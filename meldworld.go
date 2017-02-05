@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
+    "encoding/json"
 )
 
 var upgrader = websocket.Upgrader{} // use default options
@@ -60,6 +61,8 @@ func main() {
 	http.HandleFunc("/game", game)
 	http.HandleFunc("/", home)
 	http.HandleFunc("/auth", auth)
+
+    json.Marshal()
 
 	//game loop
 	go gh.ServeGame()

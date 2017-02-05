@@ -3,57 +3,74 @@
     "height": 200,
     "width": 200,
 
-    "tiles":[
-      {
-        "grass": {
-          "coordinates": [
-            {"x": 0,"y": 0},
-            {"x": 1,"y": 1}
-          ],
-          "properties":{
-            "walkable": true,
-            "speedmod": 0,
-            "damageovertime": 0
-          }
-        },
-
-        "rock": {
-          "coordinates": [
-            {"x": 10,"y": 10},
-            {"x": 11,"y": 11}
-          ],
-          "properties":{
-            "walkable": false,
-            "speedmod": -10,
-            "damageovertime": 0
-          }
+    "tiles": [{
+      "grass": {
+        "coordinates": [{
+          "x": 0,
+          "y": 0
+        }, {
+          "x": 1,
+          "y": 1
+        }],
+        "properties": {
+          "walkable": true,
+          "speedmod": 0,
+          "damageovertime": 0
         }
+      },
 
+      "rock": {
+        "coordinates": [{
+          "x": 10,
+          "y": 10
+        }, {
+          "x": 11,
+          "y": 11
+        }],
+        "properties": {
+          "walkable": false,
+          "speedmod": -10,
+          "damageovertime": 0
+        }
       }
-    ]
+
+    }]
   },
 
-  "entities": [
-    {"name": "guy",
-      "statuses": [],
-      "full_hp": 27,
-      "c_hp": 27,
-      "phy_def": 13,
-      "phy_atk": 13,
-      "speed": 1,
-      "coordinates": {"x": 0, "y": 1},
-      "destination": {"x": 2, "y": 3}
+  "entities": [{
+    "name": "guy",
+    "statuses": [],
+    "full_hp": 27,
+    "c_hp": 27,
+    "phy_def": 13,
+    "phy_atk": 13,
+    "speed": 1,
+    "coordinates": {
+      "x": 0,
+      "y": 1
     },
+    "destination": {
+      "x": 2,
+      "y": 3
+    }
+  },
 
-    {"name": "player4",
+    {
+      "name": "player4",
       "statuses": [],
       "full_hp": 2,
       "c_hp": 1,
       "phy_def": 2,
       "phy_atk": 2,
       "speed": 1,
-      "coordinates": {"x": 0, "y": 1},
-      "destination": {"x": 6, "y": 7}
+      "coordinates": {
+        "x": 0,
+        "y": 1
+      },
+      "destination": {
+        "x": 6,
+        "y": 7
+      }
     }
   ]
 
