@@ -25,7 +25,7 @@
                 }
                 ws.onmessage = function(evt) {
                     var obj = JSON.parse(evt.data);
-                    print("RESPONSE: " + obj.type + " " + obj.msg);
+                    print(obj.sender + ": " + obj.type + " " + obj.msg);
                 }
                 ws.onerror = function(evt) {
                     print("ERROR: " + evt.data);

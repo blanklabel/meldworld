@@ -40,7 +40,7 @@ func game(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		r := &ClientMessage{MsgType: "clientmessage", Msg: string(message)}
+		r := &ClientMessage{MsgType: "clientmessage", Msg: string(message), Sender: player.ID}
 		gh.broadcast <- r
 		if err != nil {
 			gh.unregister <- *player

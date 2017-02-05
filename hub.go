@@ -10,6 +10,7 @@ import (
 type ClientMessage struct {
 	MsgType string `json:"type"`
 	Msg     string `json:"msg"`
+	Sender  string `json:"sender"`
 }
 
 type GameHub struct {
@@ -22,7 +23,7 @@ type GameHub struct {
 func (g *GameHub) AddNewClient(p *Player) {
 	g.clients[p.ID] = p
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
-	r := &ClientMessage{MsgType: "client.join", Msg: announcement}
+	r := &ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 
@@ -30,7 +31,7 @@ func (g *GameHub) RemoveClient(p Player) {
 	g.clients[p.ID].conn.Close()
 	delete(g.clients, p.ID)
 	announcement := fmt.Sprintf("Player %s left", p.ID)
-	r := &ClientMessage{MsgType: "client.leave", Msg: announcement}
+	r := &ClientMessage{MsgType: "client.leave", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 
