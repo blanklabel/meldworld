@@ -12,7 +12,7 @@ type ClientMessage struct {
 }
 
 var dict string = `{
-	"map": {
+	"mapper": {
 		"height": 200,
 		"width": 200
 	}

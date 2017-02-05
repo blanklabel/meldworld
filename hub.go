@@ -5,6 +5,9 @@ import (
 	"log"
 
 	"time"
+
+	"github.com/blanklabel/meldworld/entity"
+	"github.com/blanklabel/meldworld/mapper"
 )
 
 type ClientMessage struct {
@@ -18,6 +21,11 @@ type GameHub struct {
 	broadcast  chan *ClientMessage
 	register   chan *Player
 	unregister chan Player
+}
+
+type WorldMap struct {
+	mapper.MapObj
+	entity.EntityObj
 }
 
 func (g *GameHub) AddNewClient(p *Player) {
