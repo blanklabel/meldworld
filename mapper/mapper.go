@@ -1,37 +1,30 @@
 package mapper
 
 import (
-    "encoding/json"
-    "fmt"
+	"encoding/json"
+	"fmt"
 )
 
-type ClientMessage struct {
-    MsgType string `json:"type"`
-    Msg     string `json:"msg"`
-    Sender  string `json:"sender"`
+type Dimension struct {
+	Height int
+	Width  int
 }
 
-var dict string = `{
+type MapObj struct {
+	Map Dimension
+}
+
+func main() {
+	var dict string = `{
 	"mapper": {
 		"height": 200,
 		"width": 200
 	}
-}`
+    }`
+	fmt.Println(dict)
 
-func main() {
-    fmt.Println(dict)
-
-    type Dimension struct {
-        Height int
-        Width int
-    }
-
-    type MapObj struct {
-        Map Dimension
-    }
-
-    jo := MapObj{}
-    json.Unmarshal([]byte(dict), &jo)
-    fmt.Println(jo)
+	jo := MapObj{}
+	json.Unmarshal([]byte(dict), &jo)
+	fmt.Println(jo)
 
 }
