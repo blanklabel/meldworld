@@ -5,8 +5,12 @@ import (
 	"log"
 	"net/http"
 
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"os"
+
 	"github.com/gorilla/websocket"
-    "encoding/json"
 )
 
 var upgrader = websocket.Upgrader{} // use default options
@@ -56,13 +60,24 @@ func home(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	file, e := ioutil.ReadFile("./example.json")
+
+	if e != nil {
+		fmt.Printf("File error: %v\n", e)
+		os.Exit(1)
+	}
+
+	world := &WorldMap{}
+	json.Unmarshal(file, world)
+	gh.WorldMapped = *world
+
 	addr := "localhost:8080"
 	// log.SetFlags(0)
 	http.HandleFunc("/game", game)
 	http.HandleFunc("/", home)
 	http.HandleFunc("/auth", auth)
 
-    json.Marshal()
+	fmt.Println(world)
 
 	//game loop
 	go gh.ServeGame()

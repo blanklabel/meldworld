@@ -21,9 +21,11 @@ type GameHub struct {
 	broadcast  chan *ClientMessage
 	register   chan *Player
 	unregister chan Player
+	WorldMapped WorldMap
 }
 
 type WorldMap struct {
+	Type string
 	mapper.MapObj
 	entity.EntityObj
 }
@@ -33,6 +35,7 @@ func (g *GameHub) AddNewClient(p *Player) {
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
 	r := &ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
+	g.DirectMessage(g.WorldMapped, p.ID)
 }
 
 func (g *GameHub) RemoveClient(p Player) {
@@ -43,7 +46,7 @@ func (g *GameHub) RemoveClient(p Player) {
 	g.Broadcast(r)
 }
 
-func (g GameHub) DirectMessage(msg *ClientMessage, userID string) {
+func (g GameHub) DirectMessage(msg interface{}, userID string) {
 	g.clients[userID].conn.WriteJSON(msg)
 }
 
