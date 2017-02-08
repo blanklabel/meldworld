@@ -25,7 +25,13 @@
                 }
                 ws.onmessage = function(evt) {
                     var obj = JSON.parse(evt.data);
-                    print(obj.sender + ": " + obj.type + " " + obj.msg);
+                    if (obj.type == "worldmap") {
+                        print("The world is:" + obj.Map.Height + "x" + obj.Map.Width);
+
+                    } else {
+                        print(obj.sender + ": " + obj.type + " " + obj.msg);
+                    }
+
                 }
                 ws.onerror = function(evt) {
                     print("ERROR: " + evt.data);
@@ -37,7 +43,8 @@
                     return false;
                 }
                 print("SEND: " + input.value);
-                ws.send(input.value);
+                var message = '{"type": "client.message", "msg":"' + input.value + '"}';
+                ws.send(message);
                 return false;
             };
             document.getElementById("close").onclick = function(evt) {

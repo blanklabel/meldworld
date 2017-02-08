@@ -13,6 +13,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type MsgType struct {
+	MType string `json:"type"`
+}
+
 var upgrader = websocket.Upgrader{} // use default options
 var homeTemplate = template.Must(template.ParseFiles("home.html"))
 
@@ -37,20 +41,38 @@ func game(w http.ResponseWriter, r *http.Request) {
 
 	player := NewPlayer(c)
 	gh.register <- player
+	mHolder := &MsgType{}
 
 	for {
+
+		// Get Client message
 		_, message, err := c.ReadMessage()
 		if err != nil {
 			gh.unregister <- *player
 			break
 		}
 
-		r := &ClientMessage{MsgType: "clientmessage", Msg: string(message), Sender: player.ID}
-		gh.broadcast <- r
-		if err != nil {
-			gh.unregister <- *player
-			break
+		fmt.Println(json.Unmarshal(message, mHolder))
 
+		// Determine message type
+		switch mHolder.MType {
+
+		// Receive client messages
+		case "client.message":
+			m := &ClientMessage{}
+			json.Unmarshal(message, m)
+			r := &ClientMessage{MsgType: "client.message", Msg: m.Msg, Sender: player.ID}
+
+			gh.broadcast <- r
+			if err != nil {
+				gh.unregister <- *player
+				break
+			}
+		default:
+			fmt.Println("Bad Message:", mHolder, message)
+			r := &ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type"}
+			gh.DirectMessage(r, player.ID)
+			// fmt.Println(mHolder.MType)
 		}
 	}
 }
@@ -77,7 +99,7 @@ func main() {
 	http.HandleFunc("/", home)
 	http.HandleFunc("/auth", auth)
 
-	fmt.Println(world)
+	//fmt.Println(world)
 
 	//game loop
 	go gh.ServeGame()

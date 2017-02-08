@@ -5,10 +5,12 @@ type Status struct {
 	// TO DO
 }
 
+// Location
 type Cords struct {
 	X, Y int
 }
 
+// Everything is an entity
 type Entity struct {
 	Name        string
 	Full_hp     int
@@ -24,6 +26,7 @@ type EntityObj struct {
 	Entities []Entity
 }
 
+// Actors will be things that can attack or be attacked...
 type Actor interface {
 	ReduceHP(int)
 	IncreaseHP(int)

@@ -17,41 +17,56 @@ type ClientMessage struct {
 }
 
 type GameHub struct {
-	clients    map[string]*Player
-	broadcast  chan *ClientMessage
-	register   chan *Player
-	unregister chan Player
+	clients     map[string]*Player
+	broadcast   chan *ClientMessage
+	register    chan *Player
+	unregister  chan Player
 	WorldMapped WorldMap
 }
 
 type WorldMap struct {
-	Type string
+	Type string `json:"type"`
 	mapper.MapObj
 	entity.EntityObj
 }
 
+// Add a new unkown client
 func (g *GameHub) AddNewClient(p *Player) {
+    // map the player to the hub
 	g.clients[p.ID] = p
+
+    // Notify everyone of the new player
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
 	r := &ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
+
+    // TODO: Update world map with new entity
+
+    // Give the new player the worldmap
 	g.DirectMessage(g.WorldMapped, p.ID)
 }
 
+// Remove a client from the server
 func (g *GameHub) RemoveClient(p Player) {
+    // close the connection and delete the record
 	g.clients[p.ID].conn.Close()
 	delete(g.clients, p.ID)
+
+    // Notify server of player departure
 	announcement := fmt.Sprintf("Player %s left", p.ID)
 	r := &ClientMessage{MsgType: "client.leave", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 
+// Write a message to a single client
 func (g GameHub) DirectMessage(msg interface{}, userID string) {
 	g.clients[userID].conn.WriteJSON(msg)
 }
 
+// Account to all clients
 func (g GameHub) Broadcast(msg *ClientMessage) {
 
+	// loop through all clients and give them a message
 	for id, client := range g.clients {
 		err := client.conn.WriteJSON(msg)
 		if err != nil {
@@ -72,17 +87,13 @@ func (g GameHub) ServeGame() {
 		select {
 		// main loop
 		case <-clk.C:
-			// ummm?
-			break
+            // TODO: Update world map with new entity
 		case c := <-gh.register:
 			gh.AddNewClient(c)
-			break
 		case c := <-gh.unregister:
 			gh.RemoveClient(c)
-			break
 		case c := <-gh.broadcast:
 			gh.Broadcast(c)
-			break
 		}
 	}
 }
