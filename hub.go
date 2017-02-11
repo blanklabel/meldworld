@@ -46,6 +46,7 @@ func (g *GameHub) RemoveClient(p Player) {
 
 // Write a message to a single client
 func (g GameHub) DirectMessage(msg interface{}, userID string) {
+	// TODO: Should track FROM & TO
 	g.clients[userID].conn.WriteJSON(msg)
 }
 
@@ -56,9 +57,9 @@ func (g GameHub) Broadcast(msg *model.ClientMessage) {
 	for id, client := range g.clients {
 		err := client.conn.WriteJSON(msg)
 		if err != nil {
-			log.Print("Didn't send")
+			log.Print("Didn't send due to error:", err)
 		}
-		fmt.Printf("sent msg type of '%s' contents '%s' to '%s'\n", msg.MsgType, msg.Msg, id)
+		log.Printf("sent msg type of '%s' contents '%s' to '%s'\n", msg.MsgType, msg.Msg, id)
 	}
 }
 

@@ -52,7 +52,9 @@ func game(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		fmt.Println(json.Unmarshal(message, mHolder))
+		json.Unmarshal(message, mHolder)
+
+		log.Println(mHolder.MType)
 
 		// Determine message type
 		switch mHolder.MType {
@@ -69,7 +71,7 @@ func game(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		default:
-			fmt.Println("Bad Message:", mHolder, message)
+			log.Println("Bad Message:", mHolder, message)
 			r := &model.ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type"}
 			gh.DirectMessage(r, player.ID)
 			// fmt.Println(mHolder.MType)
