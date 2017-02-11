@@ -1,13 +1,9 @@
 package model
 
-import (
-	"github.com/blanklabel/meldworld/model"
-)
-
 type WorldMap struct {
 	Type string `json:"type"`
-	model.MapObj
-	model.EntityObj
+	MapObj
+	EntityObj
 }
 
 // Size of a map
