@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"os"
 
+	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
 )
 
@@ -22,7 +23,7 @@ var homeTemplate = template.Must(template.ParseFiles("home.html"))
 
 var gh = GameHub{
 	clients:    make(map[string]*Player),
-	broadcast:  make(chan *ClientMessage),
+	broadcast:  make(chan *model.ClientMessage),
 	register:   make(chan *Player),
 	unregister: make(chan Player),
 }
@@ -59,9 +60,9 @@ func game(w http.ResponseWriter, r *http.Request) {
 
 		// Receive client messages
 		case "client.message":
-			m := &ClientMessage{}
+			m := &model.ClientMessage{}
 			json.Unmarshal(message, m)
-			r := &ClientMessage{MsgType: "client.message", Msg: m.Msg, Sender: player.ID}
+			r := &model.ClientMessage{MsgType: "client.message", Msg: m.Msg, Sender: player.ID}
 
 			gh.broadcast <- r
 			if err != nil {
@@ -70,7 +71,7 @@ func game(w http.ResponseWriter, r *http.Request) {
 			}
 		default:
 			fmt.Println("Bad Message:", mHolder, message)
-			r := &ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type"}
+			r := &model.ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type"}
 			gh.DirectMessage(r, player.ID)
 			// fmt.Println(mHolder.MType)
 		}
@@ -89,7 +90,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	world := &WorldMap{}
+	world := &model.WorldMap{}
 	json.Unmarshal(file, world)
 	gh.WorldMapped = *world
 

@@ -6,28 +6,15 @@ import (
 
 	"time"
 
-	"github.com/blanklabel/meldworld/entity"
-	"github.com/blanklabel/meldworld/mapper"
+	"github.com/blanklabel/meldworld/model"
 )
-
-type ClientMessage struct {
-	MsgType string `json:"type"`
-	Msg     string `json:"msg"`
-	Sender  string `json:"sender"`
-}
 
 type GameHub struct {
 	clients     map[string]*Player
 	broadcast   chan *ClientMessage
 	register    chan *Player
 	unregister  chan Player
-	WorldMapped WorldMap
-}
-
-type WorldMap struct {
-	Type string `json:"type"`
-	mapper.MapObj
-	entity.EntityObj
+	WorldMapped model.WorldMap
 }
 
 // Add a new unkown client
@@ -37,7 +24,7 @@ func (g *GameHub) AddNewClient(p *Player) {
 
 	// Notify everyone of the new player
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
-	r := &ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 
 	// TODO: Update world map with new entity
@@ -54,7 +41,7 @@ func (g *GameHub) RemoveClient(p Player) {
 
 	// Notify server of player departure
 	announcement := fmt.Sprintf("Player %s left", p.ID)
-	r := &ClientMessage{MsgType: "client.leave", Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{MsgType: "client.leave", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 
@@ -64,7 +51,7 @@ func (g GameHub) DirectMessage(msg interface{}, userID string) {
 }
 
 // Account to all clients
-func (g GameHub) Broadcast(msg *ClientMessage) {
+func (g GameHub) Broadcast(msg *model.ClientMessage) {
 
 	// loop through all clients and give them a message
 	for id, client := range g.clients {

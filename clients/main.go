@@ -6,28 +6,9 @@ import (
 
 	"encoding/json"
 
-	"github.com/blanklabel/meldworld/entity"
-	"github.com/blanklabel/meldworld/mapper"
+	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
 )
-
-// Simple way to encompass all messages
-type ClientMessage struct {
-	MsgType string `json:"type"`
-	Msg     string `json:"msg"`
-	Sender  string `json:"sender"`
-}
-
-// Binds map data and entity data
-type WorldMap struct {
-	Type string
-	mapper.MapObj
-	entity.EntityObj
-}
-
-type Test struct {
-	MsgType string `json:"type"`
-}
 
 // Simple client
 func main() {
@@ -45,10 +26,10 @@ func main() {
 	}
 	fmt.Println("Server Response", resp)
 
-	r := &ClientMessage{MsgType: "client.message", Msg: "move and groove"}
+	r := &model.ClientMessage{MsgType: "client.message", Msg: "move and groove"}
 	wsConn.WriteJSON(r)
 
-	cmsg := &Test{}
+	cmsg := &model.ModelType{}
 	m := &WorldMap{}
 
 	for {
@@ -66,7 +47,7 @@ func main() {
 
 		// Receive client messages
 		case "client.message":
-			m := &ClientMessage{}
+			m := &model.ClientMessage{}
 			json.Unmarshal(jsonData, m)
 			fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
 
