@@ -1,7 +1,7 @@
 package model
 
 type WorldMap struct {
-	Type string `json:"type"`
+	ModelType
 	MapObj
 	EntityObj
 }

@@ -1,10 +1,11 @@
 package main
 
 import (
-    "fmt"
-    "log"
-    "time"
+	"fmt"
+	"log"
+	"time"
 
+	"github.com/blanklabel/meldworld/model"
 )
 
 type GameHub struct {
