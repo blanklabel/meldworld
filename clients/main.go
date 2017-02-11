@@ -1,10 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"encoding/json"
 
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
@@ -30,7 +29,7 @@ func main() {
 	wsConn.WriteJSON(r)
 
 	cmsg := &model.ModelType{}
-	m := &WorldMap{}
+	m := &model.WorldMap{}
 
 	for {
 		_, jsonData, err := wsConn.ReadMessage()

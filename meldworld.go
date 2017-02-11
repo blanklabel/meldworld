@@ -1,13 +1,12 @@
 package main
 
 import (
-	"html/template"
-	"log"
-	"net/http"
-
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
 
 	"github.com/blanklabel/meldworld/model"

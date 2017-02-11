@@ -1,17 +1,16 @@
 package main
 
 import (
-	"fmt"
-	"log"
+    "fmt"
+    "log"
+    "time"
 
-	"time"
-
-	"github.com/blanklabel/meldworld/model"
+    "github.com/blanklabel/meldworld/model"
 )
 
 type GameHub struct {
 	clients     map[string]*Player
-	broadcast   chan *ClientMessage
+	broadcast   chan *model.ClientMessage
 	register    chan *Player
 	unregister  chan Player
 	WorldMapped model.WorldMap
