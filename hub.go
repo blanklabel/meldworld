@@ -5,7 +5,6 @@ import (
     "log"
     "time"
 
-    "github.com/blanklabel/meldworld/model"
 )
 
 type GameHub struct {
