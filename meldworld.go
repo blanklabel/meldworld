@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -72,7 +71,7 @@ func game(w http.ResponseWriter, r *http.Request) {
 			}
 		default:
 			log.Println("Bad Message:", mHolder, message)
-			r := &model.ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type"}
+			r := &model.ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type", Sender: "Server"}
 			gh.DirectMessage(r, player.ID)
 			// fmt.Println(mHolder.MType)
 		}
@@ -87,7 +86,7 @@ func main() {
 	file, e := ioutil.ReadFile("./example.json")
 
 	if e != nil {
-		fmt.Printf("File error: %v\n", e)
+		log.Printf("File error: %v\n", e)
 		os.Exit(1)
 	}
 

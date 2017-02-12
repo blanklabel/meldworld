@@ -7,6 +7,7 @@ type ClientMessage struct {
 }
 
 type ClientAction struct {
+	// TODO: What can they do here?
 }
 
 type ModelType struct {

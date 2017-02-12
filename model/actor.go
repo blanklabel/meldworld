@@ -22,10 +22,6 @@ type Entity struct {
 	Destination Cords
 }
 
-type EntityObj struct {
-	Entities []Entity
-}
-
 // Actors will be things that can attack or be attacked...
 type Actor interface {
 	ReduceHP(int)

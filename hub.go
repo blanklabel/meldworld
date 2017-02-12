@@ -23,7 +23,7 @@ func (g *GameHub) AddNewClient(p *Player) {
 
 	// Notify everyone of the new player
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
-	r := &model.ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{MsgType: model.CLIENTJOIN, Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 
 	// TODO: Pull new record
@@ -50,7 +50,7 @@ func (g *GameHub) RemoveClient(p Player) {
 
 	// Notify server of player departure
 	announcement := fmt.Sprintf("Player %s left", p.ID)
-	r := &model.ClientMessage{MsgType: "client.leave", Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{MsgType: model.CLIENTLEAVE, Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 
@@ -76,7 +76,7 @@ func (g GameHub) Broadcast(msg *model.ClientMessage) {
 func (g GameHub) ServeGame() {
 
 	//running at 60 FPS everyone get the ticks  -- int(1e9) / 60
-    // Once a second everyone gets an update
+	// Once a second everyone gets an update
 	frameNS := time.Duration(time.Second)
 	clk := time.NewTicker(frameNS)
 
