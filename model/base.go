@@ -6,4 +6,5 @@ const (
 	CLIENTLEAVE   string = "client.leave"
 	CLIENTERROR   string = "client.error"
 	CLIENTMESSAGE string = "client.message"
+	WORLDMAP      string = "worldmap"
 )

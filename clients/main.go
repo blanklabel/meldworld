@@ -44,7 +44,8 @@ func main() {
 	}
 	fmt.Println("Server Response", resp)
 
-	r := &model.ClientMessage{MsgType: "client.message", Msg: "move and groove"}
+	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
+		Msg: "move and groove"}
 	wsConn.WriteJSON(r)
 
 	cmsg := &model.ModelType{}
@@ -64,13 +65,13 @@ func main() {
 		switch cmsg.MsgType {
 
 		// Receive client messages
-		case "client.message":
+		case model.CLIENTMESSAGE:
 			m := &model.ClientMessage{}
 			json.Unmarshal(jsonData, m)
 			fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
 
 		// receive bootstap of map
-		case "worldmap":
+		case model.WORLDMAP:
 			json.Unmarshal(jsonData, m)
 			showMap(*m)
 		}
