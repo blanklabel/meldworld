@@ -4,5 +4,6 @@ package model
 const (
 	CLIENTJOIN    string = "client.join"
 	CLIENTLEAVE   string = "client.leave"
+	CLIENTERROR   string = "client.error"
 	CLIENTMESSAGE string = "client.message"
 )

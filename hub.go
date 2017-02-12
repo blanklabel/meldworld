@@ -23,7 +23,8 @@ func (g *GameHub) AddNewClient(p *Player) {
 
 	// Notify everyone of the new player
 	announcement := fmt.Sprintf("Player %s joined", p.ID)
-	r := &model.ClientMessage{MsgType: model.CLIENTJOIN, Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTLEAVE},
+		Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 
 	// TODO: Pull new record
@@ -50,7 +51,8 @@ func (g *GameHub) RemoveClient(p Player) {
 
 	// Notify server of player departure
 	announcement := fmt.Sprintf("Player %s left", p.ID)
-	r := &model.ClientMessage{MsgType: model.CLIENTLEAVE, Msg: announcement, Sender: "Server"}
+	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTLEAVE},
+		Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 }
 

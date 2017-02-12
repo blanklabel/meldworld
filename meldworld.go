@@ -62,7 +62,8 @@ func game(w http.ResponseWriter, r *http.Request) {
 		case "client.message":
 			m := &model.ClientMessage{}
 			json.Unmarshal(message, m)
-			r := &model.ClientMessage{MsgType: "client.message", Msg: m.Msg, Sender: player.ID}
+			r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
+				Msg: m.Msg, Sender: player.ID}
 
 			gh.broadcast <- r
 			if err != nil {
@@ -71,7 +72,8 @@ func game(w http.ResponseWriter, r *http.Request) {
 			}
 		default:
 			log.Println("Bad Message:", mHolder, message)
-			r := &model.ClientMessage{MsgType: "client.error", Msg: "Unknown Message Type", Sender: "Server"}
+			r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTERROR},
+				Msg: "Unknown Message Type", Sender: "Server"}
 			gh.DirectMessage(r, player.ID)
 			// fmt.Println(mHolder.MType)
 		}
