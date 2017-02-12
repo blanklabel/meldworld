@@ -2,7 +2,7 @@ package model
 
 // types of messages
 const (
-	CLIENTJOIN    = "client.join"
-	CLIENTLEAVE   = "client.leave"
-	CLIENTMESSAGE = "client.message"
+	CLIENTJOIN    string = "client.join"
+	CLIENTLEAVE   string = "client.leave"
+	CLIENTMESSAGE string = "client.message"
 )
