@@ -1,8 +1,8 @@
 {
   "type": "worldmap",
   "map": {
-    "height": 200,
-    "width": 200,
+    "height": 100,
+    "width": 100,
 
     "tiles": [{
       "grass": {
@@ -47,7 +47,7 @@
     "phy_atk": 13,
     "speed": 1,
     "coordinates": {
-      "x": 0,
+      "x": 10,
       "y": 1
     },
     "destination": {
@@ -65,8 +65,8 @@
       "phy_atk": 2,
       "speed": 1,
       "coordinates": {
-        "x": 0,
-        "y": 1
+        "x": 25,
+        "y": 10
       },
       "destination": {
         "x": 6,

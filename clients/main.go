@@ -9,6 +9,25 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func showMap(gamemap model.WorldMap) {
+	fmt.Println("showing map")
+	b := make([][]string, gamemap.Map.Width)
+	for i := range b {
+		b[i] = make([]string, gamemap.Map.Height)
+		for v := range b[i] {
+			b[i][v] = "X"
+		}
+	}
+
+	for _, something := range gamemap.Entities {
+		b[something.Coordinates.Y][something.Coordinates.X] = "@"
+	}
+
+	for i := range b {
+		fmt.Println(b[i])
+	}
+}
+
 // Simple client
 func main() {
 	d := websocket.Dialer{}
@@ -53,7 +72,7 @@ func main() {
 		// receive bootstap of map
 		case "worldmap":
 			json.Unmarshal(jsonData, m)
-			fmt.Println(m.MapObj.Map.Height, m.MapObj.Map.Width)
+			showMap(*m)
 		}
 	}
 

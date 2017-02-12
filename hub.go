@@ -26,7 +26,17 @@ func (g *GameHub) AddNewClient(p *Player) {
 	r := &model.ClientMessage{MsgType: "client.join", Msg: announcement, Sender: "Server"}
 	g.Broadcast(r)
 
-	// TODO: Update world map with new entity
+	// TODO: Pull new record
+	gh.WorldMapped.Entities = append(gh.WorldMapped.Entities,
+		model.Entity{Name: "Bob",
+			Full_hp:     20,
+			C_hp:        20,
+			Phy_def:     3,
+			Phy_atk:     2,
+			Speed:       1,
+			Coordinates: model.Cords{X: 0, Y: 0},
+			Destination: model.Cords{X: 0, Y: 0},
+		})
 
 	// Give the new player the worldmap
 	g.DirectMessage(g.WorldMapped, p.ID)
@@ -65,8 +75,9 @@ func (g GameHub) Broadcast(msg *model.ClientMessage) {
 
 func (g GameHub) ServeGame() {
 
-	//running at 60 FPS everyone get the ticks
-	frameNS := time.Duration(int(1e9) / 60)
+	//running at 60 FPS everyone get the ticks  -- int(1e9) / 60
+    // Once a second everyone gets an update
+	frameNS := time.Duration(time.Second)
 	clk := time.NewTicker(frameNS)
 
 	// Run forever
@@ -74,7 +85,7 @@ func (g GameHub) ServeGame() {
 		select {
 		// main loop
 		case <-clk.C:
-			// TODO: Update world map with new entity
+			// TODO: Update world map with new activity
 		case c := <-gh.register:
 			gh.AddNewClient(c)
 		case c := <-gh.unregister:

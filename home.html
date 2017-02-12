@@ -27,6 +27,7 @@
                     var obj = JSON.parse(evt.data);
                     if (obj.type == "worldmap") {
                         print("The world is:" + obj.Map.Height + "x" + obj.Map.Width);
+                        print(obj.Map.entities.toString());
 
                     } else {
                         print(obj.sender + ": " + obj.type + " " + obj.msg);

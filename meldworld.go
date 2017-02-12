@@ -28,7 +28,7 @@ var gh = GameHub{
 }
 
 func auth(w http.ResponseWriter, r *http.Request) {
-	// Auth mech
+	// TODO: Auth mech
 }
 
 func game(w http.ResponseWriter, r *http.Request) {
