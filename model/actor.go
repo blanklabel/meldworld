@@ -5,11 +5,6 @@ type Status struct {
 	// TO DO
 }
 
-// Location
-type Cords struct {
-	X, Y int
-}
-
 // Everything is an entity
 type Entity struct {
 	Name        string

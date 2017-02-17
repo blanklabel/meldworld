@@ -8,3 +8,8 @@ const (
 	CLIENTMESSAGE string = "client.message"
 	WORLDMAP      string = "worldmap"
 )
+
+// Location of an object, entity, or tile
+type Cords struct {
+	X, Y int
+}

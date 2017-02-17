@@ -9,13 +9,35 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func getRune(t string) string {
+	switch t {
+	case "grass":
+		return "."
+	case "water":
+		return "~"
+	case "mountain":
+		return "M"
+	default:
+		return "?"
+	}
+
+}
 func showMap(gamemap model.WorldMap) {
 	fmt.Println("showing map")
-	b := make([][]string, gamemap.Map.Width)
+	b := make([][]string, gamemap.MapObj.Dimensions.Width)
+	defaultTile := gamemap.MapObj.DefaultTile.TileType
+	marker := getRune(defaultTile)
+
 	for i := range b {
-		b[i] = make([]string, gamemap.Map.Height)
+		b[i] = make([]string, gamemap.MapObj.Dimensions.Height)
 		for v := range b[i] {
-			b[i][v] = "X"
+			b[i][v] = marker
+		}
+	}
+
+	for _, tile := range gamemap.MapObj.Tiles {
+		for _, tilelocation := range tile.TFeatures.Coordinates {
+			b[tilelocation.Y][tilelocation.X] = getRune(tile.TileType)
 		}
 	}
 
@@ -73,6 +95,7 @@ func main() {
 		// receive bootstap of map
 		case model.WORLDMAP:
 			json.Unmarshal(jsonData, m)
+			fmt.Println(m)
 			showMap(*m)
 		}
 	}

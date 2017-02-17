@@ -1,42 +1,59 @@
 {
   "type": "worldmap",
   "map": {
-    "height": 100,
-    "width": 100,
-
-    "tiles": [{
-      "grass": {
-        "coordinates": [{
-          "x": 0,
-          "y": 0
-        }, {
-          "x": 1,
-          "y": 1
-        }],
+    "dimensions": {
+      "height": 10,
+      "width": 10
+    },
+    "defaulttile": {
+      "tiletype": "grass",
+      "features": {
         "properties": {
-          "walkable": true,
-          "speedmod": 0,
-          "damageovertime": 0
-        }
-      },
-
-      "rock": {
-        "coordinates": [{
-          "x": 10,
-          "y": 10
-        }, {
-          "x": 11,
-          "y": 11
-        }],
-        "properties": {
-          "walkable": false,
-          "speedmod": -10,
+          "collision": false,
+          "speedcost": 0,
           "damageovertime": 0
         }
       }
+    },
 
+    "tiles": [{
+      "tiletype": "water",
+      "features": {
+        "coordinates": [{
+          "x": 1,
+          "y": 5
+        }, {
+          "x": 2,
+          "y": 5
+        }, {
+          "x": 3,
+          "y": 5
+        }],
+        "properties": {
+          "collision": false,
+          "speedcost": 0,
+          "damageovertime": 0
+        }
+      }
+    }, {
+      "tiletype": "mountain",
+      "features": {
+        "coordinates": [{
+          "x": 1,
+          "y": 2
+        }, {
+          "x": 1,
+          "y": 3
+        }],
+        "properties": {
+          "collision": true,
+          "speedcost": 10,
+          "damageovertime": 0
+        }
+      }
     }]
   },
+
 
   "entities": [{
     "name": "guy",
@@ -47,7 +64,7 @@
     "phy_atk": 13,
     "speed": 1,
     "coordinates": {
-      "x": 10,
+      "x": 9,
       "y": 1
     },
     "destination": {
@@ -65,8 +82,8 @@
       "phy_atk": 2,
       "speed": 1,
       "coordinates": {
-        "x": 25,
-        "y": 10
+        "x": 7,
+        "y": 1
       },
       "destination": {
         "x": 6,

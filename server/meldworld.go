@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"fmt"
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
 )
@@ -94,6 +95,7 @@ func main() {
 
 	world := &model.WorldMap{}
 	json.Unmarshal(file, world)
+	fmt.Println(world)
 	gh.WorldMapped = *world
 
 	addr := "localhost:8080"

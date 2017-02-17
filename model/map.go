@@ -2,8 +2,8 @@ package model
 
 type WorldMap struct {
 	ModelType
-	MapObj
-	Entities []Entity
+	MapObj   `json:"map"`
+	Entities []Entity `json:"entities"`
 }
 
 // Size of a map
@@ -17,20 +17,25 @@ type Climate struct {
 }
 
 type Props struct {
-	Collision      bool `json:"collision"` // Is it walkable?
-	speedmod       int  `json:"speedmod"`  // How much to slow ya down or speed ya up
-	damageovertime int  `json:"dot"`       // Does it hurt to walk on?
+	Collision      bool `json:"collision"`      // Is it walkable?
+	Speedcost      int  `json:"speedcost"`      // How much to slow ya down or speed ya up
+	Damageovertime int  `json:"damageovertime"` // Does it hurt to walk on?
 }
 
-type Tiles struct {
-	TileType    string `json:"type"`        // Type of tile
-	Coordinates Cords  `json:"coordinates"` // Where does this tile start?
-	Properties  Props  `json:"properties"`  // Special settings
-	Fill        Cords  `json:"fill"`        // Starting from coordinates fill until...
+type TileFeatures struct {
+	Coordinates []Cords `json:"coordinates"` // Where does this tile start?
+	Properties  Props   `json:"properties"`  // Special settings
+	Fill        Cords   `json:"fill"`        // Starting from coordinates fill until...
+
+}
+type Tile struct {
+	TileType  string       `json:"tiletype"` // Type of tile
+	TFeatures TileFeatures `json:"features"` // Details about the tile
 }
 
 // Container for the json
 type MapObj struct {
-	Map Dimension
-	// tiles
+	Dimensions  Dimension `json:"dimensions"` // Whats the size of the map?
+	Tiles       []Tile    `json:"tiles"`      //What is the map made of?
+	DefaultTile Tile
 }
