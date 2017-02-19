@@ -66,9 +66,22 @@ func main() {
 	}
 	fmt.Println("Server Response", resp)
 
-	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
-		Msg: "move and groove"}
+	// Silly message to test server message
+	r := &model.ClientMessage{
+		ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
+		Msg:       "move and groove"}
 	wsConn.WriteJSON(r)
+
+	// a is for action
+	a := &model.EntityAction{
+		ModelType: model.ModelType{MsgType: model.ENTITYACTION},
+		Action:    model.ENTITYACTIONMOVE,
+		EntityMove: model.EntityMove{
+			Direction: model.ENTITYDIRECTIONDOWN,
+			Distance:  6},
+	}
+
+	wsConn.WriteJSON(a)
 
 	cmsg := &model.ModelType{}
 	m := &model.WorldMap{}
