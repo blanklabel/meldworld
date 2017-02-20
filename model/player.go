@@ -1,4 +1,4 @@
-package main
+package model
 
 import (
 	"github.com/gorilla/websocket"
@@ -7,12 +7,13 @@ import (
 
 // Player construct to simplify dealing with that dude
 type Player struct {
-	conn *websocket.Conn
-	PlayerMeta
+	WSconn *websocket.Conn
+	PlayerInfo
 }
 
 // General information about a player
-type PlayerMeta struct {
+type PlayerInfo struct {
+	ModelType
 	ID   string
 	Name string
 }
@@ -21,9 +22,10 @@ type PlayerMeta struct {
 func NewPlayer(c *websocket.Conn) *Player {
 	u := uuid.NewV4().String()
 	p := Player{
-		conn: c,
-		PlayerMeta: PlayerMeta{
-			ID: u,
+		WSconn: c,
+		PlayerInfo: PlayerInfo{
+			ModelType: ModelType{MsgType: PLAYERINFO},
+			ID:        u,
 			// Name:
 		}}
 	return &p

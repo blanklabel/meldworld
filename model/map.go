@@ -4,6 +4,7 @@ type WorldMap struct {
 	ModelType
 	MapObj   `json:"map"`
 	Entities []Entity `json:"entities"`
+	// TODO change entities into a map: Entities map[string]Entity `json:"entities"`
 }
 
 // Size of a map

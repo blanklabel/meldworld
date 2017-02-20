@@ -16,7 +16,7 @@ const (
 // Entity trying to do a thing
 type EntityAction struct {
 	ModelType
-    Entity
+	Entity
 	Action string // move, attack, attack.range
 	EntityMove
 }

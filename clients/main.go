@@ -7,6 +7,7 @@ import (
 
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
+	"time"
 )
 
 func getRune(t string) string {
@@ -50,6 +51,21 @@ func showMap(gamemap model.WorldMap) {
 	}
 }
 
+func GetMessages(ex chan []byte, c *websocket.Conn) {
+
+	for {
+		_, jsonData, err := c.ReadMessage()
+
+		// umm wat? bye Felica
+		if err != nil {
+			break
+		}
+
+		ex <- jsonData
+	}
+
+}
+
 // Simple client
 func main() {
 	d := websocket.Dialer{}
@@ -72,45 +88,80 @@ func main() {
 		Msg:       "move and groove"}
 	wsConn.WriteJSON(r)
 
-	// a is for action
-	a := &model.EntityAction{
-		ModelType: model.ModelType{MsgType: model.ENTITYACTION},
-		Action:    model.ENTITYACTIONMOVE,
-		EntityMove: model.EntityMove{
-			Direction: model.ENTITYDIRECTIONDOWN,
-			Distance:  6},
-	}
-
-	wsConn.WriteJSON(a)
-
+	// All messages start like this ;)
 	cmsg := &model.ModelType{}
-	m := &model.WorldMap{}
+
+	// What's the world like?
+	worldmap := &model.WorldMap{}
+
+	// Who am I?
+	whoiam := &model.PlayerInfo{}
+
+	// Things I control
+	myentities := []model.Entity{}
+
+	frameNS := time.Duration(time.Minute)
+	clk := time.NewTicker(frameNS)
+
+	// Receive from our websocket
+	jsonExchange := make(chan []byte)
+	go GetMessages(jsonExchange, wsConn)
 
 	for {
-		_, jsonData, err := wsConn.ReadMessage()
+		// receive from time based or websocket
+		select {
+		case <-clk.C:
+			for num, entity := range myentities {
+				fmt.Println(num, entity)
+				// a is for action
+				a := &model.EntityAction{
+					ModelType: model.ModelType{MsgType: model.ENTITYACTION},
+					Action:    model.ENTITYACTIONMOVE,
+					Entity:    model.Entity{ID: entity.ID},
+					EntityMove: model.EntityMove{
+						Direction: model.ENTITYDIRECTIONDOWN,
+						Distance:  6},
+				}
 
-		// umm wat? bye Felica
-		if err != nil {
-			break
-		}
+				wsConn.WriteJSON(a)
+			}
 
-		json.Unmarshal(jsonData, cmsg)
+		case jsonData := <-jsonExchange:
 
-		// Determine message type
-		switch cmsg.MsgType {
+			json.Unmarshal(jsonData, cmsg)
 
-		// Receive client messages
-		case model.CLIENTMESSAGE:
-			m := &model.ClientMessage{}
-			json.Unmarshal(jsonData, m)
-			fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
+			fmt.Println("MESSAGE TYPE:", cmsg.MsgType)
 
-		// receive bootstap of map
-		case model.WORLDMAP:
-			json.Unmarshal(jsonData, m)
-			fmt.Println(m)
-			showMap(*m)
+			// Determine message type
+			switch cmsg.MsgType {
+
+			// Receive client messages
+			case model.CLIENTMESSAGE:
+				m := &model.ClientMessage{}
+				json.Unmarshal(jsonData, m)
+				fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
+
+			// receive bootstap of map
+			case model.WORLDMAP:
+
+				json.Unmarshal(jsonData, worldmap)
+				fmt.Println("WORLD MAP", worldmap)
+				showMap(*worldmap)
+
+				for _, entity := range worldmap.Entities {
+					if entity.OwnerID == whoiam.ID {
+						myentities = append(myentities, entity)
+					}
+				}
+
+			case model.PLAYERINFO:
+				json.Unmarshal(jsonData, whoiam)
+				fmt.Println("WHO I AM:", whoiam)
+
+			default:
+				fmt.Println("UNKNOWN MESSAGE:", cmsg.MsgType)
+			}
+
 		}
 	}
-
 }

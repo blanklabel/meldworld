@@ -8,6 +8,7 @@ const (
 	CLIENTMESSAGE string = "client.message"
 	WORLDMAP      string = "worldmap"
 	ENTITYACTION  string = "entity.action"
+	PLAYERINFO    string = "player.info"
 )
 
 // Location of an object, entity, or tile

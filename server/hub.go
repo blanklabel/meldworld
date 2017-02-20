@@ -11,17 +11,17 @@ import (
 )
 
 type GameHub struct {
-	clients      map[string]*Player
+	clients      map[string]*model.Player
 	broadcast    chan *model.ClientMessage
-	register     chan *Player
-	unregister   chan Player
+	register     chan *model.Player
+	unregister   chan model.Player
 	entityaction chan *model.EntityAction
-	actionqueue  []*model.EntityAction
+	actionqueue  *LIFOQueue
 	WorldMapped  model.WorldMap
 }
 
 // Add a new unknown client
-func (g *GameHub) AddNewClient(p *Player) {
+func (g *GameHub) AddNewClient(p *model.Player) {
 	// map the player to the hub
 	g.clients[p.ID] = p
 
@@ -46,8 +46,24 @@ func (g *GameHub) AddNewClient(p *Player) {
 			Destination: model.Cords{X: 0, Y: 0},
 		})
 
+	//// TODO: Entities as maps
+	//entID := uuid.NewV4().String()
+	//gh.WorldMapped.Entities[entID] =
+	//    model.Entity{
+	//        ID:          entID,
+	//        OwnerID:     p.ID,
+	//        Name:        "Bob",
+	//        Full_hp:     20,
+	//        C_hp:        20,
+	//        Phy_def:     3,
+	//        Phy_atk:     2,
+	//        Speed:       1,
+	//        Coordinates: model.Cords{X: 0, Y: 0},
+	//        Destination: model.Cords{X: 0, Y: 0},
+	//    }
+
 	// Tell the player who they are
-	g.DirectMessage(p.PlayerMeta, p.ID)
+	g.DirectMessage(p.PlayerInfo, p.ID)
 
 	// Give the new player the worldmap
 	g.DirectMessage(g.WorldMapped, p.ID)
@@ -55,9 +71,9 @@ func (g *GameHub) AddNewClient(p *Player) {
 }
 
 // Remove a client from the server
-func (g *GameHub) RemoveClient(p Player) {
+func (g *GameHub) RemoveClient(p model.Player) {
 	// close the connection and delete the record
-	g.clients[p.ID].conn.Close()
+	g.clients[p.ID].WSconn.Close()
 	delete(g.clients, p.ID)
 
 	// Notify server of player departure
@@ -71,7 +87,7 @@ func (g *GameHub) RemoveClient(p Player) {
 func (g GameHub) DirectMessage(msg interface{}, userID string) {
 	// TODO: Should track FROM & TO maybe?
 
-	err := g.clients[userID].conn.WriteJSON(msg)
+	err := g.clients[userID].WSconn.WriteJSON(msg)
 	if err != nil {
 		log.Warn("Message Failed to send:", err, msg)
 	}
@@ -80,17 +96,17 @@ func (g GameHub) DirectMessage(msg interface{}, userID string) {
 // Account to all clients
 func (g GameHub) Broadcast(msg *model.ClientMessage) {
 
+	log.WithFields(logrus.Fields{
+		"messagetype": msg.MsgType,
+		"content":     msg.Msg,
+	}).Info("Message sent")
+
 	// loop through all clients and give them a message
 	for id, client := range g.clients {
-		err := client.conn.WriteJSON(msg)
+		err := client.WSconn.WriteJSON(msg)
 		if err != nil {
-			log.Warn("Didn't send due to error:", err)
+			log.Warn("Didn't send due to error:", err, id)
 		}
-		log.WithFields(logrus.Fields{
-			"messagetype": msg.MsgType,
-			"content":     msg.Msg,
-			"toplayer":    id,
-		}).Info("Message sent")
 	}
 }
 
@@ -99,7 +115,7 @@ func (g GameHub) ActionBroadcast(msg *model.EntityAction) {
 
 	// loop through all clients and give them a message
 	for id, client := range g.clients {
-		err := client.conn.WriteJSON(msg)
+		err := client.WSconn.WriteJSON(msg)
 		if err != nil {
 			log.Warn("Didn't send due to error:", err)
 		}
@@ -111,12 +127,14 @@ func (g GameHub) EntityAction(action *model.EntityAction) {
 	switch action.Action {
 	case model.ENTITYACTIONMOVE:
 		log.WithFields(logrus.Fields{
+			"ownerID":    action.OwnerID,
+			"entityID":   action.ID,
 			"actiontype": action.Action,
 			"direction":  action.Direction,
 			"distance":   action.Distance,
 		}).Info("ACTION")
 		// TODO: if the move command is valid
-		gh.actionqueue = append(gh.actionqueue, action)
+		gh.actionqueue.Push(action)
 		break
 	}
 }
@@ -133,18 +151,19 @@ func (g GameHub) ServeGame() {
 		select {
 		// main loop
 		case <-clk.C:
-			//for _, e := range gh.WorldMapped.Entities {
-			//	gh.Broadcast(&model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
-			//		Msg:    fmt.Sprintf("{\"LOCATION\": {X: %d, Y: %d}}", e.Coordinates.X, e.Coordinates.X),
-			//		Sender: "Server"})
-			//}
-			for _, action := range gh.actionqueue {
-				if action != nil {
-					fmt.Println("ACTION", action)
-				}
+			// loop through the queue
+			i := 0
+			for i < gh.actionqueue.GetSize() {
+				action := gh.actionqueue.Pop()
+				fmt.Println("Recieved Action", action)
+				//gh.WorldMapped.Entities[]
+				//action.OwnerID
+				//action.ID
+				//action.Direction
+				//action.Distance
 			}
 			// TODO: Update world map with new activity
-			// Go through a queue of actions
+			// Go through a queue of actions - Done
 			// if location isn't a collision announce destination
 			// if is valid (Speed + tile direction) allow move
 			// else return error to client
