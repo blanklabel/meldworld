@@ -111,15 +111,15 @@ func (g GameHub) Broadcast(msg *model.ClientMessage) {
 }
 
 // Account to all clients
-func (g GameHub) ActionBroadcast(msg *model.EntityAction) {
+func (g GameHub) UpdateEntityBroadcast(entity *model.Entity) {
+	entity.ModelType.MsgType = model.ENTITY
 
 	// loop through all clients and give them a message
-	for id, client := range g.clients {
-		err := client.WSconn.WriteJSON(msg)
+	for _, client := range g.clients {
+		err := client.WSconn.WriteJSON(entity)
 		if err != nil {
 			log.Warn("Didn't send due to error:", err)
 		}
-		log.Info("ACTION:", msg.MsgType, id)
 	}
 }
 
@@ -155,12 +155,36 @@ func (g GameHub) ServeGame() {
 			i := 0
 			for i < gh.actionqueue.GetSize() {
 				action := gh.actionqueue.Pop()
-				fmt.Println("Recieved Action", action)
-				//gh.WorldMapped.Entities[]
-				//action.OwnerID
-				//action.ID
-				//action.Direction
-				//action.Distance
+				fmt.Println("Recieved Action", action.ID, action.OwnerID)
+				// loop through all entities
+				// TODO change entities to a map
+				for index, entity := range gh.WorldMapped.Entities {
+					if entity.ID == action.Entity.ID {
+						switch action.Direction {
+						case model.ENTITYDIRECTIONUP:
+							gh.WorldMapped.Entities[index].Coordinates.Y -= action.Distance
+
+						case model.ENTITYDIRECTIONDOWN:
+							gh.WorldMapped.Entities[index].Coordinates.Y += action.Distance
+
+						case model.ENTITYDIRECTIONLEFT:
+							gh.WorldMapped.Entities[index].Coordinates.X -= action.Distance
+
+						case model.ENTITYDIRECTIONRIGHT:
+							gh.WorldMapped.Entities[index].Coordinates.X += action.Distance
+						}
+						e := &model.Entity{
+							OwnerID: entity.OwnerID,
+							ID:      entity.ID,
+							Coordinates: model.Cords{
+								X: entity.Coordinates.X,
+								Y: entity.Coordinates.Y,
+							},
+						}
+						fmt.Println("UPDATING ENTITY", e)
+						gh.UpdateEntityBroadcast(e)
+					}
+				}
 			}
 			// TODO: Update world map with new activity
 			// Go through a queue of actions - Done

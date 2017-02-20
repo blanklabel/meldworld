@@ -1,6 +1,7 @@
 package model
 
 const (
+	ENTITY                  string = "ENTITY" // Generally used to update an entity
 	ENTITYACTIONMOVE        string = "MOVE"
 	ENTITYACTIONATTACK      string = "ATTACK"
 	ENTITYACTIONRANGEATTACK string = "ATTACK.RANGE"
@@ -34,6 +35,7 @@ type Status struct {
 
 // Everything is an entity
 type Entity struct {
+	ModelType
 	ID          string
 	OwnerID     string
 	Name        string

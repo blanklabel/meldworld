@@ -52,13 +52,12 @@ func showMap(gamemap model.WorldMap) {
 }
 
 func GetMessages(ex chan []byte, c *websocket.Conn) {
-
 	for {
 		_, jsonData, err := c.ReadMessage()
 
 		// umm wat? bye Felica
 		if err != nil {
-			break
+			fmt.Println(err)
 		}
 
 		ex <- jsonData
@@ -88,9 +87,6 @@ func main() {
 		Msg:       "move and groove"}
 	wsConn.WriteJSON(r)
 
-	// All messages start like this ;)
-	cmsg := &model.ModelType{}
-
 	// What's the world like?
 	worldmap := &model.WorldMap{}
 
@@ -100,7 +96,7 @@ func main() {
 	// Things I control
 	myentities := []model.Entity{}
 
-	frameNS := time.Duration(time.Minute)
+	frameNS := time.Duration(time.Second)
 	clk := time.NewTicker(frameNS)
 
 	// Receive from our websocket
@@ -120,7 +116,7 @@ func main() {
 					Entity:    model.Entity{ID: entity.ID},
 					EntityMove: model.EntityMove{
 						Direction: model.ENTITYDIRECTIONDOWN,
-						Distance:  6},
+						Distance:  1},
 				}
 
 				wsConn.WriteJSON(a)
@@ -128,7 +124,14 @@ func main() {
 
 		case jsonData := <-jsonExchange:
 
-			json.Unmarshal(jsonData, cmsg)
+			// All messages start like this ;)
+			cmsg := &model.ModelType{}
+
+			err := json.Unmarshal(jsonData, cmsg)
+			if err != nil {
+				fmt.Println("GAMEOVER: ", err)
+				break
+			}
 
 			fmt.Println("MESSAGE TYPE:", cmsg.MsgType)
 
@@ -157,6 +160,18 @@ func main() {
 			case model.PLAYERINFO:
 				json.Unmarshal(jsonData, whoiam)
 				fmt.Println("WHO I AM:", whoiam)
+
+			case model.ENTITY:
+				ent := &model.Entity{}
+				json.Unmarshal(jsonData, ent)
+				fmt.Println("ENT!", ent)
+				for index, entity := range worldmap.Entities {
+					if entity.ID == ent.ID {
+						worldmap.Entities[index] = *ent
+					}
+				}
+				fmt.Println(worldmap)
+				showMap(*worldmap)
 
 			default:
 				fmt.Println("UNKNOWN MESSAGE:", cmsg.MsgType)
