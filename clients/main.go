@@ -5,10 +5,27 @@ import (
 	"fmt"
 	"net/http"
 
+	"os"
+	"os/exec"
+	"runtime"
+	"time"
+
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
-	"time"
 )
+
+func ClearScreen() {
+	switch runtime.GOOS {
+	case "linux":
+		cmd := exec.Command("clear") //Linux example, its tested
+		cmd.Stdout = os.Stdout
+		cmd.Run()
+	case "windows":
+		cmd := exec.Command("cmd.exe", "/c", "cls") //Windows example it is untested, but I think its working
+		cmd.Stdout = os.Stdout
+		cmd.Run()
+	}
+}
 
 func getRune(t string) string {
 	switch t {
@@ -24,7 +41,7 @@ func getRune(t string) string {
 
 }
 func showMap(gamemap model.WorldMap) {
-	fmt.Println("showing map")
+	//fmt.Println("showing map")
 	b := make([][]string, gamemap.MapObj.Dimensions.Width)
 	defaultTile := gamemap.MapObj.DefaultTile.TileType
 	marker := getRune(defaultTile)
@@ -49,6 +66,7 @@ func showMap(gamemap model.WorldMap) {
 	for i := range b {
 		fmt.Println(b[i])
 	}
+
 }
 
 func GetMessages(ex chan []byte, c *websocket.Conn) {
@@ -107,8 +125,8 @@ func main() {
 		// receive from time based or websocket
 		select {
 		case <-clk.C:
-			for num, entity := range myentities {
-				fmt.Println(num, entity)
+			for _, entity := range myentities {
+				// fmt.Println(num, entity)
 				// a is for action
 				a := &model.EntityAction{
 					ModelType: model.ModelType{MsgType: model.ENTITYACTION},
@@ -133,7 +151,7 @@ func main() {
 				break
 			}
 
-			fmt.Println("MESSAGE TYPE:", cmsg.MsgType)
+			// fmt.Println("MESSAGE TYPE:", cmsg.MsgType)
 
 			// Determine message type
 			switch cmsg.MsgType {
@@ -142,13 +160,12 @@ func main() {
 			case model.CLIENTMESSAGE:
 				m := &model.ClientMessage{}
 				json.Unmarshal(jsonData, m)
-				fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
+				// fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
 
 			// receive bootstap of map
 			case model.WORLDMAP:
 
 				json.Unmarshal(jsonData, worldmap)
-				fmt.Println("WORLD MAP", worldmap)
 				showMap(*worldmap)
 
 				for _, entity := range worldmap.Entities {
@@ -159,18 +176,18 @@ func main() {
 
 			case model.PLAYERINFO:
 				json.Unmarshal(jsonData, whoiam)
-				fmt.Println("WHO I AM:", whoiam)
+				// fmt.Println("WHO I AM:", whoiam)
 
 			case model.ENTITY:
 				ent := &model.Entity{}
 				json.Unmarshal(jsonData, ent)
-				fmt.Println("ENT!", ent)
+				// fmt.Println("ENT!", ent)
 				for index, entity := range worldmap.Entities {
 					if entity.ID == ent.ID {
 						worldmap.Entities[index] = *ent
 					}
 				}
-				fmt.Println(worldmap)
+				ClearScreen()
 				showMap(*worldmap)
 
 			default:

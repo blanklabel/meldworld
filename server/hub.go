@@ -20,7 +20,7 @@ type GameHub struct {
 	WorldMapped  model.WorldMap
 }
 
-// Add a new unknown client
+// AddNewClient Add a new unknown client
 func (g *GameHub) AddNewClient(p *model.Player) {
 	// map the player to the hub
 	g.clients[p.ID] = p
@@ -70,7 +70,7 @@ func (g *GameHub) AddNewClient(p *model.Player) {
 
 }
 
-// Remove a client from the server
+// RemoveClient Remove a client from the server
 func (g *GameHub) RemoveClient(p model.Player) {
 	// close the connection and delete the record
 	g.clients[p.ID].WSconn.Close()
@@ -83,7 +83,7 @@ func (g *GameHub) RemoveClient(p model.Player) {
 	g.Broadcast(r)
 }
 
-// Write a message to a single client
+// DirectMessage Write a message to a single client
 func (g GameHub) DirectMessage(msg interface{}, userID string) {
 	// TODO: Should track FROM & TO maybe?
 
@@ -93,7 +93,7 @@ func (g GameHub) DirectMessage(msg interface{}, userID string) {
 	}
 }
 
-// Account to all clients
+// Broadcast speak to all clients connected
 func (g GameHub) Broadcast(msg *model.ClientMessage) {
 
 	log.WithFields(logrus.Fields{
@@ -110,7 +110,7 @@ func (g GameHub) Broadcast(msg *model.ClientMessage) {
 	}
 }
 
-// Account to all clients
+// UpdateEntityBroadcast notify all clients of an entity action
 func (g GameHub) UpdateEntityBroadcast(entity *model.Entity) {
 	entity.ModelType.MsgType = model.ENTITY
 
@@ -123,6 +123,10 @@ func (g GameHub) UpdateEntityBroadcast(entity *model.Entity) {
 	}
 }
 
+func (g GameHub) isMoveValid(move *model.EntityMove) {
+	// something something moves valid?
+}
+
 func (g GameHub) EntityAction(action *model.EntityAction) {
 	switch action.Action {
 	case model.ENTITYACTIONMOVE:
@@ -133,9 +137,12 @@ func (g GameHub) EntityAction(action *model.EntityAction) {
 			"direction":  action.Direction,
 			"distance":   action.Distance,
 		}).Info("ACTION")
+
 		// TODO: if the move command is valid
 		gh.actionqueue.Push(action)
-		break
+
+	default:
+		log.Warn("Unknown Action")
 	}
 }
 
@@ -155,23 +162,35 @@ func (g GameHub) ServeGame() {
 			i := 0
 			for i < gh.actionqueue.GetSize() {
 				action := gh.actionqueue.Pop()
-				fmt.Println("Recieved Action", action.ID, action.OwnerID)
+				log.Debug("Recieved Action", action.ID, action.OwnerID)
 				// loop through all entities
 				// TODO change entities to a map
 				for index, entity := range gh.WorldMapped.Entities {
 					if entity.ID == action.Entity.ID {
 						switch action.Direction {
 						case model.ENTITYDIRECTIONUP:
-							gh.WorldMapped.Entities[index].Coordinates.Y -= action.Distance
+							newCord := gh.WorldMapped.Entities[index].Coordinates.Y - action.Distance
+							if newCord >= 0 {
+								gh.WorldMapped.Entities[index].Coordinates.Y = newCord
+							}
 
 						case model.ENTITYDIRECTIONDOWN:
-							gh.WorldMapped.Entities[index].Coordinates.Y += action.Distance
+							newCord := gh.WorldMapped.Entities[index].Coordinates.Y + action.Distance
+							if newCord < gh.WorldMapped.Dimensions.Height {
+								gh.WorldMapped.Entities[index].Coordinates.Y = newCord
+							}
 
 						case model.ENTITYDIRECTIONLEFT:
-							gh.WorldMapped.Entities[index].Coordinates.X -= action.Distance
+							newCord := gh.WorldMapped.Entities[index].Coordinates.X - action.Distance
+							if newCord >= 0 {
+								gh.WorldMapped.Entities[index].Coordinates.X = newCord
+							}
 
 						case model.ENTITYDIRECTIONRIGHT:
-							gh.WorldMapped.Entities[index].Coordinates.X += action.Distance
+							newCord := gh.WorldMapped.Entities[index].Coordinates.X + action.Distance
+							if newCord < gh.WorldMapped.Dimensions.Width {
+								gh.WorldMapped.Entities[index].Coordinates.X = newCord
+							}
 						}
 						e := &model.Entity{
 							OwnerID: entity.OwnerID,
@@ -181,7 +200,8 @@ func (g GameHub) ServeGame() {
 								Y: entity.Coordinates.Y,
 							},
 						}
-						fmt.Println("UPDATING ENTITY", e)
+
+						log.Debug("UPDATING ENTITY", e)
 						gh.UpdateEntityBroadcast(e)
 					}
 				}

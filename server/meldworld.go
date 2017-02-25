@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"fmt"
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
@@ -28,6 +27,40 @@ func auth(w http.ResponseWriter, r *http.Request) {
 	// TODO: Auth mech
 }
 
+func processPlayerMessage(message []byte, p model.Player) {
+	m := &model.ClientMessage{}
+	json.Unmarshal(message, m)
+	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
+		Msg: m.Msg, Sender: p.ID}
+
+	gh.broadcast <- r
+
+}
+
+func processPlayerAction(message []byte, p model.Player) {
+	m := &model.EntityAction{}
+	json.Unmarshal(message, m)
+	switch m.Action {
+
+	// Trying to move a single entity
+	case model.ENTITYACTIONMOVE:
+		r := &model.EntityAction{
+			ModelType: model.ModelType{MsgType: model.ENTITYACTION},
+			Entity: model.Entity{
+				OwnerID: p.ID,
+				ID:      m.ID,
+			},
+			Action: model.ENTITYACTIONMOVE,
+			EntityMove: model.EntityMove{
+				Direction: m.Direction,
+				Distance:  m.Distance},
+		}
+
+		log.Debug("Move action:", m)
+		gh.entityaction <- r
+	}
+}
+
 func game(w http.ResponseWriter, r *http.Request) {
 	c, err := upgrader.Upgrade(w, r, nil)
 
@@ -36,6 +69,7 @@ func game(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO: Returning player?
 	player := model.NewPlayer(c)
 	gh.register <- player
 	mHolder := &model.ModelType{}
@@ -50,46 +84,23 @@ func game(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
+		// What type of message are they sending?
 		json.Unmarshal(message, mHolder)
-
 		log.Info(mHolder.MsgType)
 
 		// Determine message type so we can build proper validated messages to go to the hub
 		switch mHolder.MsgType {
 
-		// Receive client messages
+		// Receive client messages such as chatting to other players
 		case model.CLIENTMESSAGE:
-			m := &model.ClientMessage{}
-			json.Unmarshal(message, m)
-			r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
-				Msg: m.Msg, Sender: player.ID}
+			processPlayerMessage(message, *player)
 
-			gh.broadcast <- r
+		// Entity Attacking moving etc
+		case model.ENTITYACTION:
+			processPlayerAction(message, *player)
 
-		case model.ENTITYACTION: // Entity Attacking moving etc
-			m := &model.EntityAction{}
-			json.Unmarshal(message, m)
-			switch m.Action {
-
-			case model.ENTITYACTIONMOVE: // Trying to move a single entity
-				r := &model.EntityAction{
-					ModelType: model.ModelType{MsgType: model.ENTITYACTION},
-					Entity: model.Entity{
-						OwnerID: player.ID,
-						ID:      m.ID,
-					},
-					Action: model.ENTITYACTIONMOVE,
-					EntityMove: model.EntityMove{
-						Direction: m.Direction,
-						Distance:  m.Distance},
-				}
-				fmt.Println(m)
-
-				gh.entityaction <- r
-
-			}
-
-		default: // A bad message
+		// A bad message
+		default:
 			log.Warn("Bad Message:", mHolder, message)
 			r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTERROR},
 				Msg: "Unknown Message Type", Sender: "Server"}
