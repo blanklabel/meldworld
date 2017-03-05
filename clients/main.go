@@ -169,7 +169,7 @@ func main() {
 				showMap(*worldmap)
 
 				for _, entity := range worldmap.Entities {
-					if entity.OwnerID == whoiam.ID {
+					if entity.Owner == whoiam.ID {
 						myentities = append(myentities, entity)
 					}
 				}
