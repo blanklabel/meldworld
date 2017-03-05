@@ -47,8 +47,8 @@ func processPlayerAction(message []byte, p model.Player) {
 		r := &model.EntityAction{
 			ModelType: model.ModelType{MsgType: model.ENTITYACTION},
 			Entity: model.Entity{
-				OwnerID: p.ID,
-				ID:      m.ID,
+				Owner: p.ID,
+				ID:    m.ID,
 			},
 			Action: model.ENTITYACTIONMOVE,
 			EntityMove: model.EntityMove{

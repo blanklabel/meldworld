@@ -35,7 +35,7 @@ func (g *GameHub) AddNewClient(p *model.Player) {
 	gh.WorldMapped.Entities = append(gh.WorldMapped.Entities,
 		model.Entity{
 			ID:          uuid.NewV4().String(),
-			OwnerID:     p.ID,
+			Owner:       p.ID,
 			Name:        "Bob",
 			Full_hp:     20,
 			C_hp:        20,
@@ -131,7 +131,7 @@ func (g GameHub) EntityAction(action *model.EntityAction) {
 	switch action.Action {
 	case model.ENTITYACTIONMOVE:
 		log.WithFields(logrus.Fields{
-			"ownerID":    action.OwnerID,
+			"ownerID":    action.Owner,
 			"entityID":   action.ID,
 			"actiontype": action.Action,
 			"direction":  action.Direction,
@@ -162,7 +162,7 @@ func (g GameHub) ServeGame() {
 			i := 0
 			for i < gh.actionqueue.GetSize() {
 				action := gh.actionqueue.Pop()
-				log.Debug("Recieved Action", action.ID, action.OwnerID)
+				log.Debug("Recieved Action", action.ID, action.Owner)
 				// loop through all entities
 				// TODO change entities to a map
 				for index, entity := range gh.WorldMapped.Entities {
@@ -193,8 +193,8 @@ func (g GameHub) ServeGame() {
 							}
 						}
 						e := &model.Entity{
-							OwnerID: entity.OwnerID,
-							ID:      entity.ID,
+							Owner: entity.Owner,
+							ID:    entity.ID,
 							Coordinates: model.Cords{
 								X: entity.Coordinates.X,
 								Y: entity.Coordinates.Y,

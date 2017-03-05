@@ -37,7 +37,7 @@ type Status struct {
 type Entity struct {
 	ModelType
 	ID          string
-	OwnerID     string
+	Owner       string
 	Name        string
 	Full_hp     int
 	C_hp        int

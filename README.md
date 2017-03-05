@@ -8,3 +8,8 @@ Game for programmers and gamers alike
 # Connect a client
     cd client/
     go run main.go
+
+# TODO
+* Decouple models from server
+* Allow the parsing of JSON generically where you specifically pass in the model
+* Separate entities from the MAP
