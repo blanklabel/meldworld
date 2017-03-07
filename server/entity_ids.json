@@ -1,0 +1,105 @@
+{
+  "type": "worldmap",
+  "map": {
+    "dimensions": {
+      "height": 10,
+      "width": 10
+    },
+    "defaulttile": {
+      "tiletype": "grass",
+      "features": {
+        "properties": {
+          "collision": false,
+          "speedcost": 0,
+          "damageovertime": 0
+        }
+      }
+    },
+    "tiles": [
+      {
+        "tiletype": "water",
+        "features": {
+          "coordinates": [
+            {
+              "x": 1,
+              "y": 5
+            },
+            {
+              "x": 2,
+              "y": 5
+            },
+            {
+              "x": 3,
+              "y": 5
+            }
+          ],
+          "properties": {
+            "collision": false,
+            "speedcost": 0,
+            "damageovertime": 0
+          }
+        }
+      },
+      {
+        "tiletype": "mountain",
+        "features": {
+          "coordinates": [
+            {
+              "x": 1,
+              "y": 2
+            },
+            {
+              "x": 1,
+              "y": 3
+            }
+          ],
+          "properties": {
+            "collision": true,
+            "speedcost": 10,
+            "damageovertime": 0
+          }
+        }
+      }
+    ]
+  },
+  "entities": {
+    "55A1EA1D-D363-4F3A-AD29-0898C92F59BC": {
+      "owner": "333333333",
+      "ID": "55A1EA1D-D363-4F3A-AD29-0898C92F59BC",
+      "name": "guy",
+      "statuses": [],
+      "full_hp": 27,
+      "c_hp": 27,
+      "phy_def": 13,
+      "phy_atk": 13,
+      "speed": 1,
+      "coordinates": {
+        "x": 9,
+        "y": 1
+      },
+      "destination": {
+        "x": 2,
+        "y": 3
+      }
+    },
+    "F64CB41D-4FAE-48A1-93A9-C5B9C3DE50FD": {
+      "owner": "333333333",
+      "ID": "F64CB41D-4FAE-48A1-93A9-C5B9C3DE50FD",
+      "name": "player4",
+      "statuses": [],
+      "full_hp": 2,
+      "c_hp": 1,
+      "phy_def": 2,
+      "phy_atk": 2,
+      "speed": 1,
+      "coordinates": {
+        "x": 7,
+        "y": 1
+      },
+      "destination": {
+        "x": 6,
+        "y": 7
+      }
+    }
+  }
+}

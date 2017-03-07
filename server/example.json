@@ -56,7 +56,7 @@
 
 
   "entities": [{
-    "owner": "333333333"
+    "owner": "333333333",
     "ID": "1111111",
     "name": "guy",
     "statuses": [],
@@ -76,7 +76,7 @@
   },
 
     {
-      "owner": "333333333"
+      "owner": "333333333",
       "ID": "2222222",
       "name": "player4",
       "statuses": [],

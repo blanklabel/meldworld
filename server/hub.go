@@ -62,6 +62,8 @@ func (g *GameHub) AddNewClient(p *model.Player) {
 	//        Destination: model.Cords{X: 0, Y: 0},
 	//    }
 
+	// TODO: Notify all players of new entity
+
 	// Tell the player who they are
 	g.DirectMessage(p.PlayerInfo, p.ID)
 

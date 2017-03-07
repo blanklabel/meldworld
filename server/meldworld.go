@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"net/http"
 
+	"fmt"
+
 	"github.com/blanklabel/meldworld/model"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
@@ -30,6 +32,7 @@ func auth(w http.ResponseWriter, r *http.Request) {
 func processPlayerMessage(message []byte, p model.Player) {
 	m := &model.ClientMessage{}
 	json.Unmarshal(message, m)
+	fmt.Println(m)
 	r := &model.ClientMessage{ModelType: model.ModelType{MsgType: model.CLIENTMESSAGE},
 		Msg: m.Msg, Sender: p.ID}
 

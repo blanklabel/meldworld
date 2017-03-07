@@ -160,9 +160,9 @@ func main() {
 			case model.CLIENTMESSAGE:
 				m := &model.ClientMessage{}
 				json.Unmarshal(jsonData, m)
-				// fmt.Println("Recieved:", m.Msg, " From: ", m.Sender)
+				fmt.Println("Received:", m.Msg, " From: ", m.Sender)
 
-			// receive bootstap of map
+			// receive bootstrap of map
 			case model.WORLDMAP:
 
 				json.Unmarshal(jsonData, worldmap)
@@ -176,7 +176,7 @@ func main() {
 
 			case model.PLAYERINFO:
 				json.Unmarshal(jsonData, whoiam)
-				// fmt.Println("WHO I AM:", whoiam)
+				fmt.Println("WHO I AM:", whoiam)
 
 			case model.ENTITY:
 				ent := &model.Entity{}
