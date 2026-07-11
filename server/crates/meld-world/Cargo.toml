@@ -1,0 +1,11 @@
+[package]
+name = "meld-world"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Overworld: seeded arena, monster placement, movement integration, touch detection (subset for the spike)."
+
+[dependencies]
+uuid.workspace = true
+meld-proto.workspace = true
+meld-balance.workspace = true

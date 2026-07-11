@@ -1,0 +1,57 @@
+# MELDWORLD server workspace (BUILD-PLAN.md §1 repo layout).
+#
+# This is the today-slice of the canonical layout: the crates needed to prove
+# "4 players join a server and kill one creature" over the real stack. The
+# Bevy client crates (client/crates/meld-client, meld-ui) and the remaining
+# economy/meta/endgame services are the next slices and are not members yet.
+[workspace]
+resolver = "2"
+members = [
+    "shared/meld-proto",
+    "server/crates/meld-balance",
+    "server/crates/meld-db",
+    "server/crates/meld-api",
+    "server/crates/meld-battle",
+    "server/crates/meld-world",
+    "server/crates/meld-run",
+    "server/crates/meld-server",
+    "qa",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] }
+bcrypt = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+# internal crates
+meld-proto = { path = "shared/meld-proto" }
+meld-balance = { path = "server/crates/meld-balance" }
+meld-db = { path = "server/crates/meld-db" }
+meld-api = { path = "server/crates/meld-api" }
+meld-battle = { path = "server/crates/meld-battle" }
+meld-world = { path = "server/crates/meld-world" }
+meld-run = { path = "server/crates/meld-run" }
+
+[profile.dev]
+# The ATB engine + bots do a lot of tiny allocations; opt-level 1 keeps the
+# test loop snappy without a full release build.
+opt-level = 1
+
+[workspace.dependencies.meld-server]
+path = "server/crates/meld-server"

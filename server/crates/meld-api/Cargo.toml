@@ -1,0 +1,18 @@
+[package]
+name = "meld-api"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "HTTP API (axum): auth register/login, players/me, realtime-ticket mint (CANON.md D17)."
+
+[dependencies]
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+rand.workspace = true
+meld-proto.workspace = true
+meld-db.workspace = true

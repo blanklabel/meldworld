@@ -1,0 +1,25 @@
+# Postgres for MELDWORLD (CANON.md D18). The server runs against it via:
+#   docker compose up -d
+#   MELD_DATABASE_URL=postgres://meld:meld@localhost:5432/meldworld cargo run -p meld-server
+#
+# Containerizing the server itself (full `docker compose up` per BUILD-PLAN M0.5)
+# is a follow-up; the tested local path today is qa/scripts/local_pg.sh.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: meld
+      POSTGRES_PASSWORD: meld
+      POSTGRES_DB: meldworld
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meld -d meldworld"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - meld_pgdata:/var/lib/postgresql/data
+
+volumes:
+  meld_pgdata:

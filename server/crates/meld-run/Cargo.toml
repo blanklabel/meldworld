@@ -1,0 +1,13 @@
+[package]
+name = "meld-run"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Run/instance lifecycle: enter maze, backpack, victory/defeat outcomes (subset for the spike)."
+
+[dependencies]
+uuid.workspace = true
+meld-proto.workspace = true
+meld-balance.workspace = true
+meld-world.workspace = true
+meld-battle.workspace = true
