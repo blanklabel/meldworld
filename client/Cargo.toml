@@ -1,0 +1,15 @@
+# MELDWORLD client workspace (BUILD-PLAN §1: T4 overworld + T5 UI, all-Bevy,
+# CANON D16). Separate from the server workspace; shares only meld-proto by path.
+[workspace]
+resolver = "2"
+members = ["crates/meld-client"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3   # deps (Bevy) optimized even in dev, per Bevy's recommended setup

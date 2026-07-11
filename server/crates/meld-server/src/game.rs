@@ -562,7 +562,7 @@ impl GameState {
         let Some(inst) = self.instance.as_ref() else {
             return Vec::new();
         };
-        let entities: Vec<wm::SnapshotEntity> = inst
+        let mut entities: Vec<wm::SnapshotEntity> = inst
             .arena
             .avatars
             .iter()
@@ -573,6 +573,17 @@ impl GameState {
                 avatar_state: Some(a.state.clone()),
             })
             .collect();
+        // The monster is a dynamic entity too (movement-world.md: snapshots carry
+        // players and monsters). `avatar_state: null` marks it non-player, which
+        // is how the client tells it apart. Drop it once defeated.
+        if !inst.arena.monster.defeated {
+            entities.push(wm::SnapshotEntity {
+                entity_id: inst.arena.monster.entity_id.clone(),
+                position: inst.arena.monster.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: None,
+            });
+        }
         let msg = wm::Snapshot {
             server_tick: now_ms() as i64,
             entities,

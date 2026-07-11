@@ -1,0 +1,18 @@
+[package]
+name = "meld-client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Bevy client: overworld + ATB battle UI for the core gameplay loop (T4+T5)."
+
+[dependencies]
+bevy = "0.16"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "v7"] }
+meld-proto = { path = "../../../shared/meld-proto" }
