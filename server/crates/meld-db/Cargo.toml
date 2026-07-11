@@ -1,0 +1,14 @@
+[package]
+name = "meld-db"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Postgres persistence: players + credentials (bcrypt), migrations (CANON.md D18)."
+
+[dependencies]
+sqlx.workspace = true
+uuid.workspace = true
+bcrypt.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+meld-proto.workspace = true

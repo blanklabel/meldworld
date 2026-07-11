@@ -1,0 +1,12 @@
+[package]
+name = "meld-proto"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Shared wire types: realtime envelope, C2S/S2C messages, HTTP DTOs, enums, validators (BUILD-PLAN T1)."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

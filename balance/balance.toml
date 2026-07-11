@@ -1,0 +1,66 @@
+# MELDWORLD tunable constants (CANON.md §B / §D). Owned by T1.
+#
+# Working agreement #2: NO gameplay number appears as a literal in any crate.
+# Formula *structure* is code; formula *coefficients* live here. Only the subset
+# the today-slice actually reads is present; more land as their systems do.
+
+[session]
+heartbeat_interval_ms = 5000     # CANON D-session; realtime-protocol session.md
+grace_window_ms = 10000          # CANON §B disconnect grace
+auth_timeout_ms = 5000           # first message must be session.authenticate
+realtime_ticket_ttl_ms = 60000   # auth-players.md: ticket expires 60s after issue
+
+[auth]
+bcrypt_cost = 12                 # CANON D17
+session_token_ttl_secs = 86400   # 24h
+
+[world]
+chunk_size = 64                  # CANON §G Chunk (64x64)
+interest_radius_chunks = 2       # CANON §B networking
+overworld_sim_hz = 20            # CANON §B
+snapshot_hz = 10                 # CANON §B
+touch_radius_tiles = 1.0         # contact distance to trigger a battle (spec-defined)
+avatar_speed_tiles_per_sec = 6.0 # overworld walk speed (spec-defined)
+
+[runs]
+# base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
+base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
+backpack_slots = 40                   # limits.md
+
+[battle]
+tick_ms = 100                    # CANON §B ATB tick
+gauge_fill_divisor = 400.0       # gauge += speed_stat / 400 per tick
+turn_timeout_ms = 15000          # 15s -> auto-defend
+flee_base = 0.60
+flee_penalty_per_tier = 0.10
+flee_floor = 0.05
+merge_cap_normal_instances = 2   # CANON D5
+merge_cap_gatekeeper_instances = 4
+defend_damage_reduction = 0.5    # content-defined; spike default
+
+[combat_math]
+# Damage = max(1, round(atk * stat_mult_attacker - def)). Content-defined
+# formula; coefficients here. mlevel/stat_mult per world scaling.
+min_damage = 1
+
+[world_scaling]
+tier_divisor = 100.0             # tier(d) = floor(d/100)
+mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
+stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
+stat_mult_exp = 1.25
+red_chest_floor_distance = 300
+
+# Content-ish stats for the spike's one creature and the starter class.
+[creature.forest_bloom_stalker]
+base_hp = 120
+base_atk = 14
+base_def = 4
+speed_stat = 90
+xp_reward = 60
+encounter_class = "standard"
+
+[player.squire]
+base_hp = 40
+base_atk = 12
+base_def = 3
+speed_stat = 110
