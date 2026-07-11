@@ -10,6 +10,7 @@ use axum::routing::get;
 use axum::Router;
 use meld_api::{ApiState, Sessions, Tickets};
 use meld_db::Db;
+use tower_http::cors::CorsLayer;
 
 pub use config::Config;
 
@@ -54,7 +55,10 @@ pub async fn build(config: &Config) -> Result<Built, String> {
         .route("/v1/realtime", get(gateway::realtime_handler))
         .with_state(gateway_state);
 
-    let router = realtime.merge(api);
+    // Permissive CORS on the HTTP API only, so a browser client on another
+    // origin can call it. The WS route is left bare — CORS middleware corrupts
+    // the 101 upgrade, and cross-origin WebSockets aren't CORS-governed anyway.
+    let router = realtime.merge(api.layer(CorsLayer::permissive()));
     Ok(Built { router, db })
 }
 

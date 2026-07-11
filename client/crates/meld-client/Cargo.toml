@@ -7,12 +7,19 @@ description = "Bevy client: overworld + ATB battle UI for the core gameplay loop
 
 [dependencies]
 bevy = "0.16"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-crossbeam-channel = "0.5"
+# Cross-platform networking (native desktop AND browser/wasm): ewebsock for the
+# realtime WebSocket, ehttp for the auth HTTP calls. Both are poll/callback based
+# and need no tokio, so the same code runs on the desktop and in the browser.
+ewebsock = "0.6"
+ehttp = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7"] }
 meld-proto = { path = "../../../shared/meld-proto" }
+
+# In the browser, uuid/getrandom need the JS entropy backend, and we read the
+# server base from the page origin.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["v4", "v7", "js"] }
+getrandom = { version = "0.2", features = ["js"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "UrlSearchParams"] }

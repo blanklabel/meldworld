@@ -74,6 +74,22 @@ own network layer against a real server; exits 0 on victory):
 client/scripts/serve.sh cargo run -p meld-client --bin smoke
 ```
 
+### In the browser (wasm)
+
+The same client compiles to WebAssembly (networking via `ewebsock`/`ehttp` works
+on native *and* web). With a server running and `trunk` installed:
+
+```sh
+client/scripts/trunk-serve.sh --port 9080     # serves the wasm client
+# then open http://localhost:9080 and press ENTER to play
+```
+
+`?autoplay` self-drives the loop against the server; `?demo` runs an offline
+render demo (no server) — handy for screenshots. The wasm build needs rustup's
+toolchain (the wrapper sets that up); a `?server=<url>` param points the client
+at a server on another origin (the server sends permissive CORS for the HTTP
+API). Requires the wasm target: `rustup target add wasm32-unknown-unknown`.
+
 ## Workspace layout (BUILD-PLAN §1)
 
 ```
