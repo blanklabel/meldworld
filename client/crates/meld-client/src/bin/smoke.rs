@@ -1,0 +1,98 @@
+//! Headless end-to-end smoke: drives the whole gameplay loop through the
+//! client's *own* network layer (no Bevy, no window), against a real running
+//! server. Exits 0 on victory, 1 on defeat, non-zero on timeout/error.
+//!
+//! This is the runnable proof of the client thread in a headless environment
+//! (where a native Bevy window can't be observed). It's a solo run: one client
+//! forms a party of one, walks into the monster, and fights it to the end.
+//!
+//! Usage: `MELD_SERVER=http://127.0.0.1:8080 cargo run -p meld-client --bin smoke`
+
+use std::time::{Duration, Instant};
+
+use meld_client::net::{self, ClientCmd, ServerMsg};
+
+fn main() {
+    let base = std::env::var("MELD_SERVER").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+    eprintln!("[smoke] connecting to {base}");
+    let net = net::start(base);
+
+    let name = format!("smoke{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    net.send(ClientCmd::Connect { username: name });
+
+    let mut entered = false;
+    let mut in_battle = false;
+    let mut my_combatant = String::new();
+    let mut battle_id = String::new();
+    let mut monster: Option<String> = None;
+    let mut my_turn = false;
+    let mut last_move = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(40);
+
+    loop {
+        if Instant::now() > deadline {
+            eprintln!("[smoke] TIMEOUT");
+            std::process::exit(2);
+        }
+
+        // Walk east toward the monster until pulled into battle.
+        if entered && !in_battle && last_move.elapsed() > Duration::from_millis(80) {
+            net.send(ClientCmd::Move { dx: 1.0, dy: 0.0 });
+            last_move = Instant::now();
+        }
+
+        // Attack as soon as it's our turn.
+        if in_battle && my_turn {
+            if let Some(t) = monster.clone() {
+                net.send(ClientCmd::Attack {
+                    battle_id: battle_id.clone(),
+                    target: t,
+                });
+                my_turn = false;
+            }
+        }
+
+        match net.evt.recv_timeout(Duration::from_millis(40)) {
+            Ok(ServerMsg::Connected { player_id }) => {
+                eprintln!("[smoke] authenticated as {player_id}; entering maze");
+                net.send(ClientCmd::EnterMaze);
+            }
+            Ok(ServerMsg::RunStarted) => {
+                entered = true;
+                eprintln!("[smoke] run started; walking to the monster");
+            }
+            Ok(ServerMsg::BattleStarted {
+                battle_id: b,
+                your_combatant_id,
+                monster_combatant,
+                combatants,
+            }) => {
+                in_battle = true;
+                battle_id = b;
+                my_combatant = your_combatant_id;
+                monster = monster_combatant;
+                eprintln!("[smoke] battle started ({} combatants)", combatants.len());
+            }
+            Ok(ServerMsg::TurnReady { combatant_id }) => {
+                if combatant_id == my_combatant {
+                    my_turn = true;
+                }
+            }
+            Ok(ServerMsg::BattleEnded { outcome }) => {
+                eprintln!("[smoke] battle ended: {outcome}");
+                match outcome.as_str() {
+                    "victory" => std::process::exit(0),
+                    "defeat" => std::process::exit(1),
+                    _ => std::process::exit(4),
+                }
+            }
+            Ok(ServerMsg::Error { message }) => eprintln!("[smoke] server error: {message}"),
+            Ok(ServerMsg::Disconnected) => {
+                eprintln!("[smoke] disconnected");
+                std::process::exit(3);
+            }
+            Ok(ServerMsg::Gauge { .. }) | Ok(ServerMsg::Snapshot { .. }) => {}
+            Err(_) => {} // recv timeout — loop to drive movement/attack
+        }
+    }
+}

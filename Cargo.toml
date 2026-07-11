@@ -17,6 +17,9 @@ members = [
     "server/crates/meld-server",
     "qa",
 ]
+# The Bevy client is its own workspace (BUILD-PLAN §1 M0.1/M0.3: server and
+# client workspaces are separate, sharing only the meld-proto crate by path).
+exclude = ["client"]
 
 [workspace.package]
 edition = "2021"

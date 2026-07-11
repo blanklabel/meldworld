@@ -51,6 +51,29 @@ the real wire protocol — no shortcuts, no client-side combat math:
 M1.1/M1.8/M1.9): register/login/me, bcrypt-only credential storage, and the
 enumeration-safe identical error for unknown-username vs wrong-password.
 
+## Play it (Bevy client)
+
+The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
+**Join** (Enter to auth as a guest) → **Overworld** (WASD to move; walk into red
+Grendel) → **Battle** (ATB HUD — HP + gauge bars from the server; SPACE to attack
+on your turn) → **Ended** (victory/defeat). It's server-authoritative: the client
+sends intents and renders whatever the server reports, never computing combat.
+
+```sh
+# boots Postgres + the server, then opens the client window:
+client/scripts/serve.sh
+```
+
+Solo is winnable but tense; a full party wins comfortably. The client lives in
+its own workspace (`client/`), sharing only `meld-proto` with the server.
+
+**Headless verification** (no window — drives the whole loop through the client's
+own network layer against a real server; exits 0 on victory):
+
+```sh
+client/scripts/serve.sh cargo run -p meld-client --bin smoke
+```
+
 ## Workspace layout (BUILD-PLAN §1)
 
 ```

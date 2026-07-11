@@ -51,11 +51,13 @@ stat_mult_exp = 1.25
 red_chest_floor_distance = 300
 
 # Content-ish stats for the spike's one creature and the starter class.
+# Tuned so a SOLO squire can win but with real tension (dawdling → death),
+# while a full party wins comfortably. All [TUNABLE] — pure balance.
 [creature.forest_bloom_stalker]
-base_hp = 120
-base_atk = 14
-base_def = 4
-speed_stat = 90
+base_hp = 60
+base_atk = 9
+base_def = 2
+speed_stat = 80
 xp_reward = 60
 encounter_class = "standard"
 
