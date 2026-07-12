@@ -47,6 +47,12 @@ the real wire protocol — no shortcuts, no client-side combat math:
 5. On each `battle.turn_ready`, bots submit `battle.submit_action { attack }`.
 6. The 100 ms ATB engine resolves damage; the monster dies → `battle.ended { outcome: victory }`.
 
+`qa/tests/extraction.rs` proves the **extract-or-die** half: a bot kills the
+monster (loot → backpack), walks to the extraction portal, channels an extraction
+(`run.begin_extraction` → `run.channel_started` → `run.member_result`), and the
+loot is **banked into the persistent Vault** — verified over `GET /v1/vault`
+(Postgres). Move mid-channel and it's interrupted; die and the backpack is lost.
+
 `qa/tests/auth_conformance.rs` covers the auth acceptance criteria (BUILD-PLAN
 M1.1/M1.8/M1.9): register/login/me, bcrypt-only credential storage, and the
 enumeration-safe identical error for unknown-username vs wrong-password.
@@ -55,8 +61,9 @@ enumeration-safe identical error for unknown-username vs wrong-password.
 
 The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
 **Join** (Enter to auth as a guest) → **Overworld** (WASD to move; walk into red
-Grendel) → **Battle** (ATB HUD — HP + gauge bars from the server; SPACE to attack
-on your turn) → **Ended** (victory/defeat). It's server-authoritative: the client
+Grendel to fight; walk to the cyan portal and press **E** to extract) → **Battle**
+(ATB HUD — HP + gauge bars from the server; SPACE to attack on your turn) →
+**Ended** (extracted / defeat). It's server-authoritative: the client
 sends intents and renders whatever the server reports, never computing combat.
 
 ```sh

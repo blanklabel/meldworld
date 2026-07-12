@@ -28,6 +28,8 @@ pub enum ClientCmd {
     EnterMaze,
     Move { dx: f64, dy: f64 },
     Attack { battle_id: String, target: String },
+    /// Begin a portal extraction channel at the current position.
+    Extract,
 }
 
 /// A render-ready combatant view for the battle screen.
@@ -59,13 +61,21 @@ impl CombatantView {
     }
 }
 
-/// A dynamic overworld entity (player avatar or monster).
+/// What an overworld entity is (decides how the client draws it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntityKind {
+    Player,
+    Monster,
+    Portal,
+}
+
+/// A dynamic overworld entity.
 #[derive(Clone)]
 pub struct EntityView {
     pub id: String,
     pub x: f64,
     pub y: f64,
-    pub is_player: bool,
+    pub kind: EntityKind,
 }
 
 /// Events emitted from the network layer up to Bevy.
@@ -83,6 +93,12 @@ pub enum ServerMsg {
     TurnReady { combatant_id: String },
     Gauge { updates: Vec<(String, f64, i32)> },
     BattleEnded { outcome: String },
+    /// An extraction channel began / broke.
+    ChannelStarted { completes_at: u64 },
+    ChannelInterrupted,
+    /// This player's run ended (extracted / died / abandoned), with the count of
+    /// items banked on extraction.
+    RunEnded { result: String, banked: usize },
     Disconnected,
 }
 
@@ -272,6 +288,10 @@ impl Inner {
                     "target_ids": [target]
                 }),
             ),
+            ClientCmd::Extract => self.send_env(
+                wr::BeginExtraction::TYPE,
+                json!({ "method": "portal", "portal_entity_id": "portal", "item_id": null }),
+            ),
             ClientCmd::Connect { .. } => {}
         }
     }
@@ -307,11 +327,18 @@ impl Inner {
                     let entities = s
                         .entities
                         .into_iter()
-                        .map(|e| EntityView {
-                            id: e.entity_id,
-                            x: e.position.x,
-                            y: e.position.y,
-                            is_player: e.avatar_state.is_some(),
+                        .map(|e| {
+                            let kind = match e.avatar_state.as_deref() {
+                                None => EntityKind::Monster,
+                                Some("portal") => EntityKind::Portal,
+                                Some(_) => EntityKind::Player,
+                            };
+                            EntityView {
+                                id: e.entity_id,
+                                x: e.position.x,
+                                y: e.position.y,
+                                kind,
+                            }
                         })
                         .collect();
                     self.out.push_back(ServerMsg::Snapshot { entities });
@@ -355,6 +382,27 @@ impl Inner {
                         .and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_else(|| "over".to_string());
                     self.out.push_back(ServerMsg::BattleEnded { outcome });
+                }
+            }
+            "run.channel_started" => {
+                if let Ok(c) = serde_json::from_value::<wr::ChannelStarted>(raw.payload) {
+                    self.out.push_back(ServerMsg::ChannelStarted {
+                        completes_at: c.completes_at,
+                    });
+                }
+            }
+            "run.channel_interrupted" => self.out.push_back(ServerMsg::ChannelInterrupted),
+            "run.member_result" => {
+                if let Ok(m) = serde_json::from_value::<wr::MemberResult>(raw.payload) {
+                    // Only our own copy carries `banked`; others are notifications.
+                    if m.player_id == self.player_id {
+                        let result = serde_json::to_value(m.result)
+                            .ok()
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default();
+                        let banked = m.banked.map(|b| b.len()).unwrap_or(0);
+                        self.out.push_back(ServerMsg::RunEnded { result, banked });
+                    }
                 }
             }
             _ => {}

@@ -20,12 +20,16 @@ interest_radius_chunks = 2       # CANON §B networking
 overworld_sim_hz = 20            # CANON §B
 snapshot_hz = 10                 # CANON §B
 touch_radius_tiles = 1.0         # contact distance to trigger a battle (spec-defined)
+interaction_radius_tiles = 2.5   # range to use a portal/drop/etc. (~2-tile, limits.md) [TUNABLE]
 avatar_speed_tiles_per_sec = 6.0 # overworld walk speed (spec-defined)
 
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
 base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
 backpack_slots = 40                   # limits.md
+# Extraction channel duration. Spec default is 10000 (10s, interruptible);
+# shortened here for snappy runs/tests. [TUNABLE]
+extraction_channel_ms = 2500
 
 [battle]
 tick_ms = 100                    # CANON §B ATB tick

@@ -307,6 +307,41 @@ pub mod run {
         const TYPE: &'static str = "run.started";
     }
 
+    /// C2S — start an extraction channel (portal or escape item).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct BeginExtraction {
+        pub method: String, // "portal" | "escape_item"
+        #[serde(default)]
+        pub portal_entity_id: Option<Id>,
+        #[serde(default)]
+        pub item_id: Option<Id>,
+    }
+    impl Message for BeginExtraction {
+        const TYPE: &'static str = "run.begin_extraction";
+    }
+
+    /// S2C — an extraction channel began (interruptible; visible to the instance).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ChannelStarted {
+        pub client_seq: Option<u32>,
+        pub player_id: Id,
+        pub method: String,
+        pub completes_at: u64,
+    }
+    impl Message for ChannelStarted {
+        const TYPE: &'static str = "run.channel_started";
+    }
+
+    /// S2C — an extraction channel broke before completing.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ChannelInterrupted {
+        pub player_id: Id,
+        pub reason: String, // damage_taken | battle_started | moved | cancelled | disconnected
+    }
+    impl Message for ChannelInterrupted {
+        const TYPE: &'static str = "run.channel_interrupted";
+    }
+
     /// S2C — a member's run reached a terminal state.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct MemberResult {

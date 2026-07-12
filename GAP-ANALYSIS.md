@@ -57,9 +57,9 @@ server-or-spec-only.
 
 ## 2. Server systems — spec vs. spike
 
-### 2.1 HTTP API — **3 of ~46 endpoints**
+### 2.1 HTTP API — **4 of ~46 endpoints**
 
-Implemented: `POST /v1/auth/register`, `POST /v1/auth/login`, `GET /v1/players/me` (+ non-spec `/v1/healthz`).
+Implemented: `POST /v1/auth/register`, `POST /v1/auth/login`, `GET /v1/players/me`, `GET /v1/vault` (+ non-spec `/v1/healthz`).
 
 Missing whole groups (interfaces/http-api.md):
 - **players** (4): `players/{id}`, `players/me/class-unlocks`, `players/me/cosmetics`, `PUT players/me/title`
@@ -69,11 +69,13 @@ Missing whole groups (interfaces/http-api.md):
 - **runs-world** (5): runs history/detail, `runs/prepare` (matchmaking), hubs, hub rebuild
 - **leaderboards** (4): vanguard (+ me), seasons (+ detail)
 
-### 2.2 Persistence (`meld-db`) — **1 of ~20 models**
+### 2.2 Persistence (`meld-db`) — **~3 of ~20 models**
 
-Have: `players` (id, username, password_hash, created_at, active_title).
+Have: `players` (id, username, password_hash, …) and the **Vault** (`vaults` chits
++ `vault_items` stacks). Extraction banks a run's backpack into the Vault
+atomically (Postgres), read back via `GET /v1/vault`.
 
-Missing every other persistent model (data-models/*): `Vault`, `GearItem`,
+Missing most persistent models (data-models/*): `Vault`, `GearItem`,
 `Gem`, `ConsumableItem`, `WardItem`, `Material`, `MeldSkill`, `ClassEmblem`,
 `CosmeticTitle`, `PrestigeAura`, `Stall`, `StallListing`, `Contract`,
 `LedgerEntry`, `Hub`, `BiomeBand`, `Season`, `VanguardBoardEntry`, `Run` history,
@@ -121,13 +123,14 @@ seq replay**, forced-flee vs auto-defend on disconnect, **sleeping avatars**, wa
 protection, roaming-monster-attacks-sleeper, 60-min all-disconnected auto-abandon.
 `session_id` is carried but resume is a stub.
 
-### 2.8 Run lifecycle — entry + battle outcome only
+### 2.8 Run lifecycle — entry + battle + **extraction**
 
-Missing (run-lifecycle.md): **extraction** (portals, `ripcord_scroll`, the 10 s
-interruptible channel), death **durability penalty** (DB), abandon, instance close,
-matchmaking/party formation (spike auto-forms from whoever's connected), backpack
-capacity, ground **drops/pickups**, drop-on-battling-player. Have: enter_maze,
-victory loot into an in-memory backpack, defeat→`died` in memory (no persistence).
+Have: enter_maze, victory loot into the backpack, **portal extraction** (an
+interruptible channel that banks the backpack into the persistent Vault),
+defeat→`died`. Missing: death **durability penalty** (needs the gear model),
+`ripcord_scroll` escape item, explicit abandon, instance close, matchmaking/party
+formation (auto-forms from whoever's connected), backpack capacity, ground
+**drops/pickups**, drop-on-battling-player.
 
 ### 2.9 Economy — 0%
 

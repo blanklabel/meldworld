@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use meld_balance::Balance;
 use meld_battle::{Battle, Event as BattleEvent, Reject};
+use meld_db::Db;
 use meld_proto::common::{ItemStack, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{battle as wb, movement as wm, run as wr, session as ws, Message};
@@ -53,10 +54,10 @@ impl GameHandle {
 }
 
 /// Spawn the game loop; returns a handle for the gateway.
-pub fn spawn(balance: Arc<Balance>) -> GameHandle {
+pub fn spawn(balance: Arc<Balance>, db: Db) -> GameHandle {
     let (tx, rx) = mpsc::channel(1024);
     tokio::spawn(async move {
-        GameState::new(balance).run(rx).await;
+        GameState::new(balance, db).run(rx).await;
     });
     GameHandle { tx }
 }
@@ -94,6 +95,11 @@ fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
     }
 }
 
+/// An in-progress extraction channel (interruptible; completes → bank).
+struct Extraction {
+    completes_at: u64,
+}
+
 /// The single active MazeInstance of the slice.
 struct ActiveInstance {
     arena: Arena,
@@ -105,10 +111,13 @@ struct ActiveInstance {
     combatant_player: HashMap<String, String>,
     /// player_id -> combatant_id.
     player_combatant: HashMap<String, String>,
+    /// player_id -> active extraction channel.
+    extraction: HashMap<String, Extraction>,
 }
 
 struct GameState {
     balance: Arc<Balance>,
+    db: Db,
     sessions: HashMap<String, Session>,
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
@@ -116,9 +125,10 @@ struct GameState {
 }
 
 impl GameState {
-    fn new(balance: Arc<Balance>) -> Self {
+    fn new(balance: Arc<Balance>, db: Db) -> Self {
         GameState {
             balance,
+            db,
             sessions: HashMap::new(),
             order: Vec::new(),
             instance: None,
@@ -141,6 +151,10 @@ impl GameState {
                 _ = ticker.tick() => {
                     let out = self.tick();
                     self.dispatch(out);
+                    // Extraction banking touches Postgres, so it awaits here
+                    // rather than in the sync tick.
+                    let banked = self.complete_extractions().await;
+                    self.dispatch(banked);
                 }
             }
         }
@@ -222,6 +236,7 @@ impl GameState {
                 },
             )],
             wr::EnterMaze::TYPE => self.handle_enter_maze(player_id, raw.seq),
+            wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -344,6 +359,7 @@ impl GameState {
             monster_combatant_id: String::new(),
             combatant_player: HashMap::new(),
             player_combatant: HashMap::new(),
+            extraction: HashMap::new(),
         });
         out
     }
@@ -368,6 +384,25 @@ impl GameState {
                 Some(raw.seq),
             )];
         };
+        // Any movement interrupts an in-progress extraction channel (D15).
+        if inst.extraction.remove(player_id).is_some() {
+            if let Some(a) = inst.arena.avatar_mut(player_id) {
+                a.state = "active".to_string();
+            }
+            let members: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
+            return members
+                .iter()
+                .map(|pid| {
+                    out_msg(
+                        pid,
+                        &wr::ChannelInterrupted {
+                            player_id: player_id.to_string(),
+                            reason: "moved".to_string(),
+                        },
+                    )
+                })
+                .collect();
+        }
         // Movement is ignored while in battle (avatar not `active`).
         inst.arena.apply_move(
             player_id,
@@ -503,6 +538,175 @@ impl GameState {
         }
     }
 
+    fn handle_begin_extraction(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::BeginExtraction = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "bad begin_extraction",
+                    Some(raw.seq),
+                )]
+            }
+        };
+        let now = now_ms();
+        let channel_ms = self.balance.runs.extraction_channel_ms;
+        let Some(inst) = self.instance.as_mut() else {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Not in a run.",
+                Some(raw.seq),
+            )];
+        };
+        if inst.battle.is_some() {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Resolve the battle first.",
+                Some(raw.seq),
+            )];
+        }
+        if inst.extraction.contains_key(player_id) {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Already channeling.",
+                Some(raw.seq),
+            )];
+        }
+        // Portal extraction requires standing at the portal; escape items work
+        // from anywhere (their consumption is deferred with the item slice).
+        if req.method == "portal" && !inst.arena.at_portal(player_id) {
+            return vec![error(
+                player_id,
+                ErrorCode::OutOfRange,
+                "Not at an extraction portal.",
+                Some(raw.seq),
+            )];
+        }
+        let completes_at = now + channel_ms;
+        inst.extraction
+            .insert(player_id.to_string(), Extraction { completes_at });
+        if let Some(a) = inst.arena.avatar_mut(player_id) {
+            a.state = "channeling".to_string();
+        }
+        let members: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        members
+            .iter()
+            .map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelStarted {
+                        client_seq: if pid == player_id { Some(raw.seq) } else { None },
+                        player_id: player_id.to_string(),
+                        method: req.method.clone(),
+                        completes_at,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Complete any extraction channels whose timer elapsed: bank the backpack
+    /// into the Vault (Postgres) and finalize the run as `extracted`.
+    async fn complete_extractions(&mut self) -> Vec<Outgoing> {
+        let now = now_ms();
+        struct Banked {
+            player_id: String,
+            run_id: String,
+            items: Vec<ItemStack>,
+        }
+        let (banks, members): (Vec<Banked>, Vec<String>) = {
+            let Some(inst) = self.instance.as_mut() else {
+                return Vec::new();
+            };
+            let done: Vec<String> = inst
+                .extraction
+                .iter()
+                .filter(|(_, e)| e.completes_at <= now)
+                .map(|(p, _)| p.clone())
+                .collect();
+            if done.is_empty() {
+                return Vec::new();
+            }
+            let mut banks = Vec::new();
+            for pid in &done {
+                inst.extraction.remove(pid);
+                if let Some(a) = inst.arena.avatar_mut(pid) {
+                    a.state = "active".to_string();
+                }
+                if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
+                    if r.result.is_some() {
+                        continue;
+                    }
+                    let items = std::mem::take(&mut r.backpack);
+                    r.result = Some(RunResult::Extracted);
+                    banks.push(Banked {
+                        player_id: pid.clone(),
+                        run_id: r.run_id.clone(),
+                        items,
+                    });
+                }
+            }
+            let members: Vec<String> =
+                inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
+            (banks, members)
+        };
+
+        let db = self.db.clone();
+        let mut out = Vec::new();
+        for b in banks {
+            let items_kv: Vec<(String, i32)> = b
+                .items
+                .iter()
+                .map(|i| (i.item_kind.clone(), i.quantity))
+                .collect();
+            if let Ok(uid) = Uuid::parse_str(&b.player_id) {
+                if let Err(e) = db.bank_extraction(uid, &items_kv, 0).await {
+                    tracing::error!("bank_extraction failed for {}: {e}", b.player_id);
+                }
+            }
+            for pid in &members {
+                let banked = if pid == &b.player_id {
+                    Some(b.items.clone())
+                } else {
+                    None
+                };
+                out.push(out_msg(
+                    pid,
+                    &wr::MemberResult {
+                        run_id: b.run_id.clone(),
+                        player_id: b.player_id.clone(),
+                        result: RunResult::Extracted,
+                        max_distance_reached: 0,
+                        banked,
+                        lost: None,
+                        durability_loss_applied: false,
+                    },
+                ));
+            }
+            if !b.items.is_empty() {
+                out.push(out_msg(
+                    &b.player_id,
+                    &wr::BackpackUpdate {
+                        changes: b
+                            .items
+                            .iter()
+                            .map(|i| wr::BackpackChange {
+                                item: i.clone(),
+                                delta: "removed".to_string(),
+                                cause: "banked".to_string(),
+                            })
+                            .collect(),
+                    },
+                ));
+            }
+        }
+        out
+    }
+
     // --- tick ---------------------------------------------------------------
 
     fn tick(&mut self) -> Vec<Outgoing> {
@@ -584,6 +788,14 @@ impl GameState {
                 avatar_state: None,
             });
         }
+        // The extraction portal, tagged via a distinct avatar_state the client
+        // renders specially (a pragmatic stand-in for world.entity_spawn).
+        entities.push(wm::SnapshotEntity {
+            entity_id: "portal".to_string(),
+            position: inst.arena.portal,
+            velocity: wm::Velocity { x: 0.0, y: 0.0 },
+            avatar_state: Some("portal".to_string()),
+        });
         let msg = wm::Snapshot {
             server_tick: now_ms() as i64,
             entities,
@@ -703,6 +915,10 @@ impl GameState {
                         quantity: 1,
                         insurance: None,
                     };
+                    // Record loot in the run's backpack so extraction can bank it.
+                    if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
+                        r.backpack.push(loot_item.clone());
+                    }
                     let ended = wb::Ended {
                         battle_id: battle_id.clone(),
                         outcome: BattleOutcome::Victory,

@@ -38,6 +38,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/auth/register", post(register))
         .route("/v1/auth/login", post(login))
         .route("/v1/players/me", get(players_me))
+        .route("/v1/vault", get(vault))
         .with_state(state)
 }
 
@@ -107,6 +108,20 @@ async fn players_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
     match st.db.get_player(player_id).await {
         Ok(Some(row)) => Ok((StatusCode::OK, Json(to_player(row))).into_response()),
         Ok(None) => Err(ApiReject::unauthorized()),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+async fn vault(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    match st.db.get_vault(player_id).await {
+        Ok((chits, items)) => {
+            let materials = items
+                .into_iter()
+                .map(|(item_kind, quantity)| VaultItemStack { item_kind, quantity })
+                .collect();
+            Ok((StatusCode::OK, Json(VaultSummary { chits, materials })).into_response())
+        }
         Err(e) => Err(ApiReject::internal(e)),
     }
 }

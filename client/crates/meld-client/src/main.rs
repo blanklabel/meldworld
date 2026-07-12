@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use meld_client::net;
-use net::{ClientCmd, CombatantView, Net, ServerMsg};
+use net::{ClientCmd, CombatantView, EntityKind, Net, ServerMsg};
 
 /// World tiles → screen pixels.
 const TILE_PX: f32 = 22.0;
@@ -149,13 +149,14 @@ struct Session {
     player_id: String,
     connecting: bool,
     entered: bool,
+    channeling: bool,
     status: String,
 }
 
 #[derive(Resource, Default)]
 struct Overworld {
-    /// entity id -> (x, y, is_player)
-    entities: HashMap<String, (f32, f32, bool)>,
+    /// entity id -> (x, y, kind)
+    entities: HashMap<String, (f32, f32, EntityKind)>,
 }
 
 #[derive(Resource, Default)]
@@ -170,6 +171,7 @@ struct BattleData {
 #[derive(Resource, Default)]
 struct EndInfo {
     outcome: String,
+    banked: usize,
 }
 
 /// When true, the client self-drives the loop against the real server.
@@ -248,7 +250,7 @@ fn pump_net(
                 for e in entities {
                     world
                         .entities
-                        .insert(e.id, (e.x as f32, e.y as f32, e.is_player));
+                        .insert(e.id, (e.x as f32, e.y as f32, e.kind));
                 }
             }
             ServerMsg::BattleStarted {
@@ -280,7 +282,29 @@ fn pump_net(
                 }
             }
             ServerMsg::BattleEnded { outcome } => {
-                end.outcome = outcome;
+                // Victory returns to the overworld (go extract!); defeat ends.
+                if outcome == "victory" {
+                    if *state.get() == Screen::Battle {
+                        next.set(Screen::Overworld);
+                    }
+                } else {
+                    end.outcome = outcome;
+                    end.banked = 0;
+                    next.set(Screen::Ended);
+                }
+            }
+            ServerMsg::ChannelStarted { .. } => {
+                session.channeling = true;
+                session.status = "extracting…".to_string();
+            }
+            ServerMsg::ChannelInterrupted => {
+                session.channeling = false;
+                session.status = "extraction interrupted".to_string();
+            }
+            ServerMsg::RunEnded { result, banked } => {
+                session.channeling = false;
+                end.outcome = result;
+                end.banked = banked;
                 next.set(Screen::Ended);
             }
             ServerMsg::Error { message } => {
@@ -320,8 +344,9 @@ fn demo_driver(
         }
         let x = t / 3.0 * 9.0;
         world.entities.clear();
-        world.entities.insert("me".to_string(), (x, 0.0, true));
-        world.entities.insert("grendel".to_string(), (10.0, 0.0, false));
+        world.entities.insert("me".to_string(), (x, 0.0, EntityKind::Player));
+        world.entities.insert("grendel".to_string(), (10.0, 0.0, EntityKind::Monster));
+        world.entities.insert("portal".to_string(), (14.0, 0.0, EntityKind::Portal));
         return;
     }
 
@@ -432,7 +457,9 @@ fn overworld_ui(mut commands: Commands) {
         ))
         .with_children(|p| {
             p.spawn((
-                Text::new("WASD / arrows to move - walk into Grendel (red) to fight"),
+                Text::new(
+                    "WASD/arrows: move - walk into Grendel (red) to fight - press E at the cyan portal to extract",
+                ),
                 TextFont {
                     font_size: 16.0,
                     ..default()
@@ -446,11 +473,35 @@ fn overworld_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
+    world: Res<Overworld>,
+    session: Res<Session>,
 ) {
+    // Movement is locked while channeling an extraction (and would interrupt it).
+    if session.channeling {
+        return;
+    }
+
+    let me = world.entities.get(&session.player_id).map(|&(x, y, _)| (x, y));
+    let portal = world
+        .entities
+        .values()
+        .find(|&&(_, _, k)| k == EntityKind::Portal)
+        .map(|&(x, y, _)| (x, y));
+    let near_portal = match (me, portal) {
+        (Some((mx, my)), Some((px, py))) => ((mx - px).powi(2) + (my - py).powi(2)).sqrt() <= 2.0,
+        _ => false,
+    };
+
+    // Extract at the portal (E key, or autopilot once it arrives).
+    if keys.just_pressed(KeyCode::KeyE) || (autoplay.0 && near_portal) {
+        net.0.send(ClientCmd::Extract);
+        return;
+    }
+
     let mut dx = 0.0;
     let mut dy = 0.0;
-    if autoplay.0 {
-        dx += 1.0; // walk east toward Grendel
+    if autoplay.0 && !near_portal {
+        dx += 1.0; // walk east: into Grendel, then on to the portal
     }
     if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
         dy += 1.0;
@@ -480,35 +531,38 @@ fn sync_overworld_sprites(
 ) {
     let mut seen = HashMap::new();
     for (entity, we, mut tf, mut sprite) in &mut q {
-        if let Some(&(x, y, is_player)) = world.entities.get(&we.0) {
+        if let Some(&(x, y, kind)) = world.entities.get(&we.0) {
             tf.translation.x = x * TILE_PX;
             tf.translation.y = -y * TILE_PX; // server Y south → screen Y north
-            sprite.color = entity_color(&we.0, is_player, &session.player_id);
+            sprite.color = entity_color(&we.0, kind, &session.player_id);
             seen.insert(we.0.clone(), true);
         } else {
             commands.entity(entity).despawn();
         }
     }
-    for (id, &(x, y, is_player)) in &world.entities {
+    for (id, &(x, y, kind)) in &world.entities {
         if seen.contains_key(id) {
             continue;
         }
-        let size = if is_player { 18.0 } else { 30.0 };
+        let size = match kind {
+            EntityKind::Player => 18.0,
+            EntityKind::Monster => 30.0,
+            EntityKind::Portal => 26.0,
+        };
         commands.spawn((
             WorldEntity(id.clone()),
-            Sprite::from_color(entity_color(id, is_player, &session.player_id), Vec2::splat(size)),
+            Sprite::from_color(entity_color(id, kind, &session.player_id), Vec2::splat(size)),
             Transform::from_xyz(x * TILE_PX, -y * TILE_PX, 1.0),
         ));
     }
 }
 
-fn entity_color(id: &str, is_player: bool, me: &str) -> Color {
-    if !is_player {
-        Color::srgb(0.9, 0.3, 0.3) // monster
-    } else if id == me {
-        Color::srgb(0.4, 0.9, 0.5) // you
-    } else {
-        Color::srgb(0.5, 0.7, 1.0) // ally
+fn entity_color(id: &str, kind: EntityKind, me: &str) -> Color {
+    match kind {
+        EntityKind::Monster => Color::srgb(0.9, 0.3, 0.3),
+        EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
+        EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
+        EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
     }
 }
 
@@ -623,10 +677,14 @@ fn render_battle(
 // ----------------------------------------------------------------- ended ---
 
 fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
-    let (title, color) = match end.outcome.as_str() {
-        "victory" => ("VICTORY - Grendel is slain!", Color::srgb(0.5, 0.95, 0.6)),
-        "defeat" => ("DEFEAT - your hero has fallen.", Color::srgb(0.95, 0.4, 0.4)),
-        _ => ("The battle is over.", Color::srgb(0.8, 0.8, 0.8)),
+    let (title, color): (String, Color) = match end.outcome.as_str() {
+        "victory" => ("VICTORY - Grendel is slain!".into(), Color::srgb(0.5, 0.95, 0.6)),
+        "extracted" => (
+            format!("EXTRACTED - banked {} item(s) to your Vault", end.banked),
+            Color::srgb(0.4, 0.9, 0.95),
+        ),
+        "defeat" | "died" => ("DEFEAT - your hero has fallen.".into(), Color::srgb(0.95, 0.4, 0.4)),
+        _ => ("The run is over.".into(), Color::srgb(0.8, 0.8, 0.8)),
     };
     commands
         .spawn((

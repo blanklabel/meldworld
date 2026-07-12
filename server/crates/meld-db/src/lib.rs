@@ -65,7 +65,86 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
+        // The Vault: per-player persistent chits balance + banked item stacks.
+        // (Gear/gems/durability land with the gear slice; materials/consumables
+        // are stacked by kind here.) One statement per query() — sqlx uses
+        // prepared statements, which reject multiple commands in one string.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS vaults (
+                player_id UUID PRIMARY KEY REFERENCES players(player_id),
+                chits     BIGINT NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS vault_items (
+                player_id UUID NOT NULL REFERENCES players(player_id),
+                item_kind TEXT NOT NULL,
+                quantity  INTEGER NOT NULL,
+                PRIMARY KEY (player_id, item_kind)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
+    }
+
+    /// Bank a run's backpack into the player's Vault atomically (extraction).
+    /// Upserts each item stack and adds `chits`; creates the vault row if absent.
+    pub async fn bank_extraction(
+        &self,
+        player_id: Uuid,
+        items: &[(String, i32)],
+        chits: i64,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO vaults (player_id, chits) VALUES ($1, $2)
+             ON CONFLICT (player_id) DO UPDATE SET chits = vaults.chits + $2",
+        )
+        .bind(player_id)
+        .bind(chits)
+        .execute(&mut *tx)
+        .await?;
+        for (kind, qty) in items {
+            sqlx::query(
+                "INSERT INTO vault_items (player_id, item_kind, quantity) VALUES ($1, $2, $3)
+                 ON CONFLICT (player_id, item_kind)
+                 DO UPDATE SET quantity = vault_items.quantity + $3",
+            )
+            .bind(player_id)
+            .bind(kind)
+            .bind(qty)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Read a player's Vault: chits balance + item stacks (kind, quantity).
+    pub async fn get_vault(&self, player_id: Uuid) -> Result<(i64, Vec<(String, i32)>), DbError> {
+        let chits: i64 = sqlx::query_scalar("SELECT chits FROM vaults WHERE player_id = $1")
+            .bind(player_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(0);
+        let rows = sqlx::query(
+            "SELECT item_kind, quantity FROM vault_items WHERE player_id = $1 ORDER BY item_kind",
+        )
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let items = rows
+            .iter()
+            .map(|r| (r.get::<String, _>("item_kind"), r.get::<i32, _>("quantity")))
+            .collect();
+        Ok((chits, items))
     }
 
     /// Create an account. Hashes the password with bcrypt (cost from balance);

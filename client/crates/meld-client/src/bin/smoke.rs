@@ -75,7 +75,11 @@ fn main() {
                     eprintln!("[smoke] disconnected");
                     std::process::exit(3);
                 }
-                ServerMsg::Gauge { .. } | ServerMsg::Snapshot { .. } => {}
+                ServerMsg::Gauge { .. }
+                | ServerMsg::Snapshot { .. }
+                | ServerMsg::ChannelStarted { .. }
+                | ServerMsg::ChannelInterrupted
+                | ServerMsg::RunEnded { .. } => {}
             }
         }
 

@@ -77,7 +77,10 @@ pub struct Arena {
     pub half_extent: f64,
     pub avatars: Vec<Avatar>,
     pub monster: MonsterSpawn,
+    /// The extraction portal (deterministic at every hub — CANON.md D15).
+    pub portal: Position,
     touch_radius: f64,
+    interaction_radius: f64,
     sim_dt: f64,
 }
 
@@ -127,9 +130,19 @@ impl Arena {
             half_extent: 64.0,
             avatars,
             monster,
+            // A short walk east past where the monster stands (d≈14, Forest).
+            portal: Position::new(14.0, 0.0),
             touch_radius: balance.world.touch_radius_tiles,
+            interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
         }
+    }
+
+    /// Is `player` within interaction range of the extraction portal?
+    pub fn at_portal(&self, player_id: &str) -> bool {
+        self.avatar(player_id)
+            .map(|a| a.position.distance_to(&self.portal) <= self.interaction_radius)
+            .unwrap_or(false)
     }
 
     pub fn avatar(&self, player_id: &str) -> Option<&Avatar> {

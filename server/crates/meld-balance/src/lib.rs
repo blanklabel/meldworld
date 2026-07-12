@@ -49,6 +49,7 @@ pub struct World {
     pub overworld_sim_hz: u64,
     pub snapshot_hz: u64,
     pub touch_radius_tiles: f64,
+    pub interaction_radius_tiles: f64,
     pub avatar_speed_tiles_per_sec: f64,
 }
 
@@ -56,6 +57,7 @@ pub struct World {
 pub struct Runs {
     pub base_run_level_per_distance: f64,
     pub backpack_slots: i32,
+    pub extraction_channel_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -42,7 +42,7 @@ pub async fn build(config: &Config) -> Result<Built, String> {
     });
 
     // Realtime gateway.
-    let game = game::spawn(balance.clone());
+    let game = game::spawn(balance.clone(), db.clone());
     let gateway_state = gateway::GatewayState {
         db: db.clone(),
         tickets,
