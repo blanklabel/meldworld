@@ -273,6 +273,13 @@ fn pump_net(
                     battle.my_turn = true;
                 }
             }
+            ServerMsg::CombatantsJoined { combatants } => {
+                for c in combatants {
+                    if !battle.combatants.iter().any(|x| x.id == c.id) {
+                        battle.combatants.push(c);
+                    }
+                }
+            }
             ServerMsg::Gauge { updates } => {
                 for (id, gauge, hp) in updates {
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == id) {

@@ -91,6 +91,8 @@ pub enum ServerMsg {
         monster_combatant: Option<String>,
     },
     TurnReady { combatant_id: String },
+    /// A second party merged into the battle (raid merge) — add their combatants.
+    CombatantsJoined { combatants: Vec<CombatantView> },
     Gauge { updates: Vec<(String, f64, i32)> },
     BattleEnded { outcome: String },
     /// An extraction channel began / broke.
@@ -363,6 +365,12 @@ impl Inner {
                     self.out.push_back(ServerMsg::TurnReady {
                         combatant_id: t.combatant_id,
                     });
+                }
+            }
+            "battle.party_joined" => {
+                if let Ok(p) = serde_json::from_value::<wb::PartyJoined>(raw.payload) {
+                    let combatants = p.joining_allies.iter().map(CombatantView::from_wire).collect();
+                    self.out.push_back(ServerMsg::CombatantsJoined { combatants });
                 }
             }
             "battle.gauge_update" => {

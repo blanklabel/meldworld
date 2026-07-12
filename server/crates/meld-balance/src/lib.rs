@@ -22,6 +22,7 @@ pub struct Balance {
     pub world: World,
     pub runs: Runs,
     pub battle: Battle,
+    pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
     pub creature: Creatures,
@@ -71,6 +72,13 @@ pub struct Battle {
     pub merge_cap_normal_instances: i32,
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Meld {
+    pub xp_per_level: i64,
+    pub alchemy_xp_per_extracted_stack: i64,
+    pub forging_xp_per_craft: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

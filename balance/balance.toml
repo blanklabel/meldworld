@@ -42,6 +42,13 @@ merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
 
+[meld]
+# Meld-skill progression. Simple linear curve for the slice; the real per-skill
+# curves + recipe XP are content tables. [TUNABLE]
+xp_per_level = 100
+alchemy_xp_per_extracted_stack = 15   # extracting plants/monster parts (GDD §4.1)
+forging_xp_per_craft = 25             # successful craft (GDD §4.1)
+
 [combat_math]
 # Damage = max(1, round(atk * stat_mult_attacker - def)). Content-defined
 # formula; coefficients here. mlevel/stat_mult per world scaling.

@@ -39,6 +39,8 @@ pub async fn build(config: &Config) -> Result<Built, String> {
         tickets: tickets.clone(),
         sessions: sessions.clone(),
         session_ttl_secs: balance.auth.session_token_ttl_secs,
+        meld_xp_per_level: balance.meld.xp_per_level,
+        meld_forging_xp: balance.meld.forging_xp_per_craft,
     });
 
     // Realtime gateway.

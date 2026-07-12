@@ -77,6 +77,7 @@ fn main() {
                 }
                 ServerMsg::Gauge { .. }
                 | ServerMsg::Snapshot { .. }
+                | ServerMsg::CombatantsJoined { .. }
                 | ServerMsg::ChannelStarted { .. }
                 | ServerMsg::ChannelInterrupted
                 | ServerMsg::RunEnded { .. } => {}

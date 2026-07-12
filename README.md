@@ -53,6 +53,12 @@ monster (loot → backpack), walks to the extraction portal, channels an extract
 loot is **banked into the persistent Vault** — verified over `GET /v1/vault`
 (Postgres). Move mid-channel and it's interrupted; die and the backpack is lost.
 
+More Postgres-backed conformance tests cover the RPG systems:
+
+- `qa/tests/death_durability.rs` — a passive bot dies; its equipped blue-chest gear loses 10% max durability (the durability sink, CANON D6).
+- `qa/tests/progression.rs` — extraction credits **Alchemy** XP; crafting the loot consumes it and credits **Forging** XP, mutating the Vault (`/v1/meld-skills`, `/v1/crafting/craft`).
+- `qa/tests/raid_merge.rs` — an anchor party engages the monster and a second party **merges into the battle** (`battle.party_joined`); both win together.
+
 `qa/tests/auth_conformance.rs` covers the auth acceptance criteria (BUILD-PLAN
 M1.1/M1.8/M1.9): register/login/me, bcrypt-only credential storage, and the
 enumeration-safe identical error for unknown-username vs wrong-password.

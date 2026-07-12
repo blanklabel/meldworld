@@ -10,7 +10,7 @@ pub mod tokens;
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -30,6 +30,8 @@ pub struct ApiState {
     pub tickets: Tickets,
     pub sessions: Sessions,
     pub session_ttl_secs: i32,
+    pub meld_xp_per_level: i64,
+    pub meld_forging_xp: i64,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -39,6 +41,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/auth/login", post(login))
         .route("/v1/players/me", get(players_me))
         .route("/v1/vault", get(vault))
+        .route("/v1/vault/gear", get(vault_gear))
+        .route("/v1/vault/gear/{gear_id}/equip", post(equip))
+        .route("/v1/vault/gear/{gear_id}/unequip", post(unequip))
+        .route("/v1/meld-skills", get(meld_skills))
+        .route("/v1/crafting/craft", post(craft))
         .with_state(state)
 }
 
@@ -62,7 +69,7 @@ async fn register(
         Ok(row) => Ok((
             StatusCode::CREATED,
             Json(RegisterResponse {
-                player: to_player(row),
+                player: to_player(row, default_skills()),
             }),
         )
             .into_response()),
@@ -97,7 +104,7 @@ async fn login(
             token_type: "Bearer".to_string(),
             expires_in: st.session_ttl_secs,
             realtime_ticket,
-            player: to_player(row),
+            player: to_player(row, default_skills()),
         }),
     )
         .into_response())
@@ -105,11 +112,65 @@ async fn login(
 
 async fn players_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
-    match st.db.get_player(player_id).await {
-        Ok(Some(row)) => Ok((StatusCode::OK, Json(to_player(row))).into_response()),
-        Ok(None) => Err(ApiReject::unauthorized()),
+    let row = match st.db.get_player(player_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return Err(ApiReject::unauthorized()),
+        Err(e) => return Err(ApiReject::internal(e)),
+    };
+    let skills = st
+        .db
+        .get_skills(player_id)
+        .await
+        .map_err(ApiReject::internal)?;
+    let entries = skill_entries(skills, st.meld_xp_per_level);
+    Ok((StatusCode::OK, Json(to_player(row, entries))).into_response())
+}
+
+async fn meld_skills(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    match st.db.get_skills(player_id).await {
+        Ok(skills) => {
+            let data = skill_entries(skills, st.meld_xp_per_level);
+            Ok((StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response())
+        }
         Err(e) => Err(ApiReject::internal(e)),
     }
+}
+
+async fn craft(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    // v0.1 recipe set: 1 forest_bloom_petal -> 1 bloom_salve (Forging).
+    let inputs = [("forest_bloom_petal".to_string(), 1)];
+    match st
+        .db
+        .craft(player_id, &inputs, ("bloom_salve", 1), st.meld_forging_xp)
+        .await
+    {
+        Ok(true) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({ "crafted": "bloom_salve", "quantity": 1 })),
+        )
+            .into_response()),
+        Ok(false) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Insufficient materials (need 1 forest_bloom_petal).",
+        )),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+/// Derive a skill level from total xp: `1 + xp/xp_per_level`, capped at 99.
+fn skill_entries(skills: Vec<(String, i64)>, xp_per_level: i64) -> Vec<MeldSkillEntry> {
+    let per = xp_per_level.max(1);
+    skills
+        .into_iter()
+        .map(|(skill_kind, xp)| MeldSkillEntry {
+            level: (1 + xp / per).clamp(1, 99) as i32,
+            xp,
+            skill_kind,
+        })
+        .collect()
 }
 
 async fn vault(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
@@ -122,6 +183,61 @@ async fn vault(State(st): State<ApiState>, headers: HeaderMap) -> Result<Respons
                 .collect();
             Ok((StatusCode::OK, Json(VaultSummary { chits, materials })).into_response())
         }
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    match st.db.get_gear(player_id).await {
+        Ok(rows) => {
+            let data = rows
+                .into_iter()
+                .map(|g| GearView {
+                    gear_id: g.gear_id.to_string(),
+                    name: g.name,
+                    slot: g.slot,
+                    insurance: g.insurance,
+                    atk_bonus: g.atk_bonus,
+                    base_max_durability: g.base_max_durability,
+                    max_durability: g.max_durability,
+                    equipped: g.equipped,
+                })
+                .collect();
+            Ok((StatusCode::OK, Json(GearListResponse { data })).into_response())
+        }
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+async fn equip(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(gear_id): Path<String>,
+) -> Result<Response, ApiReject> {
+    set_equipped(st, headers, gear_id, true).await
+}
+
+async fn unequip(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(gear_id): Path<String>,
+) -> Result<Response, ApiReject> {
+    set_equipped(st, headers, gear_id, false).await
+}
+
+async fn set_equipped(
+    st: ApiState,
+    headers: HeaderMap,
+    gear_id: String,
+    equipped: bool,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let gid = Uuid::parse_str(&gear_id)
+        .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
+    match st.db.set_equipped(player_id, gid, equipped).await {
+        Ok(true) => Ok((StatusCode::OK, Json(serde_json::json!({ "equipped": equipped }))).into_response()),
+        Ok(false) => Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Gear not owned by caller.")),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }
@@ -140,24 +256,30 @@ fn authenticate(st: &ApiState, headers: &HeaderMap) -> Result<Uuid, ApiReject> {
         .ok_or_else(ApiReject::unauthorized)
 }
 
-/// Build the wire `Player` from a DB row. A fresh account has `squire` unlocked
-/// and all three meld skills at level 1 (auth-players.md).
-fn to_player(row: PlayerRow) -> Player {
+/// Build the wire `Player` from a DB row + its meld skills. `squire` is always
+/// unlocked (auth-players.md).
+fn to_player(row: PlayerRow, meld_skills: Vec<MeldSkillEntry>) -> Player {
     Player {
         player_id: row.player_id.to_string(),
         username: row.username,
         created_at: row.created_at.to_rfc3339(),
         active_title: row.active_title,
         class_unlocks: vec![CharacterClass::Squire],
-        meld_skills: ["forging", "mercantile", "alchemy"]
-            .iter()
-            .map(|k| MeldSkillEntry {
-                skill_kind: k.to_string(),
-                level: 1,
-                xp: 0,
-            })
-            .collect(),
+        meld_skills,
     }
+}
+
+/// The three skills at level 1 / 0 xp — for a just-registered/just-logged-in
+/// account (fresh) without a DB round-trip.
+fn default_skills() -> Vec<MeldSkillEntry> {
+    ["forging", "mercantile", "alchemy"]
+        .iter()
+        .map(|k| MeldSkillEntry {
+            skill_kind: k.to_string(),
+            level: 1,
+            xp: 0,
+        })
+        .collect()
 }
 
 /// An HTTP rejection that renders the canonical error envelope (CANON.md §I).

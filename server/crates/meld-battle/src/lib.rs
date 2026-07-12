@@ -186,6 +186,27 @@ impl Battle {
         self.ended
     }
 
+    /// Merge a joining party's fighters into the battle at gauge 0 (raid merge;
+    /// enemy stats never rescale — combat-atb.md). Returns their wire views.
+    pub fn join(&mut self, mut new: Vec<Fighter>) -> Vec<WireCombatant> {
+        for f in &mut new {
+            f.gauge = 0.0;
+            f.awaiting = false;
+            f.alive = f.hp > 0;
+        }
+        let views = new.iter().map(Fighter::to_wire).collect();
+        self.fighters.extend(new);
+        views
+    }
+
+    /// Number of distinct player combatants currently in the battle.
+    pub fn player_count(&self) -> usize {
+        self.fighters
+            .iter()
+            .filter(|f| f.kind == CombatantKind::Player)
+            .count()
+    }
+
     pub fn tick_count(&self) -> u64 {
         self.tick_count
     }

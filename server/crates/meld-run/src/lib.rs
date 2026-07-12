@@ -35,6 +35,9 @@ pub struct PlayerRun {
     pub backpack: Vec<ItemStack>,
     pub max_distance_reached: i32,
     pub result: Option<RunResult>,
+    /// Which party (enter-maze group) this run belongs to. Battles merge across
+    /// party ids (the Expandable Party raid mechanic).
+    pub party_id: u32,
 }
 
 impl PlayerRun {
@@ -62,36 +65,42 @@ pub struct InstanceRun {
     pub departure_hub_distance: i32,
     pub base_run_level: i32,
     pub runs: Vec<PlayerRun>,
+    next_party_id: u32,
 }
 
 impl InstanceRun {
-    pub fn new(
-        instance_id: Id,
-        departure_hub_distance: i32,
+    pub fn new(instance_id: Id, departure_hub_distance: i32, balance: &Balance) -> Self {
+        InstanceRun {
+            instance_id,
+            departure_hub_distance,
+            base_run_level: base_run_level(departure_hub_distance, balance),
+            runs: Vec::new(),
+            next_party_id: 0,
+        }
+    }
+
+    /// Add a party (one enter-maze group) and return its party id.
+    pub fn add_party(
+        &mut self,
         members: Vec<(Id, String, CharacterClass, Id)>, // (player_id, username, class, run_id)
-        balance: &Balance,
-    ) -> Self {
-        let base = base_run_level(departure_hub_distance, balance);
-        let runs = members
-            .into_iter()
-            .map(|(player_id, username, character_class, run_id)| PlayerRun {
+    ) -> u32 {
+        let party_id = self.next_party_id;
+        self.next_party_id += 1;
+        for (player_id, username, character_class, run_id) in members {
+            self.runs.push(PlayerRun {
                 run_id,
                 player_id,
                 username,
                 character_class,
-                run_level: base,
+                run_level: self.base_run_level,
                 xp: 0,
                 backpack: Vec::new(),
                 max_distance_reached: 0,
                 result: None,
-            })
-            .collect();
-        InstanceRun {
-            instance_id,
-            departure_hub_distance,
-            base_run_level: base,
-            runs,
+                party_id,
+            });
         }
+        party_id
     }
 
     pub fn run_mut(&mut self, player_id: &str) -> Option<&mut PlayerRun> {
@@ -118,19 +127,15 @@ fn class_key(class: CharacterClass) -> &'static str {
 
 /// Assemble a battle from a party and one arena monster. `party` gives, per
 /// player, the (player_id, combatant_id, class); the server owns combatant ids.
-#[allow(clippy::too_many_arguments)]
-pub fn build_battle(
-    battle_id: Id,
-    party: &[(Id, Id, CharacterClass)],
-    monster: &MonsterSpawn,
-    monster_combatant_id: Id,
-    runs: &InstanceRun,
-    balance: &Balance,
-    seed: u64,
-) -> Battle {
-    let allies = party
+/// Per-player combatant inputs for a battle: (player_id, combatant_id, class,
+/// equipped gear attack bonus).
+pub type PartyMember = (Id, Id, CharacterClass, i32);
+
+/// Build the ally `Fighter`s for a party (shared by battle start and raid merge).
+pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balance) -> Vec<Fighter> {
+    party
         .iter()
-        .map(|(player_id, combatant_id, class)| {
+        .map(|(player_id, combatant_id, class, atk_bonus)| {
             let stats = balance
                 .player
                 .get(class_key(*class))
@@ -148,12 +153,25 @@ pub fn build_battle(
                 None,
                 level,
                 stats.base_hp,
-                stats.base_atk,
+                stats.base_atk + atk_bonus, // equipped gear
                 stats.base_def,
                 stats.speed_stat,
             )
         })
-        .collect();
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_battle(
+    battle_id: Id,
+    party: &[PartyMember],
+    monster: &MonsterSpawn,
+    monster_combatant_id: Id,
+    runs: &InstanceRun,
+    balance: &Balance,
+    seed: u64,
+) -> Battle {
+    let allies = party_fighters(party, runs, balance);
 
     let enemy = Fighter::new(
         monster_combatant_id,
@@ -206,6 +224,7 @@ mod tests {
             backpack: vec![],
             max_distance_reached: 0,
             result: None,
+            party_id: 0,
         };
         // xp_to_next(1) = 80.
         let gained = r.award_xp(200);

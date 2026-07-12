@@ -78,6 +78,8 @@ struct Session {
     seq_out: u32,
     last_client_seq: u32,
     in_instance: bool,
+    /// Attack bonus from equipped gear, loaded from the DB after connect.
+    gear_atk_bonus: i32,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -113,6 +115,8 @@ struct ActiveInstance {
     player_combatant: HashMap<String, String>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
+    /// Party ids currently merged into the active battle (raid merge).
+    battle_parties: std::collections::HashSet<u32>,
 }
 
 struct GameState {
@@ -122,6 +126,10 @@ struct GameState {
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
     instance: Option<ActiveInstance>,
+    /// Players whose gear bonus needs (re)loading from the DB (post-connect).
+    pending_gear_load: Vec<String>,
+    /// Players whose run just ended in death; durability sink applied async.
+    pending_deaths: Vec<String>,
 }
 
 impl GameState {
@@ -132,6 +140,8 @@ impl GameState {
             sessions: HashMap::new(),
             order: Vec::new(),
             instance: None,
+            pending_gear_load: Vec::new(),
+            pending_deaths: Vec::new(),
         }
     }
 
@@ -151,12 +161,15 @@ impl GameState {
                 _ = ticker.tick() => {
                     let out = self.tick();
                     self.dispatch(out);
-                    // Extraction banking touches Postgres, so it awaits here
-                    // rather than in the sync tick.
-                    let banked = self.complete_extractions().await;
-                    self.dispatch(banked);
                 }
             }
+            // Async DB side-effects run after either arm (the sync paths queue
+            // work; here we await Postgres): gear loads, extraction banking, and
+            // the death durability sink.
+            self.flush_gear_loads().await;
+            let banked = self.complete_extractions().await;
+            self.dispatch(banked);
+            self.flush_deaths().await;
         }
     }
 
@@ -196,9 +209,11 @@ impl GameState {
                         seq_out: 2,
                         last_client_seq: 0,
                         in_instance: false,
+                        gear_atk_bonus: 0,
                     },
                 );
-                self.order.push(player_id);
+                self.order.push(player_id.clone());
+                self.pending_gear_load.push(player_id);
                 Vec::new()
             }
             ServerEvent::Disconnected { player_id } => {
@@ -249,18 +264,32 @@ impl GameState {
     }
 
     fn handle_enter_maze(&mut self, player_id: &str, client_seq: u32) -> Vec<Outgoing> {
-        if self.instance.is_some() {
+        // The caller can't already be in a run.
+        if self
+            .sessions
+            .get(player_id)
+            .map(|s| s.in_instance)
+            .unwrap_or(false)
+        {
             return vec![error(
                 player_id,
                 ErrorCode::InvalidState,
-                "A run is already active.",
+                "A run is already active for you.",
                 Some(client_seq),
             )];
         }
-        // Form the party from up to PARTY_MAX connected players (slice model).
+        // Party = connected players not already in a run, up to the cap. So the
+        // first enter_maze with everyone waiting forms one big party; a player
+        // who enters later forms a fresh party that can raid-merge in.
         let party_ids: Vec<String> = self
             .order
             .iter()
+            .filter(|p| {
+                self.sessions
+                    .get(*p)
+                    .map(|s| !s.in_instance)
+                    .unwrap_or(false)
+            })
             .take(meld_proto::limits::PARTY_MAX)
             .cloned()
             .collect();
@@ -268,12 +297,33 @@ impl GameState {
             return vec![error(
                 player_id,
                 ErrorCode::InvalidState,
-                "No connected players.",
+                "No eligible players.",
                 Some(client_seq),
             )];
         }
 
         let departure_hub_distance = 0; // Center Hub
+        let speed = self.balance.world.avatar_speed_tiles_per_sec;
+
+        // Create the shared instance on the first entry.
+        if self.instance.is_none() {
+            let instance_id = Uuid::now_v7().to_string();
+            self.instance = Some(ActiveInstance {
+                arena: Arena::new(&self.balance, Uuid::now_v7().to_string()),
+                run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
+                battle: None,
+                battle_id: String::new(),
+                monster_combatant_id: String::new(),
+                combatant_player: HashMap::new(),
+                player_combatant: HashMap::new(),
+                extraction: HashMap::new(),
+                battle_parties: std::collections::HashSet::new(),
+            });
+        }
+        let inst = self.instance.as_mut().expect("instance exists");
+        let instance_id = inst.run.instance_id.clone();
+        let base_run_level = inst.run.base_run_level;
+
         let members: Vec<(String, String, CharacterClass, String)> = party_ids
             .iter()
             .map(|pid| {
@@ -290,77 +340,56 @@ impl GameState {
                 )
             })
             .collect();
-
-        let instance_id = Uuid::now_v7().to_string();
-        let run = InstanceRun::new(
-            instance_id.clone(),
-            departure_hub_distance,
-            members,
-            &self.balance,
-        );
-
-        let speed = self.balance.world.avatar_speed_tiles_per_sec;
-        let party_speeds: Vec<(String, f64)> =
-            party_ids.iter().map(|p| (p.clone(), speed)).collect();
-        let arena = Arena::new(&self.balance, &party_speeds, Uuid::now_v7().to_string());
-
+        inst.run.add_party(members);
+        for pid in &party_ids {
+            inst.arena.add_avatar(pid.clone(), speed);
+        }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
                 s.in_instance = true;
             }
         }
+        let inst = self.instance.as_ref().expect("instance exists");
 
-        // Build the shared members list once (spawn positions from the arena).
-        let member_views: Vec<wr::Member> = run
-            .runs
+        // run.started to this party's members (spawn positions from the arena).
+        let member_views: Vec<wr::Member> = party_ids
             .iter()
-            .map(|r| {
-                let pos = arena
+            .filter_map(|pid| inst.run.runs.iter().find(|r| &r.player_id == pid))
+            .map(|r| wr::Member {
+                player_id: r.player_id.clone(),
+                username: r.username.clone(),
+                character_class: r.character_class,
+                spawn_position: inst
+                    .arena
                     .avatar(&r.player_id)
                     .map(|a| a.position)
-                    .unwrap_or(Position::new(0.0, 0.0));
-                wr::Member {
-                    player_id: r.player_id.clone(),
-                    username: r.username.clone(),
-                    character_class: r.character_class,
-                    spawn_position: pos,
-                }
+                    .unwrap_or(Position::new(0.0, 0.0)),
             })
             .collect();
 
         let mut out = Vec::new();
         for pid in &party_ids {
-            let msg = wr::Started {
-                client_seq: if pid == player_id {
-                    Some(client_seq)
-                } else {
-                    None
+            let run_id = inst
+                .run
+                .runs
+                .iter()
+                .find(|r| &r.player_id == pid)
+                .map(|r| r.run_id.clone())
+                .unwrap_or_default();
+            out.push(out_msg(
+                pid,
+                &wr::Started {
+                    client_seq: if pid == player_id { Some(client_seq) } else { None },
+                    run_id,
+                    instance_id: instance_id.clone(),
+                    departure_hub_distance,
+                    base_run_level,
+                    members: member_views.clone(),
+                    backpack: Vec::new(),
                 },
-                run_id: run
-                    .runs
-                    .iter()
-                    .find(|r| &r.player_id == pid)
-                    .map(|r| r.run_id.clone())
-                    .unwrap_or_default(),
-                instance_id: instance_id.clone(),
-                departure_hub_distance,
-                base_run_level: run.base_run_level,
-                members: member_views.clone(),
-                backpack: Vec::new(),
-            };
-            out.push(out_msg(pid, &msg));
+            ));
         }
-
-        self.instance = Some(ActiveInstance {
-            arena,
-            run,
-            battle: None,
-            battle_id: String::new(),
-            monster_combatant_id: String::new(),
-            combatant_player: HashMap::new(),
-            player_combatant: HashMap::new(),
-            extraction: HashMap::new(),
-        });
+        self.pending_gear_load.extend(party_ids.iter().cloned());
         out
     }
 
@@ -411,37 +440,70 @@ impl GameState {
             intent.input_seq,
         );
 
-        // Touch detection triggers the battle (behaviors/combat-atb.md).
-        if inst.battle.is_none() {
-            if let Some(toucher) = inst.arena.check_touch() {
-                return self.start_battle(&toucher);
+        // Touching the monster starts a battle, or raid-merges the toucher's
+        // party into the one already in progress (combat-atb.md).
+        let decision = {
+            match inst.arena.check_touch() {
+                Some(toucher) => {
+                    let party = inst
+                        .run
+                        .runs
+                        .iter()
+                        .find(|r| r.player_id == toucher)
+                        .map(|r| r.party_id);
+                    match party {
+                        Some(pid) if inst.battle.is_none() => Some((toucher, pid, true)),
+                        Some(pid) if !inst.battle_parties.contains(&pid) => {
+                            Some((toucher, pid, false))
+                        }
+                        _ => None,
+                    }
+                }
+                None => None,
             }
+        };
+        match decision {
+            Some((toucher, pid, true)) => self.start_battle(&toucher, pid),
+            Some((toucher, pid, false)) => self.join_battle(&toucher, pid),
+            None => Vec::new(),
         }
-        Vec::new()
     }
 
-    fn start_battle(&mut self, toucher: &str) -> Vec<Outgoing> {
+    fn start_battle(&mut self, toucher: &str, party_id: u32) -> Vec<Outgoing> {
         let seed = now_ms();
         let balance = self.balance.clone();
+        // Snapshot gear bonuses before borrowing the instance mutably.
+        let bonuses: HashMap<String, i32> = self
+            .sessions
+            .iter()
+            .map(|(k, s)| (k.clone(), s.gear_atk_bonus))
+            .collect();
         let Some(inst) = self.instance.as_mut() else {
             return Vec::new();
         };
-        inst.arena.monster.engaged = true;
 
         let battle_id = Uuid::now_v7().to_string();
         let monster_combatant_id = Uuid::now_v7().to_string();
 
-        // Assign a combatant id per party member.
-        let mut party: Vec<(String, String, CharacterClass)> = Vec::new();
+        // Assign a combatant id per member of the *touching* party only.
+        let mut party: Vec<meld_run::PartyMember> = Vec::new();
         inst.combatant_player.clear();
         inst.player_combatant.clear();
-        for r in &inst.run.runs {
+        let party_players: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| r.party_id == party_id)
+            .map(|r| r.player_id.clone())
+            .collect();
+        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
             let cid = Uuid::now_v7().to_string();
             inst.combatant_player
                 .insert(cid.clone(), r.player_id.clone());
             inst.player_combatant
                 .insert(r.player_id.clone(), cid.clone());
-            party.push((r.player_id.clone(), cid, r.character_class));
+            let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
+            party.push((r.player_id.clone(), cid, r.character_class, bonus));
         }
 
         let battle = build_battle(
@@ -455,9 +517,8 @@ impl GameState {
         );
         let (allies, enemies) = battle.wire_combatants();
 
-        // Mark avatars in-battle.
-        for r in &inst.run.runs {
-            if let Some(a) = inst.arena.avatar_mut(&r.player_id) {
+        for pid in &party_players {
+            if let Some(a) = inst.arena.avatar_mut(pid) {
                 a.state = "in_battle".to_string();
             }
         }
@@ -466,21 +527,125 @@ impl GameState {
         inst.battle = Some(battle);
         inst.battle_id = battle_id.clone();
         inst.monster_combatant_id = monster_combatant_id;
+        inst.battle_parties.clear();
+        inst.battle_parties.insert(party_id);
 
-        // Broadcast battle.started to every party member.
-        let member_ids: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
         let mut out = Vec::new();
-        for pid in &member_ids {
+        for pid in &party_players {
             let your = inst.player_combatant.get(pid).cloned().unwrap_or_default();
-            let msg = wb::Started {
-                battle_id: battle_id.clone(),
-                encounter_class,
-                allies: allies.clone(),
-                enemies: enemies.clone(),
-                your_combatant_id: your,
-                triggered_by: Some(toucher.to_string()),
-            };
-            out.push(out_msg(pid, &msg));
+            out.push(out_msg(
+                pid,
+                &wb::Started {
+                    battle_id: battle_id.clone(),
+                    encounter_class,
+                    allies: allies.clone(),
+                    enemies: enemies.clone(),
+                    your_combatant_id: your,
+                    triggered_by: Some(toucher.to_string()),
+                },
+            ));
+        }
+        out
+    }
+
+    /// Raid merge: the toucher's party joins the in-progress battle.
+    fn join_battle(&mut self, toucher: &str, party_id: u32) -> Vec<Outgoing> {
+        let balance = self.balance.clone();
+        let cap =
+            meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
+        let bonuses: HashMap<String, i32> = self
+            .sessions
+            .iter()
+            .map(|(k, s)| (k.clone(), s.gear_atk_bonus))
+            .collect();
+        let Some(inst) = self.instance.as_mut() else {
+            return Vec::new();
+        };
+        if inst.battle.is_none() {
+            return Vec::new();
+        }
+
+        // Build the joining party's combatants.
+        let mut party: Vec<meld_run::PartyMember> = Vec::new();
+        let mut joiners: Vec<String> = Vec::new();
+        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
+            let cid = Uuid::now_v7().to_string();
+            let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
+            party.push((r.player_id.clone(), cid.clone(), r.character_class, bonus));
+            joiners.push(r.player_id.clone());
+            inst.combatant_player.insert(cid.clone(), r.player_id.clone());
+            inst.player_combatant.insert(r.player_id.clone(), cid);
+        }
+        if party.is_empty() {
+            return Vec::new();
+        }
+        // Merge cap: a touch that would exceed it does not merge (combat-atb.md).
+        if inst.battle.as_ref().unwrap().player_count() + party.len() > cap {
+            for cid_pid in &party {
+                inst.combatant_player.remove(&cid_pid.1);
+                inst.player_combatant.remove(&cid_pid.0);
+            }
+            return Vec::new();
+        }
+
+        let fighters = meld_run::party_fighters(&party, &inst.run, &balance);
+        inst.battle.as_mut().unwrap().join(fighters);
+        inst.battle_parties.insert(party_id);
+        for pid in &joiners {
+            if let Some(a) = inst.arena.avatar_mut(pid) {
+                a.state = "in_battle".to_string();
+            }
+        }
+
+        let battle = inst.battle.as_ref().unwrap();
+        let battle_id = inst.battle_id.clone();
+        let encounter_class = battle.encounter_class;
+        let (allies, enemies) = battle.wire_combatants();
+        // Joining combatants (for party_joined to the existing side).
+        let joining_allies: Vec<meld_proto::common::Combatant> = allies
+            .iter()
+            .filter(|c| {
+                c.player_id
+                    .as_ref()
+                    .map(|p| joiners.contains(p))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let mut out = Vec::new();
+        // battle.started (full state) to the joiners.
+        for pid in &joiners {
+            let your = inst.player_combatant.get(pid).cloned().unwrap_or_default();
+            out.push(out_msg(
+                pid,
+                &wb::Started {
+                    battle_id: battle_id.clone(),
+                    encounter_class,
+                    allies: allies.clone(),
+                    enemies: enemies.clone(),
+                    your_combatant_id: your,
+                    triggered_by: Some(toucher.to_string()),
+                },
+            ));
+        }
+        // battle.party_joined (delta) to everyone already in the battle.
+        let existing: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| inst.battle_parties.contains(&r.party_id) && !joiners.contains(&r.player_id))
+            .map(|r| r.player_id.clone())
+            .collect();
+        for pid in &existing {
+            out.push(out_msg(
+                pid,
+                &wb::PartyJoined {
+                    battle_id: battle_id.clone(),
+                    joining_instance_id: inst.run.instance_id.clone(),
+                    joining_allies: joining_allies.clone(),
+                },
+            ));
         }
         out
     }
@@ -609,6 +774,32 @@ impl GameState {
             .collect()
     }
 
+    /// Load equipped-gear attack bonuses for freshly-connected players.
+    async fn flush_gear_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_gear_load);
+        for pid in loads {
+            if let Ok(uid) = Uuid::parse_str(&pid) {
+                if let Ok(bonus) = self.db.equipped_atk_bonus(uid).await {
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.gear_atk_bonus = bonus;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply the death durability sink (Postgres) for players who just died.
+    async fn flush_deaths(&mut self) {
+        let deaths: Vec<String> = std::mem::take(&mut self.pending_deaths);
+        for pid in deaths {
+            if let Ok(uid) = Uuid::parse_str(&pid) {
+                if let Err(e) = self.db.apply_death_durability(uid).await {
+                    tracing::error!("death durability failed for {pid}: {e}");
+                }
+            }
+        }
+    }
+
     /// Complete any extraction channels whose timer elapsed: bank the backpack
     /// into the Vault (Postgres) and finalize the run as `extracted`.
     async fn complete_extractions(&mut self) -> Vec<Outgoing> {
@@ -656,6 +847,7 @@ impl GameState {
         };
 
         let db = self.db.clone();
+        let alchemy_per = self.balance.meld.alchemy_xp_per_extracted_stack;
         let mut out = Vec::new();
         for b in banks {
             let items_kv: Vec<(String, i32)> = b
@@ -666,6 +858,13 @@ impl GameState {
             if let Ok(uid) = Uuid::parse_str(&b.player_id) {
                 if let Err(e) = db.bank_extraction(uid, &items_kv, 0).await {
                     tracing::error!("bank_extraction failed for {}: {e}", b.player_id);
+                }
+                // Extraction success credits Alchemy XP (GDD §4.1).
+                let axp = items_kv.len() as i64 * alchemy_per;
+                if axp > 0 {
+                    if let Err(e) = db.add_skill_xp(uid, "alchemy", axp).await {
+                        tracing::error!("alchemy xp failed for {}: {e}", b.player_id);
+                    }
                 }
             }
             for pid in &members {
@@ -758,6 +957,7 @@ impl GameState {
         inst.run
             .runs
             .iter()
+            .filter(|r| inst.battle_parties.contains(&r.party_id))
             .map(|r| out_msg(&r.player_id, &msg))
             .collect()
     }
@@ -868,11 +1068,17 @@ impl GameState {
         out
     }
 
+    /// Battle id + the players currently in it (all merged parties).
     fn battle_id_and_members(&self) -> (String, Vec<String>) {
         match &self.instance {
             Some(inst) => (
                 inst.battle_id.clone(),
-                inst.run.runs.iter().map(|r| r.player_id.clone()).collect(),
+                inst.run
+                    .runs
+                    .iter()
+                    .filter(|r| inst.battle_parties.contains(&r.party_id))
+                    .map(|r| r.player_id.clone())
+                    .collect(),
             ),
             None => (String::new(), Vec::new()),
         }
@@ -885,18 +1091,25 @@ impl GameState {
         };
         let battle_id = inst.battle_id.clone();
         let xp_reward = inst.arena.monster.xp_reward;
-        let members: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        // The outcome applies to every party merged into the battle (raid).
+        let bp = inst.battle_parties.clone();
+        let members: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| bp.contains(&r.party_id))
+            .map(|r| r.player_id.clone())
+            .collect();
+        let mut dead: Vec<String> = Vec::new();
 
         match outcome {
             BattleOutcome::Victory => {
                 inst.arena.monster.defeated = true;
-                // Award XP + one loot item per surviving player; return avatars.
-                for r in &mut inst.run.runs {
+                // Award XP to every participant; return their avatars to active.
+                for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     r.award_xp(xp_reward);
                 }
-                let owner_ids: Vec<String> =
-                    inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
-                for pid in &owner_ids {
+                for pid in &members {
                     if let Some(a) = inst.arena.avatar_mut(pid) {
                         a.state = "active".to_string();
                     }
@@ -906,6 +1119,7 @@ impl GameState {
                     .run
                     .runs
                     .iter()
+                    .filter(|r| bp.contains(&r.party_id))
                     .map(|r| (r.player_id.clone(), r.run_level, r.xp))
                     .collect();
                 for (pid, run_level, _xp) in &runs_snapshot {
@@ -959,15 +1173,16 @@ impl GameState {
                         },
                     ));
                 }
-                // Each player's run → died (durability/vault handoff is DB-side,
-                // deferred with the persistence slice).
+                // Each participating player's run → died. (Durability sink runs
+                // in flush_deaths against Postgres.)
                 let run_ids: Vec<(String, String)> = inst
                     .run
                     .runs
                     .iter()
+                    .filter(|r| bp.contains(&r.party_id))
                     .map(|r| (r.player_id.clone(), r.run_id.clone()))
                     .collect();
-                for r in &mut inst.run.runs {
+                for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     r.result = Some(RunResult::Died);
                 }
                 for (pid, run_id) in &run_ids {
@@ -985,11 +1200,17 @@ impl GameState {
                     ));
                 }
                 inst.battle = None;
+                dead = members.clone();
             }
             BattleOutcome::Fled => {
                 inst.battle = None;
             }
         }
+        // Battle over: reset merge + combatant bookkeeping.
+        inst.battle_parties.clear();
+        inst.combatant_player.clear();
+        inst.player_combatant.clear();
+        self.pending_deaths.append(&mut dead);
         out
     }
 }

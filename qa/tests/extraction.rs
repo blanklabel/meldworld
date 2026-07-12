@@ -158,11 +158,7 @@ async fn extraction_banks_loot_into_the_vault() {
                         phase = Phase::ToPortal; // now walk east to the portal
                     }
                     // A rejected channel or an interruption: walk up and retry.
-                    "session.error" | "run.channel_interrupted" => {
-                        if phase == Phase::Channeling {
-                            phase = Phase::ToPortal;
-                        }
-                    }
+                    "session.error" | "run.channel_interrupted" if phase == Phase::Channeling => phase = Phase::ToPortal,
                     "run.member_result" => {
                         assert_eq!(v["payload"]["result"], json!("extracted"));
                         let banked = v["payload"]["banked"].as_array().cloned().unwrap_or_default();

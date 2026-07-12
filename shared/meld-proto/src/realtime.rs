@@ -167,6 +167,17 @@ pub mod battle {
         const TYPE: &'static str = "battle.started";
     }
 
+    /// S2C — a second party merged into an active battle (raid merge).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PartyJoined {
+        pub battle_id: Id,
+        pub joining_instance_id: Id,
+        pub joining_allies: Vec<Combatant>,
+    }
+    impl Message for PartyJoined {
+        const TYPE: &'static str = "battle.party_joined";
+    }
+
     /// S2C — a combatant's gauge filled; a player's 15s window opens.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct TurnReady {

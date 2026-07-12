@@ -57,9 +57,11 @@ server-or-spec-only.
 
 ## 2. Server systems — spec vs. spike
 
-### 2.1 HTTP API — **4 of ~46 endpoints**
+### 2.1 HTTP API — **~9 of ~46 endpoints**
 
-Implemented: `POST /v1/auth/register`, `POST /v1/auth/login`, `GET /v1/players/me`, `GET /v1/vault` (+ non-spec `/v1/healthz`).
+Implemented: auth register/login, `players/me` (real meld skills), `GET /v1/vault`,
+`GET /v1/vault/gear`, gear equip/unequip, `GET /v1/meld-skills`,
+`POST /v1/crafting/craft` (+ non-spec `/v1/healthz`).
 
 Missing whole groups (interfaces/http-api.md):
 - **players** (4): `players/{id}`, `players/me/class-unlocks`, `players/me/cosmetics`, `PUT players/me/title`
@@ -69,11 +71,13 @@ Missing whole groups (interfaces/http-api.md):
 - **runs-world** (5): runs history/detail, `runs/prepare` (matchmaking), hubs, hub rebuild
 - **leaderboards** (4): vanguard (+ me), seasons (+ detail)
 
-### 2.2 Persistence (`meld-db`) — **~3 of ~20 models**
+### 2.2 Persistence (`meld-db`) — **~5 of ~20 models**
 
-Have: `players` (id, username, password_hash, …) and the **Vault** (`vaults` chits
-+ `vault_items` stacks). Extraction banks a run's backpack into the Vault
-atomically (Postgres), read back via `GET /v1/vault`.
+Have: `players`, the **Vault** (`vaults` chits + `vault_items` stacks),
+**gear** (blue-chest, durability, atk bonus, equipped), and **meld_skills**
+(forging/mercantile/alchemy xp). Extraction banks the backpack + credits alchemy
+xp; death degrades equipped-gear durability (×0.9); crafting consumes materials +
+credits forging xp — all atomic, read back over HTTP.
 
 Missing most persistent models (data-models/*): `Vault`, `GearItem`,
 `Gem`, `ConsumableItem`, `WardItem`, `Material`, `MeldSkill`, `ClassEmblem`,
@@ -109,12 +113,13 @@ Missing: real 20 Hz sim loop, 2-chunk interest management, collision, speed
 enforcement against real terrain, position corrections, 10 Hz snapshot cadence.
 Have: per-intent integration + proximity touch, a naive snapshot.
 
-### 2.6 Combat — core loop only
+### 2.6 Combat — core loop + gear + raid merge
 
-Missing (combat-atb.md): **battle merge / raid** (`party_joined`, 8/16 caps),
-skills, items (in-battle consumables), status effects, **external heal injection**,
-encounter-class behaviors for `elite`/`gatekeeper`, resolution-ordering edge cases,
-gatekeeper HP-sizing. Have: attack/defend/flee(basic), victory/defeat, auto-defend.
+Have: attack/defend/flee(basic), victory/defeat, auto-defend, equipped-gear attack
+bonus, and **battle merge / raid** (a second party touching the engaged monster
+joins at gauge 0, capped at `merge_cap_normal_instances`; `battle.party_joined`).
+Missing: skills, in-battle items, status effects, **external heal injection**,
+`elite`/`gatekeeper` encounter behaviors, Gatekeeper HP-sizing.
 
 ### 2.7 Disconnect / resume — 0%
 
@@ -138,12 +143,13 @@ Nothing from economy.md: stalls, listings, purchase (atomic, taxed), bounty
 contracts (escrow, accept, fulfill, expiry/refund), the durability sink, the chits
 ledger, and all the conservation invariants (I1–I5).
 
-### 2.10 Meta-progression — 0%
+### 2.10 Meta-progression — Meld skills partial
 
-Nothing from meta-progression.md: hub unlock flow (gatekeeper→camp→rebuild),
-class-emblem drops + account unlocks, Training Ground build templates, resource
-stratification, the three **Meld Skills** (forging/mercantile/alchemy) with their
-XP sources and level effects (repair cap, tax, stall slots/gates, gem gating).
+Have: the three **Meld Skills** persist; **alchemy** xp on extraction, **forging**
+xp on a craft; level derived from xp; real `players/me`/`meld-skills`. Missing:
+the level *effects* (repair cap, tax, stall gates, gem gating), hub unlock flow
+(gatekeeper→camp→rebuild), class-emblem drops, Training Ground build templates,
+resource stratification.
 
 ### 2.11 Endgame / seasons — 0%
 
