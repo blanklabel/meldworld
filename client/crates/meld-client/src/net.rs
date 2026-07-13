@@ -1,29 +1,35 @@
-//! Network layer: a background tokio thread that speaks the real MELDWORLD wire
-//! protocol (HTTP auth + realtime WebSocket), bridged to Bevy's synchronous ECS
-//! via channels. Bevy sends [`ClientCmd`]s; the thread emits [`ServerMsg`]s that
-//! a Bevy system drains each frame. Message sequence mirrors the proven bot
-//! harness (`qa/tests/four_players_kill_monster.rs`).
+//! Cross-platform network layer (native desktop AND browser/wasm).
+//!
+//! Poll-based, single-threaded: [`Net`] holds an internal state machine advanced
+//! by [`Net::poll`] once per frame. Auth HTTP goes through `ehttp`, the realtime
+//! socket through `ewebsock` — neither needs tokio or OS threads, so the exact
+//! same code runs on the desktop and compiled to wasm in the browser.
+//!
+//! Bevy holds `Net` as a NonSend resource; commands go in via [`Net::send`],
+//! server events come out via [`Net::poll`] + [`Net::try_recv`]. Message
+//! sequence mirrors the proven bot harness.
 
-use crossbeam_channel::{Receiver, Sender};
-use futures_util::{SinkExt, StreamExt};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+use std::sync::mpsc;
+
+use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use meld_proto::common::Combatant;
 use meld_proto::realtime::{battle as wb, movement as wm, run as wr, session as ws, Message as _};
 use meld_proto::RawEnvelope;
 use serde_json::json;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
 
-/// Commands sent from Bevy into the network thread.
+const GUEST_PASSWORD: &str = "meld-guest-password";
+
+/// Commands sent from Bevy into the network layer.
 pub enum ClientCmd {
-    /// Register (idempotent) + login + connect + authenticate as `username`.
     Connect { username: String },
-    /// Ask the server to start the run (forms the party, spawns the arena).
     EnterMaze,
-    /// A movement input sample (already-normalized direction).
     Move { dx: f64, dy: f64 },
-    /// Attack a battle target.
     Attack { battle_id: String, target: String },
+    /// Begin a portal extraction channel at the current position.
+    Extract,
 }
 
 /// A render-ready combatant view for the battle screen.
@@ -55,17 +61,24 @@ impl CombatantView {
     }
 }
 
-/// A dynamic overworld entity (player avatar or monster).
+/// What an overworld entity is (decides how the client draws it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EntityKind {
+    Player,
+    Monster,
+    Portal,
+}
+
+/// A dynamic overworld entity.
 #[derive(Clone)]
 pub struct EntityView {
     pub id: String,
     pub x: f64,
     pub y: f64,
-    /// `true` for player avatars (snapshot `avatar_state` present), else monster.
-    pub is_player: bool,
+    pub kind: EntityKind,
 }
 
-/// Events emitted from the network thread up to Bevy.
+/// Events emitted from the network layer up to Bevy.
 pub enum ServerMsg {
     Connected { player_id: String },
     Error { message: String },
@@ -78,229 +91,368 @@ pub enum ServerMsg {
         monster_combatant: Option<String>,
     },
     TurnReady { combatant_id: String },
+    /// A second party merged into the battle (raid merge) — add their combatants.
+    CombatantsJoined { combatants: Vec<CombatantView> },
     Gauge { updates: Vec<(String, f64, i32)> },
     BattleEnded { outcome: String },
+    /// An extraction channel began / broke.
+    ChannelStarted { completes_at: u64 },
+    ChannelInterrupted,
+    /// This player's run ended (extracted / died / abandoned), with the count of
+    /// items banked on extraction.
+    RunEnded { result: String, banked: usize },
     Disconnected,
 }
 
-/// Bevy-side handle to the network thread.
-pub struct Net {
-    pub cmd: UnboundedSender<ClientCmd>,
-    pub evt: Receiver<ServerMsg>,
+#[derive(PartialEq)]
+enum Phase {
+    Idle,
+    Http,
+    WsConnecting,
+    Ready,
+    Dead,
+}
+
+/// The (ticket, player_id) login result, or an error string.
+type LoginResult = Result<(String, String), String>;
+
+struct Inner {
+    base: String,
+    phase: Phase,
+    ws_tx: Option<WsSender>,
+    ws_rx: Option<WsReceiver>,
+    http_rx: Option<mpsc::Receiver<LoginResult>>,
+    ticket: String,
+    player_id: String,
+    seq: u32,
+    input_seq: u32,
+    cmds: VecDeque<ClientCmd>,
+    out: VecDeque<ServerMsg>,
+}
+
+/// Bevy-side handle. Cloneable (shared `Rc`), single-threaded (NonSend resource).
+#[derive(Clone)]
+pub struct Net(Rc<RefCell<Inner>>);
+
+/// Create the network layer. No I/O happens until the first `Connect` command.
+pub fn start(base: String) -> Net {
+    Net(Rc::new(RefCell::new(Inner {
+        base,
+        phase: Phase::Idle,
+        ws_tx: None,
+        ws_rx: None,
+        http_rx: None,
+        ticket: String::new(),
+        player_id: String::new(),
+        seq: 1,
+        input_seq: 0,
+        cmds: VecDeque::new(),
+        out: VecDeque::new(),
+    })))
 }
 
 impl Net {
+    /// Queue a command (processed on the next `poll`).
     pub fn send(&self, cmd: ClientCmd) {
-        let _ = self.cmd.send(cmd);
+        self.0.borrow_mut().cmds.push_back(cmd);
+    }
+
+    /// Advance the state machine: fire queued commands, pump HTTP + WS.
+    pub fn poll(&self) {
+        self.0.borrow_mut().step();
+    }
+
+    /// Pop the next server event, if any.
+    pub fn try_recv(&self) -> Option<ServerMsg> {
+        self.0.borrow_mut().out.pop_front()
     }
 }
 
-/// Spawn the network thread. `base` is the HTTP base, e.g. `http://127.0.0.1:8080`.
-pub fn start(base: String) -> Net {
-    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (evt_tx, evt_rx) = crossbeam_channel::unbounded();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
-        rt.block_on(net_main(base, cmd_rx, evt_tx));
-    });
-    Net {
-        cmd: cmd_tx,
-        evt: evt_rx,
-    }
-}
-
-async fn send_env<S>(sink: &mut S, ty: &str, seq: u32, payload: serde_json::Value)
-where
-    S: SinkExt<Message> + Unpin,
-{
-    let env = json!({ "type": ty, "seq": seq, "ts": 0u64, "payload": payload });
-    let _ = sink.send(Message::Text(env.to_string())).await;
-}
-
-async fn net_main(
-    base: String,
-    mut cmd_rx: UnboundedReceiver<ClientCmd>,
-    evt_tx: Sender<ServerMsg>,
-) {
-    // 1. Wait for the Connect command carrying the chosen username.
-    let username = loop {
-        match cmd_rx.recv().await {
-            Some(ClientCmd::Connect { username }) => break username,
-            Some(_) => continue, // ignore anything before Connect
-            None => return,
-        }
-    };
-
-    // 2. HTTP: register (idempotent) then login → realtime ticket + player id.
-    let password = "meld-guest-password";
-    let http = reqwest::Client::new();
-    let body = json!({ "username": username, "password": password });
-    let _ = http
-        .post(format!("{base}/v1/auth/register"))
-        .json(&body)
-        .send()
-        .await; // conflict is fine (returning guest)
-    let login = match http
-        .post(format!("{base}/v1/auth/login"))
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return fail(&evt_tx, format!("login request failed: {e}")),
-    };
-    if !login.status().is_success() {
-        return fail(&evt_tx, "login rejected".into());
-    }
-    let lv: serde_json::Value = match login.json().await {
-        Ok(v) => v,
-        Err(e) => return fail(&evt_tx, format!("login body: {e}")),
-    };
-    let ticket = lv["realtime_ticket"].as_str().unwrap_or_default().to_string();
-    let player_id = lv["player"]["player_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-
-    // 3. WebSocket connect + authenticate handshake.
-    let ws_url = format!("{}/v1/realtime", base.replacen("http", "ws", 1));
-    let (stream, _) = match connect_async(&ws_url).await {
-        Ok(x) => x,
-        Err(e) => return fail(&evt_tx, format!("ws connect: {e}")),
-    };
-    let (mut sink, mut source) = stream.split();
-    let mut seq = 1u32;
-    send_env(
-        &mut sink,
-        ws::Authenticate::TYPE,
-        seq,
-        json!({ "ticket": ticket, "resume": null }),
-    )
-    .await;
-    seq += 1;
-
-    // 4. Steady state: pump commands out, server messages in.
-    let mut input_seq = 0u32;
-    loop {
-        tokio::select! {
-            cmd = cmd_rx.recv() => match cmd {
-                Some(ClientCmd::EnterMaze) => {
-                    send_env(&mut sink, wr::EnterMaze::TYPE, seq, json!({})).await;
-                    seq += 1;
+impl Inner {
+    fn step(&mut self) {
+        // 1. Drain queued commands.
+        let cmds: Vec<ClientCmd> = self.cmds.drain(..).collect();
+        for cmd in cmds {
+            match cmd {
+                ClientCmd::Connect { username } if self.phase == Phase::Idle => {
+                    self.http_rx = Some(spawn_login(&self.base, &username));
+                    self.phase = Phase::Http;
                 }
-                Some(ClientCmd::Move { dx, dy }) => {
-                    input_seq += 1;
-                    send_env(&mut sink, wm::MoveIntent::TYPE, seq, json!({
-                        "input_seq": input_seq,
+                ClientCmd::Connect { .. } => {} // already connecting/connected
+                other if self.phase == Phase::Ready => self.send_cmd(other),
+                _ => { /* not connected yet — drop movement/attack */ }
+            }
+        }
+
+        // 2. HTTP login result → open the socket.
+        if self.phase == Phase::Http {
+            if let Some(rx) = &self.http_rx {
+                match rx.try_recv() {
+                    Ok(Ok((ticket, player_id))) => {
+                        self.http_rx = None;
+                        self.open_socket(ticket, player_id);
+                    }
+                    Ok(Err(e)) => {
+                        self.http_rx = None;
+                        self.out.push_back(ServerMsg::Error { message: e });
+                        self.phase = Phase::Dead;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.http_rx = None;
+                        self.out.push_back(ServerMsg::Error {
+                            message: "login task dropped".into(),
+                        });
+                        self.phase = Phase::Dead;
+                    }
+                }
+            }
+        }
+
+        // 3. Drain socket events.
+        let mut events = Vec::new();
+        if let Some(rx) = self.ws_rx.as_mut() {
+            while let Some(ev) = rx.try_recv() {
+                events.push(ev);
+            }
+        }
+        for ev in events {
+            self.on_ws_event(ev);
+        }
+    }
+
+    fn open_socket(&mut self, ticket: String, player_id: String) {
+        let ws_url = format!("{}/v1/realtime", self.base.replacen("http", "ws", 1));
+        match ewebsock::connect(&ws_url, ewebsock::Options::default()) {
+            Ok((tx, rx)) => {
+                self.ws_tx = Some(tx);
+                self.ws_rx = Some(rx);
+                self.ticket = ticket;
+                self.player_id = player_id;
+                self.seq = 1;
+                self.phase = Phase::WsConnecting;
+            }
+            Err(e) => {
+                self.out.push_back(ServerMsg::Error {
+                    message: format!("ws connect: {e}"),
+                });
+                self.phase = Phase::Dead;
+            }
+        }
+    }
+
+    fn on_ws_event(&mut self, ev: WsEvent) {
+        match ev {
+            WsEvent::Opened => {
+                // First frame must be session.authenticate (seq 1).
+                self.send_env(
+                    ws::Authenticate::TYPE,
+                    json!({ "ticket": self.ticket, "resume": null }),
+                );
+            }
+            WsEvent::Message(WsMessage::Text(t)) => self.handle_text(&t),
+            WsEvent::Message(_) => {}
+            WsEvent::Error(e) => {
+                self.out.push_back(ServerMsg::Error { message: e });
+                self.phase = Phase::Dead;
+            }
+            WsEvent::Closed => {
+                self.out.push_back(ServerMsg::Disconnected);
+                self.phase = Phase::Dead;
+            }
+        }
+    }
+
+    fn send_cmd(&mut self, cmd: ClientCmd) {
+        match cmd {
+            ClientCmd::EnterMaze => self.send_env(wr::EnterMaze::TYPE, json!({})),
+            ClientCmd::Move { dx, dy } => {
+                self.input_seq += 1;
+                self.send_env(
+                    wm::MoveIntent::TYPE,
+                    json!({
+                        "input_seq": self.input_seq,
                         "move_dir": { "x": dx, "y": dy },
                         "client_pos": { "x": 0.0, "y": 0.0 }
-                    })).await;
-                    seq += 1;
-                }
-                Some(ClientCmd::Attack { battle_id, target }) => {
-                    send_env(&mut sink, wb::SubmitAction::TYPE, seq, json!({
-                        "battle_id": battle_id,
-                        "action_id": uuid::Uuid::now_v7().to_string(),
-                        "action": "attack",
-                        "skill_kind": null,
-                        "item_id": null,
-                        "target_ids": [target]
-                    })).await;
-                    seq += 1;
-                }
-                Some(ClientCmd::Connect { .. }) => {} // already connected
-                None => return, // Bevy dropped the sender
-            },
-            frame = source.next() => match frame {
-                Some(Ok(Message::Text(t))) => handle_incoming(&t, &evt_tx, &player_id),
-                Some(Ok(_)) => {}
-                _ => { let _ = evt_tx.send(ServerMsg::Disconnected); return; }
+                    }),
+                );
             }
+            ClientCmd::Attack { battle_id, target } => self.send_env(
+                wb::SubmitAction::TYPE,
+                json!({
+                    "battle_id": battle_id,
+                    // v4 (random) not v7 — v7 needs a system clock, which panics
+                    // on wasm. Uniqueness is all the server needs here.
+                    "action_id": uuid::Uuid::new_v4().to_string(),
+                    "action": "attack",
+                    "skill_kind": null,
+                    "item_id": null,
+                    "target_ids": [target]
+                }),
+            ),
+            ClientCmd::Extract => self.send_env(
+                wr::BeginExtraction::TYPE,
+                json!({ "method": "portal", "portal_entity_id": "portal", "item_id": null }),
+            ),
+            ClientCmd::Connect { .. } => {}
+        }
+    }
+
+    fn send_env(&mut self, ty: &str, payload: serde_json::Value) {
+        if let Some(tx) = self.ws_tx.as_mut() {
+            let env = json!({ "type": ty, "seq": self.seq, "ts": 0u64, "payload": payload });
+            tx.send(WsMessage::Text(env.to_string()));
+            self.seq += 1;
+        }
+    }
+
+    fn handle_text(&mut self, text: &str) {
+        let raw: RawEnvelope = match serde_json::from_str(text) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        match raw.msg_type.as_str() {
+            "session.authenticated" => {
+                self.phase = Phase::Ready;
+                self.out.push_back(ServerMsg::Connected {
+                    player_id: self.player_id.clone(),
+                });
+            }
+            "session.error" => {
+                if let Ok(e) = serde_json::from_value::<ws::Error>(raw.payload) {
+                    self.out.push_back(ServerMsg::Error { message: e.message });
+                }
+            }
+            "run.started" => self.out.push_back(ServerMsg::RunStarted),
+            "world.snapshot" => {
+                if let Ok(s) = serde_json::from_value::<wm::Snapshot>(raw.payload) {
+                    let entities = s
+                        .entities
+                        .into_iter()
+                        .map(|e| {
+                            let kind = match e.avatar_state.as_deref() {
+                                None => EntityKind::Monster,
+                                Some("portal") => EntityKind::Portal,
+                                Some(_) => EntityKind::Player,
+                            };
+                            EntityView {
+                                id: e.entity_id,
+                                x: e.position.x,
+                                y: e.position.y,
+                                kind,
+                            }
+                        })
+                        .collect();
+                    self.out.push_back(ServerMsg::Snapshot { entities });
+                }
+            }
+            "battle.started" => {
+                if let Ok(b) = serde_json::from_value::<wb::Started>(raw.payload) {
+                    let mut combatants: Vec<CombatantView> =
+                        b.allies.iter().map(CombatantView::from_wire).collect();
+                    combatants.extend(b.enemies.iter().map(CombatantView::from_wire));
+                    let monster_combatant = b.enemies.first().map(|c| c.combatant_id.clone());
+                    self.out.push_back(ServerMsg::BattleStarted {
+                        battle_id: b.battle_id,
+                        your_combatant_id: b.your_combatant_id,
+                        combatants,
+                        monster_combatant,
+                    });
+                }
+            }
+            "battle.turn_ready" => {
+                if let Ok(t) = serde_json::from_value::<wb::TurnReady>(raw.payload) {
+                    self.out.push_back(ServerMsg::TurnReady {
+                        combatant_id: t.combatant_id,
+                    });
+                }
+            }
+            "battle.party_joined" => {
+                if let Ok(p) = serde_json::from_value::<wb::PartyJoined>(raw.payload) {
+                    let combatants = p.joining_allies.iter().map(CombatantView::from_wire).collect();
+                    self.out.push_back(ServerMsg::CombatantsJoined { combatants });
+                }
+            }
+            "battle.gauge_update" => {
+                if let Ok(g) = serde_json::from_value::<wb::GaugeUpdate>(raw.payload) {
+                    let updates = g
+                        .combatants
+                        .into_iter()
+                        .map(|c| (c.combatant_id, c.gauge, c.hp))
+                        .collect();
+                    self.out.push_back(ServerMsg::Gauge { updates });
+                }
+            }
+            "battle.ended" => {
+                if let Ok(e) = serde_json::from_value::<wb::Ended>(raw.payload) {
+                    let outcome = serde_json::to_value(e.outcome)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_else(|| "over".to_string());
+                    self.out.push_back(ServerMsg::BattleEnded { outcome });
+                }
+            }
+            "run.channel_started" => {
+                if let Ok(c) = serde_json::from_value::<wr::ChannelStarted>(raw.payload) {
+                    self.out.push_back(ServerMsg::ChannelStarted {
+                        completes_at: c.completes_at,
+                    });
+                }
+            }
+            "run.channel_interrupted" => self.out.push_back(ServerMsg::ChannelInterrupted),
+            "run.member_result" => {
+                if let Ok(m) = serde_json::from_value::<wr::MemberResult>(raw.payload) {
+                    // Only our own copy carries `banked`; others are notifications.
+                    if m.player_id == self.player_id {
+                        let result = serde_json::to_value(m.result)
+                            .ok()
+                            .and_then(|v| v.as_str().map(String::from))
+                            .unwrap_or_default();
+                        let banked = m.banked.map(|b| b.len()).unwrap_or(0);
+                        self.out.push_back(ServerMsg::RunEnded { result, banked });
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
 
-fn fail(evt_tx: &Sender<ServerMsg>, message: String) {
-    let _ = evt_tx.send(ServerMsg::Error { message });
-}
+/// Kick off register (idempotent) + login via `ehttp`; the result arrives on the
+/// returned channel. Works on native (background thread) and wasm (fetch).
+fn spawn_login(base: &str, username: &str) -> mpsc::Receiver<LoginResult> {
+    let (tx, rx) = mpsc::channel();
+    let body = serde_json::to_vec(&json!({ "username": username, "password": GUEST_PASSWORD }))
+        .unwrap_or_default();
 
-/// Parse one S2C frame and translate it into a [`ServerMsg`] for Bevy.
-fn handle_incoming(text: &str, evt_tx: &Sender<ServerMsg>, player_id: &str) {
-    let raw: RawEnvelope = match serde_json::from_str(text) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    let send = |m: ServerMsg| {
-        let _ = evt_tx.send(m);
-    };
-    match raw.msg_type.as_str() {
-        "session.authenticated" => send(ServerMsg::Connected {
-            player_id: player_id.to_string(),
-        }),
-        "session.error" => {
-            if let Ok(e) = serde_json::from_value::<ws::Error>(raw.payload) {
-                send(ServerMsg::Error { message: e.message });
-            }
-        }
-        "run.started" => send(ServerMsg::RunStarted),
-        "world.snapshot" => {
-            if let Ok(s) = serde_json::from_value::<wm::Snapshot>(raw.payload) {
-                let entities = s
-                    .entities
-                    .into_iter()
-                    .map(|e| EntityView {
-                        id: e.entity_id,
-                        x: e.position.x,
-                        y: e.position.y,
-                        is_player: e.avatar_state.is_some(),
-                    })
-                    .collect();
-                send(ServerMsg::Snapshot { entities });
-            }
-        }
-        "battle.started" => {
-            if let Ok(b) = serde_json::from_value::<wb::Started>(raw.payload) {
-                let mut combatants: Vec<CombatantView> =
-                    b.allies.iter().map(CombatantView::from_wire).collect();
-                combatants.extend(b.enemies.iter().map(CombatantView::from_wire));
-                let monster_combatant = b.enemies.first().map(|c| c.combatant_id.clone());
-                send(ServerMsg::BattleStarted {
-                    battle_id: b.battle_id,
-                    your_combatant_id: b.your_combatant_id,
-                    combatants,
-                    monster_combatant,
-                });
-            }
-        }
-        "battle.turn_ready" => {
-            if let Ok(t) = serde_json::from_value::<wb::TurnReady>(raw.payload) {
-                send(ServerMsg::TurnReady {
-                    combatant_id: t.combatant_id,
-                });
-            }
-        }
-        "battle.gauge_update" => {
-            if let Ok(g) = serde_json::from_value::<wb::GaugeUpdate>(raw.payload) {
-                let updates = g
-                    .combatants
-                    .into_iter()
-                    .map(|c| (c.combatant_id, c.gauge, c.hp))
-                    .collect();
-                send(ServerMsg::Gauge { updates });
-            }
-        }
-        "battle.ended" => {
-            if let Ok(e) = serde_json::from_value::<wb::Ended>(raw.payload) {
-                let outcome = serde_json::to_value(e.outcome)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "over".to_string());
-                send(ServerMsg::BattleEnded { outcome });
-            }
-        }
-        _ => {}
-    }
+    let mut reg = ehttp::Request::post(format!("{base}/v1/auth/register"), body.clone());
+    reg.headers.insert("Content-Type", "application/json");
+
+    let login_url = format!("{base}/v1/auth/login");
+    ehttp::fetch(reg, move |_reg| {
+        // Conflict (already registered) is fine — proceed to login regardless.
+        let mut login = ehttp::Request::post(&login_url, body);
+        login.headers.insert("Content-Type", "application/json");
+        ehttp::fetch(login, move |res| {
+            let result: LoginResult = match res {
+                Ok(resp) if resp.ok => match resp.text() {
+                    Some(t) => match serde_json::from_str::<serde_json::Value>(t) {
+                        Ok(v) => Ok((
+                            v["realtime_ticket"].as_str().unwrap_or_default().to_string(),
+                            v["player"]["player_id"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_string(),
+                        )),
+                        Err(e) => Err(format!("login parse: {e}")),
+                    },
+                    None => Err("login: empty body".into()),
+                },
+                Ok(resp) => Err(format!("login status {}", resp.status)),
+                Err(e) => Err(format!("login request: {e}")),
+            };
+            let _ = tx.send(result);
+        });
+    });
+    rx
 }

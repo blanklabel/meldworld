@@ -20,12 +20,16 @@ interest_radius_chunks = 2       # CANON §B networking
 overworld_sim_hz = 20            # CANON §B
 snapshot_hz = 10                 # CANON §B
 touch_radius_tiles = 1.0         # contact distance to trigger a battle (spec-defined)
+interaction_radius_tiles = 2.5   # range to use a portal/drop/etc. (~2-tile, limits.md) [TUNABLE]
 avatar_speed_tiles_per_sec = 6.0 # overworld walk speed (spec-defined)
 
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
 base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
 backpack_slots = 40                   # limits.md
+# Extraction channel duration. Spec default is 10000 (10s, interruptible);
+# shortened here for snappy runs/tests. [TUNABLE]
+extraction_channel_ms = 2500
 
 [battle]
 tick_ms = 100                    # CANON §B ATB tick
@@ -37,6 +41,13 @@ flee_floor = 0.05
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
+
+[meld]
+# Meld-skill progression. Simple linear curve for the slice; the real per-skill
+# curves + recipe XP are content tables. [TUNABLE]
+xp_per_level = 100
+alchemy_xp_per_extracted_stack = 15   # extracting plants/monster parts (GDD §4.1)
+forging_xp_per_craft = 25             # successful craft (GDD §4.1)
 
 [combat_math]
 # Damage = max(1, round(atk * stat_mult_attacker - def)). Content-defined

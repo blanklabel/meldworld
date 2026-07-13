@@ -1,0 +1,11 @@
+# Trunk serves the wasm client and proxies the API + realtime socket to the
+# running meld-server (default 127.0.0.1:18090), so the browser talks same-origin
+# and there is no CORS. The realtime (WebSocket) proxy is listed first so it
+# wins over the HTTP /v1 proxy for the upgrade request.
+
+[[proxy]]
+backend = "http://127.0.0.1:18090/v1/realtime"
+ws = true
+
+[[proxy]]
+backend = "http://127.0.0.1:18090/v1"

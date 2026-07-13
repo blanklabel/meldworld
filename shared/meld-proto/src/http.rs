@@ -57,6 +57,40 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+/// One banked item stack in the Vault.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultItemStack {
+    pub item_kind: String,
+    pub quantity: i32,
+}
+
+/// `GET /v1/vault` response — chits balance + banked item stacks (slice subset
+/// of the full vault-gear surface).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultSummary {
+    pub chits: i64,
+    pub materials: Vec<VaultItemStack>,
+}
+
+/// A gear item (vault-gear.md subset — blue-chest, durability, atk bonus).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GearView {
+    pub gear_id: Id,
+    pub name: String,
+    pub slot: String,
+    pub insurance: String,
+    pub atk_bonus: i32,
+    pub base_max_durability: i32,
+    pub max_durability: i32,
+    pub equipped: bool,
+}
+
+/// `GET /v1/vault/gear` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GearListResponse {
+    pub data: Vec<GearView>,
+}
+
 /// `POST /v1/auth/login` response — `200 OK`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {

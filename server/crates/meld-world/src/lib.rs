@@ -56,8 +56,6 @@ pub struct MonsterSpawn {
     pub def: i32,
     pub speed_stat: i32,
     pub xp_reward: i64,
-    /// Set once this monster's battle has started, so we don't re-trigger.
-    pub engaged: bool,
     pub defeated: bool,
 }
 
@@ -77,14 +75,17 @@ pub struct Arena {
     pub half_extent: f64,
     pub avatars: Vec<Avatar>,
     pub monster: MonsterSpawn,
+    /// The extraction portal (deterministic at every hub — CANON.md D15).
+    pub portal: Position,
     touch_radius: f64,
+    interaction_radius: f64,
     sim_dt: f64,
 }
 
 impl Arena {
-    /// Build a Forest arena with the party spawned near the Center Hub and one
-    /// monster placed a short walk away (still Forest band, d < 100).
-    pub fn new(balance: &Balance, party: &[(Id, f64)], monster_id: Id) -> Self {
+    /// Build an empty Forest arena (one monster + a portal near the Center Hub).
+    /// Avatars are added as parties enter via [`Arena::add_avatar`].
+    pub fn new(balance: &Balance, monster_id: Id) -> Self {
         // Spawn the monster ~10 tiles out (Forest, d≈10).
         let monster_pos = Position::new(10.0, 0.0);
         let d = monster_pos.distance_floor();
@@ -106,30 +107,39 @@ impl Arena {
             def: stats.base_def,
             speed_stat: stats.speed_stat,
             xp_reward: stats.xp_reward,
-            engaged: false,
             defeated: false,
         };
 
-        // Party spawns in a small arc near the origin.
-        let avatars = party
-            .iter()
-            .enumerate()
-            .map(|(i, (pid, speed))| Avatar {
-                player_id: pid.clone(),
-                position: Position::new(0.0, (i as f64 - party.len() as f64 / 2.0) * 1.5),
-                state: "active".to_string(),
-                last_input_seq: 0,
-                max_speed_tiles_per_sec: *speed,
-            })
-            .collect();
-
         Arena {
             half_extent: 64.0,
-            avatars,
+            avatars: Vec::new(),
             monster,
+            // A short walk east past where the monster stands (d≈14, Forest).
+            portal: Position::new(14.0, 0.0),
             touch_radius: balance.world.touch_radius_tiles,
+            interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
         }
+    }
+
+    /// Is `player` within interaction range of the extraction portal?
+    pub fn at_portal(&self, player_id: &str) -> bool {
+        self.avatar(player_id)
+            .map(|a| a.position.distance_to(&self.portal) <= self.interaction_radius)
+            .unwrap_or(false)
+    }
+
+    /// Spawn a player avatar near the Center Hub (staggered so parties don't
+    /// stack). All start on the y=0 row so they can all reach the monster.
+    pub fn add_avatar(&mut self, player_id: String, speed: f64) {
+        let idx = self.avatars.len();
+        self.avatars.push(Avatar {
+            player_id,
+            position: Position::new(-(idx as f64) * 0.6, 0.0),
+            state: "active".to_string(),
+            last_input_seq: 0,
+            max_speed_tiles_per_sec: speed,
+        });
     }
 
     pub fn avatar(&self, player_id: &str) -> Option<&Avatar> {
@@ -171,10 +181,11 @@ impl Arena {
         Some(a.position)
     }
 
-    /// Any active avatar within touch range of the (undefeated, unengaged)
-    /// monster? Returns the touching player's id — the battle trigger.
+    /// Any **active** (not already battling) avatar within touch range of the
+    /// living monster? Battling avatars are `in_battle`, so a hit is always a
+    /// fresh toucher — the caller starts a battle or raid-merges into one.
     pub fn check_touch(&self) -> Option<Id> {
-        if self.monster.engaged || self.monster.defeated {
+        if self.monster.defeated {
             return None;
         }
         self.avatars
@@ -205,7 +216,8 @@ mod tests {
     #[test]
     fn walking_toward_monster_eventually_touches() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::new(&b, &[("p1".into(), 6.0)], "m1".into());
+        let mut arena = Arena::new(&b, "m1".into());
+        arena.add_avatar("p1".into(), 6.0);
         assert!(arena.check_touch().is_none());
         // Walk east toward the monster at x=10 for up to 5 s of sim ticks.
         let mut touched = None;

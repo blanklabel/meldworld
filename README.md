@@ -47,6 +47,18 @@ the real wire protocol — no shortcuts, no client-side combat math:
 5. On each `battle.turn_ready`, bots submit `battle.submit_action { attack }`.
 6. The 100 ms ATB engine resolves damage; the monster dies → `battle.ended { outcome: victory }`.
 
+`qa/tests/extraction.rs` proves the **extract-or-die** half: a bot kills the
+monster (loot → backpack), walks to the extraction portal, channels an extraction
+(`run.begin_extraction` → `run.channel_started` → `run.member_result`), and the
+loot is **banked into the persistent Vault** — verified over `GET /v1/vault`
+(Postgres). Move mid-channel and it's interrupted; die and the backpack is lost.
+
+More Postgres-backed conformance tests cover the RPG systems:
+
+- `qa/tests/death_durability.rs` — a passive bot dies; its equipped blue-chest gear loses 10% max durability (the durability sink, CANON D6).
+- `qa/tests/progression.rs` — extraction credits **Alchemy** XP; crafting the loot consumes it and credits **Forging** XP, mutating the Vault (`/v1/meld-skills`, `/v1/crafting/craft`).
+- `qa/tests/raid_merge.rs` — an anchor party engages the monster and a second party **merges into the battle** (`battle.party_joined`); both win together.
+
 `qa/tests/auth_conformance.rs` covers the auth acceptance criteria (BUILD-PLAN
 M1.1/M1.8/M1.9): register/login/me, bcrypt-only credential storage, and the
 enumeration-safe identical error for unknown-username vs wrong-password.
@@ -55,8 +67,9 @@ enumeration-safe identical error for unknown-username vs wrong-password.
 
 The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
 **Join** (Enter to auth as a guest) → **Overworld** (WASD to move; walk into red
-Grendel) → **Battle** (ATB HUD — HP + gauge bars from the server; SPACE to attack
-on your turn) → **Ended** (victory/defeat). It's server-authoritative: the client
+Grendel to fight; walk to the cyan portal and press **E** to extract) → **Battle**
+(ATB HUD — HP + gauge bars from the server; SPACE to attack on your turn) →
+**Ended** (extracted / defeat). It's server-authoritative: the client
 sends intents and renders whatever the server reports, never computing combat.
 
 ```sh
@@ -73,6 +86,22 @@ own network layer against a real server; exits 0 on victory):
 ```sh
 client/scripts/serve.sh cargo run -p meld-client --bin smoke
 ```
+
+### In the browser (wasm)
+
+The same client compiles to WebAssembly (networking via `ewebsock`/`ehttp` works
+on native *and* web). With a server running and `trunk` installed:
+
+```sh
+client/scripts/trunk-serve.sh --port 9080     # serves the wasm client
+# then open http://localhost:9080 and press ENTER to play
+```
+
+`?autoplay` self-drives the loop against the server; `?demo` runs an offline
+render demo (no server) — handy for screenshots. The wasm build needs rustup's
+toolchain (the wrapper sets that up); a `?server=<url>` param points the client
+at a server on another origin (the server sends permissive CORS for the HTTP
+API). Requires the wasm target: `rustup target add wasm32-unknown-unknown`.
 
 ## Workspace layout (BUILD-PLAN §1)
 

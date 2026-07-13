@@ -22,6 +22,7 @@ pub struct Balance {
     pub world: World,
     pub runs: Runs,
     pub battle: Battle,
+    pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
     pub creature: Creatures,
@@ -49,6 +50,7 @@ pub struct World {
     pub overworld_sim_hz: u64,
     pub snapshot_hz: u64,
     pub touch_radius_tiles: f64,
+    pub interaction_radius_tiles: f64,
     pub avatar_speed_tiles_per_sec: f64,
 }
 
@@ -56,6 +58,7 @@ pub struct World {
 pub struct Runs {
     pub base_run_level_per_distance: f64,
     pub backpack_slots: i32,
+    pub extraction_channel_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +72,13 @@ pub struct Battle {
     pub merge_cap_normal_instances: i32,
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Meld {
+    pub xp_per_level: i64,
+    pub alchemy_xp_per_extracted_stack: i64,
+    pub forging_xp_per_craft: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

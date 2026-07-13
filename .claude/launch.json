@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "meld-web",
+      "runtimeExecutable": "client/scripts/trunk-serve.sh",
+      "runtimeArgs": ["--port", "9080", "--address", "127.0.0.1", "--no-autoreload"],
+      "port": 9080,
+      "autoPort": false
+    }
+  ]
+}
