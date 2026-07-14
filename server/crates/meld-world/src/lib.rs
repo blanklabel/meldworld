@@ -122,6 +122,16 @@ impl Arena {
         }
     }
 
+    /// Bring the monster back for a fresh run. In the spike the shared arena
+    /// reuses a single monster, so once a party slays it there's nothing left to
+    /// fight; reviving on the next entry keeps a target available. Its combat
+    /// stats live on `MonsterSpawn` and are never decremented (battle HP is
+    /// tracked on a separate `Fighter`), so clearing `defeated` restores it to
+    /// full. The full spec gives each MazeInstance its own monster instead.
+    pub fn respawn_monster(&mut self) {
+        self.monster.defeated = false;
+    }
+
     /// Is `player` within interaction range of the extraction portal?
     pub fn at_portal(&self, player_id: &str) -> bool {
         self.avatar(player_id)
@@ -211,6 +221,23 @@ mod tests {
         assert_eq!(s.mlevel(500), 40);
         assert_eq!(s.mlevel(0), 1);
         assert!((s.stat_mult(0) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn respawn_revives_a_slain_monster_as_a_fresh_target() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::new(&b, "m1".into());
+        arena.add_avatar("p1".into(), 6.0);
+        // Stand on the monster and confirm it can be touched.
+        arena.avatar_mut("p1").unwrap().position = arena.monster.position;
+        assert_eq!(arena.check_touch(), Some("p1".to_string()));
+        // Slay it: defeated monsters can't be touched (nothing to fight).
+        arena.monster.defeated = true;
+        assert_eq!(arena.check_touch(), None);
+        // Respawn brings back a full, undefeated target for the next run.
+        arena.respawn_monster();
+        assert!(!arena.monster.defeated);
+        assert_eq!(arena.check_touch(), Some("p1".to_string()));
     }
 
     #[test]

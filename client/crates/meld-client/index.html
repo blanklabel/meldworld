@@ -5,12 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MELDWORLD</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #0d0f16; overflow: hidden; }
-    canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+    html, body { margin: 0; width: 100%; height: 100%; background: #0d0f16; overflow: hidden; }
+    /* Fill the parent (body). Bevy's fit_canvas_to_parent owns the backing-store
+       size; the canvas must NOT be sized in vw/vh or it fights that observer and
+       the viewport drifts (content anchors off-center). */
+    canvas { display: block; width: 100%; height: 100%; outline: none; }
   </style>
   <link data-trunk rel="rust" data-bin="meld-client" data-wasm-opt="0" />
 </head>
 <body>
-  <canvas id="bevy"></canvas>
+  <!-- tabindex makes the canvas focusable so keyboard events reach winit/Bevy;
+       without it, keys can go nowhere and the avatar never moves. -->
+  <canvas id="bevy" tabindex="0"></canvas>
+  <script>
+    // Grab keyboard focus on load and whenever the game is clicked, so WASD/
+    // arrows/ENTER always reach the game canvas.
+    (function () {
+      var c = document.getElementById('bevy');
+      var focus = function () { try { c.focus(); } catch (e) {} };
+      window.addEventListener('load', focus);
+      window.addEventListener('pointerdown', focus);
+      focus();
+    })();
+  </script>
 </body>
 </html>

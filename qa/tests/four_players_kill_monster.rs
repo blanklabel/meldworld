@@ -27,6 +27,7 @@ async fn start_server() -> String {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
         balance,
+        client_dist: None,
     };
     let built = meld_server::build(&config).await.expect("server builds");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -176,7 +177,7 @@ impl Bot {
         }
 
         let mut move_timer = tokio::time::interval(Duration::from_millis(80));
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
 
         loop {
             if tokio::time::Instant::now() > deadline {

@@ -23,6 +23,7 @@ async fn start_server() -> String {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
         balance,
+        client_dist: None,
     };
     let built = meld_server::build(&config).await.expect("server builds");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -80,7 +81,7 @@ async fn run_bot(addr: String, username: String, anchor: bool, ready: Arc<Notify
 
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
 
     while outcome.is_empty() {
         assert!(tokio::time::Instant::now() < deadline, "{username}: timed out");

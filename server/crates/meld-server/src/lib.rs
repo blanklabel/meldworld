@@ -11,6 +11,7 @@ use axum::Router;
 use meld_api::{ApiState, Sessions, Tickets};
 use meld_db::Db;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 
 pub use config::Config;
 
@@ -60,7 +61,17 @@ pub async fn build(config: &Config) -> Result<Built, String> {
     // Permissive CORS on the HTTP API only, so a browser client on another
     // origin can call it. The WS route is left bare — CORS middleware corrupts
     // the 101 upgrade, and cross-origin WebSockets aren't CORS-governed anyway.
-    let router = realtime.merge(api.layer(CorsLayer::permissive()));
+    let mut router = realtime.merge(api.layer(CorsLayer::permissive()));
+
+    // Optionally serve the built wasm client at `/` so the whole game is
+    // same-origin: the browser loads the page, calls `/v1/*`, and opens the
+    // `/v1/realtime` WebSocket all against this one server — no dev-proxy in
+    // the loop (trunk's WS proxy is unreliable) and no cross-origin at all.
+    if let Some(dist) = &config.client_dist {
+        router = router.fallback_service(ServeDir::new(dist));
+        tracing::info!("serving wasm client from {dist} at /");
+    }
+
     Ok(Built { router, db })
 }
 

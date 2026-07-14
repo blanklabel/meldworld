@@ -139,6 +139,9 @@ pub struct Battle {
     gauge_divisor: f64,
     timeout_ticks: u64,
     defend_reduction: f64,
+    skill_power_mult: f64,
+    skill_heal_fraction: f64,
+    item_heal_fraction: f64,
     min_damage: i32,
     flee_base: f64,
     flee_penalty_per_tier: f64,
@@ -173,6 +176,9 @@ impl Battle {
             gauge_divisor: balance.battle.gauge_fill_divisor,
             timeout_ticks: (balance.battle.turn_timeout_ms / tick_ms).max(1),
             defend_reduction: balance.battle.defend_damage_reduction,
+            skill_power_mult: balance.battle.skill_power_mult,
+            skill_heal_fraction: balance.battle.skill_heal_fraction,
+            item_heal_fraction: balance.battle.item_heal_fraction,
             min_damage: balance.combat_math.min_damage,
             flee_base: balance.battle.flee_base,
             flee_penalty_per_tier: balance.battle.flee_penalty_per_tier,
@@ -337,6 +343,8 @@ impl Battle {
         action_id: Id,
         action: BattleActionKind,
         target_ids: Option<Vec<Id>>,
+        skill_kind: Option<String>,
+        item_id: Option<Id>,
     ) -> Result<Vec<Event>, Reject> {
         if self.ended {
             return Err(Reject::InvalidState("Battle has ended."));
@@ -369,12 +377,12 @@ impl Battle {
             }
             BattleActionKind::Defend => self.resolve_defend(i, Some(action_id), false),
             BattleActionKind::Flee => self.resolve_flee(i, Some(action_id)),
-            BattleActionKind::Skill | BattleActionKind::Item => {
-                // Skills/items are content-driven — out of the today-slice.
-                return Err(Reject::ValidationError(
-                    "skill/item not implemented in v0.1 slice",
-                ));
+            BattleActionKind::Skill => {
+                let target = target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str());
+                self.resolve_skill(i, target, skill_kind.as_deref(), Some(action_id))?
             }
+            // Slice items are always available (no inventory depletion yet).
+            BattleActionKind::Item => self.resolve_item(i, item_id.as_deref(), Some(action_id)),
         };
         let fled = res.flee_success == Some(true);
         events.push(Event::Resolved(res));
@@ -433,6 +441,99 @@ impl Battle {
             flee_success: None,
             effects,
         })
+    }
+
+    /// Class skills (slice content). `power_strike` is a heavier attack
+    /// (`atk * skill_power_mult`); `second_wind` (and the default) is a self-heal
+    /// for `skill_heal_fraction` of max HP. An unknown/absent kind falls back to
+    /// power strike so a bare "skill" still does something sensible.
+    fn resolve_skill(
+        &mut self,
+        actor_i: usize,
+        target_id: Option<&str>,
+        skill_kind: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        if skill_kind == Some("second_wind") {
+            let raw = ((self.fighters[actor_i].max_hp as f64) * self.skill_heal_fraction).round()
+                as i32;
+            let effects = self.apply_self_heal(actor_i, raw);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Power Strike: retarget to the first living enemy if the chosen one died.
+        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+        let target_i = match self.idx(target) {
+            Some(t) if self.fighters[t].alive => t,
+            _ => self
+                .fighters
+                .iter()
+                .position(|f| f.alive && f.kind != CombatantKind::Player)
+                .ok_or(Reject::NotFound)?,
+        };
+        let scaled_atk =
+            (self.fighters[actor_i].atk as f64 * self.skill_power_mult).round() as i32;
+        let def = self.fighters[target_i].def;
+        let defending = self.fighters[target_i].defending;
+        let dmg = self.damage(scaled_atk, def, defending);
+        let effects = self.apply_damage(target_i, dmg);
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// Items (slice content). `elixir` fully heals the actor; `salve` (and the
+    /// default) heals `item_heal_fraction` of max HP.
+    fn resolve_item(
+        &mut self,
+        actor_i: usize,
+        item_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Resolution {
+        let max_hp = self.fighters[actor_i].max_hp;
+        let raw = if item_id == Some("elixir") {
+            max_hp // full heal
+        } else {
+            ((max_hp as f64) * self.item_heal_fraction).round() as i32
+        };
+        let effects = self.apply_self_heal(actor_i, raw);
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        self.resolution(actor_i, BattleActionKind::Item, action_id, effects)
+    }
+
+    /// Heal the actor by `raw` (min 1), capped at max HP; report the actual gain.
+    fn apply_self_heal(&mut self, actor_i: usize, raw: i32) -> Vec<ResolvedEffect> {
+        let before = self.fighters[actor_i].hp;
+        let max_hp = self.fighters[actor_i].max_hp;
+        let after = (before + raw.max(1)).min(max_hp);
+        self.fighters[actor_i].hp = after;
+        vec![ResolvedEffect {
+            target_id: self.fighters[actor_i].combatant_id.clone(),
+            kind: EffectKind::Heal,
+            amount: Some(after - before),
+            status: None,
+            hp_after: after,
+        }]
+    }
+
+    /// Assemble a non-flee, non-auto player [`Resolution`].
+    fn resolution(
+        &self,
+        actor_i: usize,
+        action: BattleActionKind,
+        action_id: Option<Id>,
+        effects: Vec<ResolvedEffect>,
+    ) -> Resolution {
+        Resolution {
+            action_id,
+            actor_id: self.fighters[actor_i].combatant_id.clone(),
+            action,
+            auto: false,
+            flee_success: None,
+            effects,
+        }
     }
 
     fn resolve_defend(&mut self, actor_i: usize, action_id: Option<Id>, auto: bool) -> Resolution {
@@ -618,17 +719,17 @@ mod tests {
             &b,
             7,
         );
-        // speed 110 / 400 = 0.275 per tick → full at tick 4.
-        let mut ready = false;
-        for _ in 0..5 {
+        // speed 110 / 4400 = 0.025 per tick → full at tick 40 (~4s FF5 cadence).
+        let mut ready_tick = None;
+        for t in 1..=60 {
             for ev in battle.tick() {
                 if let Event::TurnReady { combatant_id } = ev {
                     assert_eq!(combatant_id, "a");
-                    ready = true;
+                    ready_tick.get_or_insert(t);
                 }
             }
         }
-        assert!(ready, "player turn should become ready within 5 ticks");
+        assert_eq!(ready_tick, Some(40), "speed-110 turn should ready at tick 40");
     }
 
     #[test]
@@ -653,6 +754,8 @@ mod tests {
                             format!("act-{}", battle.tick_count()),
                             BattleActionKind::Attack,
                             Some(vec!["m".into()]),
+                            None,
+                            None,
                         )
                         .unwrap();
                     for e in evs {
@@ -667,6 +770,166 @@ mod tests {
             }
         }
         assert_eq!(outcome, Some(BattleOutcome::Victory));
+    }
+
+    /// Ticks until the given player combatant's turn is ready (cap guards runaway).
+    fn tick_to_ready(battle: &mut Battle, cid: &str) {
+        for _ in 0..500 {
+            let ready = battle
+                .tick()
+                .into_iter()
+                .any(|e| matches!(e, Event::TurnReady { combatant_id } if combatant_id == cid));
+            if ready {
+                return;
+            }
+        }
+        panic!("turn never became ready for {cid}");
+    }
+
+    #[test]
+    fn skill_hits_harder_than_a_plain_attack() {
+        let b = balance();
+        // atk 12, def 4 → attack = 8; skill = round(12*1.75) - 4 = 21 - 4 = 17.
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 110)],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "a");
+        let evs = battle
+            .submit(
+                "a",
+                "s1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m".into()]),
+                Some("power_strike".into()),
+                None,
+            )
+            .expect("skill resolves");
+        let dmg = evs.iter().find_map(|e| match e {
+            Event::Resolved(r) if r.action == BattleActionKind::Skill => r.effects[0].amount,
+            _ => None,
+        });
+        assert_eq!(dmg, Some(17), "power strike should use the 1.75x multiplier");
+    }
+
+    #[test]
+    fn item_heals_the_wounded_actor_without_overhealing() {
+        let b = balance();
+        // A brisk monster (speed 200 → acts ~every 22 ticks) wounds the speed-110
+        // player (ready at tick 40) exactly once (14 atk − 3 def = 11) before the
+        // player's first turn: 40 → 29 hp.
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 110)], // 40 max hp, def 3
+            vec![monster("m", 1000, 200)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "a");
+        let hp_before = battle
+            .gauge_state()
+            .into_iter()
+            .find(|(id, _, _, _)| id == "a")
+            .unwrap()
+            .2;
+        assert_eq!(hp_before, 29, "monster should have landed one 11-dmg hit");
+        let evs = battle
+            .submit(
+                "a",
+                "i1".into(),
+                BattleActionKind::Item,
+                None,
+                None,
+                Some("salve".into()),
+            )
+            .expect("item resolves");
+        let eff = evs
+            .iter()
+            .find_map(|e| match e {
+                Event::Resolved(r) if r.action == BattleActionKind::Item => Some(r.effects[0].clone()),
+                _ => None,
+            })
+            .expect("item resolution present");
+        assert_eq!(eff.kind, EffectKind::Heal);
+        // Salve rolls 0.4*40 = 16, but only 11 is missing → heal 11, capped at max.
+        assert_eq!(eff.amount, Some(11));
+        assert_eq!(eff.hp_after, 40);
+    }
+
+    fn tick_times(battle: &mut Battle, n: usize) {
+        for _ in 0..n {
+            battle.tick();
+        }
+    }
+
+    fn player_hp(battle: &Battle, cid: &str) -> i32 {
+        battle
+            .gauge_state()
+            .into_iter()
+            .find(|(id, _, _, _)| id == cid)
+            .unwrap()
+            .2
+    }
+
+    /// Sets up a speed-110 player wounded to 18 hp by two 11-dmg monster hits
+    /// (monster speed 200 acts at ticks 22 & 44; player is awaiting from tick 40)
+    /// and returns the heal effect of `submit`ing the given skill/item.
+    fn wounded_heal(skill: Option<&str>, item: Option<&str>) -> ResolvedEffect {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 110)],
+            vec![monster("m", 1000, 200)],
+            &b,
+            7,
+        );
+        tick_times(&mut battle, 50);
+        assert_eq!(player_hp(&battle, "a"), 18, "two 11-dmg hits land by tick 50");
+        let action = if skill.is_some() {
+            BattleActionKind::Skill
+        } else {
+            BattleActionKind::Item
+        };
+        let evs = battle
+            .submit(
+                "a",
+                "h".into(),
+                action,
+                Some(vec!["m".into()]),
+                skill.map(String::from),
+                item.map(String::from),
+            )
+            .expect("heal resolves");
+        evs.into_iter()
+            .find_map(|e| match e {
+                Event::Resolved(r) if r.action == action => Some(r.effects[0].clone()),
+                _ => None,
+            })
+            .expect("heal resolution present")
+    }
+
+    #[test]
+    fn second_wind_skill_heals_a_fraction_of_max_hp() {
+        // 0.3 * 40 = 12; wounded to 18 → 30.
+        let eff = wounded_heal(Some("second_wind"), None);
+        assert_eq!(eff.kind, EffectKind::Heal);
+        assert_eq!(eff.amount, Some(12));
+        assert_eq!(eff.hp_after, 30);
+    }
+
+    #[test]
+    fn elixir_item_fully_heals() {
+        // Full heal from 18 → 40 (gain 22).
+        let eff = wounded_heal(None, Some("elixir"));
+        assert_eq!(eff.kind, EffectKind::Heal);
+        assert_eq!(eff.amount, Some(22));
+        assert_eq!(eff.hp_after, 40);
     }
 
     #[test]
@@ -708,16 +971,22 @@ mod tests {
             &b,
             7,
         );
-        battle.tick(); // fill + ready
+        // speed 400 / 4400 ≈ 0.09 per tick → full by tick 12.
+        for _ in 0..12 {
+            battle.tick();
+        }
         let first = battle.submit(
             "a",
             "dup".into(),
             BattleActionKind::Attack,
             Some(vec!["m".into()]),
+            None,
+            None,
         );
-        assert!(first.is_ok());
-        // Re-ready and resubmit the same action_id.
-        for _ in 0..3 {
+        assert!(first.is_ok(), "first submit should resolve: {first:?}");
+        // Re-ready and resubmit the same action_id (dup is rejected before the
+        // gauge check, so it fails regardless of gauge state).
+        for _ in 0..12 {
             battle.tick();
         }
         let second = battle.submit(
@@ -725,6 +994,8 @@ mod tests {
             "dup".into(),
             BattleActionKind::Attack,
             Some(vec!["m".into()]),
+            None,
+            None,
         );
         assert_eq!(second, Err(Reject::DuplicateAction));
     }

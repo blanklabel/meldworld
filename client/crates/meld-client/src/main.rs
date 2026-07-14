@@ -17,6 +17,14 @@ use net::{ClientCmd, CombatantView, EntityKind, Net, ServerMsg};
 /// World tiles → screen pixels.
 const TILE_PX: f32 = 22.0;
 
+/// MoveIntents are emitted at this fixed rate (Hz). The server advances the
+/// avatar by `avatar_speed / overworld_sim_hz` tiles per intent, so pacing
+/// intents at `overworld_sim_hz` yields the configured tiles/sec at ANY render
+/// frame rate. Sending one intent per frame instead would make walk speed scale
+/// with FPS (crawl in a throttled tab, rocket at 120fps). Keep in sync with
+/// `[world] overworld_sim_hz` in balance.toml.
+const MOVE_INTENT_HZ: f32 = 20.0;
+
 /// Where the API + realtime socket live. Native: `MELD_SERVER` env (default
 /// localhost). Browser: the page origin (trunk proxies `/v1` to the server).
 #[cfg(not(target_arch = "wasm32"))]
@@ -73,6 +81,18 @@ fn query_has(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Offline battle-screen mockup: jump straight into the Battle screen with canned
+/// combatants and the command window open, so the subscreen can be inspected
+/// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
+#[cfg(not(target_arch = "wasm32"))]
+fn battle_mockup_flag() -> bool {
+    std::env::var("MELD_BATTLE").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn battle_mockup_flag() -> bool {
+    query_has("battle")
+}
+
 fn main() {
     let base = server_base();
     App::new()
@@ -98,10 +118,12 @@ fn main() {
             started: false,
         })
         .init_resource::<Session>()
+        .init_resource::<MoveClock>()
+        .init_resource::<BattleMenu>()
         .init_resource::<Overworld>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, mock_battle_setup))
         .add_systems(Update, (pump_net, demo_driver)) // run in every state
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
@@ -115,11 +137,26 @@ fn main() {
             (overworld_input, sync_overworld_sprites).run_if(in_state(Screen::Overworld)),
         )
         // Battle
-        .add_systems(OnEnter(Screen::Battle), clear_overworld_sprites)
-        .add_systems(OnExit(Screen::Battle), despawn::<BattleRoot>)
+        .add_systems(OnEnter(Screen::Battle), (clear_overworld_sprites, enter_battle))
+        .add_systems(
+            OnExit(Screen::Battle),
+            (
+                despawn::<BattleScene>,
+                despawn::<PartyWindow>,
+                despawn::<CommandWindow>,
+            ),
+        )
         .add_systems(
             Update,
-            (battle_input, render_battle).run_if(in_state(Screen::Battle)),
+            (
+                render_enemy_panel,
+                render_party_window,
+                rebuild_command_menu,
+                style_command_menu,
+                menu_keyboard,
+                menu_click,
+            )
+                .run_if(in_state(Screen::Battle)),
         )
         // Ended
         .add_systems(OnEnter(Screen::Ended), ended_ui)
@@ -174,6 +211,13 @@ struct EndInfo {
     banked: usize,
 }
 
+/// Paces MoveIntents at a fixed cadence (see [`MOVE_INTENT_HZ`]) so walk speed
+/// is independent of render frame rate. `acc` banks elapsed time between sends.
+#[derive(Resource, Default)]
+struct MoveClock {
+    acc: f32,
+}
+
 /// When true, the client self-drives the loop against the real server.
 #[derive(Resource)]
 struct Autoplay(bool);
@@ -188,14 +232,90 @@ struct Demo {
     started: bool,
 }
 
+// -------------------------------------------------------- battle command ---
+
+/// Which page of the battle command window is showing. FF/Lufia-style: the root
+/// four commands, or a Skill / Item sub-list.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MenuLevel {
+    #[default]
+    Root,
+    Skills,
+    Items,
+}
+
+/// What selecting a menu row does.
+#[derive(Clone, Copy)]
+enum EntryAction {
+    Attack,
+    Defend,
+    OpenSkills,
+    OpenItems,
+    Skill(&'static str), // skill_kind
+    Item(&'static str),  // item_id
+    Back,
+}
+
+/// One selectable row in the command window.
+struct MenuEntry {
+    label: &'static str,
+    action: EntryAction,
+}
+
+/// The rows shown at a given menu level (slice content). Skill/Item pages carry
+/// a Back row so keyboard-only players can return to the root commands.
+fn menu_entries(level: MenuLevel) -> Vec<MenuEntry> {
+    let e = |label, action| MenuEntry { label, action };
+    match level {
+        MenuLevel::Root => vec![
+            e("Attack", EntryAction::Attack),
+            e("Defend", EntryAction::Defend),
+            e("Item", EntryAction::OpenItems),
+            e("Skill", EntryAction::OpenSkills),
+        ],
+        MenuLevel::Skills => vec![
+            e("Power Strike", EntryAction::Skill("power_strike")),
+            e("Second Wind", EntryAction::Skill("second_wind")),
+            e("Back", EntryAction::Back),
+        ],
+        MenuLevel::Items => vec![
+            e("Salve", EntryAction::Item("salve")),
+            e("Elixir", EntryAction::Item("elixir")),
+            e("Back", EntryAction::Back),
+        ],
+    }
+}
+
+/// Battle command-window state: which page, and the highlighted row. `dirty`
+/// asks [`rebuild_command_menu`] to respawn the rows (only on a page change, so
+/// button entities persist within a page and clicks/taps register).
+#[derive(Resource, Default)]
+struct BattleMenu {
+    level: MenuLevel,
+    cursor: usize,
+    dirty: bool,
+}
+
 // ------------------------------------------------------------- marker(s) ---
 
 #[derive(Component)]
 struct JoinRoot;
 #[derive(Component)]
 struct OverworldRoot;
+/// Immediate-mode enemy panel + battle banner (top of the screen).
 #[derive(Component)]
-struct BattleRoot;
+struct BattleScene;
+/// Immediate-mode party status window (bottom-left).
+#[derive(Component)]
+struct PartyWindow;
+/// Persistent command window (bottom-right); rebuilt only on page change.
+#[derive(Component)]
+struct CommandWindow;
+/// One clickable row in the command window, tagged with its index.
+#[derive(Component)]
+struct MenuRow {
+    index: usize,
+}
 #[derive(Component)]
 struct EndedRoot;
 #[derive(Component)]
@@ -211,6 +331,46 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
+/// If the battle-mockup flag is set, seed canned combatants and jump straight to
+/// the Battle screen (no networking) so the battle subscreen is viewable on its
+/// own. Runs once at startup; a no-op otherwise.
+fn mock_battle_setup(mut battle: ResMut<BattleData>, mut next: ResMut<NextState<Screen>>) {
+    if !battle_mockup_flag() {
+        return;
+    }
+    battle.battle_id = "mock".to_string();
+    battle.your_combatant_id = "hero".to_string();
+    battle.monster_combatant = Some("grendel".to_string());
+    battle.my_turn = true;
+    battle.combatants = vec![
+        CombatantView {
+            id: "hero".into(),
+            name: "Hero".into(),
+            hp: 32,
+            max_hp: 40,
+            gauge: 1.0,
+            is_player: true,
+        },
+        CombatantView {
+            id: "ally".into(),
+            name: "Ally".into(),
+            hp: 27,
+            max_hp: 38,
+            gauge: 0.5,
+            is_player: true,
+        },
+        CombatantView {
+            id: "grendel".into(),
+            name: "Grendel".into(),
+            hp: 44,
+            max_hp: 60,
+            gauge: 0.65,
+            is_player: false,
+        },
+    ];
+    next.set(Screen::Battle);
+}
+
 fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -220,12 +380,14 @@ fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
 // --------------------------------------------------------------- net pump --
 
 /// Drain server messages every frame, update resources, drive transitions.
+#[allow(clippy::too_many_arguments)]
 fn pump_net(
     net: NonSend<NetRes>,
     mut session: ResMut<Session>,
     mut world: ResMut<Overworld>,
     mut battle: ResMut<BattleData>,
     mut end: ResMut<EndInfo>,
+    mut menu: ResMut<BattleMenu>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -271,6 +433,7 @@ fn pump_net(
             ServerMsg::TurnReady { combatant_id } => {
                 if combatant_id == battle.your_combatant_id {
                     battle.my_turn = true;
+                    reset_menu(&mut menu); // open on the root commands each turn
                 }
             }
             ServerMsg::CombatantsJoined { combatants } => {
@@ -482,6 +645,8 @@ fn overworld_input(
     autoplay: Res<Autoplay>,
     world: Res<Overworld>,
     session: Res<Session>,
+    time: Res<Time>,
+    mut clock: ResMut<MoveClock>,
 ) {
     // Movement is locked while channeling an extraction (and would interrupt it).
     if session.channeling {
@@ -522,7 +687,19 @@ fn overworld_input(
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
         dx += 1.0;
     }
-    if dx != 0.0 || dy != 0.0 {
+    if dx == 0.0 && dy == 0.0 {
+        clock.acc = 0.0; // standing still — don't bank up steps to burst later
+        return;
+    }
+
+    // Emit MoveIntents at a fixed cadence (see MOVE_INTENT_HZ) so walk speed is
+    // frame-rate-independent. Bank elapsed time and drain it in fixed steps;
+    // cap the backlog so a throttled/backgrounded tab can't accumulate a big
+    // teleport when it resumes.
+    let step = 1.0 / MOVE_INTENT_HZ;
+    clock.acc = (clock.acc + time.delta_secs()).min(0.25);
+    while clock.acc >= step {
+        clock.acc -= step;
         // Server Y grows south; screen Y grows north - flip for the intent.
         net.0.send(ClientCmd::Move { dx, dy: -dy });
     }
@@ -581,103 +758,437 @@ fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEn
 
 // ---------------------------------------------------------------- battle ---
 
-fn battle_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    net: NonSend<NetRes>,
-    autoplay: Res<Autoplay>,
-    mut battle: ResMut<BattleData>,
-) {
-    if battle.my_turn
-        && (keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::Enter) || autoplay.0)
-    {
-        if let Some(target) = battle.monster_combatant.clone() {
-            net.0.send(ClientCmd::Attack {
-                battle_id: battle.battle_id.clone(),
-                target,
-            });
-            battle.my_turn = false; // wait for the next turn_ready
+/// Reset the command window to its root page.
+fn reset_menu(menu: &mut BattleMenu) {
+    menu.level = MenuLevel::Root;
+    menu.cursor = 0;
+    menu.dirty = true;
+}
+
+/// On entering a battle, open the command window on the root page.
+fn enter_battle(mut menu: ResMut<BattleMenu>) {
+    reset_menu(&mut menu);
+}
+
+/// Send a command, end the local turn, and return the menu to root.
+fn fire(net: &Net, cmd: ClientCmd, battle: &mut BattleData, menu: &mut BattleMenu) {
+    net.send(cmd);
+    battle.my_turn = false; // wait for the next turn_ready
+    reset_menu(menu);
+}
+
+/// Act on the menu row at `index` for the current page: root commands fire or
+/// open a sub-page; Skill/Item rows fire that skill/item; Back returns to root.
+/// Attack/Skill target Grendel (the sole enemy in the slice).
+fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, net: &Net) {
+    let entries = menu_entries(menu.level);
+    let Some(entry) = entries.get(index) else {
+        return;
+    };
+    let battle_id = battle.battle_id.clone();
+    match entry.action {
+        EntryAction::Attack => {
+            if let Some(target) = battle.monster_combatant.clone() {
+                fire(net, ClientCmd::Attack { battle_id, target }, battle, menu);
+            }
         }
+        EntryAction::Defend => fire(net, ClientCmd::Defend { battle_id }, battle, menu),
+        EntryAction::OpenSkills => {
+            menu.level = MenuLevel::Skills;
+            menu.cursor = 0;
+            menu.dirty = true;
+        }
+        EntryAction::OpenItems => {
+            menu.level = MenuLevel::Items;
+            menu.cursor = 0;
+            menu.dirty = true;
+        }
+        EntryAction::Skill(kind) => {
+            if let Some(target) = battle.monster_combatant.clone() {
+                fire(
+                    net,
+                    ClientCmd::Skill {
+                        battle_id,
+                        target,
+                        skill_kind: kind.to_string(),
+                    },
+                    battle,
+                    menu,
+                );
+            }
+        }
+        EntryAction::Item(id) => fire(
+            net,
+            ClientCmd::Item {
+                battle_id,
+                item_id: id.to_string(),
+            },
+            battle,
+            menu,
+        ),
+        EntryAction::Back => reset_menu(menu),
     }
 }
 
-/// Rebuild the battle HUD each frame from `BattleData` (server-authoritative -
-/// the client never computes HP or damage).
-fn render_battle(
+/// Keyboard control: ↑/↓ move the cursor, ENTER/SPACE (or a number key) selects,
+/// ESC/BACKSPACE backs out of a sub-page. At the root page A/D/I/S jump to the
+/// matching command. Autoplay just attacks.
+fn menu_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    autoplay: Res<Autoplay>,
+    mut menu: ResMut<BattleMenu>,
+    mut battle: ResMut<BattleData>,
+) {
+    if !battle.my_turn {
+        return;
+    }
+    if autoplay.0 {
+        select_entry(0, &mut menu, &mut battle, &net.0); // root row 0 = Attack
+        return;
+    }
+
+    let n = menu_entries(menu.level).len().max(1);
+    if keys.just_pressed(KeyCode::ArrowDown) {
+        menu.cursor = (menu.cursor + 1) % n;
+    }
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        menu.cursor = (menu.cursor + n - 1) % n;
+    }
+    if (keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace))
+        && menu.level != MenuLevel::Root
+    {
+        reset_menu(&mut menu);
+        return;
+    }
+
+    // Number keys pick the Nth row directly.
+    let digits = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+    ];
+    for (i, key) in digits.iter().enumerate() {
+        if i < n && keys.just_pressed(*key) {
+            menu.cursor = i;
+            select_entry(i, &mut menu, &mut battle, &net.0);
+            return;
+        }
+    }
+
+    // Root-page initials (A/D/I/S).
+    if menu.level == MenuLevel::Root {
+        let hotkey = if keys.just_pressed(KeyCode::KeyA) {
+            Some(0)
+        } else if keys.just_pressed(KeyCode::KeyD) {
+            Some(1)
+        } else if keys.just_pressed(KeyCode::KeyI) {
+            Some(2)
+        } else if keys.just_pressed(KeyCode::KeyS) {
+            Some(3)
+        } else {
+            None
+        };
+        if let Some(i) = hotkey {
+            menu.cursor = i;
+            select_entry(i, &mut menu, &mut battle, &net.0);
+            return;
+        }
+    }
+
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+        select_entry(menu.cursor, &mut menu, &mut battle, &net.0);
+    }
+}
+
+/// Mouse/touch control: pressing a row selects it (bevy_ui `Interaction` covers
+/// pointer and touch alike).
+fn menu_click(
+    net: NonSend<NetRes>,
+    mut menu: ResMut<BattleMenu>,
+    mut battle: ResMut<BattleData>,
+    rows: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
+) {
+    if !battle.my_turn {
+        return;
+    }
+    let mut pressed = None;
+    for (interaction, row) in &rows {
+        if *interaction == Interaction::Pressed {
+            pressed = Some(row.index);
+        }
+    }
+    if let Some(index) = pressed {
+        menu.cursor = index;
+        select_entry(index, &mut menu, &mut battle, &net.0);
+    }
+}
+
+/// Respawn the command window's rows when the page changes. Kept stable between
+/// changes so `Interaction` on the row buttons works — an immediate-mode rebuild
+/// every frame would reset click/hover state.
+fn rebuild_command_menu(
+    mut commands: Commands,
+    mut menu: ResMut<BattleMenu>,
+    existing: Query<Entity, With<CommandWindow>>,
+) {
+    if !menu.dirty {
+        return;
+    }
+    menu.dirty = false;
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let header = match menu.level {
+        MenuLevel::Root => "COMMAND",
+        MenuLevel::Skills => "SKILL",
+        MenuLevel::Items => "ITEM",
+    };
+    commands
+        .spawn((
+            CommandWindow,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(24.0),
+                bottom: Val::Px(24.0),
+                width: Val::Px(300.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
+            BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
+            BorderRadius::all(Val::Px(6.0)),
+        ))
+        .with_children(|w| {
+            w.spawn((
+                Text::new(header),
+                TextFont {
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.85, 0.5)),
+                Node {
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+            ));
+            for (i, entry) in menu_entries(menu.level).into_iter().enumerate() {
+                w.spawn((
+                    Button,
+                    MenuRow { index: i },
+                    Node {
+                        width: Val::Percent(100.0),
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    BorderRadius::all(Val::Px(3.0)),
+                ))
+                .with_children(|r| {
+                    r.spawn((
+                        Text::new(entry.label),
+                        TextFont {
+                            font_size: 19.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.9, 0.93, 1.0)),
+                    ));
+                });
+            }
+        });
+}
+
+/// Highlight the cursor row (and hover); blank the highlights when it isn't the
+/// player's turn.
+fn style_command_menu(
+    menu: Res<BattleMenu>,
+    battle: Res<BattleData>,
+    mut rows: Query<(&MenuRow, &Interaction, &mut BackgroundColor)>,
+) {
+    for (row, interaction, mut bg) in &mut rows {
+        let selected = row.index == menu.cursor;
+        *bg = BackgroundColor(if !battle.my_turn {
+            Color::NONE
+        } else if *interaction == Interaction::Pressed || selected {
+            Color::srgb(0.2, 0.28, 0.52)
+        } else if *interaction == Interaction::Hovered {
+            Color::srgb(0.14, 0.17, 0.3)
+        } else {
+            Color::NONE
+        });
+    }
+}
+
+/// A labelled meter (HP or gauge): a bordered track with a proportional fill.
+fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(height),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.4, 0.45, 0.6)),
+            BackgroundColor(Color::srgb(0.1, 0.11, 0.16)),
+        ))
+        .with_children(|t| {
+            t.spawn((
+                Node {
+                    width: Val::Percent((frac * 100.0).clamp(0.0, 100.0)),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(fill),
+            ));
+        });
+}
+
+/// Immediate-mode enemy panel (top): each enemy as a block + name + HP bar.
+fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
-    roots: Query<Entity, With<BattleRoot>>,
+    existing: Query<Entity, With<BattleScene>>,
 ) {
-    // Cheap immediate-mode: clear and rebuild the panel each frame.
-    for e in &roots {
+    for e in &existing {
         commands.entity(e).despawn();
     }
     commands
         .spawn((
-            BattleRoot,
+            BattleScene,
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                row_gap: Val::Px(10.0),
+                justify_content: JustifyContent::FlexStart,
+                padding: UiRect::top(Val::Px(56.0)),
+                row_gap: Val::Px(22.0),
                 ..default()
             },
         ))
         .with_children(|p| {
             p.spawn((
-                Text::new("BATTLE"),
+                Text::new("== BATTLE =="),
                 TextFont {
-                    font_size: 34.0,
+                    font_size: 22.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.9, 0.85, 0.6)),
             ));
-            for c in &battle.combatants {
-                let filled = (c.gauge.clamp(0.0, 1.0) * 10.0).round() as usize;
-                let gauge_bar = format!("{}{}", "#".repeat(filled), "-".repeat(10 - filled));
-                let mine = c.id == battle.your_combatant_id;
-                let line = format!(
-                    "{}{:<16} HP {:>4}/{:<4}  [{}]",
-                    if mine { "> " } else { "  " },
-                    c.name,
-                    c.hp,
-                    c.max_hp,
-                    gauge_bar
-                );
-                let color = if !c.is_player {
-                    Color::srgb(0.95, 0.5, 0.5)
-                } else if mine {
-                    Color::srgb(0.5, 0.95, 0.6)
-                } else {
-                    Color::srgb(0.7, 0.8, 1.0)
-                };
-                p.spawn((
-                    Text::new(line),
-                    TextFont {
-                        font_size: 20.0,
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(48.0),
+                align_items: AlignItems::FlexEnd,
+                ..default()
+            })
+            .with_children(|row| {
+                for c in battle.combatants.iter().filter(|c| !c.is_player) {
+                    let frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                    row.spawn(Node {
+                        width: Val::Px(190.0),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(6.0),
                         ..default()
-                    },
-                    TextColor(color),
-                ));
-            }
-            let prompt = if battle.my_turn {
-                "Your turn - press SPACE to attack Grendel"
-            } else {
-                "...gauges filling..."
-            };
+                    })
+                    .with_children(|e| {
+                        e.spawn((
+                            Node {
+                                width: Val::Px(76.0),
+                                height: Val::Px(76.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.85, 0.28, 0.28)),
+                            BorderRadius::all(Val::Px(8.0)),
+                        ));
+                        e.spawn((
+                            Text::new(format!("{}   {}/{}", c.name, c.hp, c.max_hp)),
+                            TextFont {
+                                font_size: 16.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.95, 0.65, 0.65)),
+                        ));
+                        meter(e, frac, 12.0, Color::srgb(0.85, 0.3, 0.3));
+                    });
+                }
+            });
+        });
+}
+
+/// Immediate-mode party status window (bottom-left): name, HP bar, ATB gauge.
+fn render_party_window(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    existing: Query<Entity, With<PartyWindow>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    commands
+        .spawn((
+            PartyWindow,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(24.0),
+                bottom: Val::Px(24.0),
+                width: Val::Px(380.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
+            BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
+            BorderRadius::all(Val::Px(6.0)),
+        ))
+        .with_children(|p| {
             p.spawn((
-                Text::new(prompt),
+                Text::new("PARTY"),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: 15.0,
                     ..default()
                 },
-                TextColor(if battle.my_turn {
-                    Color::srgb(0.95, 0.95, 0.5)
-                } else {
-                    Color::srgb(0.5, 0.55, 0.7)
-                }),
+                TextColor(Color::srgb(0.95, 0.85, 0.5)),
             ));
+            for c in battle.combatants.iter().filter(|c| c.is_player) {
+                let mine = c.id == battle.your_combatant_id;
+                let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                let gauge = c.gauge.clamp(0.0, 1.0) as f32;
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(3.0),
+                    ..default()
+                })
+                .with_children(|r| {
+                    r.spawn((
+                        Text::new(format!(
+                            "{}{}   HP {}/{}",
+                            if mine { "> " } else { "  " },
+                            c.name,
+                            c.hp,
+                            c.max_hp
+                        )),
+                        TextFont {
+                            font_size: 15.0,
+                            ..default()
+                        },
+                        TextColor(if mine {
+                            Color::srgb(0.6, 0.95, 0.7)
+                        } else {
+                            Color::srgb(0.7, 0.8, 1.0)
+                        }),
+                    ));
+                    meter(r, hp_frac, 10.0, Color::srgb(0.4, 0.85, 0.5));
+                    meter(r, gauge, 6.0, Color::srgb(0.55, 0.7, 1.0));
+                });
+            }
         });
 }
 
