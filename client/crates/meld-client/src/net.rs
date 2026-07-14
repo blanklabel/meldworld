@@ -27,7 +27,11 @@ pub enum ClientCmd {
     Connect { username: String },
     EnterMaze,
     Move { dx: f64, dy: f64 },
+    /// Battle commands. Attack/Skill strike an enemy; Defend/Item are self-cast.
     Attack { battle_id: String, target: String },
+    Defend { battle_id: String },
+    Skill { battle_id: String, target: String, skill_kind: String },
+    Item { battle_id: String, item_id: String },
     /// Begin a portal extraction channel at the current position.
     Extract,
 }
@@ -277,17 +281,54 @@ impl Inner {
                     }),
                 );
             }
+            // v4 (random) not v7 for action_id — v7 needs a system clock, which
+            // panics on wasm. Uniqueness is all the server needs here.
             ClientCmd::Attack { battle_id, target } => self.send_env(
                 wb::SubmitAction::TYPE,
                 json!({
                     "battle_id": battle_id,
-                    // v4 (random) not v7 — v7 needs a system clock, which panics
-                    // on wasm. Uniqueness is all the server needs here.
                     "action_id": uuid::Uuid::new_v4().to_string(),
                     "action": "attack",
                     "skill_kind": null,
                     "item_id": null,
                     "target_ids": [target]
+                }),
+            ),
+            ClientCmd::Defend { battle_id } => self.send_env(
+                wb::SubmitAction::TYPE,
+                json!({
+                    "battle_id": battle_id,
+                    "action_id": uuid::Uuid::new_v4().to_string(),
+                    "action": "defend",
+                    "skill_kind": null,
+                    "item_id": null,
+                    "target_ids": null
+                }),
+            ),
+            ClientCmd::Skill {
+                battle_id,
+                target,
+                skill_kind,
+            } => self.send_env(
+                wb::SubmitAction::TYPE,
+                json!({
+                    "battle_id": battle_id,
+                    "action_id": uuid::Uuid::new_v4().to_string(),
+                    "action": "skill",
+                    "skill_kind": skill_kind,
+                    "item_id": null,
+                    "target_ids": [target]
+                }),
+            ),
+            ClientCmd::Item { battle_id, item_id } => self.send_env(
+                wb::SubmitAction::TYPE,
+                json!({
+                    "battle_id": battle_id,
+                    "action_id": uuid::Uuid::new_v4().to_string(),
+                    "action": "item",
+                    "skill_kind": null,
+                    "item_id": item_id,
+                    "target_ids": null
                 }),
             ),
             ClientCmd::Extract => self.send_env(

@@ -21,6 +21,7 @@ async fn start_server() -> String {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
         balance,
+        client_dist: None,
     };
     let built = meld_server::build(&config).await.expect("server builds");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -86,7 +87,7 @@ async fn extraction_and_crafting_grow_meld_skills() {
     let (mut my_x, mut portal_x) = (0.0f64, 14.0f64);
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
 
     while phase != Phase::Done {
         assert!(tokio::time::Instant::now() < deadline, "run timed out");

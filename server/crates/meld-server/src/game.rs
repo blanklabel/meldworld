@@ -219,9 +219,30 @@ impl GameState {
             ServerEvent::Disconnected { player_id } => {
                 self.sessions.remove(&player_id);
                 self.order.retain(|p| p != &player_id);
+                self.pending_gear_load.retain(|p| p != &player_id);
+                self.remove_from_instance(&player_id);
                 Vec::new()
             }
             ServerEvent::Client { player_id, raw } => self.handle_client(&player_id, raw),
+        }
+    }
+
+    /// Drop a player's overworld/run state from the shared instance (on
+    /// disconnect). When nobody is left, tear the instance down entirely so the
+    /// next `enter_maze` rebuilds a clean arena with a live monster — otherwise
+    /// dead avatars pile up and the slain monster never returns.
+    fn remove_from_instance(&mut self, player_id: &str) {
+        let Some(inst) = self.instance.as_mut() else {
+            return;
+        };
+        inst.arena.avatars.retain(|a| a.player_id != player_id);
+        inst.run.runs.retain(|r| r.player_id != player_id);
+        if let Some(cid) = inst.player_combatant.remove(player_id) {
+            inst.combatant_player.remove(&cid);
+        }
+        inst.extraction.remove(player_id);
+        if inst.run.runs.is_empty() {
+            self.instance = None;
         }
     }
 
@@ -321,6 +342,12 @@ impl GameState {
             });
         }
         let inst = self.instance.as_mut().expect("instance exists");
+        // Guarantee a live target: if a prior party already slew Grendel and no
+        // battle is in progress, respawn it so every fresh run has a creature to
+        // fight (the shared instance otherwise keeps the monster dead forever).
+        if inst.arena.monster.defeated && inst.battle.is_none() {
+            inst.arena.respawn_monster();
+        }
         let instance_id = inst.run.instance_id.clone();
         let base_run_level = inst.run.base_run_level;
 
@@ -524,6 +551,12 @@ impl GameState {
         }
 
         let encounter_class = battle.encounter_class;
+        tracing::info!(
+            battle_id = %battle_id,
+            party = party_players.len(),
+            triggered_by = %toucher,
+            "battle started"
+        );
         inst.battle = Some(battle);
         inst.battle_id = battle_id.clone();
         inst.monster_combatant_id = monster_combatant_id;
@@ -693,6 +726,8 @@ impl GameState {
             submit.action_id.clone(),
             submit.action,
             submit.target_ids.clone(),
+            submit.skill_kind.clone(),
+            submit.item_id.clone(),
         );
         match result {
             Ok(events) => self.emit_battle_events(events),
@@ -1091,6 +1126,7 @@ impl GameState {
         };
         let battle_id = inst.battle_id.clone();
         let xp_reward = inst.arena.monster.xp_reward;
+        tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
         // The outcome applies to every party merged into the battle (raid).
         let bp = inst.battle_parties.clone();
         let members: Vec<String> = inst

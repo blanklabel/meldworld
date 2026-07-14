@@ -22,6 +22,7 @@ async fn start_server() -> String {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
         balance,
+        client_dist: None,
     };
     let built = meld_server::build(&config).await.expect("server builds");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -102,7 +103,7 @@ async fn extraction_banks_loot_into_the_vault() {
     // Don't burst missed ticks after the (mover-gated) battle — that would fling
     // the avatar past the portal in one go.
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
 
     while phase != Phase::Done {
         assert!(tokio::time::Instant::now() < deadline, "extraction timed out (phase {phase:?})");

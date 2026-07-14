@@ -33,7 +33,10 @@ extraction_channel_ms = 2500
 
 [battle]
 tick_ms = 100                    # CANON §B ATB tick
-gauge_fill_divisor = 400.0       # gauge += speed_stat / 400 per tick
+# gauge += speed_stat / divisor per 100ms tick; a turn fires at gauge 1.0.
+# 4400 → a speed-110 squire acts every ~4.0s and the speed-80 stalker every
+# ~5.5s: a deliberate, readable FF5-style ATB cadence (was 400 = ~0.4s, a blur).
+gauge_fill_divisor = 4400.0
 turn_timeout_ms = 15000          # 15s -> auto-defend
 flee_base = 0.60
 flee_penalty_per_tier = 0.10
@@ -41,6 +44,10 @@ flee_floor = 0.05
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
+skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]
+skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]
+item_heal_fraction = 0.4         # "Salve" item: heals this fraction of max HP [TUNABLE]
+                                 # "Elixir" item: full heal (structural, no coefficient)
 
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill
