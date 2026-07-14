@@ -7,12 +7,12 @@
 //! Config: `MELD_SERVER` (default `http://127.0.0.1:8080`) and `MELD_NAME`
 //! (default a random guest name).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
 use meld_client::net;
-use net::{ClientCmd, CombatantView, EntityKind, Net, ServerMsg};
+use net::{ClientCmd, CombatantView, EntityKind, GearLine, HitEffect, Net, ServerMsg, SkillLine};
 
 /// World tiles → screen pixels.
 const TILE_PX: f32 = 22.0;
@@ -93,6 +93,25 @@ fn battle_mockup_flag() -> bool {
     query_has("battle")
 }
 
+/// Offline mockups for the overworld overlays (`?inventory` / `?levelup`, or
+/// `MELD_INVENTORY` / `MELD_LEVELUP`).
+#[cfg(not(target_arch = "wasm32"))]
+fn inventory_mockup_flag() -> bool {
+    std::env::var("MELD_INVENTORY").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn inventory_mockup_flag() -> bool {
+    query_has("inventory")
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn levelup_mockup_flag() -> bool {
+    std::env::var("MELD_LEVELUP").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn levelup_mockup_flag() -> bool {
+    query_has("levelup")
+}
+
 fn main() {
     let base = server_base();
     App::new()
@@ -120,10 +139,14 @@ fn main() {
         .init_resource::<Session>()
         .init_resource::<MoveClock>()
         .init_resource::<BattleMenu>()
+        .init_resource::<HitFx>()
+        .init_resource::<Overlay>()
+        .init_resource::<InventoryData>()
+        .init_resource::<ProgressData>()
         .init_resource::<Overworld>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
-        .add_systems(Startup, (setup, mock_battle_setup))
+        .add_systems(Startup, (setup, mock_battle_setup, mock_overlay_setup))
         .add_systems(Update, (pump_net, demo_driver)) // run in every state
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
@@ -131,10 +154,19 @@ fn main() {
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
         // Overworld
         .add_systems(OnEnter(Screen::Overworld), overworld_ui)
-        .add_systems(OnExit(Screen::Overworld), despawn::<OverworldRoot>)
+        .add_systems(
+            OnExit(Screen::Overworld),
+            (despawn::<OverworldRoot>, despawn::<OverlayRoot>),
+        )
         .add_systems(
             Update,
-            (overworld_input, sync_overworld_sprites).run_if(in_state(Screen::Overworld)),
+            (
+                overlay_input,
+                overworld_input,
+                sync_overworld_sprites,
+                render_overlay,
+            )
+                .run_if(in_state(Screen::Overworld)),
         )
         // Battle
         .add_systems(OnEnter(Screen::Battle), (clear_overworld_sprites, enter_battle))
@@ -144,17 +176,22 @@ fn main() {
                 despawn::<BattleScene>,
                 despawn::<PartyWindow>,
                 despawn::<CommandWindow>,
+                despawn::<HitFxRoot>,
             ),
         )
         .add_systems(
             Update,
             (
-                render_enemy_panel,
-                render_party_window,
-                rebuild_command_menu,
-                style_command_menu,
+                validate_active,
+                auto_fire_queued,
                 menu_keyboard,
                 menu_click,
+                rebuild_command_menu,
+                style_command_menu,
+                render_enemy_panel,
+                render_party_window,
+                advance_hit_fx,
+                render_hit_fx,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -199,11 +236,107 @@ struct Overworld {
 #[derive(Resource, Default)]
 struct BattleData {
     battle_id: String,
-    your_combatant_id: String,
+    /// Combatant ids this player controls, in party order (Hero 1..N).
+    your_ids: Vec<String>,
     monster_combatant: Option<String>,
     combatants: Vec<CombatantView>,
-    my_turn: bool,
+    /// Heroes whose ATB gauge is full (server said TurnReady).
+    ready: HashSet<String>,
+    /// Per-hero queued order; auto-fires the instant that hero is ready.
+    queued: HashMap<String, QueuedKind>,
+    /// The hero the command window is giving orders to.
+    active: Option<String>,
 }
+
+impl BattleData {
+    /// Party-order label for a hero combatant ("Hero 1"), or its raw name.
+    fn hero_label(&self, id: &str) -> String {
+        match self.your_ids.iter().position(|h| h == id) {
+            Some(i) => format!("Hero {}", i + 1),
+            None => id.to_string(),
+        }
+    }
+    fn view(&self, id: &str) -> Option<&CombatantView> {
+        self.combatants.iter().find(|c| c.id == id)
+    }
+    fn alive(&self, id: &str) -> bool {
+        self.view(id).map(|c| c.hp > 0).unwrap_or(false)
+    }
+}
+
+/// A queued battle order for one hero. Attack/Skill hit the monster; Defend/Item
+/// are self-cast. The `&'static str` is the skill_kind / item_id.
+#[derive(Clone, Copy, PartialEq)]
+enum QueuedKind {
+    Attack,
+    Defend,
+    Skill(&'static str),
+    Item(&'static str),
+}
+
+impl QueuedKind {
+    /// Short tag shown as the queued-order icon next to a hero.
+    fn tag(self) -> &'static str {
+        match self {
+            QueuedKind::Attack => "ATK",
+            QueuedKind::Defend => "DEF",
+            QueuedKind::Skill(_) => "SKL",
+            QueuedKind::Item(_) => "ITM",
+        }
+    }
+    fn color(self) -> Color {
+        match self {
+            QueuedKind::Attack => Color::srgb(0.95, 0.55, 0.5),
+            QueuedKind::Defend => Color::srgb(0.55, 0.7, 1.0),
+            QueuedKind::Skill(_) => Color::srgb(0.8, 0.6, 1.0),
+            QueuedKind::Item(_) => Color::srgb(0.5, 0.9, 0.6),
+        }
+    }
+}
+
+/// Which overworld overlay screen is open (none/inventory/level-up).
+#[derive(Clone, Copy, PartialEq)]
+enum OverlayKind {
+    Inventory,
+    LevelUp,
+}
+#[derive(Resource, Default)]
+struct Overlay {
+    kind: Option<OverlayKind>,
+}
+
+/// Vault + gear for the inventory overlay (fetched over HTTP on open).
+#[derive(Resource, Default)]
+struct InventoryData {
+    loaded: bool,
+    chits: i64,
+    materials: Vec<(String, i32)>,
+    gear: Vec<GearLine>,
+}
+
+/// Meld skills + class unlocks for the level-up overlay.
+#[derive(Resource, Default)]
+struct ProgressData {
+    loaded: bool,
+    skills: Vec<SkillLine>,
+    classes: Vec<String>,
+}
+
+/// Floating hit-feedback numbers (damage/heal) with a short lifetime.
+#[derive(Resource, Default)]
+struct HitFx {
+    items: Vec<Hit>,
+}
+struct Hit {
+    target: String,
+    text: String,
+    color: Color,
+    age: f32,
+}
+/// Seconds a floating number lives.
+const HIT_TTL: f32 = 1.0;
+/// Seconds a target stays "flashed" after being hit.
+const FLASH_TTL: f32 = 0.18;
 
 #[derive(Resource, Default)]
 struct EndInfo {
@@ -316,6 +449,12 @@ struct CommandWindow;
 struct MenuRow {
     index: usize,
 }
+/// Immediate-mode overlay holding floating hit numbers.
+#[derive(Component)]
+struct HitFxRoot;
+/// Immediate-mode root for an overworld overlay (inventory / level-up).
+#[derive(Component)]
+struct OverlayRoot;
 #[derive(Component)]
 struct EndedRoot;
 #[derive(Component)]
@@ -334,31 +473,48 @@ fn setup(mut commands: Commands) {
 /// If the battle-mockup flag is set, seed canned combatants and jump straight to
 /// the Battle screen (no networking) so the battle subscreen is viewable on its
 /// own. Runs once at startup; a no-op otherwise.
-fn mock_battle_setup(mut battle: ResMut<BattleData>, mut next: ResMut<NextState<Screen>>) {
+fn mock_battle_setup(
+    mut battle: ResMut<BattleData>,
+    mut hitfx: ResMut<HitFx>,
+    mut next: ResMut<NextState<Screen>>,
+) {
     if !battle_mockup_flag() {
         return;
     }
+    // Canned hit feedback so the floating numbers + flash are visible statically.
+    hitfx.items.push(Hit {
+        target: "grendel".into(),
+        text: "-17".into(),
+        color: Color::srgb(1.0, 0.5, 0.4),
+        age: 0.0,
+    });
+    hitfx.items.push(Hit {
+        target: "h3".into(),
+        text: "+12".into(),
+        color: Color::srgb(0.5, 1.0, 0.6),
+        age: 0.0,
+    });
+    let hero = |id: &str, hp, gauge| CombatantView {
+        id: id.into(),
+        name: "Hero".into(),
+        hp,
+        max_hp: 40,
+        gauge,
+        is_player: true,
+    };
     battle.battle_id = "mock".to_string();
-    battle.your_combatant_id = "hero".to_string();
+    battle.your_ids = vec!["h1".into(), "h2".into(), "h3".into(), "h4".into()];
     battle.monster_combatant = Some("grendel".to_string());
-    battle.my_turn = true;
+    battle.active = Some("h1".to_string());
+    battle.ready.insert("h1".to_string());
+    battle.ready.insert("h3".to_string());
+    battle.queued.insert("h2".to_string(), QueuedKind::Attack);
+    battle.queued.insert("h4".to_string(), QueuedKind::Skill("power_strike"));
     battle.combatants = vec![
-        CombatantView {
-            id: "hero".into(),
-            name: "Hero".into(),
-            hp: 32,
-            max_hp: 40,
-            gauge: 1.0,
-            is_player: true,
-        },
-        CombatantView {
-            id: "ally".into(),
-            name: "Ally".into(),
-            hp: 27,
-            max_hp: 38,
-            gauge: 0.5,
-            is_player: true,
-        },
+        hero("h1", 32, 1.0),
+        hero("h2", 40, 0.4),
+        hero("h3", 21, 1.0),
+        hero("h4", 36, 0.75),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),
@@ -369,6 +525,60 @@ fn mock_battle_setup(mut battle: ResMut<BattleData>, mut next: ResMut<NextState<
         },
     ];
     next.set(Screen::Battle);
+}
+
+/// If an overlay-mockup flag is set, seed canned inventory/progress data and jump
+/// to the overworld with that screen open — so the overlays are viewable on their
+/// own without a server.
+fn mock_overlay_setup(
+    mut overlay: ResMut<Overlay>,
+    mut inv: ResMut<InventoryData>,
+    mut prog: ResMut<ProgressData>,
+    mut world: ResMut<Overworld>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    if inventory_mockup_flag() {
+        inv.loaded = true;
+        inv.chits = 1240;
+        inv.materials = vec![
+            ("forest_bloom_petal".into(), 7),
+            ("stalker_hide".into(), 3),
+            ("bloom_salve".into(), 2),
+        ];
+        inv.gear = vec![
+            GearLine {
+                name: "Chipped Blade".into(),
+                equipped: true,
+                max_durability: 90,
+                base_max_durability: 100,
+                atk_bonus: 3,
+            },
+            GearLine {
+                name: "Bloom Ward".into(),
+                equipped: false,
+                max_durability: 60,
+                base_max_durability: 60,
+                atk_bonus: 1,
+            },
+        ];
+        overlay.kind = Some(OverlayKind::Inventory);
+    } else if levelup_mockup_flag() {
+        prog.loaded = true;
+        prog.skills = vec![
+            SkillLine { kind: "alchemy".into(), level: 3, xp: 245 },
+            SkillLine { kind: "forging".into(), level: 2, xp: 130 },
+            SkillLine { kind: "gatekeeping".into(), level: 1, xp: 20 },
+        ];
+        prog.classes = vec!["squire".into(), "dragoon".into()];
+        overlay.kind = Some(OverlayKind::LevelUp);
+    } else {
+        return;
+    }
+    // A minimal overworld behind the overlay.
+    world.entities.insert("me".into(), (0.0, 0.0, EntityKind::Player));
+    world.entities.insert("grendel".into(), (10.0, 0.0, EntityKind::Monster));
+    world.entities.insert("portal".into(), (14.0, 0.0, EntityKind::Portal));
+    next.set(Screen::Overworld);
 }
 
 fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
@@ -388,6 +598,9 @@ fn pump_net(
     mut battle: ResMut<BattleData>,
     mut end: ResMut<EndInfo>,
     mut menu: ResMut<BattleMenu>,
+    mut hitfx: ResMut<HitFx>,
+    mut inv: ResMut<InventoryData>,
+    mut prog: ResMut<ProgressData>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -417,23 +630,38 @@ fn pump_net(
             }
             ServerMsg::BattleStarted {
                 battle_id,
-                your_combatant_id,
+                your_combatant_id: _,
+                your_combatant_ids,
                 combatants,
                 monster_combatant,
             } => {
                 battle.battle_id = battle_id;
-                battle.your_combatant_id = your_combatant_id;
+                battle.your_ids = your_combatant_ids;
                 battle.monster_combatant = monster_combatant;
                 battle.combatants = combatants;
-                battle.my_turn = false;
+                battle.ready.clear();
+                battle.queued.clear();
+                battle.active = battle.your_ids.first().cloned();
+                reset_menu(&mut menu);
                 if *state.get() != Screen::Battle {
                     next.set(Screen::Battle);
                 }
             }
             ServerMsg::TurnReady { combatant_id } => {
-                if combatant_id == battle.your_combatant_id {
-                    battle.my_turn = true;
-                    reset_menu(&mut menu); // open on the root commands each turn
+                // A hero's gauge filled; it can now act (its queued order fires).
+                battle.ready.insert(combatant_id);
+            }
+            ServerMsg::ActionResolved {
+                actor: _,
+                action: _,
+                effects,
+            } => {
+                for e in effects {
+                    // Reflect the authoritative HP immediately + spawn feedback.
+                    if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
+                        c.hp = e.hp_after;
+                    }
+                    push_hit_fx(&mut hitfx, &e);
                 }
             }
             ServerMsg::CombatantsJoined { combatants } => {
@@ -476,6 +704,21 @@ fn pump_net(
                 end.outcome = result;
                 end.banked = banked;
                 next.set(Screen::Ended);
+            }
+            ServerMsg::InventoryData {
+                chits,
+                materials,
+                gear,
+            } => {
+                inv.chits = chits;
+                inv.materials = materials;
+                inv.gear = gear;
+                inv.loaded = true;
+            }
+            ServerMsg::ProgressData { skills, classes } => {
+                prog.skills = skills;
+                prog.classes = classes;
+                prog.loaded = true;
             }
             ServerMsg::Error { message } => {
                 session.status = format!("error: {message}");
@@ -522,7 +765,8 @@ fn demo_driver(
 
     // 3s+: battle. Grendel's HP falls to 0 over ~5s; gauges animate.
     if *state.get() == Screen::Overworld {
-        battle.your_combatant_id = "me".to_string();
+        battle.your_ids = vec!["me".to_string()];
+        battle.active = Some("me".to_string());
         battle.monster_combatant = Some("g".to_string());
         battle.combatants = vec![
             CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true },
@@ -539,7 +783,6 @@ fn demo_driver(
             c.hp = hp;
         }
     }
-    battle.my_turn = (phase * 1.5) as i32 % 2 == 0;
     if hp <= 0 && *state.get() == Screen::Battle {
         end.outcome = "victory".to_string();
         next.set(Screen::Ended);
@@ -628,7 +871,7 @@ fn overworld_ui(mut commands: Commands) {
         .with_children(|p| {
             p.spawn((
                 Text::new(
-                    "WASD/arrows: move - walk into Grendel (red) to fight - press E at the cyan portal to extract",
+                    "WASD/arrows: move  -  E: extract at portal  -  I: inventory  -  L: level up",
                 ),
                 TextFont {
                     font_size: 16.0,
@@ -639,17 +882,20 @@ fn overworld_ui(mut commands: Commands) {
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overworld_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     world: Res<Overworld>,
     session: Res<Session>,
+    overlay: Res<Overlay>,
     time: Res<Time>,
     mut clock: ResMut<MoveClock>,
 ) {
-    // Movement is locked while channeling an extraction (and would interrupt it).
-    if session.channeling {
+    // No walking while a screen is open or while channeling an extraction.
+    if overlay.kind.is_some() || session.channeling {
+        clock.acc = 0.0;
         return;
     }
 
@@ -703,6 +949,151 @@ fn overworld_input(
         // Server Y grows south; screen Y grows north - flip for the intent.
         net.0.send(ClientCmd::Move { dx, dy: -dy });
     }
+}
+
+// -------------------------------------------------- overworld overlays -----
+
+/// Open/close the inventory (I) and level-up (L) screens; fetch fresh data on
+/// open. ESC closes whichever is up.
+fn overlay_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    mut overlay: ResMut<Overlay>,
+    mut inv: ResMut<InventoryData>,
+    mut prog: ResMut<ProgressData>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        overlay.kind = None;
+    }
+    if keys.just_pressed(KeyCode::KeyI) {
+        if overlay.kind == Some(OverlayKind::Inventory) {
+            overlay.kind = None;
+        } else {
+            overlay.kind = Some(OverlayKind::Inventory);
+            inv.loaded = false;
+            net.0.fetch_inventory();
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyL) {
+        if overlay.kind == Some(OverlayKind::LevelUp) {
+            overlay.kind = None;
+        } else {
+            overlay.kind = Some(OverlayKind::LevelUp);
+            prog.loaded = false;
+            net.0.fetch_progress();
+        }
+    }
+}
+
+/// Immediate-mode: draw the open overlay (inventory or level-up) as a centered
+/// window over a dimmed overworld.
+fn render_overlay(
+    mut commands: Commands,
+    overlay: Res<Overlay>,
+    inv: Res<InventoryData>,
+    prog: Res<ProgressData>,
+    existing: Query<Entity, With<OverlayRoot>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some(kind) = overlay.kind else {
+        return;
+    };
+    let label = |p: &mut ChildSpawnerCommands, text: String, size: f32, color: Color| {
+        p.spawn((
+            Text::new(text),
+            TextFont { font_size: size, ..default() },
+            TextColor(color),
+        ));
+    };
+    let gold = Color::srgb(0.95, 0.85, 0.5);
+    let dim = Color::srgb(0.72, 0.78, 0.9);
+    commands
+        .spawn((
+            OverlayRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    width: Val::Px(520.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(8.0),
+                    padding: UiRect::all(Val::Px(18.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BorderColor(Color::srgb(0.45, 0.55, 0.85)),
+                BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
+                BorderRadius::all(Val::Px(8.0)),
+            ))
+            .with_children(|p| match kind {
+                OverlayKind::Inventory => {
+                    label(p, "INVENTORY".into(), 24.0, gold);
+                    if !inv.loaded {
+                        label(p, "loading…".into(), 16.0, dim);
+                        label(p, "[ESC] close".into(), 13.0, dim);
+                        return;
+                    }
+                    label(p, format!("Chits: {}", inv.chits), 18.0, Color::srgb(0.95, 0.85, 0.5));
+                    label(p, "- Materials -".into(), 15.0, gold);
+                    if inv.materials.is_empty() {
+                        label(p, "  (none)".into(), 14.0, dim);
+                    }
+                    for (kind, qty) in &inv.materials {
+                        label(p, format!("  {} x{}", kind.replace('_', " "), qty), 15.0, dim);
+                    }
+                    label(p, "- Gear -".into(), 15.0, gold);
+                    for g in &inv.gear {
+                        let tag = if g.equipped { "[equipped]" } else { "" };
+                        label(
+                            p,
+                            format!(
+                                "  {}  atk+{}  dur {}/{} {}",
+                                g.name, g.atk_bonus, g.max_durability, g.base_max_durability, tag
+                            ),
+                            15.0,
+                            if g.equipped { Color::srgb(0.6, 0.95, 0.7) } else { dim },
+                        );
+                    }
+                    label(p, "[ESC] close   [L] level up".into(), 13.0, dim);
+                }
+                OverlayKind::LevelUp => {
+                    label(p, "LEVEL UP".into(), 24.0, gold);
+                    if !prog.loaded {
+                        label(p, "loading…".into(), 16.0, dim);
+                        label(p, "[ESC] close".into(), 13.0, dim);
+                        return;
+                    }
+                    label(p, "- Meld Skills -".into(), 15.0, gold);
+                    for s in &prog.skills {
+                        label(
+                            p,
+                            format!("  {:<12} Lv {}   ({} XP)", s.kind.replace('_', " "), s.level, s.xp),
+                            16.0,
+                            Color::srgb(0.7, 0.85, 1.0),
+                        );
+                    }
+                    label(p, "- Classes Unlocked -".into(), 15.0, gold);
+                    let classes = if prog.classes.is_empty() {
+                        "  (none)".to_string()
+                    } else {
+                        format!("  {}", prog.classes.join(", "))
+                    };
+                    label(p, classes, 15.0, dim);
+                    label(p, "[ESC] close   [I] inventory".into(), 13.0, dim);
+                }
+            });
+        });
 }
 
 /// Reconcile sprites to the authoritative snapshot: spawn new entities, move
@@ -770,29 +1161,113 @@ fn enter_battle(mut menu: ResMut<BattleMenu>) {
     reset_menu(&mut menu);
 }
 
-/// Send a command, end the local turn, and return the menu to root.
-fn fire(net: &Net, cmd: ClientCmd, battle: &mut BattleData, menu: &mut BattleMenu) {
-    net.send(cmd);
-    battle.my_turn = false; // wait for the next turn_ready
+/// Queue an order for the active hero and advance to the next hero that still
+/// needs orders. The order fires automatically once that hero's ATB fills
+/// ([`auto_fire_queued`]).
+fn queue_order(battle: &mut BattleData, hero: &str, kind: QueuedKind, menu: &mut BattleMenu) {
+    battle.queued.insert(hero.to_string(), kind);
+    battle.active = next_needing_order(battle, hero).or_else(|| Some(hero.to_string()));
     reset_menu(menu);
 }
 
-/// Act on the menu row at `index` for the current page: root commands fire or
-/// open a sub-page; Skill/Item rows fire that skill/item; Back returns to root.
-/// Attack/Skill target Grendel (the sole enemy in the slice).
-fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, net: &Net) {
+/// First alive hero after `current` (wrapping) that has no queued order yet.
+fn next_needing_order(battle: &BattleData, current: &str) -> Option<String> {
+    let ids = &battle.your_ids;
+    let n = ids.len();
+    if n == 0 {
+        return None;
+    }
+    let start = ids.iter().position(|h| h == current).unwrap_or(0);
+    (1..=n).find_map(|off| {
+        let h = &ids[(start + off) % n];
+        (battle.alive(h) && !battle.queued.contains_key(h)).then(|| h.clone())
+    })
+}
+
+/// A sensible active hero: prefer one that's ready and unordered, then any
+/// unordered hero, then any live hero.
+fn pick_active(battle: &BattleData) -> Option<String> {
+    let alive: Vec<&String> = battle.your_ids.iter().filter(|h| battle.alive(h)).collect();
+    alive
+        .iter()
+        .find(|h| battle.ready.contains(**h) && !battle.queued.contains_key(**h))
+        .or_else(|| alive.iter().find(|h| !battle.queued.contains_key(**h)))
+        .or_else(|| alive.first())
+        .map(|h| (*h).clone())
+}
+
+/// Send a hero's order to the server. Attack/Skill need the monster as target.
+fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target: Option<&str>) {
+    let cmd = match kind {
+        QueuedKind::Attack => target.map(|t| ClientCmd::Attack {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+            target: t.to_string(),
+        }),
+        QueuedKind::Skill(sk) => target.map(|t| ClientCmd::Skill {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+            target: t.to_string(),
+            skill_kind: sk.to_string(),
+        }),
+        QueuedKind::Defend => Some(ClientCmd::Defend {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+        }),
+        QueuedKind::Item(it) => Some(ClientCmd::Item {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+            item_id: it.to_string(),
+        }),
+    };
+    if let Some(cmd) = cmd {
+        net.send(cmd);
+    }
+}
+
+/// Keep `active` pointing at a live, controllable hero.
+fn validate_active(mut battle: ResMut<BattleData>) {
+    let ok = battle
+        .active
+        .as_ref()
+        .map(|a| battle.your_ids.contains(a) && battle.alive(a))
+        .unwrap_or(false);
+    if !ok {
+        battle.active = pick_active(&battle);
+    }
+}
+
+/// Fire every hero whose gauge is full and who has a queued order.
+fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleData>) {
+    let battle_id = battle.battle_id.clone();
+    let target = battle.monster_combatant.clone();
+    let ready_orders: Vec<(String, QueuedKind)> = battle
+        .your_ids
+        .iter()
+        .filter(|h| battle.ready.contains(*h))
+        .filter_map(|h| battle.queued.get(h).map(|k| (h.clone(), *k)))
+        .collect();
+    for (hero, kind) in ready_orders {
+        fire_order(&net.0, &battle_id, &hero, kind, target.as_deref());
+        battle.ready.remove(&hero);
+        battle.queued.remove(&hero);
+    }
+}
+
+/// Act on the command row at `index`: root Attack/Defend queue an order for the
+/// active hero; Item/Skill open a sub-page; a Skill/Item row queues it; Back
+/// returns to root.
+fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData) {
     let entries = menu_entries(menu.level);
     let Some(entry) = entries.get(index) else {
         return;
     };
-    let battle_id = battle.battle_id.clone();
+    let Some(active) = battle.active.clone() else {
+        return;
+    };
     match entry.action {
-        EntryAction::Attack => {
-            if let Some(target) = battle.monster_combatant.clone() {
-                fire(net, ClientCmd::Attack { battle_id, target }, battle, menu);
-            }
-        }
-        EntryAction::Defend => fire(net, ClientCmd::Defend { battle_id }, battle, menu),
+        EntryAction::Attack => queue_order(battle, &active, QueuedKind::Attack, menu),
+        EntryAction::Defend => queue_order(battle, &active, QueuedKind::Defend, menu),
         EntryAction::OpenSkills => {
             menu.level = MenuLevel::Skills;
             menu.cursor = 0;
@@ -803,48 +1278,32 @@ fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, ne
             menu.cursor = 0;
             menu.dirty = true;
         }
-        EntryAction::Skill(kind) => {
-            if let Some(target) = battle.monster_combatant.clone() {
-                fire(
-                    net,
-                    ClientCmd::Skill {
-                        battle_id,
-                        target,
-                        skill_kind: kind.to_string(),
-                    },
-                    battle,
-                    menu,
-                );
-            }
-        }
-        EntryAction::Item(id) => fire(
-            net,
-            ClientCmd::Item {
-                battle_id,
-                item_id: id.to_string(),
-            },
-            battle,
-            menu,
-        ),
+        EntryAction::Skill(kind) => queue_order(battle, &active, QueuedKind::Skill(kind), menu),
+        EntryAction::Item(id) => queue_order(battle, &active, QueuedKind::Item(id), menu),
         EntryAction::Back => reset_menu(menu),
     }
 }
 
-/// Keyboard control: ↑/↓ move the cursor, ENTER/SPACE (or a number key) selects,
-/// ESC/BACKSPACE backs out of a sub-page. At the root page A/D/I/S jump to the
-/// matching command. Autoplay just attacks.
+/// Keyboard control. Orders are *queued* for the active hero and fire when its
+/// ATB fills. At root: 1-4 pick which hero to command; A/D/I/S choose a command;
+/// ↑/↓ + ENTER also work. In a sub-page: 1-N / ↑↓+ENTER pick, ESC backs out.
+/// Autoplay queues Attack for every hero.
 fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
-    net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
-    if !battle.my_turn {
-        return;
-    }
     if autoplay.0 {
-        select_entry(0, &mut menu, &mut battle, &net.0); // root row 0 = Attack
+        let idle: Vec<String> = battle
+            .your_ids
+            .iter()
+            .filter(|h| battle.alive(h) && !battle.queued.contains_key(*h))
+            .cloned()
+            .collect();
+        for h in idle {
+            battle.queued.insert(h, QueuedKind::Attack);
+        }
         return;
     }
 
@@ -862,23 +1321,20 @@ fn menu_keyboard(
         return;
     }
 
-    // Number keys pick the Nth row directly.
     let digits = [
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
         KeyCode::Digit4,
     ];
-    for (i, key) in digits.iter().enumerate() {
-        if i < n && keys.just_pressed(*key) {
-            menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &net.0);
-            return;
-        }
-    }
-
-    // Root-page initials (A/D/I/S).
+    // At root, number keys pick the hero to command; in a sub-page, the row.
     if menu.level == MenuLevel::Root {
+        for (i, key) in digits.iter().enumerate() {
+            if i < battle.your_ids.len() && keys.just_pressed(*key) {
+                battle.active = Some(battle.your_ids[i].clone());
+                return;
+            }
+        }
         let hotkey = if keys.just_pressed(KeyCode::KeyA) {
             Some(0)
         } else if keys.just_pressed(KeyCode::KeyD) {
@@ -892,27 +1348,30 @@ fn menu_keyboard(
         };
         if let Some(i) = hotkey {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &net.0);
+            select_entry(i, &mut menu, &mut battle);
             return;
+        }
+    } else {
+        for (i, key) in digits.iter().enumerate() {
+            if i < n && keys.just_pressed(*key) {
+                menu.cursor = i;
+                select_entry(i, &mut menu, &mut battle);
+                return;
+            }
         }
     }
 
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        select_entry(menu.cursor, &mut menu, &mut battle, &net.0);
+        select_entry(menu.cursor, &mut menu, &mut battle);
     }
 }
 
-/// Mouse/touch control: pressing a row selects it (bevy_ui `Interaction` covers
-/// pointer and touch alike).
+/// Mouse/touch: pressing a command row queues it for the active hero.
 fn menu_click(
-    net: NonSend<NetRes>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     rows: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
 ) {
-    if !battle.my_turn {
-        return;
-    }
     let mut pressed = None;
     for (interaction, row) in &rows {
         if *interaction == Interaction::Pressed {
@@ -921,13 +1380,44 @@ fn menu_click(
     }
     if let Some(index) = pressed {
         menu.cursor = index;
-        select_entry(index, &mut menu, &mut battle, &net.0);
+        select_entry(index, &mut menu, &mut battle);
     }
 }
 
-/// Respawn the command window's rows when the page changes. Kept stable between
-/// changes so `Interaction` on the row buttons works — an immediate-mode rebuild
-/// every frame would reset click/hover state.
+/// One command tile in the cross, tagged with its menu-entry index.
+fn cmd_tile(parent: &mut ChildSpawnerCommands, index: usize, label: &str) {
+    parent
+        .spawn((
+            Button,
+            MenuRow { index },
+            Node {
+                width: Val::Px(58.0),
+                height: Val::Px(48.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.5, 0.55, 0.7)),
+            BackgroundColor(Color::srgb(0.1, 0.12, 0.22)),
+            BorderRadius::all(Val::Px(5.0)),
+        ))
+        .with_children(|t| {
+            t.spawn((
+                Text::new(label.to_string()),
+                TextFont {
+                    font_size: 15.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.92, 0.94, 1.0)),
+            ));
+        });
+}
+
+/// Rebuild the command UI when the page changes. Root shows a Lufia-style cross
+/// of command tiles (Attack centre, Skill up, Item left, Defend right), centred
+/// over the party grid; Skill/Item pages show a compact list. Rebuilt only on a
+/// page change so button `Interaction` survives.
 fn rebuild_command_menu(
     mut commands: Commands,
     mut menu: ResMut<BattleMenu>,
@@ -940,85 +1430,123 @@ fn rebuild_command_menu(
     for e in &existing {
         commands.entity(e).despawn();
     }
-    let header = match menu.level {
-        MenuLevel::Root => "COMMAND",
-        MenuLevel::Skills => "SKILL",
-        MenuLevel::Items => "ITEM",
-    };
+    let level = menu.level;
     commands
         .spawn((
             CommandWindow,
             Node {
                 position_type: PositionType::Absolute,
-                right: Val::Px(24.0),
-                bottom: Val::Px(24.0),
-                width: Val::Px(300.0),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                padding: UiRect::all(Val::Px(10.0)),
-                border: UiRect::all(Val::Px(2.0)),
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                bottom: Val::Px(96.0),
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
                 ..default()
             },
-            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
-            BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
-            BorderRadius::all(Val::Px(6.0)),
         ))
         .with_children(|w| {
-            w.spawn((
-                Text::new(header),
-                TextFont {
-                    font_size: 15.0,
+            if level == MenuLevel::Root {
+                // Cross: Skill on top; Item / Attack / Defend across the middle.
+                w.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(6.0),
                     ..default()
-                },
-                TextColor(Color::srgb(0.95, 0.85, 0.5)),
-                Node {
-                    margin: UiRect::bottom(Val::Px(4.0)),
-                    ..default()
-                },
-            ));
-            for (i, entry) in menu_entries(menu.level).into_iter().enumerate() {
+                })
+                .with_children(|cross| {
+                    cross
+                        .spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            ..default()
+                        })
+                        .with_children(|r| cmd_tile(r, 3, "SKL"));
+                    cross
+                        .spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        })
+                        .with_children(|r| {
+                            cmd_tile(r, 2, "ITM");
+                            cmd_tile(r, 0, "ATK");
+                            cmd_tile(r, 1, "DEF");
+                        });
+                });
+            } else {
+                let header = if level == MenuLevel::Skills { "SKILL" } else { "ITEM" };
                 w.spawn((
-                    Button,
-                    MenuRow { index: i },
                     Node {
-                        width: Val::Percent(100.0),
-                        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                        width: Val::Px(230.0),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(2.0),
+                        padding: UiRect::all(Val::Px(10.0)),
+                        border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::NONE),
-                    BorderRadius::all(Val::Px(3.0)),
+                    BorderColor(Color::srgb(0.45, 0.55, 0.85)),
+                    BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
+                    BorderRadius::all(Val::Px(6.0)),
                 ))
-                .with_children(|r| {
-                    r.spawn((
-                        Text::new(entry.label),
+                .with_children(|list| {
+                    list.spawn((
+                        Text::new(header),
                         TextFont {
-                            font_size: 19.0,
+                            font_size: 15.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.9, 0.93, 1.0)),
+                        TextColor(Color::srgb(0.95, 0.85, 0.5)),
+                        Node {
+                            margin: UiRect::bottom(Val::Px(4.0)),
+                            ..default()
+                        },
                     ));
+                    for (i, entry) in menu_entries(level).into_iter().enumerate() {
+                        list.spawn((
+                            Button,
+                            MenuRow { index: i },
+                            Node {
+                                width: Val::Percent(100.0),
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::NONE),
+                            BorderRadius::all(Val::Px(3.0)),
+                        ))
+                        .with_children(|r| {
+                            r.spawn((
+                                Text::new(entry.label),
+                                TextFont {
+                                    font_size: 19.0,
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.9, 0.93, 1.0)),
+                            ));
+                        });
+                    }
                 });
             }
         });
 }
 
-/// Highlight the cursor row (and hover); blank the highlights when it isn't the
-/// player's turn.
+/// Highlight the cursor tile/row (and hover). Cross tiles keep a dark base so
+/// they read as buttons; list rows fall back to transparent.
 fn style_command_menu(
     menu: Res<BattleMenu>,
-    battle: Res<BattleData>,
     mut rows: Query<(&MenuRow, &Interaction, &mut BackgroundColor)>,
 ) {
+    let base = if menu.level == MenuLevel::Root {
+        Color::srgb(0.1, 0.12, 0.22)
+    } else {
+        Color::NONE
+    };
     for (row, interaction, mut bg) in &mut rows {
         let selected = row.index == menu.cursor;
-        *bg = BackgroundColor(if !battle.my_turn {
-            Color::NONE
-        } else if *interaction == Interaction::Pressed || selected {
-            Color::srgb(0.2, 0.28, 0.52)
+        *bg = BackgroundColor(if *interaction == Interaction::Pressed || selected {
+            Color::srgb(0.4, 0.34, 0.12) // Lufia-gold selection
         } else if *interaction == Interaction::Hovered {
-            Color::srgb(0.14, 0.17, 0.3)
+            Color::srgb(0.18, 0.2, 0.32)
         } else {
-            Color::NONE
+            base
         });
     }
 }
@@ -1048,10 +1576,17 @@ fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color)
         });
 }
 
-/// Immediate-mode enemy panel (top): each enemy as a block + name + HP bar.
+/// True if a combatant was hit within the last [`FLASH_TTL`] seconds.
+fn flashing(hitfx: &HitFx, id: &str) -> bool {
+    hitfx.items.iter().any(|h| h.target == id && h.age < FLASH_TTL)
+}
+
+/// Immediate-mode enemy panel (top): each enemy as a block + name + HP bar,
+/// flashing white when struck.
 fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
+    hitfx: Res<HitFx>,
     existing: Query<Entity, With<BattleScene>>,
 ) {
     for e in &existing {
@@ -1089,6 +1624,11 @@ fn render_enemy_panel(
             .with_children(|row| {
                 for c in battle.combatants.iter().filter(|c| !c.is_player) {
                     let frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                    let block = if flashing(&hitfx, &c.id) {
+                        Color::srgb(1.0, 0.95, 0.95)
+                    } else {
+                        Color::srgb(0.85, 0.28, 0.28)
+                    };
                     row.spawn(Node {
                         width: Val::Px(190.0),
                         flex_direction: FlexDirection::Column,
@@ -1103,7 +1643,7 @@ fn render_enemy_panel(
                                 height: Val::Px(76.0),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgb(0.85, 0.28, 0.28)),
+                            BackgroundColor(block),
                             BorderRadius::all(Val::Px(8.0)),
                         ));
                         e.spawn((
@@ -1121,75 +1661,274 @@ fn render_enemy_panel(
         });
 }
 
-/// Immediate-mode party status window (bottom-left): name, HP bar, ATB gauge.
+/// Immediate-mode party window (bottom-left): one row per hero with HP bar, ATB
+/// gauge, the active-hero highlight, a ready flag, and the queued-order icon.
+/// Distinct portrait colours per party slot.
+const HERO_COLORS: [Color; 4] = [
+    Color::srgb(0.45, 0.9, 0.55),
+    Color::srgb(0.5, 0.7, 1.0),
+    Color::srgb(0.9, 0.6, 0.95),
+    Color::srgb(0.95, 0.8, 0.45),
+];
+
+/// One Lufia-style party window (name + Lv, HP + ATB bars, portrait, order icon).
+fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &HitFx, id: &str, idx: usize) {
+    let Some(c) = battle.view(id) else { return };
+    let active = battle.active.as_deref() == Some(id);
+    let ready = battle.ready.contains(id);
+    let queued = battle.queued.get(id).copied();
+    let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
+    let gauge = c.gauge.clamp(0.0, 1.0) as f32;
+    let name = battle.hero_label(id);
+    let hurt = flashing(hitfx, id);
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(46.0),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(if active {
+                Color::srgb(0.95, 0.85, 0.4)
+            } else {
+                Color::srgb(0.4, 0.5, 0.8)
+            }),
+            BackgroundColor(if hurt {
+                Color::srgb(0.28, 0.1, 0.12)
+            } else if active {
+                Color::srgb(0.1, 0.14, 0.3)
+            } else {
+                Color::srgb(0.05, 0.07, 0.16)
+            }),
+            BorderRadius::all(Val::Px(6.0)),
+        ))
+        .with_children(|cell| {
+            // Left: name + Lv, HP, bars.
+            cell.spawn(Node {
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|col| {
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|line| {
+                    line.spawn((
+                        Text::new(name),
+                        TextFont { font_size: 18.0, ..default() },
+                        TextColor(if c.hp == 0 {
+                            Color::srgb(0.55, 0.55, 0.6)
+                        } else {
+                            Color::srgb(0.85, 0.92, 1.0)
+                        }),
+                    ));
+                    line.spawn((
+                        Text::new("Lv 1"),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(Color::srgb(0.95, 0.85, 0.4)),
+                    ));
+                });
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    ..default()
+                })
+                .with_children(|line| {
+                    line.spawn((
+                        Text::new(format!("Hp {}/{}", c.hp, c.max_hp)),
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(Color::srgb(0.6, 0.75, 0.95)),
+                    ));
+                    let (tag, tag_color) = match queued {
+                        Some(k) => (k.tag().to_string(), k.color()),
+                        None if ready => ("!".to_string(), Color::srgb(0.98, 0.8, 0.3)),
+                        None => (String::new(), Color::NONE),
+                    };
+                    line.spawn((
+                        Text::new(tag),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(tag_color),
+                    ));
+                });
+                meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
+                meter(col, gauge, 7.0, Color::srgb(0.4, 0.85, 0.5));
+            });
+            // Right: portrait tile.
+            cell.spawn((
+                Node {
+                    width: Val::Px(46.0),
+                    height: Val::Px(46.0),
+                    align_self: AlignSelf::Center,
+                    ..default()
+                },
+                BackgroundColor(if c.hp == 0 {
+                    Color::srgb(0.25, 0.25, 0.28)
+                } else {
+                    HERO_COLORS[idx % 4]
+                }),
+                BorderRadius::all(Val::Px(4.0)),
+            ));
+        });
+}
+
+/// Immediate-mode party grid: a 2×2 of Lufia-style windows across the bottom,
+/// with the command cross floating in the centre gap.
 fn render_party_window(
     mut commands: Commands,
     battle: Res<BattleData>,
+    hitfx: Res<HitFx>,
     existing: Query<Entity, With<PartyWindow>>,
 ) {
     for e in &existing {
         commands.entity(e).despawn();
     }
+    let ids = battle.your_ids.clone();
     commands
         .spawn((
             PartyWindow,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(24.0),
-                bottom: Val::Px(24.0),
-                width: Val::Px(380.0),
+                left: Val::Px(12.0),
+                right: Val::Px(12.0),
+                bottom: Val::Px(12.0),
+                height: Val::Px(288.0),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(10.0)),
-                border: UiRect::all(Val::Px(2.0)),
+                justify_content: JustifyContent::SpaceBetween,
+                row_gap: Val::Px(10.0),
                 ..default()
             },
-            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
-            BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
-            BorderRadius::all(Val::Px(6.0)),
         ))
-        .with_children(|p| {
-            p.spawn((
-                Text::new("PARTY"),
-                TextFont {
-                    font_size: 15.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.95, 0.85, 0.5)),
-            ));
-            for c in battle.combatants.iter().filter(|c| c.is_player) {
-                let mine = c.id == battle.your_combatant_id;
-                let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
-                let gauge = c.gauge.clamp(0.0, 1.0) as f32;
-                p.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(3.0),
+        .with_children(|grid| {
+            for row_start in [0usize, 2] {
+                grid.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::SpaceBetween,
+                    flex_grow: 1.0,
                     ..default()
                 })
-                .with_children(|r| {
-                    r.spawn((
-                        Text::new(format!(
-                            "{}{}   HP {}/{}",
-                            if mine { "> " } else { "  " },
-                            c.name,
-                            c.hp,
-                            c.max_hp
-                        )),
-                        TextFont {
-                            font_size: 15.0,
-                            ..default()
-                        },
-                        TextColor(if mine {
-                            Color::srgb(0.6, 0.95, 0.7)
-                        } else {
-                            Color::srgb(0.7, 0.8, 1.0)
-                        }),
-                    ));
-                    meter(r, hp_frac, 10.0, Color::srgb(0.4, 0.85, 0.5));
-                    meter(r, gauge, 6.0, Color::srgb(0.55, 0.7, 1.0));
+                .with_children(|row| {
+                    for i in row_start..row_start + 2 {
+                        match ids.get(i) {
+                            Some(id) => party_cell(row, &battle, &hitfx, id, i),
+                            None => {
+                                row.spawn(Node { width: Val::Percent(46.0), ..default() });
+                            }
+                        }
+                    }
                 });
             }
         });
+}
+
+/// Age floating hit numbers; drop the expired. Frozen in the static mockup so
+/// the seeded feedback stays on screen.
+fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
+    if battle_mockup_flag() {
+        return;
+    }
+    let dt = time.delta_secs();
+    for h in &mut hitfx.items {
+        h.age += dt;
+    }
+    hitfx.items.retain(|h| h.age < HIT_TTL);
+}
+
+/// Immediate-mode overlay: draw each floating number, rising and fading, anchored
+/// over the monster (top-centre) or the striking hero's slot (bottom-left).
+fn render_hit_fx(
+    mut commands: Commands,
+    hitfx: Res<HitFx>,
+    battle: Res<BattleData>,
+    windows: Query<&Window>,
+    existing: Query<Entity, With<HitFxRoot>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some(win) = windows.iter().next() else {
+        return;
+    };
+    let (w, h) = (win.width(), win.height());
+    commands
+        .spawn((
+            HitFxRoot,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                position_type: PositionType::Absolute,
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            for hit in &hitfx.items {
+                let (x, y0) = if Some(hit.target.as_str()) == battle.monster_combatant.as_deref() {
+                    (w * 0.5 - 16.0, h * 0.22)
+                } else {
+                    // Heroes sit in a 2×2 grid across the bottom; float the number
+                    // over that hero's quadrant.
+                    let idx = battle
+                        .your_ids
+                        .iter()
+                        .position(|id| id == &hit.target)
+                        .unwrap_or(0);
+                    let x = if idx % 2 == 0 { w * 0.27 } else { w * 0.73 };
+                    let y = if idx / 2 == 0 { h - 250.0 } else { h - 110.0 };
+                    (x, y)
+                };
+                let rise = hit.age * 46.0;
+                let alpha = (1.0 - hit.age / HIT_TTL).clamp(0.0, 1.0);
+                p.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(x),
+                        top: Val::Px(y0 - rise),
+                        ..default()
+                    },
+                    Text::new(hit.text.clone()),
+                    TextFont {
+                        font_size: 26.0,
+                        ..default()
+                    },
+                    TextColor(hit.color.with_alpha(alpha)),
+                ));
+            }
+        });
+}
+
+/// Turn a resolved effect into a floating number (skips zero/no-op effects).
+fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
+    let (text, color) = match e.kind.to_lowercase().as_str() {
+        "damage" => {
+            let n = e.amount.unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            (format!("-{n}"), Color::srgb(1.0, 0.5, 0.4))
+        }
+        "heal" => {
+            let n = e.amount.unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            (format!("+{n}"), Color::srgb(0.5, 1.0, 0.6))
+        }
+        "ko" => ("KO!".to_string(), Color::srgb(1.0, 0.35, 0.35)),
+        _ => return,
+    };
+    hitfx.items.push(Hit {
+        target: e.target.clone(),
+        text,
+        color,
+        age: 0.0,
+    });
 }
 
 // ----------------------------------------------------------------- ended ---

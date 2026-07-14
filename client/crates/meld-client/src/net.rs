@@ -18,7 +18,7 @@ use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use meld_proto::common::Combatant;
 use meld_proto::realtime::{battle as wb, movement as wm, run as wr, session as ws, Message as _};
 use meld_proto::RawEnvelope;
-use serde_json::json;
+use serde_json::{json, Value};
 
 const GUEST_PASSWORD: &str = "meld-guest-password";
 
@@ -27,11 +27,12 @@ pub enum ClientCmd {
     Connect { username: String },
     EnterMaze,
     Move { dx: f64, dy: f64 },
-    /// Battle commands. Attack/Skill strike an enemy; Defend/Item are self-cast.
-    Attack { battle_id: String, target: String },
-    Defend { battle_id: String },
-    Skill { battle_id: String, target: String, skill_kind: String },
-    Item { battle_id: String, item_id: String },
+    /// Battle commands. `actor` is which of the player's heroes acts. Attack/Skill
+    /// strike an enemy; Defend/Item are self-cast.
+    Attack { battle_id: String, actor: String, target: String },
+    Defend { battle_id: String, actor: String },
+    Skill { battle_id: String, actor: String, target: String, skill_kind: String },
+    Item { battle_id: String, actor: String, item_id: String },
     /// Begin a portal extraction channel at the current position.
     Extract,
 }
@@ -82,6 +83,33 @@ pub struct EntityView {
     pub kind: EntityKind,
 }
 
+/// One resolved effect for hit feedback (a damage or heal on a combatant).
+pub struct HitEffect {
+    pub target: String,
+    pub kind: String,
+    pub amount: Option<i32>,
+    pub hp_after: i32,
+}
+
+/// A gear row for the inventory screen.
+pub struct GearLine {
+    pub name: String,
+    pub equipped: bool,
+    pub max_durability: i32,
+    pub base_max_durability: i32,
+    pub atk_bonus: i32,
+}
+
+/// A meld-skill row for the level-up screen.
+pub struct SkillLine {
+    pub kind: String,
+    pub level: i32,
+    pub xp: i64,
+}
+
+type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>);
+type ProgPayload = (Vec<SkillLine>, Vec<String>);
+
 /// Events emitted from the network layer up to Bevy.
 pub enum ServerMsg {
     Connected { player_id: String },
@@ -91,10 +119,17 @@ pub enum ServerMsg {
     BattleStarted {
         battle_id: String,
         your_combatant_id: String,
+        your_combatant_ids: Vec<String>,
         combatants: Vec<CombatantView>,
         monster_combatant: Option<String>,
     },
     TurnReady { combatant_id: String },
+    /// An action resolved — drives hit feedback (floating numbers + flash).
+    ActionResolved {
+        actor: String,
+        action: String,
+        effects: Vec<HitEffect>,
+    },
     /// A second party merged into the battle (raid merge) — add their combatants.
     CombatantsJoined { combatants: Vec<CombatantView> },
     Gauge { updates: Vec<(String, f64, i32)> },
@@ -105,6 +140,17 @@ pub enum ServerMsg {
     /// This player's run ended (extracted / died / abandoned), with the count of
     /// items banked on extraction.
     RunEnded { result: String, banked: usize },
+    /// Vault + gear, for the overworld inventory screen.
+    InventoryData {
+        chits: i64,
+        materials: Vec<(String, i32)>,
+        gear: Vec<GearLine>,
+    },
+    /// Meld skills + class unlocks, for the overworld level-up screen.
+    ProgressData {
+        skills: Vec<SkillLine>,
+        classes: Vec<String>,
+    },
     Disconnected,
 }
 
@@ -117,8 +163,8 @@ enum Phase {
     Dead,
 }
 
-/// The (ticket, player_id) login result, or an error string.
-type LoginResult = Result<(String, String), String>;
+/// The (ticket, player_id, session_token) login result, or an error string.
+type LoginResult = Result<(String, String, String), String>;
 
 struct Inner {
     base: String,
@@ -126,8 +172,12 @@ struct Inner {
     ws_tx: Option<WsSender>,
     ws_rx: Option<WsReceiver>,
     http_rx: Option<mpsc::Receiver<LoginResult>>,
+    inv_rx: Option<mpsc::Receiver<InvPayload>>,
+    prog_rx: Option<mpsc::Receiver<ProgPayload>>,
     ticket: String,
     player_id: String,
+    /// Bearer token for authenticated HTTP (vault/gear/players).
+    session_token: String,
     seq: u32,
     input_seq: u32,
     cmds: VecDeque<ClientCmd>,
@@ -146,8 +196,11 @@ pub fn start(base: String) -> Net {
         ws_tx: None,
         ws_rx: None,
         http_rx: None,
+        inv_rx: None,
+        prog_rx: None,
         ticket: String::new(),
         player_id: String::new(),
+        session_token: String::new(),
         seq: 1,
         input_seq: 0,
         cmds: VecDeque::new(),
@@ -159,6 +212,16 @@ impl Net {
     /// Queue a command (processed on the next `poll`).
     pub fn send(&self, cmd: ClientCmd) {
         self.0.borrow_mut().cmds.push_back(cmd);
+    }
+
+    /// Kick off an authenticated GET of vault + gear (→ `InventoryData`).
+    pub fn fetch_inventory(&self) {
+        self.0.borrow_mut().fetch_inventory();
+    }
+
+    /// Kick off an authenticated GET of the player profile (→ `ProgressData`).
+    pub fn fetch_progress(&self) {
+        self.0.borrow_mut().fetch_progress();
     }
 
     /// Advance the state machine: fire queued commands, pump HTTP + WS.
@@ -192,8 +255,9 @@ impl Inner {
         if self.phase == Phase::Http {
             if let Some(rx) = &self.http_rx {
                 match rx.try_recv() {
-                    Ok(Ok((ticket, player_id))) => {
+                    Ok(Ok((ticket, player_id, session_token))) => {
                         self.http_rx = None;
+                        self.session_token = session_token;
                         self.open_socket(ticket, player_id);
                     }
                     Ok(Err(e)) => {
@@ -213,6 +277,24 @@ impl Inner {
             }
         }
 
+        // 2b. Drain any HTTP data fetches (inventory / progress screens).
+        if let Some(rx) = &self.inv_rx {
+            if let Ok((chits, materials, gear)) = rx.try_recv() {
+                self.inv_rx = None;
+                self.out.push_back(ServerMsg::InventoryData {
+                    chits,
+                    materials,
+                    gear,
+                });
+            }
+        }
+        if let Some(rx) = &self.prog_rx {
+            if let Ok((skills, classes)) = rx.try_recv() {
+                self.prog_rx = None;
+                self.out.push_back(ServerMsg::ProgressData { skills, classes });
+            }
+        }
+
         // 3. Drain socket events.
         let mut events = Vec::new();
         if let Some(rx) = self.ws_rx.as_mut() {
@@ -223,6 +305,101 @@ impl Inner {
         for ev in events {
             self.on_ws_event(ev);
         }
+    }
+
+    /// GET `/v1/vault` then `/v1/vault/gear` (Bearer auth); deliver combined.
+    fn fetch_inventory(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let gear_url = format!("{base}/v1/vault/gear");
+        let mut req = ehttp::Request::get(format!("{base}/v1/vault"));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |vault_res| {
+            let mut chits = 0i64;
+            let mut materials = Vec::new();
+            if let Ok(resp) = &vault_res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    chits = v["chits"].as_i64().unwrap_or(0);
+                    if let Some(arr) = v["materials"].as_array() {
+                        materials = arr
+                            .iter()
+                            .map(|m| {
+                                (
+                                    m["item_kind"].as_str().unwrap_or("?").to_string(),
+                                    m["quantity"].as_i64().unwrap_or(0) as i32,
+                                )
+                            })
+                            .collect();
+                    }
+                }
+            }
+            let mut greq = ehttp::Request::get(&gear_url);
+            greq.headers.insert("Authorization", format!("Bearer {token}"));
+            ehttp::fetch(greq, move |gear_res| {
+                let mut gear = Vec::new();
+                if let Ok(resp) = &gear_res {
+                    if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
+                    {
+                        if let Some(arr) = v["data"].as_array() {
+                            gear = arr
+                                .iter()
+                                .map(|g| GearLine {
+                                    name: g["name"].as_str().unwrap_or("?").to_string(),
+                                    equipped: g["equipped"].as_bool().unwrap_or(false),
+                                    max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
+                                    base_max_durability: g["base_max_durability"].as_i64().unwrap_or(0)
+                                        as i32,
+                                    atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
+                                })
+                                .collect();
+                        }
+                    }
+                }
+                let _ = tx.send((chits, materials, gear));
+            });
+        });
+    }
+
+    /// GET `/v1/players/me` (Bearer auth) for meld skills + class unlocks.
+    fn fetch_progress(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.prog_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/players/me", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut skills = Vec::new();
+            let mut classes = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    if let Some(arr) = v["meld_skills"].as_array() {
+                        skills = arr
+                            .iter()
+                            .map(|s| SkillLine {
+                                kind: s["skill_kind"].as_str().unwrap_or("?").to_string(),
+                                level: s["level"].as_i64().unwrap_or(1) as i32,
+                                xp: s["xp"].as_i64().unwrap_or(0),
+                            })
+                            .collect();
+                    }
+                    if let Some(arr) = v["class_unlocks"].as_array() {
+                        classes = arr
+                            .iter()
+                            .filter_map(|c| c.as_str().map(String::from))
+                            .collect();
+                    }
+                }
+            }
+            let _ = tx.send((skills, classes));
+        });
     }
 
     fn open_socket(&mut self, ticket: String, player_id: String) {
@@ -283,22 +460,28 @@ impl Inner {
             }
             // v4 (random) not v7 for action_id — v7 needs a system clock, which
             // panics on wasm. Uniqueness is all the server needs here.
-            ClientCmd::Attack { battle_id, target } => self.send_env(
+            ClientCmd::Attack {
+                battle_id,
+                actor,
+                target,
+            } => self.send_env(
                 wb::SubmitAction::TYPE,
                 json!({
                     "battle_id": battle_id,
                     "action_id": uuid::Uuid::new_v4().to_string(),
+                    "actor_combatant_id": actor,
                     "action": "attack",
                     "skill_kind": null,
                     "item_id": null,
                     "target_ids": [target]
                 }),
             ),
-            ClientCmd::Defend { battle_id } => self.send_env(
+            ClientCmd::Defend { battle_id, actor } => self.send_env(
                 wb::SubmitAction::TYPE,
                 json!({
                     "battle_id": battle_id,
                     "action_id": uuid::Uuid::new_v4().to_string(),
+                    "actor_combatant_id": actor,
                     "action": "defend",
                     "skill_kind": null,
                     "item_id": null,
@@ -307,6 +490,7 @@ impl Inner {
             ),
             ClientCmd::Skill {
                 battle_id,
+                actor,
                 target,
                 skill_kind,
             } => self.send_env(
@@ -314,17 +498,23 @@ impl Inner {
                 json!({
                     "battle_id": battle_id,
                     "action_id": uuid::Uuid::new_v4().to_string(),
+                    "actor_combatant_id": actor,
                     "action": "skill",
                     "skill_kind": skill_kind,
                     "item_id": null,
                     "target_ids": [target]
                 }),
             ),
-            ClientCmd::Item { battle_id, item_id } => self.send_env(
+            ClientCmd::Item {
+                battle_id,
+                actor,
+                item_id,
+            } => self.send_env(
                 wb::SubmitAction::TYPE,
                 json!({
                     "battle_id": battle_id,
                     "action_id": uuid::Uuid::new_v4().to_string(),
+                    "actor_combatant_id": actor,
                     "action": "item",
                     "skill_kind": null,
                     "item_id": item_id,
@@ -393,11 +583,46 @@ impl Inner {
                         b.allies.iter().map(CombatantView::from_wire).collect();
                     combatants.extend(b.enemies.iter().map(CombatantView::from_wire));
                     let monster_combatant = b.enemies.first().map(|c| c.combatant_id.clone());
+                    let your_combatant_ids = if b.your_combatant_ids.is_empty() {
+                        vec![b.your_combatant_id.clone()]
+                    } else {
+                        b.your_combatant_ids.clone()
+                    };
                     self.out.push_back(ServerMsg::BattleStarted {
                         battle_id: b.battle_id,
                         your_combatant_id: b.your_combatant_id,
+                        your_combatant_ids,
                         combatants,
                         monster_combatant,
+                    });
+                }
+            }
+            "battle.action_resolved" => {
+                if let Ok(r) = serde_json::from_value::<wb::ActionResolved>(raw.payload) {
+                    let action = serde_json::to_value(r.action)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                        .unwrap_or_default();
+                    let effects = r
+                        .effects
+                        .into_iter()
+                        .map(|e| {
+                            let kind = serde_json::to_value(e.kind)
+                                .ok()
+                                .and_then(|v| v.as_str().map(String::from))
+                                .unwrap_or_default();
+                            HitEffect {
+                                target: e.target_id,
+                                kind,
+                                amount: e.amount,
+                                hp_after: e.hp_after,
+                            }
+                        })
+                        .collect();
+                    self.out.push_back(ServerMsg::ActionResolved {
+                        actor: r.actor_id,
+                        action,
+                        effects,
                     });
                 }
             }
@@ -484,6 +709,7 @@ fn spawn_login(base: &str, username: &str) -> mpsc::Receiver<LoginResult> {
                                 .as_str()
                                 .unwrap_or_default()
                                 .to_string(),
+                            v["session_token"].as_str().unwrap_or_default().to_string(),
                         )),
                         Err(e) => Err(format!("login parse: {e}")),
                     },

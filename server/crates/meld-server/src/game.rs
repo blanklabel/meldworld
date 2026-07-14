@@ -111,8 +111,9 @@ struct ActiveInstance {
     monster_combatant_id: String,
     /// combatant_id -> player_id (players only).
     combatant_player: HashMap<String, String>,
-    /// player_id -> combatant_id.
-    player_combatant: HashMap<String, String>,
+    /// player_id -> the combatant ids they control (a solo player fields a party
+    /// of four; in co-op each player controls one).
+    player_combatants: HashMap<String, Vec<String>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
     /// Party ids currently merged into the active battle (raid merge).
@@ -237,8 +238,10 @@ impl GameState {
         };
         inst.arena.avatars.retain(|a| a.player_id != player_id);
         inst.run.runs.retain(|r| r.player_id != player_id);
-        if let Some(cid) = inst.player_combatant.remove(player_id) {
-            inst.combatant_player.remove(&cid);
+        if let Some(cids) = inst.player_combatants.remove(player_id) {
+            for cid in cids {
+                inst.combatant_player.remove(&cid);
+            }
         }
         inst.extraction.remove(player_id);
         if inst.run.runs.is_empty() {
@@ -336,7 +339,7 @@ impl GameState {
                 battle_id: String::new(),
                 monster_combatant_id: String::new(),
                 combatant_player: HashMap::new(),
-                player_combatant: HashMap::new(),
+                player_combatants: HashMap::new(),
                 extraction: HashMap::new(),
                 battle_parties: std::collections::HashSet::new(),
             });
@@ -512,10 +515,10 @@ impl GameState {
         let battle_id = Uuid::now_v7().to_string();
         let monster_combatant_id = Uuid::now_v7().to_string();
 
-        // Assign a combatant id per member of the *touching* party only.
+        // Assign combatant ids for the *touching* party only.
         let mut party: Vec<meld_run::PartyMember> = Vec::new();
         inst.combatant_player.clear();
-        inst.player_combatant.clear();
+        inst.player_combatants.clear();
         let party_players: Vec<String> = inst
             .run
             .runs
@@ -523,14 +526,21 @@ impl GameState {
             .filter(|r| r.party_id == party_id)
             .map(|r| r.player_id.clone())
             .collect();
+        // Every player fields their own party of up to `party_size_per_player`
+        // heroes (GDD: per-player party). Up to PARTY_MAX players share the
+        // instance, so a full co-op battle is (players × party size) combatants.
+        let heroes_per_player = balance.battle.party_size_per_player.max(1);
         for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
-            let cid = Uuid::now_v7().to_string();
-            inst.combatant_player
-                .insert(cid.clone(), r.player_id.clone());
-            inst.player_combatant
-                .insert(r.player_id.clone(), cid.clone());
             let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
-            party.push((r.player_id.clone(), cid, r.character_class, bonus));
+            let mut cids = Vec::new();
+            for _ in 0..heroes_per_player {
+                let cid = Uuid::now_v7().to_string();
+                inst.combatant_player
+                    .insert(cid.clone(), r.player_id.clone());
+                party.push((r.player_id.clone(), cid.clone(), r.character_class, bonus));
+                cids.push(cid);
+            }
+            inst.player_combatants.insert(r.player_id.clone(), cids);
         }
 
         let battle = build_battle(
@@ -565,7 +575,7 @@ impl GameState {
 
         let mut out = Vec::new();
         for pid in &party_players {
-            let your = inst.player_combatant.get(pid).cloned().unwrap_or_default();
+            let yours = inst.player_combatants.get(pid).cloned().unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wb::Started {
@@ -573,7 +583,8 @@ impl GameState {
                     encounter_class,
                     allies: allies.clone(),
                     enemies: enemies.clone(),
-                    your_combatant_id: your,
+                    your_combatant_id: yours.first().cloned().unwrap_or_default(),
+                    your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
                 },
             ));
@@ -607,7 +618,8 @@ impl GameState {
             party.push((r.player_id.clone(), cid.clone(), r.character_class, bonus));
             joiners.push(r.player_id.clone());
             inst.combatant_player.insert(cid.clone(), r.player_id.clone());
-            inst.player_combatant.insert(r.player_id.clone(), cid);
+            inst.player_combatants
+                .insert(r.player_id.clone(), vec![cid]);
         }
         if party.is_empty() {
             return Vec::new();
@@ -616,7 +628,7 @@ impl GameState {
         if inst.battle.as_ref().unwrap().player_count() + party.len() > cap {
             for cid_pid in &party {
                 inst.combatant_player.remove(&cid_pid.1);
-                inst.player_combatant.remove(&cid_pid.0);
+                inst.player_combatants.remove(&cid_pid.0);
             }
             return Vec::new();
         }
@@ -649,7 +661,7 @@ impl GameState {
         let mut out = Vec::new();
         // battle.started (full state) to the joiners.
         for pid in &joiners {
-            let your = inst.player_combatant.get(pid).cloned().unwrap_or_default();
+            let yours = inst.player_combatants.get(pid).cloned().unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wb::Started {
@@ -657,7 +669,8 @@ impl GameState {
                     encounter_class,
                     allies: allies.clone(),
                     enemies: enemies.clone(),
-                    your_combatant_id: your,
+                    your_combatant_id: yours.first().cloned().unwrap_or_default(),
+                    your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
                 },
             ));
@@ -711,13 +724,30 @@ impl GameState {
                 Some(raw.seq),
             )];
         }
-        let Some(actor_cid) = inst.player_combatant.get(player_id).cloned() else {
-            return vec![error(
-                player_id,
-                ErrorCode::NotFound,
-                "Not a combatant.",
-                Some(raw.seq),
-            )];
+        let owned = inst.player_combatants.get(player_id).cloned().unwrap_or_default();
+        // The actor must be one of the sender's own combatants; default to their
+        // first hero when the client doesn't name one (back-compat).
+        let actor_cid = match &submit.actor_combatant_id {
+            Some(cid) if owned.contains(cid) => cid.clone(),
+            Some(_) => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "That combatant is not yours.",
+                    Some(raw.seq),
+                )]
+            }
+            None => match owned.first() {
+                Some(cid) => cid.clone(),
+                None => {
+                    return vec![error(
+                        player_id,
+                        ErrorCode::NotFound,
+                        "Not a combatant.",
+                        Some(raw.seq),
+                    )]
+                }
+            },
         };
 
         let battle = inst.battle.as_mut().unwrap();
@@ -1245,7 +1275,7 @@ impl GameState {
         // Battle over: reset merge + combatant bookkeeping.
         inst.battle_parties.clear();
         inst.combatant_player.clear();
-        inst.player_combatant.clear();
+        inst.player_combatants.clear();
         self.pending_deaths.append(&mut dead);
         out
     }

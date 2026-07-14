@@ -44,6 +44,7 @@ flee_floor = 0.05
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
+party_size_per_player = 4        # each player controls up to this many heroes (GDD: per-player party) [TUNABLE]
 skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]
 skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]
 item_heal_fraction = 0.4         # "Salve" item: heals this fraction of max HP [TUNABLE]
