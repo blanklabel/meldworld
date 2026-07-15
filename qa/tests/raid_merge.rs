@@ -18,7 +18,9 @@ use tokio_tungstenite::tungstenite::Message;
 async fn start_server() -> String {
     let db_url = std::env::var("MELD_DATABASE_URL")
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
-    let balance = Arc::new(meld_balance::Balance::load_default().unwrap());
+    let mut balance = meld_balance::Balance::load_default().unwrap();
+    balance.battle.party_size_per_player = 1; // pin one hero so test timing stays stable
+    let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,

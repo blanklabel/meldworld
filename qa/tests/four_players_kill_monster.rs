@@ -22,6 +22,8 @@ const PARTY: usize = 4;
 async fn start_server() -> String {
     let db_url = std::env::var("MELD_DATABASE_URL")
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
+    // Default party size (4): this exercises 4 players each fielding a full party
+    // (4 × 4 = 16 combatants). Each bot commands its own first hero.
     let balance = Arc::new(meld_balance::Balance::load_default().unwrap());
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),

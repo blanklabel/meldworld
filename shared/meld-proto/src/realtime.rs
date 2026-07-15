@@ -160,7 +160,12 @@ pub mod battle {
         pub encounter_class: EncounterClass,
         pub allies: Vec<Combatant>,
         pub enemies: Vec<Combatant>,
+        /// The first combatant this player controls (back-compat single-hero id).
         pub your_combatant_id: Id,
+        /// Every combatant this player controls (a solo player fields a party of
+        /// four; in co-op each player controls their one hero).
+        #[serde(default)]
+        pub your_combatant_ids: Vec<Id>,
         pub triggered_by: Option<Id>,
     }
     impl Message for Started {
@@ -213,6 +218,10 @@ pub mod battle {
         pub battle_id: Id,
         pub action_id: Id,
         pub action: BattleActionKind,
+        /// Which of the sender's combatants is acting. Optional for back-compat
+        /// (absent → the player's first/only hero).
+        #[serde(default)]
+        pub actor_combatant_id: Option<Id>,
         #[serde(default)]
         pub skill_kind: Option<String>,
         #[serde(default)]
