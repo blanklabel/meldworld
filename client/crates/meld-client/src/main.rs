@@ -153,10 +153,18 @@ fn main() {
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
         // Overworld
-        .add_systems(OnEnter(Screen::Overworld), overworld_ui)
+        .add_systems(
+            OnEnter(Screen::Overworld),
+            (overworld_ui, spawn_overworld_scenery),
+        )
         .add_systems(
             OnExit(Screen::Overworld),
-            (despawn::<OverworldRoot>, despawn::<OverlayRoot>),
+            (
+                despawn::<OverworldRoot>,
+                despawn::<OverlayRoot>,
+                despawn::<WorldScenery>,
+                despawn::<WorldEntity>,
+            ),
         )
         .add_systems(
             Update,
@@ -164,6 +172,8 @@ fn main() {
                 overlay_input,
                 overworld_input,
                 sync_overworld_sprites,
+                follow_camera,
+                update_overworld_hud,
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -227,10 +237,32 @@ struct Session {
     status: String,
 }
 
+/// One overworld entity as the client knows it (from the latest snapshot).
+#[derive(Clone)]
+struct OwEntity {
+    x: f32,
+    y: f32,
+    kind: EntityKind,
+    /// Creature content id (monsters only) — drives colour + label.
+    name: Option<String>,
+}
+
+impl OwEntity {
+    fn player(x: f32, y: f32) -> Self {
+        Self { x, y, kind: EntityKind::Player, name: None }
+    }
+    fn monster(x: f32, y: f32, name: &str) -> Self {
+        Self { x, y, kind: EntityKind::Monster, name: Some(name.to_string()) }
+    }
+    fn portal(x: f32, y: f32) -> Self {
+        Self { x, y, kind: EntityKind::Portal, name: None }
+    }
+}
+
 #[derive(Resource, Default)]
 struct Overworld {
-    /// entity id -> (x, y, kind)
-    entities: HashMap<String, (f32, f32, EntityKind)>,
+    /// entity id -> its render state
+    entities: HashMap<String, OwEntity>,
 }
 
 #[derive(Resource, Default)]
@@ -464,6 +496,14 @@ struct StatusText;
 #[derive(Component)]
 struct WorldEntity(String);
 
+/// Static overworld scenery (biome ground bands + reference grid).
+#[derive(Component)]
+struct WorldScenery;
+
+/// The overworld HUD line that reports distance + current biome.
+#[derive(Component)]
+struct HudText;
+
 // ---------------------------------------------------------------- setup ----
 
 fn setup(mut commands: Commands) {
@@ -575,9 +615,9 @@ fn mock_overlay_setup(
         return;
     }
     // A minimal overworld behind the overlay.
-    world.entities.insert("me".into(), (0.0, 0.0, EntityKind::Player));
-    world.entities.insert("grendel".into(), (10.0, 0.0, EntityKind::Monster));
-    world.entities.insert("portal".into(), (14.0, 0.0, EntityKind::Portal));
+    world.entities.insert("me".into(), OwEntity::player(0.0, 0.0));
+    world.entities.insert("grendel".into(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker"));
+    world.entities.insert("portal".into(), OwEntity::portal(14.0, 0.0));
     next.set(Screen::Overworld);
 }
 
@@ -623,9 +663,15 @@ fn pump_net(
             ServerMsg::Snapshot { entities } => {
                 world.entities.clear();
                 for e in entities {
-                    world
-                        .entities
-                        .insert(e.id, (e.x as f32, e.y as f32, e.kind));
+                    world.entities.insert(
+                        e.id,
+                        OwEntity {
+                            x: e.x as f32,
+                            y: e.y as f32,
+                            kind: e.kind,
+                            name: e.monster_kind,
+                        },
+                    );
                 }
             }
             ServerMsg::BattleStarted {
@@ -757,9 +803,9 @@ fn demo_driver(
         }
         let x = t / 3.0 * 9.0;
         world.entities.clear();
-        world.entities.insert("me".to_string(), (x, 0.0, EntityKind::Player));
-        world.entities.insert("grendel".to_string(), (10.0, 0.0, EntityKind::Monster));
-        world.entities.insert("portal".to_string(), (14.0, 0.0, EntityKind::Portal));
+        world.entities.insert("me".to_string(), OwEntity::player(x, 0.0));
+        world.entities.insert("grendel".to_string(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker"));
+        world.entities.insert("portal".to_string(), OwEntity::portal(14.0, 0.0));
         return;
     }
 
@@ -815,7 +861,7 @@ fn join_ui(mut commands: Commands) {
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
-                Text::new("Press ENTER to enter the maze and fight Grendel"),
+                Text::new("Press ENTER to enter the maze and march into the wilds"),
                 TextFont {
                     font_size: 20.0,
                     ..default()
@@ -870,16 +916,128 @@ fn overworld_ui(mut commands: Commands) {
         ))
         .with_children(|p| {
             p.spawn((
+                HudText,
+                Text::new("distance 0  -  Forest"),
+                TextFont {
+                    font_size: 20.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.92, 1.0)),
+            ));
+            p.spawn((
                 Text::new(
-                    "WASD/arrows: move  -  E: extract at portal  -  I: inventory  -  L: level up",
+                    "WASD/arrows: move east through the areas  -  E: extract at a portal  -  I: inventory  -  L: level up",
                 ),
                 TextFont {
-                    font_size: 16.0,
+                    font_size: 15.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
         });
+}
+
+/// Display name of the biome band at a floored distance (client-side mirror of
+/// the server's structural biome table — display only; the server stays
+/// authoritative for what actually spawns).
+fn biome_display(d: i64) -> &'static str {
+    match d {
+        0..=99 => "Forest",
+        100..=299 => "Desert",
+        300..=499 => "Ashfall",
+        500..=999 => "Tundra",
+        _ => "Mire",
+    }
+}
+
+/// Ground tint for a biome band (display-only scenery).
+fn biome_ground_color(biome: &str) -> Color {
+    match biome {
+        "forest" => Color::srgb(0.09, 0.19, 0.12),
+        "desert" => Color::srgb(0.26, 0.22, 0.11),
+        "ashfall" => Color::srgb(0.20, 0.10, 0.10),
+        "tundra" => Color::srgb(0.12, 0.19, 0.25),
+        "mire" => Color::srgb(0.11, 0.17, 0.13),
+        _ => Color::srgb(0.10, 0.11, 0.16), // hub pad
+    }
+}
+
+/// Spawn biome ground bands and a faint reference grid the player scrolls across.
+/// Bands are laid at the canon distance boundaries (distance ≈ x on the corridor);
+/// this is display-only scenery, generously sized to cover any generated run.
+fn spawn_overworld_scenery(mut commands: Commands) {
+    let bands: [(f32, f32, &str); 6] = [
+        (-20.0, 0.0, "hub"),
+        (0.0, 100.0, "forest"),
+        (100.0, 300.0, "desert"),
+        (300.0, 500.0, "ashfall"),
+        (500.0, 1000.0, "tundra"),
+        (1000.0, 1400.0, "mire"),
+    ];
+    let band_h = 44.0 * TILE_PX;
+    for (start, end, biome) in bands {
+        let w = (end - start) * TILE_PX;
+        let cx = (start + end) * 0.5 * TILE_PX;
+        commands.spawn((
+            WorldScenery,
+            Sprite::from_color(biome_ground_color(biome), Vec2::new(w, band_h)),
+            Transform::from_xyz(cx, 0.0, -3.0),
+        ));
+    }
+    // Faint grid — a motion reference while scrolling through otherwise-flat bands.
+    let grid = Color::srgba(1.0, 1.0, 1.0, 0.045);
+    let (x0, x1) = (-20.0_f32, 600.0_f32);
+    let y_span = band_h;
+    let x_span = (x1 - x0) * TILE_PX;
+    let mut x = x0;
+    while x <= x1 {
+        commands.spawn((
+            WorldScenery,
+            Sprite::from_color(grid, Vec2::new(1.5, y_span)),
+            Transform::from_xyz(x * TILE_PX, 0.0, -2.0),
+        ));
+        x += 6.0;
+    }
+    let mut y = -18.0_f32;
+    while y <= 18.0 {
+        commands.spawn((
+            WorldScenery,
+            Sprite::from_color(grid, Vec2::new(x_span, 1.5)),
+            Transform::from_xyz((x0 + x1) * 0.5 * TILE_PX, y * TILE_PX, -2.0),
+        ));
+        y += 6.0;
+    }
+}
+
+/// Keep the camera centred on the player so walking east scrolls the world into
+/// view (rather than the avatar sliding off into the void).
+fn follow_camera(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut cam: Query<&mut Transform, With<Camera2d>>,
+) {
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    if let Ok(mut tf) = cam.single_mut() {
+        tf.translation.x = me.x * TILE_PX;
+        tf.translation.y = -me.y * TILE_PX;
+    }
+}
+
+/// Update the distance/biome HUD from the player's authoritative position.
+fn update_overworld_hud(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut q: Query<&mut Text, With<HudText>>,
+) {
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    if let Ok(mut t) = q.single_mut() {
+        **t = format!("distance {d}  -  {}", biome_display(d));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -899,12 +1057,21 @@ fn overworld_input(
         return;
     }
 
-    let me = world.entities.get(&session.player_id).map(|&(x, y, _)| (x, y));
-    let portal = world
-        .entities
-        .values()
-        .find(|&&(_, _, k)| k == EntityKind::Portal)
-        .map(|&(x, y, _)| (x, y));
+    let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+    // Nearest portal to the player (there is one per area now).
+    let portal = match me {
+        Some((mx, my)) => world
+            .entities
+            .values()
+            .filter(|e| e.kind == EntityKind::Portal)
+            .min_by(|a, b| {
+                let da = (a.x - mx).powi(2) + (a.y - my).powi(2);
+                let db = (b.x - mx).powi(2) + (b.y - my).powi(2);
+                da.total_cmp(&db)
+            })
+            .map(|e| (e.x, e.y)),
+        None => None,
+    };
     let near_portal = match (me, portal) {
         (Some((mx, my)), Some((px, py))) => ((mx - px).powi(2) + (my - py).powi(2)).sqrt() <= 2.0,
         _ => false,
@@ -1106,35 +1273,69 @@ fn sync_overworld_sprites(
 ) {
     let mut seen = HashMap::new();
     for (entity, we, mut tf, mut sprite) in &mut q {
-        if let Some(&(x, y, kind)) = world.entities.get(&we.0) {
-            tf.translation.x = x * TILE_PX;
-            tf.translation.y = -y * TILE_PX; // server Y south → screen Y north
-            sprite.color = entity_color(&we.0, kind, &session.player_id);
+        if let Some(e) = world.entities.get(&we.0) {
+            tf.translation.x = e.x * TILE_PX;
+            tf.translation.y = -e.y * TILE_PX; // server Y south → screen Y north
+            sprite.color = entity_color(&we.0, e, &session.player_id);
             seen.insert(we.0.clone(), true);
         } else {
             commands.entity(entity).despawn();
         }
     }
-    for (id, &(x, y, kind)) in &world.entities {
+    for (id, e) in &world.entities {
         if seen.contains_key(id) {
             continue;
         }
-        let size = match kind {
+        let size = match e.kind {
             EntityKind::Player => 18.0,
-            EntityKind::Monster => 30.0,
+            EntityKind::Monster => 28.0,
             EntityKind::Portal => 26.0,
         };
-        commands.spawn((
+        let mut ent = commands.spawn((
             WorldEntity(id.clone()),
-            Sprite::from_color(entity_color(id, kind, &session.player_id), Vec2::splat(size)),
-            Transform::from_xyz(x * TILE_PX, -y * TILE_PX, 1.0),
+            Sprite::from_color(entity_color(id, e, &session.player_id), Vec2::splat(size)),
+            Transform::from_xyz(e.x * TILE_PX, -e.y * TILE_PX, 1.0),
         ));
+        // A small floating label above creatures and portals so a march through
+        // the areas reads clearly (which creature, where the exit is).
+        let label = match e.kind {
+            EntityKind::Monster => e.name.as_deref().map(nice_name),
+            EntityKind::Portal => Some("portal".to_string()),
+            EntityKind::Player => None,
+        };
+        if let Some(text) = label {
+            ent.with_children(|p| {
+                p.spawn((
+                    Text2d::new(text),
+                    TextFont { font_size: 11.0, ..default() },
+                    TextColor(Color::srgb(0.85, 0.9, 1.0)),
+                    Transform::from_xyz(0.0, size * 0.5 + 9.0, 2.0),
+                ));
+            });
+        }
     }
 }
 
-fn entity_color(id: &str, kind: EntityKind, me: &str) -> Color {
-    match kind {
-        EntityKind::Monster => Color::srgb(0.9, 0.3, 0.3),
+/// Turn a creature content id into a display name (`dune_wyrm` → `dune wyrm`).
+fn nice_name(kind: &str) -> String {
+    kind.replace('_', " ")
+}
+
+/// A distinct, deterministic colour per creature kind (FNV-1a hash → hue).
+fn monster_color(name: &str) -> Color {
+    let mut h: u32 = 2166136261;
+    for b in name.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    Color::hsl((h % 360) as f32, 0.62, 0.56)
+}
+
+fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
+    match e.kind {
+        EntityKind::Monster => match &e.name {
+            Some(name) => monster_color(name),
+            None => Color::srgb(0.9, 0.3, 0.3),
+        },
         EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
         EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
         EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
@@ -1935,7 +2136,7 @@ fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
 
 fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
     let (title, color): (String, Color) = match end.outcome.as_str() {
-        "victory" => ("VICTORY - Grendel is slain!".into(), Color::srgb(0.5, 0.95, 0.6)),
+        "victory" => ("VICTORY - the creature is slain!".into(), Color::srgb(0.5, 0.95, 0.6)),
         "extracted" => (
             format!("EXTRACTED - banked {} item(s) to your Vault", end.banked),
             Color::srgb(0.4, 0.9, 0.95),

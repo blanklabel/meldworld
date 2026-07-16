@@ -125,12 +125,23 @@ async fn extraction_banks_loot_into_the_vault() {
                     "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => phase = Phase::ToMonster,
                     "world.snapshot" => {
+                        // The world now generates one portal per area (ids
+                        // `portal-N`); walk to the nearest one ahead of us.
+                        let mut nearest_portal: Option<f64> = None;
                         for e in v["payload"]["entities"].as_array().unwrap() {
                             match e["entity_id"].as_str() {
                                 Some(id) if id == player_id => my_x = e["position"]["x"].as_f64().unwrap(),
-                                Some("portal") => portal_x = e["position"]["x"].as_f64().unwrap(),
+                                Some(id) if id.starts_with("portal") => {
+                                    let px = e["position"]["x"].as_f64().unwrap();
+                                    if px >= my_x - 1.0 {
+                                        nearest_portal = Some(nearest_portal.map_or(px, |c: f64| c.min(px)));
+                                    }
+                                }
                                 _ => {}
                             }
+                        }
+                        if let Some(px) = nearest_portal {
+                            portal_x = px;
                         }
                         // Near the portal — stop and start channeling (the wider
                         // interaction radius tolerates a little snapshot lag).
@@ -191,5 +202,11 @@ async fn extraction_banks_loot_into_the_vault() {
         .iter()
         .find(|m| m["item_kind"] == json!("forest_bloom_petal"))
         .expect("vault should contain the banked petal");
-    assert_eq!(petal["quantity"], json!(1), "one petal banked");
+    // One petal per creature felled on the way to the portal. The corridor now
+    // holds several creatures per area, so the exact count is world-dependent;
+    // the contract is that the won loot is banked (≥ 1).
+    assert!(
+        petal["quantity"].as_i64().unwrap() >= 1,
+        "at least one petal banked"
+    );
 }
