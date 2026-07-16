@@ -48,6 +48,7 @@ fn main() {
                 ServerMsg::BattleStarted {
                     battle_id: b,
                     your_combatant_id,
+                    your_combatant_ids: _,
                     monster_combatant,
                     combatants,
                 } => {
@@ -78,8 +79,11 @@ fn main() {
                 ServerMsg::Gauge { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
+                | ServerMsg::ActionResolved { .. }
                 | ServerMsg::ChannelStarted { .. }
                 | ServerMsg::ChannelInterrupted
+                | ServerMsg::InventoryData { .. }
+                | ServerMsg::ProgressData { .. }
                 | ServerMsg::RunEnded { .. } => {}
             }
         }
@@ -94,6 +98,7 @@ fn main() {
             if let Some(t) = monster.clone() {
                 net.send(ClientCmd::Attack {
                     battle_id: battle_id.clone(),
+                    actor: my_combatant.clone(),
                     target: t,
                 });
                 my_turn = false;

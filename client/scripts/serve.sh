@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PGDATA="${MELD_PGDATA:-$ROOT/target/pg}"; PGPORT="${MELD_PGPORT:-5433}"
 PGUSER="${MELD_PGUSER:-$(whoami)}"; SOCKDIR="${MELD_PGSOCK:-/tmp/meldworld-pg}"; DBNAME=meldworld
-ADDR="${MELD_ADDR:-127.0.0.1:8090}"
+ADDR="${MELD_ADDR:-127.0.0.1:18090}"   # matches the browser client's Trunk.toml proxy
 export LC_ALL=C LANG=C
 mkdir -p "$SOCKDIR"
 [ -d "$PGDATA/base" ] || initdb -D "$PGDATA" -U "$PGUSER" --auth=trust >/dev/null

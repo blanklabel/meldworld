@@ -69,15 +69,116 @@ stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 stat_mult_exp = 1.25
 red_chest_floor_distance = 300
 
-# Content-ish stats for the spike's one creature and the starter class.
-# Tuned so a SOLO squire can win but with real tension (dawdling → death),
-# while a full party wins comfortably. All [TUNABLE] — pure balance.
+# Procedural area generation (world-generation.md subset). A MazeInstance is a
+# seeded chain of biome "areas" marching east from the Center Hub. Each area has
+# its own length; lengths trend larger with depth (area_length_growth) plus a
+# per-area jitter, so no two areas are the same size and later ones are bigger
+# on average. Monsters are spaced along the corridor; deeper (longer) areas hold
+# more. All [TUNABLE] — structure is code, coefficients here (working agreement #2).
+[worldgen]
+area_count = 8                   # how many areas to pre-generate for the instance
+base_area_length = 20.0          # tiles: length of the first (shallowest) area
+area_length_growth = 7.0         # each successive area is ~this much longer on avg
+area_length_jitter = 0.35        # ± fraction applied to each area's length
+monster_spacing = 6.5            # avg tiles between creatures along the corridor
+monster_spacing_jitter = 0.45    # ± fraction on each gap
+lateral_jitter = 0.4             # creature y offset from the corridor centre-line
+                                 # (kept < touch_radius so an east walk still meets it)
+first_monster_x = 8.0            # the single tutorial creature (area 0) sits here
+first_area_portal_gap = 6.0      # area 0's portal is this far past that creature (→ x=14)
+portal_setback = 3.0             # a portal sits this many tiles before an area's end
+world_margin = 10.0              # walkable distance past the final portal
+lateral_half_extent = 14.0       # how far a player may stray off the corridor (±y)
+
+# Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
+# world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
+# menacing with depth. Forest bases are tuned so a solo squire can win the first
+# fight with tension; deeper biomes lean tankier / faster / harder-hitting. All
+# [TUNABLE] — pure balance. Biome→creature assignment is structural (in code).
+#
+# --- Forest (d 0–100) ---
 [creature.forest_bloom_stalker]
 base_hp = 60
 base_atk = 9
 base_def = 2
 speed_stat = 80
 xp_reward = 60
+encounter_class = "standard"
+
+[creature.thornback_boar]
+base_hp = 78
+base_atk = 8
+base_def = 4
+speed_stat = 58
+xp_reward = 72
+encounter_class = "standard"
+
+# --- Desert (d 100–300) ---
+[creature.dune_wyrm]
+base_hp = 92
+base_atk = 12
+base_def = 4
+speed_stat = 74
+xp_reward = 120
+encounter_class = "standard"
+
+[creature.sand_shade]
+base_hp = 68
+base_atk = 14
+base_def = 2
+speed_stat = 122
+xp_reward = 110
+encounter_class = "standard"
+
+# --- Ashfall (d 300–500) ---
+[creature.cinder_imp]
+base_hp = 80
+base_atk = 16
+base_def = 3
+speed_stat = 112
+xp_reward = 160
+encounter_class = "standard"
+
+[creature.magma_golem]
+base_hp = 165
+base_atk = 15
+base_def = 8
+speed_stat = 44
+xp_reward = 230
+encounter_class = "standard"
+
+# --- Tundra (d 500–1000) ---
+[creature.frost_lurker]
+base_hp = 120
+base_atk = 18
+base_def = 6
+speed_stat = 86
+xp_reward = 270
+encounter_class = "standard"
+
+[creature.ice_revenant]
+base_hp = 142
+base_atk = 20
+base_def = 7
+speed_stat = 96
+xp_reward = 330
+encounter_class = "standard"
+
+# --- Mire (d 1000+) ---
+[creature.bog_serpent]
+base_hp = 150
+base_atk = 22
+base_def = 6
+speed_stat = 104
+xp_reward = 390
+encounter_class = "standard"
+
+[creature.myconid_brute]
+base_hp = 225
+base_atk = 20
+base_def = 11
+speed_stat = 52
+xp_reward = 470
 encounter_class = "standard"
 
 [player.squire]

@@ -25,6 +25,7 @@ pub struct Balance {
     pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
+    pub worldgen: WorldGen,
     pub creature: Creatures,
     pub player: Players,
 }
@@ -97,6 +98,23 @@ pub struct WorldScaling {
     pub stat_mult_base_divisor: f64,
     pub stat_mult_exp: f64,
     pub red_chest_floor_distance: i64,
+}
+
+/// Procedural area-generation tunables (world-generation.md subset).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorldGen {
+    pub area_count: usize,
+    pub base_area_length: f64,
+    pub area_length_growth: f64,
+    pub area_length_jitter: f64,
+    pub monster_spacing: f64,
+    pub monster_spacing_jitter: f64,
+    pub lateral_jitter: f64,
+    pub first_monster_x: f64,
+    pub first_area_portal_gap: f64,
+    pub portal_setback: f64,
+    pub world_margin: f64,
+    pub lateral_half_extent: f64,
 }
 
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).

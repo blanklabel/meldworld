@@ -63,39 +63,44 @@ More Postgres-backed conformance tests cover the RPG systems:
 M1.1/M1.8/M1.9): register/login/me, bcrypt-only credential storage, and the
 enumeration-safe identical error for unknown-username vs wrong-password.
 
-## Play it (Bevy client)
+## Play it
 
-The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
-**Join** (Enter to auth as a guest) → **Overworld** (WASD to move; walk into red
-Grendel to fight; walk to the cyan portal and press **E** to extract) → **Battle**
-(ATB HUD — HP + gauge bars from the server; SPACE to attack on your turn) →
-**Ended** (extracted / defeat). It's server-authoritative: the client
-sends intents and renders whatever the server reports, never computing combat.
+The quickest way — a `Makefile` wraps the Postgres + server + client wiring so
+you don't have to remember any of it:
 
 ```sh
-# boots Postgres + the server, then opens the client window:
-client/scripts/serve.sh
+make play         # boot everything, then open http://localhost:9080 in a browser
+make play-native  # same, but opens the native desktop window instead
+make help         # list every task (test, server, smoke, stop, …)
 ```
 
-Solo is winnable but tense; a full party wins comfortably. The client lives in
-its own workspace (`client/`), sharing only `meld-proto` with the server.
+`make play` boots a throwaway Postgres, starts the server, and serves the wasm
+client (first run compiles the wasm bundle — give it a minute). Open
+**http://localhost:9080**, click the page, and press **ENTER** to play — or open
+**http://localhost:9080/?autoplay** to watch it play itself.
+
+The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
+**Join** (Enter to auth as a guest) → **Overworld** (WASD to march east through
+the procedurally-generated biome areas; walk into a creature to fight; walk to a
+cyan portal and press **E** to extract) → **Battle** (ATB HUD — HP + gauge bars
+from the server) → **Ended** (extracted / defeat). It's server-authoritative:
+the client sends intents and renders whatever the server reports, never
+computing combat. Solo is winnable but tense; a full party wins comfortably.
 
 **Headless verification** (no window — drives the whole loop through the client's
 own network layer against a real server; exits 0 on victory):
 
 ```sh
-client/scripts/serve.sh cargo run -p meld-client --bin smoke
+make smoke
 ```
 
-### In the browser (wasm)
+### Browser details
 
 The same client compiles to WebAssembly (networking via `ewebsock`/`ehttp` works
-on native *and* web). With a server running and `trunk` installed:
-
-```sh
-client/scripts/trunk-serve.sh --port 9080     # serves the wasm client
-# then open http://localhost:9080 and press ENTER to play
-```
+on native *and* web); `make play` uses `trunk`, which serves the wasm client on
+port 9080 and proxies `/v1` + the realtime socket to the server on
+`$MELD_ADDR` (default `127.0.0.1:18090`). Needs `trunk` (`cargo install trunk`)
+and the wasm target (`rustup target add wasm32-unknown-unknown`).
 
 `?autoplay` self-drives the loop against the server; `?demo` runs an offline
 render demo (no server) — handy for screenshots. The wasm build needs rustup's

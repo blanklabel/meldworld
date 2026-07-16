@@ -81,6 +81,8 @@ pub struct EntityView {
     pub x: f64,
     pub y: f64,
     pub kind: EntityKind,
+    /// Creature content id for monsters (drives colour + label); `None` otherwise.
+    pub monster_kind: Option<String>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -561,16 +563,21 @@ impl Inner {
                         .entities
                         .into_iter()
                         .map(|e| {
-                            let kind = match e.avatar_state.as_deref() {
-                                None => EntityKind::Monster,
-                                Some("portal") => EntityKind::Portal,
-                                Some(_) => EntityKind::Player,
+                            // Server tags monsters `mob:<kind>`, the portal `portal`,
+                            // and players with their avatar state (`active`, …).
+                            let (kind, monster_kind) = match e.avatar_state.as_deref() {
+                                Some("portal") => (EntityKind::Portal, None),
+                                Some(s) if s.starts_with("mob:") => {
+                                    (EntityKind::Monster, Some(s["mob:".len()..].to_string()))
+                                }
+                                _ => (EntityKind::Player, None),
                             };
                             EntityView {
                                 id: e.entity_id,
                                 x: e.position.x,
                                 y: e.position.y,
                                 kind,
+                                monster_kind,
                             }
                         })
                         .collect();

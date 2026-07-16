@@ -69,6 +69,20 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
+/// each MazeInstance gets a distinct, unpredictable layout (CANON: seeds are
+/// server-side; the client never supplies one).
+fn world_seed() -> u64 {
+    let bytes = Uuid::now_v7().into_bytes();
+    let mut seed = 0u64;
+    for chunk in bytes.chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        seed ^= u64::from_le_bytes(buf);
+    }
+    seed
+}
+
 struct Session {
     username: String,
     out: mpsc::UnboundedSender<String>,
@@ -109,6 +123,9 @@ struct ActiveInstance {
     battle: Option<Battle>,
     battle_id: String,
     monster_combatant_id: String,
+    /// Index (into `arena.monsters`) of the creature the active battle is
+    /// against, so victory can mark that specific creature defeated.
+    battle_monster_idx: Option<usize>,
     /// combatant_id -> player_id (players only).
     combatant_player: HashMap<String, String>,
     /// player_id -> the combatant ids they control (a solo player fields a party
@@ -332,12 +349,16 @@ impl GameState {
         // Create the shared instance on the first entry.
         if self.instance.is_none() {
             let instance_id = Uuid::now_v7().to_string();
+            // Server-generated world seed (CANON: the client never supplies or
+            // computes seeds). Derived from a fresh v7 UUID's bytes.
+            let seed = world_seed();
             self.instance = Some(ActiveInstance {
-                arena: Arena::new(&self.balance, Uuid::now_v7().to_string()),
+                arena: Arena::generate(&self.balance, seed),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
                 battle: None,
                 battle_id: String::new(),
                 monster_combatant_id: String::new(),
+                battle_monster_idx: None,
                 combatant_player: HashMap::new(),
                 player_combatants: HashMap::new(),
                 extraction: HashMap::new(),
@@ -345,12 +366,6 @@ impl GameState {
             });
         }
         let inst = self.instance.as_mut().expect("instance exists");
-        // Guarantee a live target: if a prior party already slew Grendel and no
-        // battle is in progress, respawn it so every fresh run has a creature to
-        // fight (the shared instance otherwise keeps the monster dead forever).
-        if inst.arena.monster.defeated && inst.battle.is_none() {
-            inst.arena.respawn_monster();
-        }
         let instance_id = inst.run.instance_id.clone();
         let base_run_level = inst.run.base_run_level;
 
@@ -474,7 +489,7 @@ impl GameState {
         // party into the one already in progress (combat-atb.md).
         let decision = {
             match inst.arena.check_touch() {
-                Some(toucher) => {
+                Some((toucher, monster_idx)) => {
                     let party = inst
                         .run
                         .runs
@@ -482,9 +497,11 @@ impl GameState {
                         .find(|r| r.player_id == toucher)
                         .map(|r| r.party_id);
                     match party {
-                        Some(pid) if inst.battle.is_none() => Some((toucher, pid, true)),
+                        Some(pid) if inst.battle.is_none() => {
+                            Some((toucher, pid, Some(monster_idx)))
+                        }
                         Some(pid) if !inst.battle_parties.contains(&pid) => {
-                            Some((toucher, pid, false))
+                            Some((toucher, pid, None))
                         }
                         _ => None,
                     }
@@ -493,13 +510,15 @@ impl GameState {
             }
         };
         match decision {
-            Some((toucher, pid, true)) => self.start_battle(&toucher, pid),
-            Some((toucher, pid, false)) => self.join_battle(&toucher, pid),
+            Some((toucher, pid, Some(monster_idx))) => {
+                self.start_battle(&toucher, pid, monster_idx)
+            }
+            Some((toucher, pid, None)) => self.join_battle(&toucher, pid),
             None => Vec::new(),
         }
     }
 
-    fn start_battle(&mut self, toucher: &str, party_id: u32) -> Vec<Outgoing> {
+    fn start_battle(&mut self, toucher: &str, party_id: u32, monster_idx: usize) -> Vec<Outgoing> {
         let seed = now_ms();
         let balance = self.balance.clone();
         // Snapshot gear bonuses before borrowing the instance mutably.
@@ -543,10 +562,11 @@ impl GameState {
             inst.player_combatants.insert(r.player_id.clone(), cids);
         }
 
+        let monster = inst.arena.monsters[monster_idx].clone();
         let battle = build_battle(
             battle_id.clone(),
             &party,
-            &inst.arena.monster,
+            &monster,
             monster_combatant_id.clone(),
             &inst.run,
             &balance,
@@ -570,6 +590,7 @@ impl GameState {
         inst.battle = Some(battle);
         inst.battle_id = battle_id.clone();
         inst.monster_combatant_id = monster_combatant_id;
+        inst.battle_monster_idx = Some(monster_idx);
         inst.battle_parties.clear();
         inst.battle_parties.insert(party_id);
 
@@ -1042,25 +1063,29 @@ impl GameState {
                 avatar_state: Some(a.state.clone()),
             })
             .collect();
-        // The monster is a dynamic entity too (movement-world.md: snapshots carry
-        // players and monsters). `avatar_state: null` marks it non-player, which
-        // is how the client tells it apart. Drop it once defeated.
-        if !inst.arena.monster.defeated {
+        // Every living creature is a dynamic entity too (movement-world.md:
+        // snapshots carry players and monsters). We tag a monster's `avatar_state`
+        // with its creature kind (`mob:<kind>`) so the client can colour/label it;
+        // that's distinct from the player states and the `portal` tag below. Slain
+        // creatures are dropped from the snapshot.
+        for m in inst.arena.monsters.iter().filter(|m| !m.defeated) {
             entities.push(wm::SnapshotEntity {
-                entity_id: inst.arena.monster.entity_id.clone(),
-                position: inst.arena.monster.position,
+                entity_id: m.entity_id.clone(),
+                position: m.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: None,
+                avatar_state: Some(format!("mob:{}", m.monster_kind)),
             });
         }
-        // The extraction portal, tagged via a distinct avatar_state the client
-        // renders specially (a pragmatic stand-in for world.entity_spawn).
-        entities.push(wm::SnapshotEntity {
-            entity_id: "portal".to_string(),
-            position: inst.arena.portal,
-            velocity: wm::Velocity { x: 0.0, y: 0.0 },
-            avatar_state: Some("portal".to_string()),
-        });
+        // One extraction portal per area, each tagged with a distinct avatar_state
+        // the client renders specially (a pragmatic stand-in for world.entity_spawn).
+        for (i, portal) in inst.arena.portals().enumerate() {
+            entities.push(wm::SnapshotEntity {
+                entity_id: format!("portal-{i}"),
+                position: portal,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some("portal".to_string()),
+            });
+        }
         let msg = wm::Snapshot {
             server_tick: now_ms() as i64,
             entities,
@@ -1155,7 +1180,11 @@ impl GameState {
             return out;
         };
         let battle_id = inst.battle_id.clone();
-        let xp_reward = inst.arena.monster.xp_reward;
+        let monster_idx = inst.battle_monster_idx;
+        let xp_reward = monster_idx
+            .and_then(|i| inst.arena.monsters.get(i))
+            .map(|m| m.xp_reward)
+            .unwrap_or(0);
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
         // The outcome applies to every party merged into the battle (raid).
         let bp = inst.battle_parties.clone();
@@ -1170,7 +1199,11 @@ impl GameState {
 
         match outcome {
             BattleOutcome::Victory => {
-                inst.arena.monster.defeated = true;
+                if let Some(i) = monster_idx {
+                    if let Some(m) = inst.arena.monsters.get_mut(i) {
+                        m.defeated = true;
+                    }
+                }
                 // Award XP to every participant; return their avatars to active.
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     r.award_xp(xp_reward);
@@ -1274,6 +1307,7 @@ impl GameState {
         }
         // Battle over: reset merge + combatant bookkeeping.
         inst.battle_parties.clear();
+        inst.battle_monster_idx = None;
         inst.combatant_player.clear();
         inst.player_combatants.clear();
         self.pending_deaths.append(&mut dead);
