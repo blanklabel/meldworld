@@ -22,12 +22,15 @@ export LC_ALL="${LC_ALL:-C}" LANG="${LANG:-C}"
 
 mkdir -p "$SOCKDIR"
 
-if [ ! -d "$PGDATA/base" ]; then
-  echo "› initdb $PGDATA"
-  initdb -D "$PGDATA" -U "$PGUSER" --auth=trust >/dev/null
-fi
-
-if ! pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+# Reuse a Postgres already listening on PGPORT (another checkout/worktree or a
+# still-running session) rather than failing to start a second one on the port.
+if pg_isready -q -h 127.0.0.1 -p "$PGPORT" 2>/dev/null; then
+  echo "› reusing Postgres already listening on 127.0.0.1:$PGPORT"
+else
+  if [ ! -d "$PGDATA/base" ]; then
+    echo "› initdb $PGDATA"
+    initdb -D "$PGDATA" -U "$PGUSER" --auth=trust >/dev/null
+  fi
   echo "› starting postgres on 127.0.0.1:$PGPORT"
   pg_ctl -D "$PGDATA" -o "-p $PGPORT -k $SOCKDIR" -l "$PGDATA/server.log" -w start
 fi
