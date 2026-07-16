@@ -13,9 +13,16 @@ PGUSER="${MELD_PGUSER:-$(whoami)}"; SOCKDIR="${MELD_PGSOCK:-/tmp/meldworld-pg}";
 ADDR="${MELD_ADDR:-127.0.0.1:18090}"   # matches the browser client's Trunk.toml proxy
 export LC_ALL=C LANG=C
 mkdir -p "$SOCKDIR"
-[ -d "$PGDATA/base" ] || initdb -D "$PGDATA" -U "$PGUSER" --auth=trust >/dev/null
-pg_ctl -D "$PGDATA" status >/dev/null 2>&1 || \
+# Reuse a Postgres already listening on PGPORT (e.g. from another checkout /
+# worktree, or a still-running previous session) instead of trying to start a
+# second one — starting a second postmaster on the same port just fails with
+# "could not start server". Only initdb/start our own when the port is free.
+if pg_isready -q -h 127.0.0.1 -p "$PGPORT" 2>/dev/null; then
+  echo "› reusing Postgres already listening on 127.0.0.1:$PGPORT"
+else
+  [ -d "$PGDATA/base" ] || initdb -D "$PGDATA" -U "$PGUSER" --auth=trust >/dev/null
   pg_ctl -D "$PGDATA" -o "-p $PGPORT -k $SOCKDIR" -l "$PGDATA/server.log" -w start >/dev/null
+fi
 createdb -p "$PGPORT" -h 127.0.0.1 -U "$PGUSER" "$DBNAME" 2>/dev/null || true
 export MELD_DATABASE_URL="postgres://$PGUSER@127.0.0.1:$PGPORT/$DBNAME"
 
