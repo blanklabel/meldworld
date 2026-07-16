@@ -69,15 +69,16 @@ The quickest way — a `Makefile` wraps the Postgres + server + client wiring so
 you don't have to remember any of it:
 
 ```sh
-make play         # boot everything, then open http://localhost:9080 in a browser
+make play         # boot everything, then open http://localhost:18090 in a browser
 make play-native  # same, but opens the native desktop window instead
 make help         # list every task (test, server, smoke, stop, …)
 ```
 
-`make play` boots a throwaway Postgres, starts the server, and serves the wasm
-client (first run compiles the wasm bundle — give it a minute). Open
-**http://localhost:9080**, click the page, and press **ENTER** to play — or open
-**http://localhost:9080/?autoplay** to watch it play itself.
+`make play` builds the wasm client, boots a throwaway Postgres, and starts the
+server — which serves the client itself, so everything lives at **one URL**
+(first run compiles the wasm bundle — give it a minute). Open
+**http://localhost:18090**, click the page, and press **ENTER** to play — or open
+**http://localhost:18090/?autoplay** to watch it play itself.
 
 The all-Bevy client (CANON D16) implements the core gameplay loop as screens:
 **Join** (Enter to auth as a guest) → **Overworld** (WASD to march east through
@@ -97,16 +98,20 @@ make smoke
 ### Browser details
 
 The same client compiles to WebAssembly (networking via `ewebsock`/`ehttp` works
-on native *and* web); `make play` uses `trunk`, which serves the wasm client on
-port 9080 and proxies `/v1` + the realtime socket to the server on
-`$MELD_ADDR` (default `127.0.0.1:18090`). Needs `trunk` (`cargo install trunk`)
-and the wasm target (`rustup target add wasm32-unknown-unknown`).
+on native *and* web). `make play` runs `trunk build` to produce `dist/`, then the
+server serves those static files at `/` (via `MELD_CLIENT_DIST`) and handles the
+realtime WebSocket on the same origin — so there's no separate web server and no
+proxy. Needs `trunk` (`cargo install trunk`) and the wasm target
+(`rustup target add wasm32-unknown-unknown`).
+
+For live-reload client development you can instead run `trunk serve` yourself
+(`client/scripts/trunk-serve.sh --port 9080`), which serves on its own port and
+proxies `/v1` + the realtime socket to the server (see `Trunk.toml`).
 
 `?autoplay` self-drives the loop against the server; `?demo` runs an offline
-render demo (no server) — handy for screenshots. The wasm build needs rustup's
-toolchain (the wrapper sets that up); a `?server=<url>` param points the client
-at a server on another origin (the server sends permissive CORS for the HTTP
-API). Requires the wasm target: `rustup target add wasm32-unknown-unknown`.
+render demo (no server) — handy for screenshots. A `?server=<url>` param points
+the client at a server on another origin (the server sends permissive CORS for
+the HTTP API).
 
 ## Workspace layout (BUILD-PLAN §1)
 
