@@ -641,6 +641,19 @@ struct MenuEntry {
     action: EntryAction,
 }
 
+/// Build skill menu rows from `(label, skill_kind)` pairs, keeping only those the
+/// hero has leveled into (per `meld_proto::skills`).
+fn skill_entries(skills: &[(&'static str, &'static str)], hero_level: i32) -> Vec<MenuEntry> {
+    skills
+        .iter()
+        .filter(|(_, kind)| meld_proto::skills::is_unlocked(kind, hero_level))
+        .map(|(label, kind)| MenuEntry {
+            label,
+            action: EntryAction::Skill(kind),
+        })
+        .collect()
+}
+
 /// The rows shown at a given menu level. For a Psyker the root is the Focus ops
 /// (Cast/Reinforce/Revoke/Hold) and the Manifest page lists the manifestations
 /// unlocked at `hero_level`.
@@ -659,17 +672,28 @@ fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry
             e("Item", EntryAction::OpenItems),
             e("Skill", EntryAction::OpenSkills),
         ],
-        MenuLevel::Skills if class == "resonant" => vec![
-            e("Transfuse", EntryAction::Skill("transfuse")),
-            e("Regen Boon", EntryAction::Skill("regen_boon")),
-            e("Ward", EntryAction::Skill("ward")),
-            e("Back", EntryAction::Back),
-        ],
-        MenuLevel::Skills => vec![
-            e("Power Strike", EntryAction::Skill("power_strike")),
-            e("Second Wind", EntryAction::Skill("second_wind")),
-            e("Back", EntryAction::Back),
-        ],
+        // Skills unlock as the hero levels; a locked one is simply hidden (the
+        // server would reject it anyway). Levels come from `meld_proto::skills`.
+        MenuLevel::Skills if class == "resonant" => {
+            let mut v = skill_entries(
+                &[
+                    ("Transfuse", "transfuse"),
+                    ("Regen Boon", "regen_boon"),
+                    ("Ward", "ward"),
+                ],
+                hero_level,
+            );
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
+        MenuLevel::Skills => {
+            let mut v = skill_entries(
+                &[("Power Strike", "power_strike"), ("Second Wind", "second_wind")],
+                hero_level,
+            );
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
         MenuLevel::Items => vec![
             e("Salve", EntryAction::Item("salve")),
             e("Elixir", EntryAction::Item("elixir")),
@@ -2526,6 +2550,19 @@ fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &Hi
                         TextColor(tag_color),
                     ));
                 });
+                // Attribute line (Str/Mnd/Dex/Wll) — heroes carry these, monsters
+                // don't, so it only shows for the party.
+                let a_str = status_num(&c.statuses, "str:");
+                let a_mnd = status_num(&c.statuses, "mnd:");
+                let a_dex = status_num(&c.statuses, "dex:");
+                let a_wll = status_num(&c.statuses, "wll:");
+                if a_str != 0 || a_mnd != 0 || a_dex != 0 || a_wll != 0 {
+                    col.spawn((
+                        Text::new(format!("STR {a_str}  MND {a_mnd}  DEX {a_dex}  WLL {a_wll}")),
+                        TextFont { font_size: 11.0, ..default() },
+                        TextColor(Color::srgb(0.62, 0.64, 0.74)),
+                    ));
+                }
                 meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
                 meter(col, gauge, 7.0, Color::srgb(0.4, 0.85, 0.5));
                 // Psyker: a row of Focus slots — filled slots show the manifestation

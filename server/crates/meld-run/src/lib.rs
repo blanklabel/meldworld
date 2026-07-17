@@ -18,9 +18,11 @@ pub fn base_run_level(distance: i32, balance: &Balance) -> i32 {
     (1.0 + distance as f64 * balance.runs.base_run_level_per_distance).round() as i32
 }
 
-/// XP needed to advance from level `l`: `xp_to_next(L) = 80 × L^1.6` (CANON.md §B).
-pub fn xp_to_next(level: i32) -> i64 {
-    (80.0 * (level as f64).powf(1.6)).round() as i64
+/// XP needed to advance from level `L`: `xp_base × xp_growth_factor^(L-1)`
+/// (CANON.md §B) — the classic "double the requirement each level" curve.
+pub fn xp_to_next(level: i32, balance: &Balance) -> i64 {
+    let steps = (level - 1).max(0) as f64;
+    (balance.runs.xp_base as f64 * balance.runs.xp_growth_factor.powf(steps)).round() as i64
 }
 
 /// One player's ephemeral run state.
@@ -47,11 +49,11 @@ impl PlayerRun {
 
     /// Apply victory XP, leveling up as thresholds are crossed. Returns the
     /// number of levels gained.
-    pub fn award_xp(&mut self, xp: i64) -> i32 {
+    pub fn award_xp(&mut self, xp: i64, balance: &Balance) -> i32 {
         self.xp += xp;
         let mut gained = 0;
-        while self.xp >= xp_to_next(self.run_level) {
-            self.xp -= xp_to_next(self.run_level);
+        while self.xp >= xp_to_next(self.run_level, balance) {
+            self.xp -= xp_to_next(self.run_level, balance);
             self.run_level += 1;
             gained += 1;
         }
@@ -148,17 +150,43 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                 .find(|r| &r.player_id == player_id)
                 .map(|r| r.run_level)
                 .unwrap_or(1);
+
+            // Attributes at this level, and the combat stats derived from them.
+            // Each derived stat = class base + (attribute − level-1 baseline) ×
+            // coefficient, so a level-1 hero has exactly its class base stats and
+            // every level's auto-gained attributes translate into growth. Str →
+            // physical atk, Wll → HP + defence, Dex → ATB speed + dodge, Mnd →
+            // manifestation/spell power. See balance `[attributes]`.
+            let a = &balance.attributes;
+            let (str_, mnd, dex, wll) = stats.attributes_at(level);
+            let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
+            let max_hp = stats.base_hp + grow(wll, stats.wll, a.wll_to_hp);
+            let atk = stats.base_atk + grow(str_, stats.str, a.str_to_atk) + atk_bonus; // + gear
+            let def = stats.base_def + grow(wll, stats.wll, a.wll_to_def);
+            let speed = stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed);
+            // Spell power keys off the class attack base (gear boosts physical, not
+            // psychic) and scales with Mnd.
+            let spell_power = stats.base_atk + grow(mnd, stats.mnd, a.mnd_to_power);
+            let dodge =
+                ((dex - a.dodge_dex_floor).max(0) as f64 * a.dodge_per_dex).clamp(0.0, a.dodge_cap);
+
             let mut f = Fighter::new(
                 combatant_id.clone(),
                 CombatantKind::Player,
                 Some(player_id.clone()),
                 None,
                 level,
-                stats.base_hp,
-                stats.base_atk + atk_bonus, // equipped gear
-                stats.base_def,
-                stats.speed_stat,
+                max_hp,
+                atk,
+                def,
+                speed,
             );
+            f.str_ = str_;
+            f.mnd = mnd;
+            f.dex = dex;
+            f.wll = wll;
+            f.spell_power = spell_power;
+            f.dodge = dodge;
             // Surface the class to the client (drives the per-hero command menu).
             f.class_key = class_key(*class).to_string();
             match *class {
@@ -261,6 +289,7 @@ mod tests {
 
     #[test]
     fn xp_award_levels_up() {
+        let b = Balance::load_default().unwrap();
         let mut r = PlayerRun {
             run_id: "r".into(),
             player_id: "p".into(),
@@ -273,10 +302,71 @@ mod tests {
             result: None,
             party_id: 0,
         };
-        // xp_to_next(1) = 80.
-        let gained = r.award_xp(200);
+        // xp_to_next(1) = xp_base = 80; xp_to_next(2) = 160 (doubling).
+        let gained = r.award_xp(200, &b);
         assert!(gained >= 1);
         assert!(r.run_level >= 2);
+        // 200 XP clears level 1 (80) but not level 1+2 (80+160=240): exactly one level.
+        assert_eq!(gained, 1);
+        assert_eq!(r.xp, 120);
+    }
+
+    #[test]
+    fn xp_curve_doubles_each_level() {
+        let b = Balance::load_default().unwrap();
+        assert_eq!(xp_to_next(1, &b), 80);
+        assert_eq!(xp_to_next(2, &b), 160);
+        assert_eq!(xp_to_next(3, &b), 320);
+        assert_eq!(xp_to_next(4, &b), 640);
+    }
+
+    /// A one-hero party at a given level, for attribute-derivation assertions.
+    fn solo_fighter(class: CharacterClass, level: i32, b: &Balance) -> Fighter {
+        let mut runs = InstanceRun::new("i".into(), 0, b);
+        runs.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
+        runs.runs[0].run_level = level;
+        let party: Vec<PartyMember> = vec![("p".into(), "c".into(), class, 0)];
+        party_fighters(&party, &runs, b).pop().unwrap()
+    }
+
+    #[test]
+    fn level_one_matches_class_base_stats() {
+        // The whole point of the derivation: a level-1 hero equals its raw class
+        // base stats, so nothing about the existing balance shifts.
+        let b = Balance::load_default().unwrap();
+        for class in [
+            CharacterClass::Squire,
+            CharacterClass::Psyker,
+            CharacterClass::Resonant,
+        ] {
+            let s = b.player.get(class_key(class)).unwrap();
+            let f = solo_fighter(class, 1, &b);
+            assert_eq!(f.max_hp, s.base_hp, "{:?} hp", class);
+            assert_eq!(f.atk, s.base_atk, "{:?} atk", class);
+            assert_eq!(f.def, s.base_def, "{:?} def", class);
+            assert_eq!(f.speed_stat, s.speed_stat, "{:?} speed", class);
+            // Manifestation power keys off the class attack base at level 1.
+            assert_eq!(f.spell_power, s.base_atk, "{:?} spell", class);
+            assert_eq!(f.dodge, 0.0, "{:?} dodge", class);
+        }
+    }
+
+    #[test]
+    fn leveling_grows_stats_per_class_focus() {
+        let b = Balance::load_default().unwrap();
+        let sq1 = solo_fighter(CharacterClass::Squire, 1, &b);
+        let sq5 = solo_fighter(CharacterClass::Squire, 5, &b);
+        // The Squire hardens: Str -> more atk, Wll -> more HP.
+        assert!(sq5.atk > sq1.atk, "squire atk grows with Str");
+        assert!(sq5.max_hp > sq1.max_hp, "squire HP grows with Wll");
+        assert!(sq5.str_ > sq1.str_ && sq5.wll > sq1.wll);
+
+        // The Psyker's manifestation power grows with Mnd, not its atk.
+        let ps1 = solo_fighter(CharacterClass::Psyker, 1, &b);
+        let ps5 = solo_fighter(CharacterClass::Psyker, 5, &b);
+        assert!(ps5.spell_power > ps1.spell_power, "psyker spell power grows");
+        assert_eq!(ps5.atk, ps1.atk, "psyker gains no Str, so atk is flat");
+        assert!(ps5.mnd > ps1.mnd);
     }
 
     #[test]

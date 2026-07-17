@@ -27,6 +27,7 @@ pub struct Balance {
     pub world_scaling: WorldScaling,
     pub worldgen: WorldGen,
     pub ai: Ai,
+    pub attributes: Attributes,
     pub creature: Creatures,
     pub player: Players,
 }
@@ -61,6 +62,23 @@ pub struct Runs {
     pub base_run_level_per_distance: f64,
     pub backpack_slots: i32,
     pub extraction_channel_ms: u64,
+    /// Level curve: `xp_to_next(L) = xp_base * xp_growth_factor^(L-1)`.
+    pub xp_base: i64,
+    pub xp_growth_factor: f64,
+}
+
+/// How the four attributes (Str/Mnd/Dex/Wll) map to combat stats. See the
+/// `[attributes]` block in balance.toml for the meaning of each coefficient.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Attributes {
+    pub str_to_atk: f64,
+    pub mnd_to_power: f64,
+    pub dex_to_speed: f64,
+    pub wll_to_hp: f64,
+    pub wll_to_def: f64,
+    pub dodge_dex_floor: i32,
+    pub dodge_per_dex: f64,
+    pub dodge_cap: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +188,30 @@ pub struct PlayerStats {
     pub base_atk: i32,
     pub base_def: i32,
     pub speed_stat: i32,
+    /// Level-1 attribute baseline.
+    pub str: i32,
+    pub mnd: i32,
+    pub dex: i32,
+    pub wll: i32,
+    /// Attribute points auto-gained per level (the class's growth focus).
+    pub str_per_level: i32,
+    pub mnd_per_level: i32,
+    pub dex_per_level: i32,
+    pub wll_per_level: i32,
+}
+
+impl PlayerStats {
+    /// The four attributes at `level` = baseline + per-level gain × (level-1).
+    /// Returns `(str, mnd, dex, wll)`.
+    pub fn attributes_at(&self, level: i32) -> (i32, i32, i32, i32) {
+        let steps = (level - 1).max(0);
+        (
+            self.str + self.str_per_level * steps,
+            self.mnd + self.mnd_per_level * steps,
+            self.dex + self.dex_per_level * steps,
+            self.wll + self.wll_per_level * steps,
+        )
+    }
 }
 
 impl Balance {

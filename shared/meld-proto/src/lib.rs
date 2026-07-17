@@ -17,6 +17,7 @@ pub mod factions;
 pub mod http;
 pub mod limits;
 pub mod realtime;
+pub mod skills;
 
 pub use enums::*;
 pub use envelope::{Envelope, RawEnvelope};
