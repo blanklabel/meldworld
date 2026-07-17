@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 description = "Bevy client: overworld + ATB battle UI for the core gameplay loop (T4+T5)."
+# The crate ships two binaries (the game + the `smoke` test harness); name the
+# game as the default so a bare `cargo run -p meld-client` (e.g. from serve.sh /
+# `make play-native`) is unambiguous.
+default-run = "meld-client"
 
 [dependencies]
 bevy = "0.16"
