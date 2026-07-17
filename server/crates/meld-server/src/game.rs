@@ -607,6 +607,13 @@ impl GameState {
                 .find(|r| &r.player_id == pid)
                 .map(|r| r.run_id.clone())
                 .unwrap_or_default();
+            let backpack = inst
+                .run
+                .runs
+                .iter()
+                .find(|r| &r.player_id == pid)
+                .map(|r| r.backpack.clone())
+                .unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wr::Started {
@@ -616,7 +623,8 @@ impl GameState {
                     departure_hub_distance,
                     base_run_level,
                     members: member_views.clone(),
-                    backpack: Vec::new(),
+                    backpack,
+                    path: inst.arena.path.clone(),
                 },
             ));
         }
@@ -1645,6 +1653,17 @@ impl GameState {
                 position: n.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("resource:{}", n.kind)),
+            });
+        }
+        // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
+        // renders each feature at its true size (static, but sent with the snapshot
+        // like the other world entities — pragmatic for the slice).
+        for o in &inst.arena.obstacles {
+            entities.push(wm::SnapshotEntity {
+                entity_id: o.entity_id.clone(),
+                position: o.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
             });
         }
         let msg = wm::Snapshot {

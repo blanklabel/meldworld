@@ -154,6 +154,12 @@ pub struct WorldGen {
     pub creature_lateral_spread: f64,
     pub resources_per_area: f64,
     pub resource_lateral_spread: f64,
+    pub obstacles_per_area: f64,
+    pub obstacle_min_radius: f64,
+    pub obstacle_max_radius: f64,
+    pub path_clear_radius: f64,
+    pub path_meander: f64,
+    pub player_radius: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

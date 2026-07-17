@@ -328,6 +328,10 @@ pub mod run {
         pub base_run_level: i32,
         pub members: Vec<Member>,
         pub backpack: Vec<ItemStack>,
+        /// Waypoints of the guaranteed clear path from the hub to the deep portal.
+        /// The client draws this as a faint trail so the feasible route is legible.
+        #[serde(default)]
+        pub path: Vec<Position>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Member {

@@ -165,11 +165,21 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
 
 ## Overworld: exploration, extraction & harvesting
 
-The overworld is not a single-file corridor: creatures **scatter across ±y** (area 0
-stays on the centre line for the deterministic tutorial), so you explore in 2D to
-find fights and nodes. Placement + roaming live in `meld-world::Arena::generate` /
-`step_creatures`; the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`,
-`portal`, `resource:<kind>`.
+The overworld is not a single-file corridor: it's a tall (±`lateral_half_extent`),
+scroll-in-every-direction map. Creatures **scatter across ±y** (area 0 stays on the
+centre line for the deterministic tutorial), so you explore in 2D to find fights and
+nodes. Placement + roaming live in `meld-world::Arena::generate` / `step_creatures`;
+the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal`,
+`resource:<kind>`, `obstacle:<kind>:<radius>`.
+
+- **Biome terrain.** Each area (≥1) is scattered with impassable `Obstacle`s —
+  biome-specific trees/cliffs/water/lava (`obstacles_for_biome`, `[worldgen]` radius
+  tunables). Movement collides with them and **slides** (`Arena::apply_move`); roaming
+  creatures avoid them too. A **guaranteed clear path** (`Arena::path`, a meandering
+  polyline hub→portal) is carved first and obstacles are rejection-sampled to never
+  enter its `path_clear_radius` tube — so a route to the exit is *always* feasible by
+  construction (unit-tested across seeds). The client draws the path as a faint trail
+  (sent on `run.started`, field `path`).
 
 - **Extraction is mostly the Town Portal item.** There is a **single fixed portal**,
   deep at the end of the last area (`Arena::portal`). The primary way home is the
