@@ -19,7 +19,9 @@ use meld_battle::{Battle, Event as BattleEvent, Reject};
 use meld_db::Db;
 use meld_proto::common::{ItemStack, Position};
 use meld_proto::enums::*;
-use meld_proto::realtime::{battle as wb, movement as wm, run as wr, session as ws, Message};
+use meld_proto::realtime::{
+    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, Message,
+};
 use meld_proto::RawEnvelope;
 use meld_run::{build_battle, InstanceRun};
 use meld_world::Arena;
@@ -95,6 +97,11 @@ fn class_base_hp(class: CharacterClass, balance: &Balance) -> i32 {
 /// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
 /// each MazeInstance gets a distinct, unpredictable layout (CANON: seeds are
 /// server-side; the client never supplies one).
+/// A short, human-typeable lobby join code (server-side; not the pure engine).
+fn new_lobby_code() -> String {
+    Uuid::now_v7().simple().to_string()[..4].to_uppercase()
+}
+
 fn world_seed() -> u64 {
     let bytes = Uuid::now_v7().into_bytes();
     let mut seed = 0u64;
@@ -173,6 +180,20 @@ struct ActiveInstance {
     battle_parties: std::collections::HashSet<u32>,
 }
 
+/// One member of a pre-maze co-op lobby.
+struct LobbyMember {
+    player_id: String,
+    party: Vec<CharacterClass>,
+    ready: bool,
+}
+
+/// A pre-maze co-op lobby: a group forming up before diving together.
+struct Lobby {
+    code: String,
+    host: String,
+    members: Vec<LobbyMember>,
+}
+
 struct GameState {
     balance: Arc<Balance>,
     db: Db,
@@ -180,6 +201,10 @@ struct GameState {
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
     instance: Option<ActiveInstance>,
+    /// Open co-op lobbies, keyed by join code.
+    lobbies: HashMap<String, Lobby>,
+    /// player_id -> the lobby code they're in.
+    player_lobby: HashMap<String, String>,
     /// Players whose gear bonus needs (re)loading from the DB (post-connect).
     pending_gear_load: Vec<String>,
     /// Players whose run just ended in death; durability sink applied async.
@@ -194,6 +219,8 @@ impl GameState {
             sessions: HashMap::new(),
             order: Vec::new(),
             instance: None,
+            lobbies: HashMap::new(),
+            player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
             pending_deaths: Vec::new(),
         }
@@ -273,11 +300,15 @@ impl GameState {
                 Vec::new()
             }
             ServerEvent::Disconnected { player_id } => {
+                // Drop the player from any lobby first (notifying the rest), then
+                // from the session/instance. The leaver's own `lobby.closed` is
+                // discarded since their socket is gone.
+                let out = self.leave_lobby(&player_id);
                 self.sessions.remove(&player_id);
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
                 self.remove_from_instance(&player_id);
-                Vec::new()
+                out
             }
             ServerEvent::Client { player_id, raw } => self.handle_client(&player_id, raw),
         }
@@ -332,6 +363,11 @@ impl GameState {
                 },
             )],
             wr::EnterMaze::TYPE => self.handle_enter_maze(player_id, raw),
+            wl::Create::TYPE => self.handle_lobby_create(player_id, raw),
+            wl::Join::TYPE => self.handle_lobby_join(player_id, raw),
+            wl::Ready::TYPE => self.handle_lobby_ready(player_id, raw),
+            wl::Leave::TYPE => self.handle_lobby_leave(player_id, raw.seq),
+            wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
@@ -346,10 +382,11 @@ impl GameState {
 
     fn handle_enter_maze(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let client_seq = raw.seq;
-        // Record the caller's party choice before forming the party. The party
-        // builder sends an explicit `party`; otherwise `character_class` is the
-        // lead and the server builds a default mixed party around it.
+        // Record the caller's party choice. The party builder sends an explicit
+        // `party`; otherwise `character_class` is the lead and the server builds a
+        // default mixed party around it.
         let req = serde_json::from_value::<wr::EnterMaze>(raw.payload).ok();
+        let solo = req.as_ref().map(|e| e.solo).unwrap_or(false);
         let party_comp = req.as_ref().and_then(|e| e.party.clone()).filter(|p| !p.is_empty());
         let chosen = req
             .as_ref()
@@ -374,21 +411,32 @@ impl GameState {
                 Some(client_seq),
             )];
         }
-        // Party = connected players not already in a run, up to the cap. So the
-        // first enter_maze with everyone waiting forms one big party; a player
-        // who enters later forms a fresh party that can raid-merge in.
-        let party_ids: Vec<String> = self
-            .order
-            .iter()
-            .filter(|p| {
-                self.sessions
-                    .get(*p)
-                    .map(|s| !s.in_instance)
-                    .unwrap_or(false)
-            })
-            .take(meld_proto::limits::PARTY_MAX)
-            .cloned()
-            .collect();
+        // Co-op is the lobby flow — you can't solo/quick-enter while in a lobby.
+        if self.player_lobby.contains_key(player_id) {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "You're in a lobby — start the dive from there.",
+                Some(client_seq),
+            )];
+        }
+        // Solo = a private instance for just the caller. Otherwise (legacy path,
+        // used by the headless bot tests) group all waiting players up to the cap.
+        let party_ids: Vec<String> = if solo {
+            vec![player_id.to_string()]
+        } else {
+            self.order
+                .iter()
+                .filter(|p| {
+                    self.sessions
+                        .get(*p)
+                        .map(|s| !s.in_instance && !self.player_lobby.contains_key(*p))
+                        .unwrap_or(false)
+                })
+                .take(meld_proto::limits::PARTY_MAX)
+                .cloned()
+                .collect()
+        };
         if party_ids.is_empty() {
             return vec![error(
                 player_id,
@@ -397,7 +445,18 @@ impl GameState {
                 Some(client_seq),
             )];
         }
+        self.form_run(party_ids, player_id, Some(client_seq))
+    }
 
+    /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
+    /// each. The initiator's `run.started` echoes `client_seq`. Every enrolled
+    /// player's session must already carry its `character_class` / `party_comp`.
+    fn form_run(
+        &mut self,
+        party_ids: Vec<String>,
+        initiator: &str,
+        client_seq: Option<u32>,
+    ) -> Vec<Outgoing> {
         let departure_hub_distance = 0; // Center Hub
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
@@ -503,7 +562,7 @@ impl GameState {
             out.push(out_msg(
                 pid,
                 &wr::Started {
-                    client_seq: if pid == player_id { Some(client_seq) } else { None },
+                    client_seq: if pid == initiator { client_seq } else { None },
                     run_id,
                     instance_id: instance_id.clone(),
                     departure_hub_distance,
@@ -515,6 +574,209 @@ impl GameState {
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
         out
+    }
+
+    // --- co-op lobby --------------------------------------------------------
+
+    /// Broadcast a lobby's authoritative state to all its members.
+    fn broadcast_lobby(&self, code: &str) -> Vec<Outgoing> {
+        let Some(lobby) = self.lobbies.get(code) else {
+            return Vec::new();
+        };
+        let members: Vec<wl::MemberView> = lobby
+            .members
+            .iter()
+            .map(|m| wl::MemberView {
+                player_id: m.player_id.clone(),
+                username: self
+                    .sessions
+                    .get(&m.player_id)
+                    .map(|s| s.username.clone())
+                    .unwrap_or_default(),
+                party: m.party.clone(),
+                ready: m.ready,
+            })
+            .collect();
+        let msg = wl::State {
+            code: lobby.code.clone(),
+            host_player_id: lobby.host.clone(),
+            members,
+        };
+        lobby
+            .members
+            .iter()
+            .map(|m| out_msg(&m.player_id, &msg))
+            .collect()
+    }
+
+    /// A member's party choice, normalized to party size (or the default mix).
+    fn lobby_party(&self, party: Option<Vec<CharacterClass>>) -> Vec<CharacterClass> {
+        let size = self.balance.battle.party_size_per_player.max(1);
+        match party {
+            Some(mut p) if !p.is_empty() => {
+                p.truncate(size);
+                while p.len() < size {
+                    p.push(CharacterClass::Squire);
+                }
+                p
+            }
+            _ => party_composition(CharacterClass::Squire, size),
+        }
+    }
+
+    fn handle_lobby_create(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        if self.player_lobby.contains_key(player_id)
+            || self.sessions.get(player_id).map(|s| s.in_instance).unwrap_or(false)
+        {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Already in a lobby or a run.",
+                Some(raw.seq),
+            )];
+        }
+        let party = serde_json::from_value::<wl::Create>(raw.payload)
+            .ok()
+            .and_then(|c| c.party);
+        let party = self.lobby_party(party);
+        // A short, unique join code.
+        let mut code = new_lobby_code();
+        while self.lobbies.contains_key(&code) {
+            code = new_lobby_code();
+        }
+        self.lobbies.insert(
+            code.clone(),
+            Lobby {
+                code: code.clone(),
+                host: player_id.to_string(),
+                members: vec![LobbyMember {
+                    player_id: player_id.to_string(),
+                    party,
+                    ready: false,
+                }],
+            },
+        );
+        self.player_lobby.insert(player_id.to_string(), code.clone());
+        self.broadcast_lobby(&code)
+    }
+
+    fn handle_lobby_join(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        if self.player_lobby.contains_key(player_id)
+            || self.sessions.get(player_id).map(|s| s.in_instance).unwrap_or(false)
+        {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Already in a lobby or a run.",
+                Some(raw.seq),
+            )];
+        }
+        let seq = raw.seq;
+        let req: wl::Join = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad join", Some(seq))]
+            }
+        };
+        let code = req.code.trim().to_uppercase();
+        let party = self.lobby_party(req.party);
+        let Some(lobby) = self.lobbies.get_mut(&code) else {
+            return vec![error(player_id, ErrorCode::NotFound, "No such lobby.", Some(seq))];
+        };
+        if lobby.members.len() >= meld_proto::limits::PARTY_MAX {
+            return vec![error(player_id, ErrorCode::InvalidState, "Lobby is full.", Some(seq))];
+        }
+        lobby.members.push(LobbyMember {
+            player_id: player_id.to_string(),
+            party,
+            ready: false,
+        });
+        self.player_lobby.insert(player_id.to_string(), code.clone());
+        self.broadcast_lobby(&code)
+    }
+
+    fn handle_lobby_ready(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let Some(code) = self.player_lobby.get(player_id).cloned() else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a lobby.", Some(raw.seq))];
+        };
+        let ready = serde_json::from_value::<wl::Ready>(raw.payload)
+            .map(|r| r.ready)
+            .unwrap_or(true);
+        if let Some(lobby) = self.lobbies.get_mut(&code) {
+            if let Some(m) = lobby.members.iter_mut().find(|m| m.player_id == player_id) {
+                m.ready = ready;
+            }
+        }
+        self.broadcast_lobby(&code)
+    }
+
+    fn handle_lobby_leave(&mut self, player_id: &str, _seq: u32) -> Vec<Outgoing> {
+        self.leave_lobby(player_id)
+    }
+
+    /// Remove a player from whatever lobby they're in; dissolve it if empty,
+    /// promote a new host if the host left, and broadcast the result.
+    fn leave_lobby(&mut self, player_id: &str) -> Vec<Outgoing> {
+        let Some(code) = self.player_lobby.remove(player_id) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(lobby) = self.lobbies.get_mut(&code) {
+            lobby.members.retain(|m| m.player_id != player_id);
+            if lobby.members.is_empty() {
+                self.lobbies.remove(&code);
+            } else {
+                if lobby.host == player_id {
+                    lobby.host = lobby.members[0].player_id.clone();
+                }
+                out = self.broadcast_lobby(&code);
+            }
+        }
+        // Tell the leaver their lobby view is gone.
+        out.push(out_msg(player_id, &wl::Closed {}));
+        out
+    }
+
+    fn handle_lobby_start(&mut self, player_id: &str, seq: u32) -> Vec<Outgoing> {
+        let Some(code) = self.player_lobby.get(player_id).cloned() else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a lobby.", Some(seq))];
+        };
+        let Some(lobby) = self.lobbies.get(&code) else {
+            return vec![error(player_id, ErrorCode::NotFound, "No such lobby.", Some(seq))];
+        };
+        if lobby.host != player_id {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Only the host can start.",
+                Some(seq),
+            )];
+        }
+        if !lobby.members.iter().all(|m| m.ready) {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Not everyone is ready.",
+                Some(seq),
+            )];
+        }
+        // Push each member's chosen party onto their session, then dissolve the
+        // lobby and form one shared run.
+        let members: Vec<(String, Vec<CharacterClass>)> = lobby
+            .members
+            .iter()
+            .map(|m| (m.player_id.clone(), m.party.clone()))
+            .collect();
+        for (pid, party) in &members {
+            if let Some(s) = self.sessions.get_mut(pid) {
+                s.character_class = party.first().copied().unwrap_or(CharacterClass::Squire);
+                s.party_comp = Some(party.clone());
+            }
+            self.player_lobby.remove(pid);
+        }
+        self.lobbies.remove(&code);
+        let ids: Vec<String> = members.into_iter().map(|(pid, _)| pid).collect();
+        self.form_run(ids, player_id, Some(seq))
     }
 
     fn handle_move(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {

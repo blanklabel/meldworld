@@ -100,6 +100,8 @@ fn main() {
                 | ServerMsg::ChannelInterrupted
                 | ServerMsg::InventoryData { .. }
                 | ServerMsg::ProgressData { .. }
+                | ServerMsg::LobbyState { .. }
+                | ServerMsg::LobbyClosed
                 | ServerMsg::RunEnded { .. } => {}
             }
         }

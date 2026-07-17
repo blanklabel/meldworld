@@ -16,7 +16,9 @@ use std::sync::mpsc;
 
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use meld_proto::common::Combatant;
-use meld_proto::realtime::{battle as wb, movement as wm, run as wr, session as ws, Message as _};
+use meld_proto::realtime::{
+    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, Message as _,
+};
 use meld_proto::RawEnvelope;
 use serde_json::{json, Value};
 
@@ -36,6 +38,12 @@ pub enum ClientCmd {
     Item { battle_id: String, actor: String, item_id: String },
     /// Begin a portal extraction channel at the current position.
     Extract,
+    /// Co-op lobby.
+    LobbyCreate { party: Vec<String> },
+    LobbyJoin { code: String, party: Vec<String> },
+    LobbyReady { ready: bool },
+    LobbyStart,
+    LobbyLeave,
 }
 
 /// A render-ready combatant view for the battle screen.
@@ -160,6 +168,14 @@ pub enum ServerMsg {
         skills: Vec<SkillLine>,
         classes: Vec<String>,
     },
+    /// Co-op lobby state — members are (player_id, username, ready).
+    LobbyState {
+        code: String,
+        host: String,
+        members: Vec<(String, String, bool)>,
+    },
+    /// The lobby was disbanded / this player left it.
+    LobbyClosed,
     Disconnected,
 }
 
@@ -455,8 +471,11 @@ impl Inner {
 
     fn send_cmd(&mut self, cmd: ClientCmd) {
         match cmd {
+            // The client's direct enter is always a solo (private) dive; co-op
+            // goes through the lobby. (Bot tests that want grouping send raw JSON
+            // without `solo`.)
             ClientCmd::EnterMaze { party } => {
-                self.send_env(wr::EnterMaze::TYPE, json!({ "party": party }))
+                self.send_env(wr::EnterMaze::TYPE, json!({ "party": party, "solo": true }))
             }
             ClientCmd::Move { dx, dy } => {
                 self.input_seq += 1;
@@ -536,6 +555,17 @@ impl Inner {
                 wr::BeginExtraction::TYPE,
                 json!({ "method": "portal", "portal_entity_id": "portal", "item_id": null }),
             ),
+            ClientCmd::LobbyCreate { party } => {
+                self.send_env(wl::Create::TYPE, json!({ "party": party }))
+            }
+            ClientCmd::LobbyJoin { code, party } => {
+                self.send_env(wl::Join::TYPE, json!({ "code": code, "party": party }))
+            }
+            ClientCmd::LobbyReady { ready } => {
+                self.send_env(wl::Ready::TYPE, json!({ "ready": ready }))
+            }
+            ClientCmd::LobbyStart => self.send_env(wl::Start::TYPE, json!({})),
+            ClientCmd::LobbyLeave => self.send_env(wl::Leave::TYPE, json!({})),
             ClientCmd::Connect { .. } => {}
         }
     }
@@ -566,6 +596,28 @@ impl Inner {
                 }
             }
             "run.started" => self.out.push_back(ServerMsg::RunStarted),
+            "lobby.state" => {
+                let members = raw.payload["members"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|m| {
+                                (
+                                    m["player_id"].as_str().unwrap_or("").to_string(),
+                                    m["username"].as_str().unwrap_or("").to_string(),
+                                    m["ready"].as_bool().unwrap_or(false),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::LobbyState {
+                    code: raw.payload["code"].as_str().unwrap_or("").to_string(),
+                    host: raw.payload["host_player_id"].as_str().unwrap_or("").to_string(),
+                    members,
+                });
+            }
+            "lobby.closed" => self.out.push_back(ServerMsg::LobbyClosed),
             "world.snapshot" => {
                 if let Ok(s) = serde_json::from_value::<wm::Snapshot>(raw.payload) {
                     let entities = s
