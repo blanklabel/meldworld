@@ -1564,6 +1564,7 @@ impl GameState {
 
     fn handle_battle_end(&mut self, outcome: BattleOutcome) -> Vec<Outgoing> {
         let mut out = Vec::new();
+        let balance = self.balance.clone();
         let Some(inst) = self.instance.as_mut() else {
             return out;
         };
@@ -1616,7 +1617,7 @@ impl GameState {
                 }
                 // Award XP to every participant; return their avatars to active.
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
-                    r.award_xp(xp_reward);
+                    r.award_xp(xp_reward, &balance);
                 }
                 for pid in &members {
                     if let Some(a) = inst.arena.avatar_mut(pid) {

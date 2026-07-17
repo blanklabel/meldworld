@@ -35,6 +35,21 @@ pub struct Fighter {
     pub atk: i32,
     pub def: i32,
     pub speed_stat: i32,
+    /// The four attributes (Str/Mnd/Dex/Wll). Populated for player heroes from the
+    /// class × level growth curve (see `meld-run`); zero for monsters. Derived
+    /// stats (`atk`/`max_hp`/`speed_stat`/`spell_power`/`dodge`) already fold these
+    /// in — the raw values are carried only to surface them to the client.
+    pub str_: i32,
+    pub mnd: i32,
+    pub dex: i32,
+    pub wll: i32,
+    /// Mnd-derived power for manifestations/spells (Psyker Foci deal
+    /// `spell_power × mult`, not `atk × mult`). Defaults to `atk`.
+    pub spell_power: i32,
+    /// Dex-derived chance (0.0–1.0) to completely avoid an incoming *physical*
+    /// attack (Attack / Power Strike / creature attacks). Psychic manifestations
+    /// are unavoidable. Zero unless Dex is above the dodge floor.
+    pub dodge: f64,
     pub gauge: f64,
     pub statuses: Vec<String>,
     /// Content key of the fighter's class (`squire`/`psyker`/`resonant`/…), surfaced
@@ -92,6 +107,12 @@ impl Fighter {
             atk,
             def,
             speed_stat,
+            str_: 0,
+            mnd: 0,
+            dex: 0,
+            wll: 0,
+            spell_power: atk,
+            dodge: 0.0,
             gauge: 0.0,
             statuses: Vec::new(),
             class_key: String::new(),
@@ -136,6 +157,13 @@ impl Fighter {
                 v.push(format!("focus:{}:{}", f.kind, f.stacks));
             }
         }
+        // Attributes for the hero inspect (only heroes carry them; monsters keep 0).
+        if self.str_ != 0 || self.mnd != 0 || self.dex != 0 || self.wll != 0 {
+            v.push(format!("str:{}", self.str_));
+            v.push(format!("mnd:{}", self.mnd));
+            v.push(format!("dex:{}", self.dex));
+            v.push(format!("wll:{}", self.wll));
+        }
         v.extend(self.statuses.iter().cloned());
         v
     }
@@ -170,9 +198,11 @@ fn prepend_effects(res: &mut Resolution, pre: Vec<ResolvedEffect>) {
 /// Psyker unlocks more manifestations as it levels.
 pub fn manifest_unlock_level(kind: &str) -> Option<i32> {
     match kind {
-        "gravity_well" | "kinetic_aegis" => Some(1),
-        "mind_spike" => Some(3),
-        "temporal_anchor" => Some(5),
+        // The unlock numbers live in one place (meld_proto::skills); this just
+        // gates "is a real manifestation" so unknown kinds return None.
+        "gravity_well" | "kinetic_aegis" | "mind_spike" | "temporal_anchor" => {
+            Some(meld_proto::skills::unlock_level(kind))
+        }
         _ => None,
     }
 }
@@ -566,9 +596,10 @@ impl Battle {
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
-        let dmg = self.damage(atk, def, defending);
-
-        let effects = self.apply_damage(target_i, dmg);
+        let effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(atk, def, defending)),
+        };
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
         Ok(Resolution {
@@ -592,6 +623,13 @@ impl Battle {
         skill_kind: Option<&str>,
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
+        // A skill the hero hasn't leveled into yet is rejected server-side (the
+        // client also greys it out; this is the authoritative backstop).
+        if let Some(k) = skill_kind {
+            if !meld_proto::skills::is_unlocked(k, self.fighters[actor_i].level) {
+                return Err(Reject::ValidationError("skill not unlocked at this level"));
+            }
+        }
         if skill_kind == Some("second_wind") {
             let raw = ((self.fighters[actor_i].max_hp as f64) * self.skill_heal_fraction).round()
                 as i32;
@@ -622,8 +660,10 @@ impl Battle {
             (self.fighters[actor_i].atk as f64 * self.skill_power_mult).round() as i32;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
-        let dmg = self.damage(scaled_atk, def, defending);
-        let effects = self.apply_damage(target_i, dmg);
+        let effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+        };
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
@@ -817,8 +857,9 @@ impl Battle {
         effects
     }
 
-    /// Offensive Manifestation tick: `atk * mult * stacks` psychic damage to the
-    /// first living enemy, **ignoring defence** (def treated as 0).
+    /// Offensive Manifestation tick: `spell_power * mult * stacks` psychic damage
+    /// to the first living enemy, **ignoring defence** (def treated as 0). Scales
+    /// with the Psyker's Mnd (which feeds `spell_power`), not its physical atk.
     fn tick_offense(&mut self, psyker_i: usize, mult: f64, stacks: u8) -> Vec<ResolvedEffect> {
         let Some(t) = self
             .fighters
@@ -827,8 +868,8 @@ impl Battle {
         else {
             return Vec::new();
         };
-        let atk = self.fighters[psyker_i].atk;
-        let dmg = ((atk as f64) * mult * stacks as f64).round() as i32;
+        let power = self.fighters[psyker_i].spell_power;
+        let dmg = ((power as f64) * mult * stacks as f64).round() as i32;
         self.apply_damage(t, dmg.max(self.min_damage))
     }
 
@@ -994,8 +1035,10 @@ impl Battle {
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
-        let dmg = self.damage(atk, def, defending);
-        let effects = self.apply_damage(target_i, dmg);
+        let effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(atk, def, defending)),
+        };
         self.reset_gauge(actor_i);
         Some(Resolution {
             action_id: None,
@@ -1005,6 +1048,27 @@ impl Battle {
             flee_success: None,
             effects,
         })
+    }
+
+    /// Roll the target's Dex-derived dodge against a *physical* attack. On a
+    /// dodge returns the whiff effect (0 HP change, `dodge` status) so the caller
+    /// deals no damage; otherwise `None`. The RNG only advances when the target
+    /// actually has dodge, so combatants with no Dex bonus don't perturb the
+    /// deterministic stream (existing tests/replays are unaffected).
+    fn roll_dodge(&mut self, target_i: usize) -> Option<Vec<ResolvedEffect>> {
+        let chance = self.fighters[target_i].dodge;
+        if chance > 0.0 && self.next_rand_unit() < chance {
+            let t = &self.fighters[target_i];
+            Some(vec![ResolvedEffect {
+                target_id: t.combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some("dodge".to_string()),
+                hp_after: t.hp,
+            }])
+        } else {
+            None
+        }
     }
 
     fn apply_damage(&mut self, target_i: usize, dmg: i32) -> Vec<ResolvedEffect> {
@@ -1086,61 +1150,33 @@ mod tests {
     }
 
     fn player(id: &str, speed: i32) -> Fighter {
-        let faction = "player";
-        Fighter {
-            combatant_id: id.to_string(),
-            kind: CombatantKind::Player,
-            player_id: Some(format!("p-{id}")),
-            monster_kind: None,
-            level: 1,
-            hp: 40,
-            max_hp: 40,
-            atk: 12,
-            def: 3,
-            speed_stat: speed,
-            gauge: 0.0,
-            statuses: vec![],
-            class_key: String::new(),
-            barrier: 0,
-            regen: 0,
-            faction: faction.to_string(),
-            flees: false,
-            focus_max: 0,
-            foci: vec![],
-            defending: false,
-            awaiting: false,
-            ready_tick: 0,
-            alive: true,
-        }
+        Fighter::new(
+            id.to_string(),
+            CombatantKind::Player,
+            Some(format!("p-{id}")),
+            None,
+            1,
+            40,
+            12,
+            3,
+            speed,
+        )
     }
 
     fn monster(id: &str, hp: i32, speed: i32) -> Fighter {
-        let faction = "beast";
-        Fighter {
-            combatant_id: id.to_string(),
-            kind: CombatantKind::Monster,
-            player_id: None,
-            monster_kind: Some("forest_bloom_stalker".into()),
-            level: 1,
+        let mut f = Fighter::new(
+            id.to_string(),
+            CombatantKind::Monster,
+            None,
+            Some("forest_bloom_stalker".into()),
+            1,
             hp,
-            max_hp: hp,
-            atk: 14,
-            def: 4,
-            speed_stat: speed,
-            gauge: 0.0,
-            statuses: vec![],
-            class_key: String::new(),
-            barrier: 0,
-            regen: 0,
-            faction: faction.to_string(),
-            flees: false,
-            focus_max: 0,
-            foci: vec![],
-            defending: false,
-            awaiting: false,
-            ready_tick: 0,
-            alive: true,
-        }
+            14,
+            4,
+            speed,
+        );
+        f.faction = "beast".to_string();
+        f
     }
 
     /// A creature of a specific faction.
@@ -1620,10 +1656,13 @@ mod tests {
     /// and returns the heal effect of `submit`ing the given skill/item.
     fn wounded_heal(skill: Option<&str>, item: Option<&str>) -> ResolvedEffect {
         let b = balance();
+        // Level 2 so Second Wind (unlocks at 2) is usable; Item is level-agnostic.
+        let mut caster = player("a", 110);
+        caster.level = 2;
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![player("a", 110)],
+            vec![caster],
             vec![monster("m", 1000, 200)],
             &b,
             7,
@@ -1660,6 +1699,61 @@ mod tests {
         assert_eq!(eff.kind, EffectKind::Heal);
         assert_eq!(eff.amount, Some(12));
         assert_eq!(eff.hp_after, 30);
+    }
+
+    #[test]
+    fn locked_skill_is_rejected_until_leveled() {
+        let b = balance();
+        // A level-1 Squire cannot use Second Wind (unlocks at 2).
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 110)], // level 1
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        // Fill the gauge so the action is otherwise legal.
+        tick_times(&mut battle, 20);
+        let res = battle.submit(
+            "a",
+            "h".into(),
+            BattleActionKind::Skill,
+            None,
+            Some("second_wind".to_string()),
+            None,
+        );
+        assert!(res.is_err(), "level-1 Second Wind must be rejected");
+    }
+
+    #[test]
+    fn high_dodge_target_avoids_some_hits() {
+        let b = balance();
+        // A fast monster hammers a dodgy, high-HP player; over many swings the
+        // player's 35% dodge whiffs some of them (a `dodge` status, 0 HP loss).
+        let mut dodgy = player("a", 1); // slow so it never acts; just soaks hits
+        dodgy.dodge = 0.35;
+        dodgy.hp = 100_000;
+        dodgy.max_hp = 100_000;
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![dodgy],
+            vec![monster("m", 1000, 400)], // fast attacker
+            &b,
+            7,
+        );
+        let mut dodges = 0;
+        for _ in 0..300 {
+            for ev in battle.tick() {
+                if let Event::Resolved(r) = ev {
+                    if r.effects.iter().any(|e| e.status.as_deref() == Some("dodge")) {
+                        dodges += 1;
+                    }
+                }
+            }
+        }
+        assert!(dodges > 0, "a 35%-dodge target should whiff at least one attack");
     }
 
     #[test]

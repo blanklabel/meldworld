@@ -146,6 +146,23 @@ New classes: add the enum variant (`meld-proto` `CharacterClass`), `[player.<key
 any `[battle]` tunables, the `class_key` mapping (`meld-run`), the kit in `meld-battle`, and the
 client menu branch (`menu_entries` keyed off the active hero's `class:` status).
 
+## Leveling & attributes
+
+- **XP curve doubles per level**: `xp_to_next(L) = xp_base × xp_growth_factor^(L-1)`
+  (`[runs]` in balance; `meld-run::xp_to_next`). `PlayerRun::award_xp` levels up on victory.
+- **Four attributes** (`[player.<key>]`: base + `*_per_level`): **Str**→physical atk,
+  **Mnd**→manifestation/spell power, **Dex**→ATB speed + dodge, **Wll**→HP + defence. A hero's
+  attribute = base + per-level gain × (level−1). Each derived stat = *class base stat* +
+  (attribute − base attribute) × coefficient (`[attributes]`), so **a level-1 hero has exactly
+  its class base stats** (nothing shifts) and every level's auto-gained attributes become growth.
+  Derivation lives in `meld-run::party_fighters`; the `Fighter` carries `str_/mnd/dex/wll`,
+  `spell_power` (Mnd-driven, used by Psyker Foci instead of `atk`) and `dodge`. Attributes ride the
+  wire on `statuses` (`str:`/`mnd:`/`dex:`/`wll:`), shown in the battle party cell.
+- **Skill unlocks by level**: the single source of truth is `meld_proto::skills::unlock_level`
+  (server rejects a locked skill in `resolve_skill`; client greys the menu row). Second Wind L2,
+  Mind Spike L3, Temporal Anchor L5, Regen Boon L2, Ward L3; everything else L1.
+- *Deferred*: MP (the ATB adaptation has no cast resource yet — Mnd would gate it later).
+
 ## Deep Dives
 
 - **Combat / ATB** (gauges, turns, flee, merge, statuses): [`behaviors/combat-atb.md`](behaviors/combat-atb.md)

@@ -30,6 +30,26 @@ backpack_slots = 40                   # limits.md
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]
 extraction_channel_ms = 2500
+# Level curve: XP to advance from level L is xp_base * xp_growth_factor^(L-1) —
+# the classic "double the requirement each level". [TUNABLE]
+xp_base = 80
+xp_growth_factor = 2.0
+
+# How the four attributes (Str/Mnd/Dex/Wll) turn into combat stats. A hero's
+# attribute = its class base + per-level gain * (level-1); the derived stat is the
+# class base stat + (attribute - base attribute) * the coefficient here, so a
+# level-1 hero has exactly its class base stats and each level adds growth. All
+# coefficients [TUNABLE].
+[attributes]
+str_to_atk = 1.0        # +physical attack per Str above base (Str -> damage)
+mnd_to_power = 1.2      # +manifestation/skill power per Mnd above base (Mnd -> magic dmg)
+dex_to_speed = 1.5      # +ATB speed_stat per Dex above base (Dex -> act faster)
+wll_to_hp = 2.5         # +max HP per Wll above base (Wll -> HP)
+wll_to_def = 0.25       # +defence per Wll above base (Wll -> resistance)
+dodge_dex_floor = 10    # Dex at/below this gives no dodge (every class starts here
+                        # or below, so dodge is earned purely through leveling)
+dodge_per_dex = 0.012   # dodge chance gained per Dex above the floor
+dodge_cap = 0.35        # maximum dodge chance
 
 [battle]
 tick_ms = 100                    # CANON §B ATB tick
@@ -259,6 +279,16 @@ base_hp = 40
 base_atk = 12
 base_def = 3
 speed_stat = 110
+# Attributes: level-1 baseline + per-level auto-gain. The Squire is a martial:
+# it hardens (Str for damage, Wll for HP) with a little Dex. [TUNABLE]
+str = 12
+mnd = 4
+dex = 8
+wll = 12
+str_per_level = 3
+mnd_per_level = 0
+dex_per_level = 1
+wll_per_level = 2
 
 # Psyker: a squishy psychic controller. Less HP and armour than a Squire, but
 # its Mind Spike ignores enemy defence (so it shines where raw attacks stall,
@@ -269,6 +299,16 @@ base_hp = 34
 base_atk = 13
 base_def = 2
 speed_stat = 100
+# The Psyker's whole kit scales with Mnd (manifestation power); it gains Mnd fast
+# with a trickle of Dex/Wll and almost no Str. [TUNABLE]
+str = 6
+mnd = 16
+dex = 10
+wll = 8
+str_per_level = 0
+mnd_per_level = 4
+dex_per_level = 1
+wll_per_level = 1
 
 # Resonant: a healer that trades its own HP for its party's survival. Beefier HP
 # pool (it spends it), modest attack, innate Regen (see [battle]). [TUNABLE]
@@ -277,3 +317,13 @@ base_hp = 46
 base_atk = 8
 base_def = 3
 speed_stat = 95
+# The Resonant spends HP to heal, so it stacks Wll (HP) and Mnd (heal/skill
+# power) and barely moves Str/Dex. [TUNABLE]
+str = 8
+mnd = 12
+dex = 7
+wll = 14
+str_per_level = 1
+mnd_per_level = 2
+dex_per_level = 0
+wll_per_level = 3
