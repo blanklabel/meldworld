@@ -171,6 +171,7 @@ fn main() {
         .init_resource::<ProgressData>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
+        .init_resource::<WorldPath>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
         .init_resource::<LobbyData>()
@@ -210,6 +211,7 @@ fn main() {
                 overlay_input,
                 overworld_input,
                 sync_overworld_sprites,
+                draw_path_trail,
                 follow_camera,
                 update_overworld_hud,
                 render_overlay,
@@ -325,15 +327,17 @@ struct OwEntity {
     x: f32,
     y: f32,
     kind: EntityKind,
-    /// Creature content id (monsters only) — drives the label.
+    /// Creature content id (monsters) or terrain kind (obstacles) — drives label/render.
     name: Option<String>,
     /// Creature faction (monsters only) — drives the colour.
     faction: Option<String>,
+    /// World-unit radius for obstacles; 0 otherwise.
+    radius: f32,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -342,10 +346,11 @@ impl OwEntity {
             kind: EntityKind::Monster,
             name: Some(name.to_string()),
             faction: Some(faction.to_string()),
+            radius: 0.0,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0 }
     }
 }
 
@@ -367,6 +372,18 @@ impl RunBackpack {
         self.items.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
     }
 }
+
+/// The guaranteed clear path (world-unit waypoints), drawn as a faint trail so the
+/// feasible route through the terrain is legible. `drawn` gates one-time spawning.
+#[derive(Resource, Default)]
+struct WorldPath {
+    points: Vec<(f32, f32)>,
+    drawn: bool,
+}
+
+/// Marker for spawned path-trail dots (despawned when the path changes).
+#[derive(Component)]
+struct PathTrail;
 
 #[derive(Resource, Default)]
 struct BattleData {
@@ -955,6 +972,7 @@ fn pump_net(
     mut prog: ResMut<ProgressData>,
     mut lobby: ResMut<LobbyData>,
     mut backpack: ResMut<RunBackpack>,
+    mut world_path: ResMut<WorldPath>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -962,6 +980,10 @@ fn pump_net(
     while let Some(msg) = net.0.try_recv() {
         match msg {
             ServerMsg::Backpack { items } => backpack.items = items,
+            ServerMsg::WorldPath { points } => {
+                world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
+                world_path.drawn = false;
+            }
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
                 if session.coop {
@@ -1016,6 +1038,7 @@ fn pump_net(
                             kind: e.kind,
                             name: e.monster_kind,
                             faction: e.faction,
+                            radius: e.radius as f32,
                         },
                     );
                 }
@@ -1504,7 +1527,9 @@ fn spawn_overworld_scenery(mut commands: Commands) {
         (500.0, 1000.0, "tundra"),
         (1000.0, 1400.0, "mire"),
     ];
-    let band_h = 44.0 * TILE_PX;
+    // Tall enough to cover the full ±lateral play area (28) with margin, so the
+    // biome ground fills the screen as you scroll north/south.
+    let band_h = 72.0 * TILE_PX;
     for (start, end, biome) in bands {
         let w = (end - start) * TILE_PX;
         let cx = (start + end) * 0.5 * TILE_PX;
@@ -1528,8 +1553,8 @@ fn spawn_overworld_scenery(mut commands: Commands) {
         ));
         x += 6.0;
     }
-    let mut y = -18.0_f32;
-    while y <= 18.0 {
+    let mut y = -30.0_f32;
+    while y <= 30.0 {
         commands.spawn((
             WorldScenery,
             Sprite::from_color(grid, Vec2::new(x_span, 1.5)),
@@ -1553,6 +1578,45 @@ fn follow_camera(
         tf.translation.x = me.x * TILE_PX;
         tf.translation.y = -me.y * TILE_PX;
     }
+}
+
+/// Draw the guaranteed clear path as a faint dotted trail so the feasible route
+/// through the terrain is legible. Redraws whenever the trail sprites are gone
+/// (e.g. after returning from a battle, where scenery is despawned).
+fn draw_path_trail(
+    mut commands: Commands,
+    mut world_path: ResMut<WorldPath>,
+    existing: Query<Entity, With<PathTrail>>,
+) {
+    if world_path.points.len() < 2 {
+        return;
+    }
+    if world_path.drawn && !existing.is_empty() {
+        return;
+    }
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let col = Color::srgba(0.95, 0.9, 0.5, 0.13);
+    let step = 2.0_f32; // world units between dots
+    for w in world_path.points.windows(2) {
+        let (ax, ay) = w[0];
+        let (bx, by) = w[1];
+        let seg = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let n = (seg / step).ceil().max(1.0) as i32;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let x = ax + (bx - ax) * t;
+            let y = ay + (by - ay) * t;
+            commands.spawn((
+                PathTrail,
+                WorldScenery,
+                Sprite::from_color(col, Vec2::splat(6.0)),
+                Transform::from_xyz(x * TILE_PX, -y * TILE_PX, 0.1),
+            ));
+        }
+    }
+    world_path.drawn = true;
 }
 
 /// Update the distance/biome HUD from the player's authoritative position.
@@ -1853,16 +1917,18 @@ fn sync_overworld_sprites(
         if seen.contains_key(id) {
             continue;
         }
-        let size = match e.kind {
-            EntityKind::Player => 18.0,
-            EntityKind::Monster => 28.0,
-            EntityKind::Portal => 26.0,
-            EntityKind::Resource => 16.0,
+        let (size, z) = match e.kind {
+            EntityKind::Player => (18.0, 1.0),
+            EntityKind::Monster => (28.0, 1.0),
+            EntityKind::Portal => (26.0, 0.9),
+            EntityKind::Resource => (16.0, 0.9),
+            // Obstacles draw at their true world size, behind the actors.
+            EntityKind::Obstacle => ((e.radius * 2.0 * TILE_PX).max(8.0), 0.4),
         };
         let mut ent = commands.spawn((
             WorldEntity(id.clone()),
             Sprite::from_color(entity_color(id, e, &session.player_id), Vec2::splat(size)),
-            Transform::from_xyz(e.x * TILE_PX, -e.y * TILE_PX, 1.0),
+            Transform::from_xyz(e.x * TILE_PX, -e.y * TILE_PX, z),
         ));
         // A small floating label above creatures and portals so a march through
         // the areas reads clearly (which creature, where the exit is).
@@ -1875,7 +1941,7 @@ fn sync_overworld_sprites(
             }),
             EntityKind::Portal => Some("portal".to_string()),
             EntityKind::Resource => e.name.as_deref().map(|k| format!("⛏ {}", nice_name(k))),
-            EntityKind::Player => None,
+            EntityKind::Obstacle | EntityKind::Player => None,
         };
         if let Some(text) = label {
             ent.with_children(|p| {
@@ -1893,6 +1959,19 @@ fn sync_overworld_sprites(
 /// Turn a creature content id into a display name (`dune_wyrm` → `dune wyrm`).
 fn nice_name(kind: &str) -> String {
     kind.replace('_', " ")
+}
+
+/// Colour for a terrain obstacle kind — greenery, stone, water and lava read
+/// distinctly so the map's geography is legible.
+fn obstacle_color(kind: &str) -> Color {
+    match kind {
+        "tree" | "cactus" | "mire_root" | "fungal_wall" => Color::srgb(0.18, 0.42, 0.22), // foliage
+        "pond" | "frozen_pond" | "bog_pool" => Color::srgb(0.22, 0.4, 0.6), // water
+        "lava" => Color::srgb(0.75, 0.32, 0.12), // molten
+        "ice_spire" | "snow_drift" => Color::srgb(0.72, 0.82, 0.9), // ice
+        // cliffs, boulders, dunes, spires, cinder rock — stone tones
+        _ => Color::srgb(0.42, 0.4, 0.38),
+    }
 }
 
 /// A distinct, deterministic colour per creature **faction** (FNV-1a hash → hue),
@@ -1913,6 +1992,7 @@ fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
         },
         EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
         EntityKind::Resource => Color::srgb(0.85, 0.75, 0.35), // amber node
+        EntityKind::Obstacle => obstacle_color(e.name.as_deref().unwrap_or("")),
         EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
         EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
     }

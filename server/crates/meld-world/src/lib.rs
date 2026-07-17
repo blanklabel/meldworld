@@ -85,6 +85,18 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// Impassable terrain feature kinds per biome (drives client rendering; all block
+/// movement identically). Structural content.
+fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
+    match biome {
+        "forest" => &["tree", "boulder", "pond"],
+        "desert" => &["dune", "rock_spire", "cactus"],
+        "ashfall" => &["cliff", "lava", "cinder_rock"],
+        "tundra" => &["ice_spire", "frozen_pond", "snow_drift"],
+        _ => &["bog_pool", "mire_root", "fungal_wall"],
+    }
+}
+
 /// A tiny deterministic PRNG (splitmix64). Same seed ⇒ same world, always —
 /// the determinism invariant (world-generation.md §Invariants). No external rng
 /// dependency (keeps the crate lean and wasm-neutral).
@@ -216,6 +228,46 @@ pub struct Area {
     pub portal: Position,
 }
 
+/// An impassable terrain feature (tree, cliff, pond, …). Circular for the spike;
+/// the player and roaming creatures cannot enter its radius.
+#[derive(Debug, Clone)]
+pub struct Obstacle {
+    pub entity_id: Id,
+    /// Content kind (`tree`/`cliff`/`lava`/…) — drives client rendering.
+    pub kind: String,
+    pub position: Position,
+    pub radius: f64,
+}
+
+/// Shortest distance from point `p` to the polyline `path` (min over segments).
+fn dist_to_path(p: &Position, path: &[Position]) -> f64 {
+    if path.is_empty() {
+        return f64::INFINITY;
+    }
+    if path.len() == 1 {
+        return p.distance_to(&path[0]);
+    }
+    let mut best = f64::INFINITY;
+    for w in path.windows(2) {
+        best = best.min(dist_point_segment(p, &w[0], &w[1]));
+    }
+    best
+}
+
+/// Distance from point `p` to segment `a`–`b`.
+fn dist_point_segment(p: &Position, a: &Position, b: &Position) -> f64 {
+    let (abx, aby) = (b.x - a.x, b.y - a.y);
+    let (apx, apy) = (p.x - a.x, p.y - a.y);
+    let len2 = abx * abx + aby * aby;
+    let t = if len2 <= 1e-9 {
+        0.0
+    } else {
+        ((apx * abx + apy * aby) / len2).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (a.x + t * abx, a.y + t * aby);
+    ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt()
+}
+
 /// A player avatar on the overworld.
 #[derive(Debug, Clone)]
 pub struct Avatar {
@@ -235,6 +287,12 @@ pub struct Arena {
     pub areas: Vec<Area>,
     pub monsters: Vec<MonsterSpawn>,
     pub resources: Vec<ResourceNode>,
+    /// Impassable biome terrain (trees/cliffs/water/…). Never intrudes on `path`.
+    pub obstacles: Vec<Obstacle>,
+    /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
+    /// of `path_clear_radius` around it holds no obstacles, so the exit is always
+    /// reachable; the client draws it as a faint trail.
+    pub path: Vec<Position>,
     /// The single fixed extraction portal, deep at the end of the last area.
     /// Extraction is otherwise the Town Portal item (works anywhere).
     pub portal: Position,
@@ -243,6 +301,8 @@ pub struct Arena {
     x_min: f64,
     x_max: f64,
     lateral: f64,
+    /// The avatar's collision radius against obstacles.
+    player_radius: f64,
     touch_radius: f64,
     interaction_radius: f64,
     sim_dt: f64,
@@ -265,6 +325,9 @@ impl Arena {
         let mut areas: Vec<Area> = Vec::new();
         let mut monsters: Vec<MonsterSpawn> = Vec::new();
         let mut resources: Vec<ResourceNode> = Vec::new();
+        let mut obstacles: Vec<Obstacle> = Vec::new();
+        // The guaranteed clear path, waypoint by waypoint (starts at the hub).
+        let mut path: Vec<Position> = vec![Position::new(0.0, 0.0)];
         let mut cursor = 0.0_f64; // current x as we lay areas end-to-end
 
         for i in 0..wg.area_count.max(1) {
@@ -304,6 +367,8 @@ impl Arena {
                     monster_idxs: area_idxs,
                     portal: Position::new(portal_x, 0.0),
                 });
+                // The tutorial path is a straight, obstacle-free line to y=0.
+                path.push(Position::new(end_x, 0.0));
                 cursor = end_x;
                 continue;
             }
@@ -360,6 +425,49 @@ impl Arena {
                 monster_idxs: area_idxs,
                 portal: Position::new(end_x - wg.portal_setback, 0.0),
             });
+
+            // The clear path meanders to a fresh ±y at this area's end. The last
+            // area's waypoint IS the portal, so the obstacle pass below keeps the
+            // final approach clear too. This completes the path segment spanning
+            // the area, letting obstacles avoid the whole tube by construction.
+            let is_last = i + 1 == wg.area_count.max(1);
+            if is_last {
+                path.push(Position::new(end_x - wg.portal_setback, 0.0));
+            } else {
+                path.push(Position::new(end_x, wg.path_meander * rng.signed()));
+            }
+
+            // Scatter impassable biome terrain, rejecting anything that would block
+            // the clear path tube or bury a creature/resource. Rejection-sampled so
+            // the path (and the exit) is always feasible by construction.
+            let okinds = obstacles_for_biome(biome);
+            let n_obs = wg.obstacles_per_area.max(0.0).round() as usize;
+            let (mut placed, mut attempts) = (0usize, 0usize);
+            while placed < n_obs && attempts < n_obs * 10 {
+                attempts += 1;
+                let ox = start_x + rng.unit() * length;
+                let oy = rng.signed() * (wg.lateral_half_extent - 1.0);
+                let radius = wg.obstacle_min_radius
+                    + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                let pos = Position::new(ox, oy);
+                // Keep the guaranteed path tube clear.
+                if dist_to_path(&pos, &path) < wg.path_clear_radius + radius {
+                    continue;
+                }
+                // Don't bury a creature or resource node under terrain.
+                let buries = monsters.iter().any(|m| m.position.distance_to(&pos) < radius + 1.5)
+                    || resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.5);
+                if buries {
+                    continue;
+                }
+                obstacles.push(Obstacle {
+                    entity_id: format!("obs-{}", obstacles.len()),
+                    kind: okinds[rng.below(okinds.len())].to_string(),
+                    position: pos,
+                    radius,
+                });
+                placed += 1;
+            }
             cursor = end_x;
         }
 
@@ -374,11 +482,14 @@ impl Arena {
             areas,
             monsters,
             resources,
+            obstacles,
+            path,
             portal,
             avatars: Vec::new(),
-            x_min: -wg.lateral_half_extent, // a little slack behind the hub
+            x_min: -4.0, // a little slack behind the hub
             x_max,
             lateral: wg.lateral_half_extent,
+            player_radius: wg.player_radius,
             touch_radius: balance.world.touch_radius_tiles,
             interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
@@ -407,6 +518,8 @@ impl Arena {
         let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
         let (wander, chase) = (self.wander_speed, self.chase_speed);
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
+        let obstacles: Vec<(Position, f64)> =
+            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
 
         for m in self.monsters.iter_mut() {
             if m.defeated || m.in_battle {
@@ -448,8 +561,17 @@ impl Arena {
                 // stay in their biome; distant ones never wander into a safe area).
                 let lo_x = x_min.max(m.area_min_x);
                 let hi_x = x_max.min(m.area_max_x);
-                m.position.x = (m.position.x + dx * step).max(lo_x).min(hi_x);
-                m.position.y = (m.position.y + dy * step).max(-lateral).min(lateral);
+                let nx = (m.position.x + dx * step).max(lo_x).min(hi_x);
+                let ny = (m.position.y + dy * step).max(-lateral).min(lateral);
+                // Creatures don't walk through terrain either (slide per axis).
+                let cand = Position::new(nx, ny);
+                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) {
+                    m.position = cand;
+                } else if !Self::obstacle_blocks(&obstacles, &Position::new(nx, m.position.y), 0.5) {
+                    m.position.x = nx;
+                } else if !Self::obstacle_blocks(&obstacles, &Position::new(m.position.x, ny), 0.5) {
+                    m.position.y = ny;
+                }
             }
         }
     }
@@ -517,9 +639,16 @@ impl Arena {
         self.avatars.iter_mut().find(|a| a.player_id == player_id)
     }
 
+    /// Is `p` (a body of `radius`) inside any impassable obstacle?
+    fn obstacle_blocks(obstacles: &[(Position, f64)], p: &Position, radius: f64) -> bool {
+        obstacles.iter().any(|(c, r)| p.distance_to(c) < r + radius)
+    }
+
     /// Integrate one movement intent against authoritative position, clamped to
-    /// the corridor bounds and max speed (server owns movement — CANON.md §S,
-    /// D11). Returns the authoritative position after integration.
+    /// the world bounds and max speed, and blocked by biome obstacles (server owns
+    /// movement — CANON.md §S, D11). Collisions **slide**: if the full step hits an
+    /// obstacle, the axis-aligned components are tried so you glide along terrain
+    /// rather than sticking. Returns the authoritative position after integration.
     pub fn apply_move(
         &mut self,
         player_id: &str,
@@ -529,6 +658,9 @@ impl Arena {
     ) -> Option<Position> {
         let dt = self.sim_dt;
         let (x_min, x_max, lateral) = (self.x_min, self.x_max, self.lateral);
+        let pr = self.player_radius;
+        let obstacles: Vec<(Position, f64)> =
+            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
         let a = self.avatar_mut(player_id)?;
         if a.state != "active" {
             return Some(a.position); // can't move while in battle/channeling/sleeping
@@ -541,8 +673,26 @@ impl Arena {
             (dir_x, dir_y)
         };
         let step = a.max_speed_tiles_per_sec * dt;
-        a.position.x = (a.position.x + nx * step).max(x_min).min(x_max);
-        a.position.y = (a.position.y + ny * step).max(-lateral).min(lateral);
+        let cur = a.position;
+        let clamp = |x: f64, y: f64| {
+            Position::new(x.max(x_min).min(x_max), y.max(-lateral).min(lateral))
+        };
+        let full = clamp(cur.x + nx * step, cur.y + ny * step);
+        let dest = if !Self::obstacle_blocks(&obstacles, &full, pr) {
+            full
+        } else {
+            // Slide: try moving along only x, then only y.
+            let sx = clamp(cur.x + nx * step, cur.y);
+            let sy = clamp(cur.x, cur.y + ny * step);
+            if !Self::obstacle_blocks(&obstacles, &sx, pr) {
+                sx
+            } else if !Self::obstacle_blocks(&obstacles, &sy, pr) {
+                sy
+            } else {
+                cur // fully blocked
+            }
+        };
+        a.position = dest;
         a.last_input_seq = input_seq;
         Some(a.position)
     }
@@ -708,6 +858,89 @@ mod tests {
         for n in &arena.resources {
             assert!(b.resource.contains_key(&n.kind), "resource {} in balance", n.kind);
         }
+    }
+
+    #[test]
+    fn terrain_generated_but_area0_stays_clear() {
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7);
+        assert!(!arena.obstacles.is_empty(), "biome terrain is generated");
+        let area0_end = arena.areas[0].end_x;
+        // The tutorial area is obstacle-free (deterministic onboarding).
+        assert!(
+            arena.obstacles.iter().all(|o| o.position.x > area0_end),
+            "no obstacles in area 0"
+        );
+        // Kinds map to a biome table (no stray content).
+        for o in &arena.obstacles {
+            assert!(o.radius > 0.0);
+        }
+    }
+
+    #[test]
+    fn no_obstacle_intrudes_on_the_clear_path() {
+        // The feasibility guarantee: every obstacle sits outside the path tube.
+        for seed in [1u64, 7, 42, 999, 123456] {
+            let b = Balance::load_default().unwrap();
+            let arena = Arena::generate(&b, seed);
+            for o in &arena.obstacles {
+                let d = dist_to_path(&o.position, &arena.path);
+                assert!(
+                    d >= b.worldgen.path_clear_radius - 1e-6,
+                    "seed {seed}: obstacle {} intrudes on the clear path (d={d:.2})",
+                    o.entity_id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_clear_path_actually_reaches_the_portal() {
+        // A walker that follows the waypoints reaches the portal without getting
+        // stuck on terrain — the route is feasible by construction, end to end.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 42);
+        let waypoints = arena.path.clone();
+        assert!(waypoints.len() >= 2);
+        arena.add_avatar("p".into(), 8.0);
+        let mut wp = 1usize;
+        let mut reached = false;
+        for _ in 0..50_000 {
+            let target = waypoints[wp];
+            let pos = arena.avatar("p").unwrap().position;
+            if pos.distance_to(&target) < 0.6 {
+                if wp + 1 >= waypoints.len() {
+                    reached = true;
+                    break;
+                }
+                wp += 1;
+                continue;
+            }
+            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
+        }
+        assert!(reached, "following the path should reach the portal");
+        let end = arena.avatar("p").unwrap().position;
+        assert!(end.distance_to(&arena.portal) < 1.5, "walker ended at the portal");
+    }
+
+    #[test]
+    fn obstacles_block_movement() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7);
+        let obs = arena.obstacles[0].clone();
+        arena.add_avatar("p".into(), 6.0);
+        // Stand just outside the obstacle and push straight into it.
+        let start = Position::new(obs.position.x - obs.radius - 1.0, obs.position.y);
+        arena.avatar_mut("p").unwrap().position = start;
+        for _ in 0..60 {
+            let p = arena.avatar("p").unwrap().position;
+            arena.apply_move("p", obs.position.x - p.x, obs.position.y - p.y, 0);
+        }
+        let p = arena.avatar("p").unwrap().position;
+        assert!(
+            p.distance_to(&obs.position) >= obs.radius - 1e-6,
+            "the avatar never enters the obstacle"
+        );
     }
 
     #[test]

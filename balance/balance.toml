@@ -142,14 +142,26 @@ first_monster_x = 8.0            # the single tutorial creature (area 0) sits he
 first_area_portal_gap = 6.0      # area 0's portal is this far past that creature (→ x=14)
 portal_setback = 3.0             # a portal sits this many tiles before an area's end
 world_margin = 10.0              # walkable distance past the final portal
-lateral_half_extent = 14.0       # how far a player may stray off the corridor (±y)
+lateral_half_extent = 28.0       # ±y half-height of the play area — tall enough to
+                                 # scroll north/south and explore, not a thin lane
 # Creatures no longer hug the centre line: from area 1 on they scatter across ±y
 # so the map feels populated in every direction (area 0 stays on the line for the
 # deterministic tutorial). Kept a touch inside lateral_half_extent.
-creature_lateral_spread = 11.0   # ± y range creatures spawn across (areas ≥ 1)
+creature_lateral_spread = 22.0   # ± y range creatures spawn across (areas ≥ 1)
 # Harvestable resource nodes scattered through each area (biome-specific kinds).
 resources_per_area = 3           # avg nodes per area
-resource_lateral_spread = 12.0   # ± y range nodes scatter across
+resource_lateral_spread = 22.0   # ± y range nodes scatter across
+
+# Biome terrain: impassable obstacles (trees/cliffs/water/…) scattered per area so
+# the map has real geography. A meandering CLEAR PATH is carved from the hub to the
+# deep portal — obstacles never intrude within `path_clear_radius` of it, so a route
+# to the exit is ALWAYS feasible. Area 0 (tutorial) stays obstacle-free. [TUNABLE]
+obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1)
+obstacle_min_radius = 0.9        # smallest feature (a lone tree/rock)
+obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
+path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
+path_meander = 18.0              # how far ±y the clear path wanders between areas
+player_radius = 0.5              # the avatar's collision radius vs obstacles
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

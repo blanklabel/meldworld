@@ -93,6 +93,8 @@ pub enum EntityKind {
     Portal,
     /// A harvestable resource node (`monster_kind` carries its content id/label).
     Resource,
+    /// An impassable terrain feature (`monster_kind` carries its kind, `radius` its size).
+    Obstacle,
 }
 
 /// A dynamic overworld entity.
@@ -102,10 +104,12 @@ pub struct EntityView {
     pub x: f64,
     pub y: f64,
     pub kind: EntityKind,
-    /// Creature content id for monsters (drives label); `None` otherwise.
+    /// Creature content id for monsters, or the terrain kind for obstacles.
     pub monster_kind: Option<String>,
     /// Creature faction for monsters (drives colour); `None` otherwise.
     pub faction: Option<String>,
+    /// World-unit radius for obstacles; `0.0` otherwise.
+    pub radius: f64,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -140,6 +144,8 @@ pub enum ServerMsg {
     Connected { player_id: String },
     Error { message: String },
     RunStarted,
+    /// Waypoints of the guaranteed clear path (world units) — drawn as a trail.
+    WorldPath { points: Vec<(f64, f64)> },
     /// Current run backpack (item_kind, quantity), sorted — drives the HUD.
     Backpack { items: Vec<(String, i32)> },
     Snapshot { entities: Vec<EntityView> },
@@ -638,6 +644,15 @@ impl Inner {
                 }
                 self.out.push_back(ServerMsg::RunStarted);
                 self.emit_backpack();
+                if let Some(pts) = raw.payload["path"].as_array() {
+                    let points: Vec<(f64, f64)> = pts
+                        .iter()
+                        .filter_map(|p| Some((p["x"].as_f64()?, p["y"].as_f64()?)))
+                        .collect();
+                    if !points.is_empty() {
+                        self.out.push_back(ServerMsg::WorldPath { points });
+                    }
+                }
             }
             "run.backpack_update" => {
                 for ch in raw.payload["changes"].as_array().into_iter().flatten() {
@@ -686,6 +701,7 @@ impl Inner {
                         .map(|e| {
                             // Server tags monsters `mob:<kind>:<faction>`, the portal
                             // `portal`, and players with their avatar state (`active`, …).
+                            let mut radius = 0.0;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
                                 Some(s) if s.starts_with("mob:") => {
@@ -700,6 +716,13 @@ impl Inner {
                                 Some(s) if s.starts_with("resource:") => {
                                     (EntityKind::Resource, Some(s["resource:".len()..].to_string()), None)
                                 }
+                                Some(s) if s.starts_with("obstacle:") => {
+                                    // obstacle:<kind>:<radius>
+                                    let rest = &s["obstacle:".len()..];
+                                    let (k, r) = rest.rsplit_once(':').unwrap_or((rest, "1"));
+                                    radius = r.parse().unwrap_or(1.0);
+                                    (EntityKind::Obstacle, Some(k.to_string()), None)
+                                }
                                 _ => (EntityKind::Player, None, None),
                             };
                             EntityView {
@@ -709,6 +732,7 @@ impl Inner {
                                 kind,
                                 monster_kind,
                                 faction,
+                                radius,
                             }
                         })
                         .collect();
