@@ -43,6 +43,8 @@ pub enum ClientCmd {
     TownPortal,
     /// Harvest a resource node the avatar is standing next to.
     Harvest { entity_id: String },
+    /// Opt into the ongoing fight nearby (the server checks proximity).
+    JoinBattle,
     /// Co-op lobby.
     LobbyCreate { party: Vec<String> },
     LobbyJoin { code: String, party: Vec<String> },
@@ -111,6 +113,8 @@ pub struct EntityView {
     pub faction: Option<String>,
     /// World-unit radius for obstacles; `0.0` otherwise.
     pub radius: f64,
+    /// True if this is a player currently in a fight (`avatar_state == in_battle`).
+    pub battling: bool,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -585,6 +589,7 @@ impl Inner {
             ClientCmd::Harvest { entity_id } => {
                 self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
             ClientCmd::LobbyCreate { party } => {
                 self.send_env(wl::Create::TYPE, json!({ "party": party }))
             }
@@ -727,6 +732,8 @@ impl Inner {
                                 }
                                 _ => (EntityKind::Player, None, None),
                             };
+                            let battling = matches!(kind, EntityKind::Player)
+                                && e.avatar_state.as_deref() == Some("in_battle");
                             EntityView {
                                 id: e.entity_id,
                                 x: e.position.x,
@@ -735,6 +742,7 @@ impl Inner {
                                 monster_kind,
                                 faction,
                                 radius,
+                                battling,
                             }
                         })
                         .collect();

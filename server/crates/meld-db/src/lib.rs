@@ -124,6 +124,43 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
+        // Persistent per-account hero names, one row per party slot. The class is
+        // still chosen per dive in the party builder; only the name persists.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS heroes (
+                player_id UUID NOT NULL REFERENCES players(player_id),
+                slot      SMALLINT NOT NULL,
+                name      TEXT NOT NULL,
+                PRIMARY KEY (player_id, slot)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The player's hero names by slot (0-based), ordered. Empty if never set.
+    pub async fn get_hero_names(&self, player_id: Uuid) -> Result<Vec<String>, DbError> {
+        let rows = sqlx::query("SELECT name FROM heroes WHERE player_id = $1 ORDER BY slot")
+            .bind(player_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| r.get::<String, _>("name")).collect())
+    }
+
+    /// Rename a hero slot (upsert). Names are trimmed/capped by the caller.
+    pub async fn set_hero_name(&self, player_id: Uuid, slot: i16, name: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO heroes (player_id, slot, name) VALUES ($1, $2, $3)
+             ON CONFLICT (player_id, slot) DO UPDATE SET name = $3",
+        )
+        .bind(player_id)
+        .bind(slot)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -219,6 +256,13 @@ impl Db {
         // Seed the three Meld skills at 0 xp.
         sqlx::query(
             "INSERT INTO meld_skills (player_id, skill_kind, xp) VALUES ($1,'forging',0),($1,'mercantile',0),($1,'alchemy',0)",
+        )
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
+        // Seed default hero names (renameable in the party builder).
+        sqlx::query(
+            "INSERT INTO heroes (player_id, slot, name) VALUES ($1,0,'Hero 1'),($1,1,'Hero 2'),($1,2,'Hero 3'),($1,3,'Hero 4')",
         )
         .bind(player_id)
         .execute(&mut *tx)

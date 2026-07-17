@@ -179,6 +179,7 @@ territorial_aggro_radius = 5.0  # territorial creatures only chase when this clo
 leash_radius = 9.0           # how far a creature wanders from its spawn (home)
 group_radius = 6.5           # creatures within this of the one you touch join the fight
 flee_hp_fraction = 0.3       # `flees` creatures bolt from battle below this HP fraction
+join_radius = 9.0            # a teammate this close to an ongoing fight may opt in to join it
 
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,

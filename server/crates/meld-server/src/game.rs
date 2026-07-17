@@ -206,6 +206,9 @@ struct ActiveInstance {
     extraction: HashMap<String, Extraction>,
     /// Party ids currently merged into the active battle (raid merge).
     battle_parties: std::collections::HashSet<u32>,
+    /// Overworld position of the active battle (the touched creature's spot), so a
+    /// nearby teammate can opt in via `run.join_battle`.
+    battle_pos: Position,
 }
 
 /// One member of a pre-maze co-op lobby.
@@ -402,6 +405,7 @@ impl GameState {
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wr::Harvest::TYPE => self.handle_harvest(player_id, raw),
+            wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -512,6 +516,7 @@ impl GameState {
                 party_classes: HashMap::new(),
                 extraction: HashMap::new(),
                 battle_parties: std::collections::HashSet::new(),
+                battle_pos: Position::new(0.0, 0.0),
             });
         }
         let inst = self.instance.as_mut().expect("instance exists");
@@ -529,7 +534,13 @@ impl GameState {
                 (pid.clone(), username, class, Uuid::now_v7().to_string())
             })
             .collect();
-        inst.run.add_party(members);
+        // Each player is their OWN battle-party, so touching a creature pulls only
+        // that player's heroes — teammates are never auto-dragged into a fight
+        // (they opt in via `run.join_battle`). They still share the instance/arena
+        // and dive together.
+        for member in members {
+            inst.run.add_party(vec![member]);
+        }
         // Each dive starts with a stock of Town Portal items — the primary way
         // home now that there's a single, deep fixed portal.
         let starting_tp = self.balance.runs.starting_town_portals;
@@ -882,35 +893,25 @@ impl GameState {
             intent.input_seq,
         );
 
-        // Touching the monster starts a battle, or raid-merges the toucher's
-        // party into the one already in progress (combat-atb.md).
-        let decision = {
+        // Touching a creature starts a battle — but ONLY when no fight is already
+        // in progress in this (single-battle) instance. A teammate never gets
+        // auto-pulled into an ongoing fight by wandering into a creature; they opt
+        // in explicitly with `run.join_battle` (see `handle_join_battle`).
+        let decision = if inst.battle.is_some() {
+            None
+        } else {
             match inst.arena.check_touch() {
-                Some((toucher, monster_idx)) => {
-                    let party = inst
-                        .run
-                        .runs
-                        .iter()
-                        .find(|r| r.player_id == toucher)
-                        .map(|r| r.party_id);
-                    match party {
-                        Some(pid) if inst.battle.is_none() => {
-                            Some((toucher, pid, Some(monster_idx)))
-                        }
-                        Some(pid) if !inst.battle_parties.contains(&pid) => {
-                            Some((toucher, pid, None))
-                        }
-                        _ => None,
-                    }
-                }
+                Some((toucher, monster_idx)) => inst
+                    .run
+                    .runs
+                    .iter()
+                    .find(|r| r.player_id == toucher)
+                    .map(|r| (toucher, r.party_id, monster_idx)),
                 None => None,
             }
         };
         match decision {
-            Some((toucher, pid, Some(monster_idx))) => {
-                self.start_battle(&toucher, pid, monster_idx)
-            }
-            Some((toucher, pid, None)) => self.join_battle(&toucher, pid),
+            Some((toucher, pid, monster_idx)) => self.start_battle(&toucher, pid, monster_idx),
             None => Vec::new(),
         }
     }
@@ -1019,6 +1020,12 @@ impl GameState {
             triggered_by = %toucher,
             "battle started"
         );
+        inst.battle_pos = inst
+            .arena
+            .monsters
+            .get(monster_idx)
+            .map(|m| m.position)
+            .unwrap_or_else(|| Position::new(0.0, 0.0));
         inst.battle = Some(battle);
         inst.battle_id = battle_id.clone();
         inst.monster_combatant_id = monster_combatant_id;
@@ -1045,7 +1052,46 @@ impl GameState {
         out
     }
 
-    /// Raid merge: the toucher's party joins the in-progress battle.
+    /// Opt into the nearby ongoing fight (`run.join_battle`). Validates that a
+    /// battle is in progress, the caller isn't already in it, and their avatar is
+    /// within `join_radius` of the fight — then merges their party in.
+    fn handle_join_battle(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let join_radius = self.balance.ai.join_radius;
+        let party_id = {
+            let Some(inst) = self.instance.as_ref() else {
+                return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+            };
+            if inst.battle.is_none() {
+                return vec![error(player_id, ErrorCode::InvalidState, "No fight in progress.", Some(raw.seq))];
+            }
+            let Some(pid) = inst
+                .run
+                .runs
+                .iter()
+                .find(|r| r.player_id == player_id)
+                .map(|r| r.party_id)
+            else {
+                return vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))];
+            };
+            if inst.battle_parties.contains(&pid) {
+                return vec![error(player_id, ErrorCode::InvalidState, "You're already in the fight.", Some(raw.seq))];
+            }
+            let near = inst
+                .arena
+                .avatar(player_id)
+                .map(|a| a.position.distance_to(&inst.battle_pos) <= join_radius)
+                .unwrap_or(false);
+            if !near {
+                return vec![error(player_id, ErrorCode::OutOfRange, "Too far from the fight to join.", Some(raw.seq))];
+            }
+            pid
+        };
+        self.join_battle(player_id, party_id)
+    }
+
+    /// Merge a party into the in-progress battle (the toucher opted in via
+    /// `run.join_battle`). The joiner brings their full hero composition, exactly
+    /// as if they'd started the fight.
     fn join_battle(&mut self, toucher: &str, party_id: u32) -> Vec<Outgoing> {
         let balance = self.balance.clone();
         let cap =
@@ -1062,35 +1108,61 @@ impl GameState {
             return Vec::new();
         }
 
-        // Build the joining party's combatants.
+        // Build the joining party's combatants — the joiner's full hero
+        // composition (parallel to `hero_hp`), just like starting a fight.
+        let joiners: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| r.party_id == party_id)
+            .map(|r| r.player_id.clone())
+            .collect();
         let mut party: Vec<meld_run::PartyMember> = Vec::new();
-        let mut joiners: Vec<String> = Vec::new();
-        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
-            let cid = Uuid::now_v7().to_string();
-            let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
-            party.push((r.player_id.clone(), cid.clone(), r.character_class, bonus));
-            joiners.push(r.player_id.clone());
-            inst.combatant_player.insert(cid.clone(), r.player_id.clone());
-            inst.player_combatants
-                .insert(r.player_id.clone(), vec![cid]);
+        let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        for pid in &joiners {
+            let lead = inst
+                .run
+                .runs
+                .iter()
+                .find(|r| &r.player_id == pid)
+                .map(|r| r.character_class)
+                .unwrap_or(CharacterClass::Squire);
+            let comp = inst
+                .party_classes
+                .get(pid)
+                .cloned()
+                .unwrap_or_else(|| vec![lead]);
+            let hp_vec = inst.hero_hp.get(pid).cloned().unwrap_or_default();
+            let bonus = bonuses.get(pid).copied().unwrap_or(0);
+            let mut cids = Vec::new();
+            for (slot, cls) in comp.iter().enumerate() {
+                let cid = Uuid::now_v7().to_string();
+                inst.combatant_player.insert(cid.clone(), pid.clone());
+                party.push((pid.clone(), cid.clone(), *cls, bonus));
+                hp_overrides.push(hp_vec.get(slot).copied());
+                cids.push(cid);
+            }
+            inst.player_combatants.insert(pid.clone(), cids);
         }
         if party.is_empty() {
             return Vec::new();
         }
         // Merge cap: a touch that would exceed it does not merge (combat-atb.md).
         if inst.battle.as_ref().unwrap().player_count() + party.len() > cap {
-            for cid_pid in &party {
-                inst.combatant_player.remove(&cid_pid.1);
-                inst.player_combatants.remove(&cid_pid.0);
+            for pm in &party {
+                inst.combatant_player.remove(&pm.1);
+            }
+            for pid in &joiners {
+                inst.player_combatants.remove(pid);
             }
             return Vec::new();
         }
 
         let mut fighters = meld_run::party_fighters(&party, &inst.run, &balance);
-        // Carry each joiner's persisted HP (slot 0) into the merged battle.
-        for (f, pm) in fighters.iter_mut().zip(party.iter()) {
-            if let Some(h) = inst.hero_hp.get(&pm.0).and_then(|v| v.first().copied()) {
-                f.hp = h.clamp(0, f.max_hp);
+        // Carry each joining hero's persisted HP into the merged battle.
+        for (f, hp) in fighters.iter_mut().zip(hp_overrides.iter()) {
+            if let Some(h) = hp {
+                f.hp = (*h).clamp(0, f.max_hp);
             }
         }
         inst.battle.as_mut().unwrap().join(fighters);

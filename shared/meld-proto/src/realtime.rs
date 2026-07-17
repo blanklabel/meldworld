@@ -354,6 +354,15 @@ pub mod run {
         const TYPE: &'static str = "run.harvest";
     }
 
+    /// C2S — opt into the fight already in progress nearby (the avatar must be
+    /// within join range of the battle). The whole of the caller's party joins the
+    /// existing side; teammates are never auto-pulled in.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct JoinBattle {}
+    impl Message for JoinBattle {
+        const TYPE: &'static str = "run.join_battle";
+    }
+
     /// C2S — start an extraction channel. `method` is `"portal"` (stand at the
     /// single deep portal) or `"town_portal"` (consume a Town Portal item, works
     /// anywhere — the primary way out).

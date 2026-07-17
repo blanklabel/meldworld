@@ -333,11 +333,13 @@ struct OwEntity {
     faction: Option<String>,
     /// World-unit radius for obstacles; 0 otherwise.
     radius: f32,
+    /// True for a player currently in a fight (drives the ⚔ marker + Join prompt).
+    battling: bool,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -347,10 +349,11 @@ impl OwEntity {
             name: Some(name.to_string()),
             faction: Some(faction.to_string()),
             radius: 0.0,
+            battling: false,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false }
     }
 }
 
@@ -1100,6 +1103,7 @@ fn pump_net(
                             name: e.monster_kind,
                             faction: e.faction,
                             radius: e.radius as f32,
+                            battling: e.battling,
                         },
                     );
                 }
@@ -1540,7 +1544,7 @@ fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows: explore  -  T: Town Portal (extract anywhere)  -  H: harvest node  -  E: deep portal  -  I: inventory  -  L: level up",
+                    "WASD/arrows: explore  -  T: Town Portal  -  H: harvest  -  J: join a fight  -  E: deep portal  -  I: inventory  -  L: level up",
                 ),
                 TextFont {
                     font_size: 15.0,
@@ -1641,6 +1645,19 @@ fn follow_camera(
     }
 }
 
+/// Roughly the server's `join_radius` — the client only shows the Join prompt /
+/// accepts J within this of a fighting teammate; the server does the real check.
+const JOIN_PROMPT_RADIUS: f32 = 9.0;
+
+/// Is the player within join range of a teammate's ongoing fight?
+fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
+    let Some((mx, my)) = me else { return false };
+    world
+        .entities
+        .values()
+        .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
+}
+
 /// Draw the guaranteed clear path as a faint dotted trail so the feasible route
 /// through the terrain is legible. Redraws whenever the trail sprites are gone
 /// (e.g. after returning from a battle, where scenery is despawned).
@@ -1700,10 +1717,14 @@ fn update_overworld_hud(
         .map(|(k, q)| format!("{} {}", nice_name(k), q))
         .collect::<Vec<_>>()
         .join(", ");
+    let me_pos = Some((me.x, me.y));
     if let Ok(mut t) = q.single_mut() {
         let mut line = format!("distance {d}  -  {}  -  ⌂×{tp}", biome_display(d));
         if !mats.is_empty() {
             line.push_str(&format!("  -  {mats}"));
+        }
+        if near_fight(&world, me_pos) {
+            line.push_str("  -  ⚔ Press [J] to join the fight");
         }
         **t = line;
     }
@@ -1772,6 +1793,12 @@ fn overworld_input(
                 net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
             }
         }
+        return;
+    }
+    // Join a nearby fight (J): opt into a teammate's ongoing battle (never pulled
+    // in automatically). The server re-checks range.
+    if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
+        net.0.send(ClientCmd::JoinBattle);
         return;
     }
 
@@ -2002,6 +2029,8 @@ fn sync_overworld_sprites(
             }),
             EntityKind::Portal => Some("portal".to_string()),
             EntityKind::Resource => e.name.as_deref().map(|k| format!("⛏ {}", nice_name(k))),
+            // A fighting teammate is flagged so you can see the fight and go join it.
+            EntityKind::Player if e.battling => Some("⚔ fighting".to_string()),
             EntityKind::Obstacle | EntityKind::Player => None,
         };
         if let Some(text) = label {
@@ -2054,6 +2083,7 @@ fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
         EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
         EntityKind::Resource => Color::srgb(0.85, 0.75, 0.35), // amber node
         EntityKind::Obstacle => obstacle_color(e.name.as_deref().unwrap_or("")),
+        EntityKind::Player if e.battling => Color::srgb(0.95, 0.45, 0.3), // fighting
         EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
         EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
     }
@@ -2811,6 +2841,50 @@ fn render_enemy_panel(
                     });
                 }
             });
+            // Allied reinforcements: other players' heroes who joined this fight, so
+            // a join visibly "joins the screen" (your own heroes are the party grid).
+            let allies: Vec<&CombatantView> = battle
+                .combatants
+                .iter()
+                .filter(|c| c.is_player && !battle.your_ids.contains(&c.id))
+                .collect();
+            if !allies.is_empty() {
+                p.spawn((
+                    Text::new("— allies —"),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.6, 0.8, 1.0)),
+                ));
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(24.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for c in &allies {
+                        let frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                        row.spawn(Node {
+                            width: Val::Px(150.0),
+                            flex_direction: FlexDirection::Column,
+                            align_items: AlignItems::Center,
+                            row_gap: Val::Px(4.0),
+                            ..default()
+                        })
+                        .with_children(|a| {
+                            a.spawn((
+                                Node { width: Val::Px(40.0), height: Val::Px(40.0), ..default() },
+                                BackgroundColor(Color::srgb(0.4, 0.6, 0.95)),
+                                BorderRadius::all(Val::Px(6.0)),
+                            ));
+                            a.spawn((
+                                Text::new(format!("{}  {}/{}", c.name, c.hp, c.max_hp)),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(Color::srgb(0.75, 0.85, 1.0)),
+                            ));
+                            meter(a, frac, 8.0, Color::srgb(0.4, 0.65, 0.95));
+                        });
+                    }
+                });
+            }
         });
 }
 
