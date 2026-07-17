@@ -81,6 +81,19 @@ fn query_has(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Pre-select a class without the Join screen (handy for demos/headless runs and
+/// with `?autoplay`). Native: `MELD_CLASS` env. Browser: `?class=psyker`.
+#[cfg(not(target_arch = "wasm32"))]
+fn class_flag() -> Option<String> {
+    std::env::var("MELD_CLASS").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+fn class_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("class").filter(|s| !s.is_empty())
+}
+
 /// Offline battle-screen mockup: jump straight into the Battle screen with canned
 /// combatants and the command window open, so the subscreen can be inspected
 /// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
@@ -146,7 +159,10 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
-        .add_systems(Startup, (setup, mock_battle_setup, mock_overlay_setup))
+        .add_systems(
+            Startup,
+            (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
+        )
         .add_systems(Update, (pump_net, demo_driver)) // run in every state
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
@@ -228,13 +244,28 @@ enum Screen {
 /// that touch it on the main thread.
 struct NetRes(Net);
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct Session {
     player_id: String,
     connecting: bool,
     entered: bool,
     channeling: bool,
     status: String,
+    /// Class chosen on the Join screen (wire form: "squire" / "psyker").
+    character_class: String,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Session {
+            player_id: String::new(),
+            connecting: false,
+            entered: false,
+            channeling: false,
+            status: String::new(),
+            character_class: "squire".to_string(),
+        }
+    }
 }
 
 /// One overworld entity as the client knows it (from the latest snapshot).
@@ -294,16 +325,37 @@ impl BattleData {
     fn alive(&self, id: &str) -> bool {
         self.view(id).map(|c| c.hp > 0).unwrap_or(false)
     }
+    /// Class of the hero the command window is currently giving orders to.
+    fn active_class(&self) -> String {
+        self.active
+            .as_ref()
+            .and_then(|a| self.view(a))
+            .map(hero_class)
+            .unwrap_or_else(|| "squire".to_string())
+    }
+    /// Level of the active hero (for level-gated menus), default 1.
+    fn active_level(&self) -> i32 {
+        self.active
+            .as_ref()
+            .and_then(|a| self.view(a))
+            .map(|c| c.level)
+            .unwrap_or(1)
+    }
 }
 
 /// A queued battle order for one hero. Attack/Skill hit the monster; Defend/Item
-/// are self-cast. The `&'static str` is the skill_kind / item_id.
+/// are self-cast. `Focus`/`Hold` are Psyker channels (verb, manifestation kind).
+/// The `&'static str`s are the skill_kind / item_id / manifestation kind.
 #[derive(Clone, Copy, PartialEq)]
 enum QueuedKind {
     Attack,
     Defend,
     Skill(&'static str),
     Item(&'static str),
+    /// Psyker: (verb, manifestation kind) — verb is "cast"/"reinforce"/"revoke".
+    Focus(&'static str, &'static str),
+    /// Psyker: let the active Foci tick, no new op.
+    Hold,
 }
 
 impl QueuedKind {
@@ -314,6 +366,11 @@ impl QueuedKind {
             QueuedKind::Defend => "DEF",
             QueuedKind::Skill(_) => "SKL",
             QueuedKind::Item(_) => "ITM",
+            QueuedKind::Focus("cast", _) => "CST",
+            QueuedKind::Focus("reinforce", _) => "RNF",
+            QueuedKind::Focus("revoke", _) => "RVK",
+            QueuedKind::Focus(_, _) => "FOC",
+            QueuedKind::Hold => "···",
         }
     }
     fn color(self) -> Color {
@@ -322,8 +379,98 @@ impl QueuedKind {
             QueuedKind::Defend => Color::srgb(0.55, 0.7, 1.0),
             QueuedKind::Skill(_) => Color::srgb(0.8, 0.6, 1.0),
             QueuedKind::Item(_) => Color::srgb(0.5, 0.9, 0.6),
+            QueuedKind::Focus(_, _) => Color::srgb(0.8, 0.6, 1.0),
+            QueuedKind::Hold => Color::srgb(0.6, 0.65, 0.8),
         }
     }
+}
+
+/// Psyker manifestation catalog: (wire kind, display name, unlock level). Mirrors
+/// the server's `manifest_unlock_level` for menu gating (display only).
+const MANIFESTS: [(&str, &str, i32); 4] = [
+    ("gravity_well", "Gravity Well", 1),
+    ("kinetic_aegis", "Kinetic Aegis", 1),
+    ("mind_spike", "Mind Spike", 3),
+    ("temporal_anchor", "Temporal Anchor", 5),
+];
+
+/// Short two-letter tag for a manifestation kind (focus-bar display).
+fn manifest_abbrev(kind: &str) -> String {
+    kind.split('_')
+        .filter_map(|w| w.chars().next())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Parse a Psyker's Focus state out of its wire statuses:
+/// `(focus_slots, [(kind, stacks), …])`.
+fn parse_foci(statuses: &[String]) -> (usize, Vec<(String, u8)>) {
+    let mut max = 0usize;
+    let mut foci = Vec::new();
+    for s in statuses {
+        if let Some(n) = s.strip_prefix("focus_slots:") {
+            max = n.parse().unwrap_or(0);
+        } else if let Some(rest) = s.strip_prefix("focus:") {
+            let mut it = rest.rsplitn(2, ':');
+            let stacks = it.next().and_then(|x| x.parse().ok()).unwrap_or(1);
+            if let Some(kind) = it.next() {
+                foci.push((kind.to_string(), stacks));
+            }
+        }
+    }
+    (max, foci)
+}
+
+/// A hero's class key parsed from its wire statuses (`class:<key>`), default squire.
+fn hero_class(view: &CombatantView) -> String {
+    view.statuses
+        .iter()
+        .find_map(|s| s.strip_prefix("class:"))
+        .unwrap_or("squire")
+        .to_string()
+}
+
+/// A numeric status value (`prefix<n>`) parsed from a combatant's statuses.
+fn status_num(statuses: &[String], prefix: &str) -> i32 {
+    statuses
+        .iter()
+        .find_map(|s| s.strip_prefix(prefix).and_then(|n| n.parse().ok()))
+        .unwrap_or(0)
+}
+
+/// Autoplay heuristic for a Resonant hero: mend the party (Transfuse) whenever any
+/// ally is meaningfully hurt, otherwise chip at the enemy.
+fn resonant_autoplay_op(battle: &BattleData) -> QueuedKind {
+    let wounded = battle.combatants.iter().any(|c| {
+        c.is_player && c.hp > 0 && (c.hp as f32 / c.max_hp.max(1) as f32) < 0.7
+    });
+    if wounded {
+        QueuedKind::Skill("transfuse")
+    } else {
+        QueuedKind::Attack
+    }
+}
+
+/// Autoplay heuristic for a Psyker hero: fill free slots with unlocked
+/// manifestations (offense first, then the ward), then reinforce, else hold.
+fn psyker_autoplay_op(view: &CombatantView) -> QueuedKind {
+    let (max, foci) = parse_foci(&view.statuses);
+    let has = |k: &str| foci.iter().any(|(kind, _)| kind == k);
+    if foci.len() < max {
+        for (kind, _name, lv) in MANIFESTS {
+            if view.level >= lv && !has(kind) {
+                return QueuedKind::Focus("cast", kind);
+            }
+        }
+    }
+    for (kind, stacks) in &foci {
+        if *stacks < 2 {
+            if let Some((k, _, _)) = MANIFESTS.iter().find(|(mk, _, _)| *mk == kind.as_str()) {
+                return QueuedKind::Focus("reinforce", k);
+            }
+        }
+    }
+    QueuedKind::Hold
 }
 
 /// Which overworld overlay screen is open (none/inventory/level-up).
@@ -400,13 +547,16 @@ struct Demo {
 // -------------------------------------------------------- battle command ---
 
 /// Which page of the battle command window is showing. FF/Lufia-style: the root
-/// four commands, or a Skill / Item sub-list.
+/// commands, a Skill / Item sub-list, or (Psyker) the Manifestation picker.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum MenuLevel {
     #[default]
     Root,
     Skills,
     Items,
+    /// Psyker: pick which Manifestation the current op (cast/reinforce/revoke)
+    /// applies to.
+    Manifest,
 }
 
 /// What selecting a menu row does.
@@ -418,6 +568,12 @@ enum EntryAction {
     OpenItems,
     Skill(&'static str), // skill_kind
     Item(&'static str),  // item_id
+    /// Psyker: open the Manifestation picker for this op verb (cast/reinforce/revoke).
+    PsykerOp(&'static str),
+    /// Psyker: apply the current op to this manifestation kind.
+    Manifest(&'static str),
+    /// Psyker: hold — let the active Foci tick.
+    Hold,
     Back,
 }
 
@@ -427,16 +583,29 @@ struct MenuEntry {
     action: EntryAction,
 }
 
-/// The rows shown at a given menu level (slice content). Skill/Item pages carry
-/// a Back row so keyboard-only players can return to the root commands.
-fn menu_entries(level: MenuLevel) -> Vec<MenuEntry> {
+/// The rows shown at a given menu level. For a Psyker the root is the Focus ops
+/// (Cast/Reinforce/Revoke/Hold) and the Manifest page lists the manifestations
+/// unlocked at `hero_level`.
+fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry> {
     let e = |label, action| MenuEntry { label, action };
     match level {
+        MenuLevel::Root if class == "psyker" => vec![
+            e("Cast", EntryAction::PsykerOp("cast")),
+            e("Reinforce", EntryAction::PsykerOp("reinforce")),
+            e("Revoke", EntryAction::PsykerOp("revoke")),
+            e("Hold", EntryAction::Hold),
+        ],
         MenuLevel::Root => vec![
             e("Attack", EntryAction::Attack),
             e("Defend", EntryAction::Defend),
             e("Item", EntryAction::OpenItems),
             e("Skill", EntryAction::OpenSkills),
+        ],
+        MenuLevel::Skills if class == "resonant" => vec![
+            e("Transfuse", EntryAction::Skill("transfuse")),
+            e("Regen Boon", EntryAction::Skill("regen_boon")),
+            e("Ward", EntryAction::Skill("ward")),
+            e("Back", EntryAction::Back),
         ],
         MenuLevel::Skills => vec![
             e("Power Strike", EntryAction::Skill("power_strike")),
@@ -448,6 +617,15 @@ fn menu_entries(level: MenuLevel) -> Vec<MenuEntry> {
             e("Elixir", EntryAction::Item("elixir")),
             e("Back", EntryAction::Back),
         ],
+        MenuLevel::Manifest => {
+            let mut v: Vec<MenuEntry> = MANIFESTS
+                .iter()
+                .filter(|(_, _, lv)| hero_level >= *lv)
+                .map(|(kind, name, _)| e(*name, EntryAction::Manifest(kind)))
+                .collect();
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
     }
 }
 
@@ -459,6 +637,8 @@ struct BattleMenu {
     level: MenuLevel,
     cursor: usize,
     dirty: bool,
+    /// Psyker: the op verb chosen at Root, applied on the Manifest page.
+    psyker_verb: &'static str,
 }
 
 // ------------------------------------------------------------- marker(s) ---
@@ -491,6 +671,9 @@ struct OverlayRoot;
 struct EndedRoot;
 #[derive(Component)]
 struct StatusText;
+/// Join-screen line showing the currently-selected class.
+#[derive(Component)]
+struct ClassText;
 
 /// A sprite representing an overworld entity, tagged by its server id.
 #[derive(Component)]
@@ -508,6 +691,13 @@ struct HudText;
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
+}
+
+/// Pre-select a class from `?class=` / `MELD_CLASS` (defaults to Squire otherwise).
+fn apply_class_flag(mut session: ResMut<Session>) {
+    if let Some(c) = class_flag() {
+        session.character_class = c;
+    }
 }
 
 /// If the battle-mockup flag is set, seed canned combatants and jump straight to
@@ -541,6 +731,8 @@ fn mock_battle_setup(
         max_hp: 40,
         gauge,
         is_player: true,
+        level: 1,
+        statuses: vec![],
     };
     battle.battle_id = "mock".to_string();
     battle.your_ids = vec!["h1".into(), "h2".into(), "h3".into(), "h4".into()];
@@ -562,6 +754,8 @@ fn mock_battle_setup(
             max_hp: 60,
             gauge: 0.65,
             is_player: false,
+            level: 1,
+            statuses: vec![],
         },
     ];
     next.set(Screen::Battle);
@@ -652,7 +846,9 @@ fn pump_net(
                 session.status = "connected - entering maze...".to_string();
                 if !session.entered {
                     session.entered = true;
-                    net.0.send(ClientCmd::EnterMaze);
+                    net.0.send(ClientCmd::EnterMaze {
+                        character_class: session.character_class.clone(),
+                    });
                 }
             }
             ServerMsg::RunStarted => {
@@ -718,10 +914,11 @@ fn pump_net(
                 }
             }
             ServerMsg::Gauge { updates } => {
-                for (id, gauge, hp) in updates {
+                for (id, gauge, hp, statuses) in updates {
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == id) {
                         c.gauge = gauge;
                         c.hp = hp;
+                        c.statuses = statuses;
                     }
                 }
             }
@@ -815,8 +1012,8 @@ fn demo_driver(
         battle.active = Some("me".to_string());
         battle.monster_combatant = Some("g".to_string());
         battle.combatants = vec![
-            CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true },
-            CombatantView { id: "g".into(), name: "forest bloom stalker".into(), hp: 60, max_hp: 60, gauge: 0.0, is_player: false },
+            CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true, level: 1, statuses: vec![] },
+            CombatantView { id: "g".into(), name: "forest bloom stalker".into(), hp: 60, max_hp: 60, gauge: 0.0, is_player: false, level: 1, statuses: vec![] },
         ];
         next.set(Screen::Battle);
     }
@@ -869,6 +1066,15 @@ fn join_ui(mut commands: Commands) {
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
             p.spawn((
+                ClassText,
+                Text::new(""),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.75, 0.85, 1.0)),
+            ));
+            p.spawn((
                 StatusText,
                 Text::new(""),
                 TextFont {
@@ -880,13 +1086,26 @@ fn join_ui(mut commands: Commands) {
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn join_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     mut session: ResMut<Session>,
     mut status_q: Query<&mut Text, With<StatusText>>,
+    mut class_q: Query<&mut Text, (With<ClassText>, Without<StatusText>)>,
 ) {
+    // Pick a class before connecting (1 = Squire, 2 = Psyker). Locked in once we
+    // start connecting.
+    if !session.connecting {
+        if keys.just_pressed(KeyCode::Digit1) {
+            session.character_class = "squire".to_string();
+        }
+        if keys.just_pressed(KeyCode::Digit2) {
+            session.character_class = "psyker".to_string();
+        }
+    }
+
     if (keys.just_pressed(KeyCode::Enter) || autoplay.0) && !session.connecting {
         session.connecting = true;
         let name = std::env::var("MELD_NAME").unwrap_or_else(|_| {
@@ -894,6 +1113,14 @@ fn join_input(
         });
         session.status = "connecting...".to_string();
         net.0.send(ClientCmd::Connect { username: name });
+    }
+
+    if let Ok(mut t) = class_q.single_mut() {
+        let (squire, psyker) = match session.character_class.as_str() {
+            "psyker" => ("Squire", "[Psyker]"),
+            _ => ("[Squire]", "Psyker"),
+        };
+        **t = format!("Class — [1] {squire}   [2] {psyker}");
     }
     if let Ok(mut t) = status_q.single_mut() {
         **t = session.status.clone();
@@ -1420,6 +1647,20 @@ fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target:
             actor: actor.to_string(),
             item_id: it.to_string(),
         }),
+        // Psyker Focus ops ride the Skill action with a `verb:kind` skill_kind
+        // (the server ignores the target for these; send the monster if known).
+        QueuedKind::Focus(verb, kind) => Some(ClientCmd::Skill {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+            target: target.unwrap_or("").to_string(),
+            skill_kind: format!("{verb}:{kind}"),
+        }),
+        QueuedKind::Hold => Some(ClientCmd::Skill {
+            battle_id: battle_id.to_string(),
+            actor: actor.to_string(),
+            target: target.unwrap_or("").to_string(),
+            skill_kind: "hold".to_string(),
+        }),
     };
     if let Some(cmd) = cmd {
         net.send(cmd);
@@ -1458,31 +1699,41 @@ fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleData>) {
 /// Act on the command row at `index`: root Attack/Defend queue an order for the
 /// active hero; Item/Skill open a sub-page; a Skill/Item row queues it; Back
 /// returns to root.
-fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData) {
-    let entries = menu_entries(menu.level);
-    let Some(entry) = entries.get(index) else {
-        return;
+fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, class: &str) {
+    let active = match battle.active.clone() {
+        Some(a) => a,
+        None => return,
     };
-    let Some(active) = battle.active.clone() else {
+    let hero_level = battle.view(&active).map(|c| c.level).unwrap_or(1);
+    let entries = menu_entries(menu.level, class, hero_level);
+    let Some(entry) = entries.get(index) else {
         return;
     };
     match entry.action {
         EntryAction::Attack => queue_order(battle, &active, QueuedKind::Attack, menu),
         EntryAction::Defend => queue_order(battle, &active, QueuedKind::Defend, menu),
-        EntryAction::OpenSkills => {
-            menu.level = MenuLevel::Skills;
-            menu.cursor = 0;
-            menu.dirty = true;
-        }
-        EntryAction::OpenItems => {
-            menu.level = MenuLevel::Items;
-            menu.cursor = 0;
-            menu.dirty = true;
-        }
+        EntryAction::OpenSkills => open_page(menu, MenuLevel::Skills),
+        EntryAction::OpenItems => open_page(menu, MenuLevel::Items),
         EntryAction::Skill(kind) => queue_order(battle, &active, QueuedKind::Skill(kind), menu),
         EntryAction::Item(id) => queue_order(battle, &active, QueuedKind::Item(id), menu),
+        // Psyker: pick the op verb, then choose a manifestation on the next page.
+        EntryAction::PsykerOp(verb) => {
+            menu.psyker_verb = verb;
+            open_page(menu, MenuLevel::Manifest);
+        }
+        EntryAction::Manifest(kind) => {
+            queue_order(battle, &active, QueuedKind::Focus(menu.psyker_verb, kind), menu)
+        }
+        EntryAction::Hold => queue_order(battle, &active, QueuedKind::Hold, menu),
         EntryAction::Back => reset_menu(menu),
     }
+}
+
+/// Switch the command window to a sub-page.
+fn open_page(menu: &mut BattleMenu, level: MenuLevel) {
+    menu.level = level;
+    menu.cursor = 0;
+    menu.dirty = true;
 }
 
 /// Keyboard control. Orders are *queued* for the active hero and fire when its
@@ -1495,6 +1746,9 @@ fn menu_keyboard(
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
+    // The command menu keys off the *active hero's* class — a mixed party is
+    // commanded hero by hero.
+    let class = battle.active_class();
     if autoplay.0 {
         let idle: Vec<String> = battle
             .your_ids
@@ -1503,12 +1757,21 @@ fn menu_keyboard(
             .cloned()
             .collect();
         for h in idle {
-            battle.queued.insert(h, QueuedKind::Attack);
+            // Each hero autoplays by its own class: Psyker channels Foci, Resonant
+            // mends the party, everyone else swings.
+            let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "squire".into());
+            let order = match hc.as_str() {
+                "psyker" => battle.view(&h).map(psyker_autoplay_op).unwrap_or(QueuedKind::Hold),
+                "resonant" => resonant_autoplay_op(&battle),
+                _ => QueuedKind::Attack,
+            };
+            battle.queued.insert(h, order);
         }
         return;
     }
 
-    let n = menu_entries(menu.level).len().max(1);
+    let hero_level = battle.active_level();
+    let n = menu_entries(menu.level, &class, hero_level).len().max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % n;
     }
@@ -1549,21 +1812,21 @@ fn menu_keyboard(
         };
         if let Some(i) = hotkey {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle);
+            select_entry(i, &mut menu, &mut battle, &class);
             return;
         }
     } else {
         for (i, key) in digits.iter().enumerate() {
             if i < n && keys.just_pressed(*key) {
                 menu.cursor = i;
-                select_entry(i, &mut menu, &mut battle);
+                select_entry(i, &mut menu, &mut battle, &class);
                 return;
             }
         }
     }
 
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        select_entry(menu.cursor, &mut menu, &mut battle);
+        select_entry(menu.cursor, &mut menu, &mut battle, &class);
     }
 }
 
@@ -1581,7 +1844,8 @@ fn menu_click(
     }
     if let Some(index) = pressed {
         menu.cursor = index;
-        select_entry(index, &mut menu, &mut battle);
+        let class = battle.active_class();
+        select_entry(index, &mut menu, &mut battle, &class);
     }
 }
 
@@ -1621,6 +1885,7 @@ fn cmd_tile(parent: &mut ChildSpawnerCommands, index: usize, label: &str) {
 /// page change so button `Interaction` survives.
 fn rebuild_command_menu(
     mut commands: Commands,
+    battle: Res<BattleData>,
     mut menu: ResMut<BattleMenu>,
     existing: Query<Entity, With<CommandWindow>>,
 ) {
@@ -1632,6 +1897,12 @@ fn rebuild_command_menu(
         commands.entity(e).despawn();
     }
     let level = menu.level;
+    let class = battle.active_class();
+    let is_psyker = class == "psyker";
+    let hero_level = battle.active_level();
+    // Psyker uses the list renderer at every level (Cast/Reinforce/Revoke/Hold at
+    // root); the martial classes keep the Lufia cross at root.
+    let verb_upper = menu.psyker_verb.to_uppercase();
     commands
         .spawn((
             CommandWindow,
@@ -1646,7 +1917,7 @@ fn rebuild_command_menu(
             },
         ))
         .with_children(|w| {
-            if level == MenuLevel::Root {
+            if level == MenuLevel::Root && !is_psyker {
                 // Cross: Skill on top; Item / Attack / Defend across the middle.
                 w.spawn(Node {
                     flex_direction: FlexDirection::Column,
@@ -1674,7 +1945,12 @@ fn rebuild_command_menu(
                         });
                 });
             } else {
-                let header = if level == MenuLevel::Skills { "SKILL" } else { "ITEM" };
+                let header: &str = match level {
+                    MenuLevel::Root => "FOCUS",
+                    MenuLevel::Skills => "SKILL",
+                    MenuLevel::Items => "ITEM",
+                    MenuLevel::Manifest => &verb_upper,
+                };
                 w.spawn((
                     Node {
                         width: Val::Px(230.0),
@@ -1701,7 +1977,10 @@ fn rebuild_command_menu(
                             ..default()
                         },
                     ));
-                    for (i, entry) in menu_entries(level).into_iter().enumerate() {
+                    for (i, entry) in menu_entries(level, &class, hero_level)
+                        .into_iter()
+                        .enumerate()
+                    {
                         list.spawn((
                             Button,
                             MenuRow { index: i },
@@ -1932,7 +2211,7 @@ fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &Hi
                         }),
                     ));
                     line.spawn((
-                        Text::new("Lv 1"),
+                        Text::new(format!("Lv {}", c.level)),
                         TextFont { font_size: 14.0, ..default() },
                         TextColor(Color::srgb(0.95, 0.85, 0.4)),
                     ));
@@ -1943,10 +2222,24 @@ fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &Hi
                     ..default()
                 })
                 .with_children(|line| {
+                    // HP, with a Barrier (temp HP) suffix and a Regen tick when present.
+                    let barrier = status_num(&c.statuses, "barrier:");
+                    let regen = status_num(&c.statuses, "regen:");
+                    let mut hp_line = format!("Hp {}/{}", c.hp, c.max_hp);
+                    if barrier > 0 {
+                        hp_line.push_str(&format!("  +{barrier}\u{25c6}")); // ◆ = Barrier
+                    }
+                    if regen > 0 {
+                        hp_line.push_str(&format!("  +{regen}/t")); // Regen per turn
+                    }
                     line.spawn((
-                        Text::new(format!("Hp {}/{}", c.hp, c.max_hp)),
+                        Text::new(hp_line),
                         TextFont { font_size: 13.0, ..default() },
-                        TextColor(Color::srgb(0.6, 0.75, 0.95)),
+                        TextColor(if barrier > 0 {
+                            Color::srgb(0.7, 0.8, 1.0)
+                        } else {
+                            Color::srgb(0.6, 0.75, 0.95)
+                        }),
                     ));
                     let (tag, tag_color) = match queued {
                         Some(k) => (k.tag().to_string(), k.color()),
@@ -1961,6 +2254,41 @@ fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &Hi
                 });
                 meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
                 meter(col, gauge, 7.0, Color::srgb(0.4, 0.85, 0.5));
+                // Psyker: a row of Focus slots — filled slots show the manifestation
+                // abbreviation (+stacks), empty slots a dot.
+                let (fmax, foci) = parse_foci(&c.statuses);
+                if fmax > 0 {
+                    col.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(5.0),
+                        margin: UiRect::top(Val::Px(3.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for slot in 0..fmax {
+                            let (label, filled) = match foci.get(slot) {
+                                Some((k, s)) => {
+                                    let tag = if *s > 1 {
+                                        format!("{}{}", manifest_abbrev(k), s)
+                                    } else {
+                                        manifest_abbrev(k)
+                                    };
+                                    (tag, true)
+                                }
+                                None => ("·".to_string(), false),
+                            };
+                            row.spawn((
+                                Text::new(label),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(if filled {
+                                    Color::srgb(0.8, 0.6, 1.0)
+                                } else {
+                                    Color::srgb(0.4, 0.45, 0.6)
+                                }),
+                            ));
+                        }
+                    });
+                }
             });
             // Right: portrait tile.
             cell.spawn((

@@ -77,6 +77,19 @@ pub struct Battle {
     pub skill_power_mult: f64,
     pub skill_heal_fraction: f64,
     pub item_heal_fraction: f64,
+    pub psyker_focus_base: usize,
+    pub psyker_focus_per_level: i32,
+    pub psyker_focus_cap: usize,
+    pub psyker_gravity_tick_mult: f64,
+    pub psyker_spike_tick_mult: f64,
+    pub psyker_aegis_tick_fraction: f64,
+    pub psyker_anchor_gauge_drain: f64,
+    pub barrier_decay_per_turn: i32,
+    pub resonant_regen_per_turn: i32,
+    pub resonant_transfuse_heal_fraction: f64,
+    pub resonant_transfuse_cost_fraction: f64,
+    pub resonant_boon_regen: i32,
+    pub resonant_ward_barrier_fraction: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
