@@ -114,7 +114,7 @@ impl InstanceRun {
 }
 
 /// Map a `CharacterClass` to its balance content key.
-fn class_key(class: CharacterClass) -> &'static str {
+pub fn class_key(class: CharacterClass) -> &'static str {
     match class {
         CharacterClass::Squire => "squire",
         CharacterClass::Dragoon => "dragoon",
@@ -122,6 +122,8 @@ fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Ranger => "ranger",
         CharacterClass::AlchemistKnight => "alchemist_knight",
         CharacterClass::Bard => "bard",
+        CharacterClass::Psyker => "psyker",
+        CharacterClass::Resonant => "resonant",
     }
 }
 
@@ -146,7 +148,7 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                 .find(|r| &r.player_id == player_id)
                 .map(|r| r.run_level)
                 .unwrap_or(1);
-            Fighter::new(
+            let mut f = Fighter::new(
                 combatant_id.clone(),
                 CombatantKind::Player,
                 Some(player_id.clone()),
@@ -156,7 +158,30 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                 stats.base_atk + atk_bonus, // equipped gear
                 stats.base_def,
                 stats.speed_stat,
-            )
+            );
+            // Surface the class to the client (drives the per-hero command menu).
+            f.class_key = class_key(*class).to_string();
+            match *class {
+                // A Psyker channels Foci instead of the martial kit; its slot count
+                // grows with level: base + 1 per `psyker_focus_per_level`, capped.
+                CharacterClass::Psyker => {
+                    let bb = &balance.battle;
+                    let extra = if bb.psyker_focus_per_level > 0 {
+                        (level - 1) / bb.psyker_focus_per_level
+                    } else {
+                        0
+                    };
+                    f.focus_max = (bb.psyker_focus_base as i32 + extra)
+                        .clamp(bb.psyker_focus_base as i32, bb.psyker_focus_cap as i32)
+                        as usize;
+                }
+                // A Resonant regenerates a little HP each of its turns (innate).
+                CharacterClass::Resonant => {
+                    f.regen = balance.battle.resonant_regen_per_turn;
+                }
+                _ => {}
+            }
+            f
         })
         .collect()
 }
@@ -170,8 +195,16 @@ pub fn build_battle(
     runs: &InstanceRun,
     balance: &Balance,
     seed: u64,
+    // Per-hero starting HP, aligned with `party`. `None` means full HP. Used to
+    // carry wounds across a run's encounters (no free heal between fights).
+    hp_overrides: &[Option<i32>],
 ) -> Battle {
-    let allies = party_fighters(party, runs, balance);
+    let mut allies = party_fighters(party, runs, balance);
+    for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
+        if let Some(h) = hp {
+            f.hp = (*h).clamp(0, f.max_hp);
+        }
+    }
 
     let enemy = Fighter::new(
         monster_combatant_id,
@@ -230,5 +263,47 @@ mod tests {
         let gained = r.award_xp(200);
         assert!(gained >= 1);
         assert!(r.run_level >= 2);
+    }
+
+    #[test]
+    fn build_battle_applies_hp_overrides() {
+        use meld_proto::common::Position;
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![(
+            "p1".into(),
+            "u1".into(),
+            CharacterClass::Squire,
+            "r1".into(),
+        )]);
+        let monster = MonsterSpawn {
+            entity_id: "m".into(),
+            monster_kind: "forest_bloom_stalker".into(),
+            position: Position::new(10.0, 0.0),
+            level: 1,
+            encounter_class: "standard".into(),
+            hp: 60,
+            atk: 9,
+            def: 2,
+            speed_stat: 80,
+            xp_reward: 60,
+            defeated: false,
+        };
+        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Squire, 0)];
+        // Carry a wounded hero in: start at 17 HP rather than full.
+        let battle = build_battle(
+            "b".into(),
+            &party,
+            &monster,
+            "mc".into(),
+            &runs,
+            &b,
+            1,
+            &[Some(17)],
+        );
+        let (allies, _) = battle.wire_combatants();
+        assert_eq!(allies.len(), 1);
+        assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
+        assert!(allies[0].max_hp > 17, "max HP stays at the class base");
     }
 }

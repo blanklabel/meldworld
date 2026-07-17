@@ -49,6 +49,35 @@ skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def
 skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]
 item_heal_fraction = 0.4         # "Salve" item: heals this fraction of max HP [TUNABLE]
                                  # "Elixir" item: full heal (structural, no coefficient)
+# Psyker Focus system. A Psyker maintains several persistent Manifestations
+# ("Foci"); on each of its ATB turns every active Focus fires, then the player
+# casts/reinforces/revokes one. Focus slots and which manifestations are unlocked
+# scale with level. All [TUNABLE].
+psyker_focus_base = 2             # focus slots at level 1
+psyker_focus_per_level = 4        # +1 slot every this many levels
+psyker_focus_cap = 5             # hard cap on focus slots
+# Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
+psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
+psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick
+psyker_aegis_tick_fraction = 0.1  # Kinetic Aegis: Barrier granted = max_hp*frac*stacks
+psyker_anchor_gauge_drain = 0.2   # Temporal Anchor: enemy ATB gauge -= drain*stacks
+
+# Barrier (temp HP): a pool that absorbs damage before HP and decays a fixed
+# amount at the start of each of the holder's turns. [TUNABLE]
+barrier_decay_per_turn = 2
+
+# The Resonant (healer). Innate Regen (HP restored at the start of each of its
+# turns), plus three ally-targeting skills that auto-pick the most-wounded ally:
+#   Transfuse   — heal an ally for a fraction of the Resonant's max HP, paying
+#                 `cost_fraction` of that heal out of the Resonant's own HP.
+#   Regen Boon  — grant an ally the Regen status.
+#   Ward        — grant an ally Barrier.
+# All [TUNABLE].
+resonant_regen_per_turn = 3
+resonant_transfuse_heal_fraction = 0.4
+resonant_transfuse_cost_fraction = 0.5
+resonant_boon_regen = 3
+resonant_ward_barrier_fraction = 0.3
 
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill
@@ -186,3 +215,21 @@ base_hp = 40
 base_atk = 12
 base_def = 3
 speed_stat = 110
+
+# Psyker: a squishy psychic controller. Less HP and armour than a Squire, but
+# its Mind Spike ignores enemy defence (so it shines where raw attacks stall,
+# against armoured deep creatures) and its Psychic Barrier self-ward buys it
+# survivability under the new no-free-heal attrition. [TUNABLE]
+[player.psyker]
+base_hp = 34
+base_atk = 13
+base_def = 2
+speed_stat = 100
+
+# Resonant: a healer that trades its own HP for its party's survival. Beefier HP
+# pool (it spends it), modest attack, innate Regen (see [battle]). [TUNABLE]
+[player.resonant]
+base_hp = 46
+base_atk = 8
+base_def = 3
+speed_stat = 95

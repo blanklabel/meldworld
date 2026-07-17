@@ -25,7 +25,8 @@ const GUEST_PASSWORD: &str = "meld-guest-password";
 /// Commands sent from Bevy into the network layer.
 pub enum ClientCmd {
     Connect { username: String },
-    EnterMaze,
+    /// Enter the maze as the given class (wire form, e.g. "squire" / "psyker").
+    EnterMaze { character_class: String },
     Move { dx: f64, dy: f64 },
     /// Battle commands. `actor` is which of the player's heroes acts. Attack/Skill
     /// strike an enemy; Defend/Item are self-cast.
@@ -46,6 +47,10 @@ pub struct CombatantView {
     pub max_hp: i32,
     pub gauge: f64,
     pub is_player: bool,
+    pub level: i32,
+    /// Wire statuses — for a Psyker these carry Focus state (`focus_slots:N`,
+    /// `focus:<kind>:<stacks>`) that drives the focus UI.
+    pub statuses: Vec<String>,
 }
 
 impl CombatantView {
@@ -62,6 +67,8 @@ impl CombatantView {
             max_hp: c.max_hp,
             gauge: c.gauge,
             is_player: c.player_id.is_some(),
+            level: c.level,
+            statuses: c.statuses.clone(),
         }
     }
 }
@@ -134,7 +141,7 @@ pub enum ServerMsg {
     },
     /// A second party merged into the battle (raid merge) — add their combatants.
     CombatantsJoined { combatants: Vec<CombatantView> },
-    Gauge { updates: Vec<(String, f64, i32)> },
+    Gauge { updates: Vec<(String, f64, i32, Vec<String>)> },
     BattleEnded { outcome: String },
     /// An extraction channel began / broke.
     ChannelStarted { completes_at: u64 },
@@ -448,7 +455,9 @@ impl Inner {
 
     fn send_cmd(&mut self, cmd: ClientCmd) {
         match cmd {
-            ClientCmd::EnterMaze => self.send_env(wr::EnterMaze::TYPE, json!({})),
+            ClientCmd::EnterMaze { character_class } => {
+                self.send_env(wr::EnterMaze::TYPE, json!({ "character_class": character_class }))
+            }
             ClientCmd::Move { dx, dy } => {
                 self.input_seq += 1;
                 self.send_env(
@@ -651,7 +660,7 @@ impl Inner {
                     let updates = g
                         .combatants
                         .into_iter()
-                        .map(|c| (c.combatant_id, c.gauge, c.hp))
+                        .map(|c| (c.combatant_id, c.gauge, c.hp, c.statuses))
                         .collect();
                     self.out.push_back(ServerMsg::Gauge { updates });
                 }

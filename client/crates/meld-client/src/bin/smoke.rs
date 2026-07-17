@@ -19,6 +19,10 @@ fn main() {
     let name = format!("smoke{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     net.send(ClientCmd::Connect { username: name });
 
+    // Optional class (MELD_CLASS=psyker exercises the Psyker Focus system end to
+    // end: focus slots + manifestations ticking + a win).
+    let class = std::env::var("MELD_CLASS").unwrap_or_else(|_| "squire".to_string());
+    let mut psyker_turn = 0u32;
     let mut entered = false;
     let mut in_battle = false;
     let mut my_combatant = String::new();
@@ -39,7 +43,9 @@ fn main() {
             match msg {
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");
-                    net.send(ClientCmd::EnterMaze);
+                    net.send(ClientCmd::EnterMaze {
+                        character_class: class.clone(),
+                    });
                 }
                 ServerMsg::RunStarted => {
                     entered = true;
@@ -54,9 +60,17 @@ fn main() {
                 } => {
                     in_battle = true;
                     battle_id = b;
-                    my_combatant = your_combatant_id;
+                    my_combatant = your_combatant_id.clone();
                     monster = monster_combatant;
-                    eprintln!("[smoke] battle started ({} combatants)", combatants.len());
+                    let my_max = combatants
+                        .iter()
+                        .find(|c| c.id == your_combatant_id)
+                        .map(|c| c.max_hp)
+                        .unwrap_or(0);
+                    eprintln!(
+                        "[smoke] battle started ({} combatants); {class} hero max HP = {my_max}",
+                        combatants.len()
+                    );
                 }
                 ServerMsg::TurnReady { combatant_id } => {
                     if combatant_id == my_combatant {
@@ -93,14 +107,31 @@ fn main() {
             net.send(ClientCmd::Move { dx: 1.0, dy: 0.0 });
             last_move = Instant::now();
         }
-        // Attack as soon as it's our turn.
+        // Act as soon as it's our turn. A Psyker channels Foci: cast Gravity Well,
+        // then Kinetic Aegis, then keep reinforcing — its ticks kill the monster.
+        // Everyone else swings.
         if in_battle && my_turn {
             if let Some(t) = monster.clone() {
-                net.send(ClientCmd::Attack {
-                    battle_id: battle_id.clone(),
-                    actor: my_combatant.clone(),
-                    target: t,
-                });
+                if class == "psyker" {
+                    let op = match psyker_turn {
+                        0 => "cast:gravity_well",
+                        1 => "cast:kinetic_aegis",
+                        _ => "reinforce:gravity_well",
+                    };
+                    psyker_turn += 1;
+                    net.send(ClientCmd::Skill {
+                        battle_id: battle_id.clone(),
+                        actor: my_combatant.clone(),
+                        target: t,
+                        skill_kind: op.to_string(),
+                    });
+                } else {
+                    net.send(ClientCmd::Attack {
+                        battle_id: battle_id.clone(),
+                        actor: my_combatant.clone(),
+                        target: t,
+                    });
+                }
                 my_turn = false;
             }
         }

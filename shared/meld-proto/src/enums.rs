@@ -12,6 +12,10 @@ pub enum CharacterClass {
     Ranger,
     AlchemistKnight,
     Bard,
+    /// Psychic controller: armour-ignoring psychic strikes + projected wards.
+    Psyker,
+    /// Healer: spends its own HP to mend allies, grants Regen + Barrier.
+    Resonant,
 }
 
 /// A combatant's category, deciding friend-vs-foe and disconnect rules.

@@ -298,9 +298,13 @@ pub mod battle {
 pub mod run {
     use super::*;
 
-    /// C2S — start the party's run (empty payload; server knows the party).
+    /// C2S — start the party's run. The chosen class is optional; the server
+    /// defaults to Squire when it is absent (back-compatible with old clients).
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    pub struct EnterMaze {}
+    pub struct EnterMaze {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub character_class: Option<crate::enums::CharacterClass>,
+    }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";
     }

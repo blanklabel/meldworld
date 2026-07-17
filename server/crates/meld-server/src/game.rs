@@ -69,6 +69,29 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// The per-hero class composition of a player's party of `size`. The picked class
+/// leads; the rest are a fixed spread so a single party mixes classes that play
+/// very differently (Squire bruiser + Psyker channeler + Resonant healer).
+fn party_composition(chosen: CharacterClass, size: usize) -> Vec<CharacterClass> {
+    let base = [
+        chosen,
+        CharacterClass::Psyker,
+        CharacterClass::Resonant,
+        CharacterClass::Squire,
+    ];
+    (0..size.max(1)).map(|i| base[i % base.len()]).collect()
+}
+
+/// A class's starting/max HP from balance (falls back to squire).
+fn class_base_hp(class: CharacterClass, balance: &Balance) -> i32 {
+    balance
+        .player
+        .get(meld_run::class_key(class))
+        .or_else(|| balance.player.get("squire"))
+        .map(|p| p.base_hp)
+        .unwrap_or(40)
+}
+
 /// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
 /// each MazeInstance gets a distinct, unpredictable layout (CANON: seeds are
 /// server-side; the client never supplies one).
@@ -94,6 +117,8 @@ struct Session {
     in_instance: bool,
     /// Attack bonus from equipped gear, loaded from the DB after connect.
     gear_atk_bonus: i32,
+    /// Class chosen at the player's most recent `run.enter_maze` (default Squire).
+    character_class: CharacterClass,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -131,6 +156,13 @@ struct ActiveInstance {
     /// player_id -> the combatant ids they control (a solo player fields a party
     /// of four; in co-op each player controls one).
     player_combatants: HashMap<String, Vec<String>>,
+    /// player_id -> per-hero current HP (length = party_size_per_player), carried
+    /// across the run's battles so wounds persist (no free heal between fights).
+    /// Reset to full only when a player (re)enters the maze — a fresh dive.
+    hero_hp: HashMap<String, Vec<i32>>,
+    /// player_id -> per-hero class (the mixed party composition), parallel to
+    /// `hero_hp`. Each slot's class drives its stats/kit for the whole run.
+    party_classes: HashMap<String, Vec<CharacterClass>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
     /// Party ids currently merged into the active battle (raid merge).
@@ -228,6 +260,7 @@ impl GameState {
                         last_client_seq: 0,
                         in_instance: false,
                         gear_atk_bonus: 0,
+                        character_class: CharacterClass::Squire,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -260,6 +293,8 @@ impl GameState {
                 inst.combatant_player.remove(&cid);
             }
         }
+        inst.hero_hp.remove(player_id);
+        inst.party_classes.remove(player_id);
         inst.extraction.remove(player_id);
         if inst.run.runs.is_empty() {
             self.instance = None;
@@ -291,7 +326,7 @@ impl GameState {
                     server_ts: now_ms(),
                 },
             )],
-            wr::EnterMaze::TYPE => self.handle_enter_maze(player_id, raw.seq),
+            wr::EnterMaze::TYPE => self.handle_enter_maze(player_id, raw),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
@@ -304,7 +339,17 @@ impl GameState {
         }
     }
 
-    fn handle_enter_maze(&mut self, player_id: &str, client_seq: u32) -> Vec<Outgoing> {
+    fn handle_enter_maze(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let client_seq = raw.seq;
+        // Record the caller's chosen class (default Squire) before forming the
+        // party, so each player's own class is used for their run.
+        let chosen = serde_json::from_value::<wr::EnterMaze>(raw.payload)
+            .ok()
+            .and_then(|e| e.character_class)
+            .unwrap_or(CharacterClass::Squire);
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            s.character_class = chosen;
+        }
         // The caller can't already be in a run.
         if self
             .sessions
@@ -361,6 +406,8 @@ impl GameState {
                 battle_monster_idx: None,
                 combatant_player: HashMap::new(),
                 player_combatants: HashMap::new(),
+                hero_hp: HashMap::new(),
+                party_classes: HashMap::new(),
                 extraction: HashMap::new(),
                 battle_parties: std::collections::HashSet::new(),
             });
@@ -372,22 +419,32 @@ impl GameState {
         let members: Vec<(String, String, CharacterClass, String)> = party_ids
             .iter()
             .map(|pid| {
-                let username = self
+                let (username, class) = self
                     .sessions
                     .get(pid)
-                    .map(|s| s.username.clone())
-                    .unwrap_or_default();
-                (
-                    pid.clone(),
-                    username,
-                    CharacterClass::Squire,
-                    Uuid::now_v7().to_string(),
-                )
+                    .map(|s| (s.username.clone(), s.character_class))
+                    .unwrap_or((String::new(), CharacterClass::Squire));
+                (pid.clone(), username, class, Uuid::now_v7().to_string())
             })
             .collect();
         inst.run.add_party(members);
         for pid in &party_ids {
             inst.arena.add_avatar(pid.clone(), speed);
+        }
+        // (Re)enter = a fresh dive: build each player's mixed party composition and
+        // start every hero at its class's full HP. Within the run this HP persists
+        // across battles (see hero_hp write-back).
+        let party_size = self.balance.battle.party_size_per_player.max(1);
+        for pid in &party_ids {
+            let chosen = self
+                .sessions
+                .get(pid)
+                .map(|s| s.character_class)
+                .unwrap_or(CharacterClass::Squire);
+            let comp = party_composition(chosen, party_size);
+            let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
+            inst.party_classes.insert(pid.clone(), comp);
+            inst.hero_hp.insert(pid.clone(), hp);
         }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
@@ -545,18 +602,27 @@ impl GameState {
             .filter(|r| r.party_id == party_id)
             .map(|r| r.player_id.clone())
             .collect();
-        // Every player fields their own party of up to `party_size_per_player`
-        // heroes (GDD: per-player party). Up to PARTY_MAX players share the
-        // instance, so a full co-op battle is (players × party size) combatants.
-        let heroes_per_player = balance.battle.party_size_per_player.max(1);
+        // Every player fields a mixed party of up to `party_size_per_player`
+        // heroes (GDD: per-player party), each slot its own class from the party
+        // composition. Up to PARTY_MAX players share the instance, so a full co-op
+        // battle is (players × party size) combatants. Per-hero starting HP is
+        // aligned with `party` (carried across the run so wounds persist).
+        let mut hp_overrides: Vec<Option<i32>> = Vec::new();
         for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
             let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
+            let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
+            let comp = inst
+                .party_classes
+                .get(&r.player_id)
+                .cloned()
+                .unwrap_or_else(|| party_composition(r.character_class, hp_vec.len().max(1)));
             let mut cids = Vec::new();
-            for _ in 0..heroes_per_player {
+            for (slot, cls) in comp.iter().enumerate() {
                 let cid = Uuid::now_v7().to_string();
                 inst.combatant_player
                     .insert(cid.clone(), r.player_id.clone());
-                party.push((r.player_id.clone(), cid.clone(), r.character_class, bonus));
+                party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
+                hp_overrides.push(hp_vec.get(slot).copied());
                 cids.push(cid);
             }
             inst.player_combatants.insert(r.player_id.clone(), cids);
@@ -571,6 +637,7 @@ impl GameState {
             &inst.run,
             &balance,
             seed,
+            &hp_overrides,
         );
         let (allies, enemies) = battle.wire_combatants();
 
@@ -654,7 +721,13 @@ impl GameState {
             return Vec::new();
         }
 
-        let fighters = meld_run::party_fighters(&party, &inst.run, &balance);
+        let mut fighters = meld_run::party_fighters(&party, &inst.run, &balance);
+        // Carry each joiner's persisted HP (slot 0) into the merged battle.
+        for (f, pm) in fighters.iter_mut().zip(party.iter()) {
+            if let Some(h) = inst.hero_hp.get(&pm.0).and_then(|v| v.first().copied()) {
+                f.hp = h.clamp(0, f.max_hp);
+            }
+        }
         inst.battle.as_mut().unwrap().join(fighters);
         inst.battle_parties.insert(party_id);
         for pid in &joiners {
@@ -1195,6 +1268,24 @@ impl GameState {
             .filter(|r| bp.contains(&r.party_id))
             .map(|r| r.player_id.clone())
             .collect();
+
+        // Persist each participant's per-hero HP so wounds carry to the next
+        // encounter (no free heal between fights). Read from the battle before it
+        // is torn down below.
+        if let Some(b) = &inst.battle {
+            for pid in &members {
+                if let (Some(cids), Some(hps)) =
+                    (inst.player_combatants.get(pid), inst.hero_hp.get_mut(pid))
+                {
+                    for (slot, cid) in cids.iter().enumerate() {
+                        if let (Some(hp), Some(slot_hp)) = (b.combatant_hp(cid), hps.get_mut(slot)) {
+                            *slot_hp = hp;
+                        }
+                    }
+                }
+            }
+        }
+
         let mut dead: Vec<String> = Vec::new();
 
         match outcome {
