@@ -43,8 +43,10 @@ fn main() {
             match msg {
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");
+                    // Lead hero = the chosen class (the bot commands hero 0); the
+                    // server fills the rest of the party.
                     net.send(ClientCmd::EnterMaze {
-                        character_class: class.clone(),
+                        party: vec![class.clone()],
                     });
                 }
                 ServerMsg::RunStarted => {
@@ -98,6 +100,8 @@ fn main() {
                 | ServerMsg::ChannelInterrupted
                 | ServerMsg::InventoryData { .. }
                 | ServerMsg::ProgressData { .. }
+                | ServerMsg::LobbyState { .. }
+                | ServerMsg::LobbyClosed
                 | ServerMsg::RunEnded { .. } => {}
             }
         }

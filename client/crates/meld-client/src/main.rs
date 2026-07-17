@@ -94,6 +94,19 @@ fn class_flag() -> Option<String> {
     params.get("class").filter(|s| !s.is_empty())
 }
 
+/// Pre-build the whole party (comma-separated class keys) without the builder.
+/// Native: `MELD_PARTY=squire,psyker,resonant,squire`. Browser: `?party=…`.
+#[cfg(not(target_arch = "wasm32"))]
+fn party_flag() -> Option<String> {
+    std::env::var("MELD_PARTY").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+fn party_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("party").filter(|s| !s.is_empty())
+}
+
 /// Offline battle-screen mockup: jump straight into the Battle screen with canned
 /// combatants and the command window open, so the subscreen can be inspected
 /// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
@@ -159,6 +172,7 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
+        .init_resource::<LobbyData>()
         .add_systems(
             Startup,
             (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
@@ -168,6 +182,13 @@ fn main() {
         .add_systems(OnEnter(Screen::Join), join_ui)
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
+        // Lobby (co-op)
+        .add_systems(OnEnter(Screen::Lobby), lobby_ui)
+        .add_systems(OnExit(Screen::Lobby), despawn::<LobbyRoot>)
+        .add_systems(
+            Update,
+            (lobby_input, render_lobby).run_if(in_state(Screen::Lobby)),
+        )
         // Overworld
         .add_systems(
             OnEnter(Screen::Overworld),
@@ -233,9 +254,24 @@ fn main() {
 enum Screen {
     #[default]
     Join,
+    /// Co-op lobby: create/join by code, ready up, host starts the shared dive.
+    Lobby,
     Overworld,
     Battle,
     Ended,
+}
+
+/// Co-op lobby state, mirrored from the server's `lobby.state`.
+#[derive(Resource, Default)]
+struct LobbyData {
+    in_lobby: bool,
+    code: String,
+    host: String,
+    /// (player_id, username, ready)
+    members: Vec<(String, String, bool)>,
+    /// The code being typed on the join line (before joining).
+    code_input: String,
+    my_ready: bool,
 }
 
 // ------------------------------------------------------------- resources ---
@@ -251,8 +287,14 @@ struct Session {
     entered: bool,
     channeling: bool,
     status: String,
-    /// Class chosen on the Join screen (wire form: "squire" / "psyker").
-    character_class: String,
+    /// The party the player built on the Join screen — one class key per hero
+    /// slot (wire form: "squire" / "psyker" / "resonant"). Sent on enter_maze.
+    party: Vec<String>,
+    /// Which party slot the builder cursor is on.
+    party_cursor: usize,
+    /// True if the player chose Co-op at Join (go to the lobby after connecting
+    /// instead of diving solo).
+    coop: bool,
 }
 
 impl Default for Session {
@@ -263,7 +305,15 @@ impl Default for Session {
             entered: false,
             channeling: false,
             status: String::new(),
-            character_class: "squire".to_string(),
+            // A diverse default so newcomers see all three classes at once.
+            party: vec![
+                "squire".into(),
+                "psyker".into(),
+                "resonant".into(),
+                "squire".into(),
+            ],
+            party_cursor: 0,
+            coop: false,
         }
     }
 }
@@ -687,16 +737,38 @@ struct WorldScenery;
 #[derive(Component)]
 struct HudText;
 
+/// Root of the co-op lobby screen.
+#[derive(Component)]
+struct LobbyRoot;
+/// The lobby screen's dynamic body (member list / join prompt).
+#[derive(Component)]
+struct LobbyText;
+
 // ---------------------------------------------------------------- setup ----
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-/// Pre-select a class from `?class=` / `MELD_CLASS` (defaults to Squire otherwise).
+/// The classes the party builder cycles through.
+const PARTY_CLASSES: [&str; 3] = ["squire", "psyker", "resonant"];
+
+/// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
+/// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
 fn apply_class_flag(mut session: ResMut<Session>) {
-    if let Some(c) = class_flag() {
-        session.character_class = c;
+    if let Some(p) = party_flag() {
+        let party: Vec<String> = p
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| PARTY_CLASSES.contains(&s.as_str()))
+            .collect();
+        if !party.is_empty() {
+            session.party = party;
+        }
+    } else if let Some(c) = class_flag() {
+        if let Some(slot0) = session.party.first_mut() {
+            *slot0 = c;
+        }
     }
 }
 
@@ -835,6 +907,7 @@ fn pump_net(
     mut hitfx: ResMut<HitFx>,
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
+    mut lobby: ResMut<LobbyData>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -843,18 +916,46 @@ fn pump_net(
         match msg {
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
-                session.status = "connected - entering maze...".to_string();
-                if !session.entered {
+                if session.coop {
+                    // Co-op: head to the lobby to create/join a party.
+                    session.status = "connected - open the lobby".to_string();
+                    if *state.get() == Screen::Join {
+                        next.set(Screen::Lobby);
+                    }
+                } else if !session.entered {
+                    // Solo: dive straight in with the built party.
+                    session.status = "connected - entering maze...".to_string();
                     session.entered = true;
                     net.0.send(ClientCmd::EnterMaze {
-                        character_class: session.character_class.clone(),
+                        party: session.party.clone(),
                     });
                 }
             }
             ServerMsg::RunStarted => {
-                if *state.get() == Screen::Join {
+                // The dive can start from Join (solo) or Lobby (co-op).
+                lobby.in_lobby = false;
+                if matches!(*state.get(), Screen::Join | Screen::Lobby) {
                     next.set(Screen::Overworld);
                 }
+            }
+            ServerMsg::LobbyState { code, host, members } => {
+                lobby.in_lobby = true;
+                lobby.code = code;
+                lobby.my_ready = members
+                    .iter()
+                    .find(|(id, _, _)| id == &session.player_id)
+                    .map(|(_, _, r)| *r)
+                    .unwrap_or(false);
+                lobby.host = host;
+                lobby.members = members;
+                if *state.get() == Screen::Join {
+                    next.set(Screen::Lobby);
+                }
+            }
+            ServerMsg::LobbyClosed => {
+                lobby.in_lobby = false;
+                lobby.members.clear();
+                lobby.code.clear();
             }
             ServerMsg::Snapshot { entities } => {
                 world.entities.clear();
@@ -1058,9 +1159,9 @@ fn join_ui(mut commands: Commands) {
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
-                Text::new("Press ENTER to enter the maze and march into the wilds"),
+                Text::new("Build your party of 4 (keys 1-4 cycle a slot).  ENTER: solo dive   C: co-op with others"),
                 TextFont {
-                    font_size: 20.0,
+                    font_size: 18.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
@@ -1069,7 +1170,7 @@ fn join_ui(mut commands: Commands) {
                 ClassText,
                 Text::new(""),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: 22.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.75, 0.85, 1.0)),
@@ -1095,19 +1196,30 @@ fn join_input(
     mut status_q: Query<&mut Text, With<StatusText>>,
     mut class_q: Query<&mut Text, (With<ClassText>, Without<StatusText>)>,
 ) {
-    // Pick a class before connecting (1 = Squire, 2 = Psyker). Locked in once we
-    // start connecting.
+    // Build the party before connecting: keys 1-4 cycle each slot's class through
+    // Squire → Psyker → Resonant. Locked in once we start connecting.
     if !session.connecting {
-        if keys.just_pressed(KeyCode::Digit1) {
-            session.character_class = "squire".to_string();
-        }
-        if keys.just_pressed(KeyCode::Digit2) {
-            session.character_class = "psyker".to_string();
+        let slots = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
+        for (slot, key) in slots.iter().enumerate() {
+            if keys.just_pressed(*key) {
+                if let Some(cur) = session.party.get(slot).cloned() {
+                    let next = PARTY_CLASSES
+                        .iter()
+                        .position(|c| *c == cur)
+                        .map(|i| (i + 1) % PARTY_CLASSES.len())
+                        .unwrap_or(0);
+                    session.party[slot] = PARTY_CLASSES[next].to_string();
+                }
+            }
         }
     }
 
-    if (keys.just_pressed(KeyCode::Enter) || autoplay.0) && !session.connecting {
+    // ENTER (or autoplay) = solo dive. C = co-op → the lobby after connecting.
+    let solo = keys.just_pressed(KeyCode::Enter) || autoplay.0;
+    let coop = keys.just_pressed(KeyCode::KeyC);
+    if (solo || coop) && !session.connecting {
         session.connecting = true;
+        session.coop = coop;
         let name = std::env::var("MELD_NAME").unwrap_or_else(|_| {
             format!("guest{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
         });
@@ -1116,15 +1228,157 @@ fn join_input(
     }
 
     if let Ok(mut t) = class_q.single_mut() {
-        let (squire, psyker) = match session.character_class.as_str() {
-            "psyker" => ("Squire", "[Psyker]"),
-            _ => ("[Squire]", "Psyker"),
-        };
-        **t = format!("Class — [1] {squire}   [2] {psyker}");
+        let slots: Vec<String> = session
+            .party
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("[{}] {}", i + 1, nice_class(c)))
+            .collect();
+        **t = slots.join("   ");
     }
     if let Ok(mut t) = status_q.single_mut() {
         **t = session.status.clone();
     }
+}
+
+/// Display name for a class key.
+fn nice_class(key: &str) -> &'static str {
+    match key {
+        "psyker" => "Psyker",
+        "resonant" => "Resonant",
+        _ => "Squire",
+    }
+}
+
+// ---------------------------------------------------------------- lobby ----
+
+fn lobby_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            LobbyRoot,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(14.0),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("CO-OP LOBBY"),
+                TextFont { font_size: 40.0, ..default() },
+                TextColor(Color::srgb(0.85, 0.9, 1.0)),
+            ));
+            p.spawn((
+                LobbyText,
+                Text::new(""),
+                TextFont { font_size: 20.0, ..default() },
+                TextColor(Color::srgb(0.8, 0.88, 1.0)),
+            ));
+        });
+}
+
+/// Map a just-pressed key to a lobby-code character (A–Z, 0–9).
+fn key_to_code_char(key: KeyCode) -> Option<char> {
+    use KeyCode::*;
+    let c = match key {
+        KeyA => 'A', KeyB => 'B', KeyC => 'C', KeyD => 'D', KeyE => 'E', KeyF => 'F',
+        KeyG => 'G', KeyH => 'H', KeyI => 'I', KeyJ => 'J', KeyK => 'K', KeyL => 'L',
+        KeyM => 'M', KeyN => 'N', KeyO => 'O', KeyP => 'P', KeyQ => 'Q', KeyR => 'R',
+        KeyS => 'S', KeyT => 'T', KeyU => 'U', KeyV => 'V', KeyW => 'W', KeyX => 'X',
+        KeyY => 'Y', KeyZ => 'Z',
+        Digit0 => '0', Digit1 => '1', Digit2 => '2', Digit3 => '3', Digit4 => '4',
+        Digit5 => '5', Digit6 => '6', Digit7 => '7', Digit8 => '8', Digit9 => '9',
+        _ => return None,
+    };
+    Some(c)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lobby_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    session: Res<Session>,
+    mut lobby: ResMut<LobbyData>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    if !lobby.in_lobby {
+        // Not in a lobby yet: create one, or type a code and join.
+        if keys.just_pressed(KeyCode::Enter) {
+            // ENTER with no code = create; with a code = join.
+            if lobby.code_input.is_empty() {
+                net.0.send(ClientCmd::LobbyCreate { party: session.party.clone() });
+            } else {
+                net.0.send(ClientCmd::LobbyJoin {
+                    code: lobby.code_input.clone(),
+                    party: session.party.clone(),
+                });
+            }
+            return;
+        }
+        if keys.just_pressed(KeyCode::Backspace) {
+            lobby.code_input.pop();
+        }
+        for key in keys.get_just_pressed() {
+            if lobby.code_input.len() < 6 {
+                if let Some(c) = key_to_code_char(*key) {
+                    lobby.code_input.push(c);
+                }
+            }
+        }
+        return;
+    }
+
+    // In a lobby: ready up, start (host), or leave.
+    if keys.just_pressed(KeyCode::KeyR) {
+        let want = !lobby.my_ready;
+        lobby.my_ready = want;
+        net.0.send(ClientCmd::LobbyReady { ready: want });
+    }
+    if keys.just_pressed(KeyCode::Enter) && lobby.host == session.player_id {
+        net.0.send(ClientCmd::LobbyStart);
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        net.0.send(ClientCmd::LobbyLeave);
+        lobby.in_lobby = false;
+        lobby.code_input.clear();
+        next.set(Screen::Join);
+    }
+}
+
+fn render_lobby(
+    lobby: Res<LobbyData>,
+    session: Res<Session>,
+    mut q: Query<&mut Text, With<LobbyText>>,
+) {
+    let Ok(mut t) = q.single_mut() else { return };
+    if !lobby.in_lobby {
+        **t = format!(
+            "Join code: {}_\n\ntype a code + ENTER to join,\nor ENTER (empty) to create a new lobby",
+            lobby.code_input
+        );
+        return;
+    }
+    let host_is_me = lobby.host == session.player_id;
+    let mut lines = vec![format!("Code: {}", lobby.code), String::new()];
+    for (id, username, ready) in &lobby.members {
+        let you = if id == &session.player_id { " (you)" } else { "" };
+        let host = if id == &lobby.host { " [host]" } else { "" };
+        let tag = if *ready { "READY" } else { "…" };
+        lines.push(format!("  {username}{you}{host}  —  {tag}"));
+    }
+    lines.push(String::new());
+    let all_ready = !lobby.members.is_empty() && lobby.members.iter().all(|(_, _, r)| *r);
+    let start = if host_is_me {
+        if all_ready { "ENTER: start the dive" } else { "ENTER: start (need everyone READY)" }
+    } else {
+        "waiting for the host to start…"
+    };
+    lines.push(format!("R: toggle ready    {start}    ESC: leave"));
+    **t = lines.join("\n");
 }
 
 // -------------------------------------------------------------- overworld --

@@ -298,12 +298,21 @@ pub mod battle {
 pub mod run {
     use super::*;
 
-    /// C2S — start the party's run. The chosen class is optional; the server
-    /// defaults to Squire when it is absent (back-compatible with old clients).
+    /// C2S — start the party's run. Class selection is optional and back-compatible:
+    /// `party` is the explicit per-hero composition from the party builder; if it is
+    /// absent the server falls back to `character_class` as the party lead (building
+    /// a default mixed party around it), and to Squire if both are absent.
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct EnterMaze {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub character_class: Option<crate::enums::CharacterClass>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub party: Option<Vec<crate::enums::CharacterClass>>,
+        /// Solo dive: a private instance for just the caller (no other humans).
+        /// When absent/false, legacy behavior groups all waiting players (used by
+        /// the headless bot tests); the co-op path is the `lobby.*` flow.
+        #[serde(default)]
+        pub solo: bool,
     }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";
@@ -394,6 +403,86 @@ pub mod run {
     }
     impl Message for BackpackUpdate {
         const TYPE: &'static str = "run.backpack_update";
+    }
+}
+
+// -------------------------------------------------------------------- lobby ---
+
+/// Pre-maze co-op lobby: create/join a party by code, ready up, and the host
+/// starts a shared dive (everyone lands in one instance). Solo play skips this
+/// entirely via `run.enter_maze { solo: true }`.
+pub mod lobby {
+    use super::*;
+
+    /// C2S — create a new lobby (caller becomes host + first member).
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Create {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub party: Option<Vec<CharacterClass>>,
+    }
+    impl Message for Create {
+        const TYPE: &'static str = "lobby.create";
+    }
+
+    /// C2S — join an existing lobby by its code.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Join {
+        pub code: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub party: Option<Vec<CharacterClass>>,
+    }
+    impl Message for Join {
+        const TYPE: &'static str = "lobby.join";
+    }
+
+    /// C2S — toggle the caller's ready flag.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Ready {
+        pub ready: bool,
+    }
+    impl Message for Ready {
+        const TYPE: &'static str = "lobby.ready";
+    }
+
+    /// C2S — leave the current lobby.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Leave {}
+    impl Message for Leave {
+        const TYPE: &'static str = "lobby.leave";
+    }
+
+    /// C2S — host only: launch the dive with all (ready) members.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Start {}
+    impl Message for Start {
+        const TYPE: &'static str = "lobby.start";
+    }
+
+    /// One member in a lobby (S2C view).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MemberView {
+        pub player_id: Id,
+        pub username: String,
+        pub party: Vec<CharacterClass>,
+        pub ready: bool,
+    }
+
+    /// S2C — authoritative lobby state, broadcast to all members on any change.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct State {
+        pub code: String,
+        pub host_player_id: Id,
+        pub members: Vec<MemberView>,
+    }
+    impl Message for State {
+        const TYPE: &'static str = "lobby.state";
+    }
+
+    /// S2C — the lobby was disbanded (host left / everyone gone).
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Closed {}
+    impl Message for Closed {
+        const TYPE: &'static str = "lobby.closed";
     }
 }
 

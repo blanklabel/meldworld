@@ -70,11 +70,16 @@ make stop         # stop the local server (Postgres left running, reused across 
 make help         # list every task
 ```
 
-`make play` needs `trunk` (`cargo install trunk`) and the wasm target
+`make play` builds the wasm client and has the **server itself serve it**, so the
+whole game lives at one URL (`$MELD_ADDR`, default `http://127.0.0.1:18090`) — no
+proxy, no second port. It needs `trunk` (`cargo install trunk`) and the wasm target
 (`rustup target add wasm32-unknown-unknown`); everything needs a local Postgres
-(`initdb`/`pg_ctl`/`createdb` on PATH). Set `MELD_CLASS=psyker|resonant|squire`
-(native) or `?class=psyker` (browser) to pick your party's lead class; `?autoplay`
-self-drives the loop for demos/screenshots.
+(`initdb`/`pg_ctl`/`createdb` on PATH).
+
+Build your **party of four** on the Join screen (keys 1–4 cycle each slot's class),
+or preset it: `?party=squire,psyker,resonant,squire` / `?class=psyker` (lead) in the
+browser, or `MELD_PARTY=…` / `MELD_CLASS=…` natively. `?autoplay` self-drives the
+loop for demos/screenshots.
 
 ## Testing
 
