@@ -15,10 +15,14 @@ use meld_proto::Id;
 
 /// One active Psyker Manifestation occupying a Focus slot. `stacks` (1–2) is the
 /// reinforcement level; each of the Psyker's turns the Focus fires `stacks` strong.
+/// `target_id` is the enemy an offensive Manifestation is aimed at (chosen when it is
+/// cast/reinforced); `None`, or a target that has died, falls back to the first living
+/// enemy at tick time (and the fallback is written back so it sticks).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Focus {
     pub kind: String,
     pub stacks: u8,
+    pub target_id: Option<Id>,
 }
 
 /// A combatant inside a battle. `atk`/`def`/`max_hp` are already world-scaled
@@ -472,7 +476,8 @@ impl Battle {
                     // Foci tick, no new op); everyone else auto-defends.
                     let upkeep = self.start_of_turn(i);
                     let mut res = if self.fighters[i].focus_max > 0 {
-                        self.resolve_psyker(i, None, None, true)
+                        // Auto-channel keeps each Focus firing at its own stored target.
+                        self.resolve_psyker(i, None, None, None, true)
                     } else {
                         self.resolve_defend(i, None, true)
                     };
@@ -528,26 +533,26 @@ impl Battle {
         let upkeep = self.start_of_turn(i);
         // A Psyker channels: every turn its active Foci fire, then it casts/
         // reinforces/revokes one (encoded in skill_kind). Flee still works normally.
+        let target = target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str());
         let is_psyker = self.fighters[i].focus_max > 0;
         let mut res = if is_psyker && action != BattleActionKind::Flee {
-            self.resolve_psyker(i, skill_kind.as_deref(), Some(action_id), false)
+            self.resolve_psyker(i, skill_kind.as_deref(), target, Some(action_id), false)
         } else {
             match action {
                 BattleActionKind::Attack => {
-                    let target = target_ids
-                        .as_ref()
-                        .and_then(|t| t.first())
-                        .ok_or(Reject::ValidationError("attack requires target_ids"))?;
+                    let target =
+                        target.ok_or(Reject::ValidationError("attack requires target_ids"))?;
                     self.resolve_attack(i, target, Some(action_id))?
                 }
                 BattleActionKind::Defend => self.resolve_defend(i, Some(action_id), false),
                 BattleActionKind::Flee => self.resolve_flee(i, Some(action_id)),
                 BattleActionKind::Skill => {
-                    let target = target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str());
                     self.resolve_skill(i, target, skill_kind.as_deref(), Some(action_id))?
                 }
                 // Slice items are always available (no inventory depletion yet).
-                BattleActionKind::Item => self.resolve_item(i, item_id.as_deref(), Some(action_id)),
+                BattleActionKind::Item => {
+                    self.resolve_item(i, item_id.as_deref(), target, Some(action_id))
+                }
             }
         };
         // Prepend the upkeep effects so the client sees Regen/Barrier before the action.
@@ -638,10 +643,13 @@ impl Battle {
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
         }
-        // Resonant healer skills. Each auto-targets the most-wounded living ally
-        // (falling back to the caster) — no manual target needed.
+        // Resonant healer skills. Aim at the chosen living ally if the player picked
+        // one, else auto-target the most-wounded living ally (the classic default).
         if matches!(skill_kind, Some("transfuse") | Some("regen_boon") | Some("ward")) {
-            let effects = self.resolve_resonant(actor_i, skill_kind.unwrap());
+            let target_i = self
+                .ally_target(target_id)
+                .unwrap_or_else(|| self.most_wounded_ally(actor_i));
+            let effects = self.resolve_resonant(actor_i, skill_kind.unwrap(), target_i);
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
@@ -681,28 +689,33 @@ impl Battle {
         &mut self,
         actor_i: usize,
         op: Option<&str>,
+        target: Option<&str>,
         action_id: Option<Id>,
         auto: bool,
     ) -> Resolution {
         let mut effects = Vec::new();
-        // 1. Tick every active Focus (snapshot to avoid aliasing the Vec).
-        let active: Vec<(String, u8)> = self.fighters[actor_i]
+        // 1. Tick every active Focus (snapshot to avoid aliasing the Vec). Each
+        // offensive Focus fires at its own stored target (retargeting on death).
+        let active: Vec<(String, u8, Option<Id>)> = self.fighters[actor_i]
             .foci
             .iter()
-            .map(|f| (f.kind.clone(), f.stacks))
+            .map(|f| (f.kind.clone(), f.stacks, f.target_id.clone()))
             .collect();
-        for (kind, stacks) in &active {
-            effects.extend(self.tick_manifest(actor_i, kind, *stacks));
+        for (kind, stacks, target_id) in &active {
+            effects.extend(self.tick_manifest(actor_i, kind, *stacks, target_id.as_deref()));
             if !self.any_enemy_alive() {
                 break;
             }
         }
 
-        // 2. Apply the management op.
+        // 2. Apply the management op. Offensive Manifestations remember the enemy the
+        // player aimed them at; casting/reinforcing the same kind on a new enemy just
+        // redirects it (see [`Focus::target_id`]).
         let op = op.unwrap_or("hold");
         let mut parts = op.splitn(2, ':');
         let verb = parts.next().unwrap_or("hold");
         let arg = parts.next().unwrap_or("");
+        let aim = target.map(str::to_string);
         match verb {
             "cast" => {
                 let level = self.fighters[actor_i].level;
@@ -713,20 +726,24 @@ impl Battle {
                     self.fighters[actor_i].foci.push(Focus {
                         kind: arg.to_string(),
                         stacks: 1,
+                        target_id: aim.clone(),
                     });
-                    effects.extend(self.tick_manifest(actor_i, arg, 1)); // fires immediately
+                    effects.extend(self.tick_manifest(actor_i, arg, 1, aim.as_deref())); // fires immediately
                 }
             }
             "reinforce" => {
                 let mut bumped = false;
                 if let Some(f) = self.fighters[actor_i].foci.iter_mut().find(|f| f.kind == arg) {
+                    if aim.is_some() {
+                        f.target_id = aim.clone(); // redirect to the freshly-aimed enemy
+                    }
                     if f.stacks < 2 {
                         f.stacks += 1;
                         bumped = true;
                     }
                 }
                 if bumped {
-                    effects.extend(self.tick_manifest(actor_i, arg, 1)); // the added stack fires
+                    effects.extend(self.tick_manifest(actor_i, arg, 1, aim.as_deref())); // the added stack fires
                 }
             }
             "revoke" => {
@@ -747,11 +764,22 @@ impl Battle {
         }
     }
 
-    /// Apply one tick of a Manifestation at `stacks` strength.
-    fn tick_manifest(&mut self, psyker_i: usize, kind: &str, stacks: u8) -> Vec<ResolvedEffect> {
+    /// Apply one tick of a Manifestation at `stacks` strength, aimed at `target_id`
+    /// (the enemy the offensive Foci hit; ignored by the self-warding Kinetic Aegis).
+    fn tick_manifest(
+        &mut self,
+        psyker_i: usize,
+        kind: &str,
+        stacks: u8,
+        target_id: Option<&str>,
+    ) -> Vec<ResolvedEffect> {
         match kind {
-            "gravity_well" => self.tick_offense(psyker_i, self.psyker_gravity_tick_mult, stacks),
-            "mind_spike" => self.tick_offense(psyker_i, self.psyker_spike_tick_mult, stacks),
+            "gravity_well" => {
+                self.tick_offense(psyker_i, kind, self.psyker_gravity_tick_mult, stacks, target_id)
+            }
+            "mind_spike" => {
+                self.tick_offense(psyker_i, kind, self.psyker_spike_tick_mult, stacks, target_id)
+            }
             "kinetic_aegis" => {
                 // The ward projects Barrier (temp HP), not a heal.
                 let raw = (self.fighters[psyker_i].max_hp as f64
@@ -760,9 +788,35 @@ impl Battle {
                     .round() as i32;
                 self.grant_barrier(psyker_i, raw)
             }
-            "temporal_anchor" => self.tick_control(stacks),
+            "temporal_anchor" => self.tick_control(psyker_i, kind, stacks, target_id),
             _ => Vec::new(),
         }
+    }
+
+    /// The enemy index an offensive Focus hits this tick: its stored target if that
+    /// enemy is alive, else the first living enemy — written back onto the Focus so the
+    /// aim sticks after a retarget. `None` when no enemy is alive.
+    fn focus_enemy_target(
+        &mut self,
+        psyker_i: usize,
+        kind: &str,
+        target_id: Option<&str>,
+    ) -> Option<usize> {
+        let aimed = target_id.and_then(|id| self.idx(id)).filter(|&t| {
+            self.fighters[t].alive && self.fighters[t].kind != CombatantKind::Player
+        });
+        if let Some(t) = aimed {
+            return Some(t);
+        }
+        let fallback = self
+            .fighters
+            .iter()
+            .position(|f| f.alive && f.kind != CombatantKind::Player)?;
+        let new_id = self.fighters[fallback].combatant_id.clone();
+        if let Some(f) = self.fighters[psyker_i].foci.iter_mut().find(|f| f.kind == kind) {
+            f.target_id = Some(new_id);
+        }
+        Some(fallback)
     }
 
     /// Grant `amount` Barrier (temp HP) to a fighter, reported as a status effect.
@@ -778,6 +832,16 @@ impl Battle {
             status: Some("barrier".to_string()),
             hp_after: self.fighters[i].hp,
         }]
+    }
+
+    /// Index of a player-chosen ally target, if `target_id` names a **living player
+    /// ally** — the guard that keeps aimed heals/items from ever healing an enemy (or
+    /// a corpse). `None` means "no valid manual pick", so callers fall back to their
+    /// default (most-wounded ally for heals, the actor for items).
+    fn ally_target(&self, target_id: Option<&str>) -> Option<usize> {
+        let id = target_id?;
+        self.idx(id)
+            .filter(|&t| self.fighters[t].alive && self.fighters[t].kind == CombatantKind::Player)
     }
 
     /// Index of the most-wounded living ally (lowest HP fraction), falling back to
@@ -796,12 +860,12 @@ impl Battle {
             .unwrap_or(caster_i)
     }
 
-    /// Resonant healer skills, auto-targeting the most-wounded ally:
+    /// Resonant healer skills, applied to `target_i` (a resolved living ally — either
+    /// the player's pick or the most-wounded default; see [`Battle::resolve_skill`]):
     /// - `transfuse`  — heal the ally, paying part of the heal from the Resonant's HP.
     /// - `regen_boon` — grant the ally the Regen status.
     /// - `ward`       — grant the ally Barrier.
-    fn resolve_resonant(&mut self, caster_i: usize, skill: &str) -> Vec<ResolvedEffect> {
-        let target_i = self.most_wounded_ally(caster_i);
+    fn resolve_resonant(&mut self, caster_i: usize, skill: &str, target_i: usize) -> Vec<ResolvedEffect> {
         match skill {
             "transfuse" => {
                 let heal = ((self.fighters[caster_i].max_hp as f64)
@@ -858,14 +922,17 @@ impl Battle {
     }
 
     /// Offensive Manifestation tick: `spell_power * mult * stacks` psychic damage
-    /// to the first living enemy, **ignoring defence** (def treated as 0). Scales
+    /// to the Focus's aimed enemy, **ignoring defence** (def treated as 0). Scales
     /// with the Psyker's Mnd (which feeds `spell_power`), not its physical atk.
-    fn tick_offense(&mut self, psyker_i: usize, mult: f64, stacks: u8) -> Vec<ResolvedEffect> {
-        let Some(t) = self
-            .fighters
-            .iter()
-            .position(|f| f.alive && f.kind != CombatantKind::Player)
-        else {
+    fn tick_offense(
+        &mut self,
+        psyker_i: usize,
+        kind: &str,
+        mult: f64,
+        stacks: u8,
+        target_id: Option<&str>,
+    ) -> Vec<ResolvedEffect> {
+        let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
             return Vec::new();
         };
         let power = self.fighters[psyker_i].spell_power;
@@ -873,13 +940,15 @@ impl Battle {
         self.apply_damage(t, dmg.max(self.min_damage))
     }
 
-    /// Control Manifestation tick: drain the enemy's ATB gauge, delaying its turns.
-    fn tick_control(&mut self, stacks: u8) -> Vec<ResolvedEffect> {
-        let Some(t) = self
-            .fighters
-            .iter()
-            .position(|f| f.alive && f.kind != CombatantKind::Player)
-        else {
+    /// Control Manifestation tick: drain the aimed enemy's ATB gauge, delaying its turns.
+    fn tick_control(
+        &mut self,
+        psyker_i: usize,
+        kind: &str,
+        stacks: u8,
+        target_id: Option<&str>,
+    ) -> Vec<ResolvedEffect> {
+        let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
             return Vec::new();
         };
         let drain = self.psyker_anchor_gauge_drain * stacks as f64;
@@ -893,21 +962,26 @@ impl Battle {
         }]
     }
 
-    /// Items (slice content). `elixir` fully heals the actor; `salve` (and the
-    /// default) heals `item_heal_fraction` of max HP.
+    /// Items (slice content). `elixir` fully heals; `salve` (and the default) heals
+    /// `item_heal_fraction` of max HP. Applied to the chosen living ally if the player
+    /// picked one, else the actor (the classic self-use default).
     fn resolve_item(
         &mut self,
         actor_i: usize,
         item_id: Option<&str>,
+        target_id: Option<&str>,
         action_id: Option<Id>,
     ) -> Resolution {
-        let max_hp = self.fighters[actor_i].max_hp;
+        let heal_i = self.ally_target(target_id).unwrap_or(actor_i);
+        let max_hp = self.fighters[heal_i].max_hp;
         let raw = if item_id == Some("elixir") {
             max_hp // full heal
         } else {
             ((max_hp as f64) * self.item_heal_fraction).round() as i32
         };
-        let effects = self.apply_heal(actor_i, raw);
+        let effects = self.apply_heal(heal_i, raw);
+        // The action still belongs to the actor (its gauge/stance reset), even when
+        // the heal lands on an ally.
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
         self.resolution(actor_i, BattleActionKind::Item, action_id, effects)
@@ -1559,6 +1633,133 @@ mod tests {
             .expect("transfuse resolves");
         assert_eq!(player_hp(&battle, "a"), 28, "ally healed 18 (10 → 28)");
         assert_eq!(player_hp(&battle, "c"), 37, "resonant paid 9 (46 → 37)");
+    }
+
+    #[test]
+    fn aimed_heal_targets_the_chosen_ally_not_the_most_wounded() {
+        let b = balance();
+        // Two hurt allies: a1 is the most wounded (the auto-target), a2 is the one the
+        // player aims at. Passing target_ids=[a2] must heal a2, leaving a1 untouched.
+        let mut caster = player("c", 400);
+        caster.hp = 46;
+        caster.max_hp = 46; // → transfuse heal = round(46*0.4) = 18
+        let mut a1 = player("a1", 1);
+        a1.hp = 10; // most wounded
+        let mut a2 = player("a2", 1);
+        a2.hp = 20; // the chosen target
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![caster, a1, a2],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "c");
+        battle
+            .submit(
+                "c",
+                "t".into(),
+                BattleActionKind::Skill,
+                Some(vec!["a2".into()]),
+                Some("transfuse".into()),
+                None,
+            )
+            .expect("transfuse resolves");
+        assert_eq!(player_hp(&battle, "a2"), 38, "chosen ally healed 18 (20 → 38)");
+        assert_eq!(player_hp(&battle, "a1"), 10, "most-wounded ally left untouched");
+    }
+
+    #[test]
+    fn item_can_be_used_on_a_chosen_ally() {
+        let b = balance();
+        // Salve heals round(40*0.4)=16. The actor uses it on an ally, not itself.
+        let mut actor = player("c", 400);
+        actor.hp = 20;
+        let mut ally = player("a", 1);
+        ally.hp = 5;
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![actor, ally],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "c");
+        battle
+            .submit(
+                "c",
+                "i".into(),
+                BattleActionKind::Item,
+                Some(vec!["a".into()]),
+                None,
+                Some("salve".into()),
+            )
+            .expect("item resolves");
+        assert_eq!(player_hp(&battle, "a"), 21, "ally healed by the salve (5 → 21)");
+        assert_eq!(player_hp(&battle, "c"), 20, "actor spent its turn, kept its own HP");
+    }
+
+    #[test]
+    fn psyker_focus_hits_the_aimed_enemy_and_reinforce_redirects() {
+        let b = balance();
+        // Two enemies. Aim Gravity Well at m2 (not the first enemy): only m2 takes the
+        // round(12*0.55)=7 tick. m1 is left alone, proving per-focus targeting.
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![psyker("p", 110, 1, 2)],
+            vec![monster("m1", 1000, 1), monster("m2", 1000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "p");
+        battle
+            .submit(
+                "p",
+                "c1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m2".into()]),
+                Some("cast:gravity_well".into()),
+                None,
+            )
+            .expect("cast resolves");
+        assert_eq!(player_hp(&battle, "m1"), 1000, "first enemy untouched");
+        assert_eq!(player_hp(&battle, "m2"), 993, "aimed enemy took the 7 tick");
+
+        // Reinforce aimed at m1 redirects the focus. Ticks fire at the start of the
+        // turn (before the op), so the still-aimed-at-m2 stack lands its 7 on m2, then
+        // the redirect applies and the freshly-added stack fires its 7 on m1.
+        tick_to_ready(&mut battle, "p");
+        battle
+            .submit(
+                "p",
+                "r1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some("reinforce:gravity_well".into()),
+                None,
+            )
+            .expect("reinforce resolves");
+        assert_eq!(player_hp(&battle, "m2"), 986, "old target took this turn's existing tick");
+        assert_eq!(player_hp(&battle, "m1"), 993, "redirected stack landed on m1");
+
+        // A plain hold turn proves the redirect stuck: both stacks (round(12*0.55*2)=13)
+        // now fire on m1, and m2 is no longer touched.
+        tick_to_ready(&mut battle, "p");
+        battle
+            .submit(
+                "p",
+                "h1".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("hold".into()),
+                None,
+            )
+            .expect("hold resolves");
+        assert_eq!(player_hp(&battle, "m1"), 980, "both stacks now hit m1 (took 13)");
+        assert_eq!(player_hp(&battle, "m2"), 986, "m2 untouched after the redirect stuck");
     }
 
     #[test]

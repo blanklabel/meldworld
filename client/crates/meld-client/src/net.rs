@@ -30,12 +30,13 @@ pub enum ClientCmd {
     /// Enter the maze with the built party (one class key per hero slot).
     EnterMaze { party: Vec<String> },
     Move { dx: f64, dy: f64 },
-    /// Battle commands. `actor` is which of the player's heroes acts. Attack/Skill
-    /// strike an enemy; Defend/Item are self-cast.
+    /// Battle commands. `actor` is which of the player's heroes acts; `target` is the
+    /// chosen combatant (an enemy for Attack/offensive Skill, an ally for a
+    /// heal/support Skill or Item). Defend is self-cast (no target).
     Attack { battle_id: String, actor: String, target: String },
     Defend { battle_id: String, actor: String },
     Skill { battle_id: String, actor: String, target: String, skill_kind: String },
-    Item { battle_id: String, actor: String, item_id: String },
+    Item { battle_id: String, actor: String, item_id: String, target: String },
     /// Begin an extraction channel at the single deep fixed portal.
     Extract,
     /// Consume a Town Portal item to extract from anywhere (the primary way out).
@@ -560,6 +561,7 @@ impl Inner {
                 battle_id,
                 actor,
                 item_id,
+                target,
             } => self.send_env(
                 wb::SubmitAction::TYPE,
                 json!({
@@ -569,7 +571,7 @@ impl Inner {
                     "action": "item",
                     "skill_kind": null,
                     "item_id": item_id,
-                    "target_ids": null
+                    "target_ids": [target]
                 }),
             ),
             ClientCmd::Extract => self.send_env(

@@ -394,10 +394,51 @@ struct BattleData {
     combatants: Vec<CombatantView>,
     /// Heroes whose ATB gauge is full (server said TurnReady).
     ready: HashSet<String>,
-    /// Per-hero queued order; auto-fires the instant that hero is ready.
-    queued: HashMap<String, QueuedKind>,
+    /// Per-hero queued order (action + chosen target); auto-fires the instant that
+    /// hero is ready.
+    queued: HashMap<String, Order>,
     /// The hero the command window is giving orders to.
     active: Option<String>,
+}
+
+/// A queued order: what the hero will do and (for aimed actions) which combatant it
+/// hits. `target` is `None` for self-cast actions (Defend, Second Wind, Hold).
+#[derive(Clone)]
+struct Order {
+    kind: QueuedKind,
+    target: Option<String>,
+}
+
+/// Which side an order picks a target from. `None` from [`order_side`] means the
+/// action is self-cast and needs no target picker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side {
+    Enemy,
+    Ally,
+}
+
+/// The side an order targets, or `None` if it is self-cast. Attacks and offensive
+/// manifestations hit an enemy; heals/wards/items land on an ally (any living player
+/// combatant, including co-op heroes who joined the battle).
+fn order_side(kind: QueuedKind) -> Option<Side> {
+    match kind {
+        QueuedKind::Attack => Some(Side::Enemy),
+        QueuedKind::Skill("power_strike") => Some(Side::Enemy),
+        QueuedKind::Skill("transfuse") | QueuedKind::Skill("regen_boon") | QueuedKind::Skill("ward") => {
+            Some(Side::Ally)
+        }
+        QueuedKind::Skill("second_wind") => None,
+        // Any other/unknown skill defaults to an offensive (enemy) target.
+        QueuedKind::Skill(_) => Some(Side::Enemy),
+        QueuedKind::Item(_) => Some(Side::Ally),
+        QueuedKind::Defend => None,
+        // Psyker Foci: Kinetic Aegis wards the caster (self); the rest are aimed at an
+        // enemy. Revoke/Hold need no target.
+        QueuedKind::Focus("cast", "kinetic_aegis") | QueuedKind::Focus("reinforce", "kinetic_aegis") => None,
+        QueuedKind::Focus("cast", _) | QueuedKind::Focus("reinforce", _) => Some(Side::Enemy),
+        QueuedKind::Focus(_, _) => None,
+        QueuedKind::Hold => None,
+    }
 }
 
 impl BattleData {
@@ -636,16 +677,21 @@ struct Demo {
 // -------------------------------------------------------- battle command ---
 
 /// Which page of the battle command window is showing. FF/Lufia-style: the root
-/// commands, a Skill / Item sub-list, or (Psyker) the Manifestation picker.
+/// commands, a Skill / Item sub-list, the Psyker Manifestation list, and the dynamic
+/// Target / Revoke pickers (whose rows come from live battle state, not [`menu_entries`]).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum MenuLevel {
     #[default]
     Root,
     Skills,
     Items,
-    /// Psyker: pick which Manifestation the current op (cast/reinforce/revoke)
-    /// applies to.
+    /// Psyker: the Manifestation list (shaped like the Skill list). Selecting one
+    /// casts it, or reinforces it if already active.
     Manifest,
+    /// Psyker: pick which active Manifestation to end.
+    Revoke,
+    /// Pick which combatant the pending action hits (enemy or ally).
+    Target,
 }
 
 /// What selecting a menu row does.
@@ -657,9 +703,12 @@ enum EntryAction {
     OpenItems,
     Skill(&'static str), // skill_kind
     Item(&'static str),  // item_id
-    /// Psyker: open the Manifestation picker for this op verb (cast/reinforce/revoke).
-    PsykerOp(&'static str),
-    /// Psyker: apply the current op to this manifestation kind.
+    /// Psyker: open the Manifestation list.
+    OpenManifest,
+    /// Psyker: open the Revoke picker (active Foci).
+    OpenRevoke,
+    /// Psyker: cast or reinforce this manifestation kind (verb inferred from whether
+    /// it is already active).
     Manifest(&'static str),
     /// Psyker: hold — let the active Foci tick.
     Hold,
@@ -685,16 +734,16 @@ fn skill_entries(skills: &[(&'static str, &'static str)], hero_level: i32) -> Ve
         .collect()
 }
 
-/// The rows shown at a given menu level. For a Psyker the root is the Focus ops
-/// (Cast/Reinforce/Revoke/Hold) and the Manifest page lists the manifestations
-/// unlocked at `hero_level`.
+/// The rows shown at a given menu level. For a Psyker the root is `Focus / Revoke /
+/// Hold` and the Manifest page lists the manifestations unlocked at `hero_level`. The
+/// dynamic pages (Target, Revoke) draw their rows from live battle state instead
+/// ([`BattleMenu::rows`]), so they return empty here.
 fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry> {
     let e = |label, action| MenuEntry { label, action };
     match level {
         MenuLevel::Root if class == "psyker" => vec![
-            e("Cast", EntryAction::PsykerOp("cast")),
-            e("Reinforce", EntryAction::PsykerOp("reinforce")),
-            e("Revoke", EntryAction::PsykerOp("revoke")),
+            e("Focus", EntryAction::OpenManifest),
+            e("Revoke", EntryAction::OpenRevoke),
             e("Hold", EntryAction::Hold),
         ],
         MenuLevel::Root => vec![
@@ -739,6 +788,8 @@ fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry
             v.push(e("Back", EntryAction::Back));
             v
         }
+        // Rows come from `BattleMenu::rows`; rendered/selected specially.
+        MenuLevel::Target | MenuLevel::Revoke => Vec::new(),
     }
 }
 
@@ -750,8 +801,12 @@ struct BattleMenu {
     level: MenuLevel,
     cursor: usize,
     dirty: bool,
-    /// Psyker: the op verb chosen at Root, applied on the Manifest page.
-    psyker_verb: &'static str,
+    /// The action waiting for a target: `(actor id, order kind)`. Set when a command
+    /// that needs a target is chosen; consumed when a Target row is picked.
+    pending: Option<(String, QueuedKind)>,
+    /// Dynamic rows for the Target/Revoke pages: `(display label, value)`. The value
+    /// is a combatant id (Target) or a manifestation kind (Revoke).
+    rows: Vec<(String, String)>,
 }
 
 // ------------------------------------------------------------- marker(s) ---
@@ -875,8 +930,14 @@ fn mock_battle_setup(
     battle.active = Some("h1".to_string());
     battle.ready.insert("h1".to_string());
     battle.ready.insert("h3".to_string());
-    battle.queued.insert("h2".to_string(), QueuedKind::Attack);
-    battle.queued.insert("h4".to_string(), QueuedKind::Skill("power_strike"));
+    battle.queued.insert(
+        "h2".to_string(),
+        Order { kind: QueuedKind::Attack, target: Some("grendel".into()) },
+    );
+    battle.queued.insert(
+        "h4".to_string(),
+        Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
+    );
     battle.combatants = vec![
         hero("h1", 32, 1.0),
         hero("h2", 40, 0.4),
@@ -2006,11 +2067,13 @@ fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEn
 
 // ---------------------------------------------------------------- battle ---
 
-/// Reset the command window to its root page.
+/// Reset the command window to its root page, clearing any pending target choice.
 fn reset_menu(menu: &mut BattleMenu) {
     menu.level = MenuLevel::Root;
     menu.cursor = 0;
     menu.dirty = true;
+    menu.pending = None;
+    menu.rows.clear();
 }
 
 /// On entering a battle, open the command window on the root page.
@@ -2018,27 +2081,79 @@ fn enter_battle(mut menu: ResMut<BattleMenu>) {
     reset_menu(&mut menu);
 }
 
-/// Queue an order for the active hero and advance to the next hero that still
-/// needs orders. The order fires automatically once that hero's ATB fills
+/// Queue an order (with its chosen target) for `hero`, then hand focus to the next
+/// hero that still needs one — preferring a hero whose ATB is already full
+/// ([`pick_active`]). The order fires the instant that hero is ready
 /// ([`auto_fire_queued`]).
-fn queue_order(battle: &mut BattleData, hero: &str, kind: QueuedKind, menu: &mut BattleMenu) {
-    battle.queued.insert(hero.to_string(), kind);
-    battle.active = next_needing_order(battle, hero).or_else(|| Some(hero.to_string()));
+fn queue_order(
+    battle: &mut BattleData,
+    hero: &str,
+    kind: QueuedKind,
+    target: Option<String>,
+    menu: &mut BattleMenu,
+) {
+    battle.queued.insert(hero.to_string(), Order { kind, target });
+    battle.active = pick_active(battle).or_else(|| Some(hero.to_string()));
     reset_menu(menu);
 }
 
-/// First alive hero after `current` (wrapping) that has no queued order yet.
-fn next_needing_order(battle: &BattleData, current: &str) -> Option<String> {
-    let ids = &battle.your_ids;
-    let n = ids.len();
-    if n == 0 {
-        return None;
+/// Begin an order for `hero`: self-cast orders queue immediately; aimed orders open the
+/// Target picker (auto-picking when only one valid target exists).
+fn begin_order(battle: &mut BattleData, menu: &mut BattleMenu, hero: &str, kind: QueuedKind) {
+    match order_side(kind) {
+        None => queue_order(battle, hero, kind, None, menu),
+        Some(side) => {
+            let targets = valid_targets(battle, side);
+            match targets.len() {
+                0 => reset_menu(menu), // nothing valid to hit — abandon the choice
+                1 => queue_order(battle, hero, kind, Some(targets[0].1.clone()), menu),
+                _ => {
+                    menu.pending = Some((hero.to_string(), kind));
+                    menu.rows = targets;
+                    open_page(menu, MenuLevel::Target);
+                }
+            }
+        }
     }
-    let start = ids.iter().position(|h| h == current).unwrap_or(0);
-    (1..=n).find_map(|off| {
-        let h = &ids[(start + off) % n];
-        (battle.alive(h) && !battle.queued.contains_key(h)).then(|| h.clone())
-    })
+}
+
+/// Living combatants on `side`, as `(label, id)` rows for the Target picker. Allies are
+/// every living player combatant — including co-op heroes who joined the battle (they
+/// live in `combatants`, not `your_ids`).
+fn valid_targets(battle: &BattleData, side: Side) -> Vec<(String, String)> {
+    battle
+        .combatants
+        .iter()
+        .filter(|c| c.hp > 0 && (side == Side::Ally) == c.is_player)
+        .map(|c| {
+            let name = if c.is_player { battle.hero_label(&c.id) } else { c.name.clone() };
+            (format!("{}  {}/{}", name, c.hp, c.max_hp), c.id.clone())
+        })
+        .collect()
+}
+
+/// A default target for an order lacking an explicit pick (autoplay, or a queued target
+/// that died before firing): first living enemy for offensive orders, most-wounded
+/// living ally for supportive ones. `None` when nothing valid remains.
+fn default_target(battle: &BattleData, kind: QueuedKind) -> Option<String> {
+    match order_side(kind) {
+        Some(Side::Enemy) => battle
+            .combatants
+            .iter()
+            .find(|c| !c.is_player && c.hp > 0)
+            .map(|c| c.id.clone()),
+        Some(Side::Ally) => battle
+            .combatants
+            .iter()
+            .filter(|c| c.is_player && c.hp > 0)
+            .min_by(|a, b| {
+                let fa = a.hp as f32 / a.max_hp.max(1) as f32;
+                let fb = b.hp as f32 / b.max_hp.max(1) as f32;
+                fa.total_cmp(&fb)
+            })
+            .map(|c| c.id.clone()),
+        None => None,
+    }
 }
 
 /// A sensible active hero: prefer one that's ready and unordered, then any
@@ -2053,7 +2168,8 @@ fn pick_active(battle: &BattleData) -> Option<String> {
         .map(|h| (*h).clone())
 }
 
-/// Send a hero's order to the server. Attack/Skill need the monster as target.
+/// Send a hero's order to the server, aimed at `target` (the combatant the player
+/// chose; already validated/retargeted by [`auto_fire_queued`]).
 fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target: Option<&str>) {
     let cmd = match kind {
         QueuedKind::Attack => target.map(|t| ClientCmd::Attack {
@@ -2071,13 +2187,15 @@ fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target:
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
         }),
+        // Items heal the chosen ally (server falls back to the actor for an empty id).
         QueuedKind::Item(it) => Some(ClientCmd::Item {
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
             item_id: it.to_string(),
+            target: target.unwrap_or(actor).to_string(),
         }),
-        // Psyker Focus ops ride the Skill action with a `verb:kind` skill_kind
-        // (the server ignores the target for these; send the monster if known).
+        // Psyker Focus ops ride the Skill action with a `verb:kind` skill_kind; the
+        // aimed enemy (for offensive Foci) travels as the target.
         QueuedKind::Focus(verb, kind) => Some(ClientCmd::Skill {
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
@@ -2096,65 +2214,141 @@ fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target:
     }
 }
 
-/// Keep `active` pointing at a live, controllable hero.
-fn validate_active(mut battle: ResMut<BattleData>) {
-    let ok = battle
-        .active
-        .as_ref()
-        .map(|a| battle.your_ids.contains(a) && battle.alive(a))
-        .unwrap_or(false);
-    if !ok {
+/// Keep `active` on a live, controllable hero and auto-focus the ready one: re-pick
+/// whenever the active hero is gone or already has a queued order, so focus follows
+/// the ATB. Frozen while the Target picker is open (the pending actor owns the turn).
+fn validate_active(mut battle: ResMut<BattleData>, menu: Res<BattleMenu>) {
+    if menu.level == MenuLevel::Target {
+        return;
+    }
+    let needs_repick = match &battle.active {
+        Some(a) => {
+            !(battle.your_ids.contains(a) && battle.alive(a)) || battle.queued.contains_key(a)
+        }
+        None => true,
+    };
+    if needs_repick {
         battle.active = pick_active(&battle);
     }
 }
 
-/// Fire every hero whose gauge is full and who has a queued order.
+/// Fire every hero whose gauge is full and who has a queued order, at its chosen
+/// target — retargeting to a sensible default if that target died while the gauge filled.
 fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleData>) {
     let battle_id = battle.battle_id.clone();
-    let target = battle.monster_combatant.clone();
-    let ready_orders: Vec<(String, QueuedKind)> = battle
+    let ready_orders: Vec<(String, Order)> = battle
         .your_ids
         .iter()
         .filter(|h| battle.ready.contains(*h))
-        .filter_map(|h| battle.queued.get(h).map(|k| (h.clone(), *k)))
+        .filter_map(|h| battle.queued.get(h).map(|o| (h.clone(), o.clone())))
         .collect();
-    for (hero, kind) in ready_orders {
-        fire_order(&net.0, &battle_id, &hero, kind, target.as_deref());
+    for (hero, order) in ready_orders {
+        let target = order
+            .target
+            .filter(|t| battle.alive(t))
+            .or_else(|| default_target(&battle, order.kind));
+        fire_order(&net.0, &battle_id, &hero, order.kind, target.as_deref());
         battle.ready.remove(&hero);
         battle.queued.remove(&hero);
     }
 }
 
-/// Act on the command row at `index`: root Attack/Defend queue an order for the
-/// active hero; Item/Skill open a sub-page; a Skill/Item row queues it; Back
-/// returns to root.
+/// The `&'static str` manifestation kind matching a dynamic `kind` string (from a
+/// combatant's parsed foci), or `None` if it isn't a known manifestation.
+fn manifest_static(kind: &str) -> Option<&'static str> {
+    MANIFESTS.iter().find(|(k, _, _)| *k == kind).map(|(k, _, _)| *k)
+}
+
+/// Cast vs reinforce for a Psyker picking `kind`: reinforce if that manifestation is
+/// already active on the hero, else cast. Mirrors the server's slot logic so the
+/// unified menu "just reinforces" a live Focus.
+fn manifest_verb(battle: &BattleData, hero: &str, kind: &str) -> &'static str {
+    let active = battle
+        .view(hero)
+        .map(|v| parse_foci(&v.statuses).1)
+        .unwrap_or_default();
+    if active.iter().any(|(k, _)| k == kind) {
+        "reinforce"
+    } else {
+        "cast"
+    }
+}
+
+/// Act on the command row at `index`. Root/list rows come from [`menu_entries`]; the
+/// dynamic Target/Revoke pages index into [`BattleMenu::rows`] (with a trailing Back).
+/// Order-producing rows route through [`begin_order`], which opens the Target picker
+/// when the action needs aiming.
 fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, class: &str) {
     let active = match battle.active.clone() {
         Some(a) => a,
         None => return,
     };
+
+    // Dynamic pages: `menu.rows` then a trailing Back row.
+    if matches!(menu.level, MenuLevel::Target | MenuLevel::Revoke) {
+        let Some((_, value)) = menu.rows.get(index).cloned() else {
+            reset_menu(menu); // the Back row (or out of range)
+            return;
+        };
+        match menu.level {
+            MenuLevel::Target => match menu.pending.clone() {
+                Some((actor, kind)) => queue_order(battle, &actor, kind, Some(value), menu),
+                None => reset_menu(menu),
+            },
+            MenuLevel::Revoke => match manifest_static(&value) {
+                Some(kind) => queue_order(battle, &active, QueuedKind::Focus("revoke", kind), None, menu),
+                None => reset_menu(menu),
+            },
+            _ => unreachable!(),
+        }
+        return;
+    }
+
     let hero_level = battle.view(&active).map(|c| c.level).unwrap_or(1);
     let entries = menu_entries(menu.level, class, hero_level);
     let Some(entry) = entries.get(index) else {
         return;
     };
     match entry.action {
-        EntryAction::Attack => queue_order(battle, &active, QueuedKind::Attack, menu),
-        EntryAction::Defend => queue_order(battle, &active, QueuedKind::Defend, menu),
+        EntryAction::Attack => begin_order(battle, menu, &active, QueuedKind::Attack),
+        EntryAction::Defend => begin_order(battle, menu, &active, QueuedKind::Defend),
         EntryAction::OpenSkills => open_page(menu, MenuLevel::Skills),
         EntryAction::OpenItems => open_page(menu, MenuLevel::Items),
-        EntryAction::Skill(kind) => queue_order(battle, &active, QueuedKind::Skill(kind), menu),
-        EntryAction::Item(id) => queue_order(battle, &active, QueuedKind::Item(id), menu),
-        // Psyker: pick the op verb, then choose a manifestation on the next page.
-        EntryAction::PsykerOp(verb) => {
-            menu.psyker_verb = verb;
-            open_page(menu, MenuLevel::Manifest);
-        }
+        EntryAction::Skill(kind) => begin_order(battle, menu, &active, QueuedKind::Skill(kind)),
+        EntryAction::Item(id) => begin_order(battle, menu, &active, QueuedKind::Item(id)),
+        // Psyker: Focus opens the manifestation list; Revoke lists the live Foci.
+        EntryAction::OpenManifest => open_page(menu, MenuLevel::Manifest),
+        EntryAction::OpenRevoke => open_revoke_page(menu, battle, &active),
+        // Cast, or reinforce if already active; begin_order aims offensive ones.
         EntryAction::Manifest(kind) => {
-            queue_order(battle, &active, QueuedKind::Focus(menu.psyker_verb, kind), menu)
+            let verb = manifest_verb(battle, &active, kind);
+            begin_order(battle, menu, &active, QueuedKind::Focus(verb, kind));
         }
-        EntryAction::Hold => queue_order(battle, &active, QueuedKind::Hold, menu),
+        EntryAction::Hold => begin_order(battle, menu, &active, QueuedKind::Hold),
         EntryAction::Back => reset_menu(menu),
+    }
+}
+
+/// Build the Revoke page rows from the hero's live Foci and open it (staying at root
+/// if there is nothing to revoke).
+fn open_revoke_page(menu: &mut BattleMenu, battle: &BattleData, hero: &str) {
+    let foci = battle
+        .view(hero)
+        .map(|v| parse_foci(&v.statuses).1)
+        .unwrap_or_default();
+    menu.rows = foci
+        .iter()
+        .filter_map(|(kind, stacks)| {
+            MANIFESTS
+                .iter()
+                .find(|(k, _, _)| *k == kind.as_str())
+                .map(|(k, name, _)| (format!("{name}  x{stacks}"), (*k).to_string()))
+        })
+        .collect();
+    if menu.rows.is_empty() {
+        reset_menu(menu);
+    } else {
+        open_page(menu, MenuLevel::Revoke);
     }
 }
 
@@ -2163,6 +2357,15 @@ fn open_page(menu: &mut BattleMenu, level: MenuLevel) {
     menu.level = level;
     menu.cursor = 0;
     menu.dirty = true;
+}
+
+/// Number of selectable rows on the current page. Static pages come from
+/// [`menu_entries`]; the dynamic Target/Revoke pages are `rows` plus a Back row.
+fn page_len(menu: &BattleMenu, class: &str, hero_level: i32) -> usize {
+    match menu.level {
+        MenuLevel::Target | MenuLevel::Revoke => menu.rows.len() + 1,
+        level => menu_entries(level, class, hero_level).len(),
+    }
 }
 
 /// Keyboard control. Orders are *queued* for the active hero and fire when its
@@ -2187,20 +2390,21 @@ fn menu_keyboard(
             .collect();
         for h in idle {
             // Each hero autoplays by its own class: Psyker channels Foci, Resonant
-            // mends the party, everyone else swings.
+            // mends the party, everyone else swings — each at a sensible default target.
             let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "squire".into());
-            let order = match hc.as_str() {
+            let kind = match hc.as_str() {
                 "psyker" => battle.view(&h).map(psyker_autoplay_op).unwrap_or(QueuedKind::Hold),
                 "resonant" => resonant_autoplay_op(&battle),
                 _ => QueuedKind::Attack,
             };
-            battle.queued.insert(h, order);
+            let target = default_target(&battle, kind);
+            battle.queued.insert(h, Order { kind, target });
         }
         return;
     }
 
     let hero_level = battle.active_level();
-    let n = menu_entries(menu.level, &class, hero_level).len().max(1);
+    let n = page_len(&menu, &class, hero_level).max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % n;
     }
@@ -2329,9 +2533,21 @@ fn rebuild_command_menu(
     let class = battle.active_class();
     let is_psyker = class == "psyker";
     let hero_level = battle.active_level();
-    // Psyker uses the list renderer at every level (Cast/Reinforce/Revoke/Hold at
-    // root); the martial classes keep the Lufia cross at root.
-    let verb_upper = menu.psyker_verb.to_uppercase();
+    // Row labels: the dynamic Target/Revoke pages draw from `menu.rows` (+ a Back row);
+    // every other page comes from `menu_entries`. The martial classes keep the Lufia
+    // cross at root; everything else uses the list renderer below.
+    let labels: Vec<String> = match level {
+        MenuLevel::Target | MenuLevel::Revoke => menu
+            .rows
+            .iter()
+            .map(|(l, _)| l.clone())
+            .chain(std::iter::once("Back".to_string()))
+            .collect(),
+        _ => menu_entries(level, &class, hero_level)
+            .into_iter()
+            .map(|e| e.label.to_string())
+            .collect(),
+    };
     commands
         .spawn((
             CommandWindow,
@@ -2375,10 +2591,12 @@ fn rebuild_command_menu(
                 });
             } else {
                 let header: &str = match level {
-                    MenuLevel::Root => "FOCUS",
+                    MenuLevel::Root => "FOCUS", // Psyker root list
                     MenuLevel::Skills => "SKILL",
                     MenuLevel::Items => "ITEM",
-                    MenuLevel::Manifest => &verb_upper,
+                    MenuLevel::Manifest => "FOCUS",
+                    MenuLevel::Revoke => "REVOKE",
+                    MenuLevel::Target => "TARGET",
                 };
                 w.spawn((
                     Node {
@@ -2406,10 +2624,7 @@ fn rebuild_command_menu(
                             ..default()
                         },
                     ));
-                    for (i, entry) in menu_entries(level, &class, hero_level)
-                        .into_iter()
-                        .enumerate()
-                    {
+                    for (i, label) in labels.iter().enumerate() {
                         list.spawn((
                             Button,
                             MenuRow { index: i },
@@ -2423,7 +2638,7 @@ fn rebuild_command_menu(
                         ))
                         .with_children(|r| {
                             r.spawn((
-                                Text::new(entry.label),
+                                Text::new(label.clone()),
                                 TextFont {
                                     font_size: 19.0,
                                     ..default()
@@ -2490,12 +2705,24 @@ fn flashing(hitfx: &HitFx, id: &str) -> bool {
     hitfx.items.iter().any(|h| h.target == id && h.age < FLASH_TTL)
 }
 
+/// During the Target picker, classify a combatant: `(is a candidate, is the
+/// highlighted pick)`. Off the Target page both are false, so panels render normally.
+fn target_state(menu: &BattleMenu, id: &str) -> (bool, bool) {
+    if menu.level != MenuLevel::Target {
+        return (false, false);
+    }
+    let candidate = menu.rows.iter().any(|(_, v)| v == id);
+    let cursor = menu.rows.get(menu.cursor).map(|(_, v)| v.as_str()) == Some(id);
+    (candidate, cursor)
+}
+
 /// Immediate-mode enemy panel (top): each enemy as a block + name + HP bar,
 /// flashing white when struck.
 fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    menu: Res<BattleMenu>,
     existing: Query<Entity, With<BattleScene>>,
 ) {
     for e in &existing {
@@ -2543,6 +2770,16 @@ fn render_enemy_panel(
                     } else {
                         faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.28, 0.28))
                     };
+                    // While aiming an enemy-targeted action, ring the candidates and
+                    // brighten the currently-highlighted one.
+                    let (is_cand, is_cursor) = target_state(&menu, &c.id);
+                    let ring = if is_cursor {
+                        Color::srgb(1.0, 0.95, 0.4)
+                    } else if is_cand {
+                        Color::srgba(1.0, 0.9, 0.4, 0.5)
+                    } else {
+                        Color::NONE
+                    };
                     row.spawn(Node {
                         width: Val::Px(190.0),
                         flex_direction: FlexDirection::Column,
@@ -2555,9 +2792,11 @@ fn render_enemy_panel(
                             Node {
                                 width: Val::Px(76.0),
                                 height: Val::Px(76.0),
+                                border: UiRect::all(Val::Px(if is_cand { 3.0 } else { 0.0 })),
                                 ..default()
                             },
                             BackgroundColor(block),
+                            BorderColor(ring),
                             BorderRadius::all(Val::Px(8.0)),
                         ));
                         e.spawn((
@@ -2586,11 +2825,21 @@ const HERO_COLORS: [Color; 4] = [
 ];
 
 /// One Lufia-style party window (name + Lv, HP + ATB bars, portrait, order icon).
-fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &HitFx, id: &str, idx: usize) {
+fn party_cell(
+    parent: &mut ChildSpawnerCommands,
+    battle: &BattleData,
+    hitfx: &HitFx,
+    menu: &BattleMenu,
+    id: &str,
+    idx: usize,
+) {
     let Some(c) = battle.view(id) else { return };
     let active = battle.active.as_deref() == Some(id);
     let ready = battle.ready.contains(id);
-    let queued = battle.queued.get(id).copied();
+    let queued = battle.queued.get(id).map(|o| o.kind);
+    // While aiming an ally-targeted action, this cell is a candidate; the cursor one
+    // gets the bright ring (reusing the active-hero highlight colour).
+    let (_is_cand, is_target_cursor) = target_state(menu, id);
     let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
     let gauge = c.gauge.clamp(0.0, 1.0) as f32;
     let name = battle.hero_label(id);
@@ -2605,13 +2854,17 @@ fn party_cell(parent: &mut ChildSpawnerCommands, battle: &BattleData, hitfx: &Hi
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
-            BorderColor(if active {
+            BorderColor(if is_target_cursor {
+                Color::srgb(1.0, 0.95, 0.4)
+            } else if active {
                 Color::srgb(0.95, 0.85, 0.4)
             } else {
                 Color::srgb(0.4, 0.5, 0.8)
             }),
             BackgroundColor(if hurt {
                 Color::srgb(0.28, 0.1, 0.12)
+            } else if is_target_cursor {
+                Color::srgb(0.16, 0.2, 0.1)
             } else if active {
                 Color::srgb(0.1, 0.14, 0.3)
             } else {
@@ -2761,6 +3014,7 @@ fn render_party_window(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    menu: Res<BattleMenu>,
     existing: Query<Entity, With<PartyWindow>>,
 ) {
     for e in &existing {
@@ -2793,7 +3047,7 @@ fn render_party_window(
                 .with_children(|row| {
                     for i in row_start..row_start + 2 {
                         match ids.get(i) {
-                            Some(id) => party_cell(row, &battle, &hitfx, id, i),
+                            Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
                             None => {
                                 row.spawn(Node { width: Val::Percent(46.0), ..default() });
                             }
@@ -2955,5 +3209,83 @@ fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
 fn ended_input(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cv(id: &str, is_player: bool, hp: i32, max_hp: i32, statuses: &[&str]) -> CombatantView {
+        CombatantView {
+            id: id.into(),
+            name: id.into(),
+            hp,
+            max_hp,
+            gauge: 0.0,
+            is_player,
+            level: 5,
+            statuses: statuses.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// A battle with two heroes we control, a co-op ally who joined (not in `your_ids`),
+    /// and two enemies of differing health.
+    fn battle() -> BattleData {
+        BattleData {
+            your_ids: vec!["h1".into(), "h2".into()],
+            combatants: vec![
+                cv("h1", true, 40, 40, &["class:squire"]),
+                cv("h2", true, 12, 40, &["class:resonant"]), // most wounded ally
+                cv("ally", true, 30, 40, &["class:squire"]), // joined co-op hero
+                cv("m1", false, 100, 100, &["faction:beast"]),
+                cv("m2", false, 40, 100, &["faction:beast"]),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn order_side_routes_targets_by_action() {
+        assert_eq!(order_side(QueuedKind::Attack), Some(Side::Enemy));
+        assert_eq!(order_side(QueuedKind::Skill("power_strike")), Some(Side::Enemy));
+        assert_eq!(order_side(QueuedKind::Skill("transfuse")), Some(Side::Ally));
+        assert_eq!(order_side(QueuedKind::Item("salve")), Some(Side::Ally));
+        assert_eq!(order_side(QueuedKind::Defend), None);
+        assert_eq!(order_side(QueuedKind::Skill("second_wind")), None);
+        // Kinetic Aegis wards the caster; other Foci are aimed at an enemy.
+        assert_eq!(order_side(QueuedKind::Focus("cast", "kinetic_aegis")), None);
+        assert_eq!(order_side(QueuedKind::Focus("cast", "gravity_well")), Some(Side::Enemy));
+        assert_eq!(order_side(QueuedKind::Focus("reinforce", "mind_spike")), Some(Side::Enemy));
+        assert_eq!(order_side(QueuedKind::Focus("revoke", "gravity_well")), None);
+        assert_eq!(order_side(QueuedKind::Hold), None);
+    }
+
+    #[test]
+    fn valid_targets_split_by_side_and_include_joined_allies() {
+        let b = battle();
+        let enemies: Vec<String> = valid_targets(&b, Side::Enemy).into_iter().map(|(_, id)| id).collect();
+        assert_eq!(enemies, vec!["m1", "m2"], "enemies only");
+        let allies: Vec<String> = valid_targets(&b, Side::Ally).into_iter().map(|(_, id)| id).collect();
+        // The joined co-op hero "ally" (absent from your_ids) is still targetable.
+        assert_eq!(allies, vec!["h1", "h2", "ally"], "all living player combatants");
+    }
+
+    #[test]
+    fn default_target_picks_first_enemy_or_most_wounded_ally() {
+        let b = battle();
+        assert_eq!(default_target(&b, QueuedKind::Attack).as_deref(), Some("m1"));
+        // Transfuse auto-aims at the lowest-HP-fraction ally (h2 at 12/40).
+        assert_eq!(default_target(&b, QueuedKind::Skill("transfuse")).as_deref(), Some("h2"));
+        assert_eq!(default_target(&b, QueuedKind::Defend), None);
+    }
+
+    #[test]
+    fn manifest_verb_reinforces_an_active_focus_else_casts() {
+        let mut b = battle();
+        // Give h1 an active gravity_well focus.
+        b.combatants[0].statuses = vec!["class:psyker".into(), "focus:gravity_well:1".into()];
+        assert_eq!(manifest_verb(&b, "h1", "gravity_well"), "reinforce");
+        assert_eq!(manifest_verb(&b, "h1", "mind_spike"), "cast");
     }
 }
