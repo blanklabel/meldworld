@@ -324,19 +324,27 @@ struct OwEntity {
     x: f32,
     y: f32,
     kind: EntityKind,
-    /// Creature content id (monsters only) — drives colour + label.
+    /// Creature content id (monsters only) — drives the label.
     name: Option<String>,
+    /// Creature faction (monsters only) — drives the colour.
+    faction: Option<String>,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None }
     }
-    fn monster(x: f32, y: f32, name: &str) -> Self {
-        Self { x, y, kind: EntityKind::Monster, name: Some(name.to_string()) }
+    fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
+        Self {
+            x,
+            y,
+            kind: EntityKind::Monster,
+            name: Some(name.to_string()),
+            faction: Some(faction.to_string()),
+        }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None }
     }
 }
 
@@ -882,7 +890,7 @@ fn mock_overlay_setup(
     }
     // A minimal overworld behind the overlay.
     world.entities.insert("me".into(), OwEntity::player(0.0, 0.0));
-    world.entities.insert("grendel".into(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker"));
+    world.entities.insert("grendel".into(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker", "beast"));
     world.entities.insert("portal".into(), OwEntity::portal(14.0, 0.0));
     next.set(Screen::Overworld);
 }
@@ -967,6 +975,7 @@ fn pump_net(
                             y: e.y as f32,
                             kind: e.kind,
                             name: e.monster_kind,
+                            faction: e.faction,
                         },
                     );
                 }
@@ -1102,7 +1111,7 @@ fn demo_driver(
         let x = t / 3.0 * 9.0;
         world.entities.clear();
         world.entities.insert("me".to_string(), OwEntity::player(x, 0.0));
-        world.entities.insert("grendel".to_string(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker"));
+        world.entities.insert("grendel".to_string(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker", "beast"));
         world.entities.insert("portal".to_string(), OwEntity::portal(14.0, 0.0));
         return;
     }
@@ -1779,8 +1788,13 @@ fn sync_overworld_sprites(
         ));
         // A small floating label above creatures and portals so a march through
         // the areas reads clearly (which creature, where the exit is).
+        // Label creatures with their kind + faction (so you can read who sides
+        // with whom); the sprite colour also encodes the faction.
         let label = match e.kind {
-            EntityKind::Monster => e.name.as_deref().map(nice_name),
+            EntityKind::Monster => e.name.as_deref().map(|k| match &e.faction {
+                Some(f) => format!("{} · {}", nice_name(k), f),
+                None => nice_name(k),
+            }),
             EntityKind::Portal => Some("portal".to_string()),
             EntityKind::Player => None,
         };
@@ -1802,10 +1816,11 @@ fn nice_name(kind: &str) -> String {
     kind.replace('_', " ")
 }
 
-/// A distinct, deterministic colour per creature kind (FNV-1a hash → hue).
-fn monster_color(name: &str) -> Color {
+/// A distinct, deterministic colour per creature **faction** (FNV-1a hash → hue),
+/// so you can read who belongs together (and who doesn't) at a glance.
+fn faction_color(faction: &str) -> Color {
     let mut h: u32 = 2166136261;
-    for b in name.bytes() {
+    for b in faction.bytes() {
         h = (h ^ b as u32).wrapping_mul(16777619);
     }
     Color::hsl((h % 360) as f32, 0.62, 0.56)
@@ -1813,8 +1828,8 @@ fn monster_color(name: &str) -> Color {
 
 fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
     match e.kind {
-        EntityKind::Monster => match &e.name {
-            Some(name) => monster_color(name),
+        EntityKind::Monster => match &e.faction {
+            Some(f) => faction_color(f),
             None => Color::srgb(0.9, 0.3, 0.3),
         },
         EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
@@ -2358,10 +2373,15 @@ fn render_enemy_panel(
             .with_children(|row| {
                 for c in battle.combatants.iter().filter(|c| !c.is_player) {
                     let frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                    // Colour the enemy by faction so a mixed brawl is readable.
+                    let faction = c
+                        .statuses
+                        .iter()
+                        .find_map(|s| s.strip_prefix("faction:"));
                     let block = if flashing(&hitfx, &c.id) {
                         Color::srgb(1.0, 0.95, 0.95)
                     } else {
-                        Color::srgb(0.85, 0.28, 0.28)
+                        faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.28, 0.28))
                     };
                     row.spawn(Node {
                         width: Val::Px(190.0),

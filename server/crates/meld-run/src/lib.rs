@@ -186,12 +186,14 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
         .collect()
 }
 
+/// One creature joining a battle: its spawn + the combatant id to give it.
+pub type EnemyMember<'a> = (&'a MonsterSpawn, Id);
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_battle(
     battle_id: Id,
     party: &[PartyMember],
-    monster: &MonsterSpawn,
-    monster_combatant_id: Id,
+    enemies: &[EnemyMember],
     runs: &InstanceRun,
     balance: &Balance,
     seed: u64,
@@ -206,32 +208,44 @@ pub fn build_battle(
         }
     }
 
-    let enemy = Fighter::new(
-        monster_combatant_id,
-        CombatantKind::Monster,
-        None,
-        Some(monster.monster_kind.clone()),
-        monster.level,
-        monster.hp,
-        monster.atk,
-        monster.def,
-        monster.speed_stat,
-    );
+    // One enemy Fighter per grouped creature, carrying its faction + flee flag so
+    // the battle can pit factions against each other.
+    let enemy_fighters: Vec<Fighter> = enemies
+        .iter()
+        .map(|(m, cid)| {
+            let mut f = Fighter::new(
+                cid.clone(),
+                CombatantKind::Monster,
+                None,
+                Some(m.monster_kind.clone()),
+                m.level,
+                m.hp,
+                m.atk,
+                m.def,
+                m.speed_stat,
+            );
+            f.faction = m.faction.clone();
+            f.flees = m.flees;
+            f
+        })
+        .collect();
 
-    let encounter_class = match monster.encounter_class.as_str() {
-        "gatekeeper" => EncounterClass::Gatekeeper,
-        "elite" => EncounterClass::Elite,
-        _ => EncounterClass::Standard,
-    };
+    // The encounter class is the strongest present (gatekeeper > elite > standard).
+    let encounter_class = enemies
+        .iter()
+        .map(|(m, _)| match m.encounter_class.as_str() {
+            "gatekeeper" => EncounterClass::Gatekeeper,
+            "elite" => EncounterClass::Elite,
+            _ => EncounterClass::Standard,
+        })
+        .max_by_key(|c| match c {
+            EncounterClass::Gatekeeper => 2,
+            EncounterClass::Elite => 1,
+            EncounterClass::Standard => 0,
+        })
+        .unwrap_or(EncounterClass::Standard);
 
-    Battle::new(
-        battle_id,
-        encounter_class,
-        allies,
-        vec![enemy],
-        balance,
-        seed,
-    )
+    Battle::new(battle_id, encounter_class, allies, enemy_fighters, balance, seed)
 }
 
 #[cfg(test)]
@@ -267,7 +281,6 @@ mod tests {
 
     #[test]
     fn build_battle_applies_hp_overrides() {
-        use meld_proto::common::Position;
         let b = Balance::load_default().unwrap();
         let mut runs = InstanceRun::new("i".into(), 0, &b);
         runs.add_party(vec![(
@@ -276,31 +289,12 @@ mod tests {
             CharacterClass::Squire,
             "r1".into(),
         )]);
-        let monster = MonsterSpawn {
-            entity_id: "m".into(),
-            monster_kind: "forest_bloom_stalker".into(),
-            position: Position::new(10.0, 0.0),
-            level: 1,
-            encounter_class: "standard".into(),
-            hp: 60,
-            atk: 9,
-            def: 2,
-            speed_stat: 80,
-            xp_reward: 60,
-            defeated: false,
-        };
+        // Use a real generated creature as the enemy.
+        let arena = meld_world::Arena::generate(&b, 5);
+        let enemies = vec![(&arena.monsters[0], "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Squire, 0)];
         // Carry a wounded hero in: start at 17 HP rather than full.
-        let battle = build_battle(
-            "b".into(),
-            &party,
-            &monster,
-            "mc".into(),
-            &runs,
-            &b,
-            1,
-            &[Some(17)],
-        );
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)]);
         let (allies, _) = battle.wire_combatants();
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");

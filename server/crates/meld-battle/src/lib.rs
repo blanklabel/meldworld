@@ -46,6 +46,12 @@ pub struct Fighter {
     /// Regen: HP restored at the start of each of this fighter's turns (Resonant
     /// innate, or granted by Regen Boon).
     pub regen: i32,
+    /// Battle faction — `"player"` for heroes, else the creature's faction. Drives
+    /// AI targeting: a fighter attacks the nearest fighter hostile to its faction
+    /// (see `meld_proto::factions::battle_hostile`).
+    pub faction: String,
+    /// Whether this (creature) fighter flees a losing battle.
+    pub flees: bool,
     /// Max simultaneous Foci (0 = not a Psyker; Psykers channel instead of the
     /// normal attack/skill kit — see [`Battle::resolve_psyker`]).
     pub focus_max: usize,
@@ -91,6 +97,12 @@ impl Fighter {
             class_key: String::new(),
             barrier: 0,
             regen: 0,
+            faction: if kind == CombatantKind::Player {
+                meld_proto::factions::PLAYER.to_string()
+            } else {
+                String::new()
+            },
+            flees: false,
             focus_max: 0,
             foci: Vec::new(),
             defending: false,
@@ -101,12 +113,16 @@ impl Fighter {
     }
 
     /// Wire status list — the channel the client reads per-combatant extras from:
-    /// `class:<key>` (drives the per-hero command menu), `barrier:<n>`, `regen:<n>`,
-    /// and (Psyker) `focus_slots:<n>` + one `focus:<kind>:<stacks>` per Manifestation.
+    /// `class:<key>` (drives the per-hero command menu), `faction:<f>` (creature
+    /// side), `barrier:<n>`, `regen:<n>`, and (Psyker) `focus_slots:<n>` +
+    /// `focus:<kind>:<stacks>` per Manifestation.
     fn wire_statuses(&self) -> Vec<String> {
         let mut v = Vec::new();
         if !self.class_key.is_empty() {
             v.push(format!("class:{}", self.class_key));
+        }
+        if self.kind != CombatantKind::Player && !self.faction.is_empty() {
+            v.push(format!("faction:{}", self.faction));
         }
         if self.barrier > 0 {
             v.push(format!("barrier:{}", self.barrier));
@@ -225,6 +241,7 @@ pub struct Battle {
     resonant_boon_regen: i32,
     resonant_ward_barrier_fraction: f64,
     min_damage: i32,
+    creature_flee_hp_fraction: f64,
     flee_base: f64,
     flee_penalty_per_tier: f64,
     flee_floor: f64,
@@ -271,6 +288,7 @@ impl Battle {
             resonant_boon_regen: balance.battle.resonant_boon_regen,
             resonant_ward_barrier_fraction: balance.battle.resonant_ward_barrier_fraction,
             min_damage: balance.combat_math.min_damage,
+            creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
             flee_penalty_per_tier: balance.battle.flee_penalty_per_tier,
             flee_floor: balance.battle.flee_floor,
@@ -926,8 +944,53 @@ impl Battle {
         }
     }
 
+    /// A creature's turn. It targets the first living fighter *hostile to its
+    /// faction* — a player, or a rival-faction creature — so a mixed-faction
+    /// encounter has creatures fighting each other as well as the party. A
+    /// `flees` creature bolts (leaves the battle) once its HP is low.
     fn resolve_monster_turn(&mut self, actor_i: usize) -> Option<Resolution> {
-        let target_i = self.first_living_player()?;
+        let actor_faction = self.fighters[actor_i].faction.clone();
+
+        // Skittish creatures flee a losing battle instead of attacking.
+        if self.fighters[actor_i].flees {
+            let f = &self.fighters[actor_i];
+            let low = (f.hp as f64) < (f.max_hp as f64) * self.creature_flee_hp_fraction;
+            if low && f.max_hp > 0 {
+                self.fighters[actor_i].alive = false; // leaves the field
+                self.reset_gauge(actor_i);
+                return Some(Resolution {
+                    action_id: None,
+                    actor_id: self.fighters[actor_i].combatant_id.clone(),
+                    action: BattleActionKind::Flee,
+                    auto: true,
+                    flee_success: Some(true),
+                    effects: vec![ResolvedEffect {
+                        target_id: self.fighters[actor_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("fled".to_string()),
+                        hp_after: self.fighters[actor_i].hp,
+                    }],
+                });
+            }
+        }
+
+        // Attack the *weakest* living fighter hostile to this creature's faction —
+        // a player, or a rival-faction creature. Going for the lowest HP means a
+        // wounded rival draws a creature away from the party, so a mixed-faction
+        // encounter naturally has creatures turning on each other.
+        let actor_id = self.fighters[actor_i].combatant_id.clone();
+        let target_i = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.alive
+                    && f.combatant_id != actor_id
+                    && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
+            })
+            .min_by_key(|(_, f)| f.hp)
+            .map(|(i, _)| i)?;
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
@@ -1023,6 +1086,7 @@ mod tests {
     }
 
     fn player(id: &str, speed: i32) -> Fighter {
+        let faction = "player";
         Fighter {
             combatant_id: id.to_string(),
             kind: CombatantKind::Player,
@@ -1039,6 +1103,8 @@ mod tests {
             class_key: String::new(),
             barrier: 0,
             regen: 0,
+            faction: faction.to_string(),
+            flees: false,
             focus_max: 0,
             foci: vec![],
             defending: false,
@@ -1049,6 +1115,7 @@ mod tests {
     }
 
     fn monster(id: &str, hp: i32, speed: i32) -> Fighter {
+        let faction = "beast";
         Fighter {
             combatant_id: id.to_string(),
             kind: CombatantKind::Monster,
@@ -1065,6 +1132,8 @@ mod tests {
             class_key: String::new(),
             barrier: 0,
             regen: 0,
+            faction: faction.to_string(),
+            flees: false,
             focus_max: 0,
             foci: vec![],
             defending: false,
@@ -1072,6 +1141,70 @@ mod tests {
             ready_tick: 0,
             alive: true,
         }
+    }
+
+    /// A creature of a specific faction.
+    fn creature(id: &str, hp: i32, speed: i32, faction: &str) -> Fighter {
+        let mut m = monster(id, hp, speed);
+        m.faction = faction.to_string();
+        m
+    }
+
+    #[test]
+    fn creatures_turn_on_a_wounded_rival() {
+        let b = balance();
+        // A fast fiend, a near-dead beast (rival faction), and a healthy idle
+        // player. The fiend goes for the weakest hostile — the beast — not the
+        // player, so the two creatures brawl.
+        let mut beast = creature("beast", 5, 1, "beast");
+        beast.max_hp = 60;
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("p", 1)], // idle player
+            vec![beast, creature("fiend", 1000, 400, "fiend")],
+            &b,
+            7,
+        );
+        // Let the fiend take a turn.
+        for _ in 0..20 {
+            battle.tick();
+        }
+        assert_eq!(player_hp(&battle, "beast"), 0, "the fiend struck the wounded beast");
+        assert_eq!(player_hp(&battle, "p"), 40, "the player was left alone");
+    }
+
+    #[test]
+    fn a_skittish_creature_flees_when_low() {
+        let b = balance();
+        // A lone `flees` creature at low HP bolts on its turn → victory (no enemy
+        // left) without the player lifting a finger.
+        let mut sh = creature("shade", 60, 400, "shade");
+        sh.hp = 5; // below flee_hp_fraction * 60
+        sh.flees = true;
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("p", 1)],
+            vec![sh],
+            &b,
+            7,
+        );
+        let mut fled = false;
+        let mut outcome = None;
+        for _ in 0..20 {
+            for ev in battle.tick() {
+                match ev {
+                    Event::Resolved(r) if r.action == BattleActionKind::Flee && r.actor_id == "shade" => {
+                        fled = true;
+                    }
+                    Event::Ended { outcome: o } => outcome = Some(o),
+                    _ => {}
+                }
+            }
+        }
+        assert!(fled, "the skittish creature should flee");
+        assert_eq!(outcome, Some(BattleOutcome::Victory));
     }
 
     #[test]

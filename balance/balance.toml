@@ -126,6 +126,20 @@ lateral_half_extent = 14.0       # how far a player may stray off the corridor (
 # [TUNABLE] — pure balance. Biome→creature assignment is structural (in code).
 #
 # --- Forest (d 0–100) ---
+# Creature AI (overworld movement + encounter grouping). All [TUNABLE].
+[ai]
+wander_speed = 1.6            # tiles/sec for passive/idle drifting near home
+chase_speed = 4.2            # tiles/sec when hunting a player
+aggro_radius = 11.0          # aggressive creatures chase players within this range
+territorial_aggro_radius = 5.0  # territorial creatures only chase when this close
+leash_radius = 9.0           # how far a creature wanders from its spawn (home)
+group_radius = 6.5           # creatures within this of the one you touch join the fight
+flee_hp_fraction = 0.3       # `flees` creatures bolt from battle below this HP fraction
+
+# `faction` groups creatures that get along; `aggression` drives overworld
+# movement (passive = wander near home, territorial = patrol + chase if close,
+# aggressive = chase players on sight); `flees` marks skittish creatures that
+# bolt from a losing battle. Faction hostility lives in meld-proto::factions.
 [creature.forest_bloom_stalker]
 base_hp = 60
 base_atk = 9
@@ -133,6 +147,9 @@ base_def = 2
 speed_stat = 80
 xp_reward = 60
 encounter_class = "standard"
+faction = "beast"
+aggression = "territorial"
+flees = false
 
 [creature.thornback_boar]
 base_hp = 78
@@ -141,6 +158,9 @@ base_def = 4
 speed_stat = 58
 xp_reward = 72
 encounter_class = "standard"
+faction = "beast"
+aggression = "passive"
+flees = false
 
 # --- Desert (d 100–300) ---
 [creature.dune_wyrm]
@@ -150,6 +170,9 @@ base_def = 4
 speed_stat = 74
 xp_reward = 120
 encounter_class = "standard"
+faction = "wyrm"
+aggression = "aggressive"
+flees = false
 
 [creature.sand_shade]
 base_hp = 68
@@ -158,6 +181,9 @@ base_def = 2
 speed_stat = 122
 xp_reward = 110
 encounter_class = "standard"
+faction = "shade"
+aggression = "aggressive"
+flees = true
 
 # --- Ashfall (d 300–500) ---
 [creature.cinder_imp]
@@ -167,6 +193,9 @@ base_def = 3
 speed_stat = 112
 xp_reward = 160
 encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = false
 
 [creature.magma_golem]
 base_hp = 165
@@ -175,6 +204,9 @@ base_def = 8
 speed_stat = 44
 xp_reward = 230
 encounter_class = "standard"
+faction = "construct"
+aggression = "territorial"
+flees = false
 
 # --- Tundra (d 500–1000) ---
 [creature.frost_lurker]
@@ -184,6 +216,9 @@ base_def = 6
 speed_stat = 86
 xp_reward = 270
 encounter_class = "standard"
+faction = "beast"
+aggression = "aggressive"
+flees = false
 
 [creature.ice_revenant]
 base_hp = 142
@@ -192,6 +227,9 @@ base_def = 7
 speed_stat = 96
 xp_reward = 330
 encounter_class = "standard"
+faction = "undead"
+aggression = "territorial"
+flees = false
 
 # --- Mire (d 1000+) ---
 [creature.bog_serpent]
@@ -201,6 +239,9 @@ base_def = 6
 speed_stat = 104
 xp_reward = 390
 encounter_class = "standard"
+faction = "wyrm"
+aggression = "aggressive"
+flees = false
 
 [creature.myconid_brute]
 base_hp = 225
@@ -209,6 +250,9 @@ base_def = 11
 speed_stat = 52
 xp_reward = 470
 encounter_class = "standard"
+faction = "fungal"
+aggression = "passive"
+flees = false
 
 [player.squire]
 base_hp = 40

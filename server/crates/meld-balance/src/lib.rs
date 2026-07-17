@@ -26,6 +26,7 @@ pub struct Balance {
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
     pub worldgen: WorldGen,
+    pub ai: Ai,
     pub creature: Creatures,
     pub player: Players,
 }
@@ -130,6 +131,18 @@ pub struct WorldGen {
     pub lateral_half_extent: f64,
 }
 
+/// Creature AI tunables (overworld movement + encounter grouping).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Ai {
+    pub wander_speed: f64,
+    pub chase_speed: f64,
+    pub aggro_radius: f64,
+    pub territorial_aggro_radius: f64,
+    pub leash_radius: f64,
+    pub group_radius: f64,
+    pub flee_hp_fraction: f64,
+}
+
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
 pub type Creatures = std::collections::HashMap<String, CreatureStats>;
 pub type Players = std::collections::HashMap<String, PlayerStats>;
@@ -142,6 +155,13 @@ pub struct CreatureStats {
     pub speed_stat: i32,
     pub xp_reward: i64,
     pub encounter_class: String,
+    /// Faction (for grouping + hostility). See meld-proto::factions.
+    pub faction: String,
+    /// `passive` | `territorial` | `aggressive` — overworld movement style.
+    pub aggression: String,
+    /// Whether this creature flees a losing battle.
+    #[serde(default)]
+    pub flees: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

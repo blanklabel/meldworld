@@ -96,8 +96,10 @@ pub struct EntityView {
     pub x: f64,
     pub y: f64,
     pub kind: EntityKind,
-    /// Creature content id for monsters (drives colour + label); `None` otherwise.
+    /// Creature content id for monsters (drives label); `None` otherwise.
     pub monster_kind: Option<String>,
+    /// Creature faction for monsters (drives colour); `None` otherwise.
+    pub faction: Option<String>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -624,14 +626,20 @@ impl Inner {
                         .entities
                         .into_iter()
                         .map(|e| {
-                            // Server tags monsters `mob:<kind>`, the portal `portal`,
-                            // and players with their avatar state (`active`, …).
-                            let (kind, monster_kind) = match e.avatar_state.as_deref() {
-                                Some("portal") => (EntityKind::Portal, None),
+                            // Server tags monsters `mob:<kind>:<faction>`, the portal
+                            // `portal`, and players with their avatar state (`active`, …).
+                            let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
+                                Some("portal") => (EntityKind::Portal, None, None),
                                 Some(s) if s.starts_with("mob:") => {
-                                    (EntityKind::Monster, Some(s["mob:".len()..].to_string()))
+                                    let rest = &s["mob:".len()..];
+                                    let (k, f) = rest.split_once(':').unwrap_or((rest, ""));
+                                    (
+                                        EntityKind::Monster,
+                                        Some(k.to_string()),
+                                        (!f.is_empty()).then(|| f.to_string()),
+                                    )
                                 }
-                                _ => (EntityKind::Player, None),
+                                _ => (EntityKind::Player, None, None),
                             };
                             EntityView {
                                 id: e.entity_id,
@@ -639,6 +647,7 @@ impl Inner {
                                 y: e.position.y,
                                 kind,
                                 monster_kind,
+                                faction,
                             }
                         })
                         .collect();
