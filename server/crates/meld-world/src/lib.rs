@@ -104,14 +104,35 @@ impl Rng {
     }
 }
 
-/// A monster placed in the overworld.
+/// Advance a raw `u64` PRNG state and return a uniform `[0, 1)` (for per-creature
+/// wander, whose state lives on the `MonsterSpawn`).
+fn next_unit(state: &mut u64) -> f64 {
+    let mut r = Rng(*state);
+    let u = r.unit();
+    *state = r.0;
+    u
+}
+
+/// A monster placed in the overworld. Creatures roam (see [`Arena::step_creatures`])
+/// and belong to a faction (grouping + hostility).
 #[derive(Debug, Clone)]
 pub struct MonsterSpawn {
     pub entity_id: Id,
     pub monster_kind: String,
     pub position: Position,
+    /// Where it spawned — passive/territorial creatures leash to it.
+    pub home: Position,
+    /// The x-bounds of this creature's area; it never roams outside them (keeps
+    /// creatures in their biome and stops distant creatures from wandering into a
+    /// safe/tutorial area).
+    pub area_min_x: f64,
+    pub area_max_x: f64,
     pub level: i32,
     pub encounter_class: String,
+    pub faction: String,
+    /// `passive` | `territorial` | `aggressive`.
+    pub aggression: String,
+    pub flees: bool,
     /// World-scaled combat stats (stat_mult applied at spawn — no rescale later).
     pub hp: i32,
     pub atk: i32,
@@ -119,12 +140,16 @@ pub struct MonsterSpawn {
     pub speed_stat: i32,
     pub xp_reward: i64,
     pub defeated: bool,
+    /// True while this creature is locked in a battle (so it stops roaming).
+    pub in_battle: bool,
+    /// Per-creature PRNG state for deterministic wander.
+    rng: u64,
 }
 
 impl MonsterSpawn {
     /// Build a spawn for `kind` at `position`, scaling the creature's base stats
-    /// by `stat_mult` at that position's floored distance.
-    fn build(balance: &Balance, entity_id: Id, kind: &str, position: Position) -> Self {
+    /// by `stat_mult` at that position's floored distance. `seed` drives its wander.
+    fn build(balance: &Balance, entity_id: Id, kind: &str, position: Position, seed: u64) -> Self {
         let d = position.distance_floor();
         let scaling = Scaling::new(balance);
         let stats = balance
@@ -136,14 +161,22 @@ impl MonsterSpawn {
             entity_id,
             monster_kind: kind.to_string(),
             position,
+            home: position,
+            area_min_x: f64::NEG_INFINITY,
+            area_max_x: f64::INFINITY,
             level: scaling.mlevel(d),
             encounter_class: stats.encounter_class.clone(),
+            faction: stats.faction.clone(),
+            aggression: stats.aggression.clone(),
+            flees: stats.flees,
             hp: ((stats.base_hp as f64) * mult).round() as i32,
             atk: ((stats.base_atk as f64) * mult).round() as i32,
             def: stats.base_def,
             speed_stat: stats.speed_stat,
             xp_reward: stats.xp_reward,
             defeated: false,
+            in_battle: false,
+            rng: seed | 1,
         }
     }
 }
@@ -186,6 +219,13 @@ pub struct Arena {
     touch_radius: f64,
     interaction_radius: f64,
     sim_dt: f64,
+    // Creature-AI tunables (snapshot from balance).
+    wander_speed: f64,
+    chase_speed: f64,
+    aggro_radius: f64,
+    territorial_aggro_radius: f64,
+    leash_radius: f64,
+    group_radius: f64,
 }
 
 impl Arena {
@@ -213,10 +253,13 @@ impl Arena {
             if i == 0 {
                 let pos = Position::new(wg.first_monster_x, 0.0);
                 let idx = monsters.len();
-                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos));
+                let mseed = rng.next_u64();
+                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
                 area_idxs.push(idx);
                 let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
                 let end_x = portal_x + wg.portal_setback;
+                monsters[idx].area_min_x = start_x;
+                monsters[idx].area_max_x = end_x;
                 areas.push(Area {
                     index: i,
                     biome,
@@ -246,7 +289,10 @@ impl Arena {
                 let y = wg.lateral_jitter * rng.signed();
                 let pos = Position::new(x, y);
                 let idx = monsters.len();
-                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos));
+                let mseed = rng.next_u64();
+                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
+                monsters[idx].area_min_x = start_x;
+                monsters[idx].area_max_x = end_x;
                 area_idxs.push(idx);
 
                 let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
@@ -276,7 +322,93 @@ impl Arena {
             touch_radius: balance.world.touch_radius_tiles,
             interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
+            wander_speed: balance.ai.wander_speed,
+            chase_speed: balance.ai.chase_speed,
+            aggro_radius: balance.ai.aggro_radius,
+            territorial_aggro_radius: balance.ai.territorial_aggro_radius,
+            leash_radius: balance.ai.leash_radius,
+            group_radius: balance.ai.group_radius,
         }
+    }
+
+    /// Advance every roaming creature one step of `dt` seconds. Aggressive creatures
+    /// chase the nearest active player within their aggro radius; territorial ones
+    /// only give chase when a player is close, else patrol near home; passive ones
+    /// just drift near home. Battling/defeated creatures hold still. Deterministic
+    /// given the per-creature seed (no wall-clock, no global RNG).
+    pub fn step_creatures(&mut self, dt: f64) {
+        // Snapshot active-avatar positions (immutable borrow) before moving creatures.
+        let players: Vec<Position> = self
+            .avatars
+            .iter()
+            .filter(|a| a.state == "active")
+            .map(|a| a.position)
+            .collect();
+        let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
+        let (wander, chase) = (self.wander_speed, self.chase_speed);
+        let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
+
+        for m in self.monsters.iter_mut() {
+            if m.defeated || m.in_battle {
+                continue;
+            }
+            // Nearest active player.
+            let nearest = players
+                .iter()
+                .min_by(|a, b| {
+                    m.position
+                        .distance_to(a)
+                        .total_cmp(&m.position.distance_to(b))
+                })
+                .copied();
+            let aggro_range = match m.aggression.as_str() {
+                "aggressive" => aggro,
+                "territorial" => terr_aggro,
+                _ => 0.0, // passive: never chases
+            };
+            let (mut dx, mut dy, speed) = match nearest {
+                Some(p) if m.position.distance_to(&p) <= aggro_range && aggro_range > 0.0 => {
+                    // Chase the player.
+                    (p.x - m.position.x, p.y - m.position.y, chase)
+                }
+                _ => {
+                    // Wander: drift toward a seeded random point within the leash.
+                    let ang = next_unit(&mut m.rng) * std::f64::consts::TAU;
+                    let target_x = m.home.x + ang.cos() * leash;
+                    let target_y = m.home.y + ang.sin() * leash * 0.4; // corridor is wider in x
+                    (target_x - m.position.x, target_y - m.position.y, wander)
+                }
+            };
+            let mag = (dx * dx + dy * dy).sqrt();
+            if mag > 1e-6 {
+                dx /= mag;
+                dy /= mag;
+                let step = speed * dt;
+                // Clamp to the world bounds AND the creature's own area (creatures
+                // stay in their biome; distant ones never wander into a safe area).
+                let lo_x = x_min.max(m.area_min_x);
+                let hi_x = x_max.min(m.area_max_x);
+                m.position.x = (m.position.x + dx * step).max(lo_x).min(hi_x);
+                m.position.y = (m.position.y + dy * step).max(-lateral).min(lateral);
+            }
+        }
+    }
+
+    /// The living creatures within `group_radius` of creature `idx` (including it).
+    /// This is the encounter you pull when you touch one — nearby creatures pile
+    /// in; their factions decide who fights whom once in battle.
+    pub fn group_around(&self, idx: usize) -> Vec<usize> {
+        let Some(origin) = self.monsters.get(idx) else {
+            return vec![];
+        };
+        let center = origin.position;
+        let r = self.group_radius;
+        self.monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.defeated && center.distance_to(&m.position) <= r)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Positions of every portal (one per area).
@@ -363,6 +495,53 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aggressive_creature_chases_a_nearby_player() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        arena.monsters[0].aggression = "aggressive".to_string();
+        let m = arena.monsters[0].position;
+        arena.add_avatar("p".into(), 6.0);
+        arena.avatar_mut("p").unwrap().position = Position::new(m.x + 3.0, m.y);
+        let before = arena.monsters[0].position.x;
+        for _ in 0..10 {
+            arena.step_creatures(0.1);
+        }
+        assert!(
+            arena.monsters[0].position.x > before + 0.5,
+            "aggressive creature should move toward the player"
+        );
+    }
+
+    #[test]
+    fn passive_creature_leashes_near_home() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        arena.monsters[0].aggression = "passive".to_string();
+        let home = arena.monsters[0].home;
+        // A player standing on it must NOT draw a passive creature.
+        arena.add_avatar("p".into(), 6.0);
+        arena.avatar_mut("p").unwrap().position = home;
+        for _ in 0..40 {
+            arena.step_creatures(0.1);
+        }
+        assert!(
+            arena.monsters[0].position.distance_to(&home) <= arena.leash_radius + 1.0,
+            "passive creature should stay leashed to home"
+        );
+    }
+
+    #[test]
+    fn group_around_pulls_in_close_creatures() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        assert!(arena.monsters.len() >= 2);
+        // Park the second creature right next to the first.
+        arena.monsters[1].position = arena.monsters[0].position;
+        let g = arena.group_around(0);
+        assert!(g.contains(&0) && g.contains(&1), "close creatures group up");
+    }
 
     #[test]
     fn scaling_matches_canon_examples() {

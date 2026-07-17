@@ -159,9 +159,10 @@ struct ActiveInstance {
     battle: Option<Battle>,
     battle_id: String,
     monster_combatant_id: String,
-    /// Index (into `arena.monsters`) of the creature the active battle is
-    /// against, so victory can mark that specific creature defeated.
-    battle_monster_idx: Option<usize>,
+    /// Indices (into `arena.monsters`) of every creature in the active encounter
+    /// (the touched creature plus its nearby group), so victory can mark them all
+    /// defeated and award their combined XP.
+    battle_monster_idxs: Vec<usize>,
     /// combatant_id -> player_id (players only).
     combatant_player: HashMap<String, String>,
     /// player_id -> the combatant ids they control (a solo player fields a party
@@ -472,7 +473,7 @@ impl GameState {
                 battle: None,
                 battle_id: String::new(),
                 monster_combatant_id: String::new(),
-                battle_monster_idx: None,
+                battle_monster_idxs: Vec::new(),
                 combatant_player: HashMap::new(),
                 player_combatants: HashMap::new(),
                 hero_hp: HashMap::new(),
@@ -912,12 +913,30 @@ impl GameState {
             inst.player_combatants.insert(r.player_id.clone(), cids);
         }
 
-        let monster = inst.arena.monsters[monster_idx].clone();
+        // The encounter is the touched creature plus every creature grouped
+        // around it — they all pile in (their factions sort out who fights whom).
+        let group_idxs = inst.arena.group_around(monster_idx);
+        // Give each grouped creature a combatant id; the touched one leads (its id
+        // is the client's default target).
+        let mut enemy_members: Vec<(meld_world::MonsterSpawn, String)> = Vec::new();
+        for &gi in &group_idxs {
+            let cid = if gi == monster_idx {
+                monster_combatant_id.clone()
+            } else {
+                Uuid::now_v7().to_string()
+            };
+            enemy_members.push((inst.arena.monsters[gi].clone(), cid));
+        }
+        // Put the touched creature first so `monster_combatant_id` = enemies[0].
+        enemy_members.sort_by_key(|(_, cid)| *cid != monster_combatant_id);
+        let enemies_ref: Vec<_> = enemy_members
+            .iter()
+            .map(|(m, cid)| (m, cid.clone()))
+            .collect();
         let battle = build_battle(
             battle_id.clone(),
             &party,
-            &monster,
-            monster_combatant_id.clone(),
+            &enemies_ref,
             &inst.run,
             &balance,
             seed,
@@ -930,18 +949,25 @@ impl GameState {
                 a.state = "in_battle".to_string();
             }
         }
+        // Lock the grouped creatures out of roaming while the fight is on.
+        for &gi in &group_idxs {
+            if let Some(m) = inst.arena.monsters.get_mut(gi) {
+                m.in_battle = true;
+            }
+        }
 
         let encounter_class = battle.encounter_class;
         tracing::info!(
             battle_id = %battle_id,
             party = party_players.len(),
+            enemies = group_idxs.len(),
             triggered_by = %toucher,
             "battle started"
         );
         inst.battle = Some(battle);
         inst.battle_id = battle_id.clone();
         inst.monster_combatant_id = monster_combatant_id;
-        inst.battle_monster_idx = Some(monster_idx);
+        inst.battle_monster_idxs = group_idxs;
         inst.battle_parties.clear();
         inst.battle_parties.insert(party_id);
 
@@ -1375,6 +1401,11 @@ impl GameState {
             }
             out
         } else if self.instance.is_some() {
+            // No battle: roam the creatures, then snapshot the overworld.
+            let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
+            if let Some(inst) = self.instance.as_mut() {
+                inst.arena.step_creatures(dt);
+            }
             self.snapshot_msgs()
         } else {
             Vec::new()
@@ -1422,7 +1453,7 @@ impl GameState {
             .collect();
         // Every living creature is a dynamic entity too (movement-world.md:
         // snapshots carry players and monsters). We tag a monster's `avatar_state`
-        // with its creature kind (`mob:<kind>`) so the client can colour/label it;
+        // as `mob:<kind>:<faction>` so the client can colour/label it by faction;
         // that's distinct from the player states and the `portal` tag below. Slain
         // creatures are dropped from the snapshot.
         for m in inst.arena.monsters.iter().filter(|m| !m.defeated) {
@@ -1430,7 +1461,7 @@ impl GameState {
                 entity_id: m.entity_id.clone(),
                 position: m.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("mob:{}", m.monster_kind)),
+                avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
             });
         }
         // One extraction portal per area, each tagged with a distinct avatar_state
@@ -1537,11 +1568,13 @@ impl GameState {
             return out;
         };
         let battle_id = inst.battle_id.clone();
-        let monster_idx = inst.battle_monster_idx;
-        let xp_reward = monster_idx
-            .and_then(|i| inst.arena.monsters.get(i))
+        let monster_idxs = inst.battle_monster_idxs.clone();
+        // Combined XP for the whole encounter (touched creature + its group).
+        let xp_reward: i64 = monster_idxs
+            .iter()
+            .filter_map(|&i| inst.arena.monsters.get(i))
             .map(|m| m.xp_reward)
-            .unwrap_or(0);
+            .sum();
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
         // The outcome applies to every party merged into the battle (raid).
         let bp = inst.battle_parties.clone();
@@ -1574,9 +1607,11 @@ impl GameState {
 
         match outcome {
             BattleOutcome::Victory => {
-                if let Some(i) = monster_idx {
+                // The whole encounter is cleared from the overworld.
+                for &i in &monster_idxs {
                     if let Some(m) = inst.arena.monsters.get_mut(i) {
                         m.defeated = true;
+                        m.in_battle = false;
                     }
                 }
                 // Award XP to every participant; return their avatars to active.
@@ -1680,9 +1715,17 @@ impl GameState {
                 inst.battle = None;
             }
         }
-        // Battle over: reset merge + combatant bookkeeping.
+        // Battle over: any surviving grouped creatures (e.g. after a flee) resume
+        // roaming; reset merge + combatant bookkeeping.
+        for &i in &monster_idxs {
+            if let Some(m) = inst.arena.monsters.get_mut(i) {
+                if !m.defeated {
+                    m.in_battle = false;
+                }
+            }
+        }
         inst.battle_parties.clear();
-        inst.battle_monster_idx = None;
+        inst.battle_monster_idxs.clear();
         inst.combatant_player.clear();
         inst.player_combatants.clear();
         self.pending_deaths.append(&mut dead);
