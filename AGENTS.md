@@ -163,6 +163,28 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   Mind Spike L3, Temporal Anchor L5, Regen Boon L2, Ward L3; everything else L1.
 - *Deferred*: MP (the ATB adaptation has no cast resource yet — Mnd would gate it later).
 
+## Overworld: exploration, extraction & harvesting
+
+The overworld is not a single-file corridor: creatures **scatter across ±y** (area 0
+stays on the centre line for the deterministic tutorial), so you explore in 2D to
+find fights and nodes. Placement + roaming live in `meld-world::Arena::generate` /
+`step_creatures`; the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`,
+`portal`, `resource:<kind>`.
+
+- **Extraction is mostly the Town Portal item.** There is a **single fixed portal**,
+  deep at the end of the last area (`Arena::portal`). The primary way home is the
+  **Town Portal** consumable (`begin_extraction { method: "town_portal" }`): it works
+  from anywhere, is checked at channel start and **consumed on completion** (not on
+  interrupt). Each dive starts with `starting_town_portals`; felled creatures drop
+  more at `town_portal_drop_chance`. Client keys: `E` = deep portal, `T` = Town Portal.
+- **Harvestable resource nodes** (`ResourceNode`) scatter through every area (area 0
+  gets one guaranteed starter node). `run.harvest { entity_id }` → the node's `material`
+  banks into the run backpack (extract to keep it; feeds Forging/Alchemy crafting) and
+  its `xp` credits the node's Meld `skill`. Biome→node ids in `resources_for_biome`;
+  stats under `[resource.<kind>]`. Client key `H` harvests the nearest node in reach.
+- The run backpack rides the wire on `run.backpack_update` (added/removed changes with
+  a `cause`); the client mirrors it into `RunBackpack` for the overworld HUD.
+
 ## Deep Dives
 
 - **Combat / ATB** (gauges, turns, flee, merge, statuses): [`behaviors/combat-atb.md`](behaviors/combat-atb.md)

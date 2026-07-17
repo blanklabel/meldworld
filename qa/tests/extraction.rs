@@ -1,7 +1,8 @@
 //! Extract-or-die conformance: a solo bot enters the maze, kills the monster
-//! (loot into the backpack), walks to the extraction portal, channels an
-//! extraction, and the loot is banked into the persistent Vault — verified over
-//! the HTTP `GET /v1/vault` endpoint (Postgres-backed).
+//! (loot into the backpack), then uses its starting **Town Portal** item to
+//! extract from where it stands (the primary way out now — there's a single deep
+//! fixed portal). The loot banks into the persistent Vault — verified over the
+//! HTTP `GET /v1/vault` endpoint (Postgres-backed).
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 
@@ -19,6 +20,7 @@ async fn start_server() -> String {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1; // pin one hero so test timing stays stable
+    balance.runs.town_portal_drop_chance = 0.0; // deterministic: no bonus Town Portal in the banked haul
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
@@ -89,7 +91,6 @@ async fn extraction_banks_loot_into_the_vault() {
         Init,
         ToMonster,
         InBattle,
-        ToPortal,
         Channeling,
         Done,
     }
@@ -97,20 +98,17 @@ async fn extraction_banks_loot_into_the_vault() {
     let mut my_combatant = String::new();
     let mut monster_combatant = String::new();
     let mut battle_id = String::new();
-    let mut my_x = 0.0f64;
-    let mut portal_x = 14.0f64;
     let mut banked_petal = false;
 
     let mut mover = tokio::time::interval(Duration::from_millis(80));
-    // Don't burst missed ticks after the (mover-gated) battle — that would fling
-    // the avatar past the portal in one go.
+    // Don't burst missed ticks after the (mover-gated) battle.
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
 
     while phase != Phase::Done {
         assert!(tokio::time::Instant::now() < deadline, "extraction timed out (phase {phase:?})");
         tokio::select! {
-            _ = mover.tick(), if matches!(phase, Phase::ToMonster | Phase::ToPortal) => {
+            _ = mover.tick(), if matches!(phase, Phase::ToMonster) => {
                 input_seq += 1;
                 ws.send(Message::Text(json!({
                     "type":"movement.move_intent","seq":seq,"ts":0,
@@ -123,37 +121,7 @@ async fn extraction_banks_loot_into_the_vault() {
                 let v: Value = serde_json::from_str(&t).unwrap();
                 match v["type"].as_str().unwrap_or("") {
                     "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
-                    "run.started" => phase = Phase::ToMonster,
-                    "world.snapshot" => {
-                        // The world now generates one portal per area (ids
-                        // `portal-N`); walk to the nearest one ahead of us.
-                        let mut nearest_portal: Option<f64> = None;
-                        for e in v["payload"]["entities"].as_array().unwrap() {
-                            match e["entity_id"].as_str() {
-                                Some(id) if id == player_id => my_x = e["position"]["x"].as_f64().unwrap(),
-                                Some(id) if id.starts_with("portal") => {
-                                    let px = e["position"]["x"].as_f64().unwrap();
-                                    if px >= my_x - 1.0 {
-                                        nearest_portal = Some(nearest_portal.map_or(px, |c: f64| c.min(px)));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        if let Some(px) = nearest_portal {
-                            portal_x = px;
-                        }
-                        // Near the portal — stop and start channeling (the wider
-                        // interaction radius tolerates a little snapshot lag).
-                        if phase == Phase::ToPortal && my_x >= portal_x - 1.5 {
-                            phase = Phase::Channeling;
-                            ws.send(Message::Text(json!({
-                                "type":"run.begin_extraction","seq":seq,"ts":0,
-                                "payload":{"method":"portal","portal_entity_id":"portal","item_id":null}
-                            }).to_string())).await.unwrap();
-                            seq += 1;
-                        }
-                    }
+                    "run.started" => { let _ = &player_id; phase = Phase::ToMonster; }
                     "battle.started" => {
                         phase = Phase::InBattle;
                         my_combatant = v["payload"]["your_combatant_id"].as_str().unwrap().to_string();
@@ -169,10 +137,22 @@ async fn extraction_banks_loot_into_the_vault() {
                     }
                     "battle.ended" => {
                         assert_eq!(v["payload"]["outcome"], json!("victory"), "solo should win");
-                        phase = Phase::ToPortal; // now walk east to the portal
+                        // Extract from here using the starting Town Portal item.
+                        phase = Phase::Channeling;
+                        ws.send(Message::Text(json!({
+                            "type":"run.begin_extraction","seq":seq,"ts":0,
+                            "payload":{"method":"town_portal","portal_entity_id":null,"item_id":null}
+                        }).to_string())).await.unwrap();
+                        seq += 1;
                     }
-                    // A rejected channel or an interruption: walk up and retry.
-                    "session.error" | "run.channel_interrupted" if phase == Phase::Channeling => phase = Phase::ToPortal,
+                    // A rejected/interrupted channel: retry the Town Portal in place.
+                    "session.error" | "run.channel_interrupted" if phase == Phase::Channeling => {
+                        ws.send(Message::Text(json!({
+                            "type":"run.begin_extraction","seq":seq,"ts":0,
+                            "payload":{"method":"town_portal","portal_entity_id":null,"item_id":null}
+                        }).to_string())).await.unwrap();
+                        seq += 1;
+                    }
                     "run.member_result" => {
                         assert_eq!(v["payload"]["result"], json!("extracted"));
                         let banked = v["payload"]["banked"].as_array().cloned().unwrap_or_default();
@@ -202,9 +182,8 @@ async fn extraction_banks_loot_into_the_vault() {
         .iter()
         .find(|m| m["item_kind"] == json!("forest_bloom_petal"))
         .expect("vault should contain the banked petal");
-    // One petal per creature felled on the way to the portal. The corridor now
-    // holds several creatures per area, so the exact count is world-dependent;
-    // the contract is that the won loot is banked (≥ 1).
+    // One petal per creature felled before extracting. The contract is that the
+    // won loot is banked (≥ 1); the Town Portal item itself was consumed.
     assert!(
         petal["quantity"].as_i64().unwrap() >= 1,
         "at least one petal banked"

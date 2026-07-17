@@ -36,8 +36,12 @@ pub enum ClientCmd {
     Defend { battle_id: String, actor: String },
     Skill { battle_id: String, actor: String, target: String, skill_kind: String },
     Item { battle_id: String, actor: String, item_id: String },
-    /// Begin a portal extraction channel at the current position.
+    /// Begin an extraction channel at the single deep fixed portal.
     Extract,
+    /// Consume a Town Portal item to extract from anywhere (the primary way out).
+    TownPortal,
+    /// Harvest a resource node the avatar is standing next to.
+    Harvest { entity_id: String },
     /// Co-op lobby.
     LobbyCreate { party: Vec<String> },
     LobbyJoin { code: String, party: Vec<String> },
@@ -87,6 +91,8 @@ pub enum EntityKind {
     Player,
     Monster,
     Portal,
+    /// A harvestable resource node (`monster_kind` carries its content id/label).
+    Resource,
 }
 
 /// A dynamic overworld entity.
@@ -134,6 +140,8 @@ pub enum ServerMsg {
     Connected { player_id: String },
     Error { message: String },
     RunStarted,
+    /// Current run backpack (item_kind, quantity), sorted — drives the HUD.
+    Backpack { items: Vec<(String, i32)> },
     Snapshot { entities: Vec<EntityView> },
     BattleStarted {
         battle_id: String,
@@ -209,6 +217,10 @@ struct Inner {
     input_seq: u32,
     cmds: VecDeque<ClientCmd>,
     out: VecDeque<ServerMsg>,
+    /// Current run backpack counts (item_kind -> quantity), maintained from
+    /// `run.started` + `run.backpack_update` so the overworld HUD can show your
+    /// Town Portals + gathered materials.
+    backpack: std::collections::HashMap<String, i32>,
 }
 
 /// Bevy-side handle. Cloneable (shared `Rc`), single-threaded (NonSend resource).
@@ -232,6 +244,7 @@ pub fn start(base: String) -> Net {
         input_seq: 0,
         cmds: VecDeque::new(),
         out: VecDeque::new(),
+        backpack: std::collections::HashMap::new(),
     })))
 }
 
@@ -557,6 +570,13 @@ impl Inner {
                 wr::BeginExtraction::TYPE,
                 json!({ "method": "portal", "portal_entity_id": "portal", "item_id": null }),
             ),
+            ClientCmd::TownPortal => self.send_env(
+                wr::BeginExtraction::TYPE,
+                json!({ "method": "town_portal", "portal_entity_id": null, "item_id": null }),
+            ),
+            ClientCmd::Harvest { entity_id } => {
+                self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::LobbyCreate { party } => {
                 self.send_env(wl::Create::TYPE, json!({ "party": party }))
             }
@@ -580,6 +600,14 @@ impl Inner {
         }
     }
 
+    /// Emit the current backpack as a sorted (item_kind, qty) list for the HUD.
+    fn emit_backpack(&mut self) {
+        let mut items: Vec<(String, i32)> =
+            self.backpack.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        self.out.push_back(ServerMsg::Backpack { items });
+    }
+
     fn handle_text(&mut self, text: &str) {
         let raw: RawEnvelope = match serde_json::from_str(text) {
             Ok(r) => r,
@@ -597,7 +625,37 @@ impl Inner {
                     self.out.push_back(ServerMsg::Error { message: e.message });
                 }
             }
-            "run.started" => self.out.push_back(ServerMsg::RunStarted),
+            "run.started" => {
+                self.backpack.clear();
+                if let Some(items) = raw.payload["backpack"].as_array() {
+                    for it in items {
+                        let kind = it["item_kind"].as_str().unwrap_or("").to_string();
+                        let qty = it["quantity"].as_i64().unwrap_or(0) as i32;
+                        if !kind.is_empty() {
+                            *self.backpack.entry(kind).or_insert(0) += qty;
+                        }
+                    }
+                }
+                self.out.push_back(ServerMsg::RunStarted);
+                self.emit_backpack();
+            }
+            "run.backpack_update" => {
+                for ch in raw.payload["changes"].as_array().into_iter().flatten() {
+                    let kind = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
+                    let qty = ch["item"]["quantity"].as_i64().unwrap_or(0) as i32;
+                    if kind.is_empty() {
+                        continue;
+                    }
+                    let signed = if ch["delta"].as_str() == Some("removed") { -qty } else { qty };
+                    let e = self.backpack.entry(kind).or_insert(0);
+                    *e += signed;
+                    if *e <= 0 {
+                        let k = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
+                        self.backpack.remove(&k);
+                    }
+                }
+                self.emit_backpack();
+            }
             "lobby.state" => {
                 let members = raw.payload["members"]
                     .as_array()
@@ -638,6 +696,9 @@ impl Inner {
                                         Some(k.to_string()),
                                         (!f.is_empty()).then(|| f.to_string()),
                                     )
+                                }
+                                Some(s) if s.starts_with("resource:") => {
+                                    (EntityKind::Resource, Some(s["resource:".len()..].to_string()), None)
                                 }
                                 _ => (EntityKind::Player, None, None),
                             };

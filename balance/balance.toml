@@ -34,6 +34,11 @@ extraction_channel_ms = 2500
 # the classic "double the requirement each level". [TUNABLE]
 xp_base = 80
 xp_growth_factor = 2.0
+# Extraction is mostly the Town Portal item: each dive starts with this many, and
+# felled creatures sometimes drop one. There is only ONE fixed portal (deep in),
+# so the item is the primary way home. [TUNABLE]
+starting_town_portals = 1
+town_portal_drop_chance = 0.2
 
 # How the four attributes (Str/Mnd/Dex/Wll) turn into combat stats. A hero's
 # attribute = its class base + per-level gain * (level-1); the derived stat is the
@@ -138,6 +143,13 @@ first_area_portal_gap = 6.0      # area 0's portal is this far past that creatur
 portal_setback = 3.0             # a portal sits this many tiles before an area's end
 world_margin = 10.0              # walkable distance past the final portal
 lateral_half_extent = 14.0       # how far a player may stray off the corridor (±y)
+# Creatures no longer hug the centre line: from area 1 on they scatter across ±y
+# so the map feels populated in every direction (area 0 stays on the line for the
+# deterministic tutorial). Kept a touch inside lateral_half_extent.
+creature_lateral_spread = 11.0   # ± y range creatures spawn across (areas ≥ 1)
+# Harvestable resource nodes scattered through each area (biome-specific kinds).
+resources_per_area = 3           # avg nodes per area
+resource_lateral_spread = 12.0   # ± y range nodes scatter across
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
@@ -273,6 +285,58 @@ encounter_class = "standard"
 faction = "fungal"
 aggression = "passive"
 flees = false
+
+# Harvestable resource nodes, keyed by content id (biome→node assignment is
+# structural, in `meld-world::resources_for_biome`). Harvesting one banks its
+# `material` into the run backpack (extract to keep it, feeds crafting) and
+# credits `xp` to the named Meld `skill`. `alchemy` nodes = reagents, `forging`
+# nodes = ores/wood. All [TUNABLE].
+#
+# --- Forest ---
+[resource.bloom_herb]
+material = "bloom_herb"
+skill = "alchemy"
+xp = 15
+[resource.heartoak_bark]
+material = "heartoak_bark"
+skill = "forging"
+xp = 15
+# --- Desert ---
+[resource.sun_salts]
+material = "sun_salts"
+skill = "alchemy"
+xp = 22
+[resource.dune_iron]
+material = "dune_iron"
+skill = "forging"
+xp = 22
+# --- Ashfall ---
+[resource.ember_ash]
+material = "ember_ash"
+skill = "alchemy"
+xp = 34
+[resource.cinder_ore]
+material = "cinder_ore"
+skill = "forging"
+xp = 34
+# --- Tundra ---
+[resource.frost_lichen]
+material = "frost_lichen"
+skill = "alchemy"
+xp = 50
+[resource.rime_ore]
+material = "rime_ore"
+skill = "forging"
+xp = 50
+# --- Mire ---
+[resource.bog_myrrh]
+material = "bog_myrrh"
+skill = "alchemy"
+xp = 72
+[resource.peat_iron]
+material = "peat_iron"
+skill = "forging"
+xp = 72
 
 [player.squire]
 base_hp = 40

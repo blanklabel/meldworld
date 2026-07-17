@@ -18,6 +18,7 @@ async fn start_server() -> String {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1; // pin one hero so test timing stays stable
+    balance.runs.town_portal_drop_chance = 0.0; // deterministic: no bonus Town Portal in the banked haul
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
@@ -83,10 +84,10 @@ async fn extraction_and_crafting_grow_meld_skills() {
     seq += 1;
 
     #[derive(PartialEq)]
-    enum Phase { Init, ToMonster, InBattle, ToPortal, Channeling, Done }
+    enum Phase { Init, ToMonster, InBattle, Channeling, Done }
     let mut phase = Phase::Init;
     let (mut my_c, mut mon_c, mut bid) = (String::new(), String::new(), String::new());
-    let (mut my_x, mut portal_x) = (0.0f64, 14.0f64);
+    let _ = &player_id;
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
@@ -94,7 +95,7 @@ async fn extraction_and_crafting_grow_meld_skills() {
     while phase != Phase::Done {
         assert!(tokio::time::Instant::now() < deadline, "run timed out");
         tokio::select! {
-            _ = mover.tick(), if matches!(phase, Phase::ToMonster | Phase::ToPortal) => {
+            _ = mover.tick(), if matches!(phase, Phase::ToMonster) => {
                 input_seq += 1;
                 ws.send(Message::Text(json!({"type":"movement.move_intent","seq":seq,"ts":0,
                     "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
@@ -106,20 +107,6 @@ async fn extraction_and_crafting_grow_meld_skills() {
                 match v["type"].as_str().unwrap_or("") {
                     "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => phase = Phase::ToMonster,
-                    "world.snapshot" => {
-                        for e in v["payload"]["entities"].as_array().unwrap() {
-                            match e["entity_id"].as_str() {
-                                Some(id) if id == player_id => my_x = e["position"]["x"].as_f64().unwrap(),
-                                Some("portal") => portal_x = e["position"]["x"].as_f64().unwrap(),
-                                _ => {}
-                            }
-                        }
-                        if phase == Phase::ToPortal && my_x >= portal_x - 1.5 {
-                            phase = Phase::Channeling;
-                            ws.send(Message::Text(json!({"type":"run.begin_extraction","seq":seq,"ts":0,"payload":{"method":"portal","portal_entity_id":"portal","item_id":null}}).to_string())).await.unwrap();
-                            seq += 1;
-                        }
-                    }
                     "battle.started" => {
                         phase = Phase::InBattle;
                         my_c = v["payload"]["your_combatant_id"].as_str().unwrap().to_string();
@@ -131,8 +118,17 @@ async fn extraction_and_crafting_grow_meld_skills() {
                             "payload":{"battle_id":bid,"action_id":uuid::Uuid::new_v4().to_string(),"action":"attack","skill_kind":null,"item_id":null,"target_ids":[mon_c]}}).to_string())).await.unwrap();
                         seq += 1;
                     }
-                    "battle.ended" => { assert_eq!(v["payload"]["outcome"], json!("victory")); phase = Phase::ToPortal; }
-                    "session.error" | "run.channel_interrupted" if phase == Phase::Channeling => phase = Phase::ToPortal,
+                    "battle.ended" => {
+                        assert_eq!(v["payload"]["outcome"], json!("victory"));
+                        // Extract in place with the starting Town Portal item.
+                        phase = Phase::Channeling;
+                        ws.send(Message::Text(json!({"type":"run.begin_extraction","seq":seq,"ts":0,"payload":{"method":"town_portal","portal_entity_id":null,"item_id":null}}).to_string())).await.unwrap();
+                        seq += 1;
+                    }
+                    "session.error" | "run.channel_interrupted" if phase == Phase::Channeling => {
+                        ws.send(Message::Text(json!({"type":"run.begin_extraction","seq":seq,"ts":0,"payload":{"method":"town_portal","portal_entity_id":null,"item_id":null}}).to_string())).await.unwrap();
+                        seq += 1;
+                    }
                     "run.member_result" => { assert_eq!(v["payload"]["result"], json!("extracted")); phase = Phase::Done; }
                     _ => {}
                 }

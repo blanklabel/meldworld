@@ -170,6 +170,7 @@ fn main() {
         .init_resource::<InventoryData>()
         .init_resource::<ProgressData>()
         .init_resource::<Overworld>()
+        .init_resource::<RunBackpack>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
         .init_resource::<LobbyData>()
@@ -352,6 +353,19 @@ impl OwEntity {
 struct Overworld {
     /// entity id -> its render state
     entities: HashMap<String, OwEntity>,
+}
+
+/// The current run's backpack (Town Portals + gathered materials), mirrored from
+/// the server for the overworld HUD.
+#[derive(Resource, Default)]
+struct RunBackpack {
+    items: Vec<(String, i32)>,
+}
+
+impl RunBackpack {
+    fn count(&self, kind: &str) -> i32 {
+        self.items.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
+    }
 }
 
 #[derive(Resource, Default)]
@@ -940,12 +954,14 @@ fn pump_net(
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
     mut lobby: ResMut<LobbyData>,
+    mut backpack: ResMut<RunBackpack>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
+            ServerMsg::Backpack { items } => backpack.items = items,
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
                 if session.coop {
@@ -1440,7 +1456,7 @@ fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows: move east through the areas  -  E: extract at a portal  -  I: inventory  -  L: level up",
+                    "WASD/arrows: explore  -  T: Town Portal (extract anywhere)  -  H: harvest node  -  E: deep portal  -  I: inventory  -  L: level up",
                 ),
                 TextFont {
                     font_size: 15.0,
@@ -1543,14 +1559,28 @@ fn follow_camera(
 fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
+    backpack: Res<RunBackpack>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
     };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    // Town Portals first (your way home), then a compact tally of gathered materials.
+    let tp = backpack.count("town_portal");
+    let mats: String = backpack
+        .items
+        .iter()
+        .filter(|(k, _)| k != "town_portal")
+        .map(|(k, q)| format!("{} {}", nice_name(k), q))
+        .collect::<Vec<_>>()
+        .join(", ");
     if let Ok(mut t) = q.single_mut() {
-        **t = format!("distance {d}  -  {}", biome_display(d));
+        let mut line = format!("distance {d}  -  {}  -  ⌂×{tp}", biome_display(d));
+        if !mats.is_empty() {
+            line.push_str(&format!("  -  {mats}"));
+        }
+        **t = line;
     }
 }
 
@@ -1562,6 +1592,7 @@ fn overworld_input(
     world: Res<Overworld>,
     session: Res<Session>,
     overlay: Res<Overlay>,
+    backpack: Res<RunBackpack>,
     time: Res<Time>,
     mut clock: ResMut<MoveClock>,
 ) {
@@ -1591,9 +1622,31 @@ fn overworld_input(
         _ => false,
     };
 
-    // Extract at the portal (E key, or autopilot once it arrives).
+    // Extract at the deep portal (E key, or autopilot once it arrives).
     if keys.just_pressed(KeyCode::KeyE) || (autoplay.0 && near_portal) {
         net.0.send(ClientCmd::Extract);
+        return;
+    }
+    // Town Portal (T): the primary way out — spend a Town Portal item to extract
+    // from anywhere.
+    if keys.just_pressed(KeyCode::KeyT) && backpack.count("town_portal") > 0 {
+        net.0.send(ClientCmd::TownPortal);
+        return;
+    }
+    // Harvest (H): grab the nearest resource node within reach.
+    if keys.just_pressed(KeyCode::KeyH) {
+        if let Some((mx, my)) = me {
+            let nearest = world
+                .entities
+                .iter()
+                .filter(|(_, e)| e.kind == EntityKind::Resource)
+                .map(|(id, e)| (id, ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt()))
+                .filter(|(_, d)| *d <= 2.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((id, _)) = nearest {
+                net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
+            }
+        }
         return;
     }
 
@@ -1804,6 +1857,7 @@ fn sync_overworld_sprites(
             EntityKind::Player => 18.0,
             EntityKind::Monster => 28.0,
             EntityKind::Portal => 26.0,
+            EntityKind::Resource => 16.0,
         };
         let mut ent = commands.spawn((
             WorldEntity(id.clone()),
@@ -1820,6 +1874,7 @@ fn sync_overworld_sprites(
                 None => nice_name(k),
             }),
             EntityKind::Portal => Some("portal".to_string()),
+            EntityKind::Resource => e.name.as_deref().map(|k| format!("⛏ {}", nice_name(k))),
             EntityKind::Player => None,
         };
         if let Some(text) = label {
@@ -1857,6 +1912,7 @@ fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
             None => Color::srgb(0.9, 0.3, 0.3),
         },
         EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
+        EntityKind::Resource => Color::srgb(0.85, 0.75, 0.35), // amber node
         EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
         EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
     }
