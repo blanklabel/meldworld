@@ -118,7 +118,11 @@ struct Session {
     /// Attack bonus from equipped gear, loaded from the DB after connect.
     gear_atk_bonus: i32,
     /// Class chosen at the player's most recent `run.enter_maze` (default Squire).
+    /// This is the party *lead* (slot 0).
     character_class: CharacterClass,
+    /// Explicit per-hero party composition from the builder, if the client sent
+    /// one; otherwise `None` and the server builds a default mixed party.
+    party_comp: Option<Vec<CharacterClass>>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -261,6 +265,7 @@ impl GameState {
                         in_instance: false,
                         gear_atk_bonus: 0,
                         character_class: CharacterClass::Squire,
+                        party_comp: None,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -341,14 +346,19 @@ impl GameState {
 
     fn handle_enter_maze(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let client_seq = raw.seq;
-        // Record the caller's chosen class (default Squire) before forming the
-        // party, so each player's own class is used for their run.
-        let chosen = serde_json::from_value::<wr::EnterMaze>(raw.payload)
-            .ok()
+        // Record the caller's party choice before forming the party. The party
+        // builder sends an explicit `party`; otherwise `character_class` is the
+        // lead and the server builds a default mixed party around it.
+        let req = serde_json::from_value::<wr::EnterMaze>(raw.payload).ok();
+        let party_comp = req.as_ref().and_then(|e| e.party.clone()).filter(|p| !p.is_empty());
+        let chosen = req
+            .as_ref()
             .and_then(|e| e.character_class)
+            .or_else(|| party_comp.as_ref().and_then(|p| p.first().copied()))
             .unwrap_or(CharacterClass::Squire);
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.character_class = chosen;
+            s.party_comp = party_comp;
         }
         // The caller can't already be in a run.
         if self
@@ -436,12 +446,24 @@ impl GameState {
         // across battles (see hero_hp write-back).
         let party_size = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let chosen = self
+            let (chosen, explicit) = self
                 .sessions
                 .get(pid)
-                .map(|s| s.character_class)
-                .unwrap_or(CharacterClass::Squire);
-            let comp = party_composition(chosen, party_size);
+                .map(|s| (s.character_class, s.party_comp.clone()))
+                .unwrap_or((CharacterClass::Squire, None));
+            // The builder's explicit composition wins (normalized to party size,
+            // padded with Squire); otherwise build a default mixed party around
+            // the lead.
+            let comp = match explicit {
+                Some(mut p) => {
+                    p.truncate(party_size);
+                    while p.len() < party_size {
+                        p.push(CharacterClass::Squire);
+                    }
+                    p
+                }
+                None => party_composition(chosen, party_size),
+            };
             let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);

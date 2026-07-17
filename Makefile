@@ -34,6 +34,9 @@ help:
 	@echo "  make stop         Stop the local server (Postgres is left running)."
 	@echo ""
 	@echo "  everything lives at one URL: $(URL)"
+	@echo "  build your party of 4 on the Join screen (keys 1-4), or preset it:"
+	@echo "    browser: $(URL)/?party=squire,psyker,resonant,squire   (or ?class=psyker for the lead)"
+	@echo "    native:  MELD_PARTY=squire,psyker,resonant,squire make play-native"
 
 # Browser client, single URL. Build the wasm bundle to dist/, then boot the
 # server with MELD_CLIENT_DIST set so it serves that client at / AND handles the

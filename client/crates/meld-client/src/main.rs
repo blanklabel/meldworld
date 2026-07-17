@@ -94,6 +94,19 @@ fn class_flag() -> Option<String> {
     params.get("class").filter(|s| !s.is_empty())
 }
 
+/// Pre-build the whole party (comma-separated class keys) without the builder.
+/// Native: `MELD_PARTY=squire,psyker,resonant,squire`. Browser: `?party=…`.
+#[cfg(not(target_arch = "wasm32"))]
+fn party_flag() -> Option<String> {
+    std::env::var("MELD_PARTY").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+fn party_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("party").filter(|s| !s.is_empty())
+}
+
 /// Offline battle-screen mockup: jump straight into the Battle screen with canned
 /// combatants and the command window open, so the subscreen can be inspected
 /// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
@@ -251,8 +264,11 @@ struct Session {
     entered: bool,
     channeling: bool,
     status: String,
-    /// Class chosen on the Join screen (wire form: "squire" / "psyker").
-    character_class: String,
+    /// The party the player built on the Join screen — one class key per hero
+    /// slot (wire form: "squire" / "psyker" / "resonant"). Sent on enter_maze.
+    party: Vec<String>,
+    /// Which party slot the builder cursor is on.
+    party_cursor: usize,
 }
 
 impl Default for Session {
@@ -263,7 +279,14 @@ impl Default for Session {
             entered: false,
             channeling: false,
             status: String::new(),
-            character_class: "squire".to_string(),
+            // A diverse default so newcomers see all three classes at once.
+            party: vec![
+                "squire".into(),
+                "psyker".into(),
+                "resonant".into(),
+                "squire".into(),
+            ],
+            party_cursor: 0,
         }
     }
 }
@@ -693,10 +716,25 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
-/// Pre-select a class from `?class=` / `MELD_CLASS` (defaults to Squire otherwise).
+/// The classes the party builder cycles through.
+const PARTY_CLASSES: [&str; 3] = ["squire", "psyker", "resonant"];
+
+/// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
+/// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
 fn apply_class_flag(mut session: ResMut<Session>) {
-    if let Some(c) = class_flag() {
-        session.character_class = c;
+    if let Some(p) = party_flag() {
+        let party: Vec<String> = p
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| PARTY_CLASSES.contains(&s.as_str()))
+            .collect();
+        if !party.is_empty() {
+            session.party = party;
+        }
+    } else if let Some(c) = class_flag() {
+        if let Some(slot0) = session.party.first_mut() {
+            *slot0 = c;
+        }
     }
 }
 
@@ -847,7 +885,7 @@ fn pump_net(
                 if !session.entered {
                     session.entered = true;
                     net.0.send(ClientCmd::EnterMaze {
-                        character_class: session.character_class.clone(),
+                        party: session.party.clone(),
                     });
                 }
             }
@@ -1058,9 +1096,9 @@ fn join_ui(mut commands: Commands) {
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
-                Text::new("Press ENTER to enter the maze and march into the wilds"),
+                Text::new("Build your party of 4 — keys 1-4 cycle a slot's class, then ENTER to dive"),
                 TextFont {
-                    font_size: 20.0,
+                    font_size: 18.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
@@ -1069,7 +1107,7 @@ fn join_ui(mut commands: Commands) {
                 ClassText,
                 Text::new(""),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: 22.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.75, 0.85, 1.0)),
@@ -1095,14 +1133,21 @@ fn join_input(
     mut status_q: Query<&mut Text, With<StatusText>>,
     mut class_q: Query<&mut Text, (With<ClassText>, Without<StatusText>)>,
 ) {
-    // Pick a class before connecting (1 = Squire, 2 = Psyker). Locked in once we
-    // start connecting.
+    // Build the party before connecting: keys 1-4 cycle each slot's class through
+    // Squire → Psyker → Resonant. Locked in once we start connecting.
     if !session.connecting {
-        if keys.just_pressed(KeyCode::Digit1) {
-            session.character_class = "squire".to_string();
-        }
-        if keys.just_pressed(KeyCode::Digit2) {
-            session.character_class = "psyker".to_string();
+        let slots = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
+        for (slot, key) in slots.iter().enumerate() {
+            if keys.just_pressed(*key) {
+                if let Some(cur) = session.party.get(slot).cloned() {
+                    let next = PARTY_CLASSES
+                        .iter()
+                        .position(|c| *c == cur)
+                        .map(|i| (i + 1) % PARTY_CLASSES.len())
+                        .unwrap_or(0);
+                    session.party[slot] = PARTY_CLASSES[next].to_string();
+                }
+            }
         }
     }
 
@@ -1116,14 +1161,25 @@ fn join_input(
     }
 
     if let Ok(mut t) = class_q.single_mut() {
-        let (squire, psyker) = match session.character_class.as_str() {
-            "psyker" => ("Squire", "[Psyker]"),
-            _ => ("[Squire]", "Psyker"),
-        };
-        **t = format!("Class — [1] {squire}   [2] {psyker}");
+        let slots: Vec<String> = session
+            .party
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("[{}] {}", i + 1, nice_class(c)))
+            .collect();
+        **t = slots.join("   ");
     }
     if let Ok(mut t) = status_q.single_mut() {
         **t = session.status.clone();
+    }
+}
+
+/// Display name for a class key.
+fn nice_class(key: &str) -> &'static str {
+    match key {
+        "psyker" => "Psyker",
+        "resonant" => "Resonant",
+        _ => "Squire",
     }
 }
 

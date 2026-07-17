@@ -298,12 +298,16 @@ pub mod battle {
 pub mod run {
     use super::*;
 
-    /// C2S — start the party's run. The chosen class is optional; the server
-    /// defaults to Squire when it is absent (back-compatible with old clients).
+    /// C2S — start the party's run. Class selection is optional and back-compatible:
+    /// `party` is the explicit per-hero composition from the party builder; if it is
+    /// absent the server falls back to `character_class` as the party lead (building
+    /// a default mixed party around it), and to Squire if both are absent.
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct EnterMaze {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub character_class: Option<crate::enums::CharacterClass>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub party: Option<Vec<crate::enums::CharacterClass>>,
     }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";

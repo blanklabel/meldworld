@@ -25,8 +25,8 @@ const GUEST_PASSWORD: &str = "meld-guest-password";
 /// Commands sent from Bevy into the network layer.
 pub enum ClientCmd {
     Connect { username: String },
-    /// Enter the maze as the given class (wire form, e.g. "squire" / "psyker").
-    EnterMaze { character_class: String },
+    /// Enter the maze with the built party (one class key per hero slot).
+    EnterMaze { party: Vec<String> },
     Move { dx: f64, dy: f64 },
     /// Battle commands. `actor` is which of the player's heroes acts. Attack/Skill
     /// strike an enemy; Defend/Item are self-cast.
@@ -455,8 +455,8 @@ impl Inner {
 
     fn send_cmd(&mut self, cmd: ClientCmd) {
         match cmd {
-            ClientCmd::EnterMaze { character_class } => {
-                self.send_env(wr::EnterMaze::TYPE, json!({ "character_class": character_class }))
+            ClientCmd::EnterMaze { party } => {
+                self.send_env(wr::EnterMaze::TYPE, json!({ "party": party }))
             }
             ClientCmd::Move { dx, dy } => {
                 self.input_seq += 1;
