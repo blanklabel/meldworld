@@ -154,6 +154,8 @@ struct Session {
     /// Explicit per-hero party composition from the builder, if the client sent
     /// one; otherwise `None` and the server builds a default mixed party.
     party_comp: Option<Vec<CharacterClass>>,
+    /// Per-slot persistent hero names from the builder (also stored via `/v1/heroes`).
+    hero_names: Option<Vec<String>>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -168,6 +170,24 @@ fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
         player_id: player_id.to_string(),
         msg_type: M::TYPE.to_string(),
         payload: serde_json::to_value(m).expect("payload serializes"),
+    }
+}
+
+/// Tag each ally combatant with its hero's persistent name (`name:<name>`) so the
+/// client shows names in battle. Slot = the combatant's index among its player's
+/// combatants; the name comes from `ActiveInstance::hero_names`.
+fn inject_hero_names(inst: &ActiveInstance, allies: &mut [meld_proto::common::Combatant]) {
+    for c in allies.iter_mut() {
+        let Some(pid) = &c.player_id else { continue };
+        if let (Some(cids), Some(names)) =
+            (inst.player_combatants.get(pid), inst.hero_names.get(pid))
+        {
+            if let Some(slot) = cids.iter().position(|x| x == &c.combatant_id) {
+                if let Some(n) = names.get(slot) {
+                    c.statuses.push(format!("name:{n}"));
+                }
+            }
+        }
     }
 }
 
@@ -202,6 +222,8 @@ struct ActiveInstance {
     /// player_id -> per-hero class (the mixed party composition), parallel to
     /// `hero_hp`. Each slot's class drives its stats/kit for the whole run.
     party_classes: HashMap<String, Vec<CharacterClass>>,
+    /// player_id -> per-hero display name (parallel to `party_classes`).
+    hero_names: HashMap<String, Vec<String>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
     /// Party ids currently merged into the active battle (raid merge).
@@ -238,6 +260,10 @@ struct GameState {
     player_lobby: HashMap<String, String>,
     /// Players whose gear bonus needs (re)loading from the DB (post-connect).
     pending_gear_load: Vec<String>,
+    /// Players whose persistent hero names should be loaded from Postgres.
+    pending_hero_load: Vec<String>,
+    /// Hero renames to persist to Postgres: (player, slot, name).
+    pending_hero_rename: Vec<(String, i16, String)>,
     /// Meld-skill XP earned by harvesting, flushed to Postgres: (player, skill, xp).
     pending_skill_xp: Vec<(String, String, i64)>,
     /// Players whose run just ended in death; durability sink applied async.
@@ -255,6 +281,8 @@ impl GameState {
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
+            pending_hero_load: Vec::new(),
+            pending_hero_rename: Vec::new(),
             pending_skill_xp: Vec::new(),
             pending_deaths: Vec::new(),
         }
@@ -282,6 +310,8 @@ impl GameState {
             // work; here we await Postgres): gear loads, extraction banking, and
             // the death durability sink.
             self.flush_gear_loads().await;
+            self.flush_hero_loads().await;
+            self.flush_hero_renames().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
             self.flush_deaths().await;
@@ -328,10 +358,12 @@ impl GameState {
                         gear_atk_bonus: 0,
                         character_class: CharacterClass::Squire,
                         party_comp: None,
+                        hero_names: None,
                     },
                 );
                 self.order.push(player_id.clone());
-                self.pending_gear_load.push(player_id);
+                self.pending_gear_load.push(player_id.clone());
+                self.pending_hero_load.push(player_id);
                 Vec::new()
             }
             ServerEvent::Disconnected { player_id } => {
@@ -342,6 +374,7 @@ impl GameState {
                 self.sessions.remove(&player_id);
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
+                self.pending_hero_load.retain(|p| p != &player_id);
                 self.remove_from_instance(&player_id);
                 out
             }
@@ -366,6 +399,7 @@ impl GameState {
         }
         inst.hero_hp.remove(player_id);
         inst.party_classes.remove(player_id);
+        inst.hero_names.remove(player_id);
         inst.extraction.remove(player_id);
         if inst.run.runs.is_empty() {
             self.instance = None;
@@ -406,6 +440,7 @@ impl GameState {
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wr::Harvest::TYPE => self.handle_harvest(player_id, raw),
             wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
+            wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -430,9 +465,17 @@ impl GameState {
             .and_then(|e| e.character_class)
             .or_else(|| party_comp.as_ref().and_then(|p| p.first().copied()))
             .unwrap_or(CharacterClass::Squire);
+        let names = req
+            .as_ref()
+            .and_then(|e| e.names.clone())
+            .filter(|n| !n.is_empty());
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.character_class = chosen;
             s.party_comp = party_comp;
+            // Only override the DB-loaded names if the client explicitly sent some.
+            if names.is_some() {
+                s.hero_names = names;
+            }
         }
         // The caller can't already be in a run.
         if self
@@ -488,6 +531,41 @@ impl GameState {
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
     /// each. The initiator's `run.started` echoes `client_seq`. Every enrolled
     /// player's session must already carry its `character_class` / `party_comp`.
+    /// The caller's hero roster (name/class/level/attributes) for the party panel.
+    /// Reuses `party_fighters` so the stats match combat exactly.
+    fn party_views(&self, pid: &str) -> Vec<wr::HeroView> {
+        let Some(inst) = self.instance.as_ref() else {
+            return Vec::new();
+        };
+        let Some(comp) = inst.party_classes.get(pid).cloned() else {
+            return Vec::new();
+        };
+        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
+        let party: Vec<meld_run::PartyMember> = comp
+            .iter()
+            .map(|c| (pid.to_string(), String::new(), *c, 0))
+            .collect();
+        let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance);
+        fighters
+            .iter()
+            .enumerate()
+            .map(|(slot, f)| wr::HeroView {
+                slot: slot as i32,
+                name: names
+                    .get(slot)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                class_key: f.class_key.clone(),
+                level: f.level,
+                str_: f.str_,
+                mnd: f.mnd,
+                dex: f.dex,
+                wll: f.wll,
+                max_hp: f.max_hp,
+            })
+            .collect()
+    }
+
     fn form_run(
         &mut self,
         party_ids: Vec<String>,
@@ -514,6 +592,7 @@ impl GameState {
                 player_combatants: HashMap::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
+                hero_names: HashMap::new(),
                 extraction: HashMap::new(),
                 battle_parties: std::collections::HashSet::new(),
                 battle_pos: Position::new(0.0, 0.0),
@@ -564,11 +643,11 @@ impl GameState {
         // across battles (see hero_hp write-back).
         let party_size = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let (chosen, explicit) = self
+            let (chosen, explicit, names) = self
                 .sessions
                 .get(pid)
-                .map(|s| (s.character_class, s.party_comp.clone()))
-                .unwrap_or((CharacterClass::Squire, None));
+                .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone()))
+                .unwrap_or((CharacterClass::Squire, None, None));
             // The builder's explicit composition wins (normalized to party size,
             // padded with Squire); otherwise build a default mixed party around
             // the lead.
@@ -582,15 +661,28 @@ impl GameState {
                 }
                 None => party_composition(chosen, party_size),
             };
+            // Hero names by slot: the builder's, normalized to party size and
+            // defaulted to "Hero N" for any unnamed slot.
+            let mut names = names.unwrap_or_default();
+            names.truncate(party_size);
+            while names.len() < party_size {
+                names.push(format!("Hero {}", names.len() + 1));
+            }
             let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
+            inst.hero_names.insert(pid.clone(), names);
         }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
                 s.in_instance = true;
             }
         }
+        // Roster views per player (built before the shared instance borrow below).
+        let rosters: HashMap<String, Vec<wr::HeroView>> = party_ids
+            .iter()
+            .map(|pid| (pid.clone(), self.party_views(pid)))
+            .collect();
         let inst = self.instance.as_ref().expect("instance exists");
 
         // run.started to this party's members (spawn positions from the arena).
@@ -636,6 +728,12 @@ impl GameState {
                     members: member_views.clone(),
                     backpack,
                     path: inst.arena.path.clone(),
+                },
+            ));
+            out.push(out_msg(
+                pid,
+                &wr::Party {
+                    heroes: rosters.get(pid).cloned().unwrap_or_default(),
                 },
             ));
         }
@@ -998,7 +1096,8 @@ impl GameState {
             seed,
             &hp_overrides,
         );
-        let (allies, enemies) = battle.wire_combatants();
+        let (mut allies, enemies) = battle.wire_combatants();
+        inject_hero_names(inst, &mut allies);
 
         for pid in &party_players {
             if let Some(a) = inst.arena.avatar_mut(pid) {
@@ -1089,6 +1188,48 @@ impl GameState {
         self.join_battle(player_id, party_id)
     }
 
+    /// Rename one of the caller's heroes: update the active run's names + the
+    /// session cache (for the next dive), persist to Postgres, and re-send the
+    /// roster so the party panel updates at once.
+    fn handle_rename_hero(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::RenameHero = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad rename_hero", Some(raw.seq))]
+            }
+        };
+        let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+        let name: String = req.name.trim().chars().take(24).collect();
+        if name.is_empty() || req.slot < 0 || req.slot >= party_size {
+            return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero name or slot.", Some(raw.seq))];
+        }
+        let slot = req.slot as usize;
+        // Active run's names (so battle + panel reflect it now).
+        if let Some(inst) = self.instance.as_mut() {
+            if let Some(names) = inst.hero_names.get_mut(player_id) {
+                if let Some(n) = names.get_mut(slot) {
+                    *n = name.clone();
+                }
+            }
+        }
+        // Session cache (used to form the next dive).
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            let mut v = s.hero_names.clone().unwrap_or_default();
+            while v.len() <= slot {
+                v.push(format!("Hero {}", v.len() + 1));
+            }
+            v[slot] = name.clone();
+            s.hero_names = Some(v);
+        }
+        self.pending_hero_rename.push((player_id.to_string(), slot as i16, name));
+        vec![out_msg(
+            player_id,
+            &wr::Party {
+                heroes: self.party_views(player_id),
+            },
+        )]
+    }
+
     /// Merge a party into the in-progress battle (the toucher opted in via
     /// `run.join_battle`). The joiner brings their full hero composition, exactly
     /// as if they'd started the fight.
@@ -1173,10 +1314,10 @@ impl GameState {
             }
         }
 
-        let battle = inst.battle.as_ref().unwrap();
         let battle_id = inst.battle_id.clone();
-        let encounter_class = battle.encounter_class;
-        let (allies, enemies) = battle.wire_combatants();
+        let encounter_class = inst.battle.as_ref().unwrap().encounter_class;
+        let (mut allies, enemies) = inst.battle.as_ref().unwrap().wire_combatants();
+        inject_hero_names(inst, &mut allies);
         // Joining combatants (for party_joined to the existing side).
         let joining_allies: Vec<meld_proto::common::Combatant> = allies
             .iter()
@@ -1410,6 +1551,34 @@ impl GameState {
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.gear_atk_bonus = bonus;
                     }
+                }
+            }
+        }
+    }
+
+    /// Load persistent hero names from Postgres for freshly-connected players.
+    async fn flush_hero_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_hero_load);
+        for pid in loads {
+            if let Ok(uid) = Uuid::parse_str(&pid) {
+                if let Ok(names) = self.db.get_hero_names(uid).await {
+                    if !names.is_empty() {
+                        if let Some(s) = self.sessions.get_mut(&pid) {
+                            s.hero_names = Some(names);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Persist queued hero renames to Postgres.
+    async fn flush_hero_renames(&mut self) {
+        let jobs: Vec<(String, i16, String)> = std::mem::take(&mut self.pending_hero_rename);
+        for (pid, slot, name) in jobs {
+            if let Ok(uid) = Uuid::parse_str(&pid) {
+                if let Err(e) = self.db.set_hero_name(uid, slot, &name).await {
+                    tracing::error!("hero rename persist failed for {pid}: {e}");
                 }
             }
         }
@@ -1828,6 +1997,7 @@ impl GameState {
 
     fn handle_battle_end(&mut self, outcome: BattleOutcome) -> Vec<Outgoing> {
         let mut out = Vec::new();
+        let mut leveled: Vec<String> = Vec::new();
         let balance = self.balance.clone();
         let Some(inst) = self.instance.as_mut() else {
             return out;
@@ -1879,9 +2049,12 @@ impl GameState {
                         m.in_battle = false;
                     }
                 }
-                // Award XP to every participant; return their avatars to active.
+                // Award XP to every participant; note who leveled so we can refresh
+                // their party panel (stats change on level-up).
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
-                    r.award_xp(xp_reward, &balance);
+                    if r.award_xp(xp_reward, &balance) > 0 {
+                        leveled.push(r.player_id.clone());
+                    }
                 }
                 for pid in &members {
                     if let Some(a) = inst.arena.avatar_mut(pid) {
@@ -2018,6 +2191,11 @@ impl GameState {
         inst.combatant_player.clear();
         inst.player_combatants.clear();
         self.pending_deaths.append(&mut dead);
+        // Refresh the party panel for anyone who leveled up (stats changed).
+        for pid in &leveled {
+            let heroes = self.party_views(pid);
+            out.push(out_msg(pid, &wr::Party { heroes }));
+        }
         out
     }
 }

@@ -45,6 +45,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vault/gear/{gear_id}/equip", post(equip))
         .route("/v1/vault/gear/{gear_id}/unequip", post(unequip))
         .route("/v1/meld-skills", get(meld_skills))
+        .route("/v1/heroes", get(heroes))
+        .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
         .route("/v1/crafting/craft", post(craft))
         .with_state(state)
 }
@@ -133,6 +135,41 @@ async fn meld_skills(State(st): State<ApiState>, headers: HeaderMap) -> Result<R
             let data = skill_entries(skills, st.meld_xp_per_level);
             Ok((StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response())
         }
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+/// GET the caller's persistent hero names (by slot).
+async fn heroes(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    match st.db.get_hero_names(player_id).await {
+        Ok(names) => Ok((StatusCode::OK, Json(serde_json::json!({ "names": names }))).into_response()),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RenameHero {
+    name: String,
+}
+
+/// PUT a hero slot's name (persistent, per-account).
+async fn rename_hero(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(slot): Path<i16>,
+    Json(req): Json<RenameHero>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if !(0..4).contains(&slot) {
+        return Err(ApiReject::new(StatusCode::BAD_REQUEST, "bad_request", "Invalid hero slot."));
+    }
+    let name: String = req.name.trim().chars().take(24).collect();
+    if name.is_empty() {
+        return Err(ApiReject::new(StatusCode::BAD_REQUEST, "bad_request", "Name cannot be empty."));
+    }
+    match st.db.set_hero_name(player_id, slot, &name).await {
+        Ok(()) => Ok((StatusCode::OK, Json(serde_json::json!({ "slot": slot, "name": name }))).into_response()),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }

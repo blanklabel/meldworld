@@ -172,6 +172,8 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<WorldPath>()
+        .init_resource::<PartyRoster>()
+        .init_resource::<HeroRename>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
         .init_resource::<LobbyData>()
@@ -384,6 +386,20 @@ struct WorldPath {
     drawn: bool,
 }
 
+/// The caller's hero roster (name/class/level/stats), shown on the inventory party
+/// screen — this is where stats live, not the battle HUD.
+#[derive(Resource, Default)]
+struct PartyRoster {
+    heroes: Vec<meld_client::net::HeroLine>,
+}
+
+/// In-progress hero rename on the party screen: the slot being edited + its buffer.
+#[derive(Resource, Default)]
+struct HeroRename {
+    slot: Option<usize>,
+    buffer: String,
+}
+
 /// Marker for spawned path-trail dots (despawned when the path changes).
 #[derive(Component)]
 struct PathTrail;
@@ -445,8 +461,13 @@ fn order_side(kind: QueuedKind) -> Option<Side> {
 }
 
 impl BattleData {
-    /// Party-order label for a hero combatant ("Hero 1"), or its raw name.
+    /// The hero's (persistent) name, falling back to its party-order label.
     fn hero_label(&self, id: &str) -> String {
+        if let Some(c) = self.view(id) {
+            if !c.name.is_empty() && c.name != "Hero" {
+                return c.name.clone();
+            }
+        }
         match self.your_ids.iter().position(|h| h == id) {
             Some(i) => format!("Hero {}", i + 1),
             None => id.to_string(),
@@ -1037,6 +1058,7 @@ fn pump_net(
     mut lobby: ResMut<LobbyData>,
     mut backpack: ResMut<RunBackpack>,
     mut world_path: ResMut<WorldPath>,
+    mut roster: ResMut<PartyRoster>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -1044,6 +1066,7 @@ fn pump_net(
     while let Some(msg) = net.0.try_recv() {
         match msg {
             ServerMsg::Backpack { items } => backpack.items = items,
+            ServerMsg::Party { heroes } => roster.heroes = heroes,
             ServerMsg::WorldPath { points } => {
                 world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
                 world_path.drawn = false;
@@ -1841,13 +1864,50 @@ fn overworld_input(
 
 /// Open/close the inventory (I) and level-up (L) screens; fetch fresh data on
 /// open. ESC closes whichever is up.
+#[allow(clippy::too_many_arguments)]
 fn overlay_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     mut overlay: ResMut<Overlay>,
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
+    roster: Res<PartyRoster>,
+    mut rename: ResMut<HeroRename>,
 ) {
+    // While renaming a hero on the party screen, capture text and swallow the
+    // other overlay hotkeys (so typing a name doesn't toggle screens).
+    if let Some(slot) = rename.slot {
+        if keys.just_pressed(KeyCode::Escape) {
+            rename.slot = None;
+            rename.buffer.clear();
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            let name = rename.buffer.trim().to_string();
+            if !name.is_empty() {
+                net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
+            }
+            rename.slot = None;
+            rename.buffer.clear();
+            return;
+        }
+        if keys.just_pressed(KeyCode::Backspace) {
+            rename.buffer.pop();
+            return;
+        }
+        if keys.just_pressed(KeyCode::Space) && rename.buffer.len() < 24 {
+            rename.buffer.push(' ');
+        }
+        for key in keys.get_just_pressed() {
+            if let Some(c) = key_to_code_char(*key) {
+                if rename.buffer.len() < 24 {
+                    rename.buffer.push(c);
+                }
+            }
+        }
+        return;
+    }
+
     if keys.just_pressed(KeyCode::Escape) {
         overlay.kind = None;
     }
@@ -1869,6 +1929,18 @@ fn overlay_input(
             net.0.fetch_progress();
         }
     }
+    // On the party screen, digits 1-4 start renaming that hero slot.
+    if overlay.kind == Some(OverlayKind::Inventory) {
+        let slots = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
+        for (i, k) in slots.iter().enumerate() {
+            if keys.just_pressed(*k) {
+                if let Some(h) = roster.heroes.get(i) {
+                    rename.slot = Some(i);
+                    rename.buffer = h.name.clone();
+                }
+            }
+        }
+    }
 }
 
 /// Immediate-mode: draw the open overlay (inventory or level-up) as a centered
@@ -1878,6 +1950,8 @@ fn render_overlay(
     overlay: Res<Overlay>,
     inv: Res<InventoryData>,
     prog: Res<ProgressData>,
+    roster: Res<PartyRoster>,
+    rename: Res<HeroRename>,
     existing: Query<Entity, With<OverlayRoot>>,
 ) {
     for e in &existing {
@@ -1925,6 +1999,37 @@ fn render_overlay(
             .with_children(|p| match kind {
                 OverlayKind::Inventory => {
                     label(p, "INVENTORY".into(), 24.0, gold);
+                    // Party screen: every hero's name, class, level and stats — this
+                    // is where attributes live (not the battle HUD).
+                    label(p, "- Party -".into(), 15.0, gold);
+                    if roster.heroes.is_empty() {
+                        label(p, "  (enter a dive to see your heroes)".into(), 13.0, dim);
+                    }
+                    for (i, h) in roster.heroes.iter().enumerate() {
+                        let name_line = if rename.slot == Some(i) {
+                            format!("  [{}] {}_   (typing…)", i + 1, rename.buffer)
+                        } else {
+                            format!("  [{}] {}   {} · Lv {}", i + 1, h.name, class_display(&h.class_key), h.level)
+                        };
+                        let name_col = if rename.slot == Some(i) {
+                            Color::srgb(0.98, 0.85, 0.4)
+                        } else {
+                            Color::srgb(0.85, 0.92, 1.0)
+                        };
+                        label(p, name_line, 16.0, name_col);
+                        label(
+                            p,
+                            format!(
+                                "       STR {}  MND {}  DEX {}  WLL {}   HP {}",
+                                h.str_, h.mnd, h.dex, h.wll, h.max_hp
+                            ),
+                            13.0,
+                            dim,
+                        );
+                    }
+                    if !roster.heroes.is_empty() {
+                        label(p, "  [1-4] rename hero · [Enter] save · [Esc] cancel".into(), 12.0, dim);
+                    }
                     if !inv.loaded {
                         label(p, "loading…".into(), 16.0, dim);
                         label(p, "[ESC] close".into(), 13.0, dim);
@@ -2049,6 +2154,20 @@ fn sync_overworld_sprites(
 /// Turn a creature content id into a display name (`dune_wyrm` → `dune wyrm`).
 fn nice_name(kind: &str) -> String {
     kind.replace('_', " ")
+}
+
+/// Title-case a class key for display (`alchemist_knight` → `Alchemist Knight`).
+fn class_display(key: &str) -> String {
+    key.split('_')
+        .map(|w| {
+            let mut cs = w.chars();
+            match cs.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + cs.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Colour for a terrain obstacle kind — greenery, stone, water and lava read
@@ -3013,19 +3132,8 @@ fn party_cell(
                         TextColor(tag_color),
                     ));
                 });
-                // Attribute line (Str/Mnd/Dex/Wll) — heroes carry these, monsters
-                // don't, so it only shows for the party.
-                let a_str = status_num(&c.statuses, "str:");
-                let a_mnd = status_num(&c.statuses, "mnd:");
-                let a_dex = status_num(&c.statuses, "dex:");
-                let a_wll = status_num(&c.statuses, "wll:");
-                if a_str != 0 || a_mnd != 0 || a_dex != 0 || a_wll != 0 {
-                    col.spawn((
-                        Text::new(format!("STR {a_str}  MND {a_mnd}  DEX {a_dex}  WLL {a_wll}")),
-                        TextFont { font_size: 11.0, ..default() },
-                        TextColor(Color::srgb(0.62, 0.64, 0.74)),
-                    ));
-                }
+                // Attributes are intentionally NOT shown in battle — they live on
+                // the party screen in the inventory (keeps the combat HUD clean).
                 meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
                 meter(col, gauge, 7.0, Color::srgb(0.4, 0.85, 0.5));
                 // Psyker: a row of Focus slots — filled slots show the manifestation
