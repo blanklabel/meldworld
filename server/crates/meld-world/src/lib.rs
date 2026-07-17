@@ -73,6 +73,18 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
+/// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
+fn resources_for_biome(biome: &str) -> &'static [&'static str] {
+    match biome {
+        "forest" => &["bloom_herb", "heartoak_bark"],
+        "desert" => &["sun_salts", "dune_iron"],
+        "ashfall" => &["ember_ash", "cinder_ore"],
+        "tundra" => &["frost_lichen", "rime_ore"],
+        _ => &["bog_myrrh", "peat_iron"],
+    }
+}
+
 /// A tiny deterministic PRNG (splitmix64). Same seed ⇒ same world, always —
 /// the determinism invariant (world-generation.md §Invariants). No external rng
 /// dependency (keeps the crate lean and wasm-neutral).
@@ -181,6 +193,17 @@ impl MonsterSpawn {
     }
 }
 
+/// A harvestable resource node in the overworld. Walk up and harvest it once for
+/// its material (into the backpack) + Meld-skill XP; then it's spent.
+#[derive(Debug, Clone)]
+pub struct ResourceNode {
+    pub entity_id: Id,
+    /// Content id (`bloom_herb`, `dune_iron`, …) — keys `[resource.<kind>]`.
+    pub kind: String,
+    pub position: Position,
+    pub harvested: bool,
+}
+
 /// One generated area: a stretch of corridor `[start_x, end_x)` in one biome,
 /// holding the indices of its creatures (into [`Arena::monsters`]) and a portal.
 #[derive(Debug, Clone)]
@@ -211,6 +234,10 @@ pub struct Arena {
     pub seed: u64,
     pub areas: Vec<Area>,
     pub monsters: Vec<MonsterSpawn>,
+    pub resources: Vec<ResourceNode>,
+    /// The single fixed extraction portal, deep at the end of the last area.
+    /// Extraction is otherwise the Town Portal item (works anywhere).
+    pub portal: Position,
     pub avatars: Vec<Avatar>,
     /// Walkable bounds: `x ∈ [x_min, x_max]`, `y ∈ [-lateral, lateral]`.
     x_min: f64,
@@ -237,6 +264,7 @@ impl Arena {
 
         let mut areas: Vec<Area> = Vec::new();
         let mut monsters: Vec<MonsterSpawn> = Vec::new();
+        let mut resources: Vec<ResourceNode> = Vec::new();
         let mut cursor = 0.0_f64; // current x as we lay areas end-to-end
 
         for i in 0..wg.area_count.max(1) {
@@ -260,6 +288,14 @@ impl Arena {
                 let end_x = portal_x + wg.portal_setback;
                 monsters[idx].area_min_x = start_x;
                 monsters[idx].area_max_x = end_x;
+                // A guaranteed starter resource node just off the tutorial path, so
+                // the first thing a new player can safely do is harvest (no fight).
+                resources.push(ResourceNode {
+                    entity_id: format!("res-{}", resources.len()),
+                    kind: resources_for_biome(biome)[0].to_string(),
+                    position: Position::new(wg.first_monster_x * 0.5, 3.0),
+                    harvested: false,
+                });
                 areas.push(Area {
                     index: i,
                     biome,
@@ -279,14 +315,15 @@ impl Arena {
             let length = (nominal * (1.0 + wg.area_length_jitter * rng.signed())).max(8.0);
             let end_x = start_x + length;
 
-            // Walk the corridor placing creatures at jittered gaps.
+            // Walk the corridor placing creatures at jittered gaps. Creatures no
+            // longer hug the centre line — they scatter across ±y so the map is
+            // populated in every direction and you explore to find fights (area 0
+            // stays on the line for the deterministic tutorial).
             let inner_end = end_x - wg.portal_setback - 1.0;
             let mut x = start_x + 2.0;
             while x < inner_end {
                 let kind = kinds[rng.below(kinds.len())];
-                // Keep creatures within the corridor's touch band of the centre
-                // line so an east walk collides with them (touch_radius ~1 tile).
-                let y = wg.lateral_jitter * rng.signed();
+                let y = wg.creature_lateral_spread * rng.signed();
                 let pos = Position::new(x, y);
                 let idx = monsters.len();
                 let mseed = rng.next_u64();
@@ -297,6 +334,22 @@ impl Arena {
 
                 let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
                 x += gap.max(2.0);
+            }
+
+            // Scatter harvestable resource nodes through the area (2D, biome kinds).
+            let rkinds = resources_for_biome(biome);
+            let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
+            for _ in 0..n_nodes {
+                let rk = rkinds[rng.below(rkinds.len())];
+                let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+                let ry = wg.resource_lateral_spread * rng.signed();
+                let nid = resources.len();
+                resources.push(ResourceNode {
+                    entity_id: format!("res-{nid}"),
+                    kind: rk.to_string(),
+                    position: Position::new(rx, ry),
+                    harvested: false,
+                });
             }
 
             areas.push(Area {
@@ -311,10 +364,17 @@ impl Arena {
         }
 
         let x_max = cursor + wg.world_margin;
+        // A single fixed extraction portal, deep at the end of the last area.
+        let portal = areas
+            .last()
+            .map(|a| a.portal)
+            .unwrap_or_else(|| Position::new(x_max, 0.0));
         Arena {
             seed,
             areas,
             monsters,
+            resources,
+            portal,
             avatars: Vec::new(),
             x_min: -wg.lateral_half_extent, // a little slack behind the hub
             x_max,
@@ -411,18 +471,29 @@ impl Arena {
             .collect()
     }
 
-    /// Positions of every portal (one per area).
-    pub fn portals(&self) -> impl Iterator<Item = Position> + '_ {
-        self.areas.iter().map(|a| a.portal)
-    }
-
-    /// Is `player` within interaction range of any extraction portal?
+    /// Is `player` within interaction range of the single deep extraction portal?
     pub fn at_portal(&self, player_id: &str) -> bool {
         let Some(a) = self.avatar(player_id) else {
             return false;
         };
-        self.portals()
-            .any(|p| a.position.distance_to(&p) <= self.interaction_radius)
+        a.position.distance_to(&self.portal) <= self.interaction_radius
+    }
+
+    /// Harvest the resource node `entity_id` if `player` is within interaction
+    /// range and it isn't already spent. Marks it harvested and returns its
+    /// content kind (the caller maps that to a material + skill XP via balance).
+    pub fn harvest(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
+        let ppos = self.avatar(player_id)?.position;
+        let radius = self.interaction_radius;
+        let node = self
+            .resources
+            .iter_mut()
+            .find(|n| n.entity_id == entity_id && !n.harvested)?;
+        if ppos.distance_to(&node.position) > radius {
+            return None;
+        }
+        node.harvested = true;
+        Some(node.kind.clone())
     }
 
     /// Spawn a player avatar near the Center Hub (staggered so parties don't
@@ -591,6 +662,52 @@ mod tests {
         let deep = arena.monsters.last().unwrap();
         assert!(deep.position.x > shallow.position.x);
         assert!(deep.level >= shallow.level);
+    }
+
+    #[test]
+    fn one_deep_portal_only() {
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7);
+        // The single extraction portal is the last area's, deep from the hub.
+        assert_eq!(arena.portal, arena.areas.last().unwrap().portal);
+        let first_area_end = arena.areas.first().unwrap().end_x;
+        assert!(
+            arena.portal.x > first_area_end,
+            "the portal is deep, well past area 0"
+        );
+    }
+
+    #[test]
+    fn creatures_scatter_off_the_centre_line() {
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7);
+        // Area 0's tutorial creature stays on the line; deeper ones scatter in y.
+        assert_eq!(arena.monsters[0].position.y, 0.0);
+        let spread = arena
+            .monsters
+            .iter()
+            .any(|m| m.position.y.abs() > b.worldgen.lateral_jitter + 1.0);
+        assert!(spread, "creatures should scatter across ±y, not hug the line");
+    }
+
+    #[test]
+    fn resource_nodes_generate_and_harvest_once_within_range() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7);
+        assert!(!arena.resources.is_empty(), "resource nodes are scattered in");
+        let node = arena.resources[0].clone();
+        arena.add_avatar("p".into(), 6.0);
+        // Too far → no harvest.
+        arena.avatar_mut("p").unwrap().position = Position::new(node.position.x + 50.0, node.position.y);
+        assert!(arena.harvest("p", &node.entity_id).is_none(), "out of range");
+        // Standing on it → harvest yields its kind, once.
+        arena.avatar_mut("p").unwrap().position = node.position;
+        assert_eq!(arena.harvest("p", &node.entity_id).as_deref(), Some(node.kind.as_str()));
+        assert!(arena.harvest("p", &node.entity_id).is_none(), "already harvested");
+        // Every node kind maps to balance content.
+        for n in &arena.resources {
+            assert!(b.resource.contains_key(&n.kind), "resource {} in balance", n.kind);
+        }
     }
 
     #[test]

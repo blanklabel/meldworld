@@ -93,6 +93,7 @@ fn main() {
                     std::process::exit(3);
                 }
                 ServerMsg::Gauge { .. }
+                | ServerMsg::Backpack { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
                 | ServerMsg::ActionResolved { .. }

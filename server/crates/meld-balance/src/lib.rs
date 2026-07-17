@@ -30,6 +30,7 @@ pub struct Balance {
     pub attributes: Attributes,
     pub creature: Creatures,
     pub player: Players,
+    pub resource: Resources,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +66,9 @@ pub struct Runs {
     /// Level curve: `xp_to_next(L) = xp_base * xp_growth_factor^(L-1)`.
     pub xp_base: i64,
     pub xp_growth_factor: f64,
+    /// Town Portal item economy (extraction is mostly this item now).
+    pub starting_town_portals: i32,
+    pub town_portal_drop_chance: f64,
 }
 
 /// How the four attributes (Str/Mnd/Dex/Wll) map to combat stats. See the
@@ -147,6 +151,9 @@ pub struct WorldGen {
     pub portal_setback: f64,
     pub world_margin: f64,
     pub lateral_half_extent: f64,
+    pub creature_lateral_spread: f64,
+    pub resources_per_area: f64,
+    pub resource_lateral_spread: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).
@@ -164,6 +171,18 @@ pub struct Ai {
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
 pub type Creatures = std::collections::HashMap<String, CreatureStats>;
 pub type Players = std::collections::HashMap<String, PlayerStats>;
+pub type Resources = std::collections::HashMap<String, ResourceStats>;
+
+/// A harvestable resource node's content, keyed by node id (e.g. `bloom_herb`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResourceStats {
+    /// Item kind banked into the backpack when harvested (feeds crafting).
+    pub material: String,
+    /// Meld skill credited on harvest (`forging` | `alchemy`).
+    pub skill: String,
+    /// Skill XP granted per harvest.
+    pub xp: i64,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreatureStats {

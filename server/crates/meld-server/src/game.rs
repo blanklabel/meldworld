@@ -71,6 +71,30 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Item kind of the Town Portal consumable — the primary extraction method.
+const TOWN_PORTAL: &str = "town_portal";
+
+/// A cheap uniform `[0,1)` roll from arbitrary material (splitmix64). Used for
+/// non-authoritative rolls like loot drops (game-loop side may use wall-clock;
+/// only meld-battle/meld-world must stay pure).
+fn roll_unit(material: u64) -> f64 {
+    let mut z = material.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// FNV-1a hash of a string (folds an id into the roll material).
+fn hash_str(s: &str) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// The per-hero class composition of a player's party of `size`. The picked class
 /// leads; the rest are a fixed spread so a single party mixes classes that play
 /// very differently (Squire bruiser + Psyker channeler + Resonant healer).
@@ -150,6 +174,9 @@ fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
 /// An in-progress extraction channel (interruptible; completes → bank).
 struct Extraction {
     completes_at: u64,
+    /// `"portal"` or `"town_portal"` — a town-portal channel consumes one Town
+    /// Portal item on completion.
+    method: String,
 }
 
 /// The single active MazeInstance of the slice.
@@ -208,6 +235,8 @@ struct GameState {
     player_lobby: HashMap<String, String>,
     /// Players whose gear bonus needs (re)loading from the DB (post-connect).
     pending_gear_load: Vec<String>,
+    /// Meld-skill XP earned by harvesting, flushed to Postgres: (player, skill, xp).
+    pending_skill_xp: Vec<(String, String, i64)>,
     /// Players whose run just ended in death; durability sink applied async.
     pending_deaths: Vec<String>,
 }
@@ -223,6 +252,7 @@ impl GameState {
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
+            pending_skill_xp: Vec::new(),
             pending_deaths: Vec::new(),
         }
     }
@@ -252,6 +282,7 @@ impl GameState {
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
             self.flush_deaths().await;
+            self.flush_skill_xp().await;
         }
     }
 
@@ -370,6 +401,7 @@ impl GameState {
             wl::Leave::TYPE => self.handle_lobby_leave(player_id, raw.seq),
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
+            wr::Harvest::TYPE => self.handle_harvest(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -498,6 +530,21 @@ impl GameState {
             })
             .collect();
         inst.run.add_party(members);
+        // Each dive starts with a stock of Town Portal items — the primary way
+        // home now that there's a single, deep fixed portal.
+        let starting_tp = self.balance.runs.starting_town_portals;
+        if starting_tp > 0 {
+            for pid in &party_ids {
+                if let Some(r) = inst.run.run_mut(pid) {
+                    r.backpack.push(ItemStack {
+                        item_id: Uuid::now_v7().to_string(),
+                        item_kind: TOWN_PORTAL.to_string(),
+                        quantity: starting_tp,
+                        insurance: None,
+                    });
+                }
+            }
+        }
         for pid in &party_ids {
             inst.arena.add_avatar(pid.clone(), speed);
         }
@@ -1210,19 +1257,50 @@ impl GameState {
                 Some(raw.seq),
             )];
         }
-        // Portal extraction requires standing at the portal; escape items work
-        // from anywhere (their consumption is deferred with the item slice).
-        if req.method == "portal" && !inst.arena.at_portal(player_id) {
-            return vec![error(
-                player_id,
-                ErrorCode::OutOfRange,
-                "Not at an extraction portal.",
-                Some(raw.seq),
-            )];
+        // "portal" requires standing at the single deep portal; "town_portal"
+        // works anywhere but requires a Town Portal item (consumed on completion).
+        match req.method.as_str() {
+            "portal" => {
+                if !inst.arena.at_portal(player_id) {
+                    return vec![error(
+                        player_id,
+                        ErrorCode::OutOfRange,
+                        "Not at the extraction portal.",
+                        Some(raw.seq),
+                    )];
+                }
+            }
+            "town_portal" => {
+                let has = inst
+                    .run
+                    .run_mut(player_id)
+                    .is_some_and(|r| r.backpack.iter().any(|i| i.item_kind == TOWN_PORTAL));
+                if !has {
+                    return vec![error(
+                        player_id,
+                        ErrorCode::InvalidState,
+                        "No Town Portal item.",
+                        Some(raw.seq),
+                    )];
+                }
+            }
+            _ => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "unknown extraction method",
+                    Some(raw.seq),
+                )]
+            }
         }
         let completes_at = now + channel_ms;
-        inst.extraction
-            .insert(player_id.to_string(), Extraction { completes_at });
+        inst.extraction.insert(
+            player_id.to_string(),
+            Extraction {
+                completes_at,
+                method: req.method.clone(),
+            },
+        );
         if let Some(a) = inst.arena.avatar_mut(player_id) {
             a.state = "channeling".to_string();
         }
@@ -1269,6 +1347,84 @@ impl GameState {
         }
     }
 
+    /// Credit Meld-skill XP earned by harvesting to Postgres (Forging/Alchemy).
+    async fn flush_skill_xp(&mut self) {
+        let jobs: Vec<(String, String, i64)> = std::mem::take(&mut self.pending_skill_xp);
+        for (pid, skill, xp) in jobs {
+            if xp <= 0 {
+                continue;
+            }
+            if let Ok(uid) = Uuid::parse_str(&pid) {
+                if let Err(e) = self.db.add_skill_xp(uid, &skill, xp).await {
+                    tracing::error!("harvest skill xp failed for {pid}: {e}");
+                }
+            }
+        }
+    }
+
+    /// Harvest the named resource node the avatar is standing next to: bank its
+    /// material into the backpack and queue its Meld-skill XP. The node vanishes
+    /// from the next snapshot (server-authoritative — client just renders).
+    fn handle_harvest(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::Harvest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "bad harvest",
+                    Some(raw.seq),
+                )]
+            }
+        };
+        let balance = self.balance.clone();
+        let (item, skill, xp, kind) = {
+            let Some(inst) = self.instance.as_mut() else {
+                return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+            };
+            if inst.battle.is_some() {
+                return vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Resolve the battle first.",
+                    Some(raw.seq),
+                )];
+            }
+            let Some(kind) = inst.arena.harvest(player_id, &req.entity_id) else {
+                return vec![error(
+                    player_id,
+                    ErrorCode::OutOfRange,
+                    "Nothing to harvest here.",
+                    Some(raw.seq),
+                )];
+            };
+            let Some(res) = balance.resource.get(&kind) else {
+                return vec![error(player_id, ErrorCode::ValidationError, "unknown resource", Some(raw.seq))];
+            };
+            let item = ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: res.material.clone(),
+                quantity: 1,
+                insurance: None,
+            };
+            if let Some(r) = inst.run.run_mut(player_id) {
+                r.backpack.push(item.clone());
+            }
+            (item, res.skill.clone(), res.xp, kind)
+        };
+        self.pending_skill_xp.push((player_id.to_string(), skill, xp));
+        vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item,
+                    delta: "added".to_string(),
+                    cause: format!("harvest:{kind}"),
+                }],
+            },
+        )]
+    }
+
     /// Complete any extraction channels whose timer elapsed: bank the backpack
     /// into the Vault (Postgres) and finalize the run as `extracted`.
     async fn complete_extractions(&mut self) -> Vec<Outgoing> {
@@ -1282,17 +1438,17 @@ impl GameState {
             let Some(inst) = self.instance.as_mut() else {
                 return Vec::new();
             };
-            let done: Vec<String> = inst
+            let done: Vec<(String, String)> = inst
                 .extraction
                 .iter()
                 .filter(|(_, e)| e.completes_at <= now)
-                .map(|(p, _)| p.clone())
+                .map(|(p, e)| (p.clone(), e.method.clone()))
                 .collect();
             if done.is_empty() {
                 return Vec::new();
             }
             let mut banks = Vec::new();
-            for pid in &done {
+            for (pid, method) in &done {
                 inst.extraction.remove(pid);
                 if let Some(a) = inst.arena.avatar_mut(pid) {
                     a.state = "active".to_string();
@@ -1300,6 +1456,16 @@ impl GameState {
                 if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
                     if r.result.is_some() {
                         continue;
+                    }
+                    // A town-portal extraction spends one Town Portal item; it is
+                    // consumed, not banked.
+                    if method == "town_portal" {
+                        if let Some(slot) =
+                            r.backpack.iter_mut().find(|i| i.item_kind == TOWN_PORTAL)
+                        {
+                            slot.quantity -= 1;
+                        }
+                        r.backpack.retain(|i| i.quantity > 0);
                     }
                     let items = std::mem::take(&mut r.backpack);
                     r.result = Some(RunResult::Extracted);
@@ -1464,14 +1630,21 @@ impl GameState {
                 avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
             });
         }
-        // One extraction portal per area, each tagged with a distinct avatar_state
-        // the client renders specially (a pragmatic stand-in for world.entity_spawn).
-        for (i, portal) in inst.arena.portals().enumerate() {
+        // The single deep extraction portal (extraction is otherwise the Town
+        // Portal item). Tagged `portal` so the client renders it specially.
+        entities.push(wm::SnapshotEntity {
+            entity_id: "portal".to_string(),
+            position: inst.arena.portal,
+            velocity: wm::Velocity { x: 0.0, y: 0.0 },
+            avatar_state: Some("portal".to_string()),
+        });
+        // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
+        for n in inst.arena.resources.iter().filter(|n| !n.harvested) {
             entities.push(wm::SnapshotEntity {
-                entity_id: format!("portal-{i}"),
-                position: portal,
+                entity_id: n.entity_id.clone(),
+                position: n.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some("portal".to_string()),
+                avatar_state: Some(format!("resource:{}", n.kind)),
             });
         }
         let msg = wm::Snapshot {
@@ -1666,6 +1839,30 @@ impl GameState {
                             }],
                         },
                     ));
+                    // A felled creature may drop a Town Portal, topping up the
+                    // player's ability to extract (start with one, find more).
+                    let roll = roll_unit(inst.arena.seed ^ hash_str(pid) ^ now_ms());
+                    if roll < balance.runs.town_portal_drop_chance {
+                        let tp = ItemStack {
+                            item_id: Uuid::now_v7().to_string(),
+                            item_kind: TOWN_PORTAL.to_string(),
+                            quantity: 1,
+                            insurance: None,
+                        };
+                        if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
+                            r.backpack.push(tp.clone());
+                        }
+                        out.push(out_msg(
+                            pid,
+                            &wr::BackpackUpdate {
+                                changes: vec![wr::BackpackChange {
+                                    item: tp,
+                                    delta: "added".to_string(),
+                                    cause: "town_portal_drop".to_string(),
+                                }],
+                            },
+                        ));
+                    }
                 }
                 inst.battle = None;
             }

@@ -340,10 +340,22 @@ pub mod run {
         const TYPE: &'static str = "run.started";
     }
 
-    /// C2S — start an extraction channel (portal or escape item).
+    /// C2S — harvest a resource node the avatar is standing next to. The node's
+    /// `material` banks into the backpack and its `skill` gains XP (world-gen.md).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Harvest {
+        pub entity_id: Id,
+    }
+    impl Message for Harvest {
+        const TYPE: &'static str = "run.harvest";
+    }
+
+    /// C2S — start an extraction channel. `method` is `"portal"` (stand at the
+    /// single deep portal) or `"town_portal"` (consume a Town Portal item, works
+    /// anywhere — the primary way out).
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct BeginExtraction {
-        pub method: String, // "portal" | "escape_item"
+        pub method: String, // "portal" | "town_portal"
         #[serde(default)]
         pub portal_entity_id: Option<Id>,
         #[serde(default)]
