@@ -91,11 +91,6 @@ fn main() {
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest()) // crisp pixel sprites
-                // Assets live at the repo root `assets/`, not the crate dir.
-                .set(AssetPlugin {
-                    file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../assets").to_string(),
-                    ..default()
-                })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MELDWORLD — HD-2D look-dev".into(),
