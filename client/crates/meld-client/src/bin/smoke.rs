@@ -94,6 +94,7 @@ fn main() {
                 }
                 ServerMsg::Gauge { .. }
                 | ServerMsg::Backpack { .. }
+                | ServerMsg::Party { .. }
                 | ServerMsg::WorldPath { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }

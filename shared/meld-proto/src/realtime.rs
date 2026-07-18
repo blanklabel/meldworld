@@ -308,6 +308,10 @@ pub mod run {
         pub character_class: Option<crate::enums::CharacterClass>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub party: Option<Vec<crate::enums::CharacterClass>>,
+        /// Per-slot hero names (persistent, per-account). Mirrors the player's saved
+        /// roster; the server also reads/writes them via the `/v1/heroes` HTTP API.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub names: Option<Vec<String>>,
         /// Solo dive: a private instance for just the caller (no other humans).
         /// When absent/false, legacy behavior groups all waiting players (used by
         /// the headless bot tests); the co-op path is the `lobby.*` flow.
@@ -344,6 +348,32 @@ pub mod run {
         const TYPE: &'static str = "run.started";
     }
 
+    /// One of the caller's heroes, for the party/roster panel: persistent name,
+    /// class, level, and the four attributes at that level. Stats live here (the
+    /// inventory party screen) rather than cluttering the battle HUD.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct HeroView {
+        pub slot: i32,
+        pub name: String,
+        pub class_key: String,
+        pub level: i32,
+        pub str_: i32,
+        pub mnd: i32,
+        pub dex: i32,
+        pub wll: i32,
+        pub max_hp: i32,
+    }
+
+    /// S2C — the caller's current party roster (sent at run start and refreshed on
+    /// level-up), for the inventory party panel.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Party {
+        pub heroes: Vec<HeroView>,
+    }
+    impl Message for Party {
+        const TYPE: &'static str = "run.party";
+    }
+
     /// C2S — harvest a resource node the avatar is standing next to. The node's
     /// `material` banks into the backpack and its `skill` gains XP (world-gen.md).
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,6 +382,26 @@ pub mod run {
     }
     impl Message for Harvest {
         const TYPE: &'static str = "run.harvest";
+    }
+
+    /// C2S — opt into the fight already in progress nearby (the avatar must be
+    /// within join range of the battle). The whole of the caller's party joins the
+    /// existing side; teammates are never auto-pulled in.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct JoinBattle {}
+    impl Message for JoinBattle {
+        const TYPE: &'static str = "run.join_battle";
+    }
+
+    /// C2S — rename one of the caller's heroes (persistent, per-account). Takes
+    /// effect immediately (the roster is re-sent) and is saved to the account.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct RenameHero {
+        pub slot: i32,
+        pub name: String,
+    }
+    impl Message for RenameHero {
+        const TYPE: &'static str = "run.rename_hero";
     }
 
     /// C2S — start an extraction channel. `method` is `"portal"` (stand at the

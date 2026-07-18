@@ -22,9 +22,12 @@ const PARTY: usize = 4;
 async fn start_server() -> String {
     let db_url = std::env::var("MELD_DATABASE_URL")
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
-    // Default party size (4): this exercises 4 players each fielding a full party
-    // (4 × 4 = 16 combatants). Each bot commands its own first hero.
-    let balance = Arc::new(meld_balance::Balance::load_default().unwrap());
+    // One hero per player: four separate players each start solo and OPT INTO the
+    // same fight (no auto-pull), so 4 × 1 = 4 combatants — within the merge cap
+    // (PARTY_MAX × merge_cap = 8). Each bot commands its own hero.
+    let mut balance = meld_balance::Balance::load_default().unwrap();
+    balance.battle.party_size_per_player = 1;
+    let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
@@ -150,6 +153,12 @@ impl Bot {
         .await;
     }
 
+    /// Opt into the nearby ongoing fight. Harmless (server-rejected) when there's
+    /// no battle yet or we're too far / already in it.
+    async fn try_join(&mut self) {
+        self.send("run.join_battle", json!({})).await;
+    }
+
     async fn attack_monster(&mut self) {
         let battle_id = self.battle_id.clone();
         let target = self.monster_combatant.clone().unwrap();
@@ -187,8 +196,11 @@ impl Bot {
             }
             tokio::select! {
                 _ = move_timer.tick(), if !self.in_battle => {
-                    // Walk east toward the monster until pulled into battle.
+                    // Walk east toward the monster; the first to touch it starts the
+                    // fight, and everyone else opts in (players are no longer
+                    // auto-pulled into each other's battles).
                     self.move_east().await;
+                    self.try_join().await;
                 }
                 msg = self.ws.next() => {
                     let Some(Ok(Message::Text(t))) = msg else { return Outcome::Closed };

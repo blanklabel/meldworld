@@ -195,6 +195,27 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
 - The run backpack rides the wire on `run.backpack_update` (added/removed changes with
   a `cause`); the client mirrors it into `RunBackpack` for the overworld HUD.
 
+## Fights are opt-in (no auto-pull)
+
+Each player is their **own battle-party** (`form_run` adds one party per player), so
+touching a creature pulls only YOUR heroes. A teammate near an ongoing fight opts in
+with `run.join_battle` (server checks they're within `[ai] join_radius` of
+`ActiveInstance::battle_pos`) — touching a creature while a fight is in progress does
+nothing. Fighting players show a ⚔ marker + a "Press [J]" prompt on the overworld;
+joiners render as an "allies" strip on the battle screen.
+
+## Heroes: persistent names, stats on the party screen
+
+- **Names persist per account** (`heroes` table, one row per slot; seeded on register).
+  Loaded into the session on connect (`flush_hero_loads`), attached to the run, and
+  ridden into battle on each ally combatant's `statuses` as `name:<name>`. Rename via
+  `run.rename_hero` (realtime — updates the run + session + persists + re-sends the
+  roster) or `PUT /v1/heroes/:slot`. The party builder / inventory party screen edit them.
+- **Attributes live on the party screen, not the battle HUD.** The server sends the
+  caller's roster (`run.party` → `HeroView` name/class/level/Str/Mnd/Dex/Wll/HP) at run
+  start and on level-up; the client shows it in the inventory overlay. The battle cell
+  deliberately omits stats.
+
 ## Deep Dives
 
 - **Combat / ATB** (gauges, turns, flee, merge, statuses): [`behaviors/combat-atb.md`](behaviors/combat-atb.md)

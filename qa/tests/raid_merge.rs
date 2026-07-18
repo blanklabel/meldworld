@@ -1,6 +1,7 @@
-//! Raid merge (the Expandable Party): an "anchor" party engages the monster,
-//! then a second party touches the same monster and merges into the ongoing
-//! battle (`battle.party_joined`). Both parties fight and win together.
+//! Opt-in join (the Expandable Party): an "anchor" party engages the monster,
+//! then a second party walks up and **opts in** via `run.join_battle`, merging
+//! into the ongoing battle (`battle.party_joined`). Players are never auto-pulled
+//! into each other's fights — the joiner chooses to join.
 //!
 //! The anchor defends until the joiner arrives (so it survives), then both
 //! attack. Requires Postgres: set `MELD_DATABASE_URL`.
@@ -93,6 +94,12 @@ async fn run_bot(addr: String, username: String, anchor: bool, ready: Arc<Notify
                 ws.send(Message::Text(json!({"type":"movement.move_intent","seq":seq,"ts":0,
                     "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
                 seq += 1;
+                // The joiner opts into the anchor's ongoing fight once close enough;
+                // harmless (server-rejected) before a battle exists or when too far.
+                if !anchor {
+                    ws.send(Message::Text(json!({"type":"run.join_battle","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap();
+                    seq += 1;
+                }
             }
             msg = ws.next() => {
                 let Some(Ok(Message::Text(t))) = msg else { panic!("{username}: ws closed") };

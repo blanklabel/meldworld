@@ -43,6 +43,10 @@ pub enum ClientCmd {
     TownPortal,
     /// Harvest a resource node the avatar is standing next to.
     Harvest { entity_id: String },
+    /// Opt into the ongoing fight nearby (the server checks proximity).
+    JoinBattle,
+    /// Rename one of the caller's heroes (persistent, per-account).
+    RenameHero { slot: i32, name: String },
     /// Co-op lobby.
     LobbyCreate { party: Vec<String> },
     LobbyJoin { code: String, party: Vec<String> },
@@ -69,7 +73,13 @@ pub struct CombatantView {
 impl CombatantView {
     fn from_wire(c: &Combatant) -> Self {
         let name = match (&c.player_id, &c.monster_kind) {
-            (Some(_), _) => "Hero".to_string(),
+            // Heroes carry their (persistent, per-account) name on `name:<name>`.
+            (Some(_), _) => c
+                .statuses
+                .iter()
+                .find_map(|s| s.strip_prefix("name:"))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Hero".to_string()),
             (_, Some(k)) => k.replace('_', " "),
             _ => "?".to_string(),
         };
@@ -111,6 +121,8 @@ pub struct EntityView {
     pub faction: Option<String>,
     /// World-unit radius for obstacles; `0.0` otherwise.
     pub radius: f64,
+    /// True if this is a player currently in a fight (`avatar_state == in_battle`).
+    pub battling: bool,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -137,6 +149,19 @@ pub struct SkillLine {
     pub xp: i64,
 }
 
+/// A hero row for the party screen (name/class/level/stats live here, not battle).
+#[derive(Clone)]
+pub struct HeroLine {
+    pub name: String,
+    pub class_key: String,
+    pub level: i32,
+    pub str_: i32,
+    pub mnd: i32,
+    pub dex: i32,
+    pub wll: i32,
+    pub max_hp: i32,
+}
+
 type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>);
 type ProgPayload = (Vec<SkillLine>, Vec<String>);
 
@@ -145,6 +170,8 @@ pub enum ServerMsg {
     Connected { player_id: String },
     Error { message: String },
     RunStarted,
+    /// The caller's hero roster (name/class/level/stats) for the party panel.
+    Party { heroes: Vec<HeroLine> },
     /// Waypoints of the guaranteed clear path (world units) — drawn as a trail.
     WorldPath { points: Vec<(f64, f64)> },
     /// Current run backpack (item_kind, quantity), sorted — drives the HUD.
@@ -585,6 +612,10 @@ impl Inner {
             ClientCmd::Harvest { entity_id } => {
                 self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
+            ClientCmd::RenameHero { slot, name } => {
+                self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
+            }
             ClientCmd::LobbyCreate { party } => {
                 self.send_env(wl::Create::TYPE, json!({ "party": party }))
             }
@@ -673,6 +704,26 @@ impl Inner {
                 }
                 self.emit_backpack();
             }
+            "run.party" => {
+                let heroes = raw.payload["heroes"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|h| HeroLine {
+                                name: h["name"].as_str().unwrap_or("Hero").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("squire").to_string(),
+                                level: h["level"].as_i64().unwrap_or(1) as i32,
+                                str_: h["str_"].as_i64().unwrap_or(0) as i32,
+                                mnd: h["mnd"].as_i64().unwrap_or(0) as i32,
+                                dex: h["dex"].as_i64().unwrap_or(0) as i32,
+                                wll: h["wll"].as_i64().unwrap_or(0) as i32,
+                                max_hp: h["max_hp"].as_i64().unwrap_or(0) as i32,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::Party { heroes });
+            }
             "lobby.state" => {
                 let members = raw.payload["members"]
                     .as_array()
@@ -727,6 +778,8 @@ impl Inner {
                                 }
                                 _ => (EntityKind::Player, None, None),
                             };
+                            let battling = matches!(kind, EntityKind::Player)
+                                && e.avatar_state.as_deref() == Some("in_battle");
                             EntityView {
                                 id: e.entity_id,
                                 x: e.position.x,
@@ -735,6 +788,7 @@ impl Inner {
                                 monster_kind,
                                 faction,
                                 radius,
+                                battling,
                             }
                         })
                         .collect();

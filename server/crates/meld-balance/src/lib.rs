@@ -172,6 +172,7 @@ pub struct Ai {
     pub leash_radius: f64,
     pub group_radius: f64,
     pub flee_hp_fraction: f64,
+    pub join_radius: f64,
 }
 
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
