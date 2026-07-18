@@ -86,15 +86,15 @@ impl Default for Look {
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
             aperture: 3.5, // subtle tilt-shift — blur the far field, keep play sharp
             bloom: 0.28,
-            fog_start: 70.0,
-            fog_end: 360.0, // far enough that the horizon clouds still read
+            fog_start: 110.0,
+            fog_end: 520.0, // extended draw distance (cheap: ground is one mesh)
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
             dof_on: true,
             bloom_on: true,
             fog_on: true,
-            sprite_y: 0.9,      // grounds the padded sprite at sprite_scale ≈ 1.6
+            sprite_y: 0.72,     // grounds the padded sprite at sprite_scale ≈ 1.6
             sprite_scale: 1.6,  // hero reads prominently in the diorama
             fov: 36.0,
             dof_sensor: 0.05,
@@ -110,6 +110,12 @@ pub struct LookWatch(pub Option<SystemTime>);
 /// Tag: rotate to face the camera (yaw only) each frame — see [`billboard`].
 #[derive(Component)]
 pub struct Billboard;
+
+/// Tag: a character sprite billboard whose footing + size are driven live from the
+/// `Look` (see [`place_billboards`]). Distinct from [`Billboard`] so trees/clouds
+/// (which also billboard) keep their own spawn scale + height.
+#[derive(Component)]
+pub struct HeroBillboard;
 
 // ---- post-stack component builders ------------------------------------------
 
@@ -259,29 +265,14 @@ pub fn maybe_screenshot(commands: &mut Commands) {
     }
 }
 
-/// Per-billboard footing/size override. Character billboards omit this and follow
-/// the live `Look` (so the hero size stays tunable by eye); world props/monsters
-/// carry their own baked size so a bush and a dragon aren't forced to one scale.
-#[derive(Component)]
-pub struct BillboardSize {
-    pub y: f32,
-    pub scale: f32,
-}
-
-/// System: ground + scale every [`Billboard`] — from its own [`BillboardSize`] if it
-/// has one, else from the live `Look` (tunable-by-eye hero sprites). Sets local
-/// translation.y + scale only; [`billboard`] sets rotation, so they don't fight.
-pub fn place_billboards(
-    look: Res<Look>,
-    mut q: Query<(&mut Transform, Option<&BillboardSize>), With<Billboard>>,
-) {
-    for (mut t, size) in &mut q {
-        let (y, scale) = match size {
-            Some(s) => (s.y, s.scale),
-            None => (look.sprite_y, look.sprite_scale),
-        };
-        t.translation.y = y;
-        t.scale = Vec3::splat(scale);
+/// System: ground + scale every [`HeroBillboard`] from the live `Look` (so the hero
+/// footing + size stay tunable by eye). World props/monsters use only [`Billboard`]
+/// and keep their own spawn-baked scale/height. Sets local translation.y + scale
+/// only; [`billboard`] sets rotation, so they don't fight.
+pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroBillboard>>) {
+    for mut t in &mut q {
+        t.translation.y = look.sprite_y;
+        t.scale = Vec3::splat(look.sprite_scale);
     }
 }
 

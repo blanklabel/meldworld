@@ -251,6 +251,7 @@ fn main() {
                 despawn::<PartyWindow>,
                 despawn::<CommandWindow>,
                 despawn::<HitFxRoot>,
+                despawn::<BattleActor>,
             ),
         )
         .add_systems(
@@ -266,6 +267,12 @@ fn main() {
                 render_party_window,
                 advance_hit_fx,
                 render_hit_fx,
+                // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
+                sync_battle_actors,
+                battle_camera,
+                hd2d::animate_chars,
+                hd2d::place_billboards,
+                hd2d::billboard,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -1009,6 +1016,13 @@ struct WorldAssets {
     portal_sprite: Handle<Image>,
     portal_mesh: Handle<Mesh>,
     portal_mat: Handle<StandardMaterial>,
+    // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
+    // overworld uses creature billboards from `monster_sprites` instead.
+    monster_mesh: Handle<Mesh>,
+    // Painterly rendered-tree billboards (from PR #20) still render the `tree`
+    // obstacle; the other vegetation kinds use the CC0 pixel foliage billboards.
+    tree_quad: Handle<Mesh>,
+    tree_mats: Vec<Handle<StandardMaterial>>,
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
     ground_mat: Handle<StandardMaterial>,
@@ -1111,18 +1125,10 @@ fn setup(
     .into_iter()
     .map(ld)
     .collect();
-    // Terrain-obstacle kind → foliage variants (picked per entity by id hash).
+    // Terrain-obstacle kind → foliage variants (picked per entity by id hash). The
+    // forest "tree" is rendered by the painterly landscape billboards instead (see
+    // `spawn_obstacle`), so it's absent here.
     let foliage: HashMap<String, Vec<Handle<Image>>> = [
-        (
-            "tree",
-            vec![
-                "foliage/tree1.png",
-                "foliage/tree3.png",
-                "foliage/tree5.png",
-                "foliage/tree7.png",
-                "foliage/bush3.png",
-            ],
-        ),
         (
             "cactus",
             vec![
@@ -1199,6 +1205,27 @@ fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
+        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
+        // Painterly tree billboards from assets/landscape (a few rotations read as
+        // distinct trees). Unlit + alpha-masked = crisp, art already shaded. (PR #20;
+        // render the `tree` obstacle — other vegetation uses the CC0 pixel foliage.)
+        tree_quad: meshes.add(Rectangle::new(1.0, 1.0)),
+        tree_mats: [1usize, 5, 10, 14, 19, 23]
+            .into_iter()
+            .map(|f| {
+                mats.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    base_color_texture: Some(assets.load(format!(
+                        "landscape/Tree01/Green/256x256/Tree01_{f:04}.png"
+                    ))),
+                    unlit: true,
+                    double_sided: true,
+                    cull_mode: None,
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    ..default()
+                })
+            })
+            .collect(),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         water_mesh: meshes.add(Circle::new(1.0)),
         ground_mat,
@@ -1210,7 +1237,7 @@ fn setup(
     let cloud_tex = images.add(hd2d::soft_disc_texture(128));
     let cloud_mat = mats.add(StandardMaterial {
         base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        base_color_texture: Some(cloud_tex),
+        base_color_texture: Some(cloud_tex.clone()),
         // Mild emissive so the clouds stay bright through the distance fog instead of
         // fading into the sky (they sit near the horizon, where fog is strong).
         emissive: LinearRgba::rgb(0.7, 0.75, 0.82),
@@ -1220,6 +1247,18 @@ fn setup(
         cull_mode: None,
         ..default()
     });
+    // Cloud-shadow material — the same soft disc, dark + transparent, laid flat on
+    // the ground and drifting so shadows sweep across as clouds pass overhead.
+    let cloud_shadow_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.24),
+        base_color_texture: Some(cloud_tex),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let mut s: u64 = 0x9E37_79B9;
     let mut rnd = || {
         s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -1240,7 +1279,27 @@ fn setup(
             hd2d::Billboard,
         ));
     }
+    // Cloud shadows sweeping the ground *around the player* (independent of the
+    // horizon clouds), so you see shade pass over you as the wind blows.
+    for _ in 0..11 {
+        let off = Vec2::new((rnd() - 0.5) * 300.0, (rnd() - 0.5) * 300.0);
+        let sz = 34.0 + rnd() * 46.0;
+        commands.spawn((
+            Cloud { off, y: 0.1 },
+            CloudShadow,
+            Mesh3d(puff.clone()),
+            MeshMaterial3d(cloud_shadow_mat.clone()),
+            Transform::from_translation(Vec3::new(off.x, 0.1, off.y))
+                .with_rotation(flat)
+                .with_scale(Vec3::new(sz, sz * 0.72, 1.0)),
+        ));
+    }
 }
+
+/// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
+/// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
+#[derive(Component)]
+struct CloudShadow;
 
 /// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
 /// plane (so clouds stay overhead as you travel), `y` its altitude.
@@ -2989,6 +3048,7 @@ fn spawn_player_avatar(
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, look.sprite_y, 0.0),
                 hd2d::Billboard,
+                hd2d::HeroBillboard,
             ));
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
@@ -3016,8 +3076,9 @@ fn hash_pick(id: &str, n: usize) -> usize {
 /// Spawn a camera-facing pixel-sprite billboard for a world entity (monster, prop,
 /// harvest node, portal): a lit, alpha-masked, ground-anchored quad plus (optionally)
 /// a soft contact shadow. `height` is the sprite's world height; `tint` recolours it;
-/// `shadow` is the shadow disc radius (0 = none). Sized via [`hd2d::BillboardSize`] so
-/// each prop keeps its own scale rather than the hero's live-tuned one.
+/// `shadow` is the shadow disc radius (0 = none). Tagged only [`hd2d::Billboard`]
+/// (not `HeroBillboard`), so it keeps this spawn-baked scale/height and just yaws to
+/// face the camera — hero sprites alone follow the live-tuned `Look` size.
 #[allow(clippy::too_many_arguments)]
 fn spawn_billboard_entity(
     commands: &mut Commands,
@@ -3044,9 +3105,8 @@ fn spawn_billboard_entity(
             p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(0.0, height * 0.5, 0.0),
+                Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
                 hd2d::Billboard,
-                hd2d::BillboardSize { y: height * 0.5, scale },
             ));
             if shadow > 0.0 {
                 p.spawn((
@@ -3074,7 +3134,40 @@ fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
-    // Vegetation → foliage billboard (varies with the obstacle's radius).
+    // Vegetation. The forest "tree" keeps the painterly rendered-tree billboard
+    // (PR #20); the other biomes' vegetation uses the CC0 pixel foliage billboards.
+    if name == "tree" {
+        let mat = wa
+            .tree_mats
+            .get(hash_pick(id, wa.tree_mats.len().max(1)))
+            .cloned()
+            .unwrap_or_default();
+        let h = 4.6 * (0.85 + r * 0.28).clamp(0.85, 1.7);
+        commands
+            .spawn((
+                WorldEntity(id.to_string()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.tree_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(Vec3::new(0.0, h * 0.44, 0.0))
+                        .with_scale(Vec3::new(h, h, 1.0)),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.03, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(h * 0.3, h * 0.17, 1.0)),
+                ));
+            });
+        return;
+    }
+    // Other vegetation → CC0 pixel foliage billboard (varies with the obstacle radius).
     if let Some(variants) = wa.foliage.get(name) {
         if !variants.is_empty() {
             let tex = variants[hash_pick(id, variants.len())].clone();
@@ -3188,6 +3281,138 @@ fn reset_menu(menu: &mut BattleMenu) {
 /// On entering a battle, open the command window on the root page.
 fn enter_battle(mut menu: ResMut<BattleMenu>) {
     reset_menu(&mut menu);
+}
+
+/// A 3D combatant in the HD-2D battle arena, keyed by its combatant id.
+#[derive(Component)]
+struct BattleActor {
+    id: String,
+}
+
+/// Reconcile the 3D battle arena with `BattleData`: your party as character
+/// billboards on the near side (facing the foe, Octopath-style backs), enemies as
+/// lit capsule stand-ins on the far side. The HP/ATB/command UI frames it.
+fn sync_battle_actors(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    q: Query<(Entity, &BattleActor)>,
+) {
+    let Some(wa) = wa else { return };
+    let mut seen = HashSet::new();
+    for (ent, a) in &q {
+        if battle.combatants.iter().any(|c| c.id == a.id) {
+            seen.insert(a.id.clone());
+        } else {
+            commands.entity(ent).despawn();
+        }
+    }
+    let party: Vec<&CombatantView> = battle.combatants.iter().filter(|c| c.is_player).collect();
+    let enemies: Vec<&CombatantView> = battle.combatants.iter().filter(|c| !c.is_player).collect();
+    let spread = |i: usize, n: usize, gap: f32| (i as f32 - (n.max(1) as f32 - 1.0) * 0.5) * gap;
+
+    for (i, c) in party.iter().enumerate() {
+        if seen.contains(&c.id) {
+            continue;
+        }
+        let class = c
+            .statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("class:"))
+            .unwrap_or("squire");
+        let frames = match class {
+            "psyker" => &wa.psyker,
+            _ => &wa.squire,
+        };
+        let root = Vec3::new(spread(i, party.len(), 2.7), 0.0, 1.2);
+        let mat = mats.add(hd2d::sprite_material(
+            Color::srgb(1.2, 1.18, 1.08),
+            frames.idle[0].clone(),
+        ));
+        let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
+        cs.facing = Vec2::new(0.0, -1.0); // face the enemies (north)
+        commands
+            .spawn((
+                BattleActor { id: c.id.clone() },
+                Transform::from_translation(root),
+                Visibility::default(),
+                cs,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, 0.72, 0.0),
+                    hd2d::Billboard,
+                    hd2d::HeroBillboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+                ));
+            });
+    }
+    for (i, c) in enemies.iter().enumerate() {
+        if seen.contains(&c.id) {
+            continue;
+        }
+        let col = c
+            .statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("faction:"))
+            .map(faction_color)
+            .unwrap_or(Color::srgb(0.85, 0.3, 0.3));
+        let s = 2.0;
+        let mat = mats.add(StandardMaterial {
+            base_color: col,
+            perceptual_roughness: 0.7,
+            ..default()
+        });
+        commands.spawn((
+            BattleActor { id: c.id.clone() },
+            Mesh3d(wa.monster_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_translation(Vec3::new(spread(i, enemies.len(), 3.2), 0.68 * s, -4.5))
+                .with_scale(Vec3::splat(s)),
+        ));
+    }
+}
+
+/// Frame the HD-2D battle arena: a fixed 3/4 view of the two rows, with the live
+/// `Look` post stack. (Overworld `hd2d_follow` doesn't run here.)
+#[allow(clippy::type_complexity)]
+fn battle_camera(
+    look: Res<hd2d::Look>,
+    mut cam_q: Query<
+        (
+            &mut Transform,
+            &mut Projection,
+            Option<&mut bevy::core_pipeline::bloom::Bloom>,
+            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::pbr::DistanceFog>,
+        ),
+        With<Camera3d>,
+    >,
+    mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
+) {
+    if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
+        *t = Transform::from_translation(Vec3::new(0.0, 9.5, 12.5))
+            .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        hd2d::apply_post(
+            &look,
+            &mut proj,
+            bloom.map(|b| b.into_inner()),
+            dof.map(|d| d.into_inner()),
+            fog.map(|f| f.into_inner()),
+        );
+    }
+    if let Ok(mut t) = sun_q.single_mut() {
+        *t = hd2d::sun_transform(&look);
+    }
 }
 
 /// Queue an order (with its chosen target) for `hero`, then hand focus to the next
@@ -3664,7 +3889,7 @@ fn rebuild_command_menu(
                 position_type: PositionType::Absolute,
                 left: Val::Px(12.0),
                 right: Val::Px(12.0),
-                bottom: Val::Px(96.0),
+                bottom: Val::Px(142.0), // just above the compact party HUD row
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -3897,16 +4122,18 @@ fn render_enemy_panel(
                         ..default()
                     })
                     .with_children(|e| {
+                        // A small status chip (targeting ring + hit flash); the enemy
+                        // itself is the 3D sprite in the arena.
                         e.spawn((
                             Node {
-                                width: Val::Px(76.0),
-                                height: Val::Px(76.0),
+                                width: Val::Px(40.0),
+                                height: Val::Px(40.0),
                                 border: UiRect::all(Val::Px(if is_cand { 3.0 } else { 0.0 })),
                                 ..default()
                             },
                             BackgroundColor(block),
                             BorderColor(ring),
-                            BorderRadius::all(Val::Px(8.0)),
+                            BorderRadius::all(Val::Px(6.0)),
                         ));
                         e.spawn((
                             Text::new(format!("{}   {}/{}", c.name, c.hp, c.max_hp)),
@@ -4000,10 +4227,11 @@ fn party_cell(
     parent
         .spawn((
             Node {
-                width: Val::Percent(46.0),
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(8.0)),
+                padding: UiRect::all(Val::Px(7.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
@@ -4132,21 +4360,7 @@ fn party_cell(
                     });
                 }
             });
-            // Right: portrait tile.
-            cell.spawn((
-                Node {
-                    width: Val::Px(46.0),
-                    height: Val::Px(46.0),
-                    align_self: AlignSelf::Center,
-                    ..default()
-                },
-                BackgroundColor(if c.hp == 0 {
-                    Color::srgb(0.25, 0.25, 0.28)
-                } else {
-                    HERO_COLORS[idx % 4]
-                }),
-                BorderRadius::all(Val::Px(4.0)),
-            ));
+            // The hero's avatar is now the 3D battle sprite; the cell is just status.
         });
 }
 
@@ -4163,39 +4377,34 @@ fn render_party_window(
         commands.entity(e).despawn();
     }
     let ids = battle.your_ids.clone();
+    // Compact HD-2D HUD: a single row of slim hero status cells across the very
+    // bottom, leaving the arena above open for the 3D combatant sprites.
     commands
         .spawn((
             PartyWindow,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(12.0),
-                right: Val::Px(12.0),
-                bottom: Val::Px(12.0),
-                height: Val::Px(288.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::SpaceBetween,
-                row_gap: Val::Px(10.0),
+                left: Val::Px(10.0),
+                right: Val::Px(10.0),
+                bottom: Val::Px(10.0),
+                height: Val::Px(118.0),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
                 ..default()
             },
         ))
-        .with_children(|grid| {
-            for row_start in [0usize, 2] {
-                grid.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    flex_grow: 1.0,
-                    ..default()
-                })
-                .with_children(|row| {
-                    for i in row_start..row_start + 2 {
-                        match ids.get(i) {
-                            Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
-                            None => {
-                                row.spawn(Node { width: Val::Percent(46.0), ..default() });
-                            }
-                        }
+        .with_children(|row| {
+            for i in 0..4 {
+                match ids.get(i) {
+                    Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
+                    None => {
+                        row.spawn(Node {
+                            flex_grow: 1.0,
+                            flex_basis: Val::Px(0.0),
+                            ..default()
+                        });
                     }
-                });
+                }
             }
         });
 }
@@ -4244,16 +4453,14 @@ fn render_hit_fx(
                 let (x, y0) = if Some(hit.target.as_str()) == battle.monster_combatant.as_deref() {
                     (w * 0.5 - 16.0, h * 0.22)
                 } else {
-                    // Heroes sit in a 2×2 grid across the bottom; float the number
-                    // over that hero's quadrant.
+                    // Heroes sit in a single compact row across the bottom; float the
+                    // number over that hero's cell.
                     let idx = battle
                         .your_ids
                         .iter()
                         .position(|id| id == &hit.target)
                         .unwrap_or(0);
-                    let x = if idx % 2 == 0 { w * 0.27 } else { w * 0.73 };
-                    let y = if idx / 2 == 0 { h - 250.0 } else { h - 110.0 };
-                    (x, y)
+                    ((idx as f32 + 0.5) / 4.0 * w, h - 150.0)
                 };
                 let rise = hit.age * 46.0;
                 let alpha = (1.0 - hit.age / HIT_TTL).clamp(0.0, 1.0);
