@@ -90,7 +90,12 @@ fn main() {
     App::new()
         .add_plugins(
             DefaultPlugins
-                .set(ImagePlugin::default_nearest())
+                .set(ImagePlugin::default_nearest()) // crisp pixel sprites
+                // Assets live at the repo root `assets/`, not the crate dir.
+                .set(AssetPlugin {
+                    file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../assets").to_string(),
+                    ..default()
+                })
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MELDWORLD — HD-2D look-dev".into(),
@@ -148,6 +153,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    assets: Res<AssetServer>,
     look: Res<Look>,
 ) {
     // Seed a params template Claude can edit (only if absent, so a prior session's
@@ -282,7 +288,6 @@ fn setup(
         ..default()
     };
     for (hx, hz, c) in [
-        (0.0, 0.0, Color::srgb(0.45, 0.95, 0.55)),
         (-2.2, 1.6, Color::srgb(0.55, 0.75, 1.0)),
         (2.2, 1.3, Color::srgb(0.95, 0.65, 1.0)),
     ] {
@@ -293,6 +298,26 @@ fn setup(
             Billboard,
         ));
     }
+
+    // The real thing: the Psyker sprite (8-dir set; south = facing the camera) as a
+    // pixel billboard. Nearest sampling + alpha-mask keeps it crisp with clean edges
+    // and correct depth. This is the HD-2D character look.
+    let psyker_tex =
+        assets.load("characters/PSYKER_Male/THE_PSYKER_Official/rotations/south.png");
+    let psyker_quad = meshes.add(Rectangle::new(2.2, 2.2)); // 92×92 sprite is square
+    commands.spawn((
+        Mesh3d(psyker_quad),
+        MeshMaterial3d(mats.add(StandardMaterial {
+            base_color_texture: Some(psyker_tex),
+            unlit: true,
+            double_sided: true,
+            cull_mode: None,
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 1.1, 0.0),
+        Billboard,
+    ));
     commands.spawn((
         Mesh3d(quad.clone()),
         MeshMaterial3d(mats.add(sprite(Color::srgb(0.95, 0.35, 0.35)))),
