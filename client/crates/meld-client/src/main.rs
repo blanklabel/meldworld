@@ -174,6 +174,9 @@ fn main() {
         .init_resource::<WorldPath>()
         .init_resource::<PartyRoster>()
         .init_resource::<HeroRename>()
+        .init_resource::<Steer>()
+        .init_resource::<TapTarget>()
+        .init_resource::<Joystick>()
         .init_resource::<BattleData>()
         .init_resource::<EndInfo>()
         .init_resource::<LobbyData>()
@@ -212,6 +215,10 @@ fn main() {
             (
                 overlay_input,
                 overworld_input,
+                gather_steer,
+                emit_move,
+                joystick_visual,
+                touch_action_buttons,
                 sync_overworld_sprites,
                 draw_path_trail,
                 follow_camera,
@@ -1543,6 +1550,21 @@ fn render_lobby(
 
 // -------------------------------------------------------------- overworld --
 
+/// An overworld action reachable by a keyboard key OR an on-screen (touch) button.
+#[derive(Clone, Copy, PartialEq)]
+enum OverworldAct {
+    Extract,
+    TownPortal,
+    Harvest,
+    Join,
+    Inventory,
+    LevelUp,
+}
+
+/// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
+#[derive(Component)]
+struct TouchActionButton(OverworldAct);
+
 fn overworld_ui(mut commands: Commands) {
     commands
         .spawn((
@@ -1567,15 +1589,183 @@ fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows: explore  -  T: Town Portal  -  H: harvest  -  J: join a fight  -  E: deep portal  -  I: inventory  -  L: level up",
+                    "WASD/arrows or drag left = move · tap = go there · buttons/keys: T town portal · H harvest · J join · E portal · I inventory · L level up",
                 ),
                 TextFont {
-                    font_size: 15.0,
+                    font_size: 14.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
+            // Touch action bar (bottom-right). Also clickable with the mouse.
+            p.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    bottom: Val::Px(14.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(8.0),
+                    align_items: AlignItems::FlexEnd,
+                    ..default()
+                },
+            ))
+            .with_children(|bar| {
+                for (act, label) in [
+                    (OverworldAct::Harvest, "Harvest"),
+                    (OverworldAct::Join, "Join"),
+                    (OverworldAct::Extract, "Portal"),
+                    (OverworldAct::TownPortal, "Town Portal"),
+                    (OverworldAct::Inventory, "Inventory"),
+                    (OverworldAct::LevelUp, "Level Up"),
+                ] {
+                    action_button(bar, act, label);
+                }
+            });
+            // Virtual thumbstick (base ring + knob), shown only while dragging.
+            p.spawn((
+                JoystickBase,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(120.0),
+                    height: Val::Px(120.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderColor(Color::srgba(0.7, 0.8, 1.0, 0.5)),
+                BorderRadius::all(Val::Percent(50.0)),
+                BackgroundColor(Color::srgba(0.3, 0.4, 0.7, 0.15)),
+            ));
+            p.spawn((
+                JoystickKnob,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(56.0),
+                    height: Val::Px(56.0),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderRadius::all(Val::Percent(50.0)),
+                BackgroundColor(Color::srgba(0.8, 0.88, 1.0, 0.55)),
+            ));
         });
+}
+
+/// Position + show/hide the thumbstick from the [`Joystick`] state (touch UI).
+#[allow(clippy::type_complexity)]
+fn joystick_visual(
+    stick: Res<Joystick>,
+    mut base: Query<&mut Node, (With<JoystickBase>, Without<JoystickKnob>)>,
+    mut knob: Query<&mut Node, (With<JoystickKnob>, Without<JoystickBase>)>,
+) {
+    let active = stick.touch.is_some();
+    if let Ok(mut b) = base.single_mut() {
+        b.display = if active { Display::Flex } else { Display::None };
+        if active {
+            b.left = Val::Px(stick.origin.x - 60.0);
+            b.top = Val::Px(stick.origin.y - 60.0);
+        }
+    }
+    if let Ok(mut k) = knob.single_mut() {
+        k.display = if active { Display::Flex } else { Display::None };
+        if active {
+            let off = (stick.cur - stick.origin).clamp_length_max(60.0);
+            k.left = Val::Px(stick.origin.x + off.x - 28.0);
+            k.top = Val::Px(stick.origin.y + off.y - 28.0);
+        }
+    }
+}
+
+/// Spawn one action button into the touch bar.
+fn action_button(parent: &mut ChildSpawnerCommands, act: OverworldAct, label: &str) {
+    parent
+        .spawn((
+            Button,
+            TouchActionButton(act),
+            Node {
+                width: Val::Px(150.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(11.0)),
+                justify_content: JustifyContent::Center,
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.4, 0.5, 0.8)),
+            BorderRadius::all(Val::Px(8.0)),
+            BackgroundColor(Color::srgba(0.08, 0.11, 0.22, 0.9)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.88, 0.92, 1.0)),
+            ));
+        });
+}
+
+/// Handle taps/clicks on the overworld action buttons — same effects as the
+/// keyboard shortcuts, so touch and keyboard are fully interchangeable.
+#[allow(clippy::too_many_arguments)]
+fn touch_action_buttons(
+    q: Query<(&Interaction, &TouchActionButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    backpack: Res<RunBackpack>,
+    mut overlay: ResMut<Overlay>,
+    mut inv: ResMut<InventoryData>,
+    mut prog: ResMut<ProgressData>,
+) {
+    for (interaction, btn) in &q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+        match btn.0 {
+            OverworldAct::Extract => net.0.send(ClientCmd::Extract),
+            OverworldAct::TownPortal => {
+                if backpack.count("town_portal") > 0 {
+                    net.0.send(ClientCmd::TownPortal);
+                }
+            }
+            OverworldAct::Harvest => {
+                if let Some((mx, my)) = me {
+                    if let Some((id, _)) = world
+                        .entities
+                        .iter()
+                        .filter(|(_, e)| e.kind == EntityKind::Resource)
+                        .map(|(id, e)| (id, ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt()))
+                        .filter(|(_, d)| *d <= 2.0)
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                    {
+                        net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
+                    }
+                }
+            }
+            OverworldAct::Join => {
+                if near_fight(&world, me) {
+                    net.0.send(ClientCmd::JoinBattle);
+                }
+            }
+            OverworldAct::Inventory => {
+                if overlay.kind == Some(OverlayKind::Inventory) {
+                    overlay.kind = None;
+                } else {
+                    overlay.kind = Some(OverlayKind::Inventory);
+                    inv.loaded = false;
+                    net.0.fetch_inventory();
+                }
+            }
+            OverworldAct::LevelUp => {
+                if overlay.kind == Some(OverlayKind::LevelUp) {
+                    overlay.kind = None;
+                } else {
+                    overlay.kind = Some(OverlayKind::LevelUp);
+                    prog.loaded = false;
+                    net.0.fetch_progress();
+                }
+            }
+        }
+    }
 }
 
 /// Display name of the biome band at a floored distance (client-side mirror of
@@ -1753,6 +1943,8 @@ fn update_overworld_hud(
     }
 }
 
+/// Keyboard-only overworld *actions* (E/T/H/J). Movement is device-agnostic in
+/// [`gather_steer`] + [`emit_move`]; the touch bar mirrors these actions.
 #[allow(clippy::too_many_arguments)]
 fn overworld_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -1762,12 +1954,9 @@ fn overworld_input(
     session: Res<Session>,
     overlay: Res<Overlay>,
     backpack: Res<RunBackpack>,
-    time: Res<Time>,
-    mut clock: ResMut<MoveClock>,
 ) {
-    // No walking while a screen is open or while channeling an extraction.
+    // No actions while a screen is open or while channeling an extraction.
     if overlay.kind.is_some() || session.channeling {
-        clock.acc = 0.0;
         return;
     }
 
@@ -1822,41 +2011,149 @@ fn overworld_input(
     // in automatically). The server re-checks range.
     if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
         net.0.send(ClientCmd::JoinBattle);
+    }
+}
+
+/// Server-frame (x = east, y = south) steering vector for this frame, filled by
+/// keyboard, the virtual joystick, or tap-to-move — whichever is active. Consumed
+/// by [`emit_move`]. Unifying here is what makes keyboard + touch interchangeable.
+#[derive(Resource, Default)]
+struct Steer(Vec2);
+
+/// A tap-to-move destination in *server* coords; cleared on arrival or when the
+/// player takes direct control (keyboard/joystick).
+#[derive(Resource, Default)]
+struct TapTarget(Option<Vec2>);
+
+/// The active virtual-joystick touch: its id + on-screen origin + current point.
+#[derive(Resource, Default)]
+struct Joystick {
+    touch: Option<u64>,
+    origin: Vec2,
+    cur: Vec2,
+}
+
+/// Markers for the on-screen thumbstick (base ring + knob).
+#[derive(Component)]
+struct JoystickBase;
+#[derive(Component)]
+struct JoystickKnob;
+
+/// Collect this frame's movement from keyboard OR the virtual joystick OR a
+/// tap-to-move target, into [`Steer`] (server frame). Priority: direct input
+/// (keyboard/joystick) overrides and cancels any tap-to-move.
+#[allow(clippy::too_many_arguments)]
+fn gather_steer(
+    keys: Res<ButtonInput<KeyCode>>,
+    touches: Res<Touches>,
+    autoplay: Res<Autoplay>,
+    overlay: Res<Overlay>,
+    session: Res<Session>,
+    world: Res<Overworld>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    mut steer: ResMut<Steer>,
+    mut tap: ResMut<TapTarget>,
+    mut stick: ResMut<Joystick>,
+) {
+    steer.0 = Vec2::ZERO;
+    if overlay.kind.is_some() || session.channeling {
+        stick.touch = None;
+        tap.0 = None;
+        return;
+    }
+    let win = windows.iter().next();
+    let joy_zone = win.map(|w| Vec2::new(w.width() * 0.38, w.height())); // left ~third
+
+    // 1) Keyboard (server frame: north = -y).
+    let mut kb = Vec2::ZERO;
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) { kb.y -= 1.0; }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) { kb.y += 1.0; }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { kb.x -= 1.0; }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { kb.x += 1.0; }
+    if autoplay.0 { kb.x += 1.0; }
+    if kb != Vec2::ZERO {
+        steer.0 = kb;
+        tap.0 = None;
+        stick.touch = None;
         return;
     }
 
-    let mut dx = 0.0;
-    let mut dy = 0.0;
-    if autoplay.0 && !near_portal {
-        dx += 1.0; // walk east: into Grendel, then on to the portal
+    // 2) Virtual joystick — a touch that began in the left zone. Window coords are
+    // y-down, which is exactly the server frame (south positive), so no flip.
+    if let Some(id) = stick.touch {
+        match touches.get_pressed(id) {
+            Some(t) => {
+                stick.cur = t.position();
+                let v = stick.cur - stick.origin;
+                let mag = v.length();
+                if mag > 4.0 {
+                    steer.0 = (v / 60.0).clamp_length_max(1.0); // full tilt ≈ 60px
+                }
+                tap.0 = None;
+                return;
+            }
+            None => stick.touch = None, // released
+        }
     }
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
-        dy += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
-        dy -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        dx -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        dx += 1.0;
-    }
-    if dx == 0.0 && dy == 0.0 {
-        clock.acc = 0.0; // standing still — don't bank up steps to burst later
-        return;
+    if let Some(zone) = joy_zone {
+        for t in touches.iter_just_pressed() {
+            let p = t.position();
+            if p.x <= zone.x && p.y >= zone.y * 0.35 {
+                stick.touch = Some(t.id());
+                stick.origin = p;
+                stick.cur = p;
+                tap.0 = None;
+                return;
+            }
+        }
     }
 
-    // Emit MoveIntents at a fixed cadence (see MOVE_INTENT_HZ) so walk speed is
-    // frame-rate-independent. Bank elapsed time and drain it in fixed steps;
-    // cap the backlog so a throttled/backgrounded tab can't accumulate a big
-    // teleport when it resumes.
+    // 3) Tap-to-move — a fresh tap on the world (not the joystick zone, not a UI
+    // button) sets a destination; we steer toward it until we arrive.
+    let ui_busy = ui_hit.iter().any(|i| *i != Interaction::None);
+    if !ui_busy {
+        if let (Some((cam, cam_tf)), Some(zone)) = (cam_q.iter().next(), joy_zone) {
+            for t in touches.iter_just_pressed() {
+                let p = t.position();
+                if p.x > zone.x {
+                    if let Ok(w) = cam.viewport_to_world_2d(cam_tf, p) {
+                        // Bevy world (y up) → server coords (y south).
+                        tap.0 = Some(Vec2::new(w.x / TILE_PX, -w.y / TILE_PX));
+                    }
+                }
+            }
+        }
+    }
+    if let (Some(target), Some(me)) = (tap.0, world.entities.get(&session.player_id)) {
+        let dir = target - Vec2::new(me.x, me.y);
+        if dir.length() < 0.6 {
+            tap.0 = None;
+        } else {
+            steer.0 = dir.normalize_or_zero();
+        }
+    }
+}
+
+/// Send `movement.move_intent` from [`Steer`] at a fixed cadence so walk speed is
+/// frame-rate-independent (device-agnostic — keyboard and touch feed the same
+/// path).
+fn emit_move(
+    steer: Res<Steer>,
+    net: NonSend<NetRes>,
+    time: Res<Time>,
+    mut clock: ResMut<MoveClock>,
+) {
+    if steer.0 == Vec2::ZERO {
+        clock.acc = 0.0;
+        return;
+    }
     let step = 1.0 / MOVE_INTENT_HZ;
     clock.acc = (clock.acc + time.delta_secs()).min(0.25);
     while clock.acc >= step {
         clock.acc -= step;
-        // Server Y grows south; screen Y grows north - flip for the intent.
-        net.0.send(ClientCmd::Move { dx, dy: -dy });
+        net.0.send(ClientCmd::Move { dx: steer.0.x as f64, dy: steer.0.y as f64 });
     }
 }
 
