@@ -27,10 +27,93 @@
           "west": "THE_PSYKER_Official/rotations/west.png",
           "south-west": "THE_PSYKER_Official/rotations/south-west.png"
         },
-        "animations": {}
+        "animations": {
+          "Scary_Walking_being_intimidating_energy_crackles_a": {
+            "south-east": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south-west/frame_007.png"
+            ],
+            "east": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/east/frame_007.png"
+            ],
+            "north-west": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-west/frame_007.png"
+            ],
+            "north": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north/frame_007.png"
+            ],
+            "north-east": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/north-east/frame_007.png"
+            ],
+            "west": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/west/frame_007.png"
+            ],
+            "south": [
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking_being_intimidating_energy_crackles_a/south/frame_007.png"
+            ]
+          }
+        }
       }
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-07-18T13:48:08.014012"
+  "export_date": "2026-07-18T14:25:56.306524"
 }

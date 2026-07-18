@@ -51,6 +51,7 @@ struct Look {
     // DoF shallow; a LARGER dof_sensor lengthens the virtual lens for stronger blur.
     fov: f32,
     dof_sensor: f32,
+    anim_fps: f32, // walk-cycle playback speed
 }
 
 impl Default for Look {
@@ -76,6 +77,7 @@ impl Default for Look {
             sprite_scale: 1.0,
             fov: 30.0,
             dof_sensor: 0.06,
+            anim_fps: 10.0,
         }
     }
 }
@@ -98,6 +100,29 @@ struct Billboard;
 /// dial the sprite's footing in by eye (sprites have transparent padding).
 #[derive(Component)]
 struct HeroSprite;
+
+/// A frame-by-frame sprite animation: one material per frame (already tinted), the
+/// `animate` system swaps the mesh's material on the shared clock.
+#[derive(Component)]
+struct WalkAnim {
+    frames: Vec<Handle<StandardMaterial>>,
+}
+
+/// Shared walk-cycle clock (all sprites step together for the demo).
+#[derive(Resource)]
+struct AnimClock {
+    timer: Timer,
+    frame: usize,
+}
+
+impl Default for AnimClock {
+    fn default() -> Self {
+        AnimClock {
+            timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+            frame: 0,
+        }
+    }
+}
 
 #[derive(Component)]
 struct HudText;
@@ -124,10 +149,12 @@ fn main() {
         .init_resource::<Look>()
         .init_resource::<ShotN>()
         .init_resource::<LookWatch>()
+        .init_resource::<AnimClock>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (remote_control, control, apply, place_sprites, billboard, hud, screenshot).chain(),
+            (remote_control, control, apply, place_sprites, animate, billboard, hud, screenshot)
+                .chain(),
         )
         .run();
 }
@@ -313,23 +340,31 @@ fn setup(
     .enumerate()
     {
         let x = (i as f32 - 2.0) * 3.0; // -6, -3, 0, 3, 6
-        let tex = assets.load(format!(
-            "characters/PSYKER_Male/THE_PSYKER_Official/rotations/{dir}.png"
-        ));
+        // The "Scary_Walking" cycle for this facing: 8 frames, each a tinted material.
+        // (Metadata's folder name is stale; the real path is `.../Scary_Walking/`.)
+        let frames: Vec<Handle<StandardMaterial>> = (0..8)
+            .map(|f| {
+                let tex = assets.load(format!(
+                    "characters/PSYKER_Male/THE_PSYKER_Official/animations/Scary_Walking/{dir}/frame_{f:03}.png"
+                ));
+                mats.add(StandardMaterial {
+                    base_color: c,
+                    base_color_texture: Some(tex),
+                    unlit: true,
+                    double_sided: true,
+                    cull_mode: None,
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    ..default()
+                })
+            })
+            .collect();
         commands.spawn((
             Mesh3d(psyker_quad.clone()),
-            MeshMaterial3d(mats.add(StandardMaterial {
-                base_color: c,
-                base_color_texture: Some(tex),
-                unlit: true,
-                double_sided: true,
-                cull_mode: None,
-                alpha_mode: AlphaMode::Mask(0.5),
-                ..default()
-            })),
+            MeshMaterial3d(frames[0].clone()),
             Transform::from_xyz(x, 1.1, 0.0),
             Billboard,
             HeroSprite,
+            WalkAnim { frames },
         ));
         // Contact shadow on the ground (flat circle), slightly squashed.
         commands.spawn((
@@ -474,6 +509,29 @@ fn billboard(
         let dir = (t.translation - look_at).normalize_or_zero();
         if dir.length_squared() > 0.0 {
             t.rotation = Quat::from_rotation_arc(Vec3::Z, dir);
+        }
+    }
+}
+
+/// Advance the shared walk cycle and swap each sprite to the current frame.
+fn animate(
+    time: Res<Time>,
+    look: Res<Look>,
+    mut clock: ResMut<AnimClock>,
+    mut q: Query<(&WalkAnim, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    let fps = look.anim_fps.max(0.1);
+    clock
+        .timer
+        .set_duration(std::time::Duration::from_secs_f32(1.0 / fps));
+    clock.timer.tick(time.delta());
+    if !clock.timer.just_finished() {
+        return;
+    }
+    clock.frame = clock.frame.wrapping_add(1);
+    for (anim, mut mat) in &mut q {
+        if !anim.frames.is_empty() {
+            mat.0 = anim.frames[clock.frame % anim.frames.len()].clone();
         }
     }
 }
