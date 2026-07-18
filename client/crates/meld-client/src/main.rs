@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::math::Affine2;
 
 use meld_client::hd2d::{self, CharSprite, CharacterFrames};
 use meld_client::net;
@@ -1001,27 +1003,42 @@ struct WorldAssets {
     sprite_quad: Handle<Mesh>,
     shadow_mesh: Handle<Mesh>,
     shadow_mat: Handle<StandardMaterial>,
-    monster_mesh: Handle<Mesh>, // capsule stand-in until monster sprites exist
+    /// CC0 pixel-art creature billboards keyed by creature content id (see
+    /// `meld-world::creatures_for_biome`); unknown kinds fall back to [`Self::monster_pool`].
+    monster_sprites: HashMap<String, Handle<Image>>,
+    monster_pool: Vec<Handle<Image>>,
+    /// Foliage/prop billboards keyed by terrain-obstacle kind → one of several
+    /// variants (picked per-entity by id hash) so a stand of "tree"s isn't clones.
+    foliage: HashMap<String, Vec<Handle<Image>>>,
+    /// Harvest-node billboards keyed by resource content id; else [`Self::resource_fallback`].
+    resource_sprites: HashMap<String, Handle<Image>>,
+    resource_fallback: Handle<Image>,
+    portal_sprite: Handle<Image>,
     portal_mesh: Handle<Mesh>,
     portal_mat: Handle<StandardMaterial>,
-    gem_mesh: Handle<Mesh>,
-    resource_mat: Handle<StandardMaterial>,
+    // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
+    // overworld uses creature billboards from `monster_sprites` instead.
+    monster_mesh: Handle<Mesh>,
+    // Painterly rendered-tree billboards (from PR #20) still render the `tree`
+    // obstacle; the other vegetation kinds use the CC0 pixel foliage billboards.
     tree_quad: Handle<Mesh>,
-    tree_mats: Vec<Handle<StandardMaterial>>, // painterly tree billboards (variety)
+    tree_mats: Vec<Handle<StandardMaterial>>,
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
     ground_mat: Handle<StandardMaterial>,
 }
 
-/// Lit-ground base colour per biome (distance-keyed). Richer than the old flat 2D
-/// bands since the sun + ambient now light it.
+/// Biome tint for the ground, distance-keyed. This now *multiplies* the tiled CC0
+/// grass texture (HDR pipeline, so values >1 brighten), recolouring one grass tile
+/// into forest green / desert sand / ashen / frosty / murky per biome — richer than
+/// the old flat colour band while keeping the geography legible.
 fn hd2d_ground_color(d: i64) -> Color {
     match biome_display(d) {
-        "Forest" => Color::srgb(0.16, 0.30, 0.15),
-        "Desert" => Color::srgb(0.42, 0.35, 0.18),
-        "Ashfall" => Color::srgb(0.28, 0.14, 0.13),
-        "Tundra" => Color::srgb(0.28, 0.36, 0.44),
-        _ => Color::srgb(0.15, 0.24, 0.17), // Mire
+        "Forest" => Color::srgb(0.85, 1.05, 0.70), // lush green
+        "Desert" => Color::srgb(1.35, 1.10, 0.55), // sun-bleached sand
+        "Ashfall" => Color::srgb(0.80, 0.45, 0.40), // scorched
+        "Tundra" => Color::srgb(0.85, 0.98, 1.20), // frosted
+        _ => Color::srgb(0.70, 0.88, 0.62),         // Mire — murky green
     }
 }
 
@@ -1043,9 +1060,24 @@ fn setup(
     hd2d::spawn_camera(&mut commands, &look, cam_tf);
     hd2d::spawn_sun(&mut commands, &look);
 
-    // The lit ground (one big plane, recoloured per biome as you travel).
+    // The lit ground: one big plane wearing a tiled CC0 grass texture, tinted per
+    // biome by `hd2d_ground_color`. The grass PNG must repeat (default sampler
+    // clamps), so load it with a Repeat address mode; `uv_transform` scales the
+    // plane's 0..1 UVs up so each tile is ~3 world units (nearest-sampled → crisp).
+    let grass = assets.load_with_settings(
+        "ground/grass_full.png",
+        |s: &mut ImageLoaderSettings| {
+            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::nearest()
+            });
+        },
+    );
     let ground_mat = mats.add(StandardMaterial {
         base_color: hd2d_ground_color(0),
+        base_color_texture: Some(grass),
+        uv_transform: Affine2::from_scale(Vec2::new(2000.0 / 3.0, 600.0 / 3.0)),
         perceptual_roughness: 0.95,
         ..default()
     });
@@ -1056,8 +1088,93 @@ fn setup(
         Transform::default(),
     ));
 
-    // Shared assets. The psyker sprite set is the placeholder avatar for every
-    // player until per-class sprites land; monsters use a lit capsule stand-in.
+    // Shared assets. Player avatars use the pixel character sprite sets; monsters,
+    // foliage, harvest nodes and the portal now use CC0 pixel-art billboards
+    // (Dungeon Crawl Stone Soup / RLTiles — public domain; see assets/ATTRIBUTIONS.md).
+    let ld = |p: &str| assets.load::<Image>(p);
+    // Creature content id → billboard (biome-appropriate). Kinds come from
+    // `meld-world::creatures_for_biome`.
+    let monster_sprites: HashMap<String, Handle<Image>> = [
+        ("forest_bloom_stalker", "monsters/wolf_spider.png"),
+        ("thornback_boar", "monsters/hog.png"),
+        ("dune_wyrm", "monsters/wyvern.png"),
+        ("sand_shade", "monsters/wraith.png"),
+        ("cinder_imp", "monsters/salamander.png"),
+        ("magma_golem", "monsters/ogre.png"),
+        ("frost_lurker", "monsters/wolf.png"),
+        ("ice_revenant", "monsters/skeletal_warrior.png"),
+        ("bog_serpent", "monsters/adder.png"),
+        ("myconid_brute", "monsters/troll.png"),
+    ]
+    .into_iter()
+    .map(|(k, p)| (k.to_string(), ld(p)))
+    .collect();
+    // Fallback pool for any creature id not mapped above (deeper/added content).
+    let monster_pool: Vec<Handle<Image>> = [
+        "monsters/goblin.png",
+        "monsters/gnoll.png",
+        "monsters/kobold.png",
+        "monsters/jelly.png",
+        "monsters/scorpion.png",
+        "monsters/bat.png",
+        "monsters/jackal.png",
+        "monsters/hydra1.png",
+        "monsters/fire_dragon.png",
+        "monsters/vampire.png",
+    ]
+    .into_iter()
+    .map(ld)
+    .collect();
+    // Terrain-obstacle kind → foliage variants (picked per entity by id hash). The
+    // forest "tree" is rendered by the painterly landscape billboards instead (see
+    // `spawn_obstacle`), so it's absent here.
+    let foliage: HashMap<String, Vec<Handle<Image>>> = [
+        (
+            "cactus",
+            vec![
+                "foliage/oklob_plant.png",
+                "foliage/plant_05.png",
+                "foliage/briar_patch.png",
+            ],
+        ),
+        (
+            "mire_root",
+            vec![
+                "foliage/mangrove1.png",
+                "foliage/tree_dead1.png",
+                "foliage/briar_patch.png",
+            ],
+        ),
+        (
+            "fungal_wall",
+            vec![
+                "foliage/deathcap.png",
+                "foliage/fungus1.png",
+                "foliage/fungus2.png",
+                "foliage/toadstool_left.png",
+            ],
+        ),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.into_iter().map(ld).collect()))
+    .collect();
+    // Resource content id → harvest-node billboard. Kinds from `resources_for_biome`.
+    let resource_sprites: HashMap<String, Handle<Image>> = [
+        ("bloom_herb", "foliage/starflower_1.png"),
+        ("frost_lichen", "foliage/plant_04.png"),
+        ("bog_myrrh", "foliage/sacred_lotus.png"),
+        ("sun_salts", "resources/crystal.png"),
+        ("ember_ash", "resources/gem_orange.png"),
+        ("heartoak_bark", "resources/gem_green.png"),
+        ("dune_iron", "resources/crystal.png"),
+        ("cinder_ore", "resources/gem_orange.png"),
+        ("rime_ore", "resources/gem_teal.png"),
+        ("peat_iron", "resources/gem_blue.png"),
+    ]
+    .into_iter()
+    .map(|(k, p)| (k.to_string(), ld(p)))
+    .collect();
+
     commands.insert_resource(WorldAssets {
         psyker: hd2d::load_character(
             &assets,
@@ -1075,24 +1192,23 @@ fn setup(
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
         shadow_mesh: meshes.add(Circle::new(0.7)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
-        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
-        portal_mesh: meshes.add(Torus::new(0.30, 1.3)),
+        monster_sprites,
+        monster_pool,
+        foliage,
+        resource_sprites,
+        resource_fallback: ld("resources/crystal.png"),
+        portal_sprite: ld("fx/portal_arch.png"),
+        // A faint emissive ground-ring keeps the portal glowing under the billboard.
+        portal_mesh: meshes.add(Torus::new(0.18, 1.15)),
         portal_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(0.1, 0.4, 0.5),
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        // Harvest node: a small grounded crystal (a diamond prism), not a floating
-        // orb — reads as a gatherable resource, glows gently.
-        gem_mesh: meshes.add(Cuboid::new(0.42, 0.9, 0.42)),
-        resource_mat: mats.add(StandardMaterial {
-            base_color: Color::srgb(0.85, 0.72, 0.28),
-            emissive: LinearRgba::rgb(1.6, 1.2, 0.3),
-            perceptual_roughness: 0.2,
-            ..default()
-        }),
+        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         // Painterly tree billboards from assets/landscape (a few rotations read as
-        // distinct trees). Unlit + alpha-masked = crisp, art already shaded.
+        // distinct trees). Unlit + alpha-masked = crisp, art already shaded. (PR #20;
+        // render the `tree` obstacle — other vegetation uses the CC0 pixel foliage.)
         tree_quad: meshes.add(Rectangle::new(1.0, 1.0)),
         tree_mats: [1usize, 5, 10, 14, 19, 23]
             .into_iter()
@@ -2805,35 +2921,81 @@ fn sync_overworld_sprites(
                 );
             }
             EntityKind::Monster => {
-                let mat = mats.add(StandardMaterial {
-                    base_color: entity_color(id, e, &session.player_id),
-                    perceptual_roughness: 0.7,
-                    ..default()
-                });
-                commands.spawn((
-                    WorldEntity(id.clone()),
-                    Mesh3d(wa.monster_mesh.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.68)),
-                ));
+                // Pick the creature's billboard by content id, else hash into the
+                // fallback pool. Tinted faintly warm (like heroes) to stay vibrant
+                // under the cool ambient; a fighting creature glows hot.
+                let kind = e.name.as_deref().unwrap_or("");
+                let tex = wa
+                    .monster_sprites
+                    .get(kind)
+                    .cloned()
+                    .or_else(|| {
+                        (!wa.monster_pool.is_empty())
+                            .then(|| wa.monster_pool[hash_pick(id, wa.monster_pool.len())].clone())
+                    })
+                    .unwrap_or_else(|| wa.resource_fallback.clone());
+                let base = if e.battling {
+                    Color::srgb(1.4, 0.75, 0.55)
+                } else {
+                    Color::srgb(1.2, 1.15, 1.1)
+                };
+                // Nudge the (bright) tint faintly toward the faction hue so a clan of
+                // creatures still reads as belonging together, as the old colours did.
+                let tint = match (&e.faction, e.battling) {
+                    (Some(f), false) => {
+                        let (b, fc) = (base.to_srgba(), faction_color(f).to_srgba());
+                        let k = 0.2;
+                        Color::srgb(
+                            b.red * (1.0 - k) + fc.red * 1.5 * k,
+                            b.green * (1.0 - k) + fc.green * 1.5 * k,
+                            b.blue * (1.0 - k) + fc.blue * 1.5 * k,
+                        )
+                    }
+                    _ => base,
+                };
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, 1.6, tint, 0.55);
             }
             EntityKind::Portal => {
+                // The stone-gateway billboard, plus a faint emissive ground ring so
+                // it still reads as a glowing exit at a distance.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    3.0,
+                    Color::srgb(1.2, 1.2, 1.3),
+                    0.0,
+                );
                 commands.spawn((
                     WorldEntity(id.clone()),
                     Mesh3d(wa.portal_mesh.clone()),
                     MeshMaterial3d(wa.portal_mat.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 1.6))
+                    Transform::from_translation(world_pos(e.x, e.y, 0.08))
                         .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
                 ));
             }
             EntityKind::Resource => {
-                commands.spawn((
-                    WorldEntity(id.clone()),
-                    Mesh3d(wa.gem_mesh.clone()),
-                    MeshMaterial3d(wa.resource_mat.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.45))
-                        .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)),
-                ));
+                let kind = e.name.as_deref().unwrap_or("");
+                let tex = wa
+                    .resource_sprites
+                    .get(kind)
+                    .cloned()
+                    .unwrap_or_else(|| wa.resource_fallback.clone());
+                // Bright, faintly cool — harvest nodes should sparkle out of the grass.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    tex,
+                    0.95,
+                    Color::srgb(1.3, 1.3, 1.4),
+                    0.4,
+                );
             }
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
@@ -2898,8 +3060,70 @@ fn spawn_player_avatar(
         });
 }
 
-/// Spawn a terrain obstacle as a lit 3D prop sized to its world radius: foliage as
-/// a trunk+canopy tree, water as a flat pool, everything else as a boulder.
+/// Deterministically pick an index in `0..n` from an entity id (FNV-1a). Lets a
+/// grove of identical-kind obstacles show varied art without any per-entity state.
+fn hash_pick(id: &str, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let mut h: u32 = 2166136261;
+    for b in id.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    (h as usize) % n
+}
+
+/// Spawn a camera-facing pixel-sprite billboard for a world entity (monster, prop,
+/// harvest node, portal): a lit, alpha-masked, ground-anchored quad plus (optionally)
+/// a soft contact shadow. `height` is the sprite's world height; `tint` recolours it;
+/// `shadow` is the shadow disc radius (0 = none). Tagged only [`hd2d::Billboard`]
+/// (not `HeroBillboard`), so it keeps this spawn-baked scale/height and just yaws to
+/// face the camera — hero sprites alone follow the live-tuned `Look` size.
+#[allow(clippy::too_many_arguments)]
+fn spawn_billboard_entity(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    id: &str,
+    e: &OwEntity,
+    tex: Handle<Image>,
+    height: f32,
+    tint: Color,
+    shadow: f32,
+) {
+    // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
+    // lift it so the sprite's feet sit on the ground plane.
+    let scale = height / 2.2;
+    let mat = mats.add(hd2d::sprite_material(tint, tex));
+    commands
+        .spawn((
+            WorldEntity(id.to_string()),
+            Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
+                hd2d::Billboard,
+            ));
+            if shadow > 0.0 {
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(shadow, shadow * 0.55, shadow)),
+                ));
+            }
+        });
+}
+
+/// Spawn a terrain obstacle sized to its world radius: vegetation (tree/cactus/
+/// mire-root/fungal-wall) as a CC0 pixel foliage billboard — one of several variants
+/// picked by id hash so a grove isn't clones — water as a flat pool, everything else
+/// (boulders, cliffs, spires, dunes, snow) as a lit boulder.
 fn spawn_obstacle(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
@@ -2910,42 +3134,59 @@ fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
-    match name {
-        "tree" | "cactus" | "mire_root" | "fungal_wall" => {
-            // Painterly tree billboard, variant picked deterministically from the id.
-            let mut hsh: u32 = 2166136261;
-            for b in id.bytes() {
-                hsh = (hsh ^ b as u32).wrapping_mul(16777619);
-            }
-            let mat = wa
-                .tree_mats
-                .get(hsh as usize % wa.tree_mats.len().max(1))
-                .cloned()
-                .unwrap_or_default();
-            let h = 4.6 * (0.85 + r * 0.28).clamp(0.85, 1.7);
-            commands
-                .spawn((
-                    WorldEntity(id.to_string()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.0)),
-                    Visibility::default(),
-                ))
-                .with_children(|p| {
-                    p.spawn((
-                        Mesh3d(wa.tree_quad.clone()),
-                        MeshMaterial3d(mat),
-                        Transform::from_translation(Vec3::new(0.0, h * 0.44, 0.0))
-                            .with_scale(Vec3::new(h, h, 1.0)),
-                        hd2d::Billboard,
-                    ));
-                    p.spawn((
-                        Mesh3d(wa.shadow_mesh.clone()),
-                        MeshMaterial3d(wa.shadow_mat.clone()),
-                        Transform::from_xyz(0.0, 0.03, 0.0)
-                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                            .with_scale(Vec3::new(h * 0.3, h * 0.17, 1.0)),
-                    ));
-                });
+    // Vegetation. The forest "tree" keeps the painterly rendered-tree billboard
+    // (PR #20); the other biomes' vegetation uses the CC0 pixel foliage billboards.
+    if name == "tree" {
+        let mat = wa
+            .tree_mats
+            .get(hash_pick(id, wa.tree_mats.len().max(1)))
+            .cloned()
+            .unwrap_or_default();
+        let h = 4.6 * (0.85 + r * 0.28).clamp(0.85, 1.7);
+        commands
+            .spawn((
+                WorldEntity(id.to_string()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.tree_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(Vec3::new(0.0, h * 0.44, 0.0))
+                        .with_scale(Vec3::new(h, h, 1.0)),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.03, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(h * 0.3, h * 0.17, 1.0)),
+                ));
+            });
+        return;
+    }
+    // Other vegetation → CC0 pixel foliage billboard (varies with the obstacle radius).
+    if let Some(variants) = wa.foliage.get(name) {
+        if !variants.is_empty() {
+            let tex = variants[hash_pick(id, variants.len())].clone();
+            let height = (1.4 + r * 0.7).min(3.2);
+            spawn_billboard_entity(
+                commands,
+                mats,
+                wa,
+                id,
+                e,
+                tex,
+                height,
+                Color::srgb(1.1, 1.12, 1.05),
+                (r * 0.9).min(1.2),
+            );
+            return;
         }
+    }
+    match name {
         "pond" | "frozen_pond" | "bog_pool" => {
             let mat = mats.add(StandardMaterial {
                 base_color: col,
@@ -3018,21 +3259,6 @@ fn faction_color(faction: &str) -> Color {
         h = (h ^ b as u32).wrapping_mul(16777619);
     }
     Color::hsl((h % 360) as f32, 0.62, 0.56)
-}
-
-fn entity_color(id: &str, e: &OwEntity, me: &str) -> Color {
-    match e.kind {
-        EntityKind::Monster => match &e.faction {
-            Some(f) => faction_color(f),
-            None => Color::srgb(0.9, 0.3, 0.3),
-        },
-        EntityKind::Portal => Color::srgb(0.35, 0.85, 0.95), // cyan
-        EntityKind::Resource => Color::srgb(0.85, 0.75, 0.35), // amber node
-        EntityKind::Obstacle => obstacle_color(e.name.as_deref().unwrap_or("")),
-        EntityKind::Player if e.battling => Color::srgb(0.95, 0.45, 0.3), // fighting
-        EntityKind::Player if id == me => Color::srgb(0.4, 0.9, 0.5), // you
-        EntityKind::Player => Color::srgb(0.5, 0.7, 1.0),            // ally
-    }
 }
 
 fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEntity>>) {

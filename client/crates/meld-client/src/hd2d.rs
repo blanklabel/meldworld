@@ -265,9 +265,10 @@ pub fn maybe_screenshot(commands: &mut Commands) {
     }
 }
 
-/// System: ground + scale every [`Billboard`] from the live `Look` (so a sprite's
-/// footing and size can be tuned by eye without respawning). Sets local
-/// translation.y + scale only; [`billboard`] sets rotation, so they don't fight.
+/// System: ground + scale every [`HeroBillboard`] from the live `Look` (so the hero
+/// footing + size stay tunable by eye). World props/monsters use only [`Billboard`]
+/// and keep their own spawn-baked scale/height. Sets local translation.y + scale
+/// only; [`billboard`] sets rotation, so they don't fight.
 pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroBillboard>>) {
     for mut t in &mut q {
         t.translation.y = look.sprite_y;
