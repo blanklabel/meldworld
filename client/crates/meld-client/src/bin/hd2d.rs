@@ -14,13 +14,21 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
+use serde::{Deserialize, Serialize};
 
-/// Where screenshots land — an absolute path so it works from any worktree, and
-/// one Claude can read back to see exactly what you see. Press F12 to capture.
+/// Where F12 screenshots land — absolute so it works from any worktree, and a
+/// plain file Claude can read to see exactly what you see.
 const SHOT_DIR: &str = "/tmp";
+/// File control channel (so Claude can iterate hands-free while you leave it
+/// running): it writes params to `LOOK_FILE`, drops `SHOT_REQ` to ask for a frame,
+/// and reads the captured `AUTO_SHOT`. See the `remote_control` system.
+const LOOK_FILE: &str = "/tmp/meld-look.json";
+const SHOT_REQ: &str = "/tmp/meld-shot-request";
+const AUTO_SHOT: &str = "/tmp/meld-hd2d-latest.png";
 
-/// Every knob the scene exposes. Tweak live; the readout prints current values.
-#[derive(Resource)]
+/// Every knob the scene exposes. Tweak live (keyboard) or via `LOOK_FILE` (Claude).
+#[derive(Resource, Serialize, Deserialize)]
+#[serde(default)]
 struct Look {
     cam_pitch: f32, // degrees the camera tilts down toward the diorama
     cam_yaw: f32,   // degrees around the target
@@ -68,6 +76,10 @@ struct CamEntity(Entity);
 #[derive(Resource, Default)]
 struct ShotN(u32);
 
+/// Last-seen mtime of `LOOK_FILE`, to detect external param edits.
+#[derive(Resource, Default)]
+struct LookWatch(Option<std::time::SystemTime>);
+
 #[derive(Component)]
 struct Billboard;
 
@@ -95,8 +107,12 @@ fn main() {
         })
         .init_resource::<Look>()
         .init_resource::<ShotN>()
+        .init_resource::<LookWatch>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (control, apply, billboard, hud, screenshot).chain())
+        .add_systems(
+            Update,
+            (remote_control, control, apply, billboard, hud, screenshot).chain(),
+        )
         .run();
 }
 
@@ -134,6 +150,14 @@ fn setup(
     mut mats: ResMut<Assets<StandardMaterial>>,
     look: Res<Look>,
 ) {
+    // Seed a params template Claude can edit (only if absent, so a prior session's
+    // tuning survives a restart — it's reloaded on the first frame by remote_control).
+    if std::fs::metadata(LOOK_FILE).is_err() {
+        if let Ok(s) = serde_json::to_string_pretty(&*look) {
+            let _ = std::fs::write(LOOK_FILE, s);
+        }
+    }
+
     // Camera with the full HD-2D post stack.
     let cam = commands
         .spawn((
@@ -428,6 +452,35 @@ fn hud(look: Res<Look>, mut q: Query<&mut Text, With<HudText>>) {
     );
     // Extra HUD line: how to hand a frame to Claude.
     t.0.push_str("\nF12 = save screenshot (→ /tmp/meld-hd2d-N.png, Claude can read it)");
+}
+
+/// File control channel so Claude can iterate hands-free (you just leave the
+/// window running): reload `Look` when `LOOK_FILE` changes, and capture a frame to
+/// `AUTO_SHOT` whenever `SHOT_REQ` appears. Keyboard tuning still works — whoever
+/// last wrote the params wins, so drive from one side at a time.
+fn remote_control(
+    mut look: ResMut<Look>,
+    mut watch: ResMut<LookWatch>,
+    mut commands: Commands,
+) {
+    if let Ok(meta) = std::fs::metadata(LOOK_FILE) {
+        let mtime = meta.modified().ok();
+        if mtime != watch.0 {
+            watch.0 = mtime;
+            if let Ok(s) = std::fs::read_to_string(LOOK_FILE) {
+                match serde_json::from_str::<Look>(&s) {
+                    Ok(new) => *look = new,
+                    Err(e) => warn!("bad {LOOK_FILE}: {e}"),
+                }
+            }
+        }
+    }
+    if std::fs::metadata(SHOT_REQ).is_ok() {
+        let _ = std::fs::remove_file(SHOT_REQ);
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(AUTO_SHOT));
+    }
 }
 
 /// F12 → capture the window to `/tmp/meld-hd2d-N.png`. The path prints to the
