@@ -75,18 +75,19 @@ impl Default for Look {
         // A first-guess HD-2D framing: a steep look-down, strong tilt-shift, warm
         // bloom. Tuned further via LOOK_FILE.
         Look {
-            cam_pitch: 40.0,
-            // Yaw 0 aligns the camera with the world axes, so cardinal movement
-            // (WASD) lands squarely on the N/S/E/W sprites instead of drifting onto
-            // the diagonals. Orbit from here for an angled look (facing stays
-            // camera-relative, so it keeps up).
+            // A shallower pitch keeps the horizon (and the sky + clouds) in frame and
+            // views the 2D sprites more head-on. Yaw 0 aligns the camera with the
+            // world axes, so cardinal movement (WASD) lands squarely on the N/S/E/W
+            // sprites instead of drifting onto the diagonals. Orbit from here for an
+            // angled look (facing stays camera-relative, so it keeps up).
+            cam_pitch: 21.0,
             cam_yaw: 0.0,
             cam_dist: 26.0,
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
-            aperture: 3.0, // subtle tilt-shift — blur the far field, keep play sharp
+            aperture: 3.5, // subtle tilt-shift — blur the far field, keep play sharp
             bloom: 0.28,
-            fog_start: 55.0,
-            fog_end: 160.0,
+            fog_start: 70.0,
+            fog_end: 360.0, // far enough that the horizon clouds still read
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
@@ -95,7 +96,7 @@ impl Default for Look {
             fog_on: true,
             sprite_y: 0.9,      // grounds the padded sprite at sprite_scale ≈ 1.6
             sprite_scale: 1.6,  // hero reads prominently in the diorama
-            fov: 32.0,
+            fov: 36.0,
             dof_sensor: 0.05,
             anim_fps: 10.0,
         }
@@ -131,7 +132,8 @@ pub fn dof_component(look: &Look) -> DepthOfField {
 
 pub fn fog_component(look: &Look) -> DistanceFog {
     DistanceFog {
-        color: Color::srgb(0.35, 0.42, 0.6),
+        // Daytime haze — the ground fades into the sky-blue at the horizon.
+        color: Color::srgb(0.62, 0.76, 0.92),
         falloff: FogFalloff::Linear {
             start: look.fog_start,
             end: look.fog_end,
@@ -351,15 +353,20 @@ pub fn load_character(
 }
 
 /// A movement-driven character billboard: it walks (cycles the clip) while its
-/// entity moves and faces its heading (8-way); idles otherwise. Put it on the
-/// entity root (which moves); it drives its billboard child's material `mat`.
+/// entity moves and faces its heading; idles otherwise. Put it on the entity root
+/// (which moves); it drives its billboard child's material `mat`.
+///
+/// `facing` is stored in **world** space, and the rendered sprite is whichever of
+/// the 8 rotations best matches that heading *as seen from the current camera* — so
+/// orbiting the camera around a standing character reveals its other sides (the 3D
+/// illusion) without the character turning.
 #[derive(Component)]
 pub struct CharSprite {
     pub frames: CharacterFrames,
     pub mat: Handle<StandardMaterial>,
     pub timer: Timer,
     pub frame: usize,
-    pub dir: usize,
+    pub facing: Vec2, // world-space heading (xz) the character faces
     pub last: Vec3,
     pub still: f32, // seconds since last movement (grace against snapshot gaps)
 }
@@ -371,7 +378,7 @@ impl CharSprite {
             mat,
             timer: Timer::from_seconds(0.1, TimerMode::Repeating),
             frame: 0,
-            dir: 0,
+            facing: Vec2::new(0.0, 1.0), // world south (+Z) — faces a yaw-0 camera
             last: start,
             still: 1.0, // start idle
         }
@@ -411,31 +418,35 @@ pub fn animate_chars(
         let d = pos - cs.last;
         cs.last = pos;
         let horiz = Vec2::new(d.x, d.z);
-        if horiz.length() > 1e-4 {
-            // + toward_cam = moving toward the viewer (→ front/"south" sprite).
-            let toward_cam = -horiz.dot(fwd);
-            let screen_right = horiz.dot(right);
-            cs.dir = dir_index(Vec2::new(screen_right, toward_cam));
+        // Update the WORLD facing only while actually moving (a small threshold so
+        // smoothed near-stop jitter doesn't spin it).
+        if horiz.length() > 2e-3 {
+            cs.facing = horiz.normalize();
             cs.still = 0.0;
         } else {
             cs.still += dt;
         }
-        cs.timer
-            .set_duration(Duration::from_secs_f32(1.0 / fps));
+        // Pick the sprite for the world facing *as seen from the camera* — this is
+        // what makes the character look 3D when you orbit: same facing, new side.
+        let toward_cam = -cs.facing.dot(fwd); // + = facing the viewer (front)
+        let screen_right = cs.facing.dot(right);
+        let dir = dir_index(Vec2::new(screen_right, toward_cam));
+
+        cs.timer.set_duration(Duration::from_secs_f32(1.0 / fps));
         cs.timer.tick(time.delta());
         if cs.timer.just_finished() {
             cs.frame = cs.frame.wrapping_add(1);
         }
         let walking = cs.still < 0.2;
         let tex = if walking {
-            let clip = &cs.frames.walk[cs.dir];
+            let clip = &cs.frames.walk[dir];
             if clip.is_empty() {
-                cs.frames.idle[cs.dir].clone()
+                cs.frames.idle[dir].clone()
             } else {
                 clip[cs.frame % clip.len()].clone()
             }
         } else {
-            cs.frames.idle[cs.dir].clone()
+            cs.frames.idle[dir].clone()
         };
         if let Some(m) = mats.get_mut(&cs.mat) {
             m.base_color_texture = Some(tex);
@@ -507,6 +518,37 @@ pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+/// A soft round white sprite (radial alpha falloff, 1 at centre → 0 at the rim) —
+/// a cheap cloud/glow puff needing no art. Use on an unlit alpha-blended billboard.
+pub fn soft_disc_texture(size: u32) -> Image {
+    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let s = size.max(4);
+    let c = s as f32 / 2.0;
+    let mut data = vec![0u8; (s * s * 4) as usize];
+    for y in 0..s {
+        for x in 0..s {
+            let dx = (x as f32 + 0.5 - c) / c;
+            let dy = (y as f32 + 0.5 - c) / c;
+            let r = (dx * dx + dy * dy).sqrt();
+            let a = (1.0 - r).clamp(0.0, 1.0);
+            let a = a * a; // soft feathered edge
+            let i = ((y * s + x) * 4) as usize;
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = (a * 255.0) as u8;
+        }
+    }
+    Image::new(
+        Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
 }
 
 /// A soft round contact-shadow material (blended dark disc) to ground billboards,
