@@ -76,7 +76,11 @@ impl Default for Look {
         // bloom. Tuned further via LOOK_FILE.
         Look {
             cam_pitch: 40.0,
-            cam_yaw: 18.0, // a slight 3/4 turn gives the diorama dimension
+            // Yaw 0 aligns the camera with the world axes, so cardinal movement
+            // (WASD) lands squarely on the N/S/E/W sprites instead of drifting onto
+            // the diagonals. Orbit from here for an angled look (facing stays
+            // camera-relative, so it keeps up).
+            cam_yaw: 0.0,
             cam_dist: 26.0,
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
             aperture: 3.0, // subtle tilt-shift — blur the far field, keep play sharp
