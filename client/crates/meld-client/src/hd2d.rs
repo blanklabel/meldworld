@@ -259,13 +259,29 @@ pub fn maybe_screenshot(commands: &mut Commands) {
     }
 }
 
-/// System: ground + scale every [`Billboard`] from the live `Look` (so a sprite's
-/// footing and size can be tuned by eye without respawning). Sets local
+/// Per-billboard footing/size override. Character billboards omit this and follow
+/// the live `Look` (so the hero size stays tunable by eye); world props/monsters
+/// carry their own baked size so a bush and a dragon aren't forced to one scale.
+#[derive(Component)]
+pub struct BillboardSize {
+    pub y: f32,
+    pub scale: f32,
+}
+
+/// System: ground + scale every [`Billboard`] — from its own [`BillboardSize`] if it
+/// has one, else from the live `Look` (tunable-by-eye hero sprites). Sets local
 /// translation.y + scale only; [`billboard`] sets rotation, so they don't fight.
-pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<Billboard>>) {
-    for mut t in &mut q {
-        t.translation.y = look.sprite_y;
-        t.scale = Vec3::splat(look.sprite_scale);
+pub fn place_billboards(
+    look: Res<Look>,
+    mut q: Query<(&mut Transform, Option<&BillboardSize>), With<Billboard>>,
+) {
+    for (mut t, size) in &mut q {
+        let (y, scale) = match size {
+            Some(s) => (s.y, s.scale),
+            None => (look.sprite_y, look.sprite_scale),
+        };
+        t.translation.y = y;
+        t.scale = Vec3::splat(scale);
     }
 }
 
