@@ -44,6 +44,9 @@ struct Look {
     dof_on: bool,
     bloom_on: bool,
     fog_on: bool,
+    // Sprite placement (live-tunable so we can ground the billboards by eye).
+    sprite_y: f32,     // world-y of the sprite quad centre
+    sprite_scale: f32, // uniform scale of the sprite quads
 }
 
 impl Default for Look {
@@ -65,6 +68,8 @@ impl Default for Look {
             dof_on: true,
             bloom_on: true,
             fog_on: true,
+            sprite_y: 1.1,
+            sprite_scale: 1.0,
         }
     }
 }
@@ -82,6 +87,11 @@ struct LookWatch(Option<std::time::SystemTime>);
 
 #[derive(Component)]
 struct Billboard;
+
+/// A character billboard, ground-anchored + scaled live from `Look` so we can
+/// dial the sprite's footing in by eye (sprites have transparent padding).
+#[derive(Component)]
+struct HeroSprite;
 
 #[derive(Component)]
 struct HudText;
@@ -111,7 +121,7 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (remote_control, control, apply, billboard, hud, screenshot).chain(),
+            (remote_control, control, apply, place_sprites, billboard, hud, screenshot).chain(),
         )
         .run();
 }
@@ -272,53 +282,42 @@ fn setup(
         ));
     }
 
-    // Billboarded "sprite" stand-ins (flat unlit quads = how real sprites read).
-    let quad = meshes.add(Rectangle::new(1.2, 1.8));
-    let sprite = |c: Color| StandardMaterial {
-        base_color: c,
-        unlit: true,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    };
-    for (hx, hz, c) in [
-        (-2.2, 1.6, Color::srgb(0.55, 0.75, 1.0)),
-        (2.2, 1.3, Color::srgb(0.95, 0.65, 1.0)),
-    ] {
-        commands.spawn((
-            Mesh3d(quad.clone()),
-            MeshMaterial3d(mats.add(sprite(c))),
-            Transform::from_xyz(hx, 0.9, hz),
-            Billboard,
-        ));
-    }
-
-    // The real thing: the Psyker sprite (8-dir set; south = facing the camera) as a
-    // pixel billboard. Nearest sampling + alpha-mask keeps it crisp with clean edges
-    // and correct depth. This is the HD-2D character look.
+    // The Psyker sprite (8-dir set; south = facing the camera) as a pixel billboard.
+    // Nearest sampling + alpha-mask keeps it crisp with clean edges + correct depth.
+    // A ROW of the same sprite with different `base_color` **tints** — the cheap
+    // "palette swap" so a party doesn't all look identical (real hue-shift shader
+    // comes later). `HeroSprite` marks them for live grounding via `place_sprites`.
     let psyker_tex =
         assets.load("characters/PSYKER_Male/THE_PSYKER_Official/rotations/south.png");
     let psyker_quad = meshes.add(Rectangle::new(2.2, 2.2)); // 92×92 sprite is square
-    commands.spawn((
-        Mesh3d(psyker_quad),
-        MeshMaterial3d(mats.add(StandardMaterial {
-            base_color_texture: Some(psyker_tex),
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            alpha_mode: AlphaMode::Mask(0.5),
-            ..default()
-        })),
-        Transform::from_xyz(0.0, 1.1, 0.0),
-        Billboard,
-    ));
-    commands.spawn((
-        Mesh3d(quad.clone()),
-        MeshMaterial3d(mats.add(sprite(Color::srgb(0.95, 0.35, 0.35)))),
-        Transform::from_xyz(6.0, 1.05, 2.0).with_scale(Vec3::splat(1.3)),
-        Billboard,
-    ));
+    let tint = |c: Color| StandardMaterial {
+        base_color: c,
+        base_color_texture: Some(psyker_tex.clone()),
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Mask(0.5),
+        ..default()
+    };
+    for (i, c) in [
+        Color::WHITE,                    // original
+        Color::srgb(1.0, 0.55, 0.6),     // crimson
+        Color::srgb(0.55, 1.0, 0.6),     // emerald
+        Color::srgb(1.1, 0.9, 0.45),     // gold
+        Color::srgb(0.75, 0.6, 1.15),    // violet
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = (i as f32 - 2.0) * 3.0; // -6, -3, 0, 3, 6
+        commands.spawn((
+            Mesh3d(psyker_quad.clone()),
+            MeshMaterial3d(mats.add(tint(c))),
+            Transform::from_xyz(x, 1.1, 0.0),
+            Billboard,
+            HeroSprite,
+        ));
+    }
 
     // On-screen readout.
     commands.spawn((
@@ -449,6 +448,15 @@ fn billboard(
         if dir.length_squared() > 0.0 {
             t.rotation = Quat::from_rotation_arc(Vec3::Z, dir);
         }
+    }
+}
+
+/// Ground + scale the character sprites from `Look` (live-tunable). Runs before
+/// `billboard`, which only sets rotation, so the two don't fight.
+fn place_sprites(look: Res<Look>, mut q: Query<&mut Transform, With<HeroSprite>>) {
+    for mut t in &mut q {
+        t.translation.y = look.sprite_y;
+        t.scale = Vec3::splat(look.sprite_scale);
     }
 }
 
