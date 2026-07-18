@@ -344,7 +344,7 @@ fn setup(
         let frames: Vec<Handle<StandardMaterial>> = (0..8)
             .map(|f| {
                 let tex = assets.load(format!(
-                    "characters/PSYKER_Male/THE_PSYKER_Official/animations/Scary_Walking/{dir}/frame_{f:03}.png"
+                    "characters/PSYKER_Male/Psyker/animations/Scary_Walking/{dir}/frame_{f:03}.png"
                 ));
                 mats.add(StandardMaterial {
                     base_color: c,

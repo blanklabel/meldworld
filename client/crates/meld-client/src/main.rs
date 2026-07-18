@@ -11,11 +11,11 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
+use bevy::input::mouse::{MouseMotion, MouseWheel};
+
+use meld_client::hd2d::{self, CharSprite, CharacterFrames};
 use meld_client::net;
 use net::{ClientCmd, CombatantView, EntityKind, GearLine, HitEffect, Net, ServerMsg, SkillLine};
-
-/// World tiles → screen pixels.
-const TILE_PX: f32 = 22.0;
 
 /// MoveIntents are emitted at this fixed rate (Hz). The server advances the
 /// avatar by `avatar_speed / overworld_sim_hz` tiles per intent, so pacing
@@ -141,19 +141,26 @@ fn levelup_mockup_flag() -> bool {
 fn main() {
     let base = server_base();
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "MELDWORLD".to_string(),
-                resolution: (960.0_f32, 640.0_f32).into(),
-                // Browser (wasm): bind to <canvas id="bevy"> and fill its parent.
-                canvas: Some("#bevy".to_string()),
-                fit_canvas_to_parent: true,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest()) // crisp pixel sprites
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "MELDWORLD".to_string(),
+                        resolution: (960.0_f32, 640.0_f32).into(),
+                        // Browser (wasm): bind to <canvas id="bevy"> and fill its parent.
+                        canvas: Some("#bevy".to_string()),
+                        fit_canvas_to_parent: true,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .init_state::<Screen>()
-        .insert_resource(ClearColor(Color::srgb(0.05, 0.06, 0.09)))
+        .insert_resource(ClearColor(hd2d::CLEAR))
+        .insert_resource(hd2d::ambient_light())
+        .init_resource::<hd2d::Look>()
+        .init_resource::<hd2d::LookWatch>()
         .insert_non_send_resource(NetRes(net::start(base)))
         // Demo and autoplay are mutually exclusive; demo skips networking.
         .insert_resource(Autoplay(autoplay_flag() && !demo_flag()))
@@ -181,7 +188,9 @@ fn main() {
             Startup,
             (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
         )
-        .add_systems(Update, (pump_net, demo_driver)) // run in every state
+        // run in every state: net pump, demo autopilot, and the HD-2D file channel
+        // (hot-reload look params + honour screenshot requests).
+        .add_systems(Update, (pump_net, demo_driver, hd2d_remote))
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
@@ -194,17 +203,14 @@ fn main() {
             (lobby_input, render_lobby).run_if(in_state(Screen::Lobby)),
         )
         // Overworld
-        .add_systems(
-            OnEnter(Screen::Overworld),
-            (overworld_ui, spawn_overworld_scenery),
-        )
+        .add_systems(OnEnter(Screen::Overworld), overworld_ui)
         .add_systems(
             OnExit(Screen::Overworld),
             (
                 despawn::<OverworldRoot>,
                 despawn::<OverlayRoot>,
-                despawn::<WorldScenery>,
                 despawn::<WorldEntity>,
+                despawn::<PathTrail>,
             ),
         )
         .add_systems(
@@ -212,9 +218,13 @@ fn main() {
             (
                 overlay_input,
                 overworld_input,
+                overworld_camera_control,
                 sync_overworld_sprites,
                 draw_path_trail,
-                follow_camera,
+                hd2d::animate_chars,
+                hd2d::place_billboards,
+                hd2d::billboard,
+                hd2d_follow,
                 update_overworld_hud,
                 render_overlay,
             )
@@ -871,10 +881,6 @@ struct ClassText;
 #[derive(Component)]
 struct WorldEntity(String);
 
-/// Static overworld scenery (biome ground bands + reference grid).
-#[derive(Component)]
-struct WorldScenery;
-
 /// The overworld HUD line that reports distance + current biome.
 #[derive(Component)]
 struct HudText;
@@ -888,8 +894,188 @@ struct LobbyText;
 
 // ---------------------------------------------------------------- setup ----
 
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+/// The single lit ground plane (recoloured to the current biome as you travel).
+#[derive(Component)]
+struct WorldGround;
+
+/// The HD-2D file channel, run in every screen: hot-reload the look params from
+/// `/tmp/meld-look.json` when they change, and honour a screenshot request. Lets
+/// the look be tuned + captured hands-free on a live native window.
+fn hd2d_remote(
+    mut commands: Commands,
+    mut look: ResMut<hd2d::Look>,
+    mut watch: ResMut<hd2d::LookWatch>,
+) {
+    hd2d::reload_look(&mut look, &mut watch);
+    hd2d::maybe_screenshot(&mut commands);
+}
+
+/// Move + pivot the overworld camera: **mouse** left/right-drag orbits, wheel
+/// zooms; **touch** two-finger drag orbits, pinch zooms. Both nudge the live
+/// `Look` (yaw/pitch/dist), which `hd2d_follow` then applies while keeping the
+/// player centred. Camera-relative facing keeps the hero oriented as you orbit.
+#[allow(clippy::too_many_arguments)]
+fn overworld_camera_control(
+    mut look: ResMut<hd2d::Look>,
+    overlay: Res<Overlay>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut motion: EventReader<MouseMotion>,
+    mut wheel: EventReader<MouseWheel>,
+    touches: Res<Touches>,
+    mut pinch: Local<Option<f32>>,
+    mut two_mid: Local<Option<Vec2>>,
+) {
+    // Don't pivot while a full-screen overlay (inventory / level-up) is up.
+    if overlay.kind.is_some() {
+        motion.clear();
+        wheel.clear();
+        return;
+    }
+    let orbit = |look: &mut hd2d::Look, dx: f32, dy: f32| {
+        look.cam_yaw -= dx * 0.4;
+        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 85.0);
+    };
+    let zoom = |look: &mut hd2d::Look, d: f32| {
+        look.cam_dist = (look.cam_dist + d).clamp(8.0, 60.0);
+    };
+
+    // Mouse: drag (either button) to orbit, wheel to zoom.
+    if buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right) {
+        let mut d = Vec2::ZERO;
+        for e in motion.read() {
+            d += e.delta;
+        }
+        if d != Vec2::ZERO {
+            orbit(&mut look, d.x, d.y);
+        }
+    } else {
+        motion.clear();
+    }
+    for e in wheel.read() {
+        zoom(&mut look, -e.y * 2.0);
+    }
+
+    // Touch: two-finger pinch to zoom + two-finger drag to orbit.
+    let pts: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
+    if pts.len() == 2 {
+        let dist = pts[0].distance(pts[1]);
+        let mid = (pts[0] + pts[1]) * 0.5;
+        if let Some(prev) = *pinch {
+            zoom(&mut look, -(dist - prev) * 0.05);
+        }
+        if let Some(pm) = *two_mid {
+            let dm = mid - pm;
+            orbit(&mut look, dm.x, dm.y);
+        }
+        *pinch = Some(dist);
+        *two_mid = Some(mid);
+    } else {
+        *pinch = None;
+        *two_mid = None;
+    }
+}
+
+/// Shared meshes/materials + the psyker sprite set, built once at startup so the
+/// overworld sync can spawn 3D entities without rebuilding assets each frame.
+#[derive(Resource)]
+struct WorldAssets {
+    psyker: CharacterFrames,
+    squire: CharacterFrames,
+    sprite_quad: Handle<Mesh>,
+    shadow_mesh: Handle<Mesh>,
+    shadow_mat: Handle<StandardMaterial>,
+    monster_mesh: Handle<Mesh>, // capsule stand-in until monster sprites exist
+    portal_mesh: Handle<Mesh>,
+    portal_mat: Handle<StandardMaterial>,
+    gem_mesh: Handle<Mesh>,
+    resource_mat: Handle<StandardMaterial>,
+    trunk_mesh: Handle<Mesh>,
+    canopy_mesh: Handle<Mesh>,
+    rock_mesh: Handle<Mesh>,
+    water_mesh: Handle<Mesh>,
+    ground_mat: Handle<StandardMaterial>,
+}
+
+/// Lit-ground base colour per biome (distance-keyed). Richer than the old flat 2D
+/// bands since the sun + ambient now light it.
+fn hd2d_ground_color(d: i64) -> Color {
+    match biome_display(d) {
+        "Forest" => Color::srgb(0.16, 0.30, 0.15),
+        "Desert" => Color::srgb(0.42, 0.35, 0.18),
+        "Ashfall" => Color::srgb(0.28, 0.14, 0.13),
+        "Tundra" => Color::srgb(0.28, 0.36, 0.44),
+        _ => Color::srgb(0.15, 0.24, 0.17), // Mire
+    }
+}
+
+/// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
+/// asset handles. Replaces the old flat Camera2d overworld (CANON D16 all-Bevy).
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    assets: Res<AssetServer>,
+    look: Res<hd2d::Look>,
+) {
+    hd2d::seed_look_file(&look);
+
+    // Camera parked at a nice diorama angle for the menu screens; `hd2d_follow`
+    // re-aims it at the player once in the overworld.
+    let cam_tf = hd2d::camera_transform(&look, Vec3::new(0.0, 1.0, 0.0), 0.0);
+    hd2d::spawn_camera(&mut commands, &look, cam_tf);
+    hd2d::spawn_sun(&mut commands, &look);
+
+    // The lit ground (one big plane, recoloured per biome as you travel).
+    let ground_mat = mats.add(StandardMaterial {
+        base_color: hd2d_ground_color(0),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    commands.spawn((
+        WorldGround,
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 600.0))),
+        MeshMaterial3d(ground_mat.clone()),
+        Transform::default(),
+    ));
+
+    // Shared assets. The psyker sprite set is the placeholder avatar for every
+    // player until per-class sprites land; monsters use a lit capsule stand-in.
+    commands.insert_resource(WorldAssets {
+        psyker: hd2d::load_character(
+            &assets,
+            "characters/PSYKER_Male/Psyker",
+            "Scary_Walking",
+            8,
+        ),
+        squire: hd2d::load_character(
+            &assets,
+            "characters/PSYKER_Male/Squire",
+            "Walking",
+            8,
+        ),
+        // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
+        sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
+        shadow_mesh: meshes.add(Circle::new(0.7)),
+        shadow_mat: mats.add(hd2d::contact_shadow_material()),
+        monster_mesh: meshes.add(Capsule3d::new(0.5, 1.0)),
+        portal_mesh: meshes.add(Torus::new(0.30, 1.3)),
+        portal_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.1, 0.4, 0.5),
+            emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
+            ..default()
+        }),
+        gem_mesh: meshes.add(Sphere::new(0.45)),
+        resource_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.8, 0.7, 0.2),
+            emissive: LinearRgba::rgb(4.0, 3.0, 0.5),
+            ..default()
+        }),
+        trunk_mesh: meshes.add(Cylinder::new(0.18, 1.4)),
+        canopy_mesh: meshes.add(Sphere::new(1.1)),
+        rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
+        water_mesh: meshes.add(Circle::new(1.0)),
+        ground_mat,
+    });
 }
 
 /// The classes the party builder cycles through.
@@ -1591,80 +1777,58 @@ fn biome_display(d: i64) -> &'static str {
     }
 }
 
-/// Ground tint for a biome band (display-only scenery).
-fn biome_ground_color(biome: &str) -> Color {
-    match biome {
-        "forest" => Color::srgb(0.09, 0.19, 0.12),
-        "desert" => Color::srgb(0.26, 0.22, 0.11),
-        "ashfall" => Color::srgb(0.20, 0.10, 0.10),
-        "tundra" => Color::srgb(0.12, 0.19, 0.25),
-        "mire" => Color::srgb(0.11, 0.17, 0.13),
-        _ => Color::srgb(0.10, 0.11, 0.16), // hub pad
-    }
+/// Server (x, y) → HD-2D world space: x east, **z = server y** (south, +Z toward
+/// the camera parked behind the player). Y is up (height above the ground plane).
+fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
+    Vec3::new(x, height, y)
 }
 
-/// Spawn biome ground bands and a faint reference grid the player scrolls across.
-/// Bands are laid at the canon distance boundaries (distance ≈ x on the corridor);
-/// this is display-only scenery, generously sized to cover any generated run.
-fn spawn_overworld_scenery(mut commands: Commands) {
-    let bands: [(f32, f32, &str); 6] = [
-        (-20.0, 0.0, "hub"),
-        (0.0, 100.0, "forest"),
-        (100.0, 300.0, "desert"),
-        (300.0, 500.0, "ashfall"),
-        (500.0, 1000.0, "tundra"),
-        (1000.0, 1400.0, "mire"),
-    ];
-    // Tall enough to cover the full ±lateral play area (28) with margin, so the
-    // biome ground fills the screen as you scroll north/south.
-    let band_h = 72.0 * TILE_PX;
-    for (start, end, biome) in bands {
-        let w = (end - start) * TILE_PX;
-        let cx = (start + end) * 0.5 * TILE_PX;
-        commands.spawn((
-            WorldScenery,
-            Sprite::from_color(biome_ground_color(biome), Vec2::new(w, band_h)),
-            Transform::from_xyz(cx, 0.0, -3.0),
-        ));
-    }
-    // Faint grid — a motion reference while scrolling through otherwise-flat bands.
-    let grid = Color::srgba(1.0, 1.0, 1.0, 0.045);
-    let (x0, x1) = (-20.0_f32, 600.0_f32);
-    let y_span = band_h;
-    let x_span = (x1 - x0) * TILE_PX;
-    let mut x = x0;
-    while x <= x1 {
-        commands.spawn((
-            WorldScenery,
-            Sprite::from_color(grid, Vec2::new(1.5, y_span)),
-            Transform::from_xyz(x * TILE_PX, 0.0, -2.0),
-        ));
-        x += 6.0;
-    }
-    let mut y = -30.0_f32;
-    while y <= 30.0 {
-        commands.spawn((
-            WorldScenery,
-            Sprite::from_color(grid, Vec2::new(x_span, 1.5)),
-            Transform::from_xyz((x0 + x1) * 0.5 * TILE_PX, y * TILE_PX, -2.0),
-        ));
-        y += 6.0;
-    }
-}
-
-/// Keep the camera centred on the player so walking east scrolls the world into
-/// view (rather than the avatar sliding off into the void).
-fn follow_camera(
+/// Drive the HD-2D camera each frame: orbit-follow the player, push the live
+/// `Look` post params into the camera, aim the sun, and recolour the ground to the
+/// player's current biome. Replaces the old flat 2D `follow_camera`.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn hd2d_follow(
     world: Res<Overworld>,
     session: Res<Session>,
-    mut cam: Query<&mut Transform, With<Camera2d>>,
+    look: Res<hd2d::Look>,
+    time: Res<Time>,
+    assets: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut cam_q: Query<
+        (
+            &mut Transform,
+            &mut Projection,
+            Option<&mut bevy::core_pipeline::bloom::Bloom>,
+            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::pbr::DistanceFog>,
+        ),
+        With<Camera3d>,
+    >,
+    mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
     };
-    if let Ok(mut tf) = cam.single_mut() {
-        tf.translation.x = me.x * TILE_PX;
-        tf.translation.y = -me.y * TILE_PX;
+    let target = world_pos(me.x, me.y, 1.0);
+    if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
+        *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        hd2d::apply_post(
+            &look,
+            &mut proj,
+            bloom.map(|b| b.into_inner()),
+            dof.map(|d| d.into_inner()),
+            fog.map(|f| f.into_inner()),
+        );
+    }
+    if let Ok(mut t) = sun_q.single_mut() {
+        *t = hd2d::sun_transform(&look);
+    }
+    // Recolour the ground to the biome at the player's distance.
+    if let Some(assets) = assets {
+        if let Some(m) = mats.get_mut(&assets.ground_mat) {
+            let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+            m.base_color = hd2d_ground_color(d);
+        }
     }
 }
 
@@ -1681,13 +1845,15 @@ fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
         .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
 }
 
-/// Draw the guaranteed clear path as a faint dotted trail so the feasible route
-/// through the terrain is legible. Redraws whenever the trail sprites are gone
-/// (e.g. after returning from a battle, where scenery is despawned).
+/// Draw the guaranteed clear path as a faint glowing trail of ground discs so the
+/// feasible route through the terrain reads at a glance. Redraws whenever the trail
+/// is gone (e.g. after returning from a battle, where the overworld is despawned).
 fn draw_path_trail(
     mut commands: Commands,
     mut world_path: ResMut<WorldPath>,
     existing: Query<Entity, With<PathTrail>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     if world_path.points.len() < 2 {
         return;
@@ -1698,8 +1864,16 @@ fn draw_path_trail(
     for e in &existing {
         commands.entity(e).despawn();
     }
-    let col = Color::srgba(0.95, 0.9, 0.5, 0.13);
-    let step = 2.0_f32; // world units between dots
+    let disc = meshes.add(Circle::new(0.35));
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 0.9, 0.5, 0.2),
+        emissive: LinearRgba::rgb(0.5, 0.45, 0.15),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let step = 2.5_f32; // world units between dots
     for w in world_path.points.windows(2) {
         let (ax, ay) = w[0];
         let (bx, by) = w[1];
@@ -1711,9 +1885,9 @@ fn draw_path_trail(
             let y = ay + (by - ay) * t;
             commands.spawn((
                 PathTrail,
-                WorldScenery,
-                Sprite::from_color(col, Vec2::splat(6.0)),
-                Transform::from_xyz(x * TILE_PX, -y * TILE_PX, 0.1),
+                Mesh3d(disc.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_translation(world_pos(x, y, 0.05)).with_rotation(flat),
             ));
         }
     }
@@ -1763,6 +1937,8 @@ fn overworld_input(
     overlay: Res<Overlay>,
     backpack: Res<RunBackpack>,
     time: Res<Time>,
+    touches: Res<Touches>,
+    cam_q: Query<&GlobalTransform, With<Camera3d>>,
     mut clock: ResMut<MoveClock>,
 ) {
     // No walking while a screen is open or while channeling an extraction.
@@ -1841,6 +2017,32 @@ fn overworld_input(
     }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
         dx += 1.0;
+    }
+    // Touch: a one-finger **drag steers** the avatar like a floating joystick, in
+    // camera-relative axes (drag away from yourself = walk into the screen). Two
+    // fingers are the camera gesture (see `overworld_camera_control`), so only a
+    // lone touch drives movement.
+    if touches.iter().count() == 1 {
+        if let Some(t) = touches.iter().next() {
+            let v = t.position() - t.start_position(); // screen px, y-down
+            if v.length() > 24.0 {
+                // deadzone
+                let (fwd, right) = match cam_q.single() {
+                    Ok(c) => {
+                        let f = Vec3::from(c.forward());
+                        let r = Vec3::from(c.right());
+                        (
+                            Vec2::new(f.x, f.z).normalize_or_zero(),
+                            Vec2::new(r.x, r.z).normalize_or_zero(),
+                        )
+                    }
+                    Err(_) => (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0)),
+                };
+                let m = (right * v.x + fwd * -v.y).normalize_or_zero();
+                dx += m.x as f64; // world east
+                dy += -m.y as f64; // m.y is world +Z (south); dy+ = north here
+            }
+        }
     }
     if dx == 0.0 && dy == 0.0 {
         clock.acc = 0.0; // standing still — don't bank up steps to burst later
@@ -2089,64 +2291,214 @@ fn render_overlay(
 
 /// Reconcile sprites to the authoritative snapshot: spawn new entities, move
 /// known ones, despawn the gone.
+/// Reconcile the 3D overworld scene with the latest server snapshot: move entities
+/// that persist, spawn newcomers as HD-2D visuals (billboard sprites for players,
+/// lit primitives for monsters/portals/resources/terrain), and despawn the gone.
 fn sync_overworld_sprites(
     mut commands: Commands,
     world: Res<Overworld>,
     session: Res<Session>,
-    mut q: Query<(Entity, &WorldEntity, &mut Transform, &mut Sprite)>,
+    look: Res<hd2d::Look>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
-    let mut seen = HashMap::new();
-    for (entity, we, mut tf, mut sprite) in &mut q {
+    let Some(wa) = wa else { return };
+    let mut seen = HashSet::new();
+    for (entity, we, mut tf) in &mut q {
         if let Some(e) = world.entities.get(&we.0) {
-            tf.translation.x = e.x * TILE_PX;
-            tf.translation.y = -e.y * TILE_PX; // server Y south → screen Y north
-            sprite.color = entity_color(&we.0, e, &session.player_id);
-            seen.insert(we.0.clone(), true);
+            // Only the ground-plane position updates; per-kind height/scale/facing
+            // stay as spawned (facing is driven by CharSprite/billboard).
+            tf.translation.x = e.x;
+            tf.translation.z = e.y;
+            seen.insert(we.0.clone());
         } else {
             commands.entity(entity).despawn();
         }
     }
     for (id, e) in &world.entities {
-        if seen.contains_key(id) {
+        if seen.contains(id) {
             continue;
         }
-        let (size, z) = match e.kind {
-            EntityKind::Player => (18.0, 1.0),
-            EntityKind::Monster => (28.0, 1.0),
-            EntityKind::Portal => (26.0, 0.9),
-            EntityKind::Resource => (16.0, 0.9),
-            // Obstacles draw at their true world size, behind the actors.
-            EntityKind::Obstacle => ((e.radius * 2.0 * TILE_PX).max(8.0), 0.4),
-        };
-        let mut ent = commands.spawn((
-            WorldEntity(id.clone()),
-            Sprite::from_color(entity_color(id, e, &session.player_id), Vec2::splat(size)),
-            Transform::from_xyz(e.x * TILE_PX, -e.y * TILE_PX, z),
-        ));
-        // A small floating label above creatures and portals so a march through
-        // the areas reads clearly (which creature, where the exit is).
-        // Label creatures with their kind + faction (so you can read who sides
-        // with whom); the sprite colour also encodes the faction.
-        let label = match e.kind {
-            EntityKind::Monster => e.name.as_deref().map(|k| match &e.faction {
-                Some(f) => format!("{} · {}", nice_name(k), f),
-                None => nice_name(k),
-            }),
-            EntityKind::Portal => Some("portal".to_string()),
-            EntityKind::Resource => e.name.as_deref().map(|k| format!("⛏ {}", nice_name(k))),
-            // A fighting teammate is flagged so you can see the fight and go join it.
-            EntityKind::Player if e.battling => Some("⚔ fighting".to_string()),
-            EntityKind::Obstacle | EntityKind::Player => None,
-        };
-        if let Some(text) = label {
-            ent.with_children(|p| {
-                p.spawn((
-                    Text2d::new(text),
-                    TextFont { font_size: 11.0, ..default() },
-                    TextColor(Color::srgb(0.85, 0.9, 1.0)),
-                    Transform::from_xyz(0.0, size * 0.5 + 9.0, 2.0),
+        match e.kind {
+            EntityKind::Player => {
+                // We only know the local player's lead class (from their party);
+                // remote avatars fall back to the Squire.
+                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("squire");
+                spawn_player_avatar(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    &look,
+                    id,
+                    e,
+                    &session.player_id,
+                    lead,
+                );
+            }
+            EntityKind::Monster => {
+                let mat = mats.add(StandardMaterial {
+                    base_color: entity_color(id, e, &session.player_id),
+                    perceptual_roughness: 0.7,
+                    ..default()
+                });
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.monster_mesh.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(world_pos(e.x, e.y, 1.0)),
                 ));
+            }
+            EntityKind::Portal => {
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.portal_mesh.clone()),
+                    MeshMaterial3d(wa.portal_mat.clone()),
+                    Transform::from_translation(world_pos(e.x, e.y, 1.6))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            }
+            EntityKind::Resource => {
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.gem_mesh.clone()),
+                    MeshMaterial3d(wa.resource_mat.clone()),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.5)),
+                ));
+            }
+            EntityKind::Obstacle => {
+                spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
+            }
+        }
+    }
+}
+
+/// Spawn a player's overworld avatar: a ground-anchored, walk-animated psyker
+/// billboard (the placeholder for every class until per-class sprites land) with a
+/// soft contact shadow. Tinted so you (white) read apart from allies/fighters.
+#[allow(clippy::too_many_arguments)]
+fn spawn_player_avatar(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    look: &hd2d::Look,
+    id: &str,
+    e: &OwEntity,
+    me: &str,
+    class: &str,
+) {
+    // Tints run slightly hot to counter the cool ambient dimming the now-lit
+    // sprite, keeping the pixel art vibrant while it still catches the sun.
+    let tint = if id == me {
+        Color::srgb(1.25, 1.22, 1.12) // you — bright, faintly warm
+    } else if e.battling {
+        Color::srgb(1.3, 0.7, 0.5) // a fighting ally glows warm — go join
+    } else {
+        Color::srgb(0.85, 1.0, 1.3) // ally
+    };
+    // The overworld shows one avatar per player; pick its sprite from the lead
+    // class (Resonant has no sprite yet → the Squire stands in).
+    let frames = match class {
+        "psyker" => &wa.psyker,
+        _ => &wa.squire,
+    };
+    let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
+    let root = world_pos(e.x, e.y, 0.0);
+    commands
+        .spawn((
+            WorldEntity(id.to_string()),
+            Transform::from_translation(root),
+            Visibility::default(),
+            CharSprite::new(frames.clone(), mat.clone(), root),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, look.sprite_y, 0.0),
+                hd2d::Billboard,
+            ));
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+            ));
+        });
+}
+
+/// Spawn a terrain obstacle as a lit 3D prop sized to its world radius: foliage as
+/// a trunk+canopy tree, water as a flat pool, everything else as a boulder.
+fn spawn_obstacle(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    id: &str,
+    e: &OwEntity,
+) {
+    let name = e.name.as_deref().unwrap_or("");
+    let r = e.radius.max(0.4);
+    let col = obstacle_color(name);
+    match name {
+        "tree" | "cactus" | "mire_root" | "fungal_wall" => {
+            let bark = mats.add(StandardMaterial {
+                base_color: Color::srgb(0.35, 0.22, 0.12),
+                perceptual_roughness: 1.0,
+                ..default()
             });
+            let leaf = mats.add(StandardMaterial {
+                base_color: col,
+                perceptual_roughness: 0.9,
+                ..default()
+            });
+            commands
+                .spawn((
+                    WorldEntity(id.to_string()),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Mesh3d(wa.trunk_mesh.clone()),
+                        MeshMaterial3d(bark),
+                        Transform::from_xyz(0.0, 0.7, 0.0),
+                    ));
+                    p.spawn((
+                        Mesh3d(wa.canopy_mesh.clone()),
+                        MeshMaterial3d(leaf),
+                        Transform::from_xyz(0.0, 1.6, 0.0)
+                            .with_scale(Vec3::splat((0.55 + r * 0.3).min(1.2))),
+                    ));
+                });
+        }
+        "pond" | "frozen_pond" | "bog_pool" => {
+            let mat = mats.add(StandardMaterial {
+                base_color: col,
+                perceptual_roughness: 0.2,
+                ..default()
+            });
+            commands.spawn((
+                WorldEntity(id.to_string()),
+                Mesh3d(wa.water_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(e.x, e.y, 0.03))
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::splat(r * 2.0)),
+            ));
+        }
+        _ => {
+            let mat = mats.add(StandardMaterial {
+                base_color: col,
+                perceptual_roughness: 1.0,
+                ..default()
+            });
+            commands.spawn((
+                WorldEntity(id.to_string()),
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(e.x, e.y, 0.35 * r)).with_scale(Vec3::splat(r)),
+            ));
         }
     }
 }

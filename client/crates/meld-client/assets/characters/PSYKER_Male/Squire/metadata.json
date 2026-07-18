@@ -1,0 +1,119 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "31d6b7f4-ef47-4102-981c-b51dd1e6b071",
+        "name": "There is a strong new",
+        "prompt": "There is a strong new weird HD-2d style swordsman. Clearly extremely muscular, covered in scars.  They have an asymmetric multi-color hair cut.  They're wearing leather pants, but no shirt.  They have a leather pauldron on one side. Their weapon is at their waist.  They have copper plate metal shoes and grieves  that also protect up to their knee.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-18T14:13:50.149534+00:00"
+      },
+      "folder": "There_is_a_strong_new",
+      "frames": {
+        "rotations": {
+          "south": "There_is_a_strong_new/rotations/south.png",
+          "south-east": "There_is_a_strong_new/rotations/south-east.png",
+          "east": "There_is_a_strong_new/rotations/east.png",
+          "north-east": "There_is_a_strong_new/rotations/north-east.png",
+          "north": "There_is_a_strong_new/rotations/north.png",
+          "north-west": "There_is_a_strong_new/rotations/north-west.png",
+          "west": "There_is_a_strong_new/rotations/west.png",
+          "south-west": "There_is_a_strong_new/rotations/south-west.png"
+        },
+        "animations": {
+          "Walking": {
+            "south": [
+              "There_is_a_strong_new/animations/Walking/south/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/south/frame_007.png"
+            ],
+            "north-west": [
+              "There_is_a_strong_new/animations/Walking/north-west/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "There_is_a_strong_new/animations/Walking/south-west/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/south-west/frame_007.png"
+            ],
+            "west": [
+              "There_is_a_strong_new/animations/Walking/west/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/west/frame_007.png"
+            ],
+            "north-east": [
+              "There_is_a_strong_new/animations/Walking/north-east/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/north-east/frame_007.png"
+            ],
+            "north": [
+              "There_is_a_strong_new/animations/Walking/north/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/north/frame_007.png"
+            ],
+            "south-east": [
+              "There_is_a_strong_new/animations/Walking/south-east/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/south-east/frame_007.png"
+            ],
+            "east": [
+              "There_is_a_strong_new/animations/Walking/east/frame_000.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_001.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_002.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_003.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_004.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_005.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_006.png",
+              "There_is_a_strong_new/animations/Walking/east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-18T15:07:33.819172"
+}

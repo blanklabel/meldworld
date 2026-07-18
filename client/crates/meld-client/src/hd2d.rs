@@ -1,0 +1,513 @@
+//! Shared HD-2D render pipeline — the look-dev diorama (`bin/hd2d.rs`) and the
+//! real game (`main.rs`) build the **same** lit-3D + post stack from these pieces:
+//! HDR + Bloom + tilt-shift Depth-of-Field + distance Fog + a shadow-casting sun +
+//! tonemapping, plus pixel-sprite **billboards** (nearest-sampled, alpha-masked,
+//! camera-facing) with 8-direction facing and frame animation.
+//!
+//! The pipeline is tuned by eye on a native display and driven hands-free through a
+//! file channel (`/tmp/meld-look.json` + a screenshot request file), so the look
+//! can be iterated without recompiling. Native only — the post stack needs a real
+//! GPU (WebGL2 can't do DoF/shadows).
+
+use std::time::{Duration, SystemTime};
+
+use bevy::core_pipeline::bloom::Bloom;
+use bevy::core_pipeline::dof::{DepthOfField, DepthOfFieldMode};
+use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::pbr::{DistanceFog, FogFalloff};
+use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
+use serde::{Deserialize, Serialize};
+
+// ---- file control channel (so the look can be iterated hands-free) ----------
+/// Live params: written here, hot-reloaded on mtime change (see [`reload_look`]).
+/// Separate from the look-dev's `/tmp/meld-look.json` so the game keeps its own
+/// gameplay framing (follow-cam angle, sprite size) independent of look-dev experiments.
+pub const LOOK_FILE: &str = "/tmp/meld-game-look.json";
+/// Touch this file to request a frame capture to [`AUTO_SHOT`]. Distinct from the
+/// look-dev's request file so a running look-dev window doesn't answer the game's
+/// captures (and vice-versa) when both watch the disk at once.
+pub const SHOT_REQ: &str = "/tmp/meld-game-shot-request";
+/// Where the requested capture lands — a plain PNG on disk.
+pub const AUTO_SHOT: &str = "/tmp/meld-game-latest.png";
+
+/// The diorama's night-blue base: clear colour + fill ambient (shared so the
+/// look-dev and the game match).
+pub const CLEAR: Color = Color::srgb(0.02, 0.03, 0.06);
+pub fn ambient_light() -> AmbientLight {
+    AmbientLight {
+        color: Color::srgb(0.6, 0.7, 0.95),
+        brightness: 220.0,
+        ..default()
+    }
+}
+
+/// Every knob the HD-2D look exposes. Tuned live from the keyboard (look-dev) or
+/// via [`LOOK_FILE`]; the same file drives both binaries so tuning carries over.
+#[derive(Resource, Serialize, Deserialize, Clone)]
+#[serde(default)]
+pub struct Look {
+    pub cam_pitch: f32, // degrees the camera tilts down toward the scene
+    pub cam_yaw: f32,   // degrees around the target
+    pub cam_dist: f32,  // distance from the focus point
+    pub focus: f32,     // DoF focal distance (what stays sharp)
+    pub aperture: f32,  // DoF f-stops — LOWER = more (tilt-shift) blur
+    pub bloom: f32,     // bloom intensity
+    pub fog_start: f32,
+    pub fog_end: f32,
+    pub sun_pitch: f32,
+    pub sun_yaw: f32,
+    pub orbit: bool,
+    pub dof_on: bool,
+    pub bloom_on: bool,
+    pub fog_on: bool,
+    pub sprite_y: f32,     // world-y of a billboard's centre (grounds the padded sprite)
+    pub sprite_scale: f32, // uniform scale of the sprite quads
+    // A NARROW fov (telephoto) gives the HD-2D miniature compression AND makes DoF
+    // shallow; a LARGER dof_sensor lengthens the virtual lens for stronger blur.
+    pub fov: f32,
+    pub dof_sensor: f32,
+    pub anim_fps: f32, // walk-cycle playback speed
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        // A first-guess HD-2D framing: a steep look-down, strong tilt-shift, warm
+        // bloom. Tuned further via LOOK_FILE.
+        Look {
+            cam_pitch: 40.0,
+            cam_yaw: 18.0, // a slight 3/4 turn gives the diorama dimension
+            cam_dist: 26.0,
+            focus: 26.0,   // track cam_dist so the followed hero stays sharp
+            aperture: 3.0, // subtle tilt-shift — blur the far field, keep play sharp
+            bloom: 0.28,
+            fog_start: 55.0,
+            fog_end: 160.0,
+            sun_pitch: 55.0,
+            sun_yaw: 40.0,
+            orbit: false,
+            dof_on: true,
+            bloom_on: true,
+            fog_on: true,
+            sprite_y: 0.9,      // grounds the padded sprite at sprite_scale ≈ 1.6
+            sprite_scale: 1.6,  // hero reads prominently in the diorama
+            fov: 32.0,
+            dof_sensor: 0.05,
+            anim_fps: 10.0,
+        }
+    }
+}
+
+/// Last-seen mtime of [`LOOK_FILE`], to detect external edits.
+#[derive(Resource, Default)]
+pub struct LookWatch(pub Option<SystemTime>);
+
+/// Tag: rotate to face the camera (yaw only) each frame — see [`billboard`].
+#[derive(Component)]
+pub struct Billboard;
+
+// ---- post-stack component builders ------------------------------------------
+
+pub fn bloom_component(look: &Look) -> Bloom {
+    let mut b = Bloom::NATURAL;
+    b.intensity = look.bloom;
+    b
+}
+
+pub fn dof_component(look: &Look) -> DepthOfField {
+    DepthOfField {
+        mode: DepthOfFieldMode::Bokeh,
+        focal_distance: look.focus,
+        aperture_f_stops: look.aperture,
+        sensor_height: look.dof_sensor,
+        max_circle_of_confusion_diameter: 64.0,
+        max_depth: f32::INFINITY,
+    }
+}
+
+pub fn fog_component(look: &Look) -> DistanceFog {
+    DistanceFog {
+        color: Color::srgb(0.35, 0.42, 0.6),
+        falloff: FogFalloff::Linear {
+            start: look.fog_start,
+            end: look.fog_end,
+        },
+        ..default()
+    }
+}
+
+/// Spawn the HD-2D camera (HDR + tonemap + the full post stack) and return it.
+pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) -> Entity {
+    commands
+        .spawn((
+            Camera3d::default(),
+            Camera { hdr: true, ..default() },
+            Tonemapping::TonyMcMapface,
+            bloom_component(look),
+            dof_component(look),
+            fog_component(look),
+            initial,
+        ))
+        .id()
+}
+
+/// Spawn the shadow-casting sun.
+pub fn spawn_sun(commands: &mut Commands, look: &Look) {
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 9000.0,
+            shadows_enabled: true,
+            color: Color::srgb(1.0, 0.96, 0.85),
+            ..default()
+        },
+        sun_transform(look),
+    ));
+}
+
+/// Camera transform orbiting `target` per the `Look` (auto-orbits when enabled).
+pub fn camera_transform(look: &Look, target: Vec3, elapsed: f32) -> Transform {
+    let yaw = if look.orbit {
+        look.cam_yaw + elapsed * 12.0
+    } else {
+        look.cam_yaw
+    };
+    let (yr, pr) = (yaw.to_radians(), look.cam_pitch.to_radians());
+    let offset = Vec3::new(yr.sin() * pr.cos(), pr.sin(), yr.cos() * pr.cos()) * look.cam_dist;
+    let mut t = Transform::from_translation(target + offset);
+    t.look_at(target, Vec3::Y);
+    t
+}
+
+pub fn sun_transform(look: &Look) -> Transform {
+    Transform::from_rotation(Quat::from_euler(
+        EulerRot::YXZ,
+        look.sun_yaw.to_radians(),
+        -look.sun_pitch.to_radians(),
+        0.0,
+    ))
+}
+
+/// Push the `Look`'s post params into the live camera components + projection fov.
+pub fn apply_post(
+    look: &Look,
+    proj: &mut Projection,
+    bloom: Option<&mut Bloom>,
+    dof: Option<&mut DepthOfField>,
+    fog: Option<&mut DistanceFog>,
+) {
+    if let Projection::Perspective(p) = proj {
+        p.fov = look.fov.to_radians();
+    }
+    if let Some(b) = bloom {
+        b.intensity = look.bloom;
+    }
+    if let Some(d) = dof {
+        d.focal_distance = look.focus;
+        d.aperture_f_stops = look.aperture;
+        d.sensor_height = look.dof_sensor;
+    }
+    if let Some(f) = fog {
+        f.falloff = FogFalloff::Linear {
+            start: look.fog_start,
+            end: look.fog_end,
+        };
+    }
+}
+
+/// Seed the [`LOOK_FILE`] template if absent, so tuning persists across restarts.
+pub fn seed_look_file(look: &Look) {
+    if std::fs::metadata(LOOK_FILE).is_err() {
+        if let Ok(s) = serde_json::to_string_pretty(look) {
+            let _ = std::fs::write(LOOK_FILE, s);
+        }
+    }
+}
+
+/// Reload `Look` from [`LOOK_FILE`] when it changes on disk; returns true if it did.
+pub fn reload_look(look: &mut Look, watch: &mut LookWatch) -> bool {
+    if let Ok(meta) = std::fs::metadata(LOOK_FILE) {
+        let mtime = meta.modified().ok();
+        if mtime != watch.0 {
+            watch.0 = mtime;
+            if let Ok(s) = std::fs::read_to_string(LOOK_FILE) {
+                match serde_json::from_str::<Look>(&s) {
+                    Ok(new) => {
+                        *look = new;
+                        return true;
+                    }
+                    Err(e) => warn!("bad {LOOK_FILE}: {e}"),
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Capture the window to [`AUTO_SHOT`] if a screenshot was requested via [`SHOT_REQ`].
+pub fn maybe_screenshot(commands: &mut Commands) {
+    if std::fs::metadata(SHOT_REQ).is_ok() {
+        let _ = std::fs::remove_file(SHOT_REQ);
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(AUTO_SHOT));
+    }
+}
+
+/// System: ground + scale every [`Billboard`] from the live `Look` (so a sprite's
+/// footing and size can be tuned by eye without respawning). Sets local
+/// translation.y + scale only; [`billboard`] sets rotation, so they don't fight.
+pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<Billboard>>) {
+    for mut t in &mut q {
+        t.translation.y = look.sprite_y;
+        t.scale = Vec3::splat(look.sprite_scale);
+    }
+}
+
+/// System: rotate every [`Billboard`] to face the camera (yaw only, stays upright).
+pub fn billboard(
+    cam_q: Query<&Transform, (With<Camera3d>, Without<Billboard>)>,
+    mut q: Query<&mut Transform, With<Billboard>>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    for mut t in &mut q {
+        let mut at = cam.translation;
+        at.y = t.translation.y; // upright — yaw only
+        let dir = (t.translation - at).normalize_or_zero();
+        if dir.length_squared() > 0.0 {
+            t.rotation = Quat::from_rotation_arc(Vec3::Z, dir);
+        }
+    }
+}
+
+// ---- 8-direction pixel-sprite characters ------------------------------------
+
+/// Sprite facings, clockwise from front. Index 0 (`south`) faces +Z — toward a
+/// camera parked behind the subject — so a subject walking +Z shows its front.
+pub const DIRS: [&str; 8] = [
+    "south",
+    "south-east",
+    "east",
+    "north-east",
+    "north",
+    "north-west",
+    "west",
+    "south-west",
+];
+
+/// Map a heading to the nearest of the 8 [`DIRS`]. Pass `(screen_right, toward_cam)`
+/// for camera-relative facing: `+y` = toward the viewer → index 0 (`south`/front),
+/// `+x` = screen-right → index 2 (`east`).
+pub fn dir_index(h: Vec2) -> usize {
+    if h.length_squared() < 1e-9 {
+        return 0;
+    }
+    let mut a = h.x.atan2(h.y).to_degrees(); // +y = toward viewer → 0° = south (front)
+    if a < 0.0 {
+        a += 360.0;
+    }
+    ((a / 45.0).round() as usize) % 8
+}
+
+/// Loaded frame handles for one character: an idle rotation + a walk clip per dir.
+/// Follows a character folder's on-disk layout: `<base>/rotations/<dir>.png` and
+/// `<base>/animations/<anim>/<dir>/frame_NNN.png` (the same shape `metadata.json`
+/// describes, though its `folder` prefix can go stale after a re-export, so we key
+/// off the real directory instead).
+#[derive(Clone)]
+pub struct CharacterFrames {
+    pub idle: [Handle<Image>; 8],
+    pub walk: [Vec<Handle<Image>>; 8],
+}
+
+/// Load a character's sprites from its asset folder. `base` is the character dir
+/// (e.g. `characters/PSYKER_Male/Psyker`), `anim` the walk clip, `frame_count` its
+/// length.
+pub fn load_character(
+    assets: &AssetServer,
+    base: &str,
+    anim: &str,
+    frame_count: usize,
+) -> CharacterFrames {
+    let idle = std::array::from_fn(|i| assets.load(format!("{base}/rotations/{}.png", DIRS[i])));
+    let walk = std::array::from_fn(|i| {
+        (0..frame_count)
+            .map(|f| {
+                assets.load(format!(
+                    "{base}/animations/{anim}/{}/frame_{f:03}.png",
+                    DIRS[i]
+                ))
+            })
+            .collect()
+    });
+    CharacterFrames { idle, walk }
+}
+
+/// A movement-driven character billboard: it walks (cycles the clip) while its
+/// entity moves and faces its heading (8-way); idles otherwise. Put it on the
+/// entity root (which moves); it drives its billboard child's material `mat`.
+#[derive(Component)]
+pub struct CharSprite {
+    pub frames: CharacterFrames,
+    pub mat: Handle<StandardMaterial>,
+    pub timer: Timer,
+    pub frame: usize,
+    pub dir: usize,
+    pub last: Vec3,
+    pub still: f32, // seconds since last movement (grace against snapshot gaps)
+}
+
+impl CharSprite {
+    pub fn new(frames: CharacterFrames, mat: Handle<StandardMaterial>, start: Vec3) -> Self {
+        CharSprite {
+            frames,
+            mat,
+            timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+            frame: 0,
+            dir: 0,
+            last: start,
+            still: 1.0, // start idle
+        }
+    }
+}
+
+/// System: advance each [`CharSprite`] from its root's movement and swap its
+/// material's texture to the right frame/facing. Server snapshots arrive at a
+/// lower rate than render frames, so a short `still` grace keeps the walk cycle
+/// playing across the gaps rather than stuttering to idle every other frame.
+pub fn animate_chars(
+    time: Res<Time>,
+    look: Res<Look>,
+    cam_q: Query<&GlobalTransform, With<Camera3d>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&Transform, &mut CharSprite)>,
+) {
+    let dt = time.delta_secs();
+    let fps = look.anim_fps.max(1.0);
+    // Facing is chosen **relative to the camera**, not the world: a character
+    // walking toward the viewer shows its front, one walking into the screen its
+    // back — regardless of how the camera is orbited. Project the camera's forward
+    // and right onto the ground plane for the screen-space basis.
+    let (fwd, right) = match cam_q.single() {
+        Ok(cam) => {
+            let f = Vec3::from(cam.forward());
+            let r = Vec3::from(cam.right());
+            (
+                Vec2::new(f.x, f.z).normalize_or_zero(),
+                Vec2::new(r.x, r.z).normalize_or_zero(),
+            )
+        }
+        Err(_) => (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0)),
+    };
+    for (tf, mut cs) in &mut q {
+        let pos = tf.translation;
+        let d = pos - cs.last;
+        cs.last = pos;
+        let horiz = Vec2::new(d.x, d.z);
+        if horiz.length() > 1e-4 {
+            // + toward_cam = moving toward the viewer (→ front/"south" sprite).
+            let toward_cam = -horiz.dot(fwd);
+            let screen_right = horiz.dot(right);
+            cs.dir = dir_index(Vec2::new(screen_right, toward_cam));
+            cs.still = 0.0;
+        } else {
+            cs.still += dt;
+        }
+        cs.timer
+            .set_duration(Duration::from_secs_f32(1.0 / fps));
+        cs.timer.tick(time.delta());
+        if cs.timer.just_finished() {
+            cs.frame = cs.frame.wrapping_add(1);
+        }
+        let walking = cs.still < 0.2;
+        let tex = if walking {
+            let clip = &cs.frames.walk[cs.dir];
+            if clip.is_empty() {
+                cs.frames.idle[cs.dir].clone()
+            } else {
+                clip[cs.frame % clip.len()].clone()
+            }
+        } else {
+            cs.frames.idle[cs.dir].clone()
+        };
+        if let Some(m) = mats.get_mut(&cs.mat) {
+            m.base_color_texture = Some(tex);
+        }
+    }
+}
+
+/// Build the **lit**, alpha-masked, double-sided material a sprite billboard uses.
+/// `tint` multiplies the texture (a cheap palette swap); `tex` is the first frame.
+/// Lit (not unlit) so the sun + ambient model the sprite — paired with the
+/// cylindrical normals of [`cyl_billboard_mesh`], a flat sprite reads rounded
+/// instead of like a paper cut-out (the HD-2D depth trick, no new art needed).
+pub fn sprite_material(tint: Color, tex: Handle<Image>) -> StandardMaterial {
+    StandardMaterial {
+        base_color: tint,
+        base_color_texture: Some(tex),
+        perceptual_roughness: 0.95,
+        metallic: 0.0,
+        reflectance: 0.05, // matte — no specular hotspot sliding across the sprite
+        double_sided: true,
+        cull_mode: None,
+        alpha_mode: AlphaMode::Mask(0.5),
+        ..default()
+    }
+}
+
+/// A flat sprite quad whose **normals fan outward** across its width like a
+/// vertical half-cylinder (positions stay planar). Under directional light this
+/// shades the sprite left-to-dark-to-right, giving a flat billboard volumetric
+/// form — the cheap HD-2D "impostor" depth trick. `arc_deg` is the total bow
+/// (≈50-70° reads rounded without wrapping too hard).
+pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+
+    let cols = cols.max(1);
+    let arc = arc_deg.to_radians();
+    let mut positions = Vec::with_capacity((cols + 1) * 2);
+    let mut normals = Vec::with_capacity((cols + 1) * 2);
+    let mut uvs = Vec::with_capacity((cols + 1) * 2);
+    let mut indices = Vec::with_capacity(cols * 6);
+    for i in 0..=cols {
+        let t = i as f32 / cols as f32; // 0..1 across the width
+        let x = (t - 0.5) * w;
+        let ang = (t - 0.5) * arc; // fan the normal from -arc/2 .. +arc/2
+        let n = [ang.sin(), 0.0, ang.cos()];
+        positions.push([x, h * 0.5, 0.0]);
+        positions.push([x, -h * 0.5, 0.0]);
+        normals.push(n);
+        normals.push(n);
+        uvs.push([t, 0.0]);
+        uvs.push([t, 1.0]);
+    }
+    for i in 0..cols {
+        let (a, b, c, d) = (
+            (i * 2) as u32,
+            (i * 2 + 1) as u32,
+            (i * 2 + 2) as u32,
+            (i * 2 + 3) as u32,
+        );
+        indices.extend_from_slice(&[a, b, c, c, b, d]);
+    }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// A soft round contact-shadow material (blended dark disc) to ground billboards,
+/// which the sun's real shadows can't touch (they're unlit).
+pub fn contact_shadow_material() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.35),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    }
+}
