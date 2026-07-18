@@ -1,0 +1,119 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "0111956e-e6d7-4a70-aee9-217dd59b003e",
+        "name": "# THE PSYKER ## Official",
+        "prompt": "# THE PSYKER ## Official D&D 2024 Format - Version 3.5.1  *A robed mystic stands amidst ancient ruins, their eyes glowing with psionic light. They don't cast spells\u2014they bend reality through sheer force of will. By partitioning their consciousness into multiple mental Foci, a Psyker can simultaneously crush a foe with psychic force, shield an ally with projected barriers, and communicate telepathically across the battlefield, all while their mind burns under immense psychic strain.*",
+        "size": {
+          "width": 92,
+          "height": 92
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-18T13:43:27.90002+00:00"
+      },
+      "folder": "THE_PSYKER_Official",
+      "frames": {
+        "rotations": {
+          "south": "THE_PSYKER_Official/rotations/south.png",
+          "south-east": "THE_PSYKER_Official/rotations/south-east.png",
+          "east": "THE_PSYKER_Official/rotations/east.png",
+          "north-east": "THE_PSYKER_Official/rotations/north-east.png",
+          "north": "THE_PSYKER_Official/rotations/north.png",
+          "north-west": "THE_PSYKER_Official/rotations/north-west.png",
+          "west": "THE_PSYKER_Official/rotations/west.png",
+          "south-west": "THE_PSYKER_Official/rotations/south-west.png"
+        },
+        "animations": {
+          "Scary_Walking": {
+            "south-east": [
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south-west/frame_007.png"
+            ],
+            "east": [
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/east/frame_007.png"
+            ],
+            "north-west": [
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-west/frame_007.png"
+            ],
+            "north": [
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north/frame_007.png"
+            ],
+            "north-east": [
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/north-east/frame_007.png"
+            ],
+            "west": [
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/west/frame_007.png"
+            ],
+            "south": [
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_000.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_001.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_002.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_003.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_004.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_005.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_006.png",
+              "THE_PSYKER_Official/animations/Scary_Walking/south/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-18T14:25:56.306524"
+}

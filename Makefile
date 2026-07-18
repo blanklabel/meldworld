@@ -19,7 +19,7 @@ URL       := http://$(MELD_ADDR)
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-native server smoke test stop
+.PHONY: help play play-native look server smoke test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
@@ -28,6 +28,7 @@ help:
 	@echo "                     open $(URL) in your browser and press ENTER"
 	@echo "                     (or open $(URL)/?autoplay to watch it play itself)."
 	@echo "  make play-native  Boot Postgres + server + the native desktop window."
+	@echo "  make look         HD-2D render look-dev scene (standalone; tune it live, native)."
 	@echo "  make server       Boot Postgres + server only (no client)."
 	@echo "  make smoke        Headless client run against the server (exits 0 on victory)."
 	@echo "  make test         Run the end-to-end test suite (throwaway Postgres)."
@@ -52,6 +53,13 @@ play:
 # Native desktop window (serve.sh's default command is `cargo run -p meld-client`).
 play-native:
 	$(SERVE)
+
+# HD-2D render look-dev scene — a standalone diorama (no Postgres/server) for
+# tuning the camera / bloom / tilt-shift DoF / fog live with the keyboard. The
+# on-screen readout prints the current values so we can bake in a look. Native
+# only (the post stack needs a real GPU).
+look:
+	cd client && cargo run --bin hd2d
 
 # Server only — handy for pointing your own client/tests at it. Blocks until Ctrl-C.
 server:
