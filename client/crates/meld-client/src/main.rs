@@ -157,7 +157,8 @@ fn main() {
                 }),
         )
         .init_state::<Screen>()
-        .insert_resource(ClearColor(hd2d::CLEAR))
+        // Daytime sky blue behind the diorama (the fog fades the ground into it).
+        .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
         .insert_resource(hd2d::ambient_light())
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
@@ -191,9 +192,9 @@ fn main() {
             Startup,
             (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
         )
-        // run in every state: net pump, demo autopilot, and the HD-2D file channel
-        // (hot-reload look params + honour screenshot requests).
-        .add_systems(Update, (pump_net, demo_driver, hd2d_remote))
+        // run in every state: net pump, demo autopilot, the HD-2D file channel
+        // (hot-reload look params + honour screenshot requests), and cloud drift.
+        .add_systems(Update, (pump_net, demo_driver, hd2d_remote, drift_clouds))
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
@@ -221,6 +222,8 @@ fn main() {
             (
                 overlay_input,
                 overworld_input,
+                auto_harvest,
+                overworld_click_menu,
                 overworld_camera_control,
                 gather_steer,
                 emit_move,
@@ -229,9 +232,9 @@ fn main() {
                 sync_overworld_sprites,
                 draw_path_trail,
                 hd2d::animate_chars,
+                hd2d_follow,
                 hd2d::place_billboards,
                 hd2d::billboard,
-                hd2d_follow,
                 update_overworld_hud,
                 render_overlay,
             )
@@ -1021,6 +1024,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     look: Res<hd2d::Look>,
 ) {
@@ -1064,7 +1068,7 @@ fn setup(
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
         shadow_mesh: meshes.add(Circle::new(0.7)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
-        monster_mesh: meshes.add(Capsule3d::new(0.5, 1.0)),
+        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         portal_mesh: meshes.add(Torus::new(0.30, 1.3)),
         portal_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(0.1, 0.4, 0.5),
@@ -1077,12 +1081,80 @@ fn setup(
             emissive: LinearRgba::rgb(4.0, 3.0, 0.5),
             ..default()
         }),
-        trunk_mesh: meshes.add(Cylinder::new(0.18, 1.4)),
+        trunk_mesh: meshes.add(Cylinder::new(0.14, 0.9)),
         canopy_mesh: meshes.add(Sphere::new(1.1)),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         water_mesh: meshes.add(Circle::new(1.0)),
         ground_mat,
     });
+
+    // Drifting clouds: soft white billboard puffs high overhead, anchored around the
+    // camera + drifting on the wind (see `drift_clouds`). Deterministic scatter.
+    let puff = meshes.add(Rectangle::new(1.0, 1.0));
+    let cloud_tex = images.add(hd2d::soft_disc_texture(128));
+    let cloud_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+        base_color_texture: Some(cloud_tex),
+        // Mild emissive so the clouds stay bright through the distance fog instead of
+        // fading into the sky (they sit near the horizon, where fog is strong).
+        emissive: LinearRgba::rgb(0.7, 0.75, 0.82),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let mut s: u64 = 0x9E37_79B9;
+    let mut rnd = || {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((s >> 33) as f32) / (u32::MAX as f32)
+    };
+    for _ in 0..22 {
+        // Far AHEAD (north, -z) near the horizon, never close/overhead, so they read
+        // as clouds in the sky band and never blob over the player. Drift sideways.
+        let off = Vec2::new((rnd() - 0.5) * 760.0, -(95.0 + rnd() * 150.0));
+        let y = 11.0 + rnd() * 16.0;
+        let w = 58.0 + rnd() * 66.0;
+        let h = w * (0.28 + rnd() * 0.12);
+        commands.spawn((
+            Cloud { off, y },
+            Mesh3d(puff.clone()),
+            MeshMaterial3d(cloud_mat.clone()),
+            Transform::from_xyz(off.x, y, off.y).with_scale(Vec3::new(w, h, 1.0)),
+            hd2d::Billboard,
+        ));
+    }
+}
+
+/// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
+/// plane (so clouds stay overhead as you travel), `y` its altitude.
+#[derive(Component)]
+struct Cloud {
+    off: Vec2,
+    y: f32,
+}
+
+/// Wind speed (world units/sec) the clouds drift east.
+const CLOUD_WIND: f32 = 2.5;
+
+/// Drift the clouds on the wind and keep them anchored around the camera (wrapping
+/// so the sky never empties as the player travels).
+fn drift_clouds(
+    time: Res<Time>,
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<(&mut Cloud, &mut Transform), Without<Camera3d>>,
+) {
+    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    const R: f32 = 420.0;
+    for (mut c, mut tf) in &mut q {
+        c.off.x += CLOUD_WIND * time.delta_secs();
+        if c.off.x > R {
+            c.off.x -= 2.0 * R;
+        }
+        tf.translation.x = cam.x + c.off.x;
+        tf.translation.z = cam.z + c.off.y;
+        tf.translation.y = c.y;
+    }
 }
 
 /// The classes the party builder cycles through.
@@ -1741,10 +1813,7 @@ fn render_lobby(
 enum OverworldAct {
     Extract,
     TownPortal,
-    Harvest,
     Join,
-    Inventory,
-    LevelUp,
 }
 
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
@@ -1775,7 +1844,7 @@ fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows or drag left = move · tap = go there · buttons/keys: T town portal · H harvest · J join · E portal · I inventory · L level up",
+                    "WASD/arrows or drag = move · tap = go there · tap yourself = party/inventory · walk into nodes to harvest · T town portal · J join · E portal",
                 ),
                 TextFont {
                     font_size: 14.0,
@@ -1796,13 +1865,12 @@ fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
+                // Harvest is automatic (walk into a node); inventory/party opens by
+                // tapping your character — so the bar is just the situational actions.
                 for (act, label) in [
-                    (OverworldAct::Harvest, "Harvest"),
                     (OverworldAct::Join, "Join"),
                     (OverworldAct::Extract, "Portal"),
                     (OverworldAct::TownPortal, "Town Portal"),
-                    (OverworldAct::Inventory, "Inventory"),
-                    (OverworldAct::LevelUp, "Level Up"),
                 ] {
                     action_button(bar, act, label);
                 }
@@ -1897,9 +1965,6 @@ fn touch_action_buttons(
     world: Res<Overworld>,
     session: Res<Session>,
     backpack: Res<RunBackpack>,
-    mut overlay: ResMut<Overlay>,
-    mut inv: ResMut<InventoryData>,
-    mut prog: ResMut<ProgressData>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -1913,41 +1978,9 @@ fn touch_action_buttons(
                     net.0.send(ClientCmd::TownPortal);
                 }
             }
-            OverworldAct::Harvest => {
-                if let Some((mx, my)) = me {
-                    if let Some((id, _)) = world
-                        .entities
-                        .iter()
-                        .filter(|(_, e)| e.kind == EntityKind::Resource)
-                        .map(|(id, e)| (id, ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt()))
-                        .filter(|(_, d)| *d <= 2.0)
-                        .min_by(|a, b| a.1.total_cmp(&b.1))
-                    {
-                        net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
-                    }
-                }
-            }
             OverworldAct::Join => {
                 if near_fight(&world, me) {
                     net.0.send(ClientCmd::JoinBattle);
-                }
-            }
-            OverworldAct::Inventory => {
-                if overlay.kind == Some(OverlayKind::Inventory) {
-                    overlay.kind = None;
-                } else {
-                    overlay.kind = Some(OverlayKind::Inventory);
-                    inv.loaded = false;
-                    net.0.fetch_inventory();
-                }
-            }
-            OverworldAct::LevelUp => {
-                if overlay.kind == Some(OverlayKind::LevelUp) {
-                    overlay.kind = None;
-                } else {
-                    overlay.kind = Some(OverlayKind::LevelUp);
-                    prog.loaded = false;
-                    net.0.fetch_progress();
                 }
             }
         }
@@ -1973,17 +2006,24 @@ fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
     Vec3::new(x, height, y)
 }
 
+/// Exponential rate the rendered overworld positions chase the 20 Hz server
+/// snapshots (higher = snappier + less smoothing). Kills the pixel-sprite jitter.
+const OW_SMOOTH_RATE: f32 = 16.0;
+
 /// Drive the HD-2D camera each frame: orbit-follow the player, push the live
 /// `Look` post params into the camera, aim the sun, and recolour the ground to the
 /// player's current biome. Replaces the old flat 2D `follow_camera`.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn hd2d_follow(
-    world: Res<Overworld>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
     time: Res<Time>,
     assets: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    // Follow the player's *smoothed* transform (not the raw 20 Hz snapshot), so the
+    // camera and the sprite move together — no relative jitter. Exclude the camera
+    // and sun so this `&Transform` read is disjoint from their `&mut Transform`.
+    players: Query<(&WorldEntity, &Transform), (Without<Camera3d>, Without<DirectionalLight>)>,
     mut cam_q: Query<
         (
             &mut Transform,
@@ -1996,10 +2036,14 @@ fn hd2d_follow(
     >,
     mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
 ) {
-    let Some(me) = world.entities.get(&session.player_id) else {
+    let Some(pos) = players
+        .iter()
+        .find(|(we, _)| we.0 == session.player_id)
+        .map(|(_, tf)| tf.translation)
+    else {
         return;
     };
-    let target = world_pos(me.x, me.y, 1.0);
+    let target = Vec3::new(pos.x, 1.0, pos.z);
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
         hd2d::apply_post(
@@ -2016,7 +2060,7 @@ fn hd2d_follow(
     // Recolour the ground to the biome at the player's distance.
     if let Some(assets) = assets {
         if let Some(m) = mats.get_mut(&assets.ground_mat) {
-            let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+            let d = (pos.x * pos.x + pos.z * pos.z).sqrt().floor() as i64;
             m.base_color = hd2d_ground_color(d);
         }
     }
@@ -2165,26 +2209,105 @@ fn overworld_input(
         net.0.send(ClientCmd::TownPortal);
         return;
     }
-    // Harvest (H): grab the nearest resource node within reach.
-    if keys.just_pressed(KeyCode::KeyH) {
-        if let Some((mx, my)) = me {
-            let nearest = world
-                .entities
-                .iter()
-                .filter(|(_, e)| e.kind == EntityKind::Resource)
-                .map(|(id, e)| (id, ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt()))
-                .filter(|(_, d)| *d <= 2.0)
-                .min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((id, _)) = nearest {
-                net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
-            }
-        }
-        return;
-    }
+    // Harvesting is automatic now (walk into a node → `auto_harvest`); no key.
     // Join a nearby fight (J): opt into a teammate's ongoing battle (never pulled
     // in automatically). The server re-checks range.
     if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
         net.0.send(ClientCmd::JoinBattle);
+    }
+}
+
+/// Harvest resource nodes automatically the moment you walk within reach — so
+/// "touching" a node picks it up (and tapping/clicking a distant node just walks
+/// you there via tap-to-move, then this fires on arrival). `sent` dedupes so a node
+/// isn't requested twice before the server removes it.
+fn auto_harvest(
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    overlay: Res<Overlay>,
+    mut sent: Local<HashSet<String>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    for (id, e) in &world.entities {
+        if e.kind == EntityKind::Resource
+            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
+            && !sent.contains(id)
+        {
+            net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
+            sent.insert(id.clone());
+        }
+    }
+    sent.retain(|id| world.entities.contains_key(id)); // forget harvested/gone nodes
+}
+
+/// Open the party + inventory menu (the old-school RPG screen) by **clicking or
+/// tapping your own character**. Replaces the inventory key/button. A click is a
+/// mouse press+release without a drag (drags orbit the camera); a tap is a touch on
+/// the character. Both raycast to the ground and check proximity to the player.
+#[allow(clippy::too_many_arguments)]
+fn overworld_click_menu(
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    net: NonSend<NetRes>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    mut overlay: ResMut<Overlay>,
+    mut inv: ResMut<InventoryData>,
+    mut press: Local<Option<Vec2>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let win = windows.iter().next();
+    // Gather a click point: a no-drag mouse click, or a touch tap.
+    let mut point = None;
+    if let Some(w) = win {
+        if mouse.just_pressed(MouseButton::Left) {
+            *press = w.cursor_position();
+        }
+        if mouse.just_released(MouseButton::Left) {
+            if let (Some(p0), Some(p1)) = (*press, w.cursor_position()) {
+                if p0.distance(p1) < 6.0 {
+                    point = Some(p1);
+                }
+            }
+            *press = None;
+        }
+    }
+    for t in touches.iter_just_pressed() {
+        point = Some(t.position());
+    }
+    let Some(p) = point else { return };
+    if ui_hit.iter().any(|i| *i != Interaction::None) {
+        return; // clicked a UI button, not the world
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    let Ok(ray) = cam.viewport_to_world(cam_tf, p) else { return };
+    let dv = ray.direction.y;
+    if dv.abs() < 1e-6 {
+        return;
+    }
+    let dist = -ray.origin.y / dv;
+    if dist <= 0.0 {
+        return;
+    }
+    let hit = ray.get_point(dist);
+    if let Some(me) = world.entities.get(&session.player_id) {
+        // Tapped on (near) your own avatar → open the party/inventory screen.
+        if Vec2::new(hit.x, hit.z).distance(Vec2::new(me.x, me.y)) < 1.8 {
+            overlay.kind = Some(OverlayKind::Inventory);
+            inv.loaded = false;
+            net.0.fetch_inventory();
+        }
     }
 }
 
@@ -2240,15 +2363,35 @@ fn gather_steer(
     let win = windows.iter().next();
     let joy_zone = win.map(|w| Vec2::new(w.width() * 0.38, w.height())); // left ~third
 
-    // 1) Keyboard (server frame: north = -y).
-    let mut kb = Vec2::ZERO;
-    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) { kb.y -= 1.0; }
-    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) { kb.y += 1.0; }
-    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { kb.x -= 1.0; }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { kb.x += 1.0; }
-    if autoplay.0 { kb.x += 1.0; }
-    if kb != Vec2::ZERO {
-        steer.0 = kb;
+    // Camera ground basis (server frame: x east, y south), so movement is
+    // **camera-relative** — "up" walks the way the camera faces, not a fixed world
+    // axis. Keeps the camera and movement married as you orbit.
+    let (fwd, right) = cam_q
+        .iter()
+        .next()
+        .map(|(_, tf)| {
+            let f = Vec3::from(tf.forward());
+            let r = Vec3::from(tf.right());
+            (
+                Vec2::new(f.x, f.z).normalize_or_zero(),
+                Vec2::new(r.x, r.z).normalize_or_zero(),
+            )
+        })
+        .unwrap_or((Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0)));
+
+    // 1) Keyboard — forward/right in the camera's frame.
+    let mut fwd_amt = 0.0;
+    let mut right_amt = 0.0;
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) { fwd_amt += 1.0; }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) { fwd_amt -= 1.0; }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { right_amt -= 1.0; }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { right_amt += 1.0; }
+    let mut mv = fwd * fwd_amt + right * right_amt;
+    if autoplay.0 {
+        mv += Vec2::new(1.0, 0.0); // demo walks world-east, camera-independent
+    }
+    if mv != Vec2::ZERO {
+        steer.0 = mv;
         tap.0 = None;
         stick.touch = None;
         return;
@@ -2260,10 +2403,11 @@ fn gather_steer(
         match touches.get_pressed(id) {
             Some(t) => {
                 stick.cur = t.position();
-                let v = stick.cur - stick.origin;
-                let mag = v.length();
-                if mag > 4.0 {
-                    steer.0 = (v / 60.0).clamp_length_max(1.0); // full tilt ≈ 60px
+                let v = stick.cur - stick.origin; // screen px, y-down
+                if v.length() > 4.0 {
+                    // Camera-relative: up-drag walks the way the camera faces.
+                    let m = (right * v.x + fwd * -v.y) / 60.0; // full tilt ≈ 60px
+                    steer.0 = m.clamp_length_max(1.0);
                 }
                 tap.0 = None;
                 return;
@@ -2348,8 +2492,6 @@ fn overlay_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     mut overlay: ResMut<Overlay>,
-    mut inv: ResMut<InventoryData>,
-    mut prog: ResMut<ProgressData>,
     roster: Res<PartyRoster>,
     mut rename: ResMut<HeroRename>,
 ) {
@@ -2387,26 +2529,10 @@ fn overlay_input(
         return;
     }
 
+    // ESC closes the menu (which you open by tapping your character — see
+    // `overworld_click_menu`; the inventory/level-up keybinds are gone).
     if keys.just_pressed(KeyCode::Escape) {
         overlay.kind = None;
-    }
-    if keys.just_pressed(KeyCode::KeyI) {
-        if overlay.kind == Some(OverlayKind::Inventory) {
-            overlay.kind = None;
-        } else {
-            overlay.kind = Some(OverlayKind::Inventory);
-            inv.loaded = false;
-            net.0.fetch_inventory();
-        }
-    }
-    if keys.just_pressed(KeyCode::KeyL) {
-        if overlay.kind == Some(OverlayKind::LevelUp) {
-            overlay.kind = None;
-        } else {
-            overlay.kind = Some(OverlayKind::LevelUp);
-            prog.loaded = false;
-            net.0.fetch_progress();
-        }
     }
     // On the party screen, digits 1-4 start renaming that hero slot.
     if overlay.kind == Some(OverlayKind::Inventory) {
@@ -2535,7 +2661,7 @@ fn render_overlay(
                             if g.equipped { Color::srgb(0.6, 0.95, 0.7) } else { dim },
                         );
                     }
-                    label(p, "[ESC] close   [L] level up".into(), 13.0, dim);
+                    label(p, "[ESC] close   [1-4] rename hero".into(), 13.0, dim);
                 }
                 OverlayKind::LevelUp => {
                     label(p, "LEVEL UP".into(), 24.0, gold);
@@ -2576,18 +2702,24 @@ fn sync_overworld_sprites(
     world: Res<Overworld>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
+    time: Res<Time>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
+    // Server snapshots arrive at ~20 Hz; snapping the transform to them each render
+    // frame is what made the pixel sprite jitter. Smooth (exponential) toward the
+    // target on the ground plane instead — the camera follows the *smoothed* player
+    // (see `hd2d_follow`), so sprite and world stay locked together.
+    let k = 1.0 - (-time.delta_secs() * OW_SMOOTH_RATE).exp();
     let mut seen = HashSet::new();
     for (entity, we, mut tf) in &mut q {
         if let Some(e) = world.entities.get(&we.0) {
             // Only the ground-plane position updates; per-kind height/scale/facing
             // stay as spawned (facing is driven by CharSprite/billboard).
-            tf.translation.x = e.x;
-            tf.translation.z = e.y;
+            tf.translation.x += (e.x - tf.translation.x) * k;
+            tf.translation.z += (e.y - tf.translation.z) * k;
             seen.insert(we.0.clone());
         } else {
             commands.entity(entity).despawn();
@@ -2623,7 +2755,7 @@ fn sync_overworld_sprites(
                     WorldEntity(id.clone()),
                     Mesh3d(wa.monster_mesh.clone()),
                     MeshMaterial3d(mat),
-                    Transform::from_translation(world_pos(e.x, e.y, 1.0)),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.68)),
                 ));
             }
             EntityKind::Portal => {
@@ -2739,13 +2871,13 @@ fn spawn_obstacle(
                     p.spawn((
                         Mesh3d(wa.trunk_mesh.clone()),
                         MeshMaterial3d(bark),
-                        Transform::from_xyz(0.0, 0.7, 0.0),
+                        Transform::from_xyz(0.0, 0.45, 0.0),
                     ));
                     p.spawn((
                         Mesh3d(wa.canopy_mesh.clone()),
                         MeshMaterial3d(leaf),
-                        Transform::from_xyz(0.0, 1.6, 0.0)
-                            .with_scale(Vec3::splat((0.55 + r * 0.3).min(1.2))),
+                        Transform::from_xyz(0.0, 1.15, 0.0)
+                            .with_scale(Vec3::splat((0.38 + r * 0.16).min(0.8))),
                     ));
                 });
         }
@@ -2774,7 +2906,8 @@ fn spawn_obstacle(
                 WorldEntity(id.to_string()),
                 Mesh3d(wa.rock_mesh.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_translation(world_pos(e.x, e.y, 0.35 * r)).with_scale(Vec3::splat(r)),
+                Transform::from_translation(world_pos(e.x, e.y, 0.24 * r))
+                    .with_scale(Vec3::splat(r * 0.7)),
             ));
         }
     }
