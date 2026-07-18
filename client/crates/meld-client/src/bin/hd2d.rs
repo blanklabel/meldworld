@@ -68,7 +68,7 @@ impl Default for Look {
             dof_on: true,
             bloom_on: true,
             fog_on: true,
-            sprite_y: 1.1,
+            sprite_y: 0.55, // grounded (sprites carry transparent padding below)
             sprite_scale: 1.0,
         }
     }
@@ -282,40 +282,56 @@ fn setup(
         ));
     }
 
-    // The Psyker sprite (8-dir set; south = facing the camera) as a pixel billboard.
-    // Nearest sampling + alpha-mask keeps it crisp with clean edges + correct depth.
-    // A ROW of the same sprite with different `base_color` **tints** — the cheap
-    // "palette swap" so a party doesn't all look identical (real hue-shift shader
-    // comes later). `HeroSprite` marks them for live grounding via `place_sprites`.
-    let psyker_tex =
-        assets.load("characters/PSYKER_Male/THE_PSYKER_Official/rotations/south.png");
+    // The Psyker (8-directional sprite set) as pixel billboards. Nearest sampling +
+    // alpha-mask = crisp edges, correct depth. A ROW of the same character with
+    // different `base_color` **tints** (the cheap "palette swap" so a party isn't
+    // identical) AND a different **facing** each, to show all rotations render.
+    // In the real game, facing will follow movement (camera-relative 8-way).
     let psyker_quad = meshes.add(Rectangle::new(2.2, 2.2)); // 92×92 sprite is square
-    let tint = |c: Color| StandardMaterial {
-        base_color: c,
-        base_color_texture: Some(psyker_tex.clone()),
+    // A soft round contact shadow so the billboards read as grounded, not pasted on.
+    let shadow_mesh = meshes.add(Circle::new(0.7));
+    let shadow_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.35),
         unlit: true,
-        double_sided: true,
-        cull_mode: None,
-        alpha_mode: AlphaMode::Mask(0.5),
+        alpha_mode: AlphaMode::Blend,
         ..default()
-    };
-    for (i, c) in [
-        Color::WHITE,                    // original
-        Color::srgb(1.0, 0.55, 0.6),     // crimson
-        Color::srgb(0.55, 1.0, 0.6),     // emerald
-        Color::srgb(1.1, 0.9, 0.45),     // gold
-        Color::srgb(0.75, 0.6, 1.15),    // violet
+    });
+    for (i, (dir, c)) in [
+        ("south", Color::WHITE),              // facing camera
+        ("south-east", Color::srgb(1.0, 0.55, 0.6)),
+        ("east", Color::srgb(0.55, 1.0, 0.6)),
+        ("north-east", Color::srgb(1.1, 0.9, 0.45)),
+        ("north", Color::srgb(0.75, 0.6, 1.15)), // facing away
     ]
     .into_iter()
     .enumerate()
     {
         let x = (i as f32 - 2.0) * 3.0; // -6, -3, 0, 3, 6
+        let tex = assets.load(format!(
+            "characters/PSYKER_Male/THE_PSYKER_Official/rotations/{dir}.png"
+        ));
         commands.spawn((
             Mesh3d(psyker_quad.clone()),
-            MeshMaterial3d(mats.add(tint(c))),
+            MeshMaterial3d(mats.add(StandardMaterial {
+                base_color: c,
+                base_color_texture: Some(tex),
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                alpha_mode: AlphaMode::Mask(0.5),
+                ..default()
+            })),
             Transform::from_xyz(x, 1.1, 0.0),
             Billboard,
             HeroSprite,
+        ));
+        // Contact shadow on the ground (flat circle), slightly squashed.
+        commands.spawn((
+            Mesh3d(shadow_mesh.clone()),
+            MeshMaterial3d(shadow_mat.clone()),
+            Transform::from_xyz(x, 0.02, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(1.0, 0.55, 1.0)),
         ));
     }
 
