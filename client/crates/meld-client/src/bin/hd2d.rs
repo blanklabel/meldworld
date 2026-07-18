@@ -341,7 +341,6 @@ fn setup(
     {
         let x = (i as f32 - 2.0) * 3.0; // -6, -3, 0, 3, 6
         // The "Scary_Walking" cycle for this facing: 8 frames, each a tinted material.
-        // (Metadata's folder name is stale; the real path is `.../Scary_Walking/`.)
         let frames: Vec<Handle<StandardMaterial>> = (0..8)
             .map(|f| {
                 let tex = assets.load(format!(
