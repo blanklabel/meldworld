@@ -1032,7 +1032,6 @@ struct WorldAssets {
     portal_mat: Handle<StandardMaterial>,
     // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
     // overworld uses creature billboards from `monster_sprites` instead.
-    monster_mesh: Handle<Mesh>,
     // Painterly rendered-tree billboards (from PR #20) still render the `tree`
     // obstacle; the other vegetation kinds use the CC0 pixel foliage billboards.
     tree_quad: Handle<Mesh>,
@@ -1041,20 +1040,46 @@ struct WorldAssets {
     water_mesh: Handle<Mesh>,
     water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
     ground_mat: Handle<StandardMaterial>,
+    ground_tex: Vec<Handle<Image>>, // per-biome ground textures (see biome_index)
 }
 
 /// Biome tint for the ground, distance-keyed. This now *multiplies* the tiled CC0
 /// grass texture (HDR pipeline, so values >1 brighten), recolouring one grass tile
 /// into forest green / desert sand / ashen / frosty / murky per biome — richer than
 /// the old flat colour band while keeping the geography legible.
+/// Subtle per-biome tint — each biome now has its OWN ground texture (see
+/// `biome_index` / `WorldAssets::ground_tex`), so the tint only nudges the mood
+/// rather than recolouring a single shared texture.
 fn hd2d_ground_color(d: i64) -> Color {
     match biome_display(d) {
-        "Forest" => Color::srgb(0.85, 1.05, 0.70), // lush green
-        "Desert" => Color::srgb(1.35, 1.10, 0.55), // sun-bleached sand
-        "Ashfall" => Color::srgb(0.80, 0.45, 0.40), // scorched
-        "Tundra" => Color::srgb(0.85, 0.98, 1.20), // frosted
-        _ => Color::srgb(0.70, 0.88, 0.62),         // Mire — murky green
+        "Forest" => Color::srgb(0.92, 1.05, 0.85), // fresh green
+        "Desert" => Color::srgb(1.12, 1.02, 0.82), // warm sand
+        "Ashfall" => Color::srgb(1.05, 0.72, 0.66), // scorched
+        "Tundra" => Color::srgb(0.85, 0.95, 1.18), // frosted blue
+        _ => Color::srgb(0.82, 1.0, 0.86),          // Mire — murky green
     }
+}
+
+/// Biome → index into `WorldAssets::ground_tex` (Forest/Desert/Ashfall/Tundra/Mire).
+fn biome_index(d: i64) -> usize {
+    match biome_display(d) {
+        "Forest" => 0,
+        "Desert" => 1,
+        "Ashfall" => 2,
+        "Tundra" => 3,
+        _ => 4,
+    }
+}
+
+/// Load an image with a Repeat sampler so it tiles across the big ground plane.
+fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
+    assets.load_with_settings(path, |s: &mut ImageLoaderSettings| {
+        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            ..ImageSamplerDescriptor::nearest()
+        });
+    })
 }
 
 /// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
@@ -1079,19 +1104,21 @@ fn setup(
     // biome by `hd2d_ground_color`. The grass PNG must repeat (default sampler
     // clamps), so load it with a Repeat address mode; `uv_transform` scales the
     // plane's 0..1 UVs up so each tile is ~3 world units (nearest-sampled → crisp).
-    let grass = assets.load_with_settings(
-        "ground/grass_full.png",
-        |s: &mut ImageLoaderSettings| {
-            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..ImageSamplerDescriptor::nearest()
-            });
-        },
-    );
+    // Per-biome ground textures (green grass in the forest, sand in the desert, …);
+    // `hd2d_follow` swaps the material's texture as you cross biomes.
+    let ground_tex: Vec<Handle<Image>> = [
+        "ground/grass0.png",     // Forest
+        "ground/sand.png",       // Desert
+        "ground/dirt_full.png",  // Ashfall
+        "ground/grass_dark0.png", // Tundra (tinted frost-blue)
+        "ground/moss.png",       // Mire
+    ]
+    .iter()
+    .map(|p| load_tiled(&assets, p))
+    .collect();
     let ground_mat = mats.add(StandardMaterial {
         base_color: hd2d_ground_color(0),
-        base_color_texture: Some(grass),
+        base_color_texture: Some(ground_tex[0].clone()),
         uv_transform: Affine2::from_scale(Vec2::new(2000.0 / 3.0, 600.0 / 3.0)),
         perceptual_roughness: 0.95,
         ..default()
@@ -1220,7 +1247,6 @@ fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         // Painterly tree billboards from assets/landscape (a few rotations read as
         // distinct trees). Unlit + alpha-masked = crisp, art already shaded. (PR #20;
         // render the `tree` obstacle — other vegetation uses the CC0 pixel foliage.)
@@ -1242,7 +1268,7 @@ fn setup(
             })
             .collect(),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
-        water_mesh: meshes.add(Circle::new(1.0)),
+        water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
         water_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(0.22, 0.45, 0.62),
             base_color_texture: Some(images.add(hd2d::water_ripple_texture(96))),
@@ -1253,12 +1279,13 @@ fn setup(
             ..default()
         }),
         ground_mat,
+        ground_tex,
     });
 
     // Drifting clouds: soft white billboard puffs high overhead, anchored around the
     // camera + drifting on the wind (see `drift_clouds`). Deterministic scatter.
     let puff = meshes.add(Rectangle::new(1.0, 1.0));
-    let cloud_tex = images.add(hd2d::soft_disc_texture(128));
+    let cloud_tex = images.add(hd2d::cloud_texture(160)); // puffy silhouette, not a disc
     let cloud_mat = mats.add(StandardMaterial {
         base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
         base_color_texture: Some(cloud_tex.clone()),
@@ -2476,11 +2503,17 @@ fn hd2d_follow(
             fog.map(|f| f.into_inner()),
         );
     }
-    // The sun is owned by `apply_sky` (day/night). Recolour the ground per biome.
+    // The sun is owned by `apply_sky` (day/night). Swap the ground texture + tint to
+    // the player's biome (grass in the forest, sand in the desert, …).
     if let Some(assets) = assets {
         if let Some(m) = mats.get_mut(&assets.ground_mat) {
             let d = (pos.x * pos.x + pos.z * pos.z).sqrt().floor() as i64;
             m.base_color = hd2d_ground_color(d);
+            if let Some(tex) = assets.ground_tex.get(biome_index(d)) {
+                if m.base_color_texture.as_ref() != Some(tex) {
+                    m.base_color_texture = Some(tex.clone());
+                }
+            }
         }
     }
 }
@@ -3434,13 +3467,17 @@ fn spawn_obstacle(
     }
     match name {
         "pond" | "frozen_pond" | "bog_pool" => {
-            // Shared animated water material (scrolled by `animate_water`).
+            // Shared animated water material (scrolled by `animate_water`); spin each
+            // organic blob a different way so pools don't look stamped from one shape.
+            let spin = (hash_pick(id, 360) as f32).to_radians();
             commands.spawn((
                 WorldEntity(id.to_string()),
                 Mesh3d(wa.water_mesh.clone()),
                 MeshMaterial3d(wa.water_mat.clone()),
                 Transform::from_translation(world_pos(e.x, e.y, 0.04))
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_rotation(
+                        Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    )
                     .with_scale(Vec3::splat(r * 2.0)),
             ));
         }
@@ -3602,25 +3639,42 @@ fn sync_battle_actors(
         if seen.contains(&c.id) {
             continue;
         }
-        let col = c
-            .statuses
-            .iter()
-            .find_map(|s| s.strip_prefix("faction:"))
-            .map(faction_color)
-            .unwrap_or(Color::srgb(0.85, 0.3, 0.3));
-        let s = 2.0;
-        let mat = mats.add(StandardMaterial {
-            base_color: col,
-            perceptual_roughness: 0.7,
-            ..default()
-        });
-        commands.spawn((
-            BattleActor { id: c.id.clone() },
-            Mesh3d(wa.monster_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_translation(Vec3::new(spread(i, enemies.len(), 3.2), 0.68 * s, -4.5))
-                .with_scale(Vec3::splat(s)),
-        ));
+        // Same creature billboard the overworld uses: look up by content id (the
+        // combatant name with underscores), else hash into the fallback pool.
+        let kind = c.name.replace(' ', "_");
+        let tex = wa
+            .monster_sprites
+            .get(&kind)
+            .cloned()
+            .or_else(|| {
+                (!wa.monster_pool.is_empty())
+                    .then(|| wa.monster_pool[hash_pick(&c.id, wa.monster_pool.len())].clone())
+            })
+            .unwrap_or_else(|| wa.resource_fallback.clone());
+        let h = 3.4;
+        let root = Vec3::new(spread(i, enemies.len(), 3.6), 0.0, -4.5);
+        let mat = mats.add(hd2d::sprite_material(Color::srgb(1.2, 1.15, 1.1), tex));
+        commands
+            .spawn((
+                BattleActor { id: c.id.clone() },
+                Transform::from_translation(root),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
+                ));
+            });
     }
 }
 

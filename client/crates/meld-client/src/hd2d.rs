@@ -647,6 +647,73 @@ pub fn water_ripple_texture(size: u32) -> Image {
     make_tex(s, data, true)
 }
 
+/// A flat **irregular blob** (triangle fan whose radius wobbles with angle) so pools
+/// don't read as perfect circles. Lies in the XY plane — rotate it flat like a
+/// `Circle`. Spin each instance around Y for variety.
+pub fn blob_mesh(sides: usize) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    use std::f32::consts::TAU;
+    let n = sides.max(8);
+    let mut positions = vec![[0.0f32, 0.0, 0.0]];
+    let mut normals = vec![[0.0f32, 0.0, 1.0]];
+    let mut uvs = vec![[0.5f32, 0.5]];
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        // A couple of low-frequency lobes → a natural, lumpy shoreline.
+        let r = 0.78 + 0.16 * (a * 2.0 + 0.7).sin() + 0.10 * (a * 3.0 + 2.1).sin()
+            + 0.05 * (a * 5.0).sin();
+        positions.push([a.cos() * r, a.sin() * r, 0.0]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([a.cos() * 0.5 * r + 0.5, a.sin() * 0.5 * r + 0.5]);
+    }
+    let mut indices = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        indices.extend_from_slice(&[0, 1 + i as u32, 1 + ((i + 1) % n) as u32]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// A **puffy cloud** silhouette (union of several soft lobes) rather than one round
+/// disc, so clouds + their shadows read organically. White with alpha in the shape.
+pub fn cloud_texture(size: u32) -> Image {
+    let s = size.max(16);
+    let mut data = vec![0u8; (s * s * 4) as usize];
+    // Overlapping soft circles (cx, cy, radius) forming a lumpy cloud.
+    let lobes = [
+        (0.50, 0.58, 0.30),
+        (0.30, 0.62, 0.20),
+        (0.70, 0.60, 0.21),
+        (0.40, 0.48, 0.22),
+        (0.62, 0.46, 0.20),
+        (0.50, 0.40, 0.16),
+    ];
+    for y in 0..s {
+        for x in 0..s {
+            let u = x as f32 / s as f32;
+            let v = y as f32 / s as f32;
+            let mut a = 0.0f32;
+            for (cx, cy, r) in lobes {
+                let d = (((u - cx).powi(2) + (v - cy).powi(2)).sqrt() / r).min(1.0);
+                a += 1.0 - d;
+            }
+            let a = (a * 0.85).clamp(0.0, 1.0);
+            let a = a * a; // feathered edge
+            let i = ((y * s + x) * 4) as usize;
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = (a * 255.0) as u8;
+        }
+    }
+    make_tex(s, data, true)
+}
+
 /// A soft round contact-shadow material (blended dark disc) to ground billboards,
 /// which the sun's real shadows can't touch (they're unlit).
 pub fn contact_shadow_material() -> StandardMaterial {
