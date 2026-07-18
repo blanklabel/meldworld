@@ -86,15 +86,15 @@ impl Default for Look {
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
             aperture: 3.5, // subtle tilt-shift — blur the far field, keep play sharp
             bloom: 0.28,
-            fog_start: 70.0,
-            fog_end: 360.0, // far enough that the horizon clouds still read
+            fog_start: 110.0,
+            fog_end: 520.0, // extended draw distance (cheap: ground is one mesh)
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
             dof_on: true,
             bloom_on: true,
             fog_on: true,
-            sprite_y: 0.9,      // grounds the padded sprite at sprite_scale ≈ 1.6
+            sprite_y: 0.72,     // grounds the padded sprite at sprite_scale ≈ 1.6
             sprite_scale: 1.6,  // hero reads prominently in the diorama
             fov: 36.0,
             dof_sensor: 0.05,
@@ -110,6 +110,12 @@ pub struct LookWatch(pub Option<SystemTime>);
 /// Tag: rotate to face the camera (yaw only) each frame — see [`billboard`].
 #[derive(Component)]
 pub struct Billboard;
+
+/// Tag: a character sprite billboard whose footing + size are driven live from the
+/// `Look` (see [`place_billboards`]). Distinct from [`Billboard`] so trees/clouds
+/// (which also billboard) keep their own spawn scale + height.
+#[derive(Component)]
+pub struct HeroBillboard;
 
 // ---- post-stack component builders ------------------------------------------
 
@@ -262,7 +268,7 @@ pub fn maybe_screenshot(commands: &mut Commands) {
 /// System: ground + scale every [`Billboard`] from the live `Look` (so a sprite's
 /// footing and size can be tuned by eye without respawning). Sets local
 /// translation.y + scale only; [`billboard`] sets rotation, so they don't fight.
-pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<Billboard>>) {
+pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroBillboard>>) {
     for mut t in &mut q {
         t.translation.y = look.sprite_y;
         t.scale = Vec3::splat(look.sprite_scale);

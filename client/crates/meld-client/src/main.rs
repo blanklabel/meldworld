@@ -999,8 +999,8 @@ struct WorldAssets {
     portal_mat: Handle<StandardMaterial>,
     gem_mesh: Handle<Mesh>,
     resource_mat: Handle<StandardMaterial>,
-    trunk_mesh: Handle<Mesh>,
-    canopy_mesh: Handle<Mesh>,
+    tree_quad: Handle<Mesh>,
+    tree_mats: Vec<Handle<StandardMaterial>>, // painterly tree billboards (variety)
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
     ground_mat: Handle<StandardMaterial>,
@@ -1075,14 +1075,34 @@ fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        gem_mesh: meshes.add(Sphere::new(0.45)),
+        // Harvest node: a small grounded crystal (a diamond prism), not a floating
+        // orb — reads as a gatherable resource, glows gently.
+        gem_mesh: meshes.add(Cuboid::new(0.42, 0.9, 0.42)),
         resource_mat: mats.add(StandardMaterial {
-            base_color: Color::srgb(0.8, 0.7, 0.2),
-            emissive: LinearRgba::rgb(4.0, 3.0, 0.5),
+            base_color: Color::srgb(0.85, 0.72, 0.28),
+            emissive: LinearRgba::rgb(1.6, 1.2, 0.3),
+            perceptual_roughness: 0.2,
             ..default()
         }),
-        trunk_mesh: meshes.add(Cylinder::new(0.14, 0.9)),
-        canopy_mesh: meshes.add(Sphere::new(1.1)),
+        // Painterly tree billboards from assets/landscape (a few rotations read as
+        // distinct trees). Unlit + alpha-masked = crisp, art already shaded.
+        tree_quad: meshes.add(Rectangle::new(1.0, 1.0)),
+        tree_mats: [1usize, 5, 10, 14, 19, 23]
+            .into_iter()
+            .map(|f| {
+                mats.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    base_color_texture: Some(assets.load(format!(
+                        "landscape/Tree01/Green/256x256/Tree01_{f:04}.png"
+                    ))),
+                    unlit: true,
+                    double_sided: true,
+                    cull_mode: None,
+                    alpha_mode: AlphaMode::Mask(0.5),
+                    ..default()
+                })
+            })
+            .collect(),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         water_mesh: meshes.add(Circle::new(1.0)),
         ground_mat,
@@ -1094,7 +1114,7 @@ fn setup(
     let cloud_tex = images.add(hd2d::soft_disc_texture(128));
     let cloud_mat = mats.add(StandardMaterial {
         base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        base_color_texture: Some(cloud_tex),
+        base_color_texture: Some(cloud_tex.clone()),
         // Mild emissive so the clouds stay bright through the distance fog instead of
         // fading into the sky (they sit near the horizon, where fog is strong).
         emissive: LinearRgba::rgb(0.7, 0.75, 0.82),
@@ -1104,6 +1124,18 @@ fn setup(
         cull_mode: None,
         ..default()
     });
+    // Cloud-shadow material — the same soft disc, dark + transparent, laid flat on
+    // the ground and drifting so shadows sweep across as clouds pass overhead.
+    let cloud_shadow_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.0, 0.0, 0.0, 0.24),
+        base_color_texture: Some(cloud_tex),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let mut s: u64 = 0x9E37_79B9;
     let mut rnd = || {
         s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -1124,7 +1156,27 @@ fn setup(
             hd2d::Billboard,
         ));
     }
+    // Cloud shadows sweeping the ground *around the player* (independent of the
+    // horizon clouds), so you see shade pass over you as the wind blows.
+    for _ in 0..11 {
+        let off = Vec2::new((rnd() - 0.5) * 300.0, (rnd() - 0.5) * 300.0);
+        let sz = 34.0 + rnd() * 46.0;
+        commands.spawn((
+            Cloud { off, y: 0.1 },
+            CloudShadow,
+            Mesh3d(puff.clone()),
+            MeshMaterial3d(cloud_shadow_mat.clone()),
+            Transform::from_translation(Vec3::new(off.x, 0.1, off.y))
+                .with_rotation(flat)
+                .with_scale(Vec3::new(sz, sz * 0.72, 1.0)),
+        ));
+    }
 }
+
+/// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
+/// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
+#[derive(Component)]
+struct CloudShadow;
 
 /// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
 /// plane (so clouds stay overhead as you travel), `y` its altitude.
@@ -2772,7 +2824,8 @@ fn sync_overworld_sprites(
                     WorldEntity(id.clone()),
                     Mesh3d(wa.gem_mesh.clone()),
                     MeshMaterial3d(wa.resource_mat.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.5)),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.45))
+                        .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_4)),
                 ));
             }
             EntityKind::Obstacle => {
@@ -2826,6 +2879,7 @@ fn spawn_player_avatar(
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, look.sprite_y, 0.0),
                 hd2d::Billboard,
+                hd2d::HeroBillboard,
             ));
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
@@ -2851,16 +2905,17 @@ fn spawn_obstacle(
     let col = obstacle_color(name);
     match name {
         "tree" | "cactus" | "mire_root" | "fungal_wall" => {
-            let bark = mats.add(StandardMaterial {
-                base_color: Color::srgb(0.35, 0.22, 0.12),
-                perceptual_roughness: 1.0,
-                ..default()
-            });
-            let leaf = mats.add(StandardMaterial {
-                base_color: col,
-                perceptual_roughness: 0.9,
-                ..default()
-            });
+            // Painterly tree billboard, variant picked deterministically from the id.
+            let mut hsh: u32 = 2166136261;
+            for b in id.bytes() {
+                hsh = (hsh ^ b as u32).wrapping_mul(16777619);
+            }
+            let mat = wa
+                .tree_mats
+                .get(hsh as usize % wa.tree_mats.len().max(1))
+                .cloned()
+                .unwrap_or_default();
+            let h = 4.6 * (0.85 + r * 0.28).clamp(0.85, 1.7);
             commands
                 .spawn((
                     WorldEntity(id.to_string()),
@@ -2869,15 +2924,18 @@ fn spawn_obstacle(
                 ))
                 .with_children(|p| {
                     p.spawn((
-                        Mesh3d(wa.trunk_mesh.clone()),
-                        MeshMaterial3d(bark),
-                        Transform::from_xyz(0.0, 0.45, 0.0),
+                        Mesh3d(wa.tree_quad.clone()),
+                        MeshMaterial3d(mat),
+                        Transform::from_translation(Vec3::new(0.0, h * 0.44, 0.0))
+                            .with_scale(Vec3::new(h, h, 1.0)),
+                        hd2d::Billboard,
                     ));
                     p.spawn((
-                        Mesh3d(wa.canopy_mesh.clone()),
-                        MeshMaterial3d(leaf),
-                        Transform::from_xyz(0.0, 1.15, 0.0)
-                            .with_scale(Vec3::splat((0.38 + r * 0.16).min(0.8))),
+                        Mesh3d(wa.shadow_mesh.clone()),
+                        MeshMaterial3d(wa.shadow_mat.clone()),
+                        Transform::from_xyz(0.0, 0.03, 0.0)
+                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                            .with_scale(Vec3::new(h * 0.3, h * 0.17, 1.0)),
                     ));
                 });
         }
