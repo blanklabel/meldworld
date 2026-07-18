@@ -272,7 +272,11 @@ pub fn billboard(
     for mut t in &mut q {
         let mut at = cam.translation;
         at.y = t.translation.y; // upright — yaw only
-        let dir = (t.translation - at).normalize_or_zero();
+        // Face the quad's FRONT (+Z) toward the camera. Using the away-vector would
+        // show the back face — mirroring the sprite so side facings point the wrong
+        // way (a right-facing "east" sprite reads as walking left). Toward-camera
+        // also keeps the cylindrical lighting normals bowed at the viewer.
+        let dir = (at - t.translation).normalize_or_zero();
         if dir.length_squared() > 0.0 {
             t.rotation = Quat::from_rotation_arc(Vec3::Z, dir);
         }
