@@ -13,6 +13,11 @@ use bevy::core_pipeline::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
+use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
+
+/// Where screenshots land — an absolute path so it works from any worktree, and
+/// one Claude can read back to see exactly what you see. Press F12 to capture.
+const SHOT_DIR: &str = "/tmp";
 
 /// Every knob the scene exposes. Tweak live; the readout prints current values.
 #[derive(Resource)]
@@ -59,6 +64,10 @@ impl Default for Look {
 #[derive(Resource)]
 struct CamEntity(Entity);
 
+/// Monotonic screenshot counter so successive captures don't clobber each other.
+#[derive(Resource, Default)]
+struct ShotN(u32);
+
 #[derive(Component)]
 struct Billboard;
 
@@ -85,8 +94,9 @@ fn main() {
             ..default()
         })
         .init_resource::<Look>()
+        .init_resource::<ShotN>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (control, apply, billboard, hud).chain())
+        .add_systems(Update, (control, apply, billboard, hud, screenshot).chain())
         .run();
 }
 
@@ -416,4 +426,24 @@ fn hud(look: Res<Look>, mut q: Query<&mut Text, With<HudText>>) {
         look.sun_pitch, look.sun_yaw,
         onoff(look.orbit),
     );
+    // Extra HUD line: how to hand a frame to Claude.
+    t.0.push_str("\nF12 = save screenshot (→ /tmp/meld-hd2d-N.png, Claude can read it)");
+}
+
+/// F12 → capture the window to `/tmp/meld-hd2d-N.png`. The path prints to the
+/// console; since it's a plain file on disk, Claude can read it back and see the
+/// exact frame you're looking at.
+fn screenshot(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut n: ResMut<ShotN>,
+) {
+    if keys.just_pressed(KeyCode::F12) {
+        let path = format!("{SHOT_DIR}/meld-hd2d-{}.png", n.0);
+        n.0 += 1;
+        info!("📸 saving screenshot → {path}");
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+    }
 }
