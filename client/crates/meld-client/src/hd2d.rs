@@ -558,6 +558,162 @@ pub fn soft_disc_texture(size: u32) -> Image {
     )
 }
 
+/// Cheap value-noise hash in [0,1).
+fn hash2(x: u32, y: u32) -> f32 {
+    let mut h = x.wrapping_mul(374761393).wrapping_add(y.wrapping_mul(668265263));
+    h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+    ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
+}
+
+fn repeat_sampler(linear: bool) -> bevy::image::ImageSampler {
+    use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+    let f = if linear {
+        ImageFilterMode::Linear
+    } else {
+        ImageFilterMode::Nearest
+    };
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        mag_filter: f,
+        min_filter: f,
+        ..default()
+    })
+}
+
+fn make_tex(s: u32, data: Vec<u8>, linear: bool) -> Image {
+    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let mut img = Image::new(
+        Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    img.sampler = repeat_sampler(linear);
+    img
+}
+
+/// A **grayscale** tiling grass detail (luminance variation + blade streaks) — the
+/// ground material's `base_color` (per biome) tints it. Repeat-sampled for tiling.
+pub fn grass_texture(size: u32) -> Image {
+    let s = size.max(8);
+    let mut data = vec![0u8; (s * s * 4) as usize];
+    for y in 0..s {
+        for x in 0..s {
+            // A couple of noise octaves + faint vertical blades.
+            let n = hash2(x, y) * 0.45
+                + hash2(x / 2, y / 3) * 0.35
+                + hash2(x / 5, y / 6) * 0.20;
+            let blade = ((x as f32 * 0.9).sin() * 0.5 + 0.5) * 0.12;
+            let l = (0.62 + n * 0.42 + blade - 0.06).clamp(0.35, 1.0);
+            // Slightly green-biased so shaded ground still reads leafy.
+            let v = |m: f32| ((l * m) * 255.0) as u8;
+            let i = ((y * s + x) * 4) as usize;
+            data[i] = v(0.9);
+            data[i + 1] = v(1.0);
+            data[i + 2] = v(0.82);
+            data[i + 3] = 255;
+        }
+    }
+    make_tex(s, data, true)
+}
+
+/// A tiling water ripple (soft interfering waves), scrolled + tinted by the water
+/// material. Repeat-sampled.
+pub fn water_ripple_texture(size: u32) -> Image {
+    use std::f32::consts::TAU;
+    let s = size.max(8);
+    let mut data = vec![0u8; (s * s * 4) as usize];
+    for y in 0..s {
+        for x in 0..s {
+            let u = x as f32 / s as f32;
+            let v = y as f32 / s as f32;
+            // Sum of a few sine waves → seamless because frequencies are integers.
+            let w = (((u * 3.0 + v * 2.0) * TAU).sin()
+                + ((u * 2.0 - v * 4.0) * TAU).sin()
+                + ((u * 5.0 + v * 5.0) * TAU).sin() * 0.5)
+                / 2.5;
+            let l = (0.6 + w * 0.4).clamp(0.2, 1.0);
+            let hi = ((w * 0.5 + 0.5).powf(6.0) * 255.0) as u8; // sparkle in alpha-ish
+            let i = ((y * s + x) * 4) as usize;
+            data[i] = (l * 0.7 * 255.0) as u8;
+            data[i + 1] = (l * 0.88 * 255.0) as u8;
+            data[i + 2] = (l * 255.0) as u8;
+            data[i + 3] = 210 + (hi / 6);
+        }
+    }
+    make_tex(s, data, true)
+}
+
+/// A flat **irregular blob** (triangle fan whose radius wobbles with angle) so pools
+/// don't read as perfect circles. Lies in the XY plane — rotate it flat like a
+/// `Circle`. Spin each instance around Y for variety.
+pub fn blob_mesh(sides: usize) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    use std::f32::consts::TAU;
+    let n = sides.max(8);
+    let mut positions = vec![[0.0f32, 0.0, 0.0]];
+    let mut normals = vec![[0.0f32, 0.0, 1.0]];
+    let mut uvs = vec![[0.5f32, 0.5]];
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        // A couple of low-frequency lobes → a natural, lumpy shoreline.
+        let r = 0.78 + 0.16 * (a * 2.0 + 0.7).sin() + 0.10 * (a * 3.0 + 2.1).sin()
+            + 0.05 * (a * 5.0).sin();
+        positions.push([a.cos() * r, a.sin() * r, 0.0]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push([a.cos() * 0.5 * r + 0.5, a.sin() * 0.5 * r + 0.5]);
+    }
+    let mut indices = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        indices.extend_from_slice(&[0, 1 + i as u32, 1 + ((i + 1) % n) as u32]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+/// A **puffy cloud** silhouette (union of several soft lobes) rather than one round
+/// disc, so clouds + their shadows read organically. White with alpha in the shape.
+pub fn cloud_texture(size: u32) -> Image {
+    let s = size.max(16);
+    let mut data = vec![0u8; (s * s * 4) as usize];
+    // Overlapping soft circles (cx, cy, radius) forming a lumpy cloud.
+    let lobes = [
+        (0.50, 0.58, 0.30),
+        (0.30, 0.62, 0.20),
+        (0.70, 0.60, 0.21),
+        (0.40, 0.48, 0.22),
+        (0.62, 0.46, 0.20),
+        (0.50, 0.40, 0.16),
+    ];
+    for y in 0..s {
+        for x in 0..s {
+            let u = x as f32 / s as f32;
+            let v = y as f32 / s as f32;
+            let mut a = 0.0f32;
+            for (cx, cy, r) in lobes {
+                let d = (((u - cx).powi(2) + (v - cy).powi(2)).sqrt() / r).min(1.0);
+                a += 1.0 - d;
+            }
+            let a = (a * 0.85).clamp(0.0, 1.0);
+            let a = a * a; // feathered edge
+            let i = ((y * s + x) * 4) as usize;
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = (a * 255.0) as u8;
+        }
+    }
+    make_tex(s, data, true)
+}
+
 /// A soft round contact-shadow material (blended dark disc) to ground billboards,
 /// which the sun's real shadows can't touch (they're unlit).
 pub fn contact_shadow_material() -> StandardMaterial {

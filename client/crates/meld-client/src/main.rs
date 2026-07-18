@@ -173,6 +173,7 @@ fn main() {
             started: false,
         })
         .init_resource::<Session>()
+        .init_resource::<Sky>()
         .init_resource::<MoveClock>()
         .init_resource::<BattleMenu>()
         .init_resource::<HitFx>()
@@ -195,8 +196,21 @@ fn main() {
             (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
-        // (hot-reload look params + honour screenshot requests), and cloud drift.
-        .add_systems(Update, (pump_net, demo_driver, hd2d_remote, drift_clouds))
+        // (hot-reload look params + honour screenshot requests), cloud drift, and
+        // the day/night + weather sky.
+        .add_systems(
+            Update,
+            (
+                pump_net,
+                demo_driver,
+                hd2d_remote,
+                drift_clouds,
+                advance_sky,
+                apply_sky,
+                anchor_sky_fx,
+                animate_water,
+            ),
+        )
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
@@ -1018,28 +1032,54 @@ struct WorldAssets {
     portal_mat: Handle<StandardMaterial>,
     // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
     // overworld uses creature billboards from `monster_sprites` instead.
-    monster_mesh: Handle<Mesh>,
     // Painterly rendered-tree billboards (from PR #20) still render the `tree`
     // obstacle; the other vegetation kinds use the CC0 pixel foliage billboards.
     tree_quad: Handle<Mesh>,
     tree_mats: Vec<Handle<StandardMaterial>>,
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
+    water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
     ground_mat: Handle<StandardMaterial>,
+    ground_tex: Vec<Handle<Image>>, // per-biome ground textures (see biome_index)
 }
 
 /// Biome tint for the ground, distance-keyed. This now *multiplies* the tiled CC0
 /// grass texture (HDR pipeline, so values >1 brighten), recolouring one grass tile
 /// into forest green / desert sand / ashen / frosty / murky per biome — richer than
 /// the old flat colour band while keeping the geography legible.
+/// Subtle per-biome tint — each biome now has its OWN ground texture (see
+/// `biome_index` / `WorldAssets::ground_tex`), so the tint only nudges the mood
+/// rather than recolouring a single shared texture.
 fn hd2d_ground_color(d: i64) -> Color {
     match biome_display(d) {
-        "Forest" => Color::srgb(0.85, 1.05, 0.70), // lush green
-        "Desert" => Color::srgb(1.35, 1.10, 0.55), // sun-bleached sand
-        "Ashfall" => Color::srgb(0.80, 0.45, 0.40), // scorched
-        "Tundra" => Color::srgb(0.85, 0.98, 1.20), // frosted
-        _ => Color::srgb(0.70, 0.88, 0.62),         // Mire — murky green
+        "Forest" => Color::srgb(0.92, 1.05, 0.85), // fresh green
+        "Desert" => Color::srgb(1.12, 1.02, 0.82), // warm sand
+        "Ashfall" => Color::srgb(1.05, 0.72, 0.66), // scorched
+        "Tundra" => Color::srgb(0.85, 0.95, 1.18), // frosted blue
+        _ => Color::srgb(0.82, 1.0, 0.86),          // Mire — murky green
     }
+}
+
+/// Biome → index into `WorldAssets::ground_tex` (Forest/Desert/Ashfall/Tundra/Mire).
+fn biome_index(d: i64) -> usize {
+    match biome_display(d) {
+        "Forest" => 0,
+        "Desert" => 1,
+        "Ashfall" => 2,
+        "Tundra" => 3,
+        _ => 4,
+    }
+}
+
+/// Load an image with a Repeat sampler so it tiles across the big ground plane.
+fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
+    assets.load_with_settings(path, |s: &mut ImageLoaderSettings| {
+        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            ..ImageSamplerDescriptor::nearest()
+        });
+    })
 }
 
 /// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
@@ -1064,19 +1104,21 @@ fn setup(
     // biome by `hd2d_ground_color`. The grass PNG must repeat (default sampler
     // clamps), so load it with a Repeat address mode; `uv_transform` scales the
     // plane's 0..1 UVs up so each tile is ~3 world units (nearest-sampled → crisp).
-    let grass = assets.load_with_settings(
-        "ground/grass_full.png",
-        |s: &mut ImageLoaderSettings| {
-            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..ImageSamplerDescriptor::nearest()
-            });
-        },
-    );
+    // Per-biome ground textures (green grass in the forest, sand in the desert, …);
+    // `hd2d_follow` swaps the material's texture as you cross biomes.
+    let ground_tex: Vec<Handle<Image>> = [
+        "ground/grass0.png",     // Forest
+        "ground/sand.png",       // Desert
+        "ground/dirt_full.png",  // Ashfall
+        "ground/grass_dark0.png", // Tundra (tinted frost-blue)
+        "ground/moss.png",       // Mire
+    ]
+    .iter()
+    .map(|p| load_tiled(&assets, p))
+    .collect();
     let ground_mat = mats.add(StandardMaterial {
         base_color: hd2d_ground_color(0),
-        base_color_texture: Some(grass),
+        base_color_texture: Some(ground_tex[0].clone()),
         uv_transform: Affine2::from_scale(Vec2::new(2000.0 / 3.0, 600.0 / 3.0)),
         perceptual_roughness: 0.95,
         ..default()
@@ -1205,7 +1247,6 @@ fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         // Painterly tree billboards from assets/landscape (a few rotations read as
         // distinct trees). Unlit + alpha-masked = crisp, art already shaded. (PR #20;
         // render the `tree` obstacle — other vegetation uses the CC0 pixel foliage.)
@@ -1227,14 +1268,24 @@ fn setup(
             })
             .collect(),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
-        water_mesh: meshes.add(Circle::new(1.0)),
+        water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
+        water_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.22, 0.45, 0.62),
+            base_color_texture: Some(images.add(hd2d::water_ripple_texture(96))),
+            emissive: LinearRgba::rgb(0.02, 0.06, 0.1), // faint sky sheen
+            perceptual_roughness: 0.12,                 // reflective
+            metallic: 0.1,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
         ground_mat,
+        ground_tex,
     });
 
     // Drifting clouds: soft white billboard puffs high overhead, anchored around the
     // camera + drifting on the wind (see `drift_clouds`). Deterministic scatter.
     let puff = meshes.add(Rectangle::new(1.0, 1.0));
-    let cloud_tex = images.add(hd2d::soft_disc_texture(128));
+    let cloud_tex = images.add(hd2d::cloud_texture(160)); // puffy silhouette, not a disc
     let cloud_mat = mats.add(StandardMaterial {
         base_color: Color::srgba(1.0, 1.0, 1.0, 1.0),
         base_color_texture: Some(cloud_tex.clone()),
@@ -1294,6 +1345,50 @@ fn setup(
                 .with_scale(Vec3::new(sz, sz * 0.72, 1.0)),
         ));
     }
+    commands.insert_resource(SkyMats { cloud: cloud_mat });
+
+    // Stars — tiny emissive points on a camera-anchored dome, shown only at night.
+    let star_mesh = meshes.add(Sphere::new(0.12));
+    let star_mat = mats.add(StandardMaterial {
+        base_color: Color::WHITE,
+        emissive: LinearRgba::rgb(6.0, 6.0, 7.0),
+        unlit: true,
+        ..default()
+    });
+    for _ in 0..200 {
+        // Far + low so they sit in the thin sky band near the horizon (the only sky
+        // a low-pitch diorama camera actually shows).
+        let ang = rnd() * std::f32::consts::TAU;
+        let r = 200.0 + rnd() * 260.0;
+        let off = Vec3::new(ang.cos() * r, 10.0 + rnd() * 55.0, ang.sin() * r);
+        commands.spawn((
+            Star { off },
+            Mesh3d(star_mesh.clone()),
+            MeshMaterial3d(star_mat.clone()),
+            Transform::from_translation(off).with_scale(Vec3::splat(0.6 + rnd() * 1.4)),
+            Visibility::Hidden,
+        ));
+    }
+
+    // Rain — a camera-anchored column of thin streaks, shown only while it rains.
+    let drop_mesh = meshes.add(Cuboid::new(0.03, 0.9, 0.03));
+    let drop_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.75, 0.82, 0.95, 0.55),
+        emissive: LinearRgba::rgb(0.3, 0.35, 0.45),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    for _ in 0..320 {
+        let off = Vec3::new((rnd() - 0.5) * 60.0, rnd() * 30.0, (rnd() - 0.5) * 60.0);
+        commands.spawn((
+            RainDrop { off },
+            Mesh3d(drop_mesh.clone()),
+            MeshMaterial3d(drop_mat.clone()),
+            Transform::from_translation(off),
+            Visibility::Hidden,
+        ));
+    }
 }
 
 /// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
@@ -1329,6 +1424,186 @@ fn drift_clouds(
         tf.translation.x = cam.x + c.off.x;
         tf.translation.z = cam.z + c.off.y;
         tf.translation.y = c.y;
+    }
+}
+
+// ============================ time of day + weather ========================
+
+/// Seconds for one full day → night → day cycle.
+const DAY_LEN: f32 = 210.0;
+
+/// Time of day (`t`: 0 = midnight, 0.5 = noon) + weather (`0` clear .. `1` rain),
+/// which together drive the sun, ambient, sky/fog colour, stars, and rain.
+#[derive(Resource)]
+struct Sky {
+    t: f32,
+    weather: f32,
+    weather_target: f32,
+    weather_timer: f32,
+}
+impl Default for Sky {
+    fn default() -> Self {
+        Sky { t: 0.36, weather: 0.0, weather_target: 0.0, weather_timer: 55.0 }
+    }
+}
+
+/// Material handles `apply_sky` modulates over the day (cloud glow).
+#[derive(Resource, Default)]
+struct SkyMats {
+    cloud: Handle<StandardMaterial>,
+}
+
+/// A background star, camera-anchored (`off`) and shown only at night.
+#[derive(Component)]
+struct Star {
+    off: Vec3,
+}
+
+/// A rain streak, camera-anchored (`off`); falls + wraps, shown only when raining.
+#[derive(Component)]
+struct RainDrop {
+    off: Vec3,
+}
+
+/// Lerp two colours in sRGB space.
+fn mix_col(a: Color, b: Color, t: f32) -> Color {
+    let (a, b) = (Srgba::from(a), Srgba::from(b));
+    Srgba::new(
+        a.red + (b.red - a.red) * t,
+        a.green + (b.green - a.green) * t,
+        a.blue + (b.blue - a.blue) * t,
+        1.0,
+    )
+    .into()
+}
+
+/// Advance the day clock and roll the weather (longer clear spells than rain).
+fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
+    let dt = time.delta_secs();
+    sky.t = (sky.t + dt / DAY_LEN).fract();
+    sky.weather_timer -= dt;
+    if sky.weather_timer <= 0.0 {
+        sky.weather_target = if sky.weather_target > 0.5 { 0.0 } else { 1.0 };
+        sky.weather_timer = if sky.weather_target > 0.5 { 32.0 } else { 75.0 };
+    }
+    let rate = 0.2 * dt;
+    sky.weather += (sky.weather_target - sky.weather).clamp(-rate, rate);
+}
+
+/// Drive the sun (angle/colour/brightness), ambient, sky + fog colour, star
+/// visibility, and cloud glow from the time of day + weather. Owns the sun light
+/// (so `hd2d_follow`/`battle_camera` no longer touch it).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn apply_sky(
+    sky: Res<Sky>,
+    skymats: Option<Res<SkyMats>>,
+    mut clear: ResMut<ClearColor>,
+    mut ambient: ResMut<AmbientLight>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut sun_q: Query<(&mut Transform, &mut DirectionalLight)>,
+    mut fog_q: Query<&mut bevy::pbr::DistanceFog, With<Camera3d>>,
+    mut stars: Query<&mut Visibility, With<Star>>,
+) {
+    use std::f32::consts::TAU;
+    let sun_h = ((sky.t - 0.25) * TAU).sin(); // +1 at noon, -1 at midnight
+    // Slower transition = a longer golden hour at dawn/dusk.
+    let day = ((sun_h + 0.14) / 0.36).clamp(0.0, 1.0); // 0 night → 1 day
+    let dusk = ((0.30 - sun_h.abs()).max(0.0) / 0.30).powf(1.2); // horizon glow
+    let rain = sky.weather;
+
+    let night_sky = Color::srgb(0.03, 0.05, 0.10);
+    let day_sky = Color::srgb(0.50, 0.72, 0.93);
+    let dusk_sky = Color::srgb(0.66, 0.42, 0.30);
+    let rain_sky = Color::srgb(0.36, 0.40, 0.44);
+    let mut sky_col = mix_col(night_sky, day_sky, day);
+    sky_col = mix_col(sky_col, dusk_sky, dusk * 0.6);
+    sky_col = mix_col(sky_col, rain_sky, rain * 0.7 * (0.35 + day * 0.65));
+    clear.0 = sky_col;
+    if let Ok(mut fog) = fog_q.single_mut() {
+        fog.color = mix_col(sky_col, Color::WHITE, 0.04);
+    }
+
+    if let Ok((mut t, mut light)) = sun_q.single_mut() {
+        // Keep a shallow angle even at night so the "moon" casts soft directional light.
+        let pitch = (sun_h.abs() * 66.0).max(12.0);
+        let yaw = 40.0 + (sky.t - 0.5) * 55.0; // arc east → west across the day
+        *t = Transform::from_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            yaw.to_radians(),
+            -pitch.to_radians(),
+            0.0,
+        ));
+        let noon = Color::srgb(1.0, 0.97, 0.9);
+        let warm = Color::srgb(1.0, 0.6, 0.38);
+        let moon = Color::srgb(0.55, 0.65, 0.95);
+        light.color = mix_col(moon, mix_col(warm, noon, day), day);
+        // Full sun by day; a dim cool moon fill at night.
+        light.illuminance = (day * 9200.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
+    }
+
+    // Moonlit-blue at night (not black), warm-white by day.
+    ambient.color = mix_col(Color::srgb(0.34, 0.42, 0.68), Color::srgb(0.6, 0.7, 0.85), day);
+    ambient.brightness = (95.0 + day * 165.0) * (1.0 - rain * 0.35);
+
+    let star_vis = if day < 0.22 && rain < 0.45 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut stars {
+        *v = star_vis;
+    }
+
+    if let Some(sm) = skymats {
+        if let Some(m) = mats.get_mut(&sm.cloud) {
+            let g = (0.14 + day * 0.86) * (1.0 - rain * 0.25);
+            m.emissive = LinearRgba::rgb(0.72 * g, 0.75 * g, 0.82 * g);
+            m.base_color = Color::srgba(1.0, 1.0, 1.0, (0.72 + day * 0.28) * (1.0 - rain * 0.2));
+        }
+    }
+}
+
+/// Keep stars + rain anchored around the camera (they'd otherwise be left behind).
+fn anchor_sky_fx(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    time: Res<Time>,
+    sky: Res<Sky>,
+    mut stars: Query<(&Star, &mut Transform), (Without<Camera3d>, Without<RainDrop>)>,
+    mut rain: Query<(&mut RainDrop, &mut Transform, &mut Visibility), Without<Camera3d>>,
+) {
+    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    for (s, mut t) in &mut stars {
+        t.translation = cam + s.off;
+    }
+    let raining = sky.weather > 0.05;
+    let vis = if raining { Visibility::Inherited } else { Visibility::Hidden };
+    let dt = time.delta_secs();
+    for (mut d, mut t, mut v) in &mut rain {
+        *v = vis;
+        if raining {
+            d.off.y -= 55.0 * dt; // fall
+            if d.off.y < 0.0 {
+                d.off.y += 30.0; // wrap to the top of the column
+            }
+            t.translation = Vec3::new(cam.x + d.off.x, d.off.y, cam.z + d.off.z);
+        }
+    }
+}
+
+/// Scroll the shared water ripple so pools shimmer + drift (all water at once).
+fn animate_water(
+    time: Res<Time>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(wa) = wa else { return };
+    if let Some(m) = mats.get_mut(&wa.water_mat) {
+        let t = time.elapsed_secs();
+        m.uv_transform = bevy::math::Affine2::from_scale_angle_translation(
+            Vec2::splat(2.2),
+            0.0,
+            Vec2::new(t * 0.035, t * 0.055),
+        );
     }
 }
 
@@ -2209,7 +2484,6 @@ fn hd2d_follow(
         ),
         With<Camera3d>,
     >,
-    mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
 ) {
     let Some(pos) = players
         .iter()
@@ -2229,14 +2503,17 @@ fn hd2d_follow(
             fog.map(|f| f.into_inner()),
         );
     }
-    if let Ok(mut t) = sun_q.single_mut() {
-        *t = hd2d::sun_transform(&look);
-    }
-    // Recolour the ground to the biome at the player's distance.
+    // The sun is owned by `apply_sky` (day/night). Swap the ground texture + tint to
+    // the player's biome (grass in the forest, sand in the desert, …).
     if let Some(assets) = assets {
         if let Some(m) = mats.get_mut(&assets.ground_mat) {
             let d = (pos.x * pos.x + pos.z * pos.z).sqrt().floor() as i64;
             m.base_color = hd2d_ground_color(d);
+            if let Some(tex) = assets.ground_tex.get(biome_index(d)) {
+                if m.base_color_texture.as_ref() != Some(tex) {
+                    m.base_color_texture = Some(tex.clone());
+                }
+            }
         }
     }
 }
@@ -3153,7 +3430,9 @@ fn spawn_obstacle(
                 p.spawn((
                     Mesh3d(wa.tree_quad.clone()),
                     MeshMaterial3d(mat),
-                    Transform::from_translation(Vec3::new(0.0, h * 0.44, 0.0))
+                    // Sink the quad so the trunk base (the art has transparent
+                    // padding below it) meets the ground instead of floating.
+                    Transform::from_translation(Vec3::new(0.0, h * 0.33, 0.0))
                         .with_scale(Vec3::new(h, h, 1.0)),
                     hd2d::Billboard,
                 ));
@@ -3188,17 +3467,17 @@ fn spawn_obstacle(
     }
     match name {
         "pond" | "frozen_pond" | "bog_pool" => {
-            let mat = mats.add(StandardMaterial {
-                base_color: col,
-                perceptual_roughness: 0.2,
-                ..default()
-            });
+            // Shared animated water material (scrolled by `animate_water`); spin each
+            // organic blob a different way so pools don't look stamped from one shape.
+            let spin = (hash_pick(id, 360) as f32).to_radians();
             commands.spawn((
                 WorldEntity(id.to_string()),
                 Mesh3d(wa.water_mesh.clone()),
-                MeshMaterial3d(mat),
-                Transform::from_translation(world_pos(e.x, e.y, 0.03))
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                MeshMaterial3d(wa.water_mat.clone()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.04))
+                    .with_rotation(
+                        Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    )
                     .with_scale(Vec3::splat(r * 2.0)),
             ));
         }
@@ -3360,25 +3639,42 @@ fn sync_battle_actors(
         if seen.contains(&c.id) {
             continue;
         }
-        let col = c
-            .statuses
-            .iter()
-            .find_map(|s| s.strip_prefix("faction:"))
-            .map(faction_color)
-            .unwrap_or(Color::srgb(0.85, 0.3, 0.3));
-        let s = 2.0;
-        let mat = mats.add(StandardMaterial {
-            base_color: col,
-            perceptual_roughness: 0.7,
-            ..default()
-        });
-        commands.spawn((
-            BattleActor { id: c.id.clone() },
-            Mesh3d(wa.monster_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::from_translation(Vec3::new(spread(i, enemies.len(), 3.2), 0.68 * s, -4.5))
-                .with_scale(Vec3::splat(s)),
-        ));
+        // Same creature billboard the overworld uses: look up by content id (the
+        // combatant name with underscores), else hash into the fallback pool.
+        let kind = c.name.replace(' ', "_");
+        let tex = wa
+            .monster_sprites
+            .get(&kind)
+            .cloned()
+            .or_else(|| {
+                (!wa.monster_pool.is_empty())
+                    .then(|| wa.monster_pool[hash_pick(&c.id, wa.monster_pool.len())].clone())
+            })
+            .unwrap_or_else(|| wa.resource_fallback.clone());
+        let h = 3.4;
+        let root = Vec3::new(spread(i, enemies.len(), 3.6), 0.0, -4.5);
+        let mat = mats.add(hd2d::sprite_material(Color::srgb(1.2, 1.15, 1.1), tex));
+        commands
+            .spawn((
+                BattleActor { id: c.id.clone() },
+                Transform::from_translation(root),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
+                ));
+            });
     }
 }
 
@@ -3397,7 +3693,6 @@ fn battle_camera(
         ),
         With<Camera3d>,
     >,
-    mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
 ) {
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         *t = Transform::from_translation(Vec3::new(0.0, 9.5, 12.5))
@@ -3410,9 +3705,7 @@ fn battle_camera(
             fog.map(|f| f.into_inner()),
         );
     }
-    if let Ok(mut t) = sun_q.single_mut() {
-        *t = hd2d::sun_transform(&look);
-    }
+    // Sun owned by `apply_sky` (day/night cycle).
 }
 
 /// Queue an order (with its chosen target) for `hero`, then hand focus to the next
@@ -4196,14 +4489,6 @@ fn render_enemy_panel(
 
 /// Immediate-mode party window (bottom-left): one row per hero with HP bar, ATB
 /// gauge, the active-hero highlight, a ready flag, and the queued-order icon.
-/// Distinct portrait colours per party slot.
-const HERO_COLORS: [Color; 4] = [
-    Color::srgb(0.45, 0.9, 0.55),
-    Color::srgb(0.5, 0.7, 1.0),
-    Color::srgb(0.9, 0.6, 0.95),
-    Color::srgb(0.95, 0.8, 0.45),
-];
-
 /// One Lufia-style party window (name + Lv, HP + ATB bars, portrait, order icon).
 fn party_cell(
     parent: &mut ChildSpawnerCommands,
@@ -4211,7 +4496,7 @@ fn party_cell(
     hitfx: &HitFx,
     menu: &BattleMenu,
     id: &str,
-    idx: usize,
+    _idx: usize,
 ) {
     let Some(c) = battle.view(id) else { return };
     let active = battle.active.as_deref() == Some(id);
