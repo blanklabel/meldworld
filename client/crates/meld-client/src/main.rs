@@ -249,6 +249,7 @@ fn main() {
                 despawn::<PartyWindow>,
                 despawn::<CommandWindow>,
                 despawn::<HitFxRoot>,
+                despawn::<BattleActor>,
             ),
         )
         .add_systems(
@@ -264,6 +265,12 @@ fn main() {
                 render_party_window,
                 advance_hit_fx,
                 render_hit_fx,
+                // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
+                sync_battle_actors,
+                battle_camera,
+                hd2d::animate_chars,
+                hd2d::place_billboards,
+                hd2d::billboard,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -3050,6 +3057,138 @@ fn enter_battle(mut menu: ResMut<BattleMenu>) {
     reset_menu(&mut menu);
 }
 
+/// A 3D combatant in the HD-2D battle arena, keyed by its combatant id.
+#[derive(Component)]
+struct BattleActor {
+    id: String,
+}
+
+/// Reconcile the 3D battle arena with `BattleData`: your party as character
+/// billboards on the near side (facing the foe, Octopath-style backs), enemies as
+/// lit capsule stand-ins on the far side. The HP/ATB/command UI frames it.
+fn sync_battle_actors(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    q: Query<(Entity, &BattleActor)>,
+) {
+    let Some(wa) = wa else { return };
+    let mut seen = HashSet::new();
+    for (ent, a) in &q {
+        if battle.combatants.iter().any(|c| c.id == a.id) {
+            seen.insert(a.id.clone());
+        } else {
+            commands.entity(ent).despawn();
+        }
+    }
+    let party: Vec<&CombatantView> = battle.combatants.iter().filter(|c| c.is_player).collect();
+    let enemies: Vec<&CombatantView> = battle.combatants.iter().filter(|c| !c.is_player).collect();
+    let spread = |i: usize, n: usize, gap: f32| (i as f32 - (n.max(1) as f32 - 1.0) * 0.5) * gap;
+
+    for (i, c) in party.iter().enumerate() {
+        if seen.contains(&c.id) {
+            continue;
+        }
+        let class = c
+            .statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("class:"))
+            .unwrap_or("squire");
+        let frames = match class {
+            "psyker" => &wa.psyker,
+            _ => &wa.squire,
+        };
+        let root = Vec3::new(spread(i, party.len(), 2.7), 0.0, 1.2);
+        let mat = mats.add(hd2d::sprite_material(
+            Color::srgb(1.2, 1.18, 1.08),
+            frames.idle[0].clone(),
+        ));
+        let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
+        cs.facing = Vec2::new(0.0, -1.0); // face the enemies (north)
+        commands
+            .spawn((
+                BattleActor { id: c.id.clone() },
+                Transform::from_translation(root),
+                Visibility::default(),
+                cs,
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, 0.72, 0.0),
+                    hd2d::Billboard,
+                    hd2d::HeroBillboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+                ));
+            });
+    }
+    for (i, c) in enemies.iter().enumerate() {
+        if seen.contains(&c.id) {
+            continue;
+        }
+        let col = c
+            .statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("faction:"))
+            .map(faction_color)
+            .unwrap_or(Color::srgb(0.85, 0.3, 0.3));
+        let s = 2.0;
+        let mat = mats.add(StandardMaterial {
+            base_color: col,
+            perceptual_roughness: 0.7,
+            ..default()
+        });
+        commands.spawn((
+            BattleActor { id: c.id.clone() },
+            Mesh3d(wa.monster_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_translation(Vec3::new(spread(i, enemies.len(), 3.2), 0.68 * s, -4.5))
+                .with_scale(Vec3::splat(s)),
+        ));
+    }
+}
+
+/// Frame the HD-2D battle arena: a fixed 3/4 view of the two rows, with the live
+/// `Look` post stack. (Overworld `hd2d_follow` doesn't run here.)
+#[allow(clippy::type_complexity)]
+fn battle_camera(
+    look: Res<hd2d::Look>,
+    mut cam_q: Query<
+        (
+            &mut Transform,
+            &mut Projection,
+            Option<&mut bevy::core_pipeline::bloom::Bloom>,
+            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::pbr::DistanceFog>,
+        ),
+        With<Camera3d>,
+    >,
+    mut sun_q: Query<&mut Transform, (With<DirectionalLight>, Without<Camera3d>)>,
+) {
+    if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
+        *t = Transform::from_translation(Vec3::new(0.0, 9.5, 12.5))
+            .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        hd2d::apply_post(
+            &look,
+            &mut proj,
+            bloom.map(|b| b.into_inner()),
+            dof.map(|d| d.into_inner()),
+            fog.map(|f| f.into_inner()),
+        );
+    }
+    if let Ok(mut t) = sun_q.single_mut() {
+        *t = hd2d::sun_transform(&look);
+    }
+}
+
 /// Queue an order (with its chosen target) for `hero`, then hand focus to the next
 /// hero that still needs one — preferring a hero whose ATB is already full
 /// ([`pick_active`]). The order fires the instant that hero is ready
@@ -3524,7 +3663,7 @@ fn rebuild_command_menu(
                 position_type: PositionType::Absolute,
                 left: Val::Px(12.0),
                 right: Val::Px(12.0),
-                bottom: Val::Px(96.0),
+                bottom: Val::Px(142.0), // just above the compact party HUD row
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -3757,16 +3896,18 @@ fn render_enemy_panel(
                         ..default()
                     })
                     .with_children(|e| {
+                        // A small status chip (targeting ring + hit flash); the enemy
+                        // itself is the 3D sprite in the arena.
                         e.spawn((
                             Node {
-                                width: Val::Px(76.0),
-                                height: Val::Px(76.0),
+                                width: Val::Px(40.0),
+                                height: Val::Px(40.0),
                                 border: UiRect::all(Val::Px(if is_cand { 3.0 } else { 0.0 })),
                                 ..default()
                             },
                             BackgroundColor(block),
                             BorderColor(ring),
-                            BorderRadius::all(Val::Px(8.0)),
+                            BorderRadius::all(Val::Px(6.0)),
                         ));
                         e.spawn((
                             Text::new(format!("{}   {}/{}", c.name, c.hp, c.max_hp)),
@@ -3860,10 +4001,11 @@ fn party_cell(
     parent
         .spawn((
             Node {
-                width: Val::Percent(46.0),
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(8.0)),
+                padding: UiRect::all(Val::Px(7.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
@@ -3992,21 +4134,7 @@ fn party_cell(
                     });
                 }
             });
-            // Right: portrait tile.
-            cell.spawn((
-                Node {
-                    width: Val::Px(46.0),
-                    height: Val::Px(46.0),
-                    align_self: AlignSelf::Center,
-                    ..default()
-                },
-                BackgroundColor(if c.hp == 0 {
-                    Color::srgb(0.25, 0.25, 0.28)
-                } else {
-                    HERO_COLORS[idx % 4]
-                }),
-                BorderRadius::all(Val::Px(4.0)),
-            ));
+            // The hero's avatar is now the 3D battle sprite; the cell is just status.
         });
 }
 
@@ -4023,39 +4151,34 @@ fn render_party_window(
         commands.entity(e).despawn();
     }
     let ids = battle.your_ids.clone();
+    // Compact HD-2D HUD: a single row of slim hero status cells across the very
+    // bottom, leaving the arena above open for the 3D combatant sprites.
     commands
         .spawn((
             PartyWindow,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(12.0),
-                right: Val::Px(12.0),
-                bottom: Val::Px(12.0),
-                height: Val::Px(288.0),
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::SpaceBetween,
-                row_gap: Val::Px(10.0),
+                left: Val::Px(10.0),
+                right: Val::Px(10.0),
+                bottom: Val::Px(10.0),
+                height: Val::Px(118.0),
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
                 ..default()
             },
         ))
-        .with_children(|grid| {
-            for row_start in [0usize, 2] {
-                grid.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    flex_grow: 1.0,
-                    ..default()
-                })
-                .with_children(|row| {
-                    for i in row_start..row_start + 2 {
-                        match ids.get(i) {
-                            Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
-                            None => {
-                                row.spawn(Node { width: Val::Percent(46.0), ..default() });
-                            }
-                        }
+        .with_children(|row| {
+            for i in 0..4 {
+                match ids.get(i) {
+                    Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
+                    None => {
+                        row.spawn(Node {
+                            flex_grow: 1.0,
+                            flex_basis: Val::Px(0.0),
+                            ..default()
+                        });
                     }
-                });
+                }
             }
         });
 }
@@ -4104,16 +4227,14 @@ fn render_hit_fx(
                 let (x, y0) = if Some(hit.target.as_str()) == battle.monster_combatant.as_deref() {
                     (w * 0.5 - 16.0, h * 0.22)
                 } else {
-                    // Heroes sit in a 2×2 grid across the bottom; float the number
-                    // over that hero's quadrant.
+                    // Heroes sit in a single compact row across the bottom; float the
+                    // number over that hero's cell.
                     let idx = battle
                         .your_ids
                         .iter()
                         .position(|id| id == &hit.target)
                         .unwrap_or(0);
-                    let x = if idx % 2 == 0 { w * 0.27 } else { w * 0.73 };
-                    let y = if idx / 2 == 0 { h - 250.0 } else { h - 110.0 };
-                    (x, y)
+                    ((idx as f32 + 0.5) / 4.0 * w, h - 150.0)
                 };
                 let rise = hit.age * 46.0;
                 let alpha = (1.0 - hit.age / HIT_TTL).clamp(0.0, 1.0);
