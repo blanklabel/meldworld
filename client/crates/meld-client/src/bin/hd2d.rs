@@ -47,6 +47,10 @@ struct Look {
     // Sprite placement (live-tunable so we can ground the billboards by eye).
     sprite_y: f32,     // world-y of the sprite quad centre
     sprite_scale: f32, // uniform scale of the sprite quads
+    // Lens: a NARROW fov (telephoto) gives the HD-2D miniature compression AND makes
+    // DoF shallow; a LARGER dof_sensor lengthens the virtual lens for stronger blur.
+    fov: f32,
+    dof_sensor: f32,
 }
 
 impl Default for Look {
@@ -70,6 +74,8 @@ impl Default for Look {
             fog_on: true,
             sprite_y: 0.55, // grounded (sprites carry transparent padding below)
             sprite_scale: 1.0,
+            fov: 30.0,
+            dof_sensor: 0.06,
         }
     }
 }
@@ -409,6 +415,7 @@ fn apply(
     mut cam_q: Query<
         (
             &mut Transform,
+            &mut Projection,
             Option<&mut Bloom>,
             Option<&mut DepthOfField>,
             Option<&mut DistanceFog>,
@@ -425,15 +432,19 @@ fn apply(
     let (yr, pr) = (yaw.to_radians(), look.cam_pitch.to_radians());
     let target = Vec3::new(0.0, 1.0, 0.0);
     let offset = Vec3::new(yr.sin() * pr.cos(), pr.sin(), yr.cos() * pr.cos()) * look.cam_dist;
-    if let Ok((mut t, bloom, dof, fog)) = cam_q.single_mut() {
+    if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         t.translation = target + offset;
         t.look_at(target, Vec3::Y);
+        if let Projection::Perspective(p) = &mut *proj {
+            p.fov = look.fov.to_radians();
+        }
         if let Some(mut b) = bloom {
             b.intensity = look.bloom;
         }
         if let Some(mut d) = dof {
             d.focal_distance = look.focus;
             d.aperture_f_stops = look.aperture;
+            d.sensor_height = look.dof_sensor;
         }
         if let Some(mut f) = fog {
             f.falloff = FogFalloff::Linear {
