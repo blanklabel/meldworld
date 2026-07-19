@@ -3,7 +3,7 @@
 //! them. Shared (Arc) so the realtime gateway validates against the same state.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
@@ -50,9 +50,13 @@ impl Tickets {
 }
 
 /// Opaque Bearer session tokens for the HTTP API.
+///
+/// `RwLock` (not `Mutex`) because `resolve` — hit on *every* authenticated HTTP
+/// request — is a non-consuming read, so many requests can validate concurrently;
+/// only the infrequent `mint` takes the write lock.
 #[derive(Clone, Default)]
 pub struct Sessions {
-    inner: Arc<Mutex<HashMap<String, (Uuid, Instant)>>>,
+    inner: Arc<RwLock<HashMap<String, (Uuid, Instant)>>>,
 }
 
 impl Sessions {
@@ -63,7 +67,7 @@ impl Sessions {
     /// Mint a session token valid for `ttl_secs`.
     pub fn mint(&self, player_id: Uuid, ttl_secs: i64) -> String {
         let token = random_token("mw-sess-");
-        let mut m = self.inner.lock().unwrap();
+        let mut m = self.inner.write().unwrap();
         m.retain(|_, (_, exp)| *exp > Instant::now());
         m.insert(
             token.clone(),
@@ -77,7 +81,7 @@ impl Sessions {
 
     /// Resolve a token to its player id, if valid and unexpired. Non-consuming.
     pub fn resolve(&self, token: &str) -> Option<Uuid> {
-        let m = self.inner.lock().unwrap();
+        let m = self.inner.read().unwrap();
         match m.get(token) {
             Some((pid, exp)) if *exp > Instant::now() => Some(*pid),
             _ => None,

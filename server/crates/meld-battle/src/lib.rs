@@ -6,6 +6,8 @@
 //! maps onto `battle.*` wire messages. No wall-clock, no RNG globals, no I/O —
 //! so it is fully deterministic and unit-testable (BUILD-PLAN M2.3/M2.4).
 
+use std::collections::HashSet;
+
 use meld_balance::Balance;
 use meld_proto::common::Combatant as WireCombatant;
 use meld_proto::enums::{
@@ -83,6 +85,13 @@ pub struct Fighter {
     /// Engine tick at which the turn became ready (for the 15 s timeout).
     ready_tick: u64,
     alive: bool,
+    /// Cached `build_wire_statuses()` output + a signature of the fields it reads,
+    /// so the periodic gauge_update (every 100 ms) reuses the list and rebuilds it
+    /// only when a status actually changes — instead of reallocating ~10 strings
+    /// per fighter per tick. Refreshed at the end of [`Battle::tick`].
+    statuses_cache: Vec<String>,
+    statuses_sig: u64,
+    statuses_cached: bool,
 }
 
 impl Fighter {
@@ -134,6 +143,9 @@ impl Fighter {
             awaiting: false,
             ready_tick: 0,
             alive: hp > 0,
+            statuses_cache: Vec::new(),
+            statuses_sig: 0,
+            statuses_cached: false,
         }
     }
 
@@ -141,7 +153,7 @@ impl Fighter {
     /// `class:<key>` (drives the per-hero command menu), `faction:<f>` (creature
     /// side), `barrier:<n>`, `regen:<n>`, and (Psyker) `focus_slots:<n>` +
     /// `focus:<kind>:<stacks>` per Manifestation.
-    fn wire_statuses(&self) -> Vec<String> {
+    fn build_wire_statuses(&self) -> Vec<String> {
         let mut v = Vec::new();
         if !self.class_key.is_empty() {
             v.push(format!("class:{}", self.class_key));
@@ -172,6 +184,34 @@ impl Fighter {
         v
     }
 
+    /// Cheap, allocation-free signature of the fields `build_wire_statuses` reads
+    /// that can change mid-battle (class/faction/attributes are fixed after setup,
+    /// so they need not be hashed).
+    fn statuses_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.barrier.hash(&mut h);
+        self.regen.hash(&mut h);
+        self.focus_max.hash(&mut h);
+        for f in &self.foci {
+            f.kind.hash(&mut h);
+            f.stacks.hash(&mut h);
+        }
+        self.statuses.hash(&mut h);
+        h.finish()
+    }
+
+    /// Rebuild the wire-status cache only when a relevant field changed since the
+    /// last refresh. Called each tick; the common case is a no-op signature check.
+    fn refresh_wire_statuses(&mut self) {
+        let sig = self.statuses_signature();
+        if !self.statuses_cached || sig != self.statuses_sig {
+            self.statuses_cache = self.build_wire_statuses();
+            self.statuses_sig = sig;
+            self.statuses_cached = true;
+        }
+    }
+
     fn to_wire(&self) -> WireCombatant {
         WireCombatant {
             combatant_id: self.combatant_id.clone(),
@@ -182,7 +222,7 @@ impl Fighter {
             hp: self.hp,
             max_hp: self.max_hp,
             gauge: self.gauge,
-            statuses: self.wire_statuses(),
+            statuses: self.build_wire_statuses(),
         }
     }
 }
@@ -279,7 +319,9 @@ pub struct Battle {
     flee_base: f64,
     flee_penalty_per_tier: f64,
     flee_floor: f64,
-    seen_actions: Vec<Id>,
+    /// Action ids already resolved (dedup / idempotency). A set so the check is
+    /// O(1) rather than an O(n) scan that grows over a long battle's lifetime.
+    seen_actions: HashSet<Id>,
     /// Tiny deterministic LCG for flee rolls (no global RNG — determinism).
     rng: u64,
 }
@@ -326,7 +368,7 @@ impl Battle {
             flee_base: balance.battle.flee_base,
             flee_penalty_per_tier: balance.battle.flee_penalty_per_tier,
             flee_floor: balance.battle.flee_floor,
-            seen_actions: Vec::new(),
+            seen_actions: HashSet::new(),
             rng: seed | 1,
         }
     }
@@ -377,12 +419,29 @@ impl Battle {
         (allies, enemies)
     }
 
-    /// Per-combatant gauge/HP state (for `battle.gauge_update`).
+    /// Per-combatant gauge/HP state (for `battle.gauge_update`), owned. Kept for
+    /// tests / non-hot callers; the server's per-tick path uses [`Self::gauge_views`].
     pub fn gauge_state(&self) -> Vec<(Id, f64, i32, Vec<String>)> {
         self.fighters
             .iter()
-            .map(|f| (f.combatant_id.clone(), f.gauge, f.hp, f.wire_statuses()))
+            .map(|f| (f.combatant_id.clone(), f.gauge, f.hp, f.build_wire_statuses()))
             .collect()
+    }
+
+    /// Borrowed per-combatant gauge view for the periodic `battle.gauge_update`.
+    /// Reuses each fighter's cached wire-status list (refreshed at the end of
+    /// [`Self::tick`]), so the server serializes the update without allocating the
+    /// status strings every tick. Read after a `tick`, whose refresh keeps the
+    /// cache current.
+    pub fn gauge_views(&self) -> impl Iterator<Item = (&str, f64, i32, &[String])> {
+        self.fighters.iter().map(|f| {
+            (
+                f.combatant_id.as_str(),
+                f.gauge,
+                f.hp,
+                f.statuses_cache.as_slice(),
+            )
+        })
     }
 
     /// Current HP of a combatant by id (for carrying wounds across a run's
@@ -495,6 +554,12 @@ impl Battle {
                 }
             }
         }
+        // Refresh each fighter's cached wire-status list so this tick's gauge_update
+        // can serialize from it without rebuilding (see [`Self::gauge_views`]). The
+        // signature check is a no-op unless a status/barrier/regen/focus changed.
+        for f in &mut self.fighters {
+            f.refresh_wire_statuses();
+        }
         events
     }
 
@@ -515,7 +580,7 @@ impl Battle {
         if self.fighters[i].kind != CombatantKind::Player || !self.fighters[i].alive {
             return Err(Reject::NotFound);
         }
-        if self.seen_actions.iter().any(|a| a == &action_id) {
+        if self.seen_actions.contains(&action_id) {
             return Err(Reject::DuplicateAction);
         }
         if !self.fighters[i].awaiting || self.fighters[i].gauge < 1.0 {
@@ -526,7 +591,7 @@ impl Battle {
                 "Flee is disabled against Gatekeepers.",
             ));
         }
-        self.seen_actions.push(action_id.clone());
+        self.seen_actions.insert(action_id.clone());
 
         let mut events = Vec::new();
         // Start-of-turn upkeep (Regen heal, Barrier decay) fires before the action.

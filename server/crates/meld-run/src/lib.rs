@@ -6,6 +6,8 @@
 //! party. Extraction channels, death durability (HTTP/DB side), and abandon are
 //! the next slices; the run/battle spine they hang off is here.
 
+use std::collections::HashMap;
+
 use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
@@ -145,6 +147,13 @@ pub type PartyMember = (Id, Id, CharacterClass, i32);
 
 /// Build the ally `Fighter`s for a party (shared by battle start and raid merge).
 pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balance) -> Vec<Fighter> {
+    // Index run level by player once so the per-member lookup is O(1) rather than
+    // scanning every run per member (O(party × runs) — both grow with raid size).
+    let level_by_player: HashMap<&str, i32> = runs
+        .runs
+        .iter()
+        .map(|r| (r.player_id.as_str(), r.run_level))
+        .collect();
     party
         .iter()
         .map(|(player_id, combatant_id, class, atk_bonus)| {
@@ -152,11 +161,9 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                 .player
                 .get(class_key(*class))
                 .unwrap_or_else(|| balance.player.get("squire").expect("squire stats"));
-            let level = runs
-                .runs
-                .iter()
-                .find(|r| &r.player_id == player_id)
-                .map(|r| r.run_level)
+            let level = level_by_player
+                .get(player_id.as_str())
+                .copied()
                 .unwrap_or(1);
 
             // Attributes at this level, and the combat stats derived from them.

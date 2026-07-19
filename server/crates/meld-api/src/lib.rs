@@ -114,16 +114,16 @@ async fn login(
 
 async fn players_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
-    let row = match st.db.get_player(player_id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return Err(ApiReject::unauthorized()),
-        Err(e) => return Err(ApiReject::internal(e)),
+    // The two lookups are independent — run them concurrently (one RTT, not two).
+    let (row_opt, skills) = tokio::try_join!(
+        st.db.get_player(player_id),
+        st.db.get_skills(player_id),
+    )
+    .map_err(ApiReject::internal)?;
+    let row = match row_opt {
+        Some(row) => row,
+        None => return Err(ApiReject::unauthorized()),
     };
-    let skills = st
-        .db
-        .get_skills(player_id)
-        .await
-        .map_err(ApiReject::internal)?;
     let entries = skill_entries(skills, st.meld_xp_per_level);
     Ok((StatusCode::OK, Json(to_player(row, entries))).into_response())
 }
