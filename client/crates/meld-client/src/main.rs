@@ -298,6 +298,7 @@ fn main() {
                 build_world_walls,
                 sync_chests,
                 auto_open_chest,
+                pulse_collectibles,
             )
                 .run_if(in_state(Screen::Overworld)),
         )
@@ -1051,6 +1052,12 @@ struct ClassText;
 #[derive(Component)]
 struct WorldEntity(String);
 
+/// A gatherable/pickup (harvest node or ground loot) whose own material slowly
+/// pulses an emissive glow to draw the eye — instead of a flat disc on the ground
+/// that z-fights the terrain. `pulse_collectibles` animates the emissive.
+#[derive(Component)]
+struct Collectible;
+
 /// The overworld HUD line that reports distance + current biome.
 #[derive(Component)]
 struct HudText;
@@ -1170,9 +1177,6 @@ struct WorldAssets {
     prop_scenes: HashMap<String, Vec<(Handle<Scene>, f32)>>,
     /// 3D harvest-node models keyed by resource content id → `(scene, baked_scale)`.
     resource_scenes: HashMap<String, (Handle<Scene>, f32)>,
-    /// Emissive disc laid under a harvest node so it still reads as gatherable.
-    glow_disc: Handle<Mesh>,
-    resource_glow: Handle<StandardMaterial>,
     portal_sprite: Handle<Image>,
     portal_mesh: Handle<Mesh>,
     portal_mat: Handle<StandardMaterial>,
@@ -1464,14 +1468,6 @@ fn setup(
         monster_pool,
         prop_scenes,
         resource_scenes,
-        glow_disc: meshes.add(Circle::new(0.6)),
-        resource_glow: mats.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.85, 0.35, 0.55),
-            emissive: LinearRgba::rgb(2.2, 1.6, 0.4),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
         portal_sprite: ld("fx/portal_arch.png"),
         // A faint emissive ground-ring keeps the portal glowing under the billboard.
         portal_mesh: meshes.add(Torus::new(0.18, 1.15)),
@@ -4178,47 +4174,33 @@ fn sync_overworld_sprites(
                 ));
             }
             EntityKind::Resource => {
-                // A real 3D harvest-node model with a glowing ground disc under it so
-                // it still reads as gatherable out of the grass.
+                // A real 3D harvest-node model that draws the eye by slowly pulsing
+                // its own emissive glow (`pulse_collectibles`) — no ground disc.
                 let kind = e.name.as_deref().unwrap_or("");
                 if let Some((scene, scale)) = wa.resource_scenes.get(kind) {
                     let yaw = (hash_pick(id, 360) as f32).to_radians();
                     commands.spawn((
                         WorldEntity(id.clone()),
+                        Collectible,
                         SceneRoot(scene.clone()),
                         Transform::from_translation(world_pos(e.x, e.y, 0.0))
                             .with_scale(Vec3::splat(*scale))
                             .with_rotation(Quat::from_rotation_y(yaw)),
                     ));
-                    commands.spawn((
-                        WorldEntity(id.clone()),
-                        Mesh3d(wa.glow_disc.clone()),
-                        MeshMaterial3d(wa.resource_glow.clone()),
-                        Transform::from_translation(world_pos(e.x, e.y, 0.28))
-                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-                    ));
                 }
             }
             EntityKind::Loot => {
-                // A dropped skirmish trophy — a small glowing golden pickup on the
-                // grass until a player walks over it. Rendered from the 3D-era assets
-                // (glow disc + an emissive gold nub); there's no dedicated loot sprite
-                // in the current asset set.
-                commands.spawn((
-                    WorldEntity(id.clone()),
-                    Mesh3d(wa.glow_disc.clone()),
-                    MeshMaterial3d(wa.resource_glow.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.28))
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-                ));
+                // A dropped skirmish trophy — a small golden pickup nub on the grass
+                // until a player walks over it. It slowly pulses its own emissive glow
+                // (`pulse_collectibles`) to catch the eye — no ground disc.
                 let nub = mats.add(StandardMaterial {
                     base_color: Color::srgb(1.0, 0.85, 0.35),
                     emissive: LinearRgba::rgb(1.6, 1.2, 0.4),
-                    unlit: true,
                     ..default()
                 });
                 commands.spawn((
                     WorldEntity(id.clone()),
+                    Collectible,
                     Mesh3d(wa.rock_mesh.clone()),
                     MeshMaterial3d(nub),
                     Transform::from_translation(world_pos(e.x, e.y, 0.35))
@@ -4231,6 +4213,33 @@ fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+        }
+    }
+}
+
+/// Slowly pulse the emissive glow of every [`Collectible`] (harvest node + ground
+/// loot) so pickups draw the eye without a flat disc on the ground that z-fights the
+/// grass. Drives the item's own material(s): a GLB harvest node keeps its meshes in a
+/// child scene (walk descendants), while a loot nub carries the material directly.
+fn pulse_collectibles(
+    time: Res<Time>,
+    roots: Query<Entity, With<Collectible>>,
+    child_q: Query<&Children>,
+    mat_of: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    // ~2.5 s breathe; `strength` scales each material's own colour into its emissive,
+    // so a blue gem glows blue and a gold trophy glows gold.
+    let phase = (time.elapsed_secs() * std::f32::consts::TAU * 0.4).sin() * 0.5 + 0.5;
+    let strength = 0.5 + 2.2 * phase;
+    for root in &roots {
+        for e in std::iter::once(root).chain(child_q.iter_descendants::<Children>(root)) {
+            let Ok(mm) = mat_of.get(e) else { continue };
+            let Some(m) = mats.get_mut(&mm.0) else {
+                continue;
+            };
+            let c = m.base_color.to_linear();
+            m.emissive = LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength);
         }
     }
 }
