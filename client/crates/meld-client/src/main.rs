@@ -163,8 +163,20 @@ fn levelup_anim_mockup_flag() -> bool {
 }
 
 fn main() {
+    // Self-contained build: boot the server in-process (in-memory DB, embedded
+    // balance) and set MELD_SERVER before we read it below. No-op in normal builds.
+    #[cfg(feature = "embedded-server")]
+    meld_client::embedded::boot();
+
     let base = server_base();
-    App::new()
+    let mut app = App::new();
+    // Serve every game asset from inside the binary so the QA build is one file
+    // with no `assets/` folder beside it. Must precede DefaultPlugins (AssetPlugin).
+    #[cfg(feature = "embedded-server")]
+    app.add_plugins(bevy_embedded_assets::EmbeddedAssetPlugin {
+        mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
+    });
+    app
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest()) // crisp pixel sprites

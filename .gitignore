@@ -1,2 +1,4 @@
 /target
+# Shippable single-file QA binaries from `make dist` (large build artifacts).
+/dist
 .DS_Store

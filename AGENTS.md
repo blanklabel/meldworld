@@ -63,12 +63,41 @@ A `Makefile` wraps the Postgres + server + client wiring:
 ```sh
 make play         # boot throwaway Postgres + server + browser client, then open the printed URL
 make play-native  # same, but the native desktop window
+make play-solo    # self-contained native window: server baked in, no Postgres, no setup
+make dist         # build the shippable single-file QA binary (server + assets embedded)
 make smoke        # headless: drive the whole loop through the real client netcode (exits 0 on victory)
 make server       # server only
 make test         # the Postgres-backed QA suite
 make stop         # stop the local server (Postgres left running, reused across runs)
 make help         # list every task
 ```
+
+### Self-contained QA / demo binary (`make dist` / `make play-solo`)
+
+For handing the game to someone who just wants to *play it* — remote QA, a
+demo — there is a single-file native build that needs **no Postgres, no server
+process, no Rust toolchain, and no files beside it**. `make dist` produces one
+executable (`dist/meldworld-<os>-<arch>`); the tester runs it and the game window
+opens. `make play-solo` builds and runs it in place for a quick local try.
+
+It's the `meld-client` binary built with the `embedded-server` feature (native
+only): `main()` boots the whole authoritative server on a background thread with
+an **in-memory** DB ([`meld-db`](server/crates/meld-db/src/lib.rs) `Backend::Mem`,
+selected by a `memory://` URL) and the **embedded** balance
+([`meld-balance`](server/crates/meld-balance/src/lib.rs) `EMBEDDED_DEFAULT`), on
+an ephemeral localhost port; [`bevy_embedded_assets`](client/crates/meld-client/src/main.rs)
+bakes all 84 MB of assets into the file. Everything is **ephemeral** — accounts,
+Vault, progression live in RAM and reset on exit (a clean slate every launch),
+which is what you want for QA. The party/flag env vars (`MELD_PARTY`,
+`MELD_CLASS`, `MELD_AUTOPLAY`) still apply. This does **not** touch the normal
+server/Postgres path — default builds and the wasm client are unchanged.
+
+`make dist` builds for the host OS/arch only. For **cross-platform** binaries
+(Windows `.exe`, macOS, Linux) there's a `dist` GitHub Actions workflow
+([`.github/workflows/dist.yml`](.github/workflows/dist.yml)) that runs the same
+`embedded-server` release build on each native runner — no flaky cross-compiling.
+Trigger it from the repo's Actions tab ("dist" → "Run workflow"), or push a `v*`
+tag to also attach the per-OS binaries to a GitHub Release.
 
 `make play` builds the wasm client and has the **server itself serve it**, so the
 whole game lives at one URL (`$MELD_ADDR`, default `http://127.0.0.1:18090`) — no
