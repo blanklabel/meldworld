@@ -507,13 +507,12 @@ struct Terrain {
 #[derive(Component)]
 struct TerrainMesh(u32);
 
-/// Walkable bounds + biome seams for the instance. The client builds framing
-/// walls (edge cliffs/water + end walls + gated biome seams) from this once per
-/// run; `built` gates the one-time spawn.
+/// Walkable bounds + biome seams for the instance. The client streams framing
+/// walls (edge treeline/ridge/water + west end-cap + gated biome seams) from this
+/// plus the per-section terrain, extending them as the endless world grows.
 #[derive(Resource, Default)]
 struct WorldFrame {
     have: bool,
-    built: bool,
     x_min: f32,
     x_max: f32,
     lateral: f32,
@@ -1544,11 +1543,11 @@ fn setup(
         let off = Vec2::new((rnd() - 0.5) * 300.0, (rnd() - 0.5) * 300.0);
         let sz = 34.0 + rnd() * 46.0;
         commands.spawn((
-            Cloud { off, y: 0.1 },
+            Cloud { off, y: 0.28 },
             CloudShadow,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_shadow_mat.clone()),
-            Transform::from_translation(Vec3::new(off.x, 0.1, off.y))
+            Transform::from_translation(Vec3::new(off.x, 0.28, off.y))
                 .with_rotation(flat)
                 .with_scale(Vec3::new(sz, sz * 0.72, 1.0)),
         ));
@@ -2205,7 +2204,6 @@ fn pump_net(
             }
             ServerMsg::WorldFrame { x_min, x_max, lateral, seams } => {
                 world_frame.have = true;
-                world_frame.built = false;
                 world_frame.x_min = x_min as f32;
                 world_frame.x_max = x_max as f32;
                 world_frame.lateral = lateral as f32;
@@ -3008,7 +3006,7 @@ fn draw_path_trail(
                 PathTrail,
                 Mesh3d(disc.clone()),
                 MeshMaterial3d(mat.clone()),
-                Transform::from_translation(world_pos(x, y, 0.05)).with_rotation(flat),
+                Transform::from_translation(world_pos(x, y, 0.15)).with_rotation(flat),
             ));
         }
     }
@@ -3995,7 +3993,7 @@ fn sync_overworld_sprites(
                         WorldEntity(id.clone()),
                         Mesh3d(wa.glow_disc.clone()),
                         MeshMaterial3d(wa.resource_glow.clone()),
-                        Transform::from_translation(world_pos(e.x, e.y, 0.05))
+                        Transform::from_translation(world_pos(e.x, e.y, 0.28))
                             .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                     ));
                 }
@@ -4009,7 +4007,7 @@ fn sync_overworld_sprites(
                     WorldEntity(id.clone()),
                     Mesh3d(wa.glow_disc.clone()),
                     MeshMaterial3d(wa.resource_glow.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.05))
+                    Transform::from_translation(world_pos(e.x, e.y, 0.28))
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 ));
                 let nub = mats.add(StandardMaterial {
@@ -4097,7 +4095,7 @@ fn spawn_wall_prop(
                 WorldWall,
                 Mesh3d(wa.water_mesh.clone()),
                 MeshMaterial3d(wa.water_mat.clone()),
-                Transform::from_translation(world_pos(x, y, 0.04))
+                Transform::from_translation(world_pos(x, y, 0.2))
                     .with_rotation(
                         Quat::from_rotation_y(spin)
                             * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
@@ -4120,29 +4118,44 @@ fn spawn_wall_prop(
     }
 }
 
-/// Build the map's framing once per run from [`WorldFrame`]: a natural biome
-/// border (treeline / boulder ridge / water) hugging both long edges and both
-/// ends, plus a gated ridge at each biome seam (a wall across the corridor with
-/// one gap, flanked by standing-stone gateposts). Contains the map using the
-/// world's own art — no primitive slabs.
+/// Build the map's framing, STREAMING with the endless world (#29): as each
+/// terrain section arrives it hugs that section's ±lateral edges with the biome
+/// border (treeline / boulder ridge / water), so "you can't leave the corridor"
+/// holds for the whole run — not just the starting chunk. The west end-cap
+/// (behind the hub) and the initial biome-seam gates are built once when the
+/// run's bounds arrive. No east cap — the world streams on forever.
 fn build_world_walls(
     mut commands: Commands,
-    mut frame: ResMut<WorldFrame>,
+    frame: Res<WorldFrame>,
+    terrain: Res<Terrain>,
     wa: Option<Res<WorldAssets>>,
     existing: Query<Entity, With<WorldWall>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut walled: Local<std::collections::HashSet<u32>>,
 ) {
     let Some(wa) = wa else { return };
-    if !frame.have || frame.built {
+    if !frame.have {
         return;
     }
-    for e in &existing {
-        commands.entity(e).despawn();
+    // A fresh run (new bounds) wipes the old framing + per-section tracking.
+    let new_run = frame.is_changed();
+    if new_run {
+        for e in &existing {
+            commands.entity(e).despawn();
+        }
+        walled.clear();
     }
-    let (x_min, x_max, lat) = (frame.x_min, frame.x_max, frame.lateral);
-    if x_max <= x_min {
+    // Sections still needing edge walls (grows as the world streams east).
+    let mut todo: Vec<u32> = terrain
+        .sections
+        .keys()
+        .copied()
+        .filter(|i| !walled.contains(i))
+        .collect();
+    if !new_run && todo.is_empty() {
         return;
     }
+    todo.sort_unstable();
     // One shared rock material per biome (avoids allocating hundreds).
     let rock_mats: Vec<Handle<StandardMaterial>> = (0..5)
         .map(|bi| {
@@ -4153,71 +4166,75 @@ fn build_world_walls(
             })
         })
         .collect();
-    let mut idx = 0usize;
     let step = 3.0_f32;
-    // Long edges: a deep, jittered band of props just outside ±lateral so you see
-    // a solid mass fading into fog, not a thin hedge with field behind it. Forest
-    // gets a proper thicket (many ranks of trees out to ~fog start); the rockier
-    // biomes get a chunky 2-rank boulder ridge (opaque, cheaper).
-    let mut x = x_min;
-    while x <= x_max {
-        let bi = biome_index(x.floor().max(0.0) as i64);
+
+    // Initial biome-seam gates (a ridge across the corridor with one gap you funnel
+    // through, flanked by standing-stone posts), built once when bounds arrive.
+    if new_run {
+        let lat = frame.lateral;
+        let mut sid = 900_000usize;
+        for s in &frame.seams {
+            let (sx, gap_y, gap_h) = (s.x as f32, s.gap_y as f32, s.gap_half_width as f32);
+            let bi = biome_index(sx.floor() as i64);
+            let mut y = -lat;
+            while y <= lat {
+                if (y - gap_y).abs() > gap_h {
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, sx, y, sid);
+                    sid += 1;
+                }
+                y += step;
+            }
+            for py in [gap_y - gap_h - 0.4, gap_y + gap_h + 0.4] {
+                let mat = rock_mats.get(bi.min(4)).cloned().unwrap_or_default();
+                commands.spawn((
+                    WorldWall,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(world_pos(sx, py, 1.4))
+                        .with_scale(Vec3::new(2.2, 6.0, 2.2)),
+                ));
+            }
+        }
+    }
+
+    // Per-section edge walls (deep forest thicket / 2-rank ridge) + the west
+    // end-cap for the first section (behind the hub).
+    for sidx in todo {
+        let sec = &terrain.sections[&sidx];
+        let lat = (-sec.y_min) as f32;
+        let (sx0, sx1) = (sec.start_x as f32, sec.end_x as f32);
+        let bi = biome_index(sx0.floor().max(0.0) as i64);
         let ranks = if bi == 0 { 6 } else { 2 };
-        for edge in [lat, -lat] {
-            let out = if edge > 0.0 { 1.0 } else { -1.0 };
-            for r in 0..ranks {
-                // Jitter x/y within the band so the mass looks natural, not gridded.
-                let jx = (hash_pick(&format!("jx{idx}"), 100) as f32 - 50.0) * 0.045;
-                let jy = (hash_pick(&format!("jy{idx}"), 100) as f32 - 50.0) * 0.03;
-                let depth = 0.6 + r as f32 * 2.3;
-                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, edge + out * depth + jy, idx);
-                idx += 1;
+        let mut id = sidx as usize * 8192; // unique-per-section so props vary, not tile
+        let mut x = sx0;
+        while x < sx1 {
+            for edge in [lat, -lat] {
+                let out = if edge > 0.0 { 1.0 } else { -1.0 };
+                for r in 0..ranks {
+                    let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.045;
+                    let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.03;
+                    let depth = 0.6 + r as f32 * 2.3;
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, edge + out * depth + jy, id);
+                    id += 1;
+                }
+            }
+            x += step;
+        }
+        if sec.start_x <= 0.5 {
+            let xe = frame.x_min;
+            let ranks_e = if bi == 0 { 4 } else { 2 };
+            let mut y = -lat;
+            while y <= lat {
+                for r in 0..ranks_e {
+                    let depth = 0.6 + r as f32 * 2.3;
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, xe - depth, y, id);
+                    id += 1;
+                }
+                y += step;
             }
         }
-        x += step;
+        walled.insert(sidx);
     }
-    // End caps across the full width (behind the hub, behind the deep portal),
-    // banded in x so looking down the corridor's ends is also a solid mass.
-    for xe in [x_min, x_max] {
-        let bi = biome_index(xe.floor().max(0.0) as i64);
-        let out = if xe < 0.0 { -1.0 } else { 1.0 };
-        let ranks = if bi == 0 { 4 } else { 2 };
-        let mut y = -lat;
-        while y <= lat {
-            for r in 0..ranks {
-                let jy = (hash_pick(&format!("ey{idx}"), 100) as f32 - 50.0) * 0.03;
-                let depth = 0.6 + r as f32 * 2.3;
-                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, xe + out * depth, y + jy, idx);
-                idx += 1;
-            }
-            y += step;
-        }
-    }
-    // Gated biome seams: a ridge across the corridor with one gap on the path,
-    // flanked by taller standing-stone gateposts so the pass reads as a doorway.
-    for s in &frame.seams {
-        let (sx, gap_y, gap_h) = (s.x as f32, s.gap_y as f32, s.gap_half_width as f32);
-        let bi = biome_index(sx.floor() as i64);
-        let mut y = -lat;
-        while y <= lat {
-            if (y - gap_y).abs() > gap_h {
-                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, sx, y, idx);
-                idx += 1;
-            }
-            y += step;
-        }
-        for py in [gap_y - gap_h - 0.4, gap_y + gap_h + 0.4] {
-            let mat = rock_mats.get(bi.min(4)).cloned().unwrap_or_default();
-            commands.spawn((
-                WorldWall,
-                Mesh3d(wa.rock_mesh.clone()),
-                MeshMaterial3d(mat),
-                Transform::from_translation(world_pos(sx, py, 1.4))
-                    .with_scale(Vec3::new(2.2, 6.0, 2.2)),
-            ));
-        }
-    }
-    frame.built = true;
 }
 
 /// Reconcile treasure-chest visuals from the snapshot: spawn a chest when it
@@ -4686,6 +4703,9 @@ fn spawn_connector(
         perceptual_roughness: 0.85,
         ..default()
     });
+    // Lift the whole prop a touch so its low end clears the ground plane — a slope's
+    // base otherwise lies flush with y=0 and z-fights the ground (shimmering).
+    let transform = transform.with_translation(transform.translation + Vec3::Y * 0.14);
     commands.spawn((
         TerrainMesh(idx),
         Mesh3d(mesh),
@@ -4786,7 +4806,7 @@ fn spawn_obstacle(
                 WorldEntity(id.to_string()),
                 Mesh3d(wa.water_mesh.clone()),
                 MeshMaterial3d(wa.water_mat.clone()),
-                Transform::from_translation(world_pos(e.x, e.y, 0.04))
+                Transform::from_translation(world_pos(e.x, e.y, 0.2))
                     .with_rotation(
                         Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
                     )
