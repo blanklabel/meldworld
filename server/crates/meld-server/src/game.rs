@@ -1793,6 +1793,26 @@ impl GameState {
     // --- tick ---------------------------------------------------------------
 
     fn tick(&mut self) -> Vec<Outgoing> {
+        if self.instance.is_none() {
+            return Vec::new();
+        }
+        let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
+        let mut out = Vec::new();
+
+        // 1) The overworld always advances — even while some party is in a battle.
+        // Roaming creatures move and skirmish with rival factions; creatures pulled
+        // into a battle are `in_battle` and hold still. Doing this every tick (not
+        // only in the no-battle branch) is what keeps players who *aren't* fighting
+        // live: without it, one player's fight froze the whole instance and starved
+        // everyone else of snapshots until their sockets dropped (the co-op crash).
+        if let Some(inst) = self.instance.as_mut() {
+            inst.arena.step_creatures(dt);
+        }
+        // Ground loot dropped by creature-vs-creature kills, auto-collected by any
+        // roaming player who walks over it.
+        out.extend(self.collect_ground_loot());
+
+        // 2) Advance the active battle (if any) for the parties fighting it.
         let has_battle = self
             .instance
             .as_ref()
@@ -1807,24 +1827,55 @@ impl GameState {
                 .as_mut()
                 .unwrap()
                 .tick();
-            let mut out = self.emit_battle_events(events);
+            out.extend(self.emit_battle_events(events));
             // Gauge keepalive (event-driven + periodic per battle.md).
             if let Some(inst) = self.instance.as_ref() {
                 if let Some(b) = inst.battle.as_ref() {
                     out.extend(self.gauge_update_msgs(inst, b));
                 }
             }
-            out
-        } else if self.instance.is_some() {
-            // No battle: roam the creatures, then snapshot the overworld.
-            let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
-            if let Some(inst) = self.instance.as_mut() {
-                inst.arena.step_creatures(dt);
-            }
-            self.snapshot_msgs()
-        } else {
-            Vec::new()
         }
+
+        // 3) Snapshot the overworld to everyone NOT currently in the battle. This
+        // runs every tick regardless of whether a battle is active, so roaming
+        // teammates keep receiving world state while others fight.
+        out.extend(self.snapshot_msgs());
+        out
+    }
+
+    /// Auto-collect ground loot (creature-skirmish drops) for every active player
+    /// standing on it, banking each into the run backpack and reporting the change.
+    fn collect_ground_loot(&mut self) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let Some(inst) = self.instance.as_mut() else {
+            return out;
+        };
+        let players: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        for pid in players {
+            let drops = inst.arena.collect_loot(&pid);
+            if drops.is_empty() {
+                continue;
+            }
+            let mut changes = Vec::new();
+            for d in drops {
+                let item = ItemStack {
+                    item_id: Uuid::now_v7().to_string(),
+                    item_kind: d.kind.clone(),
+                    quantity: 1,
+                    insurance: None,
+                };
+                if let Some(r) = inst.run.run_mut(&pid) {
+                    r.backpack.push(item.clone());
+                }
+                changes.push(wr::BackpackChange {
+                    item,
+                    delta: "added".to_string(),
+                    cause: format!("pickup:{}", d.kind),
+                });
+            }
+            out.push(out_msg(&pid, &wr::BackpackUpdate { changes }));
+        }
+        out
     }
 
     fn gauge_update_msgs(&self, inst: &ActiveInstance, b: &Battle) -> Vec<Outgoing> {
@@ -1896,6 +1947,16 @@ impl GameState {
                 avatar_state: Some(format!("resource:{}", n.kind)),
             });
         }
+        // Ground loot dropped by creature-vs-creature skirmishes, tagged
+        // `loot:<kind>` — walk over it to auto-collect (see `collect_ground_loot`).
+        for l in &inst.arena.ground_loot {
+            entities.push(wm::SnapshotEntity {
+                entity_id: l.entity_id.clone(),
+                position: l.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("loot:{}", l.kind)),
+            });
+        }
         // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
         // renders each feature at its true size (static, but sent with the snapshot
         // like the other world entities — pragmatic for the slice).
@@ -1911,9 +1972,13 @@ impl GameState {
             server_tick: now_ms() as i64,
             entities,
         };
+        // Overworld snapshots go to players NOT in the active battle. A fighting
+        // party is on the battle screen and driven by battle messages instead; a
+        // no-battle instance has an empty `battle_parties`, so this sends to all.
         inst.run
             .runs
             .iter()
+            .filter(|r| !inst.battle_parties.contains(&r.party_id))
             .map(|r| out_msg(&r.player_id, &msg))
             .collect()
     }

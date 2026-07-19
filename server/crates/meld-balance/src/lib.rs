@@ -173,6 +173,14 @@ pub struct Ai {
     pub group_radius: f64,
     pub flee_hp_fraction: f64,
     pub join_radius: f64,
+    /// Overworld creature-vs-creature skirmish: hostile-faction creatures hunt
+    /// each other within this range, trade blows once `skirmish_attack_range`
+    /// close, on a `skirmish_attack_interval`-second cadence.
+    pub skirmish_aggro_radius: f64,
+    pub skirmish_attack_range: f64,
+    pub skirmish_attack_interval: f64,
+    /// A player auto-collects a ground-loot drop within this range.
+    pub loot_pickup_radius: f64,
 }
 
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
@@ -206,6 +214,14 @@ pub struct CreatureStats {
     /// Whether this creature flees a losing battle.
     #[serde(default)]
     pub flees: bool,
+    /// Item kind dropped as ground loot when this creature is felled by an
+    /// overworld skirmish (players walk over it to collect).
+    #[serde(default = "default_loot_kind")]
+    pub loot_kind: String,
+}
+
+fn default_loot_kind() -> String {
+    "monster_trophy".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

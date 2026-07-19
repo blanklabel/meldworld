@@ -263,6 +263,7 @@ fn main() {
             (
                 despawn::<BattleScene>,
                 despawn::<PartyWindow>,
+                despawn::<AllyPartyStrips>,
                 despawn::<CommandWindow>,
                 despawn::<HitFxRoot>,
                 despawn::<BattleActor>,
@@ -279,6 +280,7 @@ fn main() {
                 style_command_menu,
                 render_enemy_panel,
                 render_party_window,
+                render_ally_parties,
                 advance_hit_fx,
                 render_hit_fx,
                 // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
@@ -888,6 +890,9 @@ struct BattleScene;
 /// Immediate-mode party status window (bottom-left).
 #[derive(Component)]
 struct PartyWindow;
+/// Immediate-mode edge strips showing joined allies' parties (north/west/east).
+#[derive(Component)]
+struct AllyPartyStrips;
 /// Persistent command window (bottom-right); rebuilt only on page change.
 #[derive(Component)]
 struct CommandWindow;
@@ -1660,6 +1665,7 @@ fn mock_battle_setup(
         max_hp: 40,
         gauge,
         is_player: true,
+        player_id: Some("me".into()),
         level: 1,
         statuses: vec![],
     };
@@ -1689,6 +1695,7 @@ fn mock_battle_setup(
             max_hp: 60,
             gauge: 0.65,
             is_player: false,
+            player_id: None,
             level: 1,
             statuses: vec![],
         },
@@ -1988,8 +1995,8 @@ fn demo_driver(
         battle.active = Some("me".to_string());
         battle.monster_combatant = Some("g".to_string());
         battle.combatants = vec![
-            CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true, level: 1, statuses: vec![] },
-            CombatantView { id: "g".into(), name: "forest bloom stalker".into(), hp: 60, max_hp: 60, gauge: 0.0, is_player: false, level: 1, statuses: vec![] },
+            CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true, player_id: Some("me".into()), level: 1, statuses: vec![] },
+            CombatantView { id: "g".into(), name: "forest bloom stalker".into(), hp: 60, max_hp: 60, gauge: 0.0, is_player: false, player_id: None, level: 1, statuses: vec![] },
         ];
         next.set(Screen::Battle);
     }
@@ -3274,6 +3281,26 @@ fn sync_overworld_sprites(
                     0.4,
                 );
             }
+            EntityKind::Loot => {
+                // A dropped skirmish trophy — a small, glowing golden pickup that
+                // sparkles above the grass until a player walks over it.
+                let tex = e
+                    .name
+                    .as_deref()
+                    .and_then(|k| wa.resource_sprites.get(k).cloned())
+                    .unwrap_or_else(|| wa.resource_fallback.clone());
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    tex,
+                    0.7,
+                    Color::srgb(1.7, 1.4, 0.7),
+                    0.35,
+                );
+            }
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
             }
@@ -4440,50 +4467,204 @@ fn render_enemy_panel(
                     });
                 }
             });
-            // Allied reinforcements: other players' heroes who joined this fight, so
-            // a join visibly "joins the screen" (your own heroes are the party grid).
-            let allies: Vec<&CombatantView> = battle
-                .combatants
-                .iter()
-                .filter(|c| c.is_player && !battle.your_ids.contains(&c.id))
-                .collect();
-            if !allies.is_empty() {
-                p.spawn((
-                    Text::new("— allies —"),
-                    TextFont { font_size: 13.0, ..default() },
-                    TextColor(Color::srgb(0.6, 0.8, 1.0)),
-                ));
-                p.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(24.0),
+            // Joined allies are drawn as their own per-party lineups on the screen
+            // edges (`render_ally_parties`), not as a flat strip here.
+        });
+}
+
+/// One joined ally party, pinned to a screen edge (north/west/east). Your own
+/// party is the bottom grid; up to three other players' full lineups line the
+/// other three edges so a co-op fight reads as several parties fighting together.
+#[derive(Clone, Copy)]
+enum AllyEdge {
+    North,
+    West,
+    East,
+}
+
+/// Immediate-mode ally-party strips: group every joined hero (a player-combatant
+/// that isn't one of yours) by its owning `player_id`, then lay each party out as
+/// a compact lineup on the north, west, or east edge. Rebuilt each frame from
+/// [`BattleData`] like the other battle HUD panels.
+fn render_ally_parties(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    hitfx: Res<HitFx>,
+    existing: Query<Entity, With<AllyPartyStrips>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    // Group joined heroes by owner, preserving first-seen order for a stable layout.
+    let mut order: Vec<String> = Vec::new();
+    let mut parties: HashMap<String, Vec<&CombatantView>> = HashMap::new();
+    for c in battle.combatants.iter() {
+        if !c.is_player || battle.your_ids.contains(&c.id) {
+            continue;
+        }
+        let owner = c.player_id.clone().unwrap_or_else(|| c.id.clone());
+        if !parties.contains_key(&owner) {
+            order.push(owner.clone());
+        }
+        parties.entry(owner).or_default().push(c);
+    }
+    if order.is_empty() {
+        return;
+    }
+    let edges = [AllyEdge::North, AllyEdge::West, AllyEdge::East];
+    for (gi, owner) in order.iter().enumerate() {
+        // Only three edges are free (your party owns the bottom); extra parties
+        // stack onto the north edge rather than vanish.
+        let edge = edges[gi.min(edges.len() - 1)];
+        let heroes = &parties[owner];
+        spawn_ally_party(&mut commands, &hitfx, edge, gi, heroes);
+    }
+}
+
+/// Spawn one edge-pinned ally party: a labelled container holding a slim cell per
+/// hero (name, Lv, HP + gauge bars), flashing when struck. North lays the heroes
+/// in a row; west/east stack them in a column.
+fn spawn_ally_party(
+    commands: &mut Commands,
+    hitfx: &HitFx,
+    edge: AllyEdge,
+    group_index: usize,
+    heroes: &[&CombatantView],
+) {
+    // Edge anchoring. North parties beyond the first are nudged down so they stack.
+    let mut node = Node {
+        position_type: PositionType::Absolute,
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(5.0),
+        padding: UiRect::all(Val::Px(8.0)),
+        border: UiRect::all(Val::Px(2.0)),
+        ..default()
+    };
+    match edge {
+        AllyEdge::North => {
+            node.top = Val::Px(92.0 + group_index.saturating_sub(1) as f32 * 116.0);
+            node.left = Val::Px(0.0);
+            node.right = Val::Px(0.0);
+            node.align_items = AlignItems::Center;
+        }
+        AllyEdge::West => {
+            node.left = Val::Px(10.0);
+            node.top = Val::Percent(30.0);
+            node.width = Val::Px(180.0);
+        }
+        AllyEdge::East => {
+            node.right = Val::Px(10.0);
+            node.top = Val::Percent(30.0);
+            node.width = Val::Px(180.0);
+        }
+    }
+    let label = heroes
+        .iter()
+        .find_map(|c| (!c.name.is_empty() && c.name != "Hero").then(|| c.name.clone()))
+        .map(|n| format!("{n}'s party"))
+        .unwrap_or_else(|| "Allied party".to_string());
+    commands
+        .spawn((
+            AllyPartyStrips,
+            node,
+            BorderColor(Color::srgba(0.4, 0.6, 0.95, 0.7)),
+            BackgroundColor(Color::srgba(0.05, 0.08, 0.16, 0.82)),
+            BorderRadius::all(Val::Px(8.0)),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(label),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(Color::srgb(0.7, 0.85, 1.0)),
+            ));
+            // The heroes: a row on the north edge, a column on the sides.
+            let inner_dir = match edge {
+                AllyEdge::North => FlexDirection::Row,
+                _ => FlexDirection::Column,
+            };
+            panel
+                .spawn(Node {
+                    flex_direction: inner_dir,
+                    column_gap: Val::Px(8.0),
+                    row_gap: Val::Px(5.0),
                     ..default()
                 })
                 .with_children(|row| {
-                    for c in &allies {
-                        let frac = c.hp as f32 / c.max_hp.max(1) as f32;
-                        row.spawn(Node {
-                            width: Val::Px(150.0),
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            row_gap: Val::Px(4.0),
-                            ..default()
-                        })
-                        .with_children(|a| {
-                            a.spawn((
-                                Node { width: Val::Px(40.0), height: Val::Px(40.0), ..default() },
-                                BackgroundColor(Color::srgb(0.4, 0.6, 0.95)),
-                                BorderRadius::all(Val::Px(6.0)),
-                            ));
-                            a.spawn((
-                                Text::new(format!("{}  {}/{}", c.name, c.hp, c.max_hp)),
-                                TextFont { font_size: 13.0, ..default() },
-                                TextColor(Color::srgb(0.75, 0.85, 1.0)),
-                            ));
-                            meter(a, frac, 8.0, Color::srgb(0.4, 0.65, 0.95));
-                        });
+                    for c in heroes {
+                        ally_cell(row, hitfx, c);
                     }
                 });
+        });
+}
+
+/// A slim status cell for one joined ally hero: name + Lv, HP text (with Barrier/
+/// Regen suffixes), and HP + ATB meters. No command affordances — it's read-only.
+fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView) {
+    let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
+    let gauge = c.gauge.clamp(0.0, 1.0) as f32;
+    let hurt = flashing(hitfx, &c.id);
+    let name = if !c.name.is_empty() && c.name != "Hero" {
+        c.name.clone()
+    } else {
+        "Hero".to_string()
+    };
+    parent
+        .spawn((
+            Node {
+                width: Val::Px(158.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                padding: UiRect::all(Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BorderColor(Color::srgba(0.4, 0.5, 0.8, 0.8)),
+            BackgroundColor(if hurt {
+                Color::srgb(0.28, 0.1, 0.12)
+            } else {
+                Color::srgba(0.08, 0.11, 0.22, 0.9)
+            }),
+            BorderRadius::all(Val::Px(5.0)),
+        ))
+        .with_children(|cell| {
+            cell.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::SpaceBetween,
+                align_items: AlignItems::Center,
+                ..default()
+            })
+            .with_children(|line| {
+                line.spawn((
+                    Text::new(name),
+                    TextFont { font_size: 14.0, ..default() },
+                    TextColor(if c.hp == 0 {
+                        Color::srgb(0.55, 0.55, 0.6)
+                    } else {
+                        Color::srgb(0.8, 0.88, 1.0)
+                    }),
+                ));
+                line.spawn((
+                    Text::new(format!("Lv {}", c.level)),
+                    TextFont { font_size: 11.0, ..default() },
+                    TextColor(Color::srgb(0.85, 0.8, 0.45)),
+                ));
+            });
+            let barrier = status_num(&c.statuses, "barrier:");
+            let regen = status_num(&c.statuses, "regen:");
+            let mut hp_line = format!("Hp {}/{}", c.hp, c.max_hp);
+            if barrier > 0 {
+                hp_line.push_str(&format!("  +{barrier}\u{25c6}"));
             }
+            if regen > 0 {
+                hp_line.push_str(&format!("  +{regen}/t"));
+            }
+            cell.spawn((
+                Text::new(hp_line),
+                TextFont { font_size: 11.0, ..default() },
+                TextColor(Color::srgb(0.6, 0.75, 0.95)),
+            ));
+            meter(cell, hp_frac, 7.0, Color::srgb(0.35, 0.6, 0.95));
+            meter(cell, gauge, 5.0, Color::srgb(0.4, 0.85, 0.5));
         });
 }
 
@@ -4858,6 +5039,7 @@ mod tests {
             max_hp,
             gauge: 0.0,
             is_player,
+            player_id: is_player.then(|| id.into()),
             level: 5,
             statuses: statuses.iter().map(|s| s.to_string()).collect(),
         }

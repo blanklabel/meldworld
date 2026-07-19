@@ -64,6 +64,9 @@ pub struct CombatantView {
     pub max_hp: i32,
     pub gauge: f64,
     pub is_player: bool,
+    /// Owning player for a hero combatant (`None` for monsters). Allied heroes are
+    /// grouped by this into per-party strips on the battle screen edges.
+    pub player_id: Option<String>,
     pub level: i32,
     /// Wire statuses — for a Psyker these carry Focus state (`focus_slots:N`,
     /// `focus:<kind>:<stacks>`) that drives the focus UI.
@@ -90,6 +93,7 @@ impl CombatantView {
             max_hp: c.max_hp,
             gauge: c.gauge,
             is_player: c.player_id.is_some(),
+            player_id: c.player_id.clone(),
             level: c.level,
             statuses: c.statuses.clone(),
         }
@@ -104,6 +108,9 @@ pub enum EntityKind {
     Portal,
     /// A harvestable resource node (`monster_kind` carries its content id/label).
     Resource,
+    /// Ground loot from a creature skirmish (`monster_kind` carries the item kind).
+    /// Walk over it to auto-collect.
+    Loot,
     /// An impassable terrain feature (`monster_kind` carries its kind, `radius` its size).
     Obstacle,
 }
@@ -768,6 +775,9 @@ impl Inner {
                                 }
                                 Some(s) if s.starts_with("resource:") => {
                                     (EntityKind::Resource, Some(s["resource:".len()..].to_string()), None)
+                                }
+                                Some(s) if s.starts_with("loot:") => {
+                                    (EntityKind::Loot, Some(s["loot:".len()..].to_string()), None)
                                 }
                                 Some(s) if s.starts_with("obstacle:") => {
                                     // obstacle:<kind>:<radius>

@@ -95,6 +95,29 @@ drives **real headless bot clients over the real wire protocol** — no shortcut
 client-side combat math: `four_players_kill_monster`, `extraction`, `death_durability`,
 `progression`, `raid_merge`, `auth_conformance`.
 
+### Visual verification (screenshots, not interactive driving)
+
+For anything the browser renders (HD-2D art, HUD/UI, overworld, battle screen),
+**verify by screenshot** — boot the stack, load the page, and capture the frame;
+don't click through the app interactively (Bevy paints to a `<canvas>`, so the
+accessibility/DOM tools see nothing useful anyway). Boot the backend and web client
+as two processes, then screenshot:
+
+```sh
+# 1) Postgres + game server on :18090 (stays up; Ctrl-C to stop)
+client/scripts/serve.sh bash -c 'tail -f /dev/null' &
+# 2) wasm client dev server on :9080 (proxies /v1 + /v1/realtime → :18090)
+client/scripts/trunk-build.sh          # first build compiles wasm — a few minutes
+client/scripts/trunk-serve.sh --port 9080 --address 127.0.0.1 --no-autoreload &
+# → open http://127.0.0.1:9080 and screenshot the canvas
+```
+
+`?party=…` / `?class=…` preset the party and `?autoplay` self-drives the loop — handy
+for deterministic screenshot states. The `meld-web` entry in `.claude/launch.json`
+runs the trunk step for the browser-preview tooling. Pre-build the wasm once
+(`trunk-build.sh`) so the preview server starts fast instead of timing out on the
+cold Bevy compile.
+
 ## Conventions
 
 - **Server-authoritative, always** (CANON §S, D11). All combat math, movement, loot, and
