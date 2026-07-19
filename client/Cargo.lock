@@ -3482,6 +3482,7 @@ dependencies = [
  "meld-proto",
  "sqlx",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 

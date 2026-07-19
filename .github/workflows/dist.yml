@@ -3,13 +3,18 @@
 # for each OS, so there's no flaky cross-compiling. Produces one downloadable file
 # per platform, e.g. meldworld-windows-x86_64.exe.
 #
-# Run it: the "Actions" tab → "dist" → "Run workflow" (workflow_dispatch), or push
-# a tag like `v0.1.0` to also attach the binaries to a GitHub Release.
+# When it runs:
+#   - every merge/push to `main`  → builds all three; binaries are downloadable
+#     run artifacts (the "latest main" build). No Release is cut.
+#   - a `v*` tag                  → same builds, plus a GitHub Release with the
+#     binaries attached (see the `release` job).
+#   - manual "Run workflow"       → on demand from the Actions tab.
 name: dist
 
 on:
   workflow_dispatch: {}
   push:
+    branches: ["main"]
     tags: ["v*"]
 
 # Least privilege by default; the release job opts into write below.
