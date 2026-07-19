@@ -207,11 +207,15 @@ fn terrain_section_msg(area: &Area, path: Vec<Position>) -> ww::TerrainSection {
 /// Tag each ally combatant with its hero's persistent name (`name:<name>`) so the
 /// client shows names in battle. Slot = the combatant's index among its player's
 /// combatants; the name comes from `ActiveInstance::hero_names`.
-fn inject_hero_names(inst: &ActiveInstance, allies: &mut [meld_proto::common::Combatant]) {
+fn inject_hero_names(
+    player_combatants: &HashMap<String, Vec<String>>,
+    hero_names: &HashMap<String, Vec<String>>,
+    allies: &mut [meld_proto::common::Combatant],
+) {
     for c in allies.iter_mut() {
         let Some(pid) = &c.player_id else { continue };
         if let (Some(cids), Some(names)) =
-            (inst.player_combatants.get(pid), inst.hero_names.get(pid))
+            (player_combatants.get(pid), hero_names.get(pid))
         {
             if let Some(slot) = cids.iter().position(|x| x == &c.combatant_id) {
                 if let Some(n) = names.get(slot) {
@@ -230,22 +234,36 @@ struct Extraction {
     method: String,
 }
 
+/// One in-progress battle within the instance. Several run **concurrently** — a
+/// party that touches a free creature starts its own; a nearby party can merge
+/// into an existing one via `run.join_battle`. All the state a fight owns lives
+/// here, so ending a battle is just dropping its slot (CANON §S: one task, no
+/// locks — this is a plain `Vec`, not shared).
+struct BattleSlot {
+    battle: Battle,
+    battle_id: String,
+    /// Indices (into `arena.monsters`) of every creature in this encounter (the
+    /// touched creature plus its nearby group), so victory marks them all defeated
+    /// and awards their combined XP.
+    monster_idxs: Vec<usize>,
+    /// combatant_id -> player_id, for the players in THIS battle only.
+    combatant_player: HashMap<String, String>,
+    /// player_id -> the combatant ids they control in THIS battle.
+    player_combatants: HashMap<String, Vec<String>>,
+    /// Party ids merged into this battle (raid merge).
+    parties: std::collections::HashSet<u32>,
+    /// Overworld position of this fight (the touched creature's spot), so a nearby
+    /// teammate can opt in via `run.join_battle`.
+    pos: Position,
+}
+
 /// The single active MazeInstance of the slice.
 struct ActiveInstance {
     arena: Arena,
     run: InstanceRun,
-    battle: Option<Battle>,
-    battle_id: String,
-    monster_combatant_id: String,
-    /// Indices (into `arena.monsters`) of every creature in the active encounter
-    /// (the touched creature plus its nearby group), so victory can mark them all
-    /// defeated and award their combined XP.
-    battle_monster_idxs: Vec<usize>,
-    /// combatant_id -> player_id (players only).
-    combatant_player: HashMap<String, String>,
-    /// player_id -> the combatant ids they control (a solo player fields a party
-    /// of four; in co-op each player controls one).
-    player_combatants: HashMap<String, Vec<String>>,
+    /// Every battle currently running in the instance. Independent parties fight
+    /// separate encounters at the same time; each is one [`BattleSlot`].
+    battles: Vec<BattleSlot>,
     /// player_id -> per-hero current HP (length = party_size_per_player), carried
     /// across the run's battles so wounds persist (no free heal between fights).
     /// Reset to full only when a player (re)enters the maze — a fresh dive.
@@ -257,11 +275,46 @@ struct ActiveInstance {
     hero_names: HashMap<String, Vec<String>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
-    /// Party ids currently merged into the active battle (raid merge).
-    battle_parties: std::collections::HashSet<u32>,
-    /// Overworld position of the active battle (the touched creature's spot), so a
-    /// nearby teammate can opt in via `run.join_battle`.
-    battle_pos: Position,
+}
+
+impl ActiveInstance {
+    /// The party id a player belongs to (their run's `party_id`).
+    fn party_id_of(&self, player_id: &str) -> Option<u32> {
+        self.run
+            .runs
+            .iter()
+            .find(|r| r.player_id == player_id)
+            .map(|r| r.party_id)
+    }
+    /// The battle a party is currently in, if any.
+    fn battle_of_party(&self, party_id: u32) -> Option<&BattleSlot> {
+        self.battles.iter().find(|b| b.parties.contains(&party_id))
+    }
+    /// The battle a player is currently in, if any.
+    fn battle_of_player(&self, player_id: &str) -> Option<&BattleSlot> {
+        let pid = self.party_id_of(player_id)?;
+        self.battle_of_party(pid)
+    }
+    fn battle_by_id(&self, battle_id: &str) -> Option<&BattleSlot> {
+        self.battles.iter().find(|b| b.battle_id == battle_id)
+    }
+    fn battle_by_id_mut(&mut self, battle_id: &str) -> Option<&mut BattleSlot> {
+        self.battles.iter_mut().find(|b| b.battle_id == battle_id)
+    }
+    /// Every party id currently in some battle (union across all slots). Used to
+    /// scope overworld snapshots to the players who are still roaming.
+    fn parties_in_battle(&self) -> std::collections::HashSet<u32> {
+        self.battles.iter().flat_map(|b| b.parties.iter().copied()).collect()
+    }
+    /// The players (across every merged party) in a given battle.
+    fn members_of(&self, slot: &BattleSlot) -> Vec<String> {
+        self.run
+            .runs
+            .iter()
+            .filter(|r| slot.parties.contains(&r.party_id))
+            .map(|r| r.player_id.clone())
+            .collect()
+    }
 }
 
 /// One member of a pre-maze co-op lobby.
@@ -423,9 +476,12 @@ impl GameState {
         };
         inst.arena.avatars.retain(|a| a.player_id != player_id);
         inst.run.runs.retain(|r| r.player_id != player_id);
-        if let Some(cids) = inst.player_combatants.remove(player_id) {
-            for cid in cids {
-                inst.combatant_player.remove(&cid);
+        // Drop the player's combatant bookkeeping from whichever battle held them.
+        for slot in inst.battles.iter_mut() {
+            if let Some(cids) = slot.player_combatants.remove(player_id) {
+                for cid in cids {
+                    slot.combatant_player.remove(&cid);
+                }
             }
         }
         inst.hero_hp.remove(player_id);
@@ -615,18 +671,11 @@ impl GameState {
             self.instance = Some(ActiveInstance {
                 arena: Arena::generate(&self.balance, seed),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
-                battle: None,
-                battle_id: String::new(),
-                monster_combatant_id: String::new(),
-                battle_monster_idxs: Vec::new(),
-                combatant_player: HashMap::new(),
-                player_combatants: HashMap::new(),
+                battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
                 hero_names: HashMap::new(),
                 extraction: HashMap::new(),
-                battle_parties: std::collections::HashSet::new(),
-                battle_pos: Position::new(0.0, 0.0),
             });
         }
         let inst = self.instance.as_mut().expect("instance exists");
@@ -1028,22 +1077,20 @@ impl GameState {
             intent.input_seq,
         );
 
-        // Touching a creature starts a battle — but ONLY when no fight is already
-        // in progress in this (single-battle) instance. A teammate never gets
-        // auto-pulled into an ongoing fight by wandering into a creature; they opt
-        // in explicitly with `run.join_battle` (see `handle_join_battle`).
-        let decision = if inst.battle.is_some() {
-            None
-        } else {
-            match inst.arena.check_touch() {
-                Some((toucher, monster_idx)) => inst
-                    .run
-                    .runs
-                    .iter()
-                    .find(|r| r.player_id == toucher)
-                    .map(|r| (toucher, r.party_id, monster_idx)),
-                None => None,
-            }
+        // Touching a free creature starts a NEW battle — independent battles run
+        // concurrently, so one party's fight no longer blocks another's. A player
+        // already in a fight isn't `active` (so `check_touch` skips them), and a
+        // creature already in someone's fight is `in_battle` (also skipped), so a
+        // touch is always a fresh, un-owned encounter. A teammate who wants to help
+        // an ongoing fight opts in explicitly with `run.join_battle` instead.
+        let decision = match inst.arena.check_touch() {
+            Some((toucher, monster_idx)) => inst
+                .run
+                .runs
+                .iter()
+                .find(|r| r.player_id == toucher)
+                .map(|r| (toucher, r.party_id, monster_idx)),
+            None => None,
         };
         match decision {
             Some((toucher, pid, monster_idx)) => self.start_battle(&toucher, pid, monster_idx),
@@ -1067,10 +1114,11 @@ impl GameState {
         let battle_id = Uuid::now_v7().to_string();
         let monster_combatant_id = Uuid::now_v7().to_string();
 
-        // Assign combatant ids for the *touching* party only.
+        // Assign combatant ids for the *touching* party only. This battle owns its
+        // own combatant maps (a fresh slot), so concurrent battles never collide.
         let mut party: Vec<meld_run::PartyMember> = Vec::new();
-        inst.combatant_player.clear();
-        inst.player_combatants.clear();
+        let mut combatant_player: HashMap<String, String> = HashMap::new();
+        let mut player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         let party_players: Vec<String> = inst
             .run
             .runs
@@ -1095,13 +1143,12 @@ impl GameState {
             let mut cids = Vec::new();
             for (slot, cls) in comp.iter().enumerate() {
                 let cid = Uuid::now_v7().to_string();
-                inst.combatant_player
-                    .insert(cid.clone(), r.player_id.clone());
+                combatant_player.insert(cid.clone(), r.player_id.clone());
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 cids.push(cid);
             }
-            inst.player_combatants.insert(r.player_id.clone(), cids);
+            player_combatants.insert(r.player_id.clone(), cids);
         }
 
         // The encounter is the touched creature plus every creature grouped
@@ -1133,8 +1180,22 @@ impl GameState {
             seed,
             &hp_overrides,
         );
-        let (mut allies, enemies) = battle.wire_combatants();
-        inject_hero_names(inst, &mut allies);
+        let slot = BattleSlot {
+            battle,
+            battle_id: battle_id.clone(),
+            monster_idxs: group_idxs.clone(),
+            combatant_player,
+            player_combatants,
+            parties: std::iter::once(party_id).collect(),
+            pos: inst
+                .arena
+                .monsters
+                .get(monster_idx)
+                .map(|m| m.position)
+                .unwrap_or_else(|| Position::new(0.0, 0.0)),
+        };
+        let (mut allies, enemies) = slot.battle.wire_combatants();
+        inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
 
         for pid in &party_players {
             if let Some(a) = inst.arena.avatar_mut(pid) {
@@ -1148,30 +1209,19 @@ impl GameState {
             }
         }
 
-        let encounter_class = battle.encounter_class;
+        let encounter_class = slot.battle.encounter_class;
         tracing::info!(
             battle_id = %battle_id,
             party = party_players.len(),
             enemies = group_idxs.len(),
             triggered_by = %toucher,
+            active_battles = inst.battles.len() + 1,
             "battle started"
         );
-        inst.battle_pos = inst
-            .arena
-            .monsters
-            .get(monster_idx)
-            .map(|m| m.position)
-            .unwrap_or_else(|| Position::new(0.0, 0.0));
-        inst.battle = Some(battle);
-        inst.battle_id = battle_id.clone();
-        inst.monster_combatant_id = monster_combatant_id;
-        inst.battle_monster_idxs = group_idxs;
-        inst.battle_parties.clear();
-        inst.battle_parties.insert(party_id);
 
         let mut out = Vec::new();
         for pid in &party_players {
-            let yours = inst.player_combatants.get(pid).cloned().unwrap_or_default();
+            let yours = slot.player_combatants.get(pid).cloned().unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wb::Started {
@@ -1185,6 +1235,7 @@ impl GameState {
                 },
             ));
         }
+        inst.battles.push(slot);
         out
     }
 
@@ -1193,36 +1244,37 @@ impl GameState {
     /// within `join_radius` of the fight — then merges their party in.
     fn handle_join_battle(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let join_radius = self.balance.ai.join_radius;
-        let party_id = {
+        let (party_id, battle_id) = {
             let Some(inst) = self.instance.as_ref() else {
                 return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
             };
-            if inst.battle.is_none() {
+            if inst.battles.is_empty() {
                 return vec![error(player_id, ErrorCode::InvalidState, "No fight in progress.", Some(raw.seq))];
             }
-            let Some(pid) = inst
-                .run
-                .runs
-                .iter()
-                .find(|r| r.player_id == player_id)
-                .map(|r| r.party_id)
-            else {
+            let Some(pid) = inst.party_id_of(player_id) else {
                 return vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))];
             };
-            if inst.battle_parties.contains(&pid) {
-                return vec![error(player_id, ErrorCode::InvalidState, "You're already in the fight.", Some(raw.seq))];
+            if inst.battle_of_party(pid).is_some() {
+                return vec![error(player_id, ErrorCode::InvalidState, "You're already in a fight.", Some(raw.seq))];
             }
-            let near = inst
-                .arena
-                .avatar(player_id)
-                .map(|a| a.position.distance_to(&inst.battle_pos) <= join_radius)
-                .unwrap_or(false);
-            if !near {
-                return vec![error(player_id, ErrorCode::OutOfRange, "Too far from the fight to join.", Some(raw.seq))];
-            }
-            pid
+            let Some(pos) = inst.arena.avatar(player_id).map(|a| a.position) else {
+                return vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))];
+            };
+            // Join the NEAREST battle within join_radius (concurrent battles: there
+            // may be several going on around the map).
+            let target = inst
+                .battles
+                .iter()
+                .map(|b| (b.battle_id.clone(), pos.distance_to(&b.pos)))
+                .filter(|(_, d)| *d <= join_radius)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(id, _)| id);
+            let Some(battle_id) = target else {
+                return vec![error(player_id, ErrorCode::OutOfRange, "Too far from any fight to join.", Some(raw.seq))];
+            };
+            (pid, battle_id)
         };
-        self.join_battle(player_id, party_id)
+        self.join_battle(player_id, party_id, &battle_id)
     }
 
     /// Rename one of the caller's heroes: update the active run's names + the
@@ -1270,7 +1322,7 @@ impl GameState {
     /// Merge a party into the in-progress battle (the toucher opted in via
     /// `run.join_battle`). The joiner brings their full hero composition, exactly
     /// as if they'd started the fight.
-    fn join_battle(&mut self, toucher: &str, party_id: u32) -> Vec<Outgoing> {
+    fn join_battle(&mut self, toucher: &str, party_id: u32, battle_id: &str) -> Vec<Outgoing> {
         let balance = self.balance.clone();
         let cap =
             meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
@@ -1282,12 +1334,13 @@ impl GameState {
         let Some(inst) = self.instance.as_mut() else {
             return Vec::new();
         };
-        if inst.battle.is_none() {
+        if inst.battle_by_id(battle_id).is_none() {
             return Vec::new();
         }
 
         // Build the joining party's combatants — the joiner's full hero
-        // composition (parallel to `hero_hp`), just like starting a fight.
+        // composition (parallel to `hero_hp`), just like starting a fight. These go
+        // into the target battle's own combatant maps.
         let joiners: Vec<String> = inst
             .run
             .runs
@@ -1297,6 +1350,8 @@ impl GameState {
             .collect();
         let mut party: Vec<meld_run::PartyMember> = Vec::new();
         let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        let mut add_combatant_player: HashMap<String, String> = HashMap::new();
+        let mut add_player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         for pid in &joiners {
             let lead = inst
                 .run
@@ -1315,24 +1370,19 @@ impl GameState {
             let mut cids = Vec::new();
             for (slot, cls) in comp.iter().enumerate() {
                 let cid = Uuid::now_v7().to_string();
-                inst.combatant_player.insert(cid.clone(), pid.clone());
+                add_combatant_player.insert(cid.clone(), pid.clone());
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 cids.push(cid);
             }
-            inst.player_combatants.insert(pid.clone(), cids);
+            add_player_combatants.insert(pid.clone(), cids);
         }
         if party.is_empty() {
             return Vec::new();
         }
         // Merge cap: a touch that would exceed it does not merge (combat-atb.md).
-        if inst.battle.as_ref().unwrap().player_count() + party.len() > cap {
-            for pm in &party {
-                inst.combatant_player.remove(&pm.1);
-            }
-            for pid in &joiners {
-                inst.player_combatants.remove(pid);
-            }
+        let current = inst.battle_by_id(battle_id).unwrap().battle.player_count();
+        if current + party.len() > cap {
             return Vec::new();
         }
 
@@ -1343,18 +1393,29 @@ impl GameState {
                 f.hp = (*h).clamp(0, f.max_hp);
             }
         }
-        inst.battle.as_mut().unwrap().join(fighters);
-        inst.battle_parties.insert(party_id);
+
+        // Apply to the target battle slot, then extract what messaging needs.
+        let (encounter_class, mut allies, enemies, joined_pc) = {
+            let slot = inst.battle_by_id_mut(battle_id).unwrap();
+            slot.battle.join(fighters);
+            slot.parties.insert(party_id);
+            for (k, v) in add_combatant_player {
+                slot.combatant_player.insert(k, v);
+            }
+            for (k, v) in add_player_combatants {
+                slot.player_combatants.insert(k, v);
+            }
+            let (allies, enemies) = slot.battle.wire_combatants();
+            (slot.battle.encounter_class, allies, enemies, slot.player_combatants.clone())
+        };
+        inject_hero_names(&joined_pc, &inst.hero_names, &mut allies);
         for pid in &joiners {
             if let Some(a) = inst.arena.avatar_mut(pid) {
                 a.state = "in_battle".to_string();
             }
         }
 
-        let battle_id = inst.battle_id.clone();
-        let encounter_class = inst.battle.as_ref().unwrap().encounter_class;
-        let (mut allies, enemies) = inst.battle.as_ref().unwrap().wire_combatants();
-        inject_hero_names(inst, &mut allies);
+        let battle_id = battle_id.to_string();
         // Joining combatants (for party_joined to the existing side).
         let joining_allies: Vec<meld_proto::common::Combatant> = allies
             .iter()
@@ -1370,7 +1431,7 @@ impl GameState {
         let mut out = Vec::new();
         // battle.started (full state) to the joiners.
         for pid in &joiners {
-            let yours = inst.player_combatants.get(pid).cloned().unwrap_or_default();
+            let yours = joined_pc.get(pid).cloned().unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wb::Started {
@@ -1385,12 +1446,13 @@ impl GameState {
             ));
         }
         // battle.party_joined (delta) to everyone already in the battle.
-        let existing: Vec<String> = inst
-            .run
-            .runs
-            .iter()
-            .filter(|r| inst.battle_parties.contains(&r.party_id) && !joiners.contains(&r.player_id))
-            .map(|r| r.player_id.clone())
+        let members = inst
+            .battle_by_id(&battle_id)
+            .map(|s| inst.members_of(s))
+            .unwrap_or_default();
+        let existing: Vec<String> = members
+            .into_iter()
+            .filter(|pid| !joiners.contains(pid))
             .collect();
         for pid in &existing {
             out.push(out_msg(
@@ -1425,15 +1487,19 @@ impl GameState {
                 Some(raw.seq),
             )];
         };
-        if inst.battle.is_none() || submit.battle_id != inst.battle_id {
-            return vec![error(
-                player_id,
-                ErrorCode::NotFound,
-                "Unknown battle.",
-                Some(raw.seq),
-            )];
-        }
-        let owned = inst.player_combatants.get(player_id).cloned().unwrap_or_default();
+        // Route to the battle named in the request, and only if the sender is
+        // actually in it (with concurrent battles, the id disambiguates which one).
+        let owned = match inst.battle_by_id(&submit.battle_id) {
+            Some(slot) => slot.player_combatants.get(player_id).cloned().unwrap_or_default(),
+            None => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::NotFound,
+                    "Unknown battle.",
+                    Some(raw.seq),
+                )]
+            }
+        };
         // The actor must be one of the sender's own combatants; default to their
         // first hero when the client doesn't name one (back-compat).
         let actor_cid = match &submit.actor_combatant_id {
@@ -1459,7 +1525,7 @@ impl GameState {
             },
         };
 
-        let battle = inst.battle.as_mut().unwrap();
+        let battle = &mut inst.battle_by_id_mut(&submit.battle_id).unwrap().battle;
         let result = battle.submit(
             &actor_cid,
             submit.action_id.clone(),
@@ -1469,7 +1535,7 @@ impl GameState {
             submit.item_id.clone(),
         );
         match result {
-            Ok(events) => self.emit_battle_events(events),
+            Ok(events) => self.emit_battle_events(&submit.battle_id, events),
             Err(reject) => {
                 let (code, message) = reject_to_error(&reject);
                 vec![error(player_id, code, message, Some(raw.seq))]
@@ -1499,7 +1565,7 @@ impl GameState {
                 Some(raw.seq),
             )];
         };
-        if inst.battle.is_some() {
+        if inst.battle_of_player(player_id).is_some() {
             return vec![error(
                 player_id,
                 ErrorCode::InvalidState,
@@ -1668,7 +1734,7 @@ impl GameState {
             let Some(inst) = self.instance.as_mut() else {
                 return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
             };
-            if inst.battle.is_some() {
+            if inst.battle_of_player(player_id).is_some() {
                 return vec![error(
                     player_id,
                     ErrorCode::InvalidState,
@@ -1882,32 +1948,32 @@ impl GameState {
         // roaming player who walks over it.
         out.extend(self.collect_ground_loot());
 
-        // 2) Advance the active battle (if any) for the parties fighting it.
-        let has_battle = self
+        // 2) Advance every active battle independently, for the parties fighting it.
+        // Concurrent battles: separate groups fight different encounters at once, so
+        // we tick each slot and emit its events scoped to its own members. A slot
+        // that ends is removed inside `emit_battle_events`.
+        let battle_ids: Vec<String> = self
             .instance
             .as_ref()
-            .map(|i| i.battle.is_some())
-            .unwrap_or(false);
-        if has_battle {
-            let events = self
-                .instance
-                .as_mut()
-                .unwrap()
-                .battle
-                .as_mut()
-                .unwrap()
-                .tick();
-            out.extend(self.emit_battle_events(events));
-            // Gauge keepalive (event-driven + periodic per battle.md).
+            .map(|i| i.battles.iter().map(|b| b.battle_id.clone()).collect())
+            .unwrap_or_default();
+        for id in battle_ids {
+            let events = match self.instance.as_mut().and_then(|i| i.battle_by_id_mut(&id)) {
+                Some(slot) => slot.battle.tick(),
+                None => continue,
+            };
+            out.extend(self.emit_battle_events(&id, events));
+            // Gauge keepalive (event-driven + periodic per battle.md) — only if the
+            // battle is still running (didn't end on this tick).
             if let Some(inst) = self.instance.as_ref() {
-                if let Some(b) = inst.battle.as_ref() {
-                    out.extend(self.gauge_update_msgs(inst, b));
+                if let Some(slot) = inst.battle_by_id(&id) {
+                    out.extend(self.gauge_update_msgs(inst, slot));
                 }
             }
         }
 
-        // 3) Snapshot the overworld to everyone NOT currently in the battle. This
-        // runs every tick regardless of whether a battle is active, so roaming
+        // 3) Snapshot the overworld to everyone NOT currently in a battle. This
+        // runs every tick regardless of whether any battle is active, so roaming
         // teammates keep receiving world state while others fight.
         out.extend(self.snapshot_msgs());
         out
@@ -1948,8 +2014,9 @@ impl GameState {
         out
     }
 
-    fn gauge_update_msgs(&self, inst: &ActiveInstance, b: &Battle) -> Vec<Outgoing> {
-        let combatants: Vec<wb::GaugeEntry> = b
+    fn gauge_update_msgs(&self, inst: &ActiveInstance, slot: &BattleSlot) -> Vec<Outgoing> {
+        let combatants: Vec<wb::GaugeEntry> = slot
+            .battle
             .gauge_state()
             .into_iter()
             .map(|(id, gauge, hp, statuses)| wb::GaugeEntry {
@@ -1960,14 +2027,14 @@ impl GameState {
             })
             .collect();
         let msg = wb::GaugeUpdate {
-            battle_id: inst.battle_id.clone(),
-            server_tick: b.tick_count() as i64,
+            battle_id: slot.battle_id.clone(),
+            server_tick: slot.battle.tick_count() as i64,
             combatants,
         };
         inst.run
             .runs
             .iter()
-            .filter(|r| inst.battle_parties.contains(&r.party_id))
+            .filter(|r| slot.parties.contains(&r.party_id))
             .map(|r| out_msg(&r.player_id, &msg))
             .collect()
     }
@@ -2048,19 +2115,22 @@ impl GameState {
             server_tick: now_ms() as i64,
             entities,
         };
-        // Overworld snapshots go to players NOT in the active battle. A fighting
-        // party is on the battle screen and driven by battle messages instead; a
-        // no-battle instance has an empty `battle_parties`, so this sends to all.
+        // Overworld snapshots go to players NOT in any battle. A fighting party is
+        // on the battle screen and driven by battle messages instead; when no battle
+        // is running, `in_battle` is empty so this sends to everyone.
+        let in_battle = inst.parties_in_battle();
         inst.run
             .runs
             .iter()
-            .filter(|r| !inst.battle_parties.contains(&r.party_id))
+            .filter(|r| !in_battle.contains(&r.party_id))
             .map(|r| out_msg(&r.player_id, &msg))
             .collect()
     }
 
-    /// Translate engine events into wire messages, handling terminal outcomes.
-    fn emit_battle_events(&mut self, events: Vec<BattleEvent>) -> Vec<Outgoing> {
+    /// Translate one battle's engine events into wire messages, handling its
+    /// terminal outcome. `battle_id` scopes every message + member lookup to that
+    /// battle (concurrent battles each get their own event stream).
+    fn emit_battle_events(&mut self, battle_id: &str, events: Vec<BattleEvent>) -> Vec<Outgoing> {
         let mut out = Vec::new();
         for ev in events {
             match ev {
@@ -2068,19 +2138,20 @@ impl GameState {
                     let is_player = self
                         .instance
                         .as_ref()
-                        .map(|i| i.combatant_player.contains_key(&combatant_id))
+                        .and_then(|i| i.battle_by_id(battle_id))
+                        .map(|s| s.combatant_player.contains_key(&combatant_id))
                         .unwrap_or(false);
                     let timeout_at = if is_player {
                         Some(now_ms() + self.balance.battle.turn_timeout_ms)
                     } else {
                         None
                     };
-                    let (battle_id, members) = self.battle_id_and_members();
+                    let members = self.members_of_battle(battle_id);
                     for pid in &members {
                         out.push(out_msg(
                             pid,
                             &wb::TurnReady {
-                                battle_id: battle_id.clone(),
+                                battle_id: battle_id.to_string(),
                                 combatant_id: combatant_id.clone(),
                                 timeout_at,
                             },
@@ -2088,9 +2159,9 @@ impl GameState {
                     }
                 }
                 BattleEvent::Resolved(res) => {
-                    let (battle_id, members) = self.battle_id_and_members();
+                    let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
-                        battle_id,
+                        battle_id: battle_id.to_string(),
                         action_id: res.action_id.clone(),
                         actor_id: res.actor_id.clone(),
                         action: res.action,
@@ -2113,38 +2184,35 @@ impl GameState {
                     }
                 }
                 BattleEvent::Ended { outcome } => {
-                    out.extend(self.handle_battle_end(outcome));
+                    out.extend(self.handle_battle_end(battle_id, outcome));
                 }
             }
         }
         out
     }
 
-    /// Battle id + the players currently in it (all merged parties).
-    fn battle_id_and_members(&self) -> (String, Vec<String>) {
+    /// The players (across every merged party) currently in a given battle.
+    fn members_of_battle(&self, battle_id: &str) -> Vec<String> {
         match &self.instance {
-            Some(inst) => (
-                inst.battle_id.clone(),
-                inst.run
-                    .runs
-                    .iter()
-                    .filter(|r| inst.battle_parties.contains(&r.party_id))
-                    .map(|r| r.player_id.clone())
-                    .collect(),
-            ),
-            None => (String::new(), Vec::new()),
+            Some(inst) => match inst.battle_by_id(battle_id) {
+                Some(slot) => inst.members_of(slot),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
         }
     }
 
-    fn handle_battle_end(&mut self, outcome: BattleOutcome) -> Vec<Outgoing> {
+    fn handle_battle_end(&mut self, battle_id: &str, outcome: BattleOutcome) -> Vec<Outgoing> {
         let mut out = Vec::new();
         let mut leveled: Vec<String> = Vec::new();
         let balance = self.balance.clone();
         let Some(inst) = self.instance.as_mut() else {
             return out;
         };
-        let battle_id = inst.battle_id.clone();
-        let monster_idxs = inst.battle_monster_idxs.clone();
+        let Some(bidx) = inst.battles.iter().position(|b| b.battle_id == battle_id) else {
+            return out;
+        };
+        let monster_idxs = inst.battles[bidx].monster_idxs.clone();
         // Combined XP for the whole encounter (touched creature + its group).
         let xp_reward: i64 = monster_idxs
             .iter()
@@ -2152,8 +2220,8 @@ impl GameState {
             .map(|m| m.xp_reward)
             .sum();
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
-        // The outcome applies to every party merged into the battle (raid).
-        let bp = inst.battle_parties.clone();
+        // The outcome applies to every party merged into THIS battle (raid).
+        let bp = inst.battles[bidx].parties.clone();
         let members: Vec<String> = inst
             .run
             .runs
@@ -2163,17 +2231,17 @@ impl GameState {
             .collect();
 
         // Persist each participant's per-hero HP so wounds carry to the next
-        // encounter (no free heal between fights). Read from the battle before it
-        // is torn down below.
-        if let Some(b) = &inst.battle {
-            for pid in &members {
-                if let (Some(cids), Some(hps)) =
-                    (inst.player_combatants.get(pid), inst.hero_hp.get_mut(pid))
-                {
-                    for (slot, cid) in cids.iter().enumerate() {
-                        if let (Some(hp), Some(slot_hp)) = (b.combatant_hp(cid), hps.get_mut(slot)) {
-                            *slot_hp = hp;
-                        }
+        // encounter (no free heal between fights). Read from the battle before its
+        // slot is dropped below. (Disjoint field borrows: `battles` vs `hero_hp`.)
+        for pid in &members {
+            if let (Some(cids), Some(hps)) =
+                (inst.battles[bidx].player_combatants.get(pid), inst.hero_hp.get_mut(pid))
+            {
+                for (slot, cid) in cids.iter().enumerate() {
+                    if let (Some(hp), Some(slot_hp)) =
+                        (inst.battles[bidx].battle.combatant_hp(cid), hps.get_mut(slot))
+                    {
+                        *slot_hp = hp;
                     }
                 }
             }
@@ -2222,7 +2290,7 @@ impl GameState {
                         r.backpack.push(loot_item.clone());
                     }
                     let ended = wb::Ended {
-                        battle_id: battle_id.clone(),
+                        battle_id: battle_id.to_string(),
                         outcome: BattleOutcome::Victory,
                         xp_awards: vec![wb::XpAward {
                             player_id: pid.clone(),
@@ -2269,14 +2337,13 @@ impl GameState {
                         ));
                     }
                 }
-                inst.battle = None;
             }
             BattleOutcome::Defeat => {
                 for pid in &members {
                     out.push(out_msg(
                         pid,
                         &wb::Ended {
-                            battle_id: battle_id.clone(),
+                            battle_id: battle_id.to_string(),
                             outcome: BattleOutcome::Defeat,
                             xp_awards: vec![],
                             loot: vec![],
@@ -2311,15 +2378,13 @@ impl GameState {
                         },
                     ));
                 }
-                inst.battle = None;
                 dead = members.clone();
             }
-            BattleOutcome::Fled => {
-                inst.battle = None;
-            }
+            BattleOutcome::Fled => {}
         }
         // Battle over: any surviving grouped creatures (e.g. after a flee) resume
-        // roaming; reset merge + combatant bookkeeping.
+        // roaming, then drop the battle slot entirely (its combatant bookkeeping
+        // goes with it). Other concurrent battles are untouched.
         for &i in &monster_idxs {
             if let Some(m) = inst.arena.monsters.get_mut(i) {
                 if !m.defeated {
@@ -2327,10 +2392,7 @@ impl GameState {
                 }
             }
         }
-        inst.battle_parties.clear();
-        inst.battle_monster_idxs.clear();
-        inst.combatant_player.clear();
-        inst.player_combatants.clear();
+        inst.battles.retain(|b| b.battle_id != battle_id);
         self.pending_deaths.append(&mut dead);
         // Refresh the party panel for anyone who leveled up (stats changed).
         for pid in &leveled {
