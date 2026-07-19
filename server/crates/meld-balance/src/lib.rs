@@ -97,6 +97,8 @@ pub struct Battle {
     pub merge_cap_normal_instances: i32,
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,
+    pub back_row_damage_mult: f64,
+    pub back_row_target_weight: f64,
     pub party_size_per_player: usize,
     pub skill_power_mult: f64,
     pub skill_heal_fraction: f64,

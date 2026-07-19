@@ -548,6 +548,50 @@ pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
     mesh
 }
 
+/// A small faceted octahedron — a "diamond" gem used as a floating target marker.
+/// Flat-shaded per face (verts duplicated with a face normal) so each facet catches
+/// the light + bloom as it spins. `r` is the equator radius, `half_h` the tip reach.
+pub fn diamond_mesh(r: f32, half_h: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+
+    let top = [0.0, half_h, 0.0];
+    let bot = [0.0, -half_h, 0.0];
+    let e = [[r, 0.0, 0.0], [0.0, 0.0, r], [-r, 0.0, 0.0], [0.0, 0.0, -r]];
+    // Eight triangles, wound so each face normal points outward.
+    let faces = [
+        [top, e[0], e[1]],
+        [top, e[1], e[2]],
+        [top, e[2], e[3]],
+        [top, e[3], e[0]],
+        [bot, e[1], e[0]],
+        [bot, e[2], e[1]],
+        [bot, e[3], e[2]],
+        [bot, e[0], e[3]],
+    ];
+    let mut positions = Vec::with_capacity(24);
+    let mut normals = Vec::with_capacity(24);
+    let mut uvs = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(24);
+    for (fi, f) in faces.iter().enumerate() {
+        let (a, b, c) = (Vec3::from(f[0]), Vec3::from(f[1]), Vec3::from(f[2]));
+        let n = (b - a).cross(c - a).normalize_or_zero();
+        for v in f {
+            positions.push(*v);
+            normals.push([n.x, n.y, n.z]);
+            uvs.push([0.5, 0.5]);
+        }
+        let base = (fi * 3) as u32;
+        indices.extend_from_slice(&[base, base + 1, base + 2]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 /// A soft round white sprite (radial alpha falloff, 1 at centre → 0 at the rim) —
 /// a cheap cloud/glow puff needing no art. Use on an unlit alpha-blended billboard.
 pub fn soft_disc_texture(size: u32) -> Image {

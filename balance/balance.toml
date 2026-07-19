@@ -59,9 +59,12 @@ dodge_cap = 0.35        # maximum dodge chance
 [battle]
 tick_ms = 100                    # CANON §B ATB tick
 # gauge += speed_stat / divisor per 100ms tick; a turn fires at gauge 1.0.
-# 4400 → a speed-110 squire acts every ~4.0s and the speed-80 stalker every
-# ~5.5s: a deliberate, readable FF5-style ATB cadence (was 400 = ~0.4s, a blur).
-gauge_fill_divisor = 4400.0
+# 5200 → a speed-110 squire acts every ~4.7s and the speed-80 stalker every
+# ~6.5s: a readable FF5-style ATB cadence, eased off the previous 4400 (~4.0s)
+# after "too fast" playtest feedback while still keeping a 4-hero party busy
+# (a hero acts roughly every ~1.3s across the party, so nobody idles). Was
+# 400 = ~0.4s, a blur.
+gauge_fill_divisor = 5200.0
 turn_timeout_ms = 15000          # 15s -> auto-defend
 flee_base = 0.60
 flee_penalty_per_tier = 0.10
@@ -69,6 +72,13 @@ flee_floor = 0.05
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
+# Front/back row (formation). Caster classes (Psyker/Resonant) stand in the back
+# row: they take `back_row_damage_mult` of incoming damage, and the enemy AI, when
+# the weakest foe it would strike is in the back row, only commits to it
+# `back_row_target_weight` of the time (otherwise it redirects to the weakest
+# exposed front-row hero). Martial classes hold the front. [TUNABLE]
+back_row_damage_mult = 0.5
+back_row_target_weight = 0.5
 party_size_per_player = 4        # each player controls up to this many heroes (GDD: per-player party) [TUNABLE]
 skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]
 skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]

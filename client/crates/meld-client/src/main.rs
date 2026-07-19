@@ -211,6 +211,7 @@ fn main() {
         .init_resource::<MoveClock>()
         .init_resource::<BattleMenu>()
         .init_resource::<HitFx>()
+        .init_resource::<AtbFlash>()
         .init_resource::<Overlay>()
         .init_resource::<InventoryData>()
         .init_resource::<ProgressData>()
@@ -226,6 +227,7 @@ fn main() {
         .init_resource::<TapTarget>()
         .init_resource::<Joystick>()
         .init_resource::<BattleData>()
+        .init_resource::<BattleTarget>()
         .init_resource::<EndInfo>()
         .init_resource::<LobbyData>()
         .add_systems(
@@ -340,9 +342,13 @@ fn main() {
                 render_party_window,
                 render_ally_parties,
                 advance_hit_fx,
+                advance_atb_flash,
                 render_hit_fx,
                 // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
                 sync_battle_actors,
+                battle_click_target,
+                highlight_target,
+                animate_battle_actors,
                 battle_camera,
                 hd2d::animate_chars,
                 hd2d::place_billboards,
@@ -839,10 +845,14 @@ struct ProgressData {
     classes: Vec<String>,
 }
 
-/// Floating hit-feedback numbers (damage/heal) with a short lifetime.
+/// Floating hit-feedback numbers (damage/heal) with a short lifetime, plus the
+/// attacker-lunge timers ([`Self::acts`]) that drive the "step in to strike" motion.
 #[derive(Resource, Default)]
 struct HitFx {
     items: Vec<Hit>,
+    /// Attacker id → seconds since it landed a damaging action (dropped past
+    /// [`ATTACK_LUNGE_TTL`]); [`animate_battle_actors`] lunges that sprite.
+    acts: HashMap<String, f32>,
 }
 struct Hit {
     target: String,
@@ -854,6 +864,25 @@ struct Hit {
 const HIT_TTL: f32 = 1.0;
 /// Seconds a target stays "flashed" after being hit.
 const FLASH_TTL: f32 = 0.18;
+/// Seconds a struck sprite is knocked back before easing home.
+const HIT_RECOIL_TTL: f32 = 0.3;
+/// Seconds a struck sprite flashes white (a subset of the recoil).
+const HIT_WHITE_TTL: f32 = 0.12;
+/// Seconds an attacker's lunge (step in + back) lasts.
+const ATTACK_LUNGE_TTL: f32 = 0.34;
+/// Seconds a hero's cell/ATB bar flashes when its gauge fills (turn ready).
+const ATB_FLASH_TTL: f32 = 0.55;
+
+/// Tracks the "your turn!" pop: when a hero newly enters `BattleData::ready`, its
+/// id gets a fading flash (see [`advance_atb_flash`]) that [`party_cell`] renders as
+/// a quick brighten of the ATB bar + cell border.
+#[derive(Resource, Default)]
+struct AtbFlash {
+    /// Heroes that were ready last frame, to detect the rising edge.
+    prev: HashSet<String>,
+    /// Active flashes: hero id → seconds elapsed (dropped past [`ATB_FLASH_TTL`]).
+    age: HashMap<String, f32>,
+}
 
 #[derive(Resource, Default)]
 struct EndInfo {
@@ -1198,6 +1227,11 @@ struct WorldAssets {
     portal_sprite: Handle<Image>,
     portal_mesh: Handle<Mesh>,
     portal_mat: Handle<StandardMaterial>,
+    /// Floating "target" marker: a small faceted diamond that hovers, bounces, and
+    /// slowly spins over the currently-targeted enemy (see [`highlight_target`]).
+    /// Shared across enemies; per-enemy `Visibility` gates which one shows.
+    target_diamond_mesh: Handle<Mesh>,
+    target_diamond_mat: Handle<StandardMaterial>,
     // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
     // overworld uses creature billboards from `monster_sprites` instead.
     monster_mesh: Handle<Mesh>,
@@ -1492,6 +1526,18 @@ fn setup(
         portal_mat: mats.add(StandardMaterial {
             base_color: Color::srgb(0.1, 0.4, 0.5),
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
+            ..default()
+        }),
+        // Target marker: a small gold diamond gem that floats over the picked foe.
+        // Lit + emissive so its facets glint and bloom as it slowly spins; drawn
+        // double-sided so a facet never disappears.
+        target_diamond_mesh: meshes.add(hd2d::diamond_mesh(0.32, 0.5)),
+        target_diamond_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.88, 0.4),
+            emissive: LinearRgba::rgb(2.2, 1.6, 0.5),
+            perceptual_roughness: 0.35,
+            metallic: 0.1,
+            cull_mode: None,
             ..default()
         }),
         monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
@@ -2206,17 +2252,25 @@ fn apply_class_flag(mut session: ResMut<Session>) {
 fn mock_battle_setup(
     mut battle: ResMut<BattleData>,
     mut hitfx: ResMut<HitFx>,
+    mut target: ResMut<BattleTarget>,
+    mut flash: ResMut<AtbFlash>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if !battle_mockup_flag() {
         return;
     }
+    // Seed a fresh ATB-ready flash on h1 so the "turn's up" pop shows statically.
+    flash.age.insert("h1".to_string(), 0.06);
+    // Freeze mid-impact so the hit flash + recoil (grendel) and the attacker lunge
+    // (h1 stepping in) show statically. The fx systems no-op in the mock, so these
+    // seeded ages don't advance.
+    hitfx.acts.insert("h1".to_string(), 0.11);
     // Canned hit feedback so the floating numbers + flash are visible statically.
     hitfx.items.push(Hit {
         target: "grendel".into(),
         text: "-17".into(),
         color: Color::srgb(1.0, 0.5, 0.4),
-        age: 0.0,
+        age: 0.06,
     });
     hitfx.items.push(Hit {
         target: "h3".into(),
@@ -2224,16 +2278,22 @@ fn mock_battle_setup(
         color: Color::srgb(0.5, 1.0, 0.6),
         age: 0.0,
     });
-    let hero = |id: &str, hp, gauge| CombatantView {
-        id: id.into(),
-        name: "Hero".into(),
-        hp,
-        max_hp: 40,
-        gauge,
-        is_player: true,
-        player_id: Some("me".into()),
-        level: 1,
-        statuses: vec![],
+    let hero = |id: &str, hp, gauge, class: &str, back: bool| {
+        let mut statuses = vec![format!("class:{class}")];
+        if back {
+            statuses.push("row:back".into());
+        }
+        CombatantView {
+            id: id.into(),
+            name: "Hero".into(),
+            hp,
+            max_hp: 40,
+            gauge,
+            is_player: true,
+            player_id: Some("me".into()),
+            level: 1,
+            statuses,
+        }
     };
     battle.battle_id = "mock".to_string();
     battle.your_ids = vec!["h1".into(), "h2".into(), "h3".into(), "h4".into()];
@@ -2250,10 +2310,11 @@ fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        hero("h1", 32, 1.0),
-        hero("h2", 40, 0.4),
-        hero("h3", 21, 1.0),
-        hero("h4", 36, 0.75),
+        // Two martial squires hold the front; a Psyker + Resonant sit the back row.
+        hero("h1", 32, 1.0, "squire", false),
+        hero("h2", 40, 0.4, "psyker", true),
+        hero("h3", 21, 1.0, "resonant", true),
+        hero("h4", 36, 0.75, "squire", false),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),
@@ -2265,7 +2326,47 @@ fn mock_battle_setup(
             level: 1,
             statuses: vec![],
         },
+        // A second foe, downed — shows the KO gray-out (death indicator).
+        CombatantView {
+            id: "stalker".into(),
+            name: "Stalker".into(),
+            hp: 0,
+            max_hp: 30,
+            gauge: 0.0,
+            is_player: false,
+            player_id: None,
+            level: 1,
+            statuses: vec![],
+        },
     ];
+    // `MELD_BATTLE=coop` seeds a few joined allied parties so the surround layout
+    // (each player's lineup on its own edge, enemies shrunk in the middle) can be
+    // screenshotted. `MELD_BATTLE=1` stays a solo fight.
+    if std::env::var("MELD_BATTLE").as_deref() == Ok("coop") {
+        let ally = |id: &str, owner: &str, name: &str, class: &str, hp, gauge| CombatantView {
+            id: id.into(),
+            name: name.into(),
+            hp,
+            max_hp: 40,
+            gauge,
+            is_player: true,
+            player_id: Some(owner.into()),
+            level: 1,
+            statuses: vec![format!("class:{class}")],
+        };
+        battle.combatants.extend([
+            ally("a1", "ally_a", "Bram", "squire", 34, 0.5),
+            ally("a2", "ally_a", "Ivo", "psyker", 28, 0.2),
+            ally("a3", "ally_a", "Sten", "resonant", 40, 0.9),
+            ally("b1", "ally_b", "Wren", "psyker", 22, 0.7),
+            ally("b2", "ally_b", "Cael", "squire", 37, 0.35),
+            ally("c1", "ally_c", "Doon", "resonant", 31, 0.6),
+            ally("c2", "ally_c", "Fisk", "squire", 40, 0.15),
+        ]);
+    }
+    // Pre-pick a target so the shimmering reticle is visible in a static screenshot
+    // (in play it's set by tapping an enemy — see `battle_click_target`).
+    target.selected = Some("grendel".to_string());
     next.set(Screen::Battle);
 }
 
@@ -2513,16 +2614,24 @@ fn pump_net(
                 battle.ready.insert(combatant_id);
             }
             ServerMsg::ActionResolved {
-                actor: _,
+                actor,
                 action: _,
                 effects,
             } => {
+                let mut did_damage = false;
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
                         c.hp = e.hp_after;
                     }
+                    if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
+                        did_damage = true;
+                    }
                     push_hit_fx(&mut hitfx, &e);
+                }
+                // A damaging action makes its actor lunge in to strike.
+                if did_damage {
+                    hitfx.acts.insert(actor, 0.0);
                 }
             }
             ServerMsg::CombatantsJoined { combatants } => {
@@ -5134,9 +5243,14 @@ fn reset_menu(menu: &mut BattleMenu) {
     menu.rows.clear();
 }
 
-/// On entering a battle, open the command window on the root page.
-fn enter_battle(mut menu: ResMut<BattleMenu>) {
+/// On entering a battle, open the command window on the root page and clear any
+/// enemy target left over from a previous fight. (The static `MELD_BATTLE` mock
+/// preseeds a target to show the reticle in a screenshot, so leave that one alone.)
+fn enter_battle(mut menu: ResMut<BattleMenu>, mut target: ResMut<BattleTarget>) {
     reset_menu(&mut menu);
+    if !battle_mockup_flag() {
+        target.selected = None;
+    }
 }
 
 /// A 3D combatant in the HD-2D battle arena, keyed by its combatant id.
@@ -5145,9 +5259,178 @@ struct BattleActor {
     id: String,
 }
 
-/// Reconcile the 3D battle arena with `BattleData`: your party as character
-/// billboards on the near side (facing the foe, Octopath-style backs), enemies as
-/// lit capsule stand-ins on the far side. The HP/ATB/command UI frames it.
+/// The floating diamond marker over an enemy, carrying the enemy id it belongs to
+/// and the resting height above that enemy's head. Hidden until that enemy is the
+/// current [`BattleTarget`]; bounces + spins while shown (see [`highlight_target`]).
+#[derive(Component)]
+struct TargetDiamond {
+    id: String,
+    base_y: f32,
+}
+
+/// A battle sprite billboard (hero or enemy), tagged with its combatant id, its
+/// material + base tint (for hit-flash / KO gray), and the world direction it
+/// attacks toward (for lunge / recoil). [`animate_battle_actors`] slides *this
+/// child* — not the actor root — so the flinch doesn't disturb the walk-cycle logic
+/// or the grounded shadow.
+#[derive(Component)]
+struct SpriteQuad {
+    id: String,
+    mat: Handle<StandardMaterial>,
+    base: Color,
+    forward: Vec3,
+}
+
+/// The enemy the player has singled out — a diamond marker floats over its head in
+/// the 3D arena. Set by tapping an enemy sprite ([`battle_click_target`]); while the
+/// Target picker is open the picker's cursor drives the marker instead.
+#[derive(Resource, Default)]
+struct BattleTarget {
+    selected: Option<String>,
+}
+
+/// A joined ally player's arena edge. Your own party owns the south (placed
+/// directly in `sync_battle_actors`); each *other* player's party takes one of these
+/// so co-op lineups ring the field instead of stacking.
+#[derive(Clone, Copy)]
+enum PartyEdge {
+    North,
+    West,
+    East,
+}
+
+impl PartyEdge {
+    /// World position + world-space facing (toward the centre) for hero `i` of `n`.
+    fn slot(self, i: usize, n: usize) -> (Vec3, Vec2) {
+        // Fan `n` heroes evenly around the edge's midpoint.
+        let s = (i as f32 - (n.max(1) as f32 - 1.0) * 0.5) * 2.4;
+        // Enemies knot around CZ; the allied parties ring them from each side.
+        const CZ: f32 = -1.4;
+        match self {
+            PartyEdge::North => (Vec3::new(s, 0.0, -5.8), Vec2::new(0.0, 1.0)),
+            PartyEdge::West => (Vec3::new(-4.8, 0.0, CZ + s), Vec2::new(1.0, 0.0)),
+            PartyEdge::East => (Vec3::new(4.8, 0.0, CZ + s), Vec2::new(-1.0, 0.0)),
+        }
+    }
+}
+
+/// Spawn one hero billboard at `root` facing `facing` (idle sprite chosen from that
+/// heading, camera-relative). Shared by every party edge.
+fn spawn_hero_actor(
+    commands: &mut Commands,
+    wa: &WorldAssets,
+    mats: &mut Assets<StandardMaterial>,
+    c: &CombatantView,
+    root: Vec3,
+    facing: Vec2,
+) {
+    let class = c
+        .statuses
+        .iter()
+        .find_map(|s| s.strip_prefix("class:"))
+        .unwrap_or("squire");
+    let frames = match class {
+        "psyker" => &wa.psyker,
+        _ => &wa.squire,
+    };
+    let base_tint = Color::srgb(1.2, 1.18, 1.08);
+    let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
+    let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
+    cs.facing = facing;
+    let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
+    commands
+        .spawn((
+            BattleActor { id: c.id.clone() },
+            Transform::from_translation(root),
+            Visibility::default(),
+            cs,
+        ))
+        .with_children(|p| {
+            p.spawn((
+                SpriteQuad { id: c.id.clone(), mat: mat.clone(), base: base_tint, forward },
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, 0.72, 0.0),
+                hd2d::Billboard,
+                hd2d::HeroBillboard,
+            ));
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+            ));
+        });
+}
+
+/// Spawn one enemy billboard at `root`, `h` world-units tall (shrunk when the party
+/// surrounds them), with its hidden target reticle.
+fn spawn_enemy_actor(
+    commands: &mut Commands,
+    wa: &WorldAssets,
+    mats: &mut Assets<StandardMaterial>,
+    c: &CombatantView,
+    root: Vec3,
+    h: f32,
+) {
+    // Same creature billboard the overworld uses: look up by content id (the
+    // combatant name with underscores), else hash into the fallback pool.
+    let kind = c.name.replace(' ', "_");
+    let tex = wa.monster_sprites.get(&kind).cloned().unwrap_or_else(|| {
+        // Unmapped creature → deterministic pick from the fallback pool
+        // (always non-empty, so this never panics).
+        let pool = &wa.monster_pool;
+        pool[hash_pick(&c.id, pool.len().max(1))].clone()
+    });
+    let base_tint = Color::srgb(1.2, 1.15, 1.1);
+    let mat = mats.add(hd2d::sprite_material(base_tint, tex));
+    // The diamond marker hovers just above the sprite's head (its tip reaches down
+    // toward the head, so keep a small gap above `h`).
+    let marker_y = h + 0.45;
+    commands
+        .spawn((
+            BattleActor { id: c.id.clone() },
+            Transform::from_translation(root),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                // Enemies strike toward the players (south, +z).
+                SpriteQuad {
+                    id: c.id.clone(),
+                    mat: mat.clone(),
+                    base: base_tint,
+                    forward: Vec3::new(0.0, 0.0, 1.0),
+                },
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                hd2d::Billboard,
+            ));
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
+            ));
+            // Target diamond — hidden until this enemy is the picked target.
+            p.spawn((
+                TargetDiamond { id: c.id.clone(), base_y: marker_y },
+                Mesh3d(wa.target_diamond_mesh.clone()),
+                MeshMaterial3d(wa.target_diamond_mat.clone()),
+                Transform::from_xyz(0.0, marker_y, 0.0),
+                Visibility::Hidden,
+            ));
+        });
+}
+
+/// Reconcile the 3D battle arena with `BattleData`. Your party lines up on the near
+/// (south) edge facing in, Octopath-style backs; each **other player's** joined
+/// party takes its own edge (north/west/east) so co-op lineups ring the field
+/// instead of stacking. Enemies knot in the centre and **shrink when surrounded**,
+/// reading as outnumbered. The HP/ATB/command UI frames it.
 fn sync_battle_actors(
     mut commands: Commands,
     battle: Res<BattleData>,
@@ -5164,91 +5447,268 @@ fn sync_battle_actors(
             commands.entity(ent).despawn();
         }
     }
-    let party: Vec<&CombatantView> = battle.combatants.iter().filter(|c| c.is_player).collect();
-    let enemies: Vec<&CombatantView> = battle.combatants.iter().filter(|c| !c.is_player).collect();
-    let spread = |i: usize, n: usize, gap: f32| (i as f32 - (n.max(1) as f32 - 1.0) * 0.5) * gap;
+    // Split combatants: my heroes, each ally player's heroes (grouped by owner,
+    // first-seen order), and the enemies.
+    let mut mine: Vec<&CombatantView> = Vec::new();
+    let mut ally_order: Vec<String> = Vec::new();
+    let mut allies: HashMap<String, Vec<&CombatantView>> = HashMap::new();
+    let mut enemies: Vec<&CombatantView> = Vec::new();
+    for c in battle.combatants.iter() {
+        if !c.is_player {
+            enemies.push(c);
+        } else if battle.your_ids.contains(&c.id) {
+            mine.push(c);
+        } else {
+            let owner = c.player_id.clone().unwrap_or_else(|| c.id.clone());
+            if !allies.contains_key(&owner) {
+                ally_order.push(owner.clone());
+            }
+            allies.entry(owner).or_default().push(c);
+        }
+    }
+    let surrounded = !ally_order.is_empty();
 
-    for (i, c) in party.iter().enumerate() {
+    // My party lines the south edge, each hero x-aligned to its HUD cell and pulled
+    // forward so the sprite pokes up *over* its box (saves the old gap between the
+    // sprite row and the cells). Casters (back row) sit a step behind the martial
+    // front line, so the formation reads as two ranks.
+    for (i, c) in mine.iter().enumerate() {
         if seen.contains(&c.id) {
             continue;
         }
-        let class = c
-            .statuses
-            .iter()
-            .find_map(|s| s.strip_prefix("class:"))
-            .unwrap_or("squire");
-        let frames = match class {
-            "psyker" => &wa.psyker,
-            _ => &wa.squire,
-        };
-        let root = Vec3::new(spread(i, party.len(), 2.7), 0.0, 1.2);
-        let mat = mats.add(hd2d::sprite_material(
-            Color::srgb(1.2, 1.18, 1.08),
-            frames.idle[0].clone(),
-        ));
-        let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
-        cs.facing = Vec2::new(0.0, -1.0); // face the enemies (north)
-        commands
-            .spawn((
-                BattleActor { id: c.id.clone() },
-                Transform::from_translation(root),
-                Visibility::default(),
-                cs,
-            ))
-            .with_children(|p| {
-                p.spawn((
-                    Mesh3d(wa.sprite_quad.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_xyz(0.0, 0.72, 0.0),
-                    hd2d::Billboard,
-                    hd2d::HeroBillboard,
-                ));
-                p.spawn((
-                    Mesh3d(wa.shadow_mesh.clone()),
-                    MeshMaterial3d(wa.shadow_mat.clone()),
-                    Transform::from_xyz(0.0, 0.02, 0.0)
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                        .with_scale(Vec3::new(1.0, 0.55, 1.0)),
-                ));
-            });
+        let back = c.statuses.iter().any(|s| s == "row:back");
+        let x = (i as f32 - (mine.len().max(1) as f32 - 1.0) * 0.5) * 2.4;
+        let z = if back { 2.6 } else { 3.3 }; // front rank a step forward over the cells
+        let root = Vec3::new(x, 0.0, z);
+        spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, Vec2::new(0.0, -1.0));
     }
+    // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
+    let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
+    for (gi, owner) in ally_order.iter().enumerate() {
+        let edge = edges[gi.min(edges.len() - 1)];
+        let heroes = &allies[owner];
+        for (i, c) in heroes.iter().enumerate() {
+            if seen.contains(&c.id) {
+                continue;
+            }
+            let (root, facing) = edge.slot(i, heroes.len());
+            spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, facing);
+        }
+    }
+    // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
+    // a surrounded one pulls them in tight and shrinks them.
+    let (h, gap, cz) = if surrounded {
+        (2.4, 2.3, -1.4)
+    } else {
+        (3.4, 3.6, -4.5)
+    };
     for (i, c) in enemies.iter().enumerate() {
         if seen.contains(&c.id) {
             continue;
         }
-        // Same creature billboard the overworld uses: look up by content id (the
-        // combatant name with underscores), else hash into the fallback pool.
-        let kind = c.name.replace(' ', "_");
-        let tex = wa.monster_sprites.get(&kind).cloned().unwrap_or_else(|| {
-            // Unmapped creature → deterministic pick from the fallback pool
-            // (always non-empty, so this never panics).
-            let pool = &wa.monster_pool;
-            pool[hash_pick(&c.id, pool.len().max(1))].clone()
-        });
-        let h = 3.4;
-        let root = Vec3::new(spread(i, enemies.len(), 3.6), 0.0, -4.5);
-        let mat = mats.add(hd2d::sprite_material(Color::srgb(1.2, 1.15, 1.1), tex));
-        commands
-            .spawn((
-                BattleActor { id: c.id.clone() },
-                Transform::from_translation(root),
-                Visibility::default(),
-            ))
-            .with_children(|p| {
-                p.spawn((
-                    Mesh3d(wa.sprite_quad.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
-                    hd2d::Billboard,
-                ));
-                p.spawn((
-                    Mesh3d(wa.shadow_mesh.clone()),
-                    MeshMaterial3d(wa.shadow_mat.clone()),
-                    Transform::from_xyz(0.0, 0.02, 0.0)
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                        .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
-                ));
-            });
+        let x = (i as f32 - (enemies.len().max(1) as f32 - 1.0) * 0.5) * gap;
+        spawn_enemy_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, cz), h);
+    }
+}
+
+/// Which enemy carries the target marker this frame: the Target picker's cursor
+/// while aiming an action (so keyboard target-scrolling moves the diamond too),
+/// otherwise the sticky tap-selected enemy. `None` if that enemy is gone or dead.
+fn highlight_focus(battle: &BattleData, menu: &BattleMenu, target: &BattleTarget) -> Option<String> {
+    let living = |id: &str| {
+        battle
+            .combatants
+            .iter()
+            .any(|c| c.id == id && !c.is_player && c.hp > 0)
+    };
+    let id = if menu.level == MenuLevel::Target {
+        menu.rows.get(menu.cursor).map(|(_, v)| v.clone())
+    } else {
+        target.selected.clone()
+    };
+    id.filter(|id| living(id))
+}
+
+/// Float the target marker over the picked enemy: show its diamond, slowly bounce
+/// it above the head, and spin it for a gem glint. Every other diamond is hidden, so
+/// exactly one enemy is marked as "this is who your order hits."
+fn highlight_target(
+    time: Res<Time>,
+    battle: Res<BattleData>,
+    menu: Res<BattleMenu>,
+    mut target: ResMut<BattleTarget>,
+    mut diamonds: Query<(&TargetDiamond, &mut Transform, &mut Visibility)>,
+) {
+    // Drop a stale sticky pick (its enemy died / the battle moved on).
+    if let Some(sel) = target.selected.clone() {
+        if !battle
+            .combatants
+            .iter()
+            .any(|c| c.id == sel && !c.is_player && c.hp > 0)
+        {
+            target.selected = None;
+        }
+    }
+    let focus = highlight_focus(&battle, &menu, &target);
+    let t = time.elapsed_secs();
+    // A slow, gentle bob (≈0.4 Hz) and an unhurried spin.
+    let bob = 0.22 * (t * 2.4).sin();
+    let spin = Quat::from_rotation_y(t * 1.1);
+
+    for (d, mut tf, mut vis) in &mut diamonds {
+        let on = focus.as_deref() == Some(d.id.as_str());
+        *vis = if on { Visibility::Visible } else { Visibility::Hidden };
+        if on {
+            tf.translation.y = d.base_y + bob;
+            tf.rotation = spin;
+        }
+    }
+}
+
+/// Give combat weight: struck sprites flash white + recoil (with a quick shake),
+/// attackers lunge in and back, and a downed combatant grays out. Drives each sprite
+/// *child* (leaving the actor root — and thus the walk-cycle logic + shadow — alone).
+fn animate_battle_actors(
+    battle: Res<BattleData>,
+    hitfx: Res<HitFx>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&mut Transform, &SpriteQuad)>,
+) {
+    for (mut tf, s) in &mut q {
+        // KO: gray the sprite, drop any hit motion — reads as "downed".
+        if battle.view(&s.id).map(|c| c.hp <= 0).unwrap_or(false) {
+            if let Some(m) = mats.get_mut(&s.mat) {
+                let c = s.base.to_srgba();
+                let lum = 0.3 * c.red + 0.5 * c.green + 0.2 * c.blue;
+                m.base_color = Color::srgb(lum * 0.45, lum * 0.45, lum * 0.5);
+                m.emissive = LinearRgba::BLACK;
+            }
+            tf.translation.x = 0.0;
+            tf.translation.z = 0.0;
+            continue;
+        }
+        // Freshest damage hit on this sprite, and its own lunge timer.
+        let hit_age = hitfx
+            .items
+            .iter()
+            .filter(|h| h.target == s.id && h.text.starts_with('-'))
+            .map(|h| h.age)
+            .fold(f32::INFINITY, f32::min);
+        let lunge_age = hitfx.acts.get(&s.id).copied().unwrap_or(f32::INFINITY);
+
+        // Recoil: a knockback that eases home over the TTL.
+        let recoil = if hit_age < HIT_RECOIL_TTL {
+            (1.0 - hit_age / HIT_RECOIL_TTL) * 0.35
+        } else {
+            0.0
+        };
+        // Lunge: step toward the foe and back (half-sine, peaks mid-window).
+        let lunge = if lunge_age < ATTACK_LUNGE_TTL {
+            (std::f32::consts::PI * lunge_age / ATTACK_LUNGE_TTL).sin() * 0.6
+        } else {
+            0.0
+        };
+        // A brief lateral shake right at the moment of impact.
+        let shake = if hit_age < HIT_WHITE_TTL {
+            (hit_age * 90.0).sin() * (1.0 - hit_age / HIT_WHITE_TTL) * 0.12
+        } else {
+            0.0
+        };
+        let perp = Vec3::new(s.forward.z, 0.0, -s.forward.x);
+        let off = s.forward * (lunge - recoil) + perp * shake;
+        tf.translation.x = off.x;
+        tf.translation.z = off.z;
+
+        // White impact flash on the instant of a hit (brighter than base → blooms).
+        if let Some(m) = mats.get_mut(&s.mat) {
+            m.base_color = if hit_age < HIT_WHITE_TTL {
+                lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / HIT_WHITE_TTL)
+            } else {
+                s.base
+            };
+        }
+    }
+}
+
+/// Tap/click an enemy sprite in the arena to target it — the JRPG "point at the
+/// monster" instead of scrolling a text list. While the Target picker is open the
+/// click fulfils the pending action's target; otherwise it marks the enemy (which
+/// starts it shimmering) and, for a hero with a basic Attack, swings at it directly.
+/// The hit-test projects each enemy sprite's feet→head to the screen (like
+/// [`overworld_click_menu`]), so it matches the billboard you see under any camera.
+#[allow(clippy::too_many_arguments)]
+fn battle_click_target(
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    actors: Query<(&BattleActor, &GlobalTransform)>,
+    mut menu: ResMut<BattleMenu>,
+    mut battle: ResMut<BattleData>,
+    mut target: ResMut<BattleTarget>,
+    mut press: Local<Option<Vec2>>,
+) {
+    // Gather a click point: a no-drag mouse click (drags orbit the camera) or a tap.
+    let mut point = None;
+    if let Some(w) = windows.iter().next() {
+        if mouse.just_pressed(MouseButton::Left) {
+            *press = w.cursor_position();
+        }
+        if mouse.just_released(MouseButton::Left) {
+            if let (Some(p0), Some(p1)) = (*press, w.cursor_position()) {
+                if p0.distance(p1) < 6.0 {
+                    point = Some(p1);
+                }
+            }
+            *press = None;
+        }
+    }
+    for touch in touches.iter_just_pressed() {
+        point = Some(touch.position());
+    }
+    let Some(p) = point else { return };
+    if ui_hit.iter().any(|i| *i != Interaction::None) {
+        return; // a UI button (the command window) — not the arena
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+
+    // Nearest living enemy sprite under the click.
+    let mut best: Option<(f32, String)> = None;
+    for (a, gt) in &actors {
+        match battle.view(&a.id) {
+            Some(c) if !c.is_player && c.hp > 0 => {}
+            _ => continue,
+        }
+        let feet = gt.translation();
+        let head = feet + Vec3::Y * 3.4; // enemy sprite height
+        if let (Ok(fs), Ok(hs)) = (
+            cam.world_to_viewport(cam_tf, feet),
+            cam.world_to_viewport(cam_tf, head),
+        ) {
+            let radius = ((hs - fs).length() * 0.5).max(44.0);
+            let d = seg_point_dist(p, fs, hs);
+            if d < radius && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                best = Some((d, a.id.clone()));
+            }
+        }
+    }
+    let Some((_, eid)) = best else { return };
+
+    // Aiming a pending action → this tap is the target choice.
+    if menu.level == MenuLevel::Target {
+        if let Some(idx) = menu.rows.iter().position(|(_, v)| *v == eid) {
+            let class = battle.active_class();
+            select_entry(idx, &mut menu, &mut battle, &class);
+        }
+        return;
+    }
+    // Otherwise mark it (start it shimmering) and, for a martial hero, attack it.
+    target.selected = Some(eid.clone());
+    if battle.active_class() != "psyker" {
+        if let Some(active) = battle.active.clone() {
+            queue_order(&mut battle, &active, QueuedKind::Attack, Some(eid), &mut menu);
+        }
     }
 }
 
@@ -5271,8 +5731,16 @@ fn battle_camera(
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         *t = Transform::from_translation(Vec3::new(0.0, 9.5, 12.5))
             .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        // Battle gets its own mood: a punchier bloom so hits/markers glow, and a
+        // tighter fog that closes the arena in (the walkable field beyond hazes off)
+        // — without disturbing the shared overworld look.
+        let mut blook = look.clone();
+        blook.bloom = look.bloom + 0.12;
+        blook.fog_on = true;
+        blook.fog_start = 22.0;
+        blook.fog_end = 58.0;
         hd2d::apply_post(
-            &look,
+            &blook,
             &mut proj,
             bloom.map(|b| b.into_inner()),
             dof.map(|d| d.into_inner()),
@@ -5877,6 +6345,24 @@ fn style_command_menu(
 }
 
 /// A labelled meter (HP or gauge): a bordered track with a proportional fill.
+/// Lighten a colour toward white by `f` (>1 brightens), clamped for the sRGB UI.
+fn lighten(c: Color, f: f32) -> Color {
+    let s = c.to_srgba();
+    Color::srgb((s.red * f).min(1.0), (s.green * f).min(1.0), (s.blue * f).min(1.0))
+}
+
+/// Linear blend from `a` to `b` by `t` (0→a, 1→b), in sRGB — for quick UI fades.
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let (a, b, t) = (a.to_srgba(), b.to_srgba(), t.clamp(0.0, 1.0));
+    Color::srgb(
+        a.red + (b.red - a.red) * t,
+        a.green + (b.green - a.green) * t,
+        a.blue + (b.blue - a.blue) * t,
+    )
+}
+
+/// A stat bar with a bit of depth: a rounded, inset dark track holding a rounded
+/// fill that carries a lighter top sheen (reads glossy/3D rather than a flat block).
 fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color) {
     parent
         .spawn((
@@ -5884,20 +6370,36 @@ fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color)
                 width: Val::Percent(100.0),
                 height: Val::Px(height),
                 border: UiRect::all(Val::Px(1.0)),
+                overflow: Overflow::clip(), // keep the rounded fill inside the track
                 ..default()
             },
-            BorderColor(Color::srgb(0.4, 0.45, 0.6)),
-            BackgroundColor(Color::srgb(0.1, 0.11, 0.16)),
+            BorderColor(Color::srgb(0.35, 0.4, 0.55)),
+            BackgroundColor(Color::srgb(0.07, 0.08, 0.12)),
+            BorderRadius::all(Val::Px(3.0)),
         ))
         .with_children(|t| {
             t.spawn((
                 Node {
                     width: Val::Percent((frac * 100.0).clamp(0.0, 100.0)),
                     height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
                     ..default()
                 },
                 BackgroundColor(fill),
-            ));
+                BorderRadius::all(Val::Px(2.0)),
+            ))
+            .with_children(|f| {
+                // Top sheen: a lighter band across the upper half → a rounded highlight.
+                f.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(45.0),
+                        ..default()
+                    },
+                    BackgroundColor(lighten(fill, 1.45)),
+                    BorderRadius::all(Val::Px(2.0)),
+                ));
+            });
         });
 }
 
@@ -5917,105 +6419,79 @@ fn target_state(menu: &BattleMenu, id: &str) -> (bool, bool) {
     (candidate, cursor)
 }
 
-/// Immediate-mode enemy panel (top): each enemy as a block + name + HP bar,
-/// flashing white when struck.
+/// Immediate-mode enemy HUD: a compact name + HP bar floated in screen space
+/// **under each enemy's 3D sprite** (projected from the arena each frame), so the
+/// health reads on the creature itself instead of a detached row of chips. The bar
+/// flashes white when the enemy is struck and its name goes gold while it's the
+/// current target (matching the sprite's shimmer).
+#[allow(clippy::too_many_arguments)]
 fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
     menu: Res<BattleMenu>,
+    target: Res<BattleTarget>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<BattleScene>>,
 ) {
     for e in &existing {
         commands.entity(e).despawn();
     }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    let focus = highlight_focus(&battle, &menu, &target);
+    // A full-screen, non-interactive layer; each enemy's bar is absolutely placed.
     commands
         .spawn((
             BattleScene,
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::FlexStart,
-                padding: UiRect::top(Val::Px(56.0)),
-                row_gap: Val::Px(22.0),
                 ..default()
             },
         ))
         .with_children(|p| {
-            p.spawn((
-                Text::new("== BATTLE =="),
-                TextFont {
-                    font_size: 22.0,
+            for c in battle.combatants.iter().filter(|c| !c.is_player && c.hp > 0) {
+                // Project the enemy sprite's feet to the screen and hang the bar just
+                // below them. Skip if it has no arena actor yet or is behind the camera.
+                let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == c.id) else { continue };
+                let Ok(feet) = cam.world_to_viewport(cam_tf, gt.translation()) else { continue };
+                let frac = c.hp as f32 / c.max_hp.max(1) as f32;
+                let hurt = flashing(&hitfx, &c.id);
+                let is_target = focus.as_deref() == Some(c.id.as_str());
+                let faction = c.statuses.iter().find_map(|s| s.strip_prefix("faction:"));
+                let hp_fill = if hurt {
+                    Color::srgb(1.0, 0.95, 0.95)
+                } else {
+                    faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.3, 0.3))
+                };
+                let name_color = if hurt {
+                    Color::srgb(1.0, 1.0, 1.0)
+                } else if is_target {
+                    Color::srgb(1.0, 0.9, 0.45)
+                } else {
+                    Color::srgb(0.95, 0.72, 0.72)
+                };
+                const W: f32 = 132.0;
+                p.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(feet.x - W * 0.5),
+                    top: Val::Px(feet.y + 8.0),
+                    width: Val::Px(W),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(3.0),
                     ..default()
-                },
-                TextColor(Color::srgb(0.9, 0.85, 0.6)),
-            ));
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(48.0),
-                align_items: AlignItems::FlexEnd,
-                ..default()
-            })
-            .with_children(|row| {
-                for c in battle.combatants.iter().filter(|c| !c.is_player) {
-                    let frac = c.hp as f32 / c.max_hp.max(1) as f32;
-                    // Colour the enemy by faction so a mixed brawl is readable.
-                    let faction = c
-                        .statuses
-                        .iter()
-                        .find_map(|s| s.strip_prefix("faction:"));
-                    let block = if flashing(&hitfx, &c.id) {
-                        Color::srgb(1.0, 0.95, 0.95)
-                    } else {
-                        faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.28, 0.28))
-                    };
-                    // While aiming an enemy-targeted action, ring the candidates and
-                    // brighten the currently-highlighted one.
-                    let (is_cand, is_cursor) = target_state(&menu, &c.id);
-                    let ring = if is_cursor {
-                        Color::srgb(1.0, 0.95, 0.4)
-                    } else if is_cand {
-                        Color::srgba(1.0, 0.9, 0.4, 0.5)
-                    } else {
-                        Color::NONE
-                    };
-                    row.spawn(Node {
-                        width: Val::Px(190.0),
-                        flex_direction: FlexDirection::Column,
-                        align_items: AlignItems::Center,
-                        row_gap: Val::Px(6.0),
-                        ..default()
-                    })
-                    .with_children(|e| {
-                        // A small status chip (targeting ring + hit flash); the enemy
-                        // itself is the 3D sprite in the arena.
-                        e.spawn((
-                            Node {
-                                width: Val::Px(40.0),
-                                height: Val::Px(40.0),
-                                border: UiRect::all(Val::Px(if is_cand { 3.0 } else { 0.0 })),
-                                ..default()
-                            },
-                            BackgroundColor(block),
-                            BorderColor(ring),
-                            BorderRadius::all(Val::Px(6.0)),
-                        ));
-                        e.spawn((
-                            Text::new(format!("{}   {}/{}", c.name, c.hp, c.max_hp)),
-                            TextFont {
-                                font_size: 16.0,
-                                ..default()
-                            },
-                            TextColor(Color::srgb(0.95, 0.65, 0.65)),
-                        ));
-                        meter(e, frac, 12.0, Color::srgb(0.85, 0.3, 0.3));
-                    });
-                }
-            });
-            // Joined allies are drawn as their own per-party lineups on the screen
-            // edges (`render_ally_parties`), not as a flat strip here.
+                })
+                .with_children(|e| {
+                    e.spawn((
+                        Text::new(format!("{}  {}/{}", c.name, c.hp, c.max_hp)),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(name_color),
+                    ));
+                    meter(e, frac, 10.0, hp_fill);
+                });
+            }
         });
 }
 
@@ -6223,6 +6699,7 @@ fn party_cell(
     battle: &BattleData,
     hitfx: &HitFx,
     menu: &BattleMenu,
+    flash: &AtbFlash,
     id: &str,
     _idx: usize,
 ) {
@@ -6237,6 +6714,19 @@ fn party_cell(
     let gauge = c.gauge.clamp(0.0, 1.0) as f32;
     let name = battle.hero_label(id);
     let hurt = flashing(hitfx, id);
+    // "Turn's up" pop: 1.0 the instant the gauge fills, fading to 0 over the TTL.
+    let atb_pop = flash
+        .age
+        .get(id)
+        .map(|a| (1.0 - a / ATB_FLASH_TTL).clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+    let base_border = if is_target_cursor {
+        Color::srgb(1.0, 0.95, 0.4)
+    } else if active {
+        Color::srgb(0.95, 0.85, 0.4)
+    } else {
+        Color::srgb(0.4, 0.5, 0.8)
+    };
     parent
         .spawn((
             Node {
@@ -6248,12 +6738,11 @@ fn party_cell(
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
-            BorderColor(if is_target_cursor {
-                Color::srgb(1.0, 0.95, 0.4)
-            } else if active {
-                Color::srgb(0.95, 0.85, 0.4)
+            // Flash the border toward bright gold-white as the turn comes up.
+            BorderColor(if atb_pop > 0.0 {
+                lerp_color(base_border, Color::srgb(1.0, 0.98, 0.7), atb_pop)
             } else {
-                Color::srgb(0.4, 0.5, 0.8)
+                base_border
             }),
             BackgroundColor(if hurt {
                 Color::srgb(0.28, 0.1, 0.12)
@@ -6336,7 +6825,13 @@ fn party_cell(
                 // Attributes are intentionally NOT shown in battle — they live on
                 // the party screen in the inventory (keeps the combat HUD clean).
                 meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
-                meter(col, gauge, 7.0, Color::srgb(0.4, 0.85, 0.5));
+                // ATB bar flares gold-white the instant the gauge fills, then settles.
+                let atb_fill = lerp_color(
+                    Color::srgb(0.4, 0.85, 0.5),
+                    Color::srgb(1.0, 0.98, 0.7),
+                    atb_pop,
+                );
+                meter(col, gauge, 7.0, atb_fill);
                 // Psyker: a row of Focus slots — filled slots show the manifestation
                 // abbreviation (+stacks), empty slots a dot.
                 let (fmax, foci) = parse_foci(&c.statuses);
@@ -6384,6 +6879,7 @@ fn render_party_window(
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
     menu: Res<BattleMenu>,
+    flash: Res<AtbFlash>,
     existing: Query<Entity, With<PartyWindow>>,
 ) {
     for e in &existing {
@@ -6409,7 +6905,7 @@ fn render_party_window(
         .with_children(|row| {
             for i in 0..4 {
                 match ids.get(i) {
-                    Some(id) => party_cell(row, &battle, &hitfx, &menu, id, i),
+                    Some(id) => party_cell(row, &battle, &hitfx, &menu, &flash, id, i),
                     None => {
                         row.spawn(Node {
                             flex_grow: 1.0,
@@ -6420,6 +6916,28 @@ fn render_party_window(
                 }
             }
         });
+}
+
+/// Start a fading flash for any hero whose ATB just filled (rising edge into
+/// `ready`) and age out the running ones — the "your turn is up" pop that
+/// [`party_cell`] renders on the ATB bar. Frozen in the static mockup.
+fn advance_atb_flash(time: Res<Time>, battle: Res<BattleData>, mut flash: ResMut<AtbFlash>) {
+    if battle_mockup_flag() {
+        return;
+    }
+    let dt = time.delta_secs();
+    // Age existing flashes and drop the expired.
+    flash.age.retain(|_, a| {
+        *a += dt;
+        *a < ATB_FLASH_TTL
+    });
+    // Newly-ready heroes (weren't ready last frame) get a fresh flash.
+    for id in battle.ready.iter() {
+        if !flash.prev.contains(id) {
+            flash.age.insert(id.clone(), 0.0);
+        }
+    }
+    flash.prev = battle.ready.iter().cloned().collect();
 }
 
 /// Age floating hit numbers; drop the expired. Frozen in the static mockup so
@@ -6433,6 +6951,10 @@ fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
         h.age += dt;
     }
     hitfx.items.retain(|h| h.age < HIT_TTL);
+    hitfx.acts.retain(|_, a| {
+        *a += dt;
+        *a < ATTACK_LUNGE_TTL
+    });
 }
 
 /// Immediate-mode overlay: draw each floating number, rising and fading, anchored

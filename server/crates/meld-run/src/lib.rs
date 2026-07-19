@@ -207,6 +207,7 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
             match *class {
                 // A Psyker channels Foci instead of the martial kit; its slot count
                 // grows with level: base + 1 per `psyker_focus_per_level`, capped.
+                // Casters hold the back row (squishy → protected).
                 CharacterClass::Psyker => {
                     let bb = &balance.battle;
                     let extra = if bb.psyker_focus_per_level > 0 {
@@ -217,11 +218,15 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                     f.focus_max = (bb.psyker_focus_base as i32 + extra)
                         .clamp(bb.psyker_focus_base as i32, bb.psyker_focus_cap as i32)
                         as usize;
+                    f.back_row = true;
                 }
-                // A Resonant regenerates a little HP each of its turns (innate).
+                // A Resonant regenerates a little HP each of its turns (innate) and
+                // stands in the back row.
                 CharacterClass::Resonant => {
                     f.regen = balance.battle.resonant_regen_per_turn;
+                    f.back_row = true;
                 }
+                // Martial classes (Squire, …) hold the front line.
                 _ => {}
             }
             f

@@ -73,6 +73,10 @@ pub struct Fighter {
     pub faction: String,
     /// Whether this (creature) fighter flees a losing battle.
     pub flees: bool,
+    /// Back-row formation: takes reduced damage and is targeted less often (see
+    /// `Battle::apply_damage` / `resolve_monster_turn`). Set for caster heroes in
+    /// `meld-run`; false for front-row heroes and creatures.
+    pub back_row: bool,
     /// Max simultaneous Foci (0 = not a Psyker; Psykers channel instead of the
     /// normal attack/skill kit — see [`Battle::resolve_psyker`]).
     pub focus_max: usize,
@@ -137,6 +141,7 @@ impl Fighter {
                 String::new()
             },
             flees: false,
+            back_row: false,
             focus_max: 0,
             foci: Vec::new(),
             defending: false,
@@ -166,6 +171,9 @@ impl Fighter {
         }
         if self.regen > 0 {
             v.push(format!("regen:{}", self.regen));
+        }
+        if self.back_row {
+            v.push("row:back".to_string());
         }
         if self.focus_max > 0 {
             v.push(format!("focus_slots:{}", self.focus_max));
@@ -302,6 +310,8 @@ pub struct Battle {
     gauge_divisor: f64,
     timeout_ticks: u64,
     defend_reduction: f64,
+    back_row_damage_mult: f64,
+    back_row_target_weight: f64,
     skill_power_mult: f64,
     skill_heal_fraction: f64,
     item_heal_fraction: f64,
@@ -351,6 +361,8 @@ impl Battle {
             gauge_divisor: balance.battle.gauge_fill_divisor,
             timeout_ticks: (balance.battle.turn_timeout_ms / tick_ms).max(1),
             defend_reduction: balance.battle.defend_damage_reduction,
+            back_row_damage_mult: balance.battle.back_row_damage_mult,
+            back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
             skill_heal_fraction: balance.battle.skill_heal_fraction,
             item_heal_fraction: balance.battle.item_heal_fraction,
@@ -1160,7 +1172,7 @@ impl Battle {
         // wounded rival draws a creature away from the party, so a mixed-faction
         // encounter naturally has creatures turning on each other.
         let actor_id = self.fighters[actor_i].combatant_id.clone();
-        let target_i = self
+        let hostile: Vec<usize> = self
             .fighters
             .iter()
             .enumerate()
@@ -1169,8 +1181,26 @@ impl Battle {
                     && f.combatant_id != actor_id
                     && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
             })
-            .min_by_key(|(_, f)| f.hp)
-            .map(|(i, _)| i)?;
+            .map(|(i, _)| i)
+            .collect();
+        let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp)?;
+        // Back-row protection: if the weakest foe hides in the back row, the creature
+        // only commits to it `back_row_target_weight` of the time — otherwise the
+        // blow redirects to the weakest exposed front-row foe (if any). The RNG only
+        // advances in this back-row case, so front-row-only encounters stay identical.
+        let target_i = if self.fighters[weakest].back_row {
+            let front = hostile
+                .iter()
+                .copied()
+                .filter(|&i| !self.fighters[i].back_row)
+                .min_by_key(|&i| self.fighters[i].hp);
+            match front {
+                Some(f) if self.next_rand_unit() >= self.back_row_target_weight => f,
+                _ => weakest,
+            }
+        } else {
+            weakest
+        };
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
@@ -1211,6 +1241,12 @@ impl Battle {
     }
 
     fn apply_damage(&mut self, target_i: usize, dmg: i32) -> Vec<ResolvedEffect> {
+        // Back-row formation softens every incoming blow (before Barrier/HP).
+        let dmg = if self.fighters[target_i].back_row {
+            (dmg as f64 * self.back_row_damage_mult).round() as i32
+        } else {
+            dmg
+        };
         let t = &mut self.fighters[target_i];
         // Barrier (temp HP) soaks damage before HP does.
         let absorbed = t.barrier.min(dmg.max(0));
@@ -1393,7 +1429,7 @@ mod tests {
             &b,
             7,
         );
-        // speed 110 / 4400 = 0.025 per tick → full at tick 40 (~4s FF5 cadence).
+        // speed 110 / 5200 ≈ 0.0212 per tick → full at tick 48 (~4.7s FF5 cadence).
         let mut ready_tick = None;
         for t in 1..=60 {
             for ev in battle.tick() {
@@ -1403,7 +1439,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(ready_tick, Some(40), "speed-110 turn should ready at tick 40");
+        assert_eq!(ready_tick, Some(48), "speed-110 turn should ready at tick 48");
     }
 
     #[test]
@@ -1464,6 +1500,37 @@ mod tests {
         let mut m = monster(id, hp, speed);
         m.def = def;
         m
+    }
+
+    #[test]
+    fn back_row_halves_incoming_damage() {
+        let b = balance();
+        // Run a lone hero (speed 1 → never acts) against a monster and report the
+        // first hit it takes, front-row vs back-row.
+        let first_hit = |back: bool| -> i32 {
+            let mut hero = player("h", 1);
+            hero.back_row = back;
+            let mut battle = Battle::new(
+                "b1".into(),
+                EncounterClass::Standard,
+                vec![hero],
+                vec![monster("m", 1000, 200)],
+                &b,
+                7,
+            );
+            for _ in 0..200 {
+                battle.tick();
+                let hp = player_hp(&battle, "h");
+                if hp < 40 {
+                    return 40 - hp;
+                }
+            }
+            panic!("monster never landed a hit");
+        };
+        let front = first_hit(false); // 14 atk − 3 def = 11
+        let back = first_hit(true);
+        assert_eq!(front, 11, "front-row hero takes the full 11");
+        assert_eq!(back, 6, "back-row hero takes half (round(5.5) = 6)");
     }
 
     /// A Psyker fighter: focus_max slots, given level, no innate attack use.
@@ -1860,8 +1927,8 @@ mod tests {
     #[test]
     fn item_heals_the_wounded_actor_without_overhealing() {
         let b = balance();
-        // A brisk monster (speed 200 → acts ~every 22 ticks) wounds the speed-110
-        // player (ready at tick 40) exactly once (14 atk − 3 def = 11) before the
+        // A brisk monster (speed 200 → acts ~every 26 ticks) wounds the speed-110
+        // player (ready at tick 48) exactly once (14 atk − 3 def = 11) before the
         // player's first turn: 40 → 29 hp.
         let mut battle = Battle::new(
             "b1".into(),
@@ -1918,7 +1985,7 @@ mod tests {
     }
 
     /// Sets up a speed-110 player wounded to 18 hp by two 11-dmg monster hits
-    /// (monster speed 200 acts at ticks 22 & 44; player is awaiting from tick 40)
+    /// (monster speed 200 acts at ticks 26 & 52; player is awaiting from tick 48)
     /// and returns the heal effect of `submit`ing the given skill/item.
     fn wounded_heal(skill: Option<&str>, item: Option<&str>) -> ResolvedEffect {
         let b = balance();
@@ -1933,8 +2000,8 @@ mod tests {
             &b,
             7,
         );
-        tick_times(&mut battle, 50);
-        assert_eq!(player_hp(&battle, "a"), 18, "two 11-dmg hits land by tick 50");
+        tick_times(&mut battle, 55);
+        assert_eq!(player_hp(&battle, "a"), 18, "two 11-dmg hits land by tick 55");
         let action = if skill.is_some() {
             BattleActionKind::Skill
         } else {
@@ -2070,8 +2137,9 @@ mod tests {
             &b,
             7,
         );
-        // speed 400 / 4400 ≈ 0.09 per tick → full by tick 12.
-        for _ in 0..12 {
+        // speed 400 / 5200 ≈ 0.077 per tick → full by tick 14 (float accumulation
+        // lands tick-13's gauge a hair under 1.0).
+        for _ in 0..14 {
             battle.tick();
         }
         let first = battle.submit(
