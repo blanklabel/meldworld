@@ -1001,6 +1001,48 @@ impl Arena {
             });
         }
 
+        // Forest is a DENSE maze: pack the play area with extra trees so only the
+        // winding clear path stays open. Uses a SEPARATE rng stream (section_seed ⊕
+        // a constant) so main's creature/terrace/chest/seam draws stay byte-identical
+        // and every determinism test still holds. Ground level only (no floating
+        // trees on a terrace), and never buries the path/creatures/nodes/chests.
+        if biome == "forest" && wg.forest_obstacle_mult > 0.0 {
+            let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
+            let extra = (wg.forest_obstacle_mult * wg.obstacles_per_area).round().max(0.0) as usize;
+            let (mut fp, mut fa) = (0usize, 0usize);
+            while fp < extra && fa < extra * 12 {
+                fa += 1;
+                let ox = start_x + frng.unit() * length;
+                let oy = frng.signed() * (self.lateral - 1.0);
+                let radius = wg.obstacle_min_radius
+                    + frng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                let pos = Position::new(ox, oy);
+                if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
+                    continue;
+                }
+                if terrain.level_at(&pos) != 0 {
+                    continue;
+                }
+                let occupied = self
+                    .monsters
+                    .iter()
+                    .any(|m| m.position.distance_to(&pos) < radius + 1.2)
+                    || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.2)
+                    || self.chests.iter().any(|c| c.position.distance_to(&pos) < radius + 1.2)
+                    || self.obstacles.iter().any(|o| o.position.distance_to(&pos) < radius + o.radius);
+                if occupied {
+                    continue;
+                }
+                self.obstacles.push(Obstacle {
+                    entity_id: format!("obs-{}", self.obstacles.len()),
+                    kind: "tree".to_string(),
+                    position: pos,
+                    radius,
+                });
+                fp += 1;
+            }
+        }
+
         self.areas.push(Area {
             index: i,
             biome,

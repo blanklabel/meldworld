@@ -176,6 +176,11 @@ resource_lateral_spread = 22.0   # ± y range nodes scatter across
 # deep portal — obstacles never intrude within `path_clear_radius` of it, so a route
 # to the exit is ALWAYS feasible. Area 0 (tutorial) stays obstacle-free. [TUNABLE]
 obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1)
+# The Forest is a DENSE maze: procedural forest sections pack this multiple of
+# `obstacles_per_area` EXTRA trees into the play area (only the clear path stays
+# open), on a separate rng stream so world determinism is unchanged. Other biomes
+# keep the base density. [TUNABLE]
+forest_obstacle_mult = 4.0
 obstacle_min_radius = 0.9        # smallest feature (a lone tree/rock)
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 path_clear_radius = 4.0          # half-width of the guaranteed clear path tube

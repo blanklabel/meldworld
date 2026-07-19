@@ -168,6 +168,9 @@ pub struct WorldGen {
     pub resources_per_area: f64,
     pub resource_lateral_spread: f64,
     pub obstacles_per_area: f64,
+    /// Forest sections pack this multiple of `obstacles_per_area` extra trees into
+    /// the play area (dense maze); other biomes keep the base density.
+    pub forest_obstacle_mult: f64,
     pub obstacle_min_radius: f64,
     pub obstacle_max_radius: f64,
     pub path_clear_radius: f64,
