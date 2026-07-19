@@ -490,7 +490,6 @@ pub struct Area {
     pub biome: &'static str,
     pub start_x: f64,
     pub end_x: f64,
-    pub monster_idxs: Vec<usize>,
     pub portal: Position,
     /// The section's elevation field (terraces + connectors).
     pub terrain: Terrain,
@@ -751,7 +750,6 @@ impl Arena {
         let start_x = self.cursor;
         let biome = biome_for_distance(start_x.floor() as i64);
         let kinds = creatures_for_biome(biome);
-        let mut area_idxs = Vec::new();
 
         // Area 0 is a small, deterministic "tutorial" section near the Center Hub:
         // exactly one canonical creature on the centre line and a portal a short
@@ -764,7 +762,6 @@ impl Arena {
             let mseed = rng.next_u64();
             self.monsters
                 .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
-            area_idxs.push(idx);
             let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
             let end_x = portal_x + wg.portal_setback;
             self.monsters[idx].area_min_x = start_x;
@@ -792,7 +789,6 @@ impl Arena {
                 biome,
                 start_x,
                 end_x,
-                monster_idxs: area_idxs,
                 portal: Position::new(portal_x, 0.0),
                 // The tutorial section is entirely flat (level 0).
                 terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
@@ -825,7 +821,6 @@ impl Arena {
                 .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
-            area_idxs.push(idx);
 
             let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
             x += gap.max(2.0);
@@ -1073,7 +1068,6 @@ impl Arena {
             biome,
             start_x,
             end_x,
-            monster_idxs: area_idxs,
             portal,
             terrain,
         });
@@ -1610,6 +1604,27 @@ impl Arena {
     /// monster_index)`. Battling avatars are `in_battle`, so a hit is always a fresh
     /// toucher — the caller starts a battle or raid-merges into one. A monster one
     /// terrace up (or down) is not touchable until you climb to it.
+    /// Look up a monster by its stable `entity_id`. Battles reference their
+    /// creatures by id (not vec index) so [`Self::prune_defeated`] can compact the
+    /// list without corrupting in-flight battles.
+    pub fn monster_by_id(&self, entity_id: &str) -> Option<&MonsterSpawn> {
+        self.monsters.iter().find(|m| m.entity_id == entity_id)
+    }
+
+    pub fn monster_by_id_mut(&mut self, entity_id: &str) -> Option<&mut MonsterSpawn> {
+        self.monsters.iter_mut().find(|m| m.entity_id == entity_id)
+    }
+
+    /// Drop slain creatures from the world so `monsters` doesn't grow without bound
+    /// over a long dive (every kill used to leave a corpse in the vec forever, and
+    /// `step_creatures`/snapshot iterate the whole list each tick). A creature still
+    /// locked in a fight (`in_battle`) is kept even if flagged defeated — its battle
+    /// slot still refers to it by id. Safe because ids, not indices, are the durable
+    /// reference; call it only outside battle-assembly (e.g. end of the game tick).
+    pub fn prune_defeated(&mut self) {
+        self.monsters.retain(|m| !m.defeated || m.in_battle);
+    }
+
     pub fn check_touch(&self) -> Option<(Id, usize)> {
         for a in self.avatars.iter().filter(|a| a.state == "active") {
             for (idx, m) in self.monsters.iter().enumerate() {
@@ -1931,7 +1946,14 @@ mod tests {
         // Every area has a portal past its creatures and at least one creature.
         for area in &arena.areas {
             assert!(area.portal.x <= area.end_x);
-            assert!(!area.monster_idxs.is_empty());
+            assert!(
+                arena
+                    .monsters
+                    .iter()
+                    .any(|m| m.position.x >= area.start_x && m.position.x < area.end_x),
+                "area {} has no creature",
+                area.index
+            );
         }
         // First vs last area length: last is larger on average (growth term).
         let first = arena.areas.first().unwrap();
@@ -2260,5 +2282,37 @@ mod tests {
         arena.avatar_mut("p1").unwrap().position = arena.monsters[idx].position;
         let again = arena.check_touch();
         assert!(again.map(|(_, i)| i != idx).unwrap_or(true));
+    }
+
+    #[test]
+    fn prune_defeated_reclaims_corpses_but_keeps_in_battle_and_ids_resolve() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 11);
+        let before = arena.monsters.len();
+        assert!(before >= 3, "need a few monsters for the test");
+
+        // A stable id resolves to the right monster regardless of vec position.
+        let victim = arena.monsters[0].entity_id.clone();
+        let survivor = arena.monsters[1].entity_id.clone();
+        let fighting = arena.monsters[2].entity_id.clone();
+        assert_eq!(arena.monster_by_id(&victim).unwrap().entity_id, victim);
+
+        // One slain, one slain-but-still-locked-in-a-fight, one untouched.
+        arena.monster_by_id_mut(&victim).unwrap().defeated = true;
+        {
+            let f = arena.monster_by_id_mut(&fighting).unwrap();
+            f.defeated = true;
+            f.in_battle = true; // its battle slot still refers to it by id
+        }
+
+        arena.prune_defeated();
+
+        assert_eq!(arena.monsters.len(), before - 1, "only the free corpse is dropped");
+        assert!(arena.monster_by_id(&victim).is_none(), "slain free creature reclaimed");
+        assert!(arena.monster_by_id(&survivor).is_some(), "living creature kept");
+        assert!(
+            arena.monster_by_id(&fighting).is_some(),
+            "creature still in a battle is kept even if flagged defeated",
+        );
     }
 }
