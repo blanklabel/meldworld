@@ -160,6 +160,21 @@ pub struct WorldGen {
     pub path_clear_radius: f64,
     pub path_meander: f64,
     pub player_radius: f64,
+    // --- Verticality (terraces + connectors), VERTICALITY-PROPOSAL.md. ---
+    /// Avg raised terraces per procedural section (area 0 stays flat).
+    pub terraces_per_area: f64,
+    /// Highest elevation level a terrace can reach (0 = ground).
+    pub max_level: u8,
+    /// Smallest terrace footprint side (tiles).
+    pub terrace_min_size: f64,
+    /// Largest terrace footprint side (tiles).
+    pub terrace_max_size: f64,
+    /// Grid resolution of the elevation field (tiles/cell).
+    pub terrain_cell: f64,
+    /// Reach around a connector (ladder/rope/slope) that permits a level change.
+    pub connector_radius: f64,
+    /// How far ahead of the frontier player the world streams new sections in.
+    pub stream_lookahead: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

@@ -163,6 +163,19 @@ path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
 path_meander = 18.0              # how far ±y the clear path wanders between areas
 player_radius = 0.5              # the avatar's collision radius vs obstacles
 
+# Verticality: raised terraces joined to the ground by connectors (ladders/ropes/
+# slopes). Terraces are optional side-geography kept OUT of the clear-path tube, so
+# the extraction route stays entirely on level 0 and is always feasible. Each
+# terrace gets at least one connector so it's reachable. Cliffs are impassable
+# walls; the only way up is a connector (VERTICALITY-PROPOSAL.md). All [TUNABLE].
+terraces_per_area = 3.0          # avg raised terraces per section (area 0 stays flat)
+max_level = 2                    # tallest terrace (levels above ground)
+terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
+terrace_max_size = 14.0          # largest terrace footprint side (tiles)
+terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)
+connector_radius = 2.2           # reach around a connector that permits a level change
+stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
+
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
 # menacing with depth. Forest bases are tuned so a solo squire can win the first

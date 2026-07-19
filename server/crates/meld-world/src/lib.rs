@@ -3,17 +3,29 @@
 //! The full spec is an infinite seeded radial plane with 64×64 chunk streaming,
 //! biomes, chokepoints and Gatekeeper arenas. This slice implements the part
 //! that makes the loop feel like a *world*: a per-instance **seeded chain of
-//! biome areas** marching east from the Center Hub. Each area has its own
-//! length (jittered, trending larger with depth), several creatures placed
-//! along the corridor and scaled by their own distance, and an extraction
-//! portal near its end. Distance → difficulty uses the canon `tier/mlevel/
-//! stat_mult` formulas so deeper creatures are correctly harder.
+//! biome areas** marching east from the Center Hub. Each area (a "section") has
+//! its own length (jittered, trending larger with depth), several creatures
+//! placed along the corridor and scaled by their own distance, an extraction
+//! portal near the chain's end, and — new — **terraced verticality**: raised
+//! plateaus joined to the ground by connectors (ladders/ropes/slopes).
 //!
-//! Deferred to later slices (documented, not lost): true 2D chunk streaming,
+//! **Per-section seeds & streaming** (VERTICALITY-PROPOSAL.md): each section `n`
+//! is generated from its OWN derived seed `section_seed(run_seed, n)`, so sections
+//! are independent (one section's RNG draws can't perturb another's) and any single
+//! section reproduces exactly from `(run_seed, n)`. Sections are generated
+//! **on demand** as the player advances ([`Arena::ensure_frontier`]) — the world is
+//! endless, always fresh as you go deeper, and identical again on the same seed.
+//! This is the deferred "chunk streaming" landing as the procedural core.
+//!
+//! **Verticality** (VERTICALITY-PROPOSAL.md): elevation is a small number of
+//! integer levels, not a heightmap. Terraces are raised rectangles kept OUT of the
+//! guaranteed clear-path tube, so the extraction route stays entirely on level 0
+//! and is always feasible by construction. Cliffs are impassable walls; the only
+//! way to change level is stepping onto a **connector** (slope/ladder/rope). There
+//! is no free-form climbing.
+//!
+//! Still deferred (documented, not lost): true 2D radial chunk streaming,
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
-//! The world here is a wide corridor (movement along +x is "distance"; a narrow
-//! ±y band lets players stray) rather than an open plane — enough to march
-//! through many procedurally-sized areas and fight a variety of creatures.
 
 use meld_balance::Balance;
 use meld_proto::common::Position;
@@ -98,6 +110,22 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Derive an independent, reproducible seed for section `n` from the run seed
+/// (VERTICALITY-PROPOSAL.md "per-section seeds"). Each section is generated from
+/// its OWN seed stream, so crossing into a new section is like dropping into a
+/// fresh seed — endless variety as you go, identical again on the same run seed.
+pub fn section_seed(run_seed: u64, n: usize) -> u64 {
+    splitmix64(run_seed ^ (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+}
+
 /// A tiny deterministic PRNG (splitmix64). Same seed ⇒ same world, always —
 /// the determinism invariant (world-generation.md §Invariants). No external rng
 /// dependency (keeps the crate lean and wasm-neutral).
@@ -127,6 +155,10 @@ impl Rng {
             (self.next_u64() % n as u64) as usize
         }
     }
+    /// Uniform in `[lo, hi)`.
+    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+        lo + self.unit() * (hi - lo)
+    }
 }
 
 /// Advance a raw `u64` PRNG state and return a uniform `[0, 1)` (for per-creature
@@ -136,6 +168,111 @@ fn next_unit(state: &mut u64) -> f64 {
     let u = r.unit();
     *state = r.0;
     u
+}
+
+// ---------------------------------------------------------------- verticality ---
+
+/// The kind of connector joining two elevation levels. Cliffs are always
+/// impassable walls; a connector is the *only* way to change level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorKind {
+    /// Walkable incline — you just walk up/down and your height interpolates.
+    Slope,
+    /// Vertical; mount the base and climb to the top level.
+    Ladder,
+    /// Like a ladder, flavoured for dropping down a cliff.
+    Rope,
+}
+
+impl ConnectorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConnectorKind::Slope => "slope",
+            ConnectorKind::Ladder => "ladder",
+            ConnectorKind::Rope => "rope",
+        }
+    }
+}
+
+/// A placed connector joining levels `lo`↔`hi`. Stepping within `radius` of it
+/// (while on one of its two levels) lets the avatar move to the other level.
+#[derive(Debug, Clone)]
+pub struct Connector {
+    pub entity_id: Id,
+    pub kind: ConnectorKind,
+    pub position: Position,
+    pub lo: u8,
+    pub hi: u8,
+    pub radius: f64,
+}
+
+impl Connector {
+    /// Does this connector join levels `a` and `b` (in either order)?
+    fn joins(&self, a: u8, b: u8) -> bool {
+        (self.lo == a && self.hi == b) || (self.lo == b && self.hi == a)
+    }
+}
+
+/// The elevation field for one section: a coarse grid of integer levels over the
+/// section's `[start_x, start_x + cols*cell) × [y_min, y_min + rows*cell)` extent,
+/// plus the connectors that join levels. Row-major: `level[gx*rows + gy]`.
+#[derive(Debug, Clone, Default)]
+pub struct Terrain {
+    pub start_x: f64,
+    pub y_min: f64,
+    pub cell: f64,
+    pub cols: usize,
+    pub rows: usize,
+    pub level: Vec<u8>,
+    pub connectors: Vec<Connector>,
+}
+
+impl Terrain {
+    fn empty(start_x: f64, end_x: f64, y_min: f64, cell: f64) -> Self {
+        let cols = (((end_x - start_x) / cell).ceil() as usize).max(1);
+        let rows = ((((-y_min) * 2.0) / cell).ceil() as usize).max(1);
+        Terrain {
+            start_x,
+            y_min,
+            cell,
+            cols,
+            rows,
+            level: vec![0; cols * rows],
+            connectors: Vec::new(),
+        }
+    }
+
+    fn cell_of(&self, p: &Position) -> Option<(usize, usize)> {
+        if self.cell <= 0.0 || self.cols == 0 || self.rows == 0 {
+            return None;
+        }
+        let gx = ((p.x - self.start_x) / self.cell).floor();
+        let gy = ((p.y - self.y_min) / self.cell).floor();
+        if gx < 0.0 || gy < 0.0 {
+            return None;
+        }
+        let (gx, gy) = (gx as usize, gy as usize);
+        if gx >= self.cols || gy >= self.rows {
+            return None;
+        }
+        Some((gx, gy))
+    }
+
+    /// The elevation level at world position `p` (0 outside the grid).
+    pub fn level_at(&self, p: &Position) -> u8 {
+        match self.cell_of(p) {
+            Some((gx, gy)) => self.level[gx * self.rows + gy],
+            None => 0,
+        }
+    }
+
+    /// World-space centre of cell `(gx, gy)`.
+    fn cell_center(&self, gx: usize, gy: usize) -> Position {
+        Position::new(
+            self.start_x + (gx as f64 + 0.5) * self.cell,
+            self.y_min + (gy as f64 + 0.5) * self.cell,
+        )
+    }
 }
 
 /// A monster placed in the overworld. Creatures roam (see [`Arena::step_creatures`])
@@ -153,6 +290,9 @@ pub struct MonsterSpawn {
     pub area_min_x: f64,
     pub area_max_x: f64,
     pub level: i32,
+    /// Elevation level (terrace) the creature stands on. Creatures spawn on the
+    /// ground (0); a fight only triggers when the toucher shares its elevation.
+    pub elevation: u8,
     pub encounter_class: String,
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
@@ -194,6 +334,7 @@ impl MonsterSpawn {
             area_min_x: f64::NEG_INFINITY,
             area_max_x: f64::INFINITY,
             level: scaling.mlevel(d),
+            elevation: 0,
             encounter_class: stats.encounter_class.clone(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
@@ -230,11 +371,15 @@ pub struct ResourceNode {
     /// Content id (`bloom_herb`, `dune_iron`, …) — keys `[resource.<kind>]`.
     pub kind: String,
     pub position: Position,
+    /// Elevation the node sits on. A terrace node is only harvestable once you've
+    /// climbed to it (rewards exploring the verticality).
+    pub elevation: u8,
     pub harvested: bool,
 }
 
-/// One generated area: a stretch of corridor `[start_x, end_x)` in one biome,
-/// holding the indices of its creatures (into [`Arena::monsters`]) and a portal.
+/// One generated area / **section**: a stretch of corridor `[start_x, end_x)` in
+/// one biome, holding the indices of its creatures (into [`Arena::monsters`]), a
+/// portal, and its elevation [`Terrain`].
 #[derive(Debug, Clone)]
 pub struct Area {
     pub index: usize,
@@ -243,6 +388,8 @@ pub struct Area {
     pub end_x: f64,
     pub monster_idxs: Vec<usize>,
     pub portal: Position,
+    /// The section's elevation field (terraces + connectors).
+    pub terrain: Terrain,
 }
 
 /// An impassable terrain feature (tree, cliff, pond, …). Circular for the spike;
@@ -292,12 +439,14 @@ pub struct Avatar {
     pub position: Position,
     /// `active` | `in_battle` | `channeling` | `sleeping`.
     pub state: String,
+    /// Elevation level the avatar currently stands on (changes only via connectors).
+    pub elevation: u8,
     pub last_input_seq: u32,
     pub max_speed_tiles_per_sec: f64,
 }
 
 /// The generated overworld for one MazeInstance (spike scope): a seeded chain of
-/// biome areas along a walkable corridor.
+/// biome areas along a walkable corridor, streamed section-by-section on demand.
 pub struct Arena {
     /// The seed this world was generated from (determinism / debugging).
     pub seed: u64,
@@ -309,13 +458,15 @@ pub struct Arena {
     /// Impassable biome terrain (trees/cliffs/water/…). Never intrudes on `path`.
     pub obstacles: Vec<Obstacle>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
-    /// of `path_clear_radius` around it holds no obstacles, so the exit is always
-    /// reachable; the client draws it as a faint trail.
+    /// of `path_clear_radius` around it holds no obstacles AND no raised terrace, so
+    /// the exit is always reachable on level 0; the client draws it as a faint trail.
     pub path: Vec<Position>,
-    /// The single fixed extraction portal, deep at the end of the last area.
+    /// The single fixed extraction portal, deep at the end of the initial chain.
     /// Extraction is otherwise the Town Portal item (works anywhere).
     pub portal: Position,
     pub avatars: Vec<Avatar>,
+    /// East edge of generated content; grows as sections stream in.
+    cursor: f64,
     /// Walkable bounds: `x ∈ [x_min, x_max]`, `y ∈ [-lateral, lateral]`.
     x_min: f64,
     x_max: f64,
@@ -325,6 +476,16 @@ pub struct Arena {
     touch_radius: f64,
     interaction_radius: f64,
     sim_dt: f64,
+    // World-gen tunables (snapshot from balance) needed for streaming.
+    seed_base: u64,
+    terrain_cell: f64,
+    terraces_per_area: f64,
+    max_level: u8,
+    terrace_min_size: f64,
+    terrace_max_size: f64,
+    connector_radius: f64,
+    path_clear_radius: f64,
+    world_margin: f64,
     // Creature-AI tunables (snapshot from balance).
     wander_speed: f64,
     chase_speed: f64,
@@ -340,183 +501,39 @@ pub struct Arena {
 
 impl Arena {
     /// Generate a fresh world from `seed`. Deterministic: same seed ⇒ same areas,
-    /// creatures, and portals (world-generation.md determinism invariant).
+    /// creatures, terraces, and portals (world-generation.md determinism invariant).
+    /// Eagerly builds the initial `area_count`-section chain (so the deep portal +
+    /// clear path are known at run start); further sections stream on demand via
+    /// [`Arena::ensure_frontier`].
     pub fn generate(balance: &Balance, seed: u64) -> Self {
         let wg = &balance.worldgen;
-        let mut rng = Rng(seed);
-
-        let mut areas: Vec<Area> = Vec::new();
-        let mut monsters: Vec<MonsterSpawn> = Vec::new();
-        let mut resources: Vec<ResourceNode> = Vec::new();
-        let mut obstacles: Vec<Obstacle> = Vec::new();
-        // The guaranteed clear path, waypoint by waypoint (starts at the hub).
-        let mut path: Vec<Position> = vec![Position::new(0.0, 0.0)];
-        let mut cursor = 0.0_f64; // current x as we lay areas end-to-end
-
-        for i in 0..wg.area_count.max(1) {
-            let start_x = cursor;
-            let biome = biome_for_distance(start_x.floor() as i64);
-            let kinds = creatures_for_biome(biome);
-            let mut area_idxs = Vec::new();
-
-            // Area 0 is a small, deterministic "tutorial" area near the Center Hub:
-            // exactly one canonical creature on the centre line and a portal a short
-            // walk past it. Predictable onboarding (a straight east walk always meets
-            // one fightable target, then a portal) — and the e2e/conformance tests
-            // depend on this determinism. Procedural variety begins at area 1.
-            if i == 0 {
-                let pos = Position::new(wg.first_monster_x, 0.0);
-                let idx = monsters.len();
-                let mseed = rng.next_u64();
-                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
-                area_idxs.push(idx);
-                let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
-                let end_x = portal_x + wg.portal_setback;
-                monsters[idx].area_min_x = start_x;
-                monsters[idx].area_max_x = end_x;
-                // A guaranteed starter resource node just off the tutorial path, so
-                // the first thing a new player can safely do is harvest (no fight).
-                resources.push(ResourceNode {
-                    entity_id: format!("res-{}", resources.len()),
-                    kind: resources_for_biome(biome)[0].to_string(),
-                    position: Position::new(wg.first_monster_x * 0.5, 3.0),
-                    harvested: false,
-                });
-                areas.push(Area {
-                    index: i,
-                    biome,
-                    start_x,
-                    end_x,
-                    monster_idxs: area_idxs,
-                    portal: Position::new(portal_x, 0.0),
-                });
-                // The tutorial path is a straight, obstacle-free line to y=0.
-                path.push(Position::new(end_x, 0.0));
-                cursor = end_x;
-                continue;
-            }
-
-            // Procedural area. Length trends larger with depth (growth·i) plus a
-            // per-area jitter, so areas differ in size and later ones are bigger
-            // on average.
-            let nominal = wg.base_area_length + wg.area_length_growth * i as f64;
-            let length = (nominal * (1.0 + wg.area_length_jitter * rng.signed())).max(8.0);
-            let end_x = start_x + length;
-
-            // Walk the corridor placing creatures at jittered gaps. Creatures no
-            // longer hug the centre line — they scatter across ±y so the map is
-            // populated in every direction and you explore to find fights (area 0
-            // stays on the line for the deterministic tutorial).
-            let inner_end = end_x - wg.portal_setback - 1.0;
-            let mut x = start_x + 2.0;
-            while x < inner_end {
-                let kind = kinds[rng.below(kinds.len())];
-                let y = wg.creature_lateral_spread * rng.signed();
-                let pos = Position::new(x, y);
-                let idx = monsters.len();
-                let mseed = rng.next_u64();
-                monsters.push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
-                monsters[idx].area_min_x = start_x;
-                monsters[idx].area_max_x = end_x;
-                area_idxs.push(idx);
-
-                let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
-                x += gap.max(2.0);
-            }
-
-            // Scatter harvestable resource nodes through the area (2D, biome kinds).
-            let rkinds = resources_for_biome(biome);
-            let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
-            for _ in 0..n_nodes {
-                let rk = rkinds[rng.below(rkinds.len())];
-                let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
-                let ry = wg.resource_lateral_spread * rng.signed();
-                let nid = resources.len();
-                resources.push(ResourceNode {
-                    entity_id: format!("res-{nid}"),
-                    kind: rk.to_string(),
-                    position: Position::new(rx, ry),
-                    harvested: false,
-                });
-            }
-
-            areas.push(Area {
-                index: i,
-                biome,
-                start_x,
-                end_x,
-                monster_idxs: area_idxs,
-                portal: Position::new(end_x - wg.portal_setback, 0.0),
-            });
-
-            // The clear path meanders to a fresh ±y at this area's end. The last
-            // area's waypoint IS the portal, so the obstacle pass below keeps the
-            // final approach clear too. This completes the path segment spanning
-            // the area, letting obstacles avoid the whole tube by construction.
-            let is_last = i + 1 == wg.area_count.max(1);
-            if is_last {
-                path.push(Position::new(end_x - wg.portal_setback, 0.0));
-            } else {
-                path.push(Position::new(end_x, wg.path_meander * rng.signed()));
-            }
-
-            // Scatter impassable biome terrain, rejecting anything that would block
-            // the clear path tube or bury a creature/resource. Rejection-sampled so
-            // the path (and the exit) is always feasible by construction.
-            let okinds = obstacles_for_biome(biome);
-            let n_obs = wg.obstacles_per_area.max(0.0).round() as usize;
-            let (mut placed, mut attempts) = (0usize, 0usize);
-            while placed < n_obs && attempts < n_obs * 10 {
-                attempts += 1;
-                let ox = start_x + rng.unit() * length;
-                let oy = rng.signed() * (wg.lateral_half_extent - 1.0);
-                let radius = wg.obstacle_min_radius
-                    + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
-                let pos = Position::new(ox, oy);
-                // Keep the guaranteed path tube clear.
-                if dist_to_path(&pos, &path) < wg.path_clear_radius + radius {
-                    continue;
-                }
-                // Don't bury a creature or resource node under terrain.
-                let buries = monsters.iter().any(|m| m.position.distance_to(&pos) < radius + 1.5)
-                    || resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.5);
-                if buries {
-                    continue;
-                }
-                obstacles.push(Obstacle {
-                    entity_id: format!("obs-{}", obstacles.len()),
-                    kind: okinds[rng.below(okinds.len())].to_string(),
-                    position: pos,
-                    radius,
-                });
-                placed += 1;
-            }
-            cursor = end_x;
-        }
-
-        let x_max = cursor + wg.world_margin;
-        // A single fixed extraction portal, deep at the end of the last area.
-        let portal = areas
-            .last()
-            .map(|a| a.portal)
-            .unwrap_or_else(|| Position::new(x_max, 0.0));
-        Arena {
+        let mut arena = Arena {
             seed,
-            areas,
-            monsters,
-            resources,
+            areas: Vec::new(),
+            monsters: Vec::new(),
+            resources: Vec::new(),
             ground_loot: Vec::new(),
-            obstacles,
-            path,
-            portal,
+            obstacles: Vec::new(),
+            path: vec![Position::new(0.0, 0.0)],
+            portal: Position::new(0.0, 0.0),
             avatars: Vec::new(),
+            cursor: 0.0,
             x_min: -4.0, // a little slack behind the hub
-            x_max,
+            x_max: 0.0,
             lateral: wg.lateral_half_extent,
             player_radius: wg.player_radius,
             touch_radius: balance.world.touch_radius_tiles,
             interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
+            seed_base: seed,
+            terrain_cell: wg.terrain_cell,
+            terraces_per_area: wg.terraces_per_area,
+            max_level: wg.max_level,
+            terrace_min_size: wg.terrace_min_size,
+            terrace_max_size: wg.terrace_max_size,
+            connector_radius: wg.connector_radius,
+            path_clear_radius: wg.path_clear_radius,
+            world_margin: wg.world_margin,
             wander_speed: balance.ai.wander_speed,
             chase_speed: balance.ai.chase_speed,
             aggro_radius: balance.ai.aggro_radius,
@@ -527,7 +544,301 @@ impl Arena {
             skirmish_range: balance.ai.skirmish_attack_range,
             skirmish_interval: balance.ai.skirmish_attack_interval,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
+        };
+
+        let count = wg.area_count.max(1);
+        for i in 0..count {
+            arena.push_section(balance, i);
         }
+        // A single fixed extraction portal, deep at the end of the initial chain.
+        arena.portal = arena
+            .areas
+            .get(count - 1)
+            .map(|a| a.portal)
+            .unwrap_or_else(|| Position::new(arena.cursor, 0.0));
+        arena.x_max = arena.cursor + wg.world_margin;
+        arena
+    }
+
+    /// Generate one more section if the frontier is within `stream_lookahead` of
+    /// `player_x`. Sections beyond the initial chain are endless and reproducible
+    /// (each from `section_seed(seed, n)`). Returns the indices of any sections
+    /// newly created this call (so the caller can stream their terrain to clients).
+    pub fn ensure_frontier(&mut self, balance: &Balance, player_x: f64) -> Vec<usize> {
+        let mut created = Vec::new();
+        let lookahead = balance.worldgen.stream_lookahead;
+        // Cap growth per call so a teleport can't explode work in one tick.
+        let mut budget = 4;
+        while self.cursor < player_x + lookahead && budget > 0 {
+            let i = self.areas.len();
+            self.push_section(balance, i);
+            self.x_max = self.cursor + self.world_margin;
+            created.push(i);
+            budget -= 1;
+        }
+        created
+    }
+
+    /// Build section `i` from its OWN seed (`section_seed`) and append it to the
+    /// flat entity vectors + the path. Self-contained per section: no shared RNG
+    /// state threads between sections, which is exactly what makes streaming and
+    /// reproducibility work (VERTICALITY-PROPOSAL.md per-section seeds).
+    fn push_section(&mut self, balance: &Balance, i: usize) {
+        let wg = &balance.worldgen;
+        let mut rng = Rng(section_seed(self.seed_base, i));
+        let start_x = self.cursor;
+        let biome = biome_for_distance(start_x.floor() as i64);
+        let kinds = creatures_for_biome(biome);
+        let mut area_idxs = Vec::new();
+
+        // Area 0 is a small, deterministic "tutorial" section near the Center Hub:
+        // exactly one canonical creature on the centre line and a portal a short
+        // walk past it. Predictable onboarding (a straight east walk always meets
+        // one fightable target, then a portal) — and the e2e/conformance tests
+        // depend on this determinism. Procedural variety (and terraces) begin at 1.
+        if i == 0 {
+            let pos = Position::new(wg.first_monster_x, 0.0);
+            let idx = self.monsters.len();
+            let mseed = rng.next_u64();
+            self.monsters
+                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
+            area_idxs.push(idx);
+            let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
+            let end_x = portal_x + wg.portal_setback;
+            self.monsters[idx].area_min_x = start_x;
+            self.monsters[idx].area_max_x = end_x;
+            // A guaranteed starter resource node just off the tutorial path, so
+            // the first thing a new player can safely do is harvest (no fight).
+            self.resources.push(ResourceNode {
+                entity_id: format!("res-{}", self.resources.len()),
+                kind: resources_for_biome(biome)[0].to_string(),
+                position: Position::new(wg.first_monster_x * 0.5, 3.0),
+                elevation: 0,
+                harvested: false,
+            });
+            self.areas.push(Area {
+                index: i,
+                biome,
+                start_x,
+                end_x,
+                monster_idxs: area_idxs,
+                portal: Position::new(portal_x, 0.0),
+                // The tutorial section is entirely flat (level 0).
+                terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
+            });
+            // The tutorial path is a straight, obstacle-free line to y=0.
+            self.path.push(Position::new(end_x, 0.0));
+            self.cursor = end_x;
+            return;
+        }
+
+        // Procedural section. Length trends larger with depth (growth·i) plus a
+        // per-section jitter, so sections differ in size and later ones are bigger
+        // on average.
+        let nominal = wg.base_area_length + wg.area_length_growth * i as f64;
+        let length = (nominal * (1.0 + wg.area_length_jitter * rng.signed())).max(8.0);
+        let end_x = start_x + length;
+
+        // Walk the corridor placing creatures at jittered gaps. Creatures scatter
+        // across ±y so the map is populated in every direction and you explore to
+        // find fights.
+        let inner_end = end_x - wg.portal_setback - 1.0;
+        let mut x = start_x + 2.0;
+        while x < inner_end {
+            let kind = kinds[rng.below(kinds.len())];
+            let y = wg.creature_lateral_spread * rng.signed();
+            let pos = Position::new(x, y);
+            let idx = self.monsters.len();
+            let mseed = rng.next_u64();
+            self.monsters
+                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
+            self.monsters[idx].area_min_x = start_x;
+            self.monsters[idx].area_max_x = end_x;
+            area_idxs.push(idx);
+
+            let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
+            x += gap.max(2.0);
+        }
+
+        // Scatter harvestable resource nodes through the section (2D, biome kinds).
+        let rkinds = resources_for_biome(biome);
+        let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
+        let mut section_resources: Vec<usize> = Vec::new();
+        for _ in 0..n_nodes {
+            let rk = rkinds[rng.below(rkinds.len())];
+            let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+            let ry = wg.resource_lateral_spread * rng.signed();
+            let nid = self.resources.len();
+            self.resources.push(ResourceNode {
+                entity_id: format!("res-{nid}"),
+                kind: rk.to_string(),
+                position: Position::new(rx, ry),
+                elevation: 0,
+                harvested: false,
+            });
+            section_resources.push(nid);
+        }
+
+        // The clear path meanders to a fresh ±y at this section's end. The initial
+        // chain's last section aims its final waypoint at the portal; streamed
+        // sections just meander onward (endless). This completes the path segment
+        // spanning the section, letting obstacles + terraces avoid the whole tube.
+        let is_chain_end = i + 1 == wg.area_count.max(1);
+        let portal = if is_chain_end {
+            let p = Position::new(end_x - wg.portal_setback, 0.0);
+            self.path.push(p);
+            p
+        } else {
+            self.path.push(Position::new(end_x, wg.path_meander * rng.signed()));
+            Position::new(end_x - wg.portal_setback, 0.0)
+        };
+
+        // Scatter impassable biome terrain, rejecting anything that would block the
+        // clear path tube or bury a creature/resource. Rejection-sampled so the
+        // path (and the exit) is always feasible by construction.
+        let okinds = obstacles_for_biome(biome);
+        let n_obs = wg.obstacles_per_area.max(0.0).round() as usize;
+        let (mut placed, mut attempts) = (0usize, 0usize);
+        while placed < n_obs && attempts < n_obs * 10 {
+            attempts += 1;
+            let ox = start_x + rng.unit() * length;
+            let oy = rng.signed() * (self.lateral - 1.0);
+            let radius =
+                wg.obstacle_min_radius + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+            let pos = Position::new(ox, oy);
+            if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
+                continue;
+            }
+            let buries = self.monsters.iter().any(|m| m.position.distance_to(&pos) < radius + 1.5)
+                || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.5);
+            if buries {
+                continue;
+            }
+            self.obstacles.push(Obstacle {
+                entity_id: format!("obs-{}", self.obstacles.len()),
+                kind: okinds[rng.below(okinds.len())].to_string(),
+                position: pos,
+                radius,
+            });
+            placed += 1;
+        }
+
+        // Raise a few terraces, kept OUT of the clear-path tube (so the route stays
+        // level 0 and feasible). Each gets a connector so it's reachable. Terraces
+        // never cover a creature/resource on the critical path — they'd be left on
+        // the ground otherwise unreachable — so overlapped ones are lifted with the
+        // terrace (a terrace node rewards climbing).
+        let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
+        let n_terraces = self.terraces_per_area.max(0.0).round() as usize;
+        let (mut tplaced, mut tattempts) = (0usize, 0usize);
+        while tplaced < n_terraces && tattempts < n_terraces * 12 {
+            tattempts += 1;
+            let level: u8 = 1 + rng.below(self.max_level.max(1) as usize) as u8;
+            let w = rng.range(self.terrace_min_size, self.terrace_max_size);
+            let h = rng.range(self.terrace_min_size, self.terrace_max_size);
+            let cx = start_x + rng.range(2.0, (length - 2.0).max(2.0));
+            let cy = rng.range(-self.lateral + 2.0, self.lateral - 2.0);
+            let (x0, x1) = (cx - w * 0.5, cx + w * 0.5);
+            let (y0, y1) = (cy - h * 0.5, cy + h * 0.5);
+            // Reject if any part of the terrace (+ a margin so the cliff edge itself
+            // stays clear) intrudes on the path tube — keeps extraction on level 0.
+            if self.rect_intrudes_path(x0, y0, x1, y1) {
+                continue;
+            }
+            // Reject overlap with an already-raised terrace (no ambiguous stacking).
+            if terrain_rect_overlaps(&terrain, x0, y0, x1, y1) {
+                continue;
+            }
+            // Reject burying an obstacle (a raised cliff under a tree reads wrong).
+            if self.obstacles.iter().any(|o| {
+                o.position.x >= x0 - o.radius
+                    && o.position.x <= x1 + o.radius
+                    && o.position.y >= y0 - o.radius
+                    && o.position.y <= y1 + o.radius
+            }) {
+                continue;
+            }
+            raise_terrace(&mut terrain, x0, y0, x1, y1, level);
+            // Place a connector on the middle of the terrace's south edge, nudged
+            // outward toward the ground so it straddles the level boundary.
+            let conn_pos = Position::new(cx, (y0 - terrain.cell * 0.5).max(-self.lateral));
+            let kind = match rng.below(3) {
+                0 => ConnectorKind::Ladder,
+                1 => ConnectorKind::Rope,
+                _ => ConnectorKind::Slope,
+            };
+            terrain.connectors.push(Connector {
+                entity_id: format!("conn-{}-{}", i, tplaced),
+                kind,
+                position: conn_pos,
+                lo: 0,
+                hi: level,
+                radius: self.connector_radius,
+            });
+            // Any creature/resource sitting on this terrace is lifted onto it, so it
+            // isn't stranded under a cliff (and rewards the climb).
+            for m in self.monsters.iter_mut() {
+                if terrain.level_at(&m.position) == level {
+                    m.elevation = level;
+                }
+            }
+            for &nid in &section_resources {
+                if terrain.level_at(&self.resources[nid].position) == level {
+                    self.resources[nid].elevation = level;
+                }
+            }
+            tplaced += 1;
+        }
+
+        self.areas.push(Area {
+            index: i,
+            biome,
+            start_x,
+            end_x,
+            monster_idxs: area_idxs,
+            portal,
+            terrain,
+        });
+        self.cursor = end_x;
+    }
+
+    /// Does the axis-aligned terrace rectangle come within the clear-path tube?
+    /// Samples the rect corners + centre + edge midpoints against the path.
+    fn rect_intrudes_path(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+        let margin = self.path_clear_radius + self.terrain_cell;
+        let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        let samples = [
+            Position::new(x0, y0),
+            Position::new(x1, y0),
+            Position::new(x0, y1),
+            Position::new(x1, y1),
+            Position::new(cx, y0),
+            Position::new(cx, y1),
+            Position::new(x0, cy),
+            Position::new(x1, cy),
+            Position::new(cx, cy),
+        ];
+        samples.iter().any(|s| dist_to_path(s, &self.path) < margin)
+    }
+
+    /// The elevation level at world position `p` — samples whichever section's
+    /// terrain contains `p.x` (0 outside any section, e.g. behind the hub).
+    pub fn level_at(&self, p: &Position) -> u8 {
+        area_level_at(&self.areas, p)
+    }
+
+    /// Is there a connector within reach of `p` that joins levels `a`↔`b`? (A move
+    /// crossing a level boundary is allowed only on such a connector.)
+    fn connector_between(&self, p: &Position, a: u8, b: u8) -> bool {
+        if a == b {
+            return false;
+        }
+        self.areas.iter().any(|area| {
+            area.terrain
+                .connectors
+                .iter()
+                .any(|c| c.joins(a, b) && p.distance_to(&c.position) <= c.radius)
+        })
     }
 
     /// Advance every roaming creature one step of `dt` seconds. Creatures chase the
@@ -559,6 +870,8 @@ impl Arena {
             .iter()
             .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
             .collect();
+        // Immutable borrow of a disjoint field — safe alongside `monsters.iter_mut()`.
+        let areas = &self.areas;
 
         // --- Movement pass: pick a target and close on it (or wander) ----------
         for (i, m) in self.monsters.iter_mut().enumerate() {
@@ -629,13 +942,18 @@ impl Arena {
                 let hi_x = x_max.min(m.area_max_x);
                 let nx = (m.position.x + dx * step).max(lo_x).min(hi_x);
                 let ny = (m.position.y + dy * step).max(-lateral).min(lateral);
-                // Creatures don't walk through terrain either (slide per axis).
+                // Creatures don't walk through terrain either (slide per axis), and
+                // they stay on their own elevation (never wander off a terrace edge).
                 let cand = Position::new(nx, ny);
-                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) {
+                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) && area_level_at(areas, &cand) == m.elevation {
                     m.position = cand;
-                } else if !Self::obstacle_blocks(&obstacles, &Position::new(nx, m.position.y), 0.5) {
+                } else if !Self::obstacle_blocks(&obstacles, &Position::new(nx, m.position.y), 0.5)
+                    && area_level_at(areas, &Position::new(nx, m.position.y)) == m.elevation
+                {
                     m.position.x = nx;
-                } else if !Self::obstacle_blocks(&obstacles, &Position::new(m.position.x, ny), 0.5) {
+                } else if !Self::obstacle_blocks(&obstacles, &Position::new(m.position.x, ny), 0.5)
+                    && area_level_at(areas, &Position::new(m.position.x, ny)) == m.elevation
+                {
                     m.position.y = ny;
                 }
             }
@@ -717,42 +1035,51 @@ impl Arena {
         taken
     }
 
-    /// The living creatures within `group_radius` of creature `idx` (including it).
-    /// This is the encounter you pull when you touch one — nearby creatures pile
-    /// in; their factions decide who fights whom once in battle.
+    /// The living creatures within `group_radius` of creature `idx` **on the same
+    /// elevation** (including it). This is the encounter you pull when you touch one
+    /// — nearby creatures pile in; their factions decide who fights whom once in
+    /// battle. Creatures on a different terrace don't join.
     pub fn group_around(&self, idx: usize) -> Vec<usize> {
         let Some(origin) = self.monsters.get(idx) else {
             return vec![];
         };
         let center = origin.position;
+        let elev = origin.elevation;
         let r = self.group_radius;
         self.monsters
             .iter()
             .enumerate()
-            .filter(|(_, m)| !m.defeated && center.distance_to(&m.position) <= r)
+            .filter(|(_, m)| {
+                !m.defeated && m.elevation == elev && center.distance_to(&m.position) <= r
+            })
             .map(|(i, _)| i)
             .collect()
     }
 
-    /// Is `player` within interaction range of the single deep extraction portal?
+    /// Is `player` within interaction range of the single deep extraction portal
+    /// (on the ground — the portal sits on level 0)?
     pub fn at_portal(&self, player_id: &str) -> bool {
         let Some(a) = self.avatar(player_id) else {
             return false;
         };
-        a.position.distance_to(&self.portal) <= self.interaction_radius
+        a.elevation == 0 && a.position.distance_to(&self.portal) <= self.interaction_radius
     }
 
     /// Harvest the resource node `entity_id` if `player` is within interaction
-    /// range and it isn't already spent. Marks it harvested and returns its
-    /// content kind (the caller maps that to a material + skill XP via balance).
+    /// range **on the same elevation** and it isn't already spent. Marks it
+    /// harvested and returns its content kind (the caller maps that to a material +
+    /// skill XP via balance).
     pub fn harvest(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
-        let ppos = self.avatar(player_id)?.position;
+        let (ppos, pelev) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
         let radius = self.interaction_radius;
         let node = self
             .resources
             .iter_mut()
             .find(|n| n.entity_id == entity_id && !n.harvested)?;
-        if ppos.distance_to(&node.position) > radius {
+        if node.elevation != pelev || ppos.distance_to(&node.position) > radius {
             return None;
         }
         node.harvested = true;
@@ -760,13 +1087,14 @@ impl Arena {
     }
 
     /// Spawn a player avatar near the Center Hub (staggered so parties don't
-    /// stack). All start on the y=0 corridor so they can walk east into creatures.
+    /// stack). All start on the y=0 corridor (level 0) so they can walk east.
     pub fn add_avatar(&mut self, player_id: String, speed: f64) {
         let idx = self.avatars.len();
         self.avatars.push(Avatar {
             player_id,
             position: Position::new(-(idx as f64) * 0.6, 0.0),
             state: "active".to_string(),
+            elevation: 0,
             last_input_seq: 0,
             max_speed_tiles_per_sec: speed,
         });
@@ -785,11 +1113,14 @@ impl Arena {
         obstacles.iter().any(|(c, r)| p.distance_to(c) < r + radius)
     }
 
-    /// Integrate one movement intent against authoritative position, clamped to
-    /// the world bounds and max speed, and blocked by biome obstacles (server owns
-    /// movement — CANON.md §S, D11). Collisions **slide**: if the full step hits an
-    /// obstacle, the axis-aligned components are tried so you glide along terrain
-    /// rather than sticking. Returns the authoritative position after integration.
+    /// Integrate one movement intent against authoritative position, clamped to the
+    /// world bounds and max speed, blocked by biome obstacles, and gated by
+    /// elevation (server owns movement — CANON.md §S, D11). A candidate step is
+    /// accepted only if it clears obstacles AND either stays on the current level or
+    /// crosses a boundary via a **connector** (cliffs are impassable walls — there
+    /// is no free climbing). Collisions/cliffs **slide**: the axis-aligned
+    /// components are tried so you glide along terrain rather than sticking. Returns
+    /// the authoritative position after integration.
     pub fn apply_move(
         &mut self,
         player_id: &str,
@@ -797,15 +1128,21 @@ impl Arena {
         dir_y: f64,
         input_seq: u32,
     ) -> Option<Position> {
+        // Read the avatar's current state first (immutable) so the elevation/obstacle
+        // math below can borrow `&self`; write the result back at the end.
+        let (cur, cur_elev, state, speed) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation, a.state.clone(), a.max_speed_tiles_per_sec)
+        };
+        if state != "active" {
+            return Some(cur); // can't move while in battle/channeling/sleeping
+        }
         let dt = self.sim_dt;
         let (x_min, x_max, lateral) = (self.x_min, self.x_max, self.lateral);
         let pr = self.player_radius;
         let obstacles: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
-        let a = self.avatar_mut(player_id)?;
-        if a.state != "active" {
-            return Some(a.position); // can't move while in battle/channeling/sleeping
-        }
+
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let (nx, ny) = if mag > 1.0 {
@@ -813,44 +1150,107 @@ impl Arena {
         } else {
             (dir_x, dir_y)
         };
-        let step = a.max_speed_tiles_per_sec * dt;
-        let cur = a.position;
-        let clamp = |x: f64, y: f64| {
-            Position::new(x.max(x_min).min(x_max), y.max(-lateral).min(lateral))
+        let step = speed * dt;
+        let clamp =
+            |x: f64, y: f64| Position::new(x.max(x_min).min(x_max), y.max(-lateral).min(lateral));
+
+        // A candidate is acceptable iff it clears obstacles AND is level-permitted:
+        // same level, or a connector joins the current & destination levels.
+        let accept = |cand: Position| -> Option<u8> {
+            if Self::obstacle_blocks(&obstacles, &cand, pr) {
+                return None;
+            }
+            let cl = self.level_at(&cand);
+            if cl == cur_elev
+                || self.connector_between(&cur, cur_elev, cl)
+                || self.connector_between(&cand, cur_elev, cl)
+            {
+                Some(cl)
+            } else {
+                None
+            }
         };
+
         let full = clamp(cur.x + nx * step, cur.y + ny * step);
-        let dest = if !Self::obstacle_blocks(&obstacles, &full, pr) {
-            full
+        let (dest, new_elev) = if let Some(l) = accept(full) {
+            (full, l)
         } else {
             // Slide: try moving along only x, then only y.
             let sx = clamp(cur.x + nx * step, cur.y);
             let sy = clamp(cur.x, cur.y + ny * step);
-            if !Self::obstacle_blocks(&obstacles, &sx, pr) {
-                sx
-            } else if !Self::obstacle_blocks(&obstacles, &sy, pr) {
-                sy
+            if let Some(l) = accept(sx) {
+                (sx, l)
+            } else if let Some(l) = accept(sy) {
+                (sy, l)
             } else {
-                cur // fully blocked
+                (cur, cur_elev) // fully blocked
             }
         };
+
+        let a = self.avatar_mut(player_id)?;
         a.position = dest;
+        a.elevation = new_elev;
         a.last_input_seq = input_seq;
         Some(a.position)
     }
 
     /// The first **living** monster within touch range of an **active** (not
-    /// already battling) avatar, as `(player_id, monster_index)`. Battling
-    /// avatars are `in_battle`, so a hit is always a fresh toucher — the caller
-    /// starts a battle or raid-merges into one.
+    /// already battling) avatar **on the same elevation**, as `(player_id,
+    /// monster_index)`. Battling avatars are `in_battle`, so a hit is always a fresh
+    /// toucher — the caller starts a battle or raid-merges into one. A monster one
+    /// terrace up (or down) is not touchable until you climb to it.
     pub fn check_touch(&self) -> Option<(Id, usize)> {
         for a in self.avatars.iter().filter(|a| a.state == "active") {
             for (idx, m) in self.monsters.iter().enumerate() {
-                if !m.defeated && a.position.distance_to(&m.position) <= self.touch_radius {
+                if !m.defeated
+                    && m.elevation == a.elevation
+                    && a.position.distance_to(&m.position) <= self.touch_radius
+                {
                     return Some((a.player_id.clone(), idx));
                 }
             }
         }
         None
+    }
+}
+
+/// The elevation level at world position `p` over a section list (free function
+/// so it can be called while another field of the arena is mutably borrowed).
+fn area_level_at(areas: &[Area], p: &Position) -> u8 {
+    for a in areas {
+        if p.x >= a.start_x && p.x < a.end_x {
+            return a.terrain.level_at(p);
+        }
+    }
+    0
+}
+
+/// Do any cells of the axis-aligned rect `[x0,x1]×[y0,y1]` already hold a raised
+/// (level > 0) terrace? Used to reject overlapping terraces.
+fn terrain_rect_overlaps(t: &Terrain, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+    let gx0 = (((x0 - t.start_x) / t.cell).floor().max(0.0)) as usize;
+    let gy0 = (((y0 - t.y_min) / t.cell).floor().max(0.0)) as usize;
+    let gx1 = ((((x1 - t.start_x) / t.cell).ceil()) as usize).min(t.cols);
+    let gy1 = ((((y1 - t.y_min) / t.cell).ceil()) as usize).min(t.rows);
+    for gx in gx0..gx1 {
+        for gy in gy0..gy1 {
+            if gx < t.cols && gy < t.rows && t.level[gx * t.rows + gy] > 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mark every cell whose centre falls inside `[x0,x1]×[y0,y1]` to `level`.
+fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8) {
+    for gx in 0..t.cols {
+        for gy in 0..t.rows {
+            let c = t.cell_center(gx, gy);
+            if c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1 {
+                t.level[gx * t.rows + gy] = level;
+            }
+        }
     }
 }
 
@@ -899,8 +1299,9 @@ mod tests {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 5);
         assert!(arena.monsters.len() >= 2);
-        // Park the second creature right next to the first.
+        // Park the second creature right next to the first (same elevation).
         arena.monsters[1].position = arena.monsters[0].position;
+        arena.monsters[1].elevation = arena.monsters[0].elevation;
         let g = arena.group_around(0);
         assert!(g.contains(&0) && g.contains(&1), "close creatures group up");
     }
@@ -1005,9 +1406,35 @@ mod tests {
             assert_eq!(m.position, n.position);
             assert_eq!(m.hp, n.hp);
         }
-        // A different seed yields a different world (overwhelmingly likely).
+        // A different seed yields a different world (overwhelmingly likely). Compare
+        // procedural content — monsters[0] is the fixed tutorial creature, identical
+        // across seeds by design, so look past it (and at the terraces).
         let d = Arena::generate(&b, 999);
-        assert!(a.monsters.len() != d.monsters.len() || a.monsters[0].position != d.monsters[0].position);
+        let monsters_differ = a.monsters.len() != d.monsters.len()
+            || a.monsters.iter().zip(d.monsters.iter()).any(|(m, n)| m.position != n.position);
+        let terrain_differs = a
+            .areas
+            .iter()
+            .zip(d.areas.iter())
+            .any(|(x, y)| x.terrain.level != y.terrain.level);
+        assert!(monsters_differ || terrain_differs, "different seeds → different worlds");
+    }
+
+    #[test]
+    fn sections_are_independently_seeded_and_reproducible() {
+        // Per-section seeds: section n depends only on (run_seed, n), so the SAME
+        // section reproduces exactly and is independent of its neighbours.
+        assert_eq!(section_seed(42, 3), section_seed(42, 3));
+        assert_ne!(section_seed(42, 3), section_seed(42, 4));
+        assert_ne!(section_seed(42, 3), section_seed(43, 3));
+        // Two arenas from the same run seed produce identical terraces per section.
+        let b = Balance::load_default().unwrap();
+        let a = Arena::generate(&b, 77);
+        let c = Arena::generate(&b, 77);
+        for (x, y) in a.areas.iter().zip(c.areas.iter()) {
+            assert_eq!(x.terrain.level, y.terrain.level);
+            assert_eq!(x.terrain.connectors.len(), y.terrain.connectors.len());
+        }
     }
 
     #[test]
@@ -1036,7 +1463,7 @@ mod tests {
     fn one_deep_portal_only() {
         let b = Balance::load_default().unwrap();
         let arena = Arena::generate(&b, 7);
-        // The single extraction portal is the last area's, deep from the hub.
+        // The single extraction portal is the last chain area's, deep from the hub.
         assert_eq!(arena.portal, arena.areas.last().unwrap().portal);
         let first_area_end = arena.areas.first().unwrap().end_x;
         assert!(
@@ -1063,7 +1490,9 @@ mod tests {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 7);
         assert!(!arena.resources.is_empty(), "resource nodes are scattered in");
+        // Use the guaranteed level-0 starter node (area 0) so elevation doesn't gate.
         let node = arena.resources[0].clone();
+        assert_eq!(node.elevation, 0);
         arena.add_avatar("p".into(), 6.0);
         // Too far → no harvest.
         arena.avatar_mut("p").unwrap().position = Position::new(node.position.x + 50.0, node.position.y);
@@ -1089,15 +1518,43 @@ mod tests {
             arena.obstacles.iter().all(|o| o.position.x > area0_end),
             "no obstacles in area 0"
         );
-        // Kinds map to a biome table (no stray content).
+        // Area 0 is entirely flat.
+        assert!(arena.areas[0].terrain.level.iter().all(|&l| l == 0), "area 0 is flat");
         for o in &arena.obstacles {
             assert!(o.radius > 0.0);
         }
     }
 
     #[test]
-    fn no_obstacle_intrudes_on_the_clear_path() {
-        // The feasibility guarantee: every obstacle sits outside the path tube.
+    fn terraces_generate_with_reachable_connectors() {
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7);
+        // Some section beyond the tutorial has a raised terrace.
+        let raised: usize = arena
+            .areas
+            .iter()
+            .map(|a| a.terrain.level.iter().filter(|&&l| l > 0).count())
+            .sum();
+        assert!(raised > 0, "verticality: at least one terrace is raised");
+        // Every raised level present in a section has a connector joining it to 0.
+        for area in &arena.areas {
+            let mut levels: Vec<u8> = area.terrain.level.iter().copied().filter(|&l| l > 0).collect();
+            levels.sort_unstable();
+            levels.dedup();
+            for lvl in levels {
+                assert!(
+                    area.terrain.connectors.iter().any(|c| c.joins(0, lvl)),
+                    "section {} level {lvl} has no connector to the ground",
+                    area.index
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_obstacle_or_terrace_intrudes_on_the_clear_path() {
+        // The feasibility guarantee: the path tube holds no obstacle AND stays on
+        // level 0, so extraction is always feasible without ever needing to climb.
         for seed in [1u64, 7, 42, 999, 123456] {
             let b = Balance::load_default().unwrap();
             let arena = Arena::generate(&b, seed);
@@ -1109,13 +1566,17 @@ mod tests {
                     o.entity_id
                 );
             }
+            // Every path waypoint is on the ground.
+            for wp in &arena.path {
+                assert_eq!(arena.level_at(wp), 0, "seed {seed}: path waypoint left level 0");
+            }
         }
     }
 
     #[test]
     fn the_clear_path_actually_reaches_the_portal() {
         // A walker that follows the waypoints reaches the portal without getting
-        // stuck on terrain — the route is feasible by construction, end to end.
+        // stuck on terrain or a cliff — the route is feasible by construction.
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 42);
         let waypoints = arena.path.clone();
@@ -1139,6 +1600,91 @@ mod tests {
         assert!(reached, "following the path should reach the portal");
         let end = arena.avatar("p").unwrap().position;
         assert!(end.distance_to(&arena.portal) < 1.5, "walker ended at the portal");
+        assert_eq!(arena.avatar("p").unwrap().elevation, 0, "walker stayed on the ground");
+    }
+
+    #[test]
+    fn a_cliff_blocks_but_a_connector_lets_you_climb() {
+        // Find a raised terrace, prove you can't walk onto it across the cliff, then
+        // prove stepping onto its connector carries you up.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7);
+        let (conn, level) = arena
+            .areas
+            .iter()
+            .flat_map(|a| a.terrain.connectors.iter().map(move |c| (c.clone(), c.hi)))
+            .next()
+            .expect("a connector exists");
+        arena.add_avatar("p".into(), 6.0);
+
+        // Approach the terrace from open ground, away from the connector: pick a
+        // raised cell far from the connector and try to walk straight into it.
+        let area = arena.areas.iter().find(|a| !a.terrain.connectors.is_empty()).unwrap();
+        let mut target_cell = None;
+        for gx in 0..area.terrain.cols {
+            for gy in 0..area.terrain.rows {
+                if area.terrain.level[gx * area.terrain.rows + gy] == level {
+                    let c = area.terrain.cell_center(gx, gy);
+                    if c.distance_to(&conn.position) > conn.radius + 3.0 {
+                        target_cell = Some(c);
+                    }
+                }
+            }
+        }
+        if let Some(cell) = target_cell {
+            // Stand just off the terrace, not near the connector, and push into it.
+            let start = Position::new(cell.x, area.terrain.y_min - 0.1); // below-grid ground
+            let start = if arena.level_at(&start) == 0 { start } else { Position::new(cell.x, cell.y - 6.0) };
+            arena.avatar_mut("p").unwrap().position = start;
+            arena.avatar_mut("p").unwrap().elevation = 0;
+            for _ in 0..80 {
+                let p = arena.avatar("p").unwrap().position;
+                arena.apply_move("p", cell.x - p.x, cell.y - p.y, 0);
+            }
+            assert_eq!(
+                arena.avatar("p").unwrap().elevation,
+                0,
+                "a bare cliff must not let you climb"
+            );
+        }
+
+        // Now use the connector: stand on it and step up onto the terrace.
+        arena.avatar_mut("p").unwrap().position = conn.position;
+        arena.avatar_mut("p").unwrap().elevation = 0;
+        let up = Position::new(conn.position.x, conn.position.y + arena.connector_radius + 1.0);
+        for _ in 0..40 {
+            let p = arena.avatar("p").unwrap().position;
+            arena.apply_move("p", up.x - p.x, up.y - p.y, 0);
+            if arena.avatar("p").unwrap().elevation == level {
+                break;
+            }
+        }
+        assert_eq!(
+            arena.avatar("p").unwrap().elevation,
+            level,
+            "stepping onto a connector should carry you up a level"
+        );
+    }
+
+    #[test]
+    fn streaming_extends_the_world_endlessly_and_reproducibly() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 55);
+        let chain = a.areas.len();
+        // Walking the frontier east streams in fresh sections beyond the chain.
+        let created = a.ensure_frontier(&b, a.areas.last().unwrap().end_x + 100.0);
+        assert!(!created.is_empty(), "frontier advance streams new sections");
+        assert!(a.areas.len() > chain, "world grew past the initial chain");
+        // The deep portal does NOT move when streaming past it.
+        assert_eq!(a.portal, a.areas[chain - 1].portal);
+        // Reproducible: a second arena streamed the same way matches section-for-section.
+        let mut c = Arena::generate(&b, 55);
+        c.ensure_frontier(&b, c.areas.last().unwrap().end_x + 100.0);
+        assert_eq!(a.areas.len(), c.areas.len());
+        for (x, y) in a.areas.iter().zip(c.areas.iter()) {
+            assert_eq!(x.start_x, y.start_x);
+            assert_eq!(x.terrain.level, y.terrain.level);
+        }
     }
 
     #[test]
