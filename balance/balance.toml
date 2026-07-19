@@ -203,6 +203,7 @@ terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)
 connector_radius = 2.2           # reach around a connector that permits a level change
 stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
 path_climb_chance = 0.6          # chance a section's clear path climbs a plateau (0..1)
+chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace (0..1)
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

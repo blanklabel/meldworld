@@ -198,6 +198,9 @@ pub struct WorldGen {
     /// plateau (up a ramp, across, back down) — the "path itself is a maze" knob.
     /// Endpoints stay on level 0, so feasibility is preserved.
     pub path_climb_chance: f64,
+    /// Probability a section's treasure chest sits ON TOP of a raised terrace (at
+    /// that elevation) instead of on the ground — treasure that rewards a climb.
+    pub chest_terrace_chance: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

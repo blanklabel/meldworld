@@ -2386,7 +2386,7 @@ impl GameState {
                 position: c.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
-                level: Some(0),
+                level: Some(c.elevation),
             });
         }
         // Un-harvested resource nodes, tagged `resource:<kind>` for the client.

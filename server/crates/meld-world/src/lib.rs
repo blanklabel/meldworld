@@ -505,6 +505,9 @@ pub struct Chest {
     /// Loot tier band at this depth (`tier(d) = floor(d/100)`), for loot scaling.
     pub tier: i32,
     pub opened: bool,
+    /// Elevation level the chest sits at (0 = ground). A chest atop a terrace can
+    /// only be opened from that level — the reward for climbing the detour.
+    pub elevation: u8,
 }
 
 /// A biome boundary the player funnels through: a wall of impassable geo across
@@ -783,6 +786,7 @@ impl Arena {
                 position: Position::new(starter_chest_x, -3.0),
                 tier: Scaling::new(balance).tier(starter_chest_x.floor() as i64) as i32,
                 opened: false,
+                elevation: 0,
             });
             self.areas.push(Area {
                 index: i,
@@ -971,24 +975,53 @@ impl Arena {
             tplaced += 1;
         }
 
-        // One treasure chest per section, rejection-sampled to sit off the clear
-        // path and not on top of a creature/resource (reachable, but a small
+        // One treasure chest per section. With `chest_terrace_chance` it sits ON TOP
+        // of a raised terrace at that terrace's elevation — the payoff for climbing a
+        // detour (open_chest gates on matching elevation, so you must be up there).
+        // Otherwise it's rejection-sampled onto the ground off the clear path (a small
         // detour off the main line — old-school "explore for treasure").
-        for attempt in 0..24 {
-            let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
-            let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
-            let cpos = Position::new(cx, cy);
-            let clear_of_path = dist_to_path(&cpos, &self.path) > wg.path_clear_radius;
-            let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
-                && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
-            if (clear_of_path && clear_of_mobs) || attempt == 23 {
+        let mut chest_placed = false;
+        if rng.unit() < wg.chest_terrace_chance {
+            let raised: Vec<(f64, f64, u8)> = (0..terrain.cols)
+                .flat_map(|gx| (0..terrain.rows).map(move |gy| (gx, gy)))
+                .filter_map(|(gx, gy)| {
+                    let lvl = terrain.level[gx * terrain.rows + gy];
+                    (lvl > 0).then(|| {
+                        let c = terrain.cell_center(gx, gy);
+                        (c.x, c.y, lvl)
+                    })
+                })
+                .collect();
+            if !raised.is_empty() {
+                let (tx, ty, lvl) = raised[rng.below(raised.len())];
                 self.chests.push(Chest {
                     entity_id: format!("chest-{}", self.chests.len()),
-                    position: cpos,
-                    tier: Scaling::new(balance).tier(cx.floor() as i64) as i32,
+                    position: Position::new(tx, ty),
+                    tier: Scaling::new(balance).tier(tx.floor() as i64) as i32,
                     opened: false,
+                    elevation: lvl,
                 });
-                break;
+                chest_placed = true;
+            }
+        }
+        if !chest_placed {
+            for attempt in 0..24 {
+                let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+                let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
+                let cpos = Position::new(cx, cy);
+                let clear_of_path = dist_to_path(&cpos, &self.path) > wg.path_clear_radius;
+                let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
+                    && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
+                if (clear_of_path && clear_of_mobs) || attempt == 23 {
+                    self.chests.push(Chest {
+                        entity_id: format!("chest-{}", self.chests.len()),
+                        position: cpos,
+                        tier: Scaling::new(balance).tier(cx.floor() as i64) as i32,
+                        opened: false,
+                        elevation: 0,
+                    });
+                    break;
+                }
             }
         }
 
@@ -1460,13 +1493,18 @@ impl Arena {
     /// and it isn't already open. Marks it opened and returns `(tier, distance)`
     /// so the caller can roll its loot via balance.
     pub fn open_chest(&mut self, player_id: &str, entity_id: &str) -> Option<(i32, i64)> {
-        let ppos = self.avatar(player_id)?.position;
+        let (ppos, pelev) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
         let radius = self.interaction_radius;
         let chest = self
             .chests
             .iter_mut()
             .find(|c| c.entity_id == entity_id && !c.opened)?;
-        if ppos.distance_to(&chest.position) > radius {
+        // Must share the chest's elevation (a terrace-top chest needs you up there),
+        // and be within reach — mirrors `harvest`.
+        if chest.elevation != pelev || ppos.distance_to(&chest.position) > radius {
             return None;
         }
         chest.opened = true;
@@ -2152,6 +2190,35 @@ mod tests {
             arena.avatar("p").unwrap().elevation,
             0,
             "seed {seed}: walker ends grounded at the portal"
+        );
+    }
+
+    #[test]
+    fn a_terrace_chest_only_opens_from_its_elevation() {
+        // Treasure atop a climb: a chest sitting on a terrace can't be opened from the
+        // ground below it — you must be up on the terrace (matching elevation).
+        let b = Balance::load_default().unwrap();
+        let seed = (1u64..300)
+            .find(|&s| Arena::generate(&b, s).chests.iter().any(|c| c.elevation > 0))
+            .expect("some seed puts a chest on a terrace");
+        let mut arena = Arena::generate(&b, seed);
+        let chest = arena.chests.iter().find(|c| c.elevation > 0).unwrap().clone();
+        arena.add_avatar("p".into(), 8.0);
+        // Standing at the chest's (x,y) but on the GROUND: blocked.
+        {
+            let a = arena.avatar_mut("p").unwrap();
+            a.position = chest.position;
+            a.elevation = 0;
+        }
+        assert!(
+            arena.open_chest("p", &chest.entity_id).is_none(),
+            "seed {seed}: a ground-level player can't open a terrace-top chest"
+        );
+        // Up on the terrace (matching elevation): it opens.
+        arena.avatar_mut("p").unwrap().elevation = chest.elevation;
+        assert!(
+            arena.open_chest("p", &chest.entity_id).is_some(),
+            "seed {seed}: at the chest's elevation it opens"
         );
     }
 

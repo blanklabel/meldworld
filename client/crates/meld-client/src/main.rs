@@ -4533,7 +4533,9 @@ fn sync_chests(
         commands
             .spawn((
                 ChestEntity { id: id.clone(), opened },
-                Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                // Lift onto its terrace so a treasure-atop-a-climb chest sits on the
+                // plateau, not buried in the cliff below it.
+                Transform::from_translation(world_pos(e.x, e.y, e.level as f32 * STEP_HEIGHT)),
                 Visibility::default(),
             ))
             .with_children(|p| {
@@ -4563,6 +4565,7 @@ fn auto_open_chest(
     for (id, e) in &world.entities {
         if e.kind == EntityKind::Chest
             && !e.opened
+            && e.level == me.level // must be on the chest's level (a terrace-top chest)
             && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
             && !sent.contains(id)
         {
