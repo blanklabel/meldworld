@@ -1202,7 +1202,11 @@ impl Arena {
     pub fn check_touch(&self) -> Option<(Id, usize)> {
         for a in self.avatars.iter().filter(|a| a.state == "active") {
             for (idx, m) in self.monsters.iter().enumerate() {
+                // Skip creatures already locked in someone else's fight (`in_battle`)
+                // so concurrent battles never fight over the same creature, and
+                // creatures on another terrace until you climb to them.
                 if !m.defeated
+                    && !m.in_battle
                     && m.elevation == a.elevation
                     && a.position.distance_to(&m.position) <= self.touch_radius
                 {
