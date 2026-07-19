@@ -3749,40 +3749,44 @@ fn spawn_connector(
     let hi_y = c.hi as f32 * STEP_HEIGHT;
     let h = (hi_y - lo_y).max(0.2);
     let x = c.x as f32;
-    let z = c.y as f32; // overworld y → world Z
+    // Stand the prop a touch proud of the cliff base (toward the camera / −Z) so it
+    // reads as a distinct affordance and isn't swallowed by the cliff face.
+    let z = c.y as f32 - 0.5; // overworld y → world Z
     let mid_y = (lo_y + hi_y) * 0.5;
+    // Bold, warm, emissive so the route up a cliff is unmistakable (and findable in
+    // shade) — the same "legible route" spirit as the glowing path trail.
     let (mesh, color, emissive, transform) = match c.kind.as_str() {
         "slope" => {
             // A ramp board rising from the ground (−Z) up to the terrace lip (+Z).
-            let run = h * 1.6;
+            let run = h * 1.8;
             let len = (run * run + h * h).sqrt();
             let angle = h.atan2(run);
             (
-                meshes.add(Cuboid::new(2.4, 0.18, len)),
-                Color::srgb(0.5, 0.44, 0.38),
-                LinearRgba::new(0.06, 0.05, 0.04, 1.0),
+                meshes.add(Cuboid::new(2.6, 0.22, len)),
+                Color::srgb(0.72, 0.62, 0.5),
+                LinearRgba::new(0.28, 0.22, 0.12, 1.0),
                 Transform::from_xyz(x, mid_y, z + run * 0.5)
                     .with_rotation(Quat::from_rotation_x(-angle)),
             )
         }
         "rope" => (
-            meshes.add(Cuboid::new(0.12, h, 0.12)),
-            Color::srgb(0.78, 0.64, 0.42),
-            LinearRgba::new(0.12, 0.09, 0.04, 1.0),
+            meshes.add(Cuboid::new(0.22, h * 1.05, 0.22)),
+            Color::srgb(0.95, 0.8, 0.42),
+            LinearRgba::new(0.5, 0.36, 0.12, 1.0),
             Transform::from_xyz(x, mid_y, z),
         ),
         _ => (
-            // ladder: an upright post (two side rails read as one at a distance).
-            meshes.add(Cuboid::new(0.9, h, 0.18)),
-            Color::srgb(0.58, 0.4, 0.22),
-            LinearRgba::new(0.14, 0.1, 0.04, 1.0),
+            // ladder: an upright post, bright wood, glowing rungs implied by emissive.
+            meshes.add(Cuboid::new(1.0, h * 1.05, 0.22)),
+            Color::srgb(0.9, 0.62, 0.28),
+            LinearRgba::new(0.55, 0.34, 0.1, 1.0),
             Transform::from_xyz(x, mid_y, z),
         ),
     };
     let mat = mats.add(StandardMaterial {
         base_color: color,
         emissive,
-        perceptual_roughness: 0.9,
+        perceptual_roughness: 0.85,
         ..default()
     });
     commands.spawn((
