@@ -178,6 +178,16 @@ only if you respect two shared, machine-global resources: the **server port** an
   with everyone. Keep each change small and scoped to one crate/feature, and rebase your
   branch on `main` before opening a PR.
 
+- **Always rebase onto latest `main` before opening a PR *and* before requesting review**
+  — this is the standard, not an optional last step. `git fetch origin main && git rebase
+  origin/main`, resolve conflicts, then **re-run the build + the relevant tests on the
+  rebased code** (a clean rebase can still change behaviour). With ~20 branches in flight,
+  `main` moves under you constantly; a stale branch merges broken. Real example: the
+  concurrent-battles work and the verticality PR both edited `check_touch` in `meld-world`
+  — only a rebase surfaced the same-function conflict (elevation check *and* the
+  `in_battle` skip both had to survive). If your branch was cut days ago, rebase before
+  you touch it again, too.
+
 - **Commit/push only when asked** (see Conventions). Twenty branches merge more cleanly
   when each is a tight, single-purpose diff.
 
