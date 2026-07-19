@@ -300,15 +300,28 @@ impl Balance {
         Self::from_toml_str(&text)
     }
 
-    /// Load from the checked-in default location, resolved relative to the
-    /// workspace root (`balance/balance.toml`). Falls back to `MELD_BALANCE`.
+    /// The default `balance.toml`, embedded at compile time. This is what makes a
+    /// shipped binary (e.g. the self-contained QA build) self-sufficient: it needs
+    /// no `balance/balance.toml` on disk beside it. `load_default` still prefers a
+    /// live file when one is present, so in-repo runs pick up local tweaks.
+    pub const EMBEDDED_DEFAULT: &'static str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../balance/balance.toml"));
+
+    /// Load the balance table, in priority order:
+    /// 1. `MELD_BALANCE` env → that file (explicit override).
+    /// 2. The checked-in `balance/balance.toml`, if it exists on disk (in-repo runs).
+    /// 3. Otherwise the [`Self::EMBEDDED_DEFAULT`] baked into the binary, so a
+    ///    standalone binary works with no config file present.
     pub fn load_default() -> Result<Self, BalanceError> {
         if let Ok(p) = std::env::var("MELD_BALANCE") {
             return Self::load(&p);
         }
         // CARGO_MANIFEST_DIR of this crate is server/crates/meld-balance.
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../balance/balance.toml");
-        Self::load(root)
+        if std::path::Path::new(root).exists() {
+            return Self::load(root);
+        }
+        Self::from_toml_str(Self::EMBEDDED_DEFAULT)
     }
 }
 

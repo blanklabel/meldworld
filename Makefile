@@ -16,10 +16,18 @@ PORT      := $(word 2,$(subst :, ,$(MELD_ADDR)))
 DIST      := $(CURDIR)/client/crates/meld-client/dist
 URL       := http://$(MELD_ADDR)
 
+# The self-contained ("play-solo"/"dist") build lives in the client workspace and
+# writes to its target dir — honour a shared CARGO_TARGET_DIR if one is set, else
+# the per-workspace client/target. `meld-client` is the default-run binary name.
+CLIENT_TARGET ?= $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(CURDIR)/client/target)
+SOLO_BIN      := $(CLIENT_TARGET)/release/meld-client
+DIST_OUT      := $(CURDIR)/dist
+DIST_NAME     := meldworld-$(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
+
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-native look server smoke test stop
+.PHONY: help play play-native play-solo dist look server smoke test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
@@ -28,6 +36,12 @@ help:
 	@echo "                     open $(URL) in your browser and press ENTER"
 	@echo "                     (or open $(URL)/?autoplay to watch it play itself)."
 	@echo "  make play-native  Boot Postgres + server + the native desktop window."
+	@echo "  make play-solo    Run the SELF-CONTAINED build: one native window, server"
+	@echo "                     baked in (in-memory DB, no Postgres, no config). Great"
+	@echo "                     for a quick local try; state is ephemeral (resets on exit)."
+	@echo "  make dist         Build the shippable single-file QA binary (embeds the"
+	@echo "                     server + all assets). Hand the one file to a remote tester;"
+	@echo "                     they just run it — no Rust, no Postgres, nothing beside it."
 	@echo "  make look         HD-2D render look-dev scene (standalone; tune it live, native)."
 	@echo "  make server       Boot Postgres + server only (no client)."
 	@echo "  make smoke        Headless client run against the server (exits 0 on victory)."
@@ -53,6 +67,26 @@ play:
 # Native desktop window (serve.sh's default command is `cargo run -p meld-client`).
 play-native:
 	$(SERVE)
+
+# The self-contained build: a single native binary that boots the whole server
+# in-process (in-memory DB + embedded balance — no Postgres, no separate server)
+# and embeds every asset, then opens the game window. Nothing to set up; state is
+# ephemeral. Built from the client workspace with the `embedded-server` feature.
+# `play-solo` runs it straight; `dist` packages the release binary to hand off.
+play-solo:
+	@echo "→ Building + running the self-contained game (first build is slow — server + Bevy + 84MB of assets)…"
+	cd client && cargo run -p meld-client --features embedded-server --release
+
+dist:
+	@echo "→ Building the shippable single-file QA binary (release; first build is slow)…"
+	cd client && cargo build -p meld-client --features embedded-server --release
+	@mkdir -p "$(DIST_OUT)"
+	@cp "$(SOLO_BIN)" "$(DIST_OUT)/$(DIST_NAME)"
+	@echo ""
+	@echo "✔ Self-contained QA binary:  $(DIST_OUT)/$(DIST_NAME)"
+	@echo "  size: $$(du -h "$(DIST_OUT)/$(DIST_NAME)" | cut -f1)   (one file — no Postgres, no assets folder, no config)"
+	@echo "  Hand it to a tester; they just run it. Party/flags still work via env, e.g.:"
+	@echo "    MELD_PARTY=squire,psyker,resonant,squire $(DIST_OUT)/$(DIST_NAME)"
 
 # HD-2D render look-dev scene — a standalone diorama (no Postgres/server) for
 # tuning the camera / bloom / tilt-shift DoF / fog live with the keyboard. The

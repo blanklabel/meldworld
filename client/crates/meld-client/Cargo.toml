@@ -21,6 +21,23 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7"] }
 meld-proto = { path = "../../../shared/meld-proto" }
 
+[features]
+# The self-contained QA / demo build. With this on, the native binary boots the
+# whole server in-process on a background thread (in-memory DB, embedded
+# balance — no Postgres, no separate server) and embeds every game asset, so it
+# runs as ONE file with nothing beside it. Off by default: the normal client
+# talks to a separate server (`MELD_SERVER`) and hot-reloads assets from disk.
+# Native only — never enabled for the wasm/browser build.
+embedded-server = ["dep:meld-server", "dep:tokio", "dep:bevy_embedded_assets"]
+
+# Native-only extras for the `embedded-server` build. Optional, so a normal
+# `cargo build -p meld-client` (and the wasm build) never compiles the server
+# stack. Paths reach into the server workspace exactly like meld-proto does.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+meld-server = { path = "../../../server/crates/meld-server", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }
+bevy_embedded_assets = { version = "0.13", optional = true }
+
 # In the browser, uuid/getrandom need the JS entropy backend, and we read the
 # server base from the page origin.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

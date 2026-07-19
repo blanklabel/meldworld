@@ -77,11 +77,29 @@ pub async fn build(config: &Config) -> Result<Built, String> {
 
 /// Build and serve until the process is killed.
 pub async fn serve(config: Config) -> Result<(), String> {
+    serve_reporting(config, |addr| {
+        tracing::info!("meldworld server listening on {addr}");
+    })
+    .await
+}
+
+/// Like [`serve`], but reports the **actually-bound** socket address through
+/// `on_bound` just before it starts serving. Bind to a `…:0` port and this hands
+/// back the OS-chosen port — which is how the self-contained, in-process client
+/// build (the `embedded-server` feature) learns where to point itself without a
+/// fixed port that could collide.
+pub async fn serve_reporting(
+    config: Config,
+    on_bound: impl FnOnce(std::net::SocketAddr),
+) -> Result<(), String> {
     let built = build(&config).await?;
     let listener = tokio::net::TcpListener::bind(&config.bind_addr)
         .await
         .map_err(|e| format!("bind {}: {e}", config.bind_addr))?;
-    tracing::info!("meldworld server listening on {}", config.bind_addr);
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?;
+    on_bound(addr);
     axum::serve(listener, built.router)
         .await
         .map_err(|e| format!("serve: {e}"))

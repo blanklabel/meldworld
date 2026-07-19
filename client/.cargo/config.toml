@@ -1,0 +1,10 @@
+# Client workspace cargo config.
+#
+# `embedded-server` builds bake the game's assets into the binary via
+# bevy_embedded_assets, which reads the asset folder from $BEVY_ASSET_PATH. Point
+# it at meld-client's assets/ (relative to this workspace root) so the single-file
+# QA build finds them no matter where target/ lives (e.g. a shared
+# CARGO_TARGET_DIR). Normal builds don't compile that crate, so this is a no-op
+# for them.
+[env]
+BEVY_ASSET_PATH = { value = "crates/meld-client/assets", relative = true }

@@ -11,7 +11,7 @@ to prove the architecture end-to-end, with everything else explicitly deferred.
 |------|------|-------|------------------|
 | Shared protocol | Realtime envelope `{type,seq,ts,payload}`, session/movement/battle/run messages, HTTP DTOs, enums, validators; golden round-trip tests | `shared/meld-proto` | CANON §I; T1; M0.2/M0.3 |
 | Tunables | Every constant the slice reads lives in `balance/balance.toml` with a typed loader; no gameplay literal in code | `balance/`, `meld-balance` | Working agreement #2; M0.4 |
-| Persistence | Postgres; accounts + bcrypt (cost 12) credentials; idempotent migration on boot | `meld-db` | CANON D18; M1.8 |
+| Persistence | Postgres; accounts + bcrypt (cost 12) credentials; idempotent migration on boot. Also a drop-in **in-memory** backend (`memory://` URL) with identical semantics for the self-contained QA binary — ephemeral, no Postgres | `meld-db` | CANON D18; M1.8 |
 | Auth | `POST /v1/auth/register` + `/login` (session token + single-use realtime ticket), `GET /v1/players/me`; enumeration-safe login | `meld-api` | CANON D17; M1.1/M1.8/M1.9 |
 | Realtime gateway | `/v1/realtime` WS upgrade, ticket handshake → `session.authenticated`, per-session seq, heartbeat | `meld-server/gateway.rs` | realtime session.md; M1.2 |
 | ATB engine | 100 ms tick, gauge fill `speed/400`, attack/defend/flee, 15 s auto-defend, duplicate-action rejection, victory/defeat; deterministic + unit-tested | `meld-battle` | combat-atb.md; M2.3/M2.4 |
@@ -52,3 +52,8 @@ to prove the architecture end-to-end, with everything else explicitly deferred.
 - Naia is named in the GDD, but the spec's actual realtime *contract* is the
   hand-rolled WebSocket envelope (realtime-protocol.md), which is what this
   implements — faithful to the wire spec without pulling in Naia's replication model.
+- The self-contained QA binary (`make dist`, `embedded-server` feature) runs the
+  real server + client in one native process against the in-memory DB backend, so
+  its persistence is ephemeral (resets on exit). It's a distribution convenience,
+  not a design change — the real deployment is still the separate Postgres-backed
+  server. See [`AGENTS.md`](AGENTS.md#self-contained-qa--demo-binary-make-dist--make-play-solo).
