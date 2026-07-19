@@ -260,6 +260,27 @@ fn broadcast<'a, M: Message>(
         .collect()
 }
 
+/// Like [`broadcast`] but for a serialize-only body (e.g. a borrowing struct that
+/// can't be `DeserializeOwned`, so it isn't a [`Message`]). The wire `type` is
+/// passed explicitly. Used by the per-tick gauge_update, whose body borrows each
+/// fighter's cached wire-status list to avoid allocating per tick.
+fn broadcast_ser<'a>(
+    player_ids: impl IntoIterator<Item = &'a str>,
+    msg_type: &'static str,
+    m: &impl serde::Serialize,
+) -> Vec<Outgoing> {
+    let payload: Arc<serde_json::value::RawValue> =
+        Arc::from(serde_json::value::to_raw_value(m).expect("payload serializes"));
+    player_ids
+        .into_iter()
+        .map(|pid| Outgoing {
+            player_id: pid.to_string(),
+            msg_type,
+            payload: payload.clone(),
+        })
+        .collect()
+}
+
 /// Convert a generated [`Area`] into a `world.terrain_section` wire message. The
 /// client builds one stepped ground+cliff mesh from `levels` and spawns the
 /// connector props. `path` carries the section's trail contribution — non-empty for
@@ -2261,28 +2282,45 @@ impl GameState {
     }
 
     fn gauge_update_msgs(&self, inst: &ActiveInstance, slot: &BattleSlot) -> Vec<Outgoing> {
-        let combatants: Vec<wb::GaugeEntry> = slot
+        // Borrow each fighter's cached wire-status list rather than cloning it, so
+        // this per-tick, per-battle broadcast allocates nothing for statuses. These
+        // borrowing structs serialize byte-identically to `wb::GaugeEntry` /
+        // `wb::GaugeUpdate` (same field names + snake_case), so the wire is unchanged.
+        #[derive(serde::Serialize)]
+        struct GaugeEntryRef<'a> {
+            combatant_id: &'a str,
+            gauge: f64,
+            hp: i32,
+            statuses: &'a [String],
+        }
+        #[derive(serde::Serialize)]
+        struct GaugeUpdateRef<'a> {
+            battle_id: &'a str,
+            server_tick: i64,
+            combatants: Vec<GaugeEntryRef<'a>>,
+        }
+        let combatants: Vec<GaugeEntryRef> = slot
             .battle
-            .gauge_state()
-            .into_iter()
-            .map(|(id, gauge, hp, statuses)| wb::GaugeEntry {
-                combatant_id: id,
+            .gauge_views()
+            .map(|(combatant_id, gauge, hp, statuses)| GaugeEntryRef {
+                combatant_id,
                 gauge,
                 hp,
                 statuses,
             })
             .collect();
-        let msg = wb::GaugeUpdate {
-            battle_id: slot.battle_id.clone(),
+        let msg = GaugeUpdateRef {
+            battle_id: &slot.battle_id,
             server_tick: slot.battle.tick_count() as i64,
             combatants,
         };
-        broadcast(
+        broadcast_ser(
             inst.run
                 .runs
                 .iter()
                 .filter(|r| slot.parties.contains(&r.party_id))
                 .map(|r| r.player_id.as_str()),
+            wb::GaugeUpdate::TYPE,
             &msg,
         )
     }
