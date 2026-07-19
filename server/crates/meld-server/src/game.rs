@@ -2408,22 +2408,63 @@ impl GameState {
                 level: None,
             });
         }
-        let msg = wm::Snapshot {
-            server_tick: now_ms() as i64,
-            entities,
-        };
+        let server_tick = now_ms() as i64;
+        // Interest management (CANON §B networking): a player only receives entities
+        // within the interest radius (`interest_radius_chunks × chunk_size` tiles) of
+        // their own avatar — instead of the whole world every tick, which grew
+        // unbounded as the endless world streamed in. This bounds each snapshot (and
+        // its per-recipient serialization) to a rolling window around the player.
+        // Purely a bandwidth/CPU cull: the server stays authoritative, so nothing
+        // gameplay-affecting depends on what a client is sent. The recipient's own
+        // avatar and the deep portal (a navigation landmark) are always included.
+        let radius = (self.balance.world.interest_radius_chunks.max(0)
+            * self.balance.world.chunk_size.max(1)) as f64;
+        let radius2 = radius * radius;
         // Overworld snapshots go to players NOT in any battle. A fighting party is
         // on the battle screen and driven by battle messages instead; when no battle
         // is running, `in_battle` is empty so this sends to everyone.
         let in_battle = inst.parties_in_battle();
-        broadcast(
-            inst.run
-                .runs
+        let mut out = Vec::new();
+        for r in inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| !in_battle.contains(&r.party_id))
+        {
+            let me_pos = inst
+                .arena
+                .avatars
                 .iter()
-                .filter(|r| !in_battle.contains(&r.party_id))
-                .map(|r| r.player_id.as_str()),
-            &msg,
-        )
+                .find(|a| a.player_id == r.player_id)
+                .map(|a| a.position);
+            let culled: Vec<wm::SnapshotEntity> = match me_pos {
+                Some(p) => entities
+                    .iter()
+                    .filter(|e| {
+                        // Always keep the recipient's own avatar (the client centres
+                        // its camera on it) and the portal landmark.
+                        e.entity_id == r.player_id
+                            || e.entity_id == "portal"
+                            || {
+                                let (dx, dy) = (e.position.x - p.x, e.position.y - p.y);
+                                dx * dx + dy * dy <= radius2
+                            }
+                    })
+                    .cloned()
+                    .collect(),
+                // Defensive: a roaming run should always have an avatar; if not, don't
+                // cull (send the full set) rather than send an empty world.
+                None => entities.clone(),
+            };
+            out.push(out_msg(
+                &r.player_id,
+                &wm::Snapshot {
+                    server_tick,
+                    entities: culled,
+                },
+            ));
+        }
+        out
     }
 
     /// Translate one battle's engine events into wire messages, handling its
