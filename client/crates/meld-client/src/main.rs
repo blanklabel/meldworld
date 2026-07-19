@@ -211,6 +211,7 @@ fn main() {
                 advance_sky,
                 apply_sky,
                 anchor_sky_fx,
+                drive_rain,
                 animate_water,
             ),
         )
@@ -441,8 +442,14 @@ struct WorldPath {
 }
 
 /// One elevation level of a terrace lifts the ground (and anything standing on it)
-/// by this many world units — the height of a climbable cliff/ledge.
-const STEP_HEIGHT: f32 = 1.6;
+/// by this many world units — roughly one Kenney cliff-block tall, so a terrace
+/// edge is dressed with a single row of `cliff_rock` models (see `spawn_terrace_cliffs`).
+const STEP_HEIGHT: f32 = 2.0;
+
+/// Uniform scale + facing tuning for the cliff models lining terrace edges (sized so
+/// a one-level block rises ~STEP_HEIGHT to meet the grass top).
+const CLIFF_EDGE_SCALE: f32 = 1.9;
+const CLIFF_YAW_OFFSET: f32 = 0.0;
 
 /// Streamed terraced terrain: the elevation grid + connectors for every section the
 /// server has sent. `build_terrain_sections` turns each into a stepped ground+cliff
@@ -1495,17 +1502,43 @@ fn setup(
         ));
     }
 
-    // Rain — a camera-anchored column of thin streaks, shown only while it rains.
-    let drop_mesh = meshes.add(Cuboid::new(0.03, 0.9, 0.03));
+    // The rain cloud: a single dark, low storm cloud that drifts over the play area
+    // and CARRIES the rain — rain falls only in the disk beneath it (see `drive_rain`),
+    // not as a screen-wide slab. Darker than the fair-weather clouds so it reads as a
+    // storm cloud; shown only while it rains.
+    let rain_cloud_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.34, 0.36, 0.40),
+        emissive: LinearRgba::rgb(0.02, 0.02, 0.03),
+        unlit: false,
+        perceptual_roughness: 1.0,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    commands.spawn((
+        RainCloud { off: Vec2::new(-22.0, -6.0) },
+        Mesh3d(puff.clone()),
+        MeshMaterial3d(rain_cloud_mat),
+        Transform::from_xyz(0.0, RAIN_CLOUD_Y, 0.0).with_scale(Vec3::new(78.0, 34.0, 1.0)),
+        hd2d::Billboard,
+        Visibility::Hidden,
+    ));
+
+    // Rain — thin streaks confined to a DISK under the rain cloud (radius
+    // `RAIN_RADIUS`), so the shower tracks the cloud rather than filling the screen.
+    // `off.xz` is the drop's position within that disk; `off.y` is its fall height.
+    let drop_mesh = meshes.add(Cuboid::new(0.035, 1.3, 0.035));
     let drop_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.75, 0.82, 0.95, 0.55),
-        emissive: LinearRgba::rgb(0.3, 0.35, 0.45),
+        base_color: Color::srgba(0.78, 0.85, 0.97, 0.6),
+        emissive: LinearRgba::rgb(0.32, 0.38, 0.48),
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    for _ in 0..320 {
-        let off = Vec3::new((rnd() - 0.5) * 60.0, rnd() * 30.0, (rnd() - 0.5) * 60.0);
+    for _ in 0..900 {
+        // Uniform over the disk: sqrt(u) keeps it from clustering at the centre.
+        let ang = rnd() * std::f32::consts::TAU;
+        let r = rnd().sqrt() * RAIN_RADIUS;
+        let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
         commands.spawn((
             RainDrop { off },
             Mesh3d(drop_mesh.clone()),
@@ -1515,6 +1548,11 @@ fn setup(
         ));
     }
 }
+
+/// Height of the drifting rain cloud, and the footprint the rain falls within.
+const RAIN_CLOUD_Y: f32 = 32.0;
+const RAIN_RADIUS: f32 = 18.0;
+const RAIN_FALL_TOP: f32 = 30.0;
 
 /// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
 /// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
@@ -1640,10 +1678,18 @@ struct Star {
     off: Vec3,
 }
 
-/// A rain streak, camera-anchored (`off`); falls + wraps, shown only when raining.
+/// A rain streak. `off.xz` is its position within the rain cloud's footprint disk;
+/// `off.y` is its fall height. Positioned under the drifting rain cloud (`drive_rain`).
 #[derive(Component)]
 struct RainDrop {
     off: Vec3,
+}
+
+/// The single storm cloud that carries the rain. `off` is its xz offset from the
+/// camera; it drifts on the wind and the rain falls in the disk beneath it.
+#[derive(Component)]
+struct RainCloud {
+    off: Vec2,
 }
 
 /// Lerp two colours in sRGB space.
@@ -1744,29 +1790,61 @@ fn apply_sky(
     }
 }
 
-/// Keep stars + rain anchored around the camera (they'd otherwise be left behind).
+/// Keep the stars anchored around the camera (they'd otherwise be left behind).
 fn anchor_sky_fx(
     cam_q: Query<&Transform, With<Camera3d>>,
-    time: Res<Time>,
-    sky: Res<Sky>,
     mut stars: Query<(&Star, &mut Transform), (Without<Camera3d>, Without<RainDrop>)>,
-    mut rain: Query<(&mut RainDrop, &mut Transform, &mut Visibility), Without<Camera3d>>,
 ) {
     let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
     for (s, mut t) in &mut stars {
         t.translation = cam + s.off;
     }
+}
+
+/// Drift the rain cloud over the play area and rain ONLY in the disk beneath it, so
+/// the shower reads as "that cloud is raining" rather than a screen-wide slab. The
+/// cloud + drops are shown only while it's raining.
+fn drive_rain(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    time: Res<Time>,
+    sky: Res<Sky>,
+    mut cloud_q: Query<
+        (&mut RainCloud, &mut Transform, &mut Visibility),
+        (Without<Camera3d>, Without<RainDrop>),
+    >,
+    mut rain_q: Query<
+        (&mut RainDrop, &mut Transform, &mut Visibility),
+        (Without<Camera3d>, Without<RainCloud>),
+    >,
+) {
+    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
     let raining = sky.weather > 0.05;
     let vis = if raining { Visibility::Inherited } else { Visibility::Hidden };
     let dt = time.delta_secs();
-    for (mut d, mut t, mut v) in &mut rain {
+    // Drift the rain cloud on the wind, wrapping in a tight band so it keeps passing
+    // over the play area. Capture its ground position for the drops below.
+    let mut ground = Vec2::new(cam.x, cam.z);
+    for (mut rc, mut t, mut v) in &mut cloud_q {
+        rc.off.x += CLOUD_WIND * dt;
+        // Keep the cloud in a tight band over the play area so its shower passes over
+        // the player as it drifts (rather than wandering off to the horizon).
+        const BAND: f32 = 30.0;
+        if rc.off.x > BAND {
+            rc.off.x -= 2.0 * BAND;
+        }
+        t.translation = Vec3::new(cam.x + rc.off.x, RAIN_CLOUD_Y, cam.z + rc.off.y);
+        ground = Vec2::new(t.translation.x, t.translation.z);
+        *v = vis;
+    }
+    for (mut d, mut t, mut v) in &mut rain_q {
         *v = vis;
         if raining {
             d.off.y -= 55.0 * dt; // fall
             if d.off.y < 0.0 {
-                d.off.y += 30.0; // wrap to the top of the column
+                d.off.y += RAIN_FALL_TOP; // wrap to the top of the column
             }
-            t.translation = Vec3::new(cam.x + d.off.x, d.off.y, cam.z + d.off.z);
+            // Fall straight down under the cloud's current ground footprint.
+            t.translation = Vec3::new(ground.x + d.off.x, d.off.y, ground.y + d.off.z);
         }
     }
 }
@@ -3588,6 +3666,7 @@ fn build_terrain_sections(
     mut commands: Commands,
     terrain: Res<Terrain>,
     wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     existing: Query<&TerrainMesh>,
@@ -3600,19 +3679,23 @@ fn build_terrain_sections(
         }
         if sec.levels.iter().any(|&l| l > 0) {
             let (top, cliff) = terrace_meshes(sec);
-            let biome_tex = wa
-                .ground_tex
-                .get(biome_index(sec.start_x.floor() as i64))
-                .cloned();
+            // Grassy plateau top: the grass texture over a SATURATED green base, so it
+            // reads as grass in every light (a pale base washes teal under the cool
+            // rain/dusk ambient). Terraces wear grass in all biomes — a mesa's top.
+            let grass_tex = wa.ground_tex.first().cloned(); // grass0.png
             let top_mat = mats.add(StandardMaterial {
-                base_color: Color::srgb(0.95, 1.05, 0.88),
-                base_color_texture: biome_tex,
+                base_color: Color::srgb(0.36, 0.6, 0.26),
+                base_color_texture: grass_tex,
                 perceptual_roughness: 0.95,
                 cull_mode: None,
                 ..default()
             });
+            // A dirt-textured backing mesh so the cliff reads as an earthy wall and
+            // never shows a gap behind the cliff models that dress the edges.
+            let dirt_tex = wa.ground_tex.get(2).cloned(); // dirt_full.png
             let cliff_mat = mats.add(StandardMaterial {
-                base_color: Color::srgb(0.44, 0.36, 0.29), // exposed dirt/rock cliff
+                base_color: Color::srgb(0.62, 0.5, 0.38),
+                base_color_texture: dirt_tex,
                 perceptual_roughness: 1.0,
                 cull_mode: None,
                 ..default()
@@ -3629,6 +3712,8 @@ fn build_terrain_sections(
                 MeshMaterial3d(cliff_mat),
                 Transform::default(),
             ));
+            // Dress the terrace edges with real Kenney cliff_rock models.
+            spawn_terrace_cliffs(&mut commands, &assets, sec, *idx);
         } else {
             // Flat section (e.g. the tutorial): record it as built so we don't
             // rescan it every frame, but draw nothing.
@@ -3637,6 +3722,78 @@ fn build_terrain_sections(
         // The ladders / ropes / slopes that make each terrace reachable.
         for c in &sec.connectors {
             spawn_connector(&mut commands, &mut meshes, &mut mats, *idx, c);
+        }
+    }
+}
+
+/// Dress a section's terrace edges with real Kenney **cliff_rock** models: one per
+/// boundary cell (a raised cell with a lower neighbour), facing outward, so the
+/// terraces read as rocky cliffs rather than flat brown walls. The grass-top mesh
+/// covers the surface; these give the rocky face; the backing cliff mesh fills any
+/// gaps behind them.
+fn spawn_terrace_cliffs(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    sec: &meld_client::net::TerrainSectionView,
+    idx: u32,
+) {
+    // Blockier cliff pieces (flat rock faces) read as a clean terrace wall; the
+    // rounded cliff_rock is kept as an occasional accent.
+    let cliffs: [Handle<Scene>; 3] = [
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_rock.glb")),
+    ];
+    let cols = sec.cols as usize;
+    let rows = sec.rows as usize;
+    let cell = sec.cell as f32;
+    let sx = sec.start_x as f32;
+    let zmin = sec.y_min as f32;
+    let lvl = |gx: i64, gy: i64| -> u8 {
+        if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
+            0
+        } else {
+            sec.levels[gx as usize * rows + gy as usize]
+        }
+    };
+    let mut placed = 0u32;
+    for gx in 0..cols {
+        for gy in 0..rows {
+            let l = sec.levels[gx * rows + gy];
+            if l == 0 {
+                continue;
+            }
+            // Outward direction = sum of the lower-neighbour directions; the lowest
+            // neighbour sets how far the rock face drops.
+            let mut dir = Vec2::ZERO;
+            let mut lowest = l;
+            for (ddx, ddz) in [(0i64, -1i64), (0, 1), (-1, 0), (1, 0)] {
+                let nl = lvl(gx as i64 + ddx, gy as i64 + ddz);
+                if nl < l {
+                    dir += Vec2::new(ddx as f32, ddz as f32);
+                    lowest = lowest.min(nl);
+                }
+            }
+            if dir == Vec2::ZERO {
+                continue; // interior cell — the grass top mesh covers it
+            }
+            let dir = dir.normalize_or_zero();
+            let cx = sx + (gx as f32 + 0.5) * cell;
+            let cz = zmin + (gy as f32 + 0.5) * cell;
+            let by = lowest as f32 * STEP_HEIGHT;
+            let yaw = dir.x.atan2(dir.y) + CLIFF_YAW_OFFSET;
+            let scene = cliffs[(gx + gy) % cliffs.len()].clone();
+            commands.spawn((
+                TerrainMesh(idx),
+                SceneRoot(scene),
+                Transform::from_xyz(cx, by, cz)
+                    .with_scale(Vec3::splat(CLIFF_EDGE_SCALE))
+                    .with_rotation(Quat::from_rotation_y(yaw)),
+            ));
+            placed += 1;
+            if placed > 400 {
+                return; // safety cap on a pathological section
+            }
         }
     }
 }
