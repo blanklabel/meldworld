@@ -20,11 +20,11 @@ use meld_db::Db;
 use meld_proto::common::{ItemStack, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
-    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, Message,
+    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message,
 };
 use meld_proto::RawEnvelope;
 use meld_run::{build_battle, InstanceRun};
-use meld_world::Arena;
+use meld_world::{Arena, Area};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -170,6 +170,37 @@ fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
         player_id: player_id.to_string(),
         msg_type: M::TYPE.to_string(),
         payload: serde_json::to_value(m).expect("payload serializes"),
+    }
+}
+
+/// Convert a generated [`Area`] into a `world.terrain_section` wire message. The
+/// client builds one stepped ground+cliff mesh from `levels` and spawns the
+/// connector props. `path` carries the section's trail contribution — non-empty for
+/// streamed sections (they extend the trail); the initial chain's path already
+/// rides `run.started.path`, so those pass an empty vec.
+fn terrain_section_msg(area: &Area, path: Vec<Position>) -> ww::TerrainSection {
+    let t = &area.terrain;
+    ww::TerrainSection {
+        index: area.index as u32,
+        start_x: t.start_x,
+        end_x: area.end_x,
+        y_min: t.y_min,
+        cell: t.cell,
+        cols: t.cols as u32,
+        rows: t.rows as u32,
+        levels: t.level.clone(),
+        connectors: t
+            .connectors
+            .iter()
+            .map(|c| ww::ConnectorDto {
+                kind: c.kind.as_str().to_string(),
+                position: c.position,
+                lo: c.lo,
+                hi: c.hi,
+                radius: c.radius,
+            })
+            .collect(),
+        path,
     }
 }
 
@@ -736,6 +767,12 @@ impl GameState {
                     heroes: rosters.get(pid).cloned().unwrap_or_default(),
                 },
             ));
+            // Stream the initial chain's terrain (elevation grid + connectors) so
+            // the client can build the stepped relief. Path rides run.started, so
+            // these carry no path segment.
+            for area in &inst.arena.areas {
+                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new())));
+            }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
         out
@@ -1805,8 +1842,41 @@ impl GameState {
         // only in the no-battle branch) is what keeps players who *aren't* fighting
         // live: without it, one player's fight froze the whole instance and starved
         // everyone else of snapshots until their sockets dropped (the co-op crash).
-        if let Some(inst) = self.instance.as_mut() {
-            inst.arena.step_creatures(dt);
+        let mut created_sections: Vec<usize> = Vec::new();
+        {
+            // `balance` and `instance` are disjoint fields → both borrowable.
+            let balance = &self.balance;
+            if let Some(inst) = self.instance.as_mut() {
+                inst.arena.step_creatures(dt);
+                // Stream in new sections as the frontier player advances (endless world).
+                let max_x = inst
+                    .arena
+                    .avatars
+                    .iter()
+                    .map(|a| a.position.x)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if max_x.is_finite() {
+                    created_sections = inst.arena.ensure_frontier(balance, max_x);
+                }
+            }
+        }
+        // Stream the freshly-generated sections' terrain (+ trail segment) so the
+        // client extends its relief and path — the endless-world payoff.
+        if !created_sections.is_empty() {
+            if let Some(inst) = self.instance.as_ref() {
+                for &i in &created_sections {
+                    let Some(area) = inst.arena.areas.get(i) else { continue };
+                    let seg = if i + 1 < inst.arena.path.len() {
+                        vec![inst.arena.path[i], inst.arena.path[i + 1]]
+                    } else {
+                        Vec::new()
+                    };
+                    let msg = terrain_section_msg(area, seg);
+                    for r in &inst.run.runs {
+                        out.push(out_msg(&r.player_id, &msg));
+                    }
+                }
+            }
         }
         // Ground loot dropped by creature-vs-creature kills, auto-collected by any
         // roaming player who walks over it.
@@ -1915,6 +1985,7 @@ impl GameState {
                 position: a.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(a.state.clone()),
+                level: Some(a.elevation),
             })
             .collect();
         // Every living creature is a dynamic entity too (movement-world.md:
@@ -1928,6 +1999,7 @@ impl GameState {
                 position: m.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
+                level: Some(m.elevation),
             });
         }
         // The single deep extraction portal (extraction is otherwise the Town
@@ -1937,6 +2009,7 @@ impl GameState {
             position: inst.arena.portal,
             velocity: wm::Velocity { x: 0.0, y: 0.0 },
             avatar_state: Some("portal".to_string()),
+            level: Some(0),
         });
         // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
         for n in inst.arena.resources.iter().filter(|n| !n.harvested) {
@@ -1945,6 +2018,7 @@ impl GameState {
                 position: n.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("resource:{}", n.kind)),
+                level: Some(n.elevation),
             });
         }
         // Ground loot dropped by creature-vs-creature skirmishes, tagged
@@ -1966,6 +2040,7 @@ impl GameState {
                 position: o.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
+                level: None,
             });
         }
         let msg = wm::Snapshot {

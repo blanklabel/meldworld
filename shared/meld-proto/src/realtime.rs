@@ -137,6 +137,11 @@ pub mod movement {
         pub position: Position,
         pub velocity: Velocity,
         pub avatar_state: Option<String>,
+        /// Elevation level this entity stands on (terraced verticality). Absent →
+        /// ground level 0; old clients ignore it. The client raises the entity's
+        /// render height by `level × step_height`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub level: Option<u8>,
     }
     #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
     pub struct Velocity {
@@ -145,6 +150,50 @@ pub mod movement {
     }
     impl Message for Snapshot {
         const TYPE: &'static str = "world.snapshot";
+    }
+}
+
+// ------------------------------------------------------------------ world ---
+
+/// Static section geometry for terraced verticality (VERTICALITY-PROPOSAL.md).
+/// The overworld streams in as a sequence of **sections**; each carries a coarse
+/// elevation grid + the connectors (ladders/ropes/slopes) that join levels. The
+/// client builds one stepped ground+cliff mesh per section and spawns the
+/// connector props. Sent per initial section at run start, and again for each new
+/// section the server streams in as the player advances (endless world).
+pub mod world {
+    use super::*;
+
+    /// One connector joining two elevation levels.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ConnectorDto {
+        pub kind: String, // "slope" | "ladder" | "rope"
+        pub position: Position,
+        pub lo: u8,
+        pub hi: u8,
+        pub radius: f64,
+    }
+
+    /// S2C — one section's elevation field + connectors (+ its trail contribution
+    /// for streamed sections). `levels` is row-major `levels[gx*rows + gy]`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct TerrainSection {
+        pub index: u32,
+        pub start_x: f64,
+        pub end_x: f64,
+        pub y_min: f64,
+        pub cell: f64,
+        pub cols: u32,
+        pub rows: u32,
+        pub levels: Vec<u8>,
+        pub connectors: Vec<ConnectorDto>,
+        /// This section's clear-path waypoints, so a streamed section extends the
+        /// trail. Empty for initial-chain sections (already in `run.started.path`).
+        #[serde(default)]
+        pub path: Vec<Position>,
+    }
+    impl Message for TerrainSection {
+        const TYPE: &'static str = "world.terrain_section";
     }
 }
 
@@ -562,6 +611,28 @@ mod tests {
         assert_eq!(session::Authenticate::TYPE, "session.authenticate");
         assert_eq!(battle::SubmitAction::TYPE, "battle.submit_action");
         assert_eq!(run::EnterMaze::TYPE, "run.enter_maze");
+    }
+
+    #[test]
+    fn terrain_section_round_trips() {
+        let json = r#"{"type":"world.terrain_section","seq":5,"ts":1,"payload":{"index":2,"start_x":40.0,"end_x":72.0,"y_min":-28.0,"cell":2.0,"cols":16,"rows":28,"levels":[0,1,1],"connectors":[{"kind":"ladder","position":{"x":50.0,"y":-6.0},"lo":0,"hi":1,"radius":2.2}],"path":[{"x":40.0,"y":0.0},{"x":72.0,"y":3.0}]}}"#;
+        let env: Envelope<world::TerrainSection> = serde_json::from_str(json).unwrap();
+        assert_eq!(env.payload.index, 2);
+        assert_eq!(env.payload.connectors[0].kind, "ladder");
+        assert_eq!(env.payload.levels, vec![0, 1, 1]);
+        // Round-trips back out.
+        let s = serde_json::to_string(&env.payload).unwrap();
+        let back: world::TerrainSection = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.cols, 16);
+        assert_eq!(back.connectors.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_entity_level_is_optional_and_defaults() {
+        // Old wire (no `level`) still decodes; absent → None.
+        let json = r#"{"entity_id":"m","position":{"x":1.0,"y":2.0},"velocity":{"x":0.0,"y":0.0},"avatar_state":"active"}"#;
+        let e: movement::SnapshotEntity = serde_json::from_str(json).unwrap();
+        assert_eq!(e.level, None);
     }
 
     #[test]
