@@ -4405,17 +4405,25 @@ fn build_world_walls(
         let lat = (-sec.y_min) as f32;
         let (sx0, sx1) = (sec.start_x as f32, sec.end_x as f32);
         let bi = biome_index(sx0.floor().max(0.0) as i64);
-        let ranks = if bi == 0 { 6 } else { 2 };
+        // Thick enough to fully occlude the distance now that fog is pulled in — the
+        // forest is deepest, but every biome gets a real enclosing band, not 2 props.
+        let ranks = if bi == 0 { 7 } else { 5 };
         let mut id = sidx as usize * 8192; // unique-per-section so props vary, not tile
         let mut x = sx0;
         while x < sx1 {
-            for edge in [lat, -lat] {
-                let out = if edge > 0.0 { 1.0 } else { -1.0 };
+            for side in [1.0_f32, -1.0] {
+                // Organic edge: the wall line bulges OUTWARD by a smooth 0..~3.4 units
+                // that meanders along x (two out-of-phase sines, different per side), so
+                // the treeline reads as natural geography rather than a ruler-straight
+                // hedge. Outward-only keeps it clear of the walkable clamp at ±lateral.
+                let ph = if side > 0.0 { 0.0 } else { 2.3 };
+                let wave = ((x * 0.16 + ph).sin() + (x * 0.41 + ph * 1.7).sin()) * 0.5; // -1..1
+                let base = lat + (wave + 1.0) * 1.7; // lat .. lat+3.4, outward
                 for r in 0..ranks {
-                    let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.045;
-                    let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.03;
+                    let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.06;
+                    let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.05;
                     let depth = 0.6 + r as f32 * 2.3;
-                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, edge + out * depth + jy, id);
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, side * (base + depth) + jy, id);
                     id += 1;
                 }
             }
