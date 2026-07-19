@@ -25,29 +25,56 @@ the "path is always feasible" guarantee tractable.
   hidden loot, shortcuts, vantage, and funnelled encounters — **without touching
   the difficulty curve** (difficulty stays `sqrt(x²+y²)`; see the invariant below).
 
-## Procedural & seed-deterministic (the roguelite core)
+## Per-section seeds & streamed generation (the roguelite core)
 
-Terrain is **generated procedurally from the run's seed** like everything else —
-this is non-negotiable, it's the extract-or-die loop: each `MazeInstance` is a
-fresh seed → a brand-new world (new terraces, cliffs, climb routes), and the
-**same seed reproduces the exact same world** (shared seeds, replays, QA,
-debugging). This is already how the world works today:
+The world is a **stream of sections, each generated from its *own* seed** derived
+from the run seed. As you march outward and cross into a new section, it's as if
+you dropped into a fresh seed — new layout, terraces, cliffs, climb routes,
+creatures — yet the whole run is reproducible, and re-hitting a section seed
+reproduces that section exactly. This is the extract-or-die fantasy: it's always
+new as you go deeper, forever, unless the same seed comes up again.
 
 ```
-// meld-world/src/lib.rs
-struct Rng(u64); // splitmix64 — "Same seed ⇒ same world, always"
-pub fn generate(balance: &Balance, seed: u64) -> Self { let mut rng = Rng(seed); … }
+run_seed: u64                                  // one per MazeInstance
+section_seed(n) = splitmix64(run_seed ^ (n.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+Section::generate(balance, section_seed(n), n) // terrain + monsters + resources
+                                               //  + obstacles + local path, all
+                                               //  from THIS section's seed
 ```
 
-Areas, monsters, resources, obstacles and the clear path all draw from that one
-seeded stream. Terrain generation slots into the same model — **no special-casing,
-no stored maps.** One determinism rule matters:
+This builds on today's model — `Arena::generate(seed)` already uses `Rng(seed)`
+splitmix64 ("Same seed ⇒ same world, always") — but **shifts from "generate the
+whole area-chain up front" to "generate section N on demand from `section_seed(n)`
+as the player approaches."** That gives:
 
-- **Derive terrain from a dedicated substream**, e.g. `Rng(splitmix(seed) ^
-  TERRAIN_SALT)` (or generate it strictly *after* all existing draws). Inserting
-  new `rng.next_u64()` calls in the *middle* of `generate` would shift every later
-  draw and silently rewrite monster/obstacle placement for existing seeds. A named
-  substream keeps old seeds stable and lets terrain evolve independently.
+- **Endless outward progression** (the deferred "chunk streaming" in
+  `SPIKE-NOTES.md`): sections are made just-in-time, so a run isn't a fixed length —
+  difficulty keeps scaling with distance as far as you push.
+- **Perfect reproducibility**: `run_seed` → a deterministic sequence of
+  `section_seed(n)` → the same world every time; and any `section_seed` alone
+  reproduces that one section (shared seeds, replays, QA, debugging).
+- **Clean isolation**: because each section has its own seed, terrain generation
+  never perturbs another section's monster/obstacle draws — the substream problem
+  solves itself (each section *is* a substream).
+
+### Section seams (the one hard part)
+
+Sections must **stitch together continuously** so the world reads as one place and
+extraction stays feasible:
+
+- **Path handshake:** the clear path exits section N at a known
+  `(y, level)` on the shared boundary and section N+1 *starts* its path from that
+  same point — so the guaranteed route is continuous across the seam.
+- **Terrain handshake:** the elevation level at the boundary column must match on
+  both sides (generate the seam edge deterministically from
+  `section_seed(n)`+`section_seed(n+1)`, or let N+1 read N's boundary level).
+- **Streaming lifecycle:** keep the current + next section (and maybe the previous)
+  resident; discard sections far behind the player. Server owns which sections
+  exist; the run-start / section-crossing messages carry each section's terrain +
+  entities to the client.
+
+Distance/difficulty is still `sqrt(x²+y²)` across the whole stream — section index
+is just how the world is *chunked*, not a difficulty axis.
 
 ## Hard invariants
 - **Difficulty is unchanged.** `distance_floor` stays x,y-only. Elevation never
@@ -74,12 +101,12 @@ struct Terrain {
 }
 ```
 
-- **Generation** (`Arena::generate`, behind a `[worldgen]` flag): grow a few
-  raised terraces per area from the **terrain substream** (see "Procedural &
-  seed-deterministic" above — so old seeds stay stable); carve at least
-  one climb edge onto each raised terrace; **carve the clear path first, then only
-  raise terraces that leave a climbable route to the portal** (mirrors how
-  obstacles are rejection-sampled out of the path tube today).
+- **Generation** (per section, from `section_seed(n)`, behind a `[worldgen]`
+  flag): grow a few raised terraces; carve at least one climb edge onto each; **lay
+  the clear path first, then only raise terraces that leave a climbable route to
+  the section exit** (mirrors how obstacles are rejection-sampled out of the path
+  tube today). The section's entry `(y, level)` is fixed by the previous section's
+  exit (the seam handshake), so the route is continuous end-to-end.
 - **`Avatar` + spawns** gain `level: u8` (derived from their cell at spawn).
 - **`apply_move`** gains elevation rules on top of the current circle-collision:
   - same level → move + slide as today;
@@ -113,16 +140,27 @@ struct Terrain {
 
 ## Rollout (server-first, one PR per milestone)
 
-1. **M1 — server terrain + gen (invisible):** `Terrain` gen in `Arena::generate`
-   (flagged), level-aware `apply_move` + level-aware `Arena::path`, `level` on
-   avatars/spawns, additive wire fields. **Unit-test the path guarantee across
-   seeds** (the existing `Arena::path` tests are the template). No visible change.
-2. **M2 — client relief:** build the stepped ground + cliff mesh from the terrain
-   payload, place entities per level, draw climb affordances, feed level to the
-   camera. *Now it looks 3-D and you can climb.*
+0. **M0 — per-section seeded streaming (foundation):** refactor world gen from one
+   up-front `Arena::generate(seed)` into `Section::generate(section_seed(n), n)`
+   streamed on demand, with the **path seam handshake** (section N+1 starts where N
+   ended) and a resident-section window. This is the deferred "chunk streaming" and
+   the base everything else sits on. **Unit-test path continuity across seams +
+   reproducibility (same run_seed → same sections).** No visible change beyond
+   "runs no longer have a fixed length."
+1. **M1 — terrain per section (invisible):** `Terrain` gen inside
+   `Section::generate` (flagged), level-aware `apply_move` + level-aware section
+   path, `level` on avatars/spawns, additive wire (`level` + terrain payload).
+   **Unit-test the climbable-path guarantee across seeds + across seams.**
+2. **M2 — client relief:** build the stepped ground + cliff mesh from each section's
+   terrain payload, place entities per level, draw climb affordances, feed level to
+   the camera, and stitch adjacent sections' meshes at the seam. *Now it looks 3-D
+   and you can climb.*
 3. **M3 — polish + payoff:** climb animation, biome-specific cliff art, placement
    rules for hidden loot / shortcuts / vantage, tune `step_height` / terrace
    density / climb-edge density as `[TUNABLE]`s in `balance.toml`.
+
+> M0 (streaming) can ship on its own before any verticality — it's independently
+> valuable (endless dives) and de-risks the seam logic before terrain piles on.
 
 ## Spec updates this needs
 - New `behaviors/verticality.md` (observable behavior) + a **CANON §/D-number** for
