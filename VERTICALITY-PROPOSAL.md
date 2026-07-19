@@ -1,7 +1,7 @@
-# Climbable terrain (verticality) — design + server plan
+# Verticality (terraces + ladders/ropes/slopes) — design + server plan
 
 > Status: **proposal**, not yet CANON. Grounds a multi-PR feature to replace the
-> flat overworld plane with climbable ledges/plateaus. Written against the real
+> flat overworld plane with stepped terraces joined by ladders/ropes/slopes. Written against the real
 > code: `meld-world::Arena` / `apply_move` / `Arena::path`, `meld-proto::Position`
 > / `SnapshotEntity`, and the HD-2D client ground plane.
 
@@ -11,19 +11,27 @@ The overworld is a flat plane. `Position { x, y }` has no height, movement is
 2-D circle-collision + slide, and the client renders one flat ground mesh. It
 reads as an open field with no relief to explore or climb.
 
-## Design decision: discrete elevation levels, not a continuous heightmap
+## Design decision: discrete levels joined by placed connectors (no free climbing)
 
 Model verticality as a **small number of integer elevation levels** (plateaus /
-terraces) joined by **climb edges**, rather than a smooth heightmap. This is the
-HD-2D convention (Octopath / Triangle Strategy) and it keeps collision cheap and
-the "path is always feasible" guarantee tractable.
+terraces) joined by **explicit connectors** — **ladders, ropes, and slopes** —
+rather than a smooth heightmap *or* free-form cliff-climbing. This is the HD-2D
+convention (Octopath / Triangle Strategy), keeps collision cheap, and reads
+clearly: you *see* the ladder and use it.
 
 - An area is partitioned into **terraces**, each at an integer `level` (0 = base).
-- Terraces are separated by **cliffs** (impassable walls) *except* at **climb
-  edges** — ledges / ramps / ladders where you can move between adjacent levels.
-- Elevation gates **traversal** (you must find the climb point) and enables
-  hidden loot, shortcuts, vantage, and funnelled encounters — **without touching
-  the difficulty curve** (difficulty stays `sqrt(x²+y²)`; see the invariant below).
+- Terraces are separated by **cliffs — always impassable walls.** There is **no
+  "true climbable" surface**; you can only change level at a **connector** placed
+  on the boundary.
+- **Connectors** are discrete entities (like obstacles/portals today), one of:
+  - **Slope / ramp** — a walkable incline; you just walk up/down and your height
+    interpolates. Continuous, no special state.
+  - **Ladder** — vertical; step onto the base and you move up its axis to the top
+    level (and down from the top). Movement is constrained to the ladder while on it.
+  - **Rope** — same as a ladder, flavoured for descent (e.g. dropping down a cliff).
+- Elevation gates **traversal** (you must find the connector) and enables hidden
+  loot, shortcuts, vantage, and funnelled encounters — **without touching the
+  difficulty curve** (difficulty stays `sqrt(x²+y²)`; see the invariant below).
 
 ## Per-section seeds & streamed generation (the roguelite core)
 
@@ -83,7 +91,7 @@ is just how the world is *chunked*, not a difficulty axis.
   the terrain is stored or client-authored — the client rebuilds identical relief
   from the seeded terrain payload.
 - **Extraction is always feasible.** The guaranteed clear path (`Arena::path`)
-  must remain reachable — now routed *through* climb edges. This is the riskiest
+  must remain reachable — now routed *through* connectors. This is the riskiest
   part and gets the same rejection-sampling + unit-test-across-seeds treatment the
   current path already has.
 - **Server-authoritative** (CANON §S, D11). The client renders relief + sends the
@@ -91,27 +99,41 @@ is just how the world is *chunked*, not a difficulty axis.
 
 ## Server model (`meld-world`)
 
-Add a coarse **level field** + climb data to `Arena` (seeded, deterministic):
+Add a coarse **level field** + connector list to `Arena` (seeded, deterministic):
 
 ```
 struct Terrain {
-    cell: f64,                 // grid resolution (~2 tiles)
-    level: Vec<u8>,            // level[gx*h + gy] per cell (0..=max_level)
-    climb: HashSet<(u32,u32)>, // cell-boundary edges flagged climbable
+    cell: f64,                  // grid resolution (~2 tiles)
+    level: Vec<u8>,             // level[gx*h + gy] per cell (0..=max_level)
+    connectors: Vec<Connector>, // ladders/ropes/slopes joining adjacent levels
+}
+
+enum ConnectorKind { Slope, Ladder, Rope }
+
+struct Connector {
+    kind: ConnectorKind,
+    position: Position, // 2-D footprint (like an Obstacle)
+    lo: u8, hi: u8,     // the two levels it joins
+    // Slope carries a footprint span; ladder/rope are ~point footprints.
 }
 ```
 
 - **Generation** (per section, from `section_seed(n)`, behind a `[worldgen]`
-  flag): grow a few raised terraces; carve at least one climb edge onto each; **lay
-  the clear path first, then only raise terraces that leave a climbable route to
-  the section exit** (mirrors how obstacles are rejection-sampled out of the path
-  tube today). The section's entry `(y, level)` is fixed by the previous section's
-  exit (the seam handshake), so the route is continuous end-to-end.
+  flag): grow a few raised terraces; **place at least one connector** onto each so
+  every terrace is reachable; **lay the clear path first, then only raise terraces
+  whose connector keeps a route to the section exit** (mirrors how obstacles are
+  rejection-sampled out of the path tube today). The section's entry `(y, level)`
+  is fixed by the previous section's exit (the seam handshake), so the route is
+  continuous end-to-end.
 - **`Avatar` + spawns** gain `level: u8` (derived from their cell at spawn).
 - **`apply_move`** gains elevation rules on top of the current circle-collision:
   - same level → move + slide as today;
-  - crossing a level boundary → allowed only across a **climb edge** (then update
-    `avatar.level`); a non-climb boundary blocks + slides like an obstacle wall.
+  - a level boundary is a **cliff = solid wall** → block + slide, always, *unless*
+    the avatar is on a **connector** joining those two levels. On a connector,
+    movement along its axis changes `avatar.level` (slope: interpolate as you walk
+    the ramp; ladder/rope: travel up/down the connector to the far level).
+  - No free-form climbing exists — the *only* way `avatar.level` changes is being
+    on a connector.
 - `check_touch` / harvest / join-radius compare **level too** (you don't fight a
   monster one terrace up).
 
@@ -119,11 +141,12 @@ struct Terrain {
 
 - Keep `Position` 2-D. Add `level: Option<u8>` to `SnapshotEntity` (+ the avatar);
   old clients ignore it (defaults to 0).
-- Send the compact `Terrain` (grid + climb edges) **once** in the run-start
-  payload, alongside the existing `path` — the client needs it to build relief.
-- **Movement intents are unchanged** (`{dx, dy}`). Walking into a climb edge
-  auto-climbs; walking into a cliff slides. No new input, no protocol churn on the
-  hot path.
+- Send the compact `Terrain` (grid + connector list) **once** in the run-start
+  payload, alongside the existing `path` — the client needs it to build relief and
+  draw the ladders/ropes/slopes.
+- **Movement intents are unchanged** (`{dx, dy}`). Walking onto a slope walks you
+  up it; walking onto a ladder/rope base mounts and climbs it; walking into a bare
+  cliff slides. No new input, no protocol churn on the hot path.
 
 ## Client (`meld-client`) rendering
 
@@ -133,10 +156,12 @@ struct Terrain {
   instance, rebuilt on run start → cheap.
 - Place every entity/avatar at `y += level * step_height` (on top of its current
   grounding offset).
-- Draw **climb-edge affordances** (ladder / vine / ramp sprite) so the route up is
-  legible — same spirit as the glowing path trail.
+- Render each **connector** as its own prop: a **ladder** / **rope** billboard on
+  the cliff face, or a **slope** as an actual ramp wedge cut into the stepped mesh
+  — so the route up is legible (same spirit as the glowing path trail) and the
+  cliff otherwise reads as an unbroken wall.
 - Feed the player's world-y (incl. level) into `hd2d_follow`'s target so the
-  camera rises/falls with the terrain. Optional cosmetic climb tween.
+  camera rises/falls with the terrain. Optional cosmetic climb tween while mounted.
 
 ## Rollout (server-first, one PR per milestone)
 
@@ -150,24 +175,24 @@ struct Terrain {
 1. **M1 — terrain per section (invisible):** `Terrain` gen inside
    `Section::generate` (flagged), level-aware `apply_move` + level-aware section
    path, `level` on avatars/spawns, additive wire (`level` + terrain payload).
-   **Unit-test the climbable-path guarantee across seeds + across seams.**
+   **Unit-test the connector-routed path guarantee across seeds + across seams.**
 2. **M2 — client relief:** build the stepped ground + cliff mesh from each section's
-   terrain payload, place entities per level, draw climb affordances, feed level to
-   the camera, and stitch adjacent sections' meshes at the seam. *Now it looks 3-D
-   and you can climb.*
-3. **M3 — polish + payoff:** climb animation, biome-specific cliff art, placement
-   rules for hidden loot / shortcuts / vantage, tune `step_height` / terrace
-   density / climb-edge density as `[TUNABLE]`s in `balance.toml`.
+   terrain payload, place entities per level, draw the ladder/rope/slope props, feed
+   level to the camera, and stitch adjacent sections' meshes at the seam. *Now it
+   looks 3-D and you can go up.*
+3. **M3 — polish + payoff:** mount/climb animation, biome-specific cliff + connector
+   art, placement rules for hidden loot / shortcuts / vantage, tune `step_height` /
+   terrace density / connector density as `[TUNABLE]`s in `balance.toml`.
 
 > M0 (streaming) can ship on its own before any verticality — it's independently
 > valuable (endless dives) and de-risks the seam logic before terrain piles on.
 
 ## Spec updates this needs
 - New `behaviors/verticality.md` (observable behavior) + a **CANON §/D-number** for
-  the elevation + climb rules (so `apply_move`'s new branches cite a source, as the
-  code convention requires).
+  the elevation + connector rules (so `apply_move`'s new branches cite a source, as
+  the code convention requires).
 - `[TUNABLE]`s in `balance.toml`: `terraces_per_area`, `max_level`, `step_height`,
-  `climb_edge_density`, `terrace_min_size`.
+  `connector_density`, `terrace_min_size`.
 - Note in `interfaces/realtime-protocol.md` for the additive `level` + terrain
   payload.
 
