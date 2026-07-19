@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use meld_balance::Balance;
 use meld_battle::{Battle, Event as BattleEvent, Reject};
 use meld_db::Db;
-use meld_proto::common::{ItemStack, Position};
+use meld_proto::common::{ItemStack, LootGear, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
     battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message,
@@ -526,6 +526,7 @@ impl GameState {
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
             wr::Harvest::TYPE => self.handle_harvest(player_id, raw),
+            wr::OpenChest::TYPE => self.handle_open_chest(player_id, raw),
             wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
             wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
@@ -649,6 +650,61 @@ impl GameState {
                 dex: f.dex,
                 wll: f.wll,
                 max_hp: f.max_hp,
+            })
+            .collect()
+    }
+
+    /// Per-hero stat gains for a party level-up (old_level → new_level), for the
+    /// classic JRPG "LEVEL UP!" screen. Mirrors the `party_fighters` derivation
+    /// (max HP from Wll; the four attributes from `attributes_at`) so the numbers
+    /// exactly match the party panel.
+    fn hero_level_ups(&self, pid: &str, old_level: i32, new_level: i32) -> Vec<wr::HeroLevelUp> {
+        let Some(inst) = self.instance.as_ref() else {
+            return Vec::new();
+        };
+        let Some(comp) = inst.party_classes.get(pid).cloned() else {
+            return Vec::new();
+        };
+        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
+        let b = &self.balance;
+        let a = &b.attributes;
+        // (max_hp, str, mnd, dex, wll) for a class at a level — same formula as
+        // meld_run::party_fighters (attributes_at + Wll→HP growth).
+        let statline = |class: meld_proto::enums::CharacterClass, level: i32| {
+            let key = meld_run::class_key(class);
+            let s = b
+                .player
+                .get(key)
+                .unwrap_or_else(|| b.player.get("squire").expect("squire stats"));
+            let (str_, mnd, dex, wll) = s.attributes_at(level);
+            let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
+            let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
+            (max_hp, str_, mnd, dex, wll)
+        };
+        comp.iter()
+            .enumerate()
+            .map(|(slot, class)| {
+                let (hp0, st0, mn0, dx0, wl0) = statline(*class, old_level);
+                let (hp1, st1, mn1, dx1, wl1) = statline(*class, new_level);
+                wr::HeroLevelUp {
+                    slot: slot as i32,
+                    name: names
+                        .get(slot)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                    class_key: meld_run::class_key(*class).to_string(),
+                    level: new_level,
+                    max_hp_before: hp0,
+                    max_hp_after: hp1,
+                    str_before: st0,
+                    str_after: st1,
+                    mnd_before: mn0,
+                    mnd_after: mn1,
+                    dex_before: dx0,
+                    dex_after: dx1,
+                    wll_before: wl0,
+                    wll_after: wl1,
+                }
             })
             .collect()
     }
@@ -781,6 +837,27 @@ impl GameState {
             })
             .collect();
 
+        // Shared world framing (same for every party member): walkable bounds +
+        // biome-seam chokepoints, so the client can build edge/end walls and gates.
+        let (bx_min, bx_max, blat) = inst.arena.bounds();
+        let world_bounds = wr::WorldBounds {
+            x_min: bx_min,
+            x_max: bx_max,
+            lateral: blat,
+        };
+        let seam_views: Vec<wr::SeamView> = inst
+            .arena
+            .seams
+            .iter()
+            .map(|s| wr::SeamView {
+                x: s.x,
+                gap_y: s.gap_y,
+                gap_half_width: s.gap_half_width,
+                biome_from: s.biome_from.to_string(),
+                biome_to: s.biome_to.to_string(),
+            })
+            .collect();
+
         let mut out = Vec::new();
         for pid in &party_ids {
             let run_id = inst
@@ -807,7 +884,13 @@ impl GameState {
                     base_run_level,
                     members: member_views.clone(),
                     backpack,
+                    // A dive begins with no chits and no red loot — both are found
+                    // in the maze and banked on extraction (economy.md S1).
+                    chits: 0,
+                    backpack_gear: Vec::new(),
                     path: inst.arena.path.clone(),
+                    bounds: Some(world_bounds.clone()),
+                    seams: seam_views.clone(),
                 },
             ));
             out.push(out_msg(
@@ -1773,6 +1856,72 @@ impl GameState {
                     delta: "added".to_string(),
                     cause: format!("harvest:{kind}"),
                 }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
+    /// Open the treasure chest the avatar is standing next to: roll its loot
+    /// (a richer chit payout than a kill, a biome material, and deep-enough red
+    /// gear) into the backpack. The chest shows opened on the next snapshot.
+    fn handle_open_chest(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        // A chest pays out like several kills' worth of chits (economy.md S2).
+        const CHEST_RICHNESS: i32 = 4;
+        let req: wr::OpenChest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad open_chest", Some(raw.seq))]
+            }
+        };
+        let balance = self.balance.clone();
+        let Some(inst) = self.instance.as_mut() else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+        };
+        if inst.battle_of_player(player_id).is_some() {
+            return vec![error(player_id, ErrorCode::InvalidState, "Resolve the battle first.", Some(raw.seq))];
+        }
+        let Some((_tier, distance)) = inst.arena.open_chest(player_id, &req.entity_id) else {
+            return vec![error(player_id, ErrorCode::OutOfRange, "No chest in reach.", Some(raw.seq))];
+        };
+        // Deterministic per (chest, player); the chest can only be opened once.
+        let seed = inst.arena.seed ^ hash_str(&req.entity_id) ^ hash_str(player_id);
+        let loot = meld_world::roll_creature_loot(&balance, distance, CHEST_RICHNESS, seed);
+        let loot_item = ItemStack {
+            item_id: Uuid::now_v7().to_string(),
+            item_kind: loot.material.to_string(),
+            quantity: 1,
+            insurance: None,
+        };
+        let gear: Vec<LootGear> = loot
+            .gear
+            .iter()
+            .map(|g| LootGear {
+                gear_id: Uuid::now_v7().to_string(),
+                name: g.name.clone(),
+                slot: g.slot.clone(),
+                insurance: Insurance::Red,
+                tier: g.tier,
+                atk_bonus: g.atk_bonus,
+                base_max_durability: g.max_durability,
+                max_durability: g.max_durability,
+            })
+            .collect();
+        if let Some(r) = inst.run.run_mut(player_id) {
+            r.backpack.push(loot_item.clone());
+            r.chits += loot.chits;
+            r.looted_gear.extend(gear.iter().cloned());
+        }
+        vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item: loot_item,
+                    delta: "added".to_string(),
+                    cause: "chest".to_string(),
+                }],
+                chits_delta: loot.chits,
+                gear_added: gear,
             },
         )]
     }
@@ -1785,6 +1934,8 @@ impl GameState {
             player_id: String,
             run_id: String,
             items: Vec<ItemStack>,
+            chits: i64,
+            gear: Vec<LootGear>,
         }
         let (banks, members): (Vec<Banked>, Vec<String>) = {
             let Some(inst) = self.instance.as_mut() else {
@@ -1820,11 +1971,15 @@ impl GameState {
                         r.backpack.retain(|i| i.quantity > 0);
                     }
                     let items = std::mem::take(&mut r.backpack);
+                    let gear = std::mem::take(&mut r.looted_gear);
+                    let chits = std::mem::replace(&mut r.chits, 0);
                     r.result = Some(RunResult::Extracted);
                     banks.push(Banked {
                         player_id: pid.clone(),
                         run_id: r.run_id.clone(),
                         items,
+                        chits,
+                        gear,
                     });
                 }
             }
@@ -1843,8 +1998,28 @@ impl GameState {
                 .map(|i| (i.item_kind.clone(), i.quantity))
                 .collect();
             if let Ok(uid) = Uuid::parse_str(&b.player_id) {
-                if let Err(e) = db.bank_extraction(uid, &items_kv, 0).await {
+                // Bank materials + chits atomically (economy.md S1 mint-on-extract).
+                if let Err(e) = db.bank_extraction(uid, &items_kv, b.chits).await {
                     tracing::error!("bank_extraction failed for {}: {e}", b.player_id);
+                }
+                // Convert red-chest loot to owned Vault gear (stays `red`).
+                let looted: Vec<meld_db::LootedGear> = b
+                    .gear
+                    .iter()
+                    .filter_map(|g| {
+                        Some(meld_db::LootedGear {
+                            gear_id: Uuid::parse_str(&g.gear_id).ok()?,
+                            name: g.name.clone(),
+                            slot: g.slot.clone(),
+                            tier: g.tier,
+                            atk_bonus: g.atk_bonus,
+                            base_max_durability: g.base_max_durability,
+                            max_durability: g.max_durability,
+                        })
+                    })
+                    .collect();
+                if let Err(e) = db.insert_looted_gear(uid, &looted).await {
+                    tracing::error!("insert_looted_gear failed for {}: {e}", b.player_id);
                 }
                 // Extraction success credits Alchemy XP (GDD §4.1).
                 let axp = items_kv.len() as i64 * alchemy_per;
@@ -1855,11 +2030,7 @@ impl GameState {
                 }
             }
             for pid in &members {
-                let banked = if pid == &b.player_id {
-                    Some(b.items.clone())
-                } else {
-                    None
-                };
+                let own = pid == &b.player_id;
                 out.push(out_msg(
                     pid,
                     &wr::MemberResult {
@@ -1867,13 +2038,15 @@ impl GameState {
                         player_id: b.player_id.clone(),
                         result: RunResult::Extracted,
                         max_distance_reached: 0,
-                        banked,
+                        banked: own.then(|| b.items.clone()),
                         lost: None,
+                        chits: if own { b.chits } else { 0 },
+                        gear_banked: if own { b.gear.clone() } else { vec![] },
                         durability_loss_applied: false,
                     },
                 ));
             }
-            if !b.items.is_empty() {
+            if !b.items.is_empty() || b.chits != 0 {
                 out.push(out_msg(
                     &b.player_id,
                     &wr::BackpackUpdate {
@@ -1886,6 +2059,8 @@ impl GameState {
                                 cause: "banked".to_string(),
                             })
                             .collect(),
+                        chits_delta: -b.chits,
+                        gear_added: Vec::new(),
                     },
                 ));
             }
@@ -2009,7 +2184,10 @@ impl GameState {
                     cause: format!("pickup:{}", d.kind),
                 });
             }
-            out.push(out_msg(&pid, &wr::BackpackUpdate { changes }));
+            out.push(out_msg(
+                &pid,
+                &wr::BackpackUpdate { changes, chits_delta: 0, gear_added: Vec::new() },
+            ));
         }
         out
     }
@@ -2078,6 +2256,17 @@ impl GameState {
             avatar_state: Some("portal".to_string()),
             level: Some(0),
         });
+        // Treasure chests, tagged `chest:<tier>:<open>` (`open` = 0/1) so the client
+        // draws unopened vs opened. Opened chests stay in the world (as opened).
+        for c in &inst.arena.chests {
+            entities.push(wm::SnapshotEntity {
+                entity_id: c.entity_id.clone(),
+                position: c.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
+                level: Some(0),
+            });
+        }
         // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
         for n in inst.arena.resources.iter().filter(|n| !n.harvested) {
             entities.push(wm::SnapshotEntity {
@@ -2205,6 +2394,9 @@ impl GameState {
     fn handle_battle_end(&mut self, battle_id: &str, outcome: BattleOutcome) -> Vec<Outgoing> {
         let mut out = Vec::new();
         let mut leveled: Vec<String> = Vec::new();
+        // (player_id, old_run_level, new_run_level) for anyone who leveled up this
+        // victory — drives the classic per-hero stat-gain screen.
+        let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
         let balance = self.balance.clone();
         let Some(inst) = self.instance.as_mut() else {
             return out;
@@ -2213,6 +2405,7 @@ impl GameState {
             return out;
         };
         let monster_idxs = inst.battles[bidx].monster_idxs.clone();
+        let battle_pos = inst.battles[bidx].pos;
         // Combined XP for the whole encounter (touched creature + its group).
         let xp_reward: i64 = monster_idxs
             .iter()
@@ -2261,8 +2454,10 @@ impl GameState {
                 // Award XP to every participant; note who leveled so we can refresh
                 // their party panel (stats change on level-up).
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
+                    let old_level = r.run_level;
                     if r.award_xp(xp_reward, &balance) > 0 {
                         leveled.push(r.player_id.clone());
+                        level_ups.push((r.player_id.clone(), old_level, r.run_level));
                     }
                 }
                 for pid in &members {
@@ -2278,16 +2473,46 @@ impl GameState {
                     .filter(|r| bp.contains(&r.party_id))
                     .map(|r| (r.player_id.clone(), r.run_level, r.xp))
                     .collect();
+                // Loot each participant: the biome's combat material (banked to
+                // craft), depth-scaled chits, and — deep enough — red-chest gear
+                // (economy.md S1; meld_world::roll_creature_loot). Seeded per kill
+                // like the Town Portal roll (instance ⊕ player ⊕ clock).
+                let loot_distance = battle_pos.distance_floor();
+                let monster_count = monster_idxs.len() as i32;
                 for (pid, run_level, _xp) in &runs_snapshot {
+                    let loot = meld_world::roll_creature_loot(
+                        &balance,
+                        loot_distance,
+                        monster_count,
+                        inst.arena.seed ^ hash_str(pid) ^ now_ms(),
+                    );
                     let loot_item = ItemStack {
                         item_id: Uuid::now_v7().to_string(),
-                        item_kind: "forest_bloom_petal".to_string(),
+                        item_kind: loot.material.to_string(),
                         quantity: 1,
                         insurance: None,
                     };
-                    // Record loot in the run's backpack so extraction can bank it.
+                    // Any gear drop becomes a wire LootGear with a fresh server id
+                    // (base == max durability at creation).
+                    let gear_drops: Vec<LootGear> = loot
+                        .gear
+                        .iter()
+                        .map(|g| LootGear {
+                            gear_id: Uuid::now_v7().to_string(),
+                            name: g.name.clone(),
+                            slot: g.slot.clone(),
+                            insurance: Insurance::Red,
+                            tier: g.tier,
+                            atk_bonus: g.atk_bonus,
+                            base_max_durability: g.max_durability,
+                            max_durability: g.max_durability,
+                        })
+                        .collect();
+                    // Record loot in the run so extraction can bank it.
                     if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
                         r.backpack.push(loot_item.clone());
+                        r.chits += loot.chits;
+                        r.looted_gear.extend(gear_drops.iter().cloned());
                     }
                     let ended = wb::Ended {
                         battle_id: battle_id.to_string(),
@@ -2298,6 +2523,8 @@ impl GameState {
                             run_level_after: *run_level,
                         }],
                         loot: vec![loot_item.clone()],
+                        chits_found: loot.chits,
+                        gear_drops: gear_drops.clone(),
                         class_emblem_drops: vec![],
                         gatekeeper_cleared: false,
                     };
@@ -2310,6 +2537,8 @@ impl GameState {
                                 delta: "added".to_string(),
                                 cause: "battle_loot".to_string(),
                             }],
+                            chits_delta: loot.chits,
+                            gear_added: gear_drops,
                         },
                     ));
                     // A felled creature may drop a Town Portal, topping up the
@@ -2333,6 +2562,8 @@ impl GameState {
                                     delta: "added".to_string(),
                                     cause: "town_portal_drop".to_string(),
                                 }],
+                                chits_delta: 0,
+                                gear_added: Vec::new(),
                             },
                         ));
                     }
@@ -2347,24 +2578,39 @@ impl GameState {
                             outcome: BattleOutcome::Defeat,
                             xp_awards: vec![],
                             loot: vec![],
+                            chits_found: 0,
+                            gear_drops: vec![],
                             class_emblem_drops: vec![],
                             gatekeeper_cleared: false,
                         },
                     ));
                 }
-                // Each participating player's run → died. (Durability sink runs
-                // in flush_deaths against Postgres.)
-                let run_ids: Vec<(String, String)> = inst
+                // Each participating player's run → died. The Backpack is deleted
+                // with the run: its items, red-chest gear, and chits are all lost
+                // (economy.md S1 — un-extracted chits never entered circulation).
+                // Report the forfeited haul so the client can show what was lost.
+                // (Durability sink runs in flush_deaths against Postgres.)
+                let lost_hauls: Vec<(String, String, Vec<ItemStack>, i64)> = inst
                     .run
                     .runs
                     .iter()
                     .filter(|r| bp.contains(&r.party_id))
-                    .map(|r| (r.player_id.clone(), r.run_id.clone()))
+                    .map(|r| {
+                        (
+                            r.player_id.clone(),
+                            r.run_id.clone(),
+                            r.backpack.clone(),
+                            r.chits,
+                        )
+                    })
                     .collect();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     r.result = Some(RunResult::Died);
+                    r.backpack.clear();
+                    r.looted_gear.clear();
+                    r.chits = 0;
                 }
-                for (pid, run_id) in &run_ids {
+                for (pid, run_id, lost, lost_chits) in &lost_hauls {
                     out.push(out_msg(
                         pid,
                         &wr::MemberResult {
@@ -2373,7 +2619,9 @@ impl GameState {
                             result: RunResult::Died,
                             max_distance_reached: 0,
                             banked: None,
-                            lost: Some(vec![]),
+                            lost: Some(lost.clone()),
+                            chits: *lost_chits,
+                            gear_banked: vec![],
                             durability_loss_applied: true,
                         },
                     ));
@@ -2394,7 +2642,19 @@ impl GameState {
         }
         inst.battles.retain(|b| b.battle_id != battle_id);
         self.pending_deaths.append(&mut dead);
-        // Refresh the party panel for anyone who leveled up (stats changed).
+        // Announce level-ups (classic stat-gain screen) then refresh the party
+        // panel for anyone who leveled up (stats changed).
+        for (pid, old_level, new_level) in &level_ups {
+            let heroes = self.hero_level_ups(pid, *old_level, *new_level);
+            out.push(out_msg(
+                pid,
+                &wr::LevelUp {
+                    new_run_level: *new_level,
+                    levels_gained: new_level - old_level,
+                    heroes,
+                },
+            ));
+        }
         for pid in &leveled {
             let heroes = self.party_views(pid);
             out.push(out_msg(pid, &wr::Party { heroes }));

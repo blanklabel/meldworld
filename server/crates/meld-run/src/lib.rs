@@ -8,7 +8,7 @@
 
 use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
-use meld_proto::common::ItemStack;
+use meld_proto::common::{ItemStack, LootGear};
 use meld_proto::enums::{CharacterClass, CombatantKind, EncounterClass, RunResult};
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
@@ -35,6 +35,12 @@ pub struct PlayerRun {
     pub run_level: i32,
     pub xp: i64,
     pub backpack: Vec<ItemStack>,
+    /// Chits found this run (economy.md S1). Lives in the backpack conceptually;
+    /// banked into the Vault on extraction, deleted with the run on death.
+    pub chits: i64,
+    /// Red-chest gear found this run. Unowned until extraction converts it to
+    /// owned Vault gear (gear-item-models.md); discarded on death.
+    pub looted_gear: Vec<LootGear>,
     pub max_distance_reached: i32,
     pub result: Option<RunResult>,
     /// Which party (enter-maze group) this run belongs to. Battles merge across
@@ -97,6 +103,8 @@ impl InstanceRun {
                 run_level: self.base_run_level,
                 xp: 0,
                 backpack: Vec::new(),
+                chits: 0,
+                looted_gear: Vec::new(),
                 max_distance_reached: 0,
                 result: None,
                 party_id,
@@ -298,6 +306,8 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
             max_distance_reached: 0,
             result: None,
             party_id: 0,

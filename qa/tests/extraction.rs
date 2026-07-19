@@ -99,6 +99,7 @@ async fn extraction_banks_loot_into_the_vault() {
     let mut monster_combatant = String::new();
     let mut battle_id = String::new();
     let mut banked_petal = false;
+    let mut banked_chits = 0i64;
 
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     // Don't burst missed ticks after the (mover-gated) battle.
@@ -157,6 +158,8 @@ async fn extraction_banks_loot_into_the_vault() {
                         assert_eq!(v["payload"]["result"], json!("extracted"));
                         let banked = v["payload"]["banked"].as_array().cloned().unwrap_or_default();
                         banked_petal = banked.iter().any(|i| i["item_kind"] == json!("forest_bloom_petal"));
+                        // Chits found on the kill are reported banked with the run.
+                        banked_chits = v["payload"]["chits"].as_i64().unwrap_or(0);
                         phase = Phase::Done;
                     }
                     _ => {}
@@ -166,8 +169,11 @@ async fn extraction_banks_loot_into_the_vault() {
     }
 
     assert!(banked_petal, "the extracted run should have banked the loot petal");
+    // Creatures drop chits (economy.md S1); the felled forest creature yields some,
+    // reported banked on the member result.
+    assert!(banked_chits > 0, "the kill should have banked chits (got {banked_chits})");
 
-    // The Vault now persists the banked loot.
+    // The Vault now persists the banked loot + chits.
     let v1: Value = http
         .get(format!("{base}/v1/vault"))
         .bearer_auth(&token)
@@ -187,5 +193,16 @@ async fn extraction_banks_loot_into_the_vault() {
     assert!(
         petal["quantity"].as_i64().unwrap() >= 1,
         "at least one petal banked"
+    );
+    // Chits minted into the persistent economy on extraction (was 0 at start).
+    assert_eq!(
+        v0["chits"].as_i64().unwrap_or(0),
+        0,
+        "vault chits start at 0"
+    );
+    assert_eq!(
+        v1["chits"].as_i64().unwrap(),
+        banked_chits,
+        "vault chits equal exactly the chits banked with the run"
     );
 }

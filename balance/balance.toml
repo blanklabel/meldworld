@@ -104,6 +104,25 @@ resonant_transfuse_cost_fraction = 0.5
 resonant_boon_regen = 3
 resonant_ward_barrier_fraction = 0.3
 
+# Creature loot (economy.md sources S1). A felled encounter yields, banked into
+# the run backpack and minted into the persistent economy only on extraction
+# (deleted on death — it never entered circulation, economy.md I1):
+#   - Chits: `round(chits_per_mlevel * mlevel(d) * monster_count * jitter)`, where
+#     jitter ∈ [1-chits_jitter, 1+chits_jitter]. Deeper fights pay more.
+#   - One of the biome's combat materials per felled encounter (feeds crafting;
+#     biome→material map is structural, in meld-world::combat_material_for_biome).
+#   - Red-chest gear (insurance:red), only at/after world_scaling.red_chest_floor_
+#     distance (tier 3, d 300), dropping with `gear_drop_chance`. Rolled atk bonus
+#     = `round(gear_atk_per_tier * tier(d) * jitter)`, jitter ∈ [1±gear_atk_jitter].
+# All [TUNABLE] — pure balance.
+[loot]
+chits_per_mlevel = 5.0
+chits_jitter = 0.35
+gear_drop_chance = 0.35
+gear_atk_per_tier = 3.0
+gear_atk_jitter = 0.4
+gear_base_durability = 80
+
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill
 # curves + recipe XP are content tables. [TUNABLE]

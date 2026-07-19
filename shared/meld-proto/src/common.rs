@@ -42,6 +42,25 @@ pub struct ItemStack {
     pub insurance: Option<Insurance>,
 }
 
+/// A piece of gear carried as run loot (gear-item-models.md `GearItem`). Rides
+/// the backpack/loot wire so the client can show looted red-chest gear before it
+/// is banked (extraction converts it to owned Vault gear). Only the fields the
+/// slice's HUD/inventory needs; sockets/gems land with their systems.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LootGear {
+    pub gear_id: Id,
+    pub name: String,
+    /// Equipment slot key (content-defined opaque string, e.g. `weapon`).
+    pub slot: String,
+    pub insurance: Insurance,
+    /// Loot tier band at generation: `tier(d) = floor(d / 100)`.
+    pub tier: i32,
+    /// Flat physical-attack bonus granted while equipped.
+    pub atk_bonus: i32,
+    pub base_max_durability: i32,
+    pub max_durability: i32,
+}
+
 /// A battle actor's public state (realtime-protocol.md Combatant).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Combatant {

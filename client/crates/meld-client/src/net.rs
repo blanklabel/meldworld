@@ -43,6 +43,8 @@ pub enum ClientCmd {
     TownPortal,
     /// Harvest a resource node the avatar is standing next to.
     Harvest { entity_id: String },
+    /// Open a treasure chest the avatar is standing next to.
+    OpenChest { entity_id: String },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
@@ -113,6 +115,8 @@ pub enum EntityKind {
     Loot,
     /// An impassable terrain feature (`monster_kind` carries its kind, `radius` its size).
     Obstacle,
+    /// A treasure chest (`opened` tells the client to draw it opened vs closed).
+    Chest,
 }
 
 /// A dynamic overworld entity.
@@ -133,6 +137,8 @@ pub struct EntityView {
     /// Elevation level (terraced verticality) — the render height is raised by
     /// `level × step_height`. Absent on the wire → 0 (ground).
     pub level: u8,
+    /// For chests: whether it's already been opened.
+    pub opened: bool,
 }
 
 /// A connector (ladder/rope/slope) joining two elevation levels — client view.
@@ -171,9 +177,25 @@ pub struct HitEffect {
     pub hp_after: i32,
 }
 
+/// A biome seam (chokepoint) for the client to wall + gate.
+#[derive(Clone)]
+pub struct SeamLine {
+    pub x: f64,
+    pub gap_y: f64,
+    pub gap_half_width: f64,
+    pub biome_from: String,
+    pub biome_to: String,
+}
+
 /// A gear row for the inventory screen.
+#[derive(Clone)]
 pub struct GearLine {
+    pub gear_id: String,
     pub name: String,
+    pub slot: String,
+    /// `"blue"` (insured) or `"red"` (extracted run loot).
+    pub insurance: String,
+    pub tier: i32,
     pub equipped: bool,
     pub max_durability: i32,
     pub base_max_durability: i32,
@@ -185,6 +207,19 @@ pub struct SkillLine {
     pub kind: String,
     pub level: i32,
     pub xp: i64,
+}
+
+/// One hero's stat gains for the classic "LEVEL UP!" screen (before, after).
+#[derive(Clone)]
+pub struct HeroLevelUpLine {
+    pub name: String,
+    pub class_key: String,
+    pub level: i32,
+    pub max_hp: (i32, i32),
+    pub str_: (i32, i32),
+    pub mnd: (i32, i32),
+    pub dex: (i32, i32),
+    pub wll: (i32, i32),
 }
 
 /// A hero row for the party screen (name/class/level/stats live here, not battle).
@@ -210,13 +245,33 @@ pub enum ServerMsg {
     RunStarted,
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party { heroes: Vec<HeroLine> },
+    /// The party gained a level — play the classic stat-gain screen.
+    LevelUp {
+        new_run_level: i32,
+        levels_gained: i32,
+        heroes: Vec<HeroLevelUpLine>,
+    },
     /// Waypoints of the guaranteed clear path (world units) — drawn as a trail.
     WorldPath { points: Vec<(f64, f64)> },
     /// One overworld section's elevation grid + connectors (terraced verticality).
     /// Streamed at run start (initial chain) and as the frontier advances (endless).
     TerrainSection { section: TerrainSectionView },
-    /// Current run backpack (item_kind, quantity), sorted — drives the HUD.
-    Backpack { items: Vec<(String, i32)> },
+    /// Walkable bounds + biome seams — the client frames the map with cliffs/water
+    /// walls + gated chokepoints.
+    WorldFrame {
+        x_min: f64,
+        x_max: f64,
+        lateral: f64,
+        seams: Vec<SeamLine>,
+    },
+    /// Current run backpack — drives the HUD. `items` are (item_kind, quantity),
+    /// sorted; `chits` is the run's found-chits total; `gear` is looted red-chest
+    /// gear as (name, atk_bonus).
+    Backpack {
+        items: Vec<(String, i32)>,
+        chits: i64,
+        gear: Vec<(String, i32)>,
+    },
     Snapshot { entities: Vec<EntityView> },
     BattleStarted {
         battle_id: String,
@@ -240,8 +295,13 @@ pub enum ServerMsg {
     ChannelStarted { completes_at: u64 },
     ChannelInterrupted,
     /// This player's run ended (extracted / died / abandoned), with the count of
-    /// items banked on extraction.
-    RunEnded { result: String, banked: usize },
+    /// items + gear banked and the chits banked (extract) or lost (death).
+    RunEnded {
+        result: String,
+        banked: usize,
+        chits: i64,
+        gear: usize,
+    },
     /// Vault + gear, for the overworld inventory screen.
     InventoryData {
         chits: i64,
@@ -296,6 +356,10 @@ struct Inner {
     /// `run.started` + `run.backpack_update` so the overworld HUD can show your
     /// Town Portals + gathered materials.
     backpack: std::collections::HashMap<String, i32>,
+    /// Run-scoped chits found so far (banked on extraction), for the HUD.
+    run_chits: i64,
+    /// Looted red-chest gear this run as (name, atk_bonus), for the HUD.
+    run_gear: Vec<(String, i32)>,
 }
 
 /// Bevy-side handle. Cloneable (shared `Rc`), single-threaded (NonSend resource).
@@ -320,6 +384,8 @@ pub fn start(base: String) -> Net {
         cmds: VecDeque::new(),
         out: VecDeque::new(),
         backpack: std::collections::HashMap::new(),
+        run_chits: 0,
+        run_gear: Vec::new(),
     })))
 }
 
@@ -337,6 +403,12 @@ impl Net {
     /// Kick off an authenticated GET of the player profile (→ `ProgressData`).
     pub fn fetch_progress(&self) {
         self.0.borrow_mut().fetch_progress();
+    }
+
+    /// Equip (`equip = true`) or unequip a gear item over HTTP, then refresh the
+    /// inventory (→ a fresh `InventoryData`).
+    pub fn equip_gear(&self, gear_id: String, equip: bool) {
+        self.0.borrow_mut().equip_gear(gear_id, equip);
     }
 
     /// Advance the state machine: fire queued commands, pump HTTP + WS.
@@ -429,54 +501,30 @@ impl Inner {
         }
         let (tx, rx) = mpsc::channel();
         self.inv_rx = Some(rx);
+        spawn_inventory_fetch(self.base.clone(), self.session_token.clone(), tx);
+    }
+
+    /// POST equip/unequip for a gear item, then refresh the inventory so the
+    /// overlay reflects the new loadout (a 409 leaves it unchanged). Loadout
+    /// changes take effect at the next dive (vault-gear.md).
+    fn equip_gear(&mut self, gear_id: String, equip: bool) {
+        if self.session_token.is_empty() || gear_id.is_empty() {
+            return;
+        }
         let base = self.base.clone();
         let token = self.session_token.clone();
-        let gear_url = format!("{base}/v1/vault/gear");
-        let mut req = ehttp::Request::get(format!("{base}/v1/vault"));
+        let verb = if equip { "equip" } else { "unequip" };
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/vault/gear/{gear_id}/{verb}"),
+            Vec::new(),
+        );
         req.headers.insert("Authorization", format!("Bearer {token}"));
-        ehttp::fetch(req, move |vault_res| {
-            let mut chits = 0i64;
-            let mut materials = Vec::new();
-            if let Ok(resp) = &vault_res {
-                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
-                    chits = v["chits"].as_i64().unwrap_or(0);
-                    if let Some(arr) = v["materials"].as_array() {
-                        materials = arr
-                            .iter()
-                            .map(|m| {
-                                (
-                                    m["item_kind"].as_str().unwrap_or("?").to_string(),
-                                    m["quantity"].as_i64().unwrap_or(0) as i32,
-                                )
-                            })
-                            .collect();
-                    }
-                }
-            }
-            let mut greq = ehttp::Request::get(&gear_url);
-            greq.headers.insert("Authorization", format!("Bearer {token}"));
-            ehttp::fetch(greq, move |gear_res| {
-                let mut gear = Vec::new();
-                if let Ok(resp) = &gear_res {
-                    if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
-                    {
-                        if let Some(arr) = v["data"].as_array() {
-                            gear = arr
-                                .iter()
-                                .map(|g| GearLine {
-                                    name: g["name"].as_str().unwrap_or("?").to_string(),
-                                    equipped: g["equipped"].as_bool().unwrap_or(false),
-                                    max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
-                                    base_max_durability: g["base_max_durability"].as_i64().unwrap_or(0)
-                                        as i32,
-                                    atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
-                                })
-                                .collect();
-                        }
-                    }
-                }
-                let _ = tx.send((chits, materials, gear));
-            });
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            // Regardless of 200/409, re-read the vault so the UI shows truth.
+            spawn_inventory_fetch(base, token, tx);
         });
     }
 
@@ -653,6 +701,9 @@ impl Inner {
             ClientCmd::Harvest { entity_id } => {
                 self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::OpenChest { entity_id } => {
+                self.send_env(wr::OpenChest::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
@@ -680,12 +731,16 @@ impl Inner {
         }
     }
 
-    /// Emit the current backpack as a sorted (item_kind, qty) list for the HUD.
+    /// Emit the current backpack (items + chits + looted gear) for the HUD.
     fn emit_backpack(&mut self) {
         let mut items: Vec<(String, i32)> =
             self.backpack.iter().map(|(k, v)| (k.clone(), *v)).collect();
         items.sort_by(|a, b| a.0.cmp(&b.0));
-        self.out.push_back(ServerMsg::Backpack { items });
+        self.out.push_back(ServerMsg::Backpack {
+            items,
+            chits: self.run_chits,
+            gear: self.run_gear.clone(),
+        });
     }
 
     fn handle_text(&mut self, text: &str) {
@@ -707,6 +762,8 @@ impl Inner {
             }
             "run.started" => {
                 self.backpack.clear();
+                self.run_chits = raw.payload["chits"].as_i64().unwrap_or(0);
+                self.run_gear.clear();
                 if let Some(items) = raw.payload["backpack"].as_array() {
                     for it in items {
                         let kind = it["item_kind"].as_str().unwrap_or("").to_string();
@@ -715,6 +772,11 @@ impl Inner {
                             *self.backpack.entry(kind).or_insert(0) += qty;
                         }
                     }
+                }
+                for g in raw.payload["backpack_gear"].as_array().into_iter().flatten() {
+                    let name = g["name"].as_str().unwrap_or("gear").to_string();
+                    let atk = g["atk_bonus"].as_i64().unwrap_or(0) as i32;
+                    self.run_gear.push((name, atk));
                 }
                 self.out.push_back(ServerMsg::RunStarted);
                 self.emit_backpack();
@@ -726,6 +788,29 @@ impl Inner {
                     if !points.is_empty() {
                         self.out.push_back(ServerMsg::WorldPath { points });
                     }
+                }
+                // Map bounds + biome seams → the client frames the map with walls.
+                if let Some(b) = raw.payload["bounds"].as_object() {
+                    let seams = raw.payload["seams"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|s| SeamLine {
+                                    x: s["x"].as_f64().unwrap_or(0.0),
+                                    gap_y: s["gap_y"].as_f64().unwrap_or(0.0),
+                                    gap_half_width: s["gap_half_width"].as_f64().unwrap_or(4.0),
+                                    biome_from: s["biome_from"].as_str().unwrap_or("").to_string(),
+                                    biome_to: s["biome_to"].as_str().unwrap_or("").to_string(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.out.push_back(ServerMsg::WorldFrame {
+                        x_min: b["x_min"].as_f64().unwrap_or(-4.0),
+                        x_max: b["x_max"].as_f64().unwrap_or(0.0),
+                        lateral: b["lateral"].as_f64().unwrap_or(28.0),
+                        seams,
+                    });
                 }
             }
             "run.backpack_update" => {
@@ -742,6 +827,15 @@ impl Inner {
                         let k = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
                         self.backpack.remove(&k);
                     }
+                }
+                self.run_chits += raw.payload["chits_delta"].as_i64().unwrap_or(0);
+                if self.run_chits < 0 {
+                    self.run_chits = 0;
+                }
+                for g in raw.payload["gear_added"].as_array().into_iter().flatten() {
+                    let name = g["name"].as_str().unwrap_or("gear").to_string();
+                    let atk = g["atk_bonus"].as_i64().unwrap_or(0) as i32;
+                    self.run_gear.push((name, atk));
                 }
                 self.emit_backpack();
             }
@@ -764,6 +858,36 @@ impl Inner {
                     })
                     .unwrap_or_default();
                 self.out.push_back(ServerMsg::Party { heroes });
+            }
+            "run.level_up" => {
+                let pair = |h: &Value, key: &str| {
+                    (
+                        h[format!("{key}_before")].as_i64().unwrap_or(0) as i32,
+                        h[format!("{key}_after")].as_i64().unwrap_or(0) as i32,
+                    )
+                };
+                let heroes = raw.payload["heroes"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|h| HeroLevelUpLine {
+                                name: h["name"].as_str().unwrap_or("Hero").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("squire").to_string(),
+                                level: h["level"].as_i64().unwrap_or(1) as i32,
+                                max_hp: pair(h, "max_hp"),
+                                str_: pair(h, "str"),
+                                mnd: pair(h, "mnd"),
+                                dex: pair(h, "dex"),
+                                wll: pair(h, "wll"),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::LevelUp {
+                    new_run_level: raw.payload["new_run_level"].as_i64().unwrap_or(1) as i32,
+                    levels_gained: raw.payload["levels_gained"].as_i64().unwrap_or(1) as i32,
+                    heroes,
+                });
             }
             "lobby.state" => {
                 let members = raw.payload["members"]
@@ -796,8 +920,14 @@ impl Inner {
                             // Server tags monsters `mob:<kind>:<faction>`, the portal
                             // `portal`, and players with their avatar state (`active`, …).
                             let mut radius = 0.0;
+                            let mut opened = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
+                                Some(s) if s.starts_with("chest:") => {
+                                    // chest:<tier>:<open>
+                                    opened = s.ends_with(":1");
+                                    (EntityKind::Chest, None, None)
+                                }
                                 Some(s) if s.starts_with("mob:") => {
                                     let rest = &s["mob:".len()..];
                                     let (k, f) = rest.split_once(':').unwrap_or((rest, ""));
@@ -834,6 +964,7 @@ impl Inner {
                                 radius,
                                 battling,
                                 level: e.level.unwrap_or(0),
+                                opened,
                             }
                         })
                         .collect();
@@ -966,13 +1097,74 @@ impl Inner {
                             .and_then(|v| v.as_str().map(String::from))
                             .unwrap_or_default();
                         let banked = m.banked.map(|b| b.len()).unwrap_or(0);
-                        self.out.push_back(ServerMsg::RunEnded { result, banked });
+                        self.out.push_back(ServerMsg::RunEnded {
+                            result,
+                            banked,
+                            chits: m.chits,
+                            gear: m.gear_banked.len(),
+                        });
                     }
                 }
             }
             _ => {}
         }
     }
+}
+
+/// GET `/v1/vault` then `/v1/vault/gear` (Bearer auth) and deliver the combined
+/// (chits, materials, gear) tuple on `tx`. Shared by the initial inventory open
+/// and the post-equip refresh.
+fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayload>) {
+    let gear_url = format!("{base}/v1/vault/gear");
+    let mut req = ehttp::Request::get(format!("{base}/v1/vault"));
+    req.headers.insert("Authorization", format!("Bearer {token}"));
+    ehttp::fetch(req, move |vault_res| {
+        let mut chits = 0i64;
+        let mut materials = Vec::new();
+        if let Ok(resp) = &vault_res {
+            if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                chits = v["chits"].as_i64().unwrap_or(0);
+                if let Some(arr) = v["materials"].as_array() {
+                    materials = arr
+                        .iter()
+                        .map(|m| {
+                            (
+                                m["item_kind"].as_str().unwrap_or("?").to_string(),
+                                m["quantity"].as_i64().unwrap_or(0) as i32,
+                            )
+                        })
+                        .collect();
+                }
+            }
+        }
+        let mut greq = ehttp::Request::get(&gear_url);
+        greq.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(greq, move |gear_res| {
+            let mut gear = Vec::new();
+            if let Ok(resp) = &gear_res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    if let Some(arr) = v["data"].as_array() {
+                        gear = arr
+                            .iter()
+                            .map(|g| GearLine {
+                                gear_id: g["gear_id"].as_str().unwrap_or("").to_string(),
+                                name: g["name"].as_str().unwrap_or("?").to_string(),
+                                slot: g["slot"].as_str().unwrap_or("").to_string(),
+                                insurance: g["insurance"].as_str().unwrap_or("blue").to_string(),
+                                tier: g["tier"].as_i64().unwrap_or(0) as i32,
+                                equipped: g["equipped"].as_bool().unwrap_or(false),
+                                max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
+                                base_max_durability: g["base_max_durability"].as_i64().unwrap_or(0)
+                                    as i32,
+                                atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
+                            })
+                            .collect();
+                    }
+                }
+            }
+            let _ = tx.send((chits, materials, gear));
+        });
+    });
 }
 
 /// Kick off register (idempotent) + login via `ehttp`; the result arrives on the

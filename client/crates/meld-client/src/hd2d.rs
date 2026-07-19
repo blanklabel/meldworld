@@ -86,8 +86,12 @@ impl Default for Look {
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
             aperture: 3.5, // subtle tilt-shift — blur the far field, keep play sharp
             bloom: 0.28,
-            fog_start: 110.0,
-            fog_end: 520.0, // extended draw distance (cheap: ground is one mesh)
+            // Fog roughly hugs the walkable corridor so you can't see off into an
+            // endless plain: the clearing (±lateral) stays crisp, the border
+            // thicket sits right at fog start, and everything beyond fades into
+            // misty forest depth rather than showing bright open field.
+            fog_start: 40.0,
+            fog_end: 115.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
