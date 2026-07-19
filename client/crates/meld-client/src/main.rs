@@ -230,6 +230,8 @@ fn main() {
                 demo_driver,
                 hd2d_remote,
                 drift_clouds,
+                tile_ground_detail,
+                drift_motes,
                 anchor_backdrop,
                 advance_sky,
                 apply_sky,
@@ -1102,7 +1104,11 @@ fn overworld_camera_control(
     }
     let orbit = |look: &mut hd2d::Look, dx: f32, dy: f32| {
         look.cam_yaw -= dx * 0.4;
-        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 85.0);
+        // Cap the tilt well below overhead: past ~60° the upright sprite billboards
+        // are viewed near edge-on and shrink toward invisible (they're flat quads that
+        // only yaw to face the camera). Clamping here is the HD-2D convention — it keeps
+        // sprites readable at every allowed angle instead of vanishing when you tilt up.
+        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 60.0);
     };
     let zoom = |look: &mut hd2d::Look, d: f32| {
         look.cam_dist = (look.cam_dist + d).clamp(8.0, 60.0);
@@ -1645,6 +1651,134 @@ fn setup(
             Visibility::Hidden,
         ));
     }
+
+    // ── Cosmetic ground detail (client-only) ────────────────────────────────
+    // Small Kenney nature props (flowers/bushes/mushrooms/pebbles) scattered to
+    // give the ground life the tiled texture can't. Server-authoritative props
+    // are untouched — this is pure decoration, spawned as a fixed pool of entities
+    // that `tile_ground_detail` recycles onto a player-anchored grid, so coverage
+    // is endless with a bounded entity count. Position + type + visibility all
+    // derive from the world cell, so a spot always looks the same (no popping).
+    let detail_scenes: Vec<(Handle<Scene>, f32)> = [
+        ("flower_purpleA", 2.6),
+        ("flower_redA", 2.6),
+        ("plant_bushSmall", 2.2),
+        ("plant_bushLarge", 1.8),
+        ("mushroom_redGroup", 2.4),
+        ("mushroom_tanGroup", 2.4),
+        ("rock_smallA", 2.0),
+        ("rock_smallB", 2.0),
+        ("stone_smallFlatA", 2.2),
+        ("stone_smallC", 1.8),
+    ]
+    .into_iter()
+    .map(|(p, sc)| {
+        (
+            assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))),
+            sc,
+        )
+    })
+    .collect();
+    let placeholder = detail_scenes[0].0.clone();
+    commands.insert_resource(DetailKit { scenes: detail_scenes });
+    for gz in -DETAIL_K..=DETAIL_K {
+        for gx in -DETAIL_K..=DETAIL_K {
+            commands.spawn((
+                GroundDetail { slot: IVec2::new(gx, gz), last: IVec2::splat(i32::MIN) },
+                SceneRoot(placeholder.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+            ));
+        }
+    }
+
+    // ── Atmosphere motes (client-only) ──────────────────────────────────────
+    // Drifting dust/pollen: soft billboarded discs anchored around the camera so
+    // the near air always reads as alive. `drift_motes` bobs them; `billboard`
+    // faces them at the camera.
+    let mote_tex = images.add(hd2d::soft_disc_texture(64));
+    let mote_mesh = meshes.add(Rectangle::new(0.16, 0.16));
+    let mote_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.95, 0.8, 0.5),
+        base_color_texture: Some(mote_tex),
+        emissive: LinearRgba::rgb(0.7, 0.62, 0.35),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    for _ in 0..90 {
+        let off = Vec2::new((rnd() - 0.5) * 60.0, (rnd() - 0.5) * 44.0);
+        commands.spawn((
+            Mote {
+                off,
+                base_y: 0.6 + rnd() * 4.2,
+                phase: rnd() * std::f32::consts::TAU,
+                amp: 0.3 + rnd() * 0.9,
+                speed: 0.2 + rnd() * 0.5,
+            },
+            Mesh3d(mote_mesh.clone()),
+            MeshMaterial3d(mote_mat.clone()),
+            Transform::from_scale(Vec3::splat(0.5 + rnd() * 1.2)),
+            hd2d::Billboard,
+        ));
+    }
+}
+
+/// Grid cell size (world units) for the cosmetic ground-detail field.
+const DETAIL_CELL: f32 = 4.0;
+/// Half-extent of the detail grid around the focus point: `(2K+1)²` entities.
+const DETAIL_K: i32 = 8;
+
+/// The ground point the camera is aimed at (where its view ray meets y=0) — the
+/// centre of the visible play area. Both the detail grid and the motes anchor here
+/// rather than to the camera itself, which sits well behind/above the play area.
+fn ground_focus(cam: &Transform) -> Vec3 {
+    let fwd = Vec3::from(cam.forward());
+    if fwd.y.abs() > 1e-3 {
+        let t = (-cam.translation.y / fwd.y).max(0.0);
+        cam.translation + fwd * t
+    } else {
+        cam.translation
+    }
+}
+
+/// Loaded small nature props for the cosmetic ground-detail field: `(scene, base_scale)`.
+#[derive(Resource)]
+struct DetailKit {
+    scenes: Vec<(Handle<Scene>, f32)>,
+}
+
+/// One recyclable cosmetic ground-detail prop. `slot` is its fixed offset (in cells)
+/// from the player's current cell; `last` is the world cell it currently shows, so a
+/// prop only re-derives (and swaps scene) when it actually moves to a new cell.
+#[derive(Component)]
+struct GroundDetail {
+    slot: IVec2,
+    last: IVec2,
+}
+
+/// Drifting atmosphere mote: `off` is its xz offset from the camera (anchored so it
+/// travels with the player), plus a bob phase/amplitude/speed.
+#[derive(Component)]
+struct Mote {
+    off: Vec2,
+    base_y: f32,
+    phase: f32,
+    amp: f32,
+    speed: f32,
+}
+
+/// Deterministic hash of a world cell → 64 bits of stable per-cell randomness.
+fn detail_hash(c: IVec2) -> u64 {
+    let mut x = (c.x as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (c.y as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 29;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 32;
+    x
 }
 
 /// Height of the drifting rain cloud, and the footprint the rain falls within.
@@ -1741,6 +1875,72 @@ fn drift_clouds(
         tf.translation.x = cam.x + c.off.x;
         tf.translation.z = cam.z + c.off.y;
         tf.translation.y = c.y;
+    }
+}
+
+/// Recycle the cosmetic ground-detail pool onto a grid centred on the player. Each
+/// prop maps its fixed `slot` to the world cell `player_cell + slot`; position, type,
+/// scale, yaw and visibility all derive deterministically from that cell, so a given
+/// spot always looks identical and props never appear to slide or flicker — they only
+/// re-derive (at the grid's edge, off-screen) as new cells scroll in.
+#[allow(clippy::type_complexity)]
+fn tile_ground_detail(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    kit: Option<Res<DetailKit>>,
+    mut q: Query<
+        (&mut GroundDetail, &mut Transform, &mut Visibility, &mut SceneRoot),
+        Without<Camera3d>,
+    >,
+) {
+    let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
+    let focus = ground_focus(cam);
+    let cc = IVec2::new(
+        (focus.x / DETAIL_CELL).floor() as i32,
+        (focus.z / DETAIL_CELL).floor() as i32,
+    );
+    for (mut d, mut tf, mut vis, mut root) in &mut q {
+        let cell = cc + d.slot;
+        if cell == d.last {
+            continue; // still the same world cell — nothing to re-derive
+        }
+        d.last = cell;
+        let h = detail_hash(cell);
+        // Density gate: only ~45% of cells carry detail, so it scatters instead of
+        // reading as a rigid grid.
+        if (h & 0xff) as f32 / 255.0 > 0.45 {
+            *vis = Visibility::Hidden;
+            continue;
+        }
+        let (scene, base) = &kit.scenes[((h >> 8) as usize) % kit.scenes.len()];
+        root.0 = scene.clone();
+        let jx = ((h >> 16) & 0xffff) as f32 / 65535.0;
+        let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
+        let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+        let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
+        tf.translation = Vec3::new(
+            (cell.x as f32 + jx) * DETAIL_CELL,
+            0.0,
+            (cell.y as f32 + jz) * DETAIL_CELL,
+        );
+        tf.rotation = Quat::from_rotation_y(yaw);
+        tf.scale = Vec3::splat(sc);
+        *vis = Visibility::Inherited;
+    }
+}
+
+/// Bob the atmosphere motes and keep them anchored around the camera (like the
+/// clouds) so the near air is always alive as the player travels.
+fn drift_motes(
+    time: Res<Time>,
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<(&Mote, &mut Transform), Without<Camera3d>>,
+) {
+    let focus = cam_q.single().map(ground_focus).unwrap_or(Vec3::ZERO);
+    let t = time.elapsed_secs();
+    for (m, mut tf) in &mut q {
+        tf.translation.x = focus.x + m.off.x + (t * m.speed + m.phase).sin() * m.amp;
+        tf.translation.z = focus.z + m.off.y + (t * m.speed * 0.7 + m.phase).cos() * m.amp;
+        tf.translation.y = m.base_y + (t * 0.6 + m.phase).sin() * m.amp * 0.5;
     }
 }
 
