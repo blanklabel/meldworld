@@ -25,9 +25,36 @@ the "path is always feasible" guarantee tractable.
   hidden loot, shortcuts, vantage, and funnelled encounters — **without touching
   the difficulty curve** (difficulty stays `sqrt(x²+y²)`; see the invariant below).
 
-### Hard invariants
+## Procedural & seed-deterministic (the roguelite core)
+
+Terrain is **generated procedurally from the run's seed** like everything else —
+this is non-negotiable, it's the extract-or-die loop: each `MazeInstance` is a
+fresh seed → a brand-new world (new terraces, cliffs, climb routes), and the
+**same seed reproduces the exact same world** (shared seeds, replays, QA,
+debugging). This is already how the world works today:
+
+```
+// meld-world/src/lib.rs
+struct Rng(u64); // splitmix64 — "Same seed ⇒ same world, always"
+pub fn generate(balance: &Balance, seed: u64) -> Self { let mut rng = Rng(seed); … }
+```
+
+Areas, monsters, resources, obstacles and the clear path all draw from that one
+seeded stream. Terrain generation slots into the same model — **no special-casing,
+no stored maps.** One determinism rule matters:
+
+- **Derive terrain from a dedicated substream**, e.g. `Rng(splitmix(seed) ^
+  TERRAIN_SALT)` (or generate it strictly *after* all existing draws). Inserting
+  new `rng.next_u64()` calls in the *middle* of `generate` would shift every later
+  draw and silently rewrite monster/obstacle placement for existing seeds. A named
+  substream keeps old seeds stable and lets terrain evolve independently.
+
+## Hard invariants
 - **Difficulty is unchanged.** `distance_floor` stays x,y-only. Elevation never
   feeds `tier`/`mlevel`/`stat_mult` (CANON §G). No balance impact.
+- **Same seed ⇒ same terrain.** Fully derived from the instance seed; nothing about
+  the terrain is stored or client-authored — the client rebuilds identical relief
+  from the seeded terrain payload.
 - **Extraction is always feasible.** The guaranteed clear path (`Arena::path`)
   must remain reachable — now routed *through* climb edges. This is the riskiest
   part and gets the same rejection-sampling + unit-test-across-seeds treatment the
@@ -48,7 +75,8 @@ struct Terrain {
 ```
 
 - **Generation** (`Arena::generate`, behind a `[worldgen]` flag): grow a few
-  raised terraces per area with splitmix from the instance seed; carve at least
+  raised terraces per area from the **terrain substream** (see "Procedural &
+  seed-deterministic" above — so old seeds stay stable); carve at least
   one climb edge onto each raised terrace; **carve the clear path first, then only
   raise terraces that leave a climbable route to the portal** (mirrors how
   obstacles are rejection-sampled out of the path tube today).
