@@ -84,8 +84,9 @@ impl Default for Look {
             cam_yaw: 0.0,
             cam_dist: 26.0,
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
-            aperture: 3.5, // subtle tilt-shift — blur the far field, keep play sharp
-            bloom: 0.28,
+            aperture: 2.2, // tilt-shift: softens the far field for a diorama look while
+                           // the followed hero (focus tracks cam_dist) + near play stay sharp
+            bloom: 0.4, // warm HDR glow — lets emissives (portals, node glows, fiery mobs) read
             // Fog roughly hugs the walkable corridor so you can't see off into an
             // endless plain: the clearing (±lateral) stays crisp, the border
             // thicket sits right at fog start, and everything beyond fades into
