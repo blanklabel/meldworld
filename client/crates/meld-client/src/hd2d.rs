@@ -156,17 +156,32 @@ pub fn fog_component(look: &Look) -> DistanceFog {
 
 /// Spawn the HD-2D camera (HDR + tonemap + the full post stack) and return it.
 pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) -> Entity {
-    commands
-        .spawn((
-            Camera3d::default(),
-            Camera { hdr: true, ..default() },
-            Tonemapping::TonyMcMapface,
-            bloom_component(look),
-            dof_component(look),
-            fog_component(look),
-            initial,
-        ))
-        .id()
+    #[allow(unused_mut)]
+    let mut cam = commands.spawn((
+        Camera3d::default(),
+        Camera { hdr: true, ..default() },
+        Tonemapping::TonyMcMapface,
+        bloom_component(look),
+        dof_component(look),
+        fog_component(look),
+        initial,
+    ));
+    // Order-Independent Transparency: composite every translucent surface (water
+    // pools, cloud shadows, the path trail, rain) by per-pixel coverage instead of
+    // the default per-object back-to-front sort. That sort re-decides draw order
+    // each frame as the camera moves, which is what made the water "shimmer in and
+    // out" — flat blended pools flipping in front of / behind each other and the
+    // ground. OIT is order-independent, so it's stable. It forbids MSAA, so we swap
+    // to FXAA for edge anti-aliasing on the low-poly geometry. Native only: the
+    // browser (WebGL2) build lacks the storage-buffer features OIT needs, so it
+    // keeps the default sorted-transparency path.
+    #[cfg(not(target_arch = "wasm32"))]
+    cam.insert((
+        Msaa::Off,
+        bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(),
+        bevy::core_pipeline::fxaa::Fxaa::default(),
+    ));
+    cam.id()
 }
 
 /// Spawn the shadow-casting sun.
