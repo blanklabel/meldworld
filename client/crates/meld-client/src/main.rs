@@ -3644,6 +3644,7 @@ fn build_terrain_sections(
 /// Append a quad (two triangles) with a flat `normal` and per-corner `uv`. Winding
 /// is fixed; the terrace materials render double-sided so face direction never
 /// hides a surface.
+#[allow(clippy::too_many_arguments)]
 fn push_quad(
     p: &mut Vec<[f32; 3]>,
     n: &mut Vec<[f32; 3]>,

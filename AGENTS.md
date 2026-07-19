@@ -269,6 +269,23 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   construction (unit-tested across seeds). The client draws the path as a faint trail
   (sent on `run.started`, field `path`).
 
+- **Per-section seeds & streaming.** Each area is a **section** generated from its OWN
+  seed `section_seed(run_seed, n)` (`meld-world`), so sections are independent +
+  reproducible. `Arena::ensure_frontier` streams new sections on demand as the player
+  advances (endless past the initial `area_count` chain; the deep portal stays at the
+  chain's end). The game loop streams new sections' terrain each tick.
+
+- **Verticality (terraces + connectors).** Each section carries a `Terrain` elevation
+  grid + `Connector`s (slope/ladder/rope). Terraces are raised plateaus kept OUT of the
+  clear-path tube, so extraction stays on level 0 and always feasible; cliffs are
+  impassable walls and a **connector is the only way to change level** (no free
+  climbing). `apply_move`/`check_touch`/`harvest`/`at_portal` are elevation-aware.
+  Rides the wire as `SnapshotEntity.level` + the `world.terrain_section` message; the
+  client builds a stepped ground+cliff mesh per section and connector props. See
+  [`VERTICALITY-PROPOSAL.md`](VERTICALITY-PROPOSAL.md). `[worldgen]` tunables:
+  `terraces_per_area`, `max_level`, `terrace_min/max_size`, `terrain_cell`,
+  `connector_radius`, `stream_lookahead`.
+
 - **Extraction is mostly the Town Portal item.** There is a **single fixed portal**,
   deep at the end of the last area (`Arena::portal`). The primary way home is the
   **Town Portal** consumable (`begin_extraction { method: "town_portal" }`): it works
