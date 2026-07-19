@@ -1103,11 +1103,12 @@ fn overworld_camera_control(
     }
     let orbit = |look: &mut hd2d::Look, dx: f32, dy: f32| {
         look.cam_yaw -= dx * 0.4;
-        // Cap the tilt well below overhead: past ~60° the upright sprite billboards
-        // are viewed near edge-on and shrink toward invisible (they're flat quads that
-        // only yaw to face the camera). Clamping here is the HD-2D convention — it keeps
-        // sprites readable at every allowed angle instead of vanishing when you tilt up.
-        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 60.0);
+        // Cap the tilt well below overhead. The sprites are upright billboards that
+        // only yaw to face the camera, so their apparent height falls off as ~cos(pitch)
+        // as you tilt down — at 60° they're half-height (a sliver) and near overhead they
+        // vanish edge-on. Capping at 50° keeps them at ~64% height and clearly readable
+        // at every allowed angle (the HD-2D convention: never let the camera go overhead).
+        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 50.0);
     };
     let zoom = |look: &mut hd2d::Look, d: f32| {
         look.cam_dist = (look.cam_dist + d).clamp(8.0, 60.0);
