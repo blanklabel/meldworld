@@ -206,6 +206,7 @@ fn main() {
                 demo_driver,
                 hd2d_remote,
                 drift_clouds,
+                anchor_backdrop,
                 advance_sky,
                 apply_sky,
                 anchor_sky_fx,
@@ -252,6 +253,7 @@ fn main() {
                 hd2d_follow,
                 hd2d::place_billboards,
                 hd2d::billboard,
+                animate_sway,
                 update_overworld_hud,
                 render_overlay,
             )
@@ -1200,6 +1202,8 @@ fn setup(
                 sc("rock_largeA", 7.699),
                 sc("rock_largeC", 6.851),
                 sc("rock_largeD", 4.575),
+                sc("rock_largeE", 8.212),
+                sc("rock_largeF", 5.428),
                 sc("stone_largeA", 7.699),
             ],
         ),
@@ -1216,6 +1220,8 @@ fn setup(
             vec![
                 sc("rock_tallB", 3.621),
                 sc("rock_tallF", 4.532),
+                sc("rock_tallH", 4.784),
+                sc("rock_tallJ", 5.806),
                 sc("stone_tallC", 3.832),
             ],
         ),
@@ -1223,10 +1229,13 @@ fn setup(
         (
             "cliff",
             vec![
+                sc("cliff_large_rock", 4.2),
+                sc("cliff_cornerLarge_rock", 4.2),
+                sc("cliff_top_rock", 3.4),
+                sc("cliff_diagonal_rock", 3.4),
+                sc("cliff_waterfall_rock", 4.0),
                 sc("cliff_rock", 2.6),
                 sc("cliff_block_rock", 2.6),
-                sc("cliff_blockSlope_rock", 2.6),
-                sc("rock_largeD", 4.575),
             ],
         ),
         (
@@ -1241,6 +1250,8 @@ fn setup(
             "ice_spire",
             vec![
                 sc("rock_tallD", 3.885),
+                sc("rock_tallH", 4.784),
+                sc("rock_tallJ", 5.806),
                 sc("stone_tallC", 3.832),
                 sc("rock_tallB", 3.621),
             ],
@@ -1411,6 +1422,28 @@ fn setup(
     }
     commands.insert_resource(SkyMats { cloud: cloud_mat });
 
+    // Distant cliff/mountain backdrop: a sparse ring of BIG rock models far out on the
+    // horizon, anchored around the camera (see `anchor_backdrop`) so the diorama always
+    // has depth behind the play area. Sparse + far, so it reads as a scattered skyline
+    // rather than a wall, and the distance fog softens it into the sky.
+    let backdrop: Vec<Handle<Scene>> = ["cliff_large_rock", "rock_largeA", "cliff_cornerLarge_rock"]
+        .into_iter()
+        .map(|p| assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))))
+        .collect();
+    for i in 0..14 {
+        let ang = i as f32 / 14.0 * std::f32::consts::TAU + (rnd() - 0.5) * 0.35;
+        let rad = 165.0 + rnd() * 55.0;
+        let off = Vec2::new(ang.cos() * rad, ang.sin() * rad);
+        let size = 10.0 + rnd() * 10.0;
+        commands.spawn((
+            Backdrop { off },
+            SceneRoot(backdrop[i % backdrop.len()].clone()),
+            Transform::from_translation(Vec3::new(off.x, -0.5, off.y))
+                .with_scale(Vec3::splat(size))
+                .with_rotation(Quat::from_rotation_y(rnd() * std::f32::consts::TAU)),
+        ));
+    }
+
     // Stars — tiny emissive points on a camera-anchored dome, shown only at night.
     let star_mesh = meshes.add(Sphere::new(0.12));
     let star_mat = mats.add(StandardMaterial {
@@ -1459,6 +1492,62 @@ fn setup(
 /// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
 #[derive(Component)]
 struct CloudShadow;
+
+/// A far-off cliff/mountain on the horizon, anchored around the camera (like the
+/// clouds) so the diorama always has depth behind it. `off` is its xz offset from the
+/// camera; see [`anchor_backdrop`]. Fogged into the sky at that distance.
+#[derive(Component)]
+struct Backdrop {
+    off: Vec2,
+}
+
+/// Wind sway for foliage: the prop leans back and forth around its base (which sits
+/// on the ground) so the top travels most — reading as leaves moving in the wind.
+/// `base_yaw` preserves the spawn-time variety rotation the sway composes onto; the
+/// sway strengthens in rain (see [`animate_sway`]). Applied to trees/mushrooms/cacti.
+#[derive(Component)]
+struct Sway {
+    base_yaw: f32,
+    phase: f32,
+    amp: f32,
+    speed: f32,
+}
+
+/// Per-obstacle-kind wind-sway amplitude (radians of lean); `None` = rigid (rock/etc).
+fn sway_amp(kind: &str) -> Option<f32> {
+    match kind {
+        "tree" => Some(0.05),
+        "fungal_wall" => Some(0.045),
+        "cactus" => Some(0.02),
+        _ => None,
+    }
+}
+
+/// Lean every [`Sway`] prop on the wind — top-heavy (pivots at the grounded base),
+/// phase-offset per prop, and gustier while it's raining. Overworld only.
+fn animate_sway(time: Res<Time>, sky: Option<Res<Sky>>, mut q: Query<(&Sway, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    let gust = 1.0 + sky.map(|s| s.weather).unwrap_or(0.0) * 1.6;
+    for (s, mut tf) in &mut q {
+        let a = (t * s.speed + s.phase).sin() * s.amp * gust;
+        tf.rotation = Quat::from_rotation_y(s.base_yaw)
+            * Quat::from_rotation_z(a)
+            * Quat::from_rotation_x(a * 0.35);
+    }
+}
+
+/// Keep the [`Backdrop`] cliffs parked around the camera (they never get closer, like
+/// a parallax skyline) so the horizon always frames the scene with depth.
+fn anchor_backdrop(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<(&Backdrop, &mut Transform), Without<Camera3d>>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    for (b, mut tf) in &mut q {
+        tf.translation.x = cam.translation.x + b.off.x;
+        tf.translation.z = cam.translation.z + b.off.y;
+    }
+}
 
 /// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
 /// plane (so clouds stay overhead as you travel), `y` its altitude.
@@ -3483,13 +3572,23 @@ fn spawn_obstacle(
             // obstacles read bigger, without drifting far from the tuned size.
             let scale = base * (0.85 + r * 0.15).clamp(0.85, 1.5);
             let yaw = (hash_pick(id, 360) as f32).to_radians();
-            commands.spawn((
+            let mut ent = commands.spawn((
                 WorldEntity(id.to_string()),
                 SceneRoot(scene.clone()),
                 Transform::from_translation(world_pos(e.x, e.y, 0.0))
                     .with_scale(Vec3::splat(scale))
                     .with_rotation(Quat::from_rotation_y(yaw)),
             ));
+            // Foliage sways in the wind (see `animate_sway`); rock/cliff stays rigid.
+            if let Some(amp) = sway_amp(name) {
+                let h = hash_pick(id, 10000);
+                ent.insert(Sway {
+                    base_yaw: yaw,
+                    phase: (h % 628) as f32 / 100.0,
+                    amp,
+                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
+                });
+            }
             return;
         }
     }
