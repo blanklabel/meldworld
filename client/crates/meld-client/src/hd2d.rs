@@ -87,12 +87,13 @@ impl Default for Look {
             aperture: 2.2, // tilt-shift: softens the far field for a diorama look while
                            // the followed hero (focus tracks cam_dist) + near play stay sharp
             bloom: 0.4, // warm HDR glow — lets emissives (portals, node glows, fiery mobs) read
-            // Fog roughly hugs the walkable corridor so you can't see off into an
-            // endless plain: the clearing (±lateral) stays crisp, the border
-            // thicket sits right at fog start, and everything beyond fades into
-            // misty forest depth rather than showing bright open field.
-            fog_start: 40.0,
-            fog_end: 115.0,
+            // Fog hugs the walkable corridor so you can't see off into an endless
+            // plain: the clearing (±lateral ≈ 28) stays crisp, the border thicket
+            // sits around fog start, and everything past it fades into misty depth.
+            // Pulled in from 40/115 so the far distance is occluded before you can
+            // see open ground beyond the enclosing edge.
+            fog_start: 30.0,
+            fog_end: 78.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
