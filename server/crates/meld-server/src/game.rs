@@ -350,10 +350,11 @@ struct Extraction {
 struct BattleSlot {
     battle: Battle,
     battle_id: String,
-    /// Indices (into `arena.monsters`) of every creature in this encounter (the
-    /// touched creature plus its nearby group), so victory marks them all defeated
-    /// and awards their combined XP.
-    monster_idxs: Vec<usize>,
+    /// Stable `entity_id`s of every creature in this encounter (the touched
+    /// creature plus its nearby group), so victory marks them all defeated and
+    /// awards their combined XP. Ids, not vec indices, so `Arena::prune_defeated`
+    /// can compact `arena.monsters` between ticks without corrupting this battle.
+    monster_ids: Vec<String>,
     /// combatant_id -> player_id, for the players in THIS battle only.
     combatant_player: HashMap<String, String>,
     /// player_id -> the combatant ids they control in THIS battle.
@@ -1387,10 +1388,15 @@ impl GameState {
             seed,
             &hp_overrides,
         );
+        // Store the group's stable ids (indices are only valid until the next prune).
+        let monster_ids: Vec<String> = group_idxs
+            .iter()
+            .filter_map(|&gi| inst.arena.monsters.get(gi).map(|m| m.entity_id.clone()))
+            .collect();
         let slot = BattleSlot {
             battle,
             battle_id: battle_id.clone(),
-            monster_idxs: group_idxs.clone(),
+            monster_ids,
             combatant_player,
             player_combatants,
             parties: std::iter::once(party_id).collect(),
@@ -2240,6 +2246,14 @@ impl GameState {
         // runs every tick regardless of whether any battle is active, so roaming
         // teammates keep receiving world state while others fight.
         out.extend(self.snapshot_msgs());
+
+        // 4) Reclaim slain creatures so `arena.monsters` stays bounded over a long
+        // dive instead of accumulating a corpse per kill forever. Safe here: this is
+        // after all battle-end processing (which refers to creatures by stable id,
+        // not index) and after the snapshot (which already omits defeated creatures).
+        if let Some(inst) = self.instance.as_mut() {
+            inst.arena.prune_defeated();
+        }
         out
     }
 
@@ -2551,12 +2565,12 @@ impl GameState {
         let Some(bidx) = inst.battles.iter().position(|b| b.battle_id == battle_id) else {
             return out;
         };
-        let monster_idxs = inst.battles[bidx].monster_idxs.clone();
+        let monster_ids = inst.battles[bidx].monster_ids.clone();
         let battle_pos = inst.battles[bidx].pos;
         // Combined XP for the whole encounter (touched creature + its group).
-        let xp_reward: i64 = monster_idxs
+        let xp_reward: i64 = monster_ids
             .iter()
-            .filter_map(|&i| inst.arena.monsters.get(i))
+            .filter_map(|id| inst.arena.monster_by_id(id))
             .map(|m| m.xp_reward)
             .sum();
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
@@ -2591,9 +2605,10 @@ impl GameState {
 
         match outcome {
             BattleOutcome::Victory => {
-                // The whole encounter is cleared from the overworld.
-                for &i in &monster_idxs {
-                    if let Some(m) = inst.arena.monsters.get_mut(i) {
+                // The whole encounter is cleared from the overworld (prune_defeated
+                // then reclaims these corpses at the end of the tick).
+                for id in &monster_ids {
+                    if let Some(m) = inst.arena.monster_by_id_mut(id) {
                         m.defeated = true;
                         m.in_battle = false;
                     }
@@ -2625,7 +2640,7 @@ impl GameState {
                 // (economy.md S1; meld_world::roll_creature_loot). Seeded per kill
                 // like the Town Portal roll (instance ⊕ player ⊕ clock).
                 let loot_distance = battle_pos.distance_floor();
-                let monster_count = monster_idxs.len() as i32;
+                let monster_count = monster_ids.len() as i32;
                 for (pid, run_level, _xp) in &runs_snapshot {
                     let loot = meld_world::roll_creature_loot(
                         &balance,
@@ -2780,8 +2795,8 @@ impl GameState {
         // Battle over: any surviving grouped creatures (e.g. after a flee) resume
         // roaming, then drop the battle slot entirely (its combatant bookkeeping
         // goes with it). Other concurrent battles are untouched.
-        for &i in &monster_idxs {
-            if let Some(m) = inst.arena.monsters.get_mut(i) {
+        for id in &monster_ids {
+            if let Some(m) = inst.arena.monster_by_id_mut(id) {
                 if !m.defeated {
                     m.in_battle = false;
                 }
