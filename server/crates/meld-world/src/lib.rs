@@ -27,6 +27,8 @@
 //! Still deferred (documented, not lost): true 2D radial chunk streaming,
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
 
+use std::collections::HashMap;
+
 use meld_balance::Balance;
 use meld_proto::common::Position;
 use meld_proto::factions::creatures_hostile;
@@ -1123,6 +1125,21 @@ impl Arena {
             .iter()
             .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
             .collect();
+        // Spatial hash of live creatures (by index into `cs`) so the skirmish-target
+        // search is ~O(nearby) instead of scanning every creature per creature
+        // (was O(monsters²), which grew unbounded as the endless world streamed in).
+        // Cell = skirmish_aggro so a creature's aggro circle always fits inside its
+        // own cell's 3×3 neighbourhood. Determinism is preserved: candidates are
+        // tie-broken by (distance, index j), which reproduces the old `min_by` over
+        // index-ordered iteration exactly, regardless of bucket visit order.
+        let cell = skirmish_aggro.max(1.0);
+        let cell_of = |p: &Position| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (j, (pos, _, alive, _)) in cs.iter().enumerate() {
+            if *alive {
+                grid.entry(cell_of(pos)).or_default().push(j);
+            }
+        }
         // Immutable borrow of a disjoint field — safe alongside `monsters.iter_mut()`.
         let areas = &self.areas;
 
@@ -1147,16 +1164,38 @@ impl Arena {
                     .copied()
                     .filter(|p| m.position.distance_to(p) <= aggro_range)
                     .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
-                // Nearest hostile-faction creature within skirmish aggro (initiators only).
-                let creature_target = cs
-                    .iter()
-                    .enumerate()
-                    .filter(|(j, (_, fac, alive, _))| {
-                        *j != i && *alive && creatures_hostile(&m.faction, fac)
-                    })
-                    .map(|(_, (pos, _, _, _))| *pos)
-                    .filter(|pos| m.position.distance_to(pos) <= skirmish_aggro)
-                    .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+                // Nearest hostile-faction creature within skirmish aggro (initiators
+                // only), found via the spatial grid: scan just this creature's 3×3
+                // cell neighbourhood. Tie-break by (distance, index) to match the old
+                // full index-ordered scan bit-for-bit.
+                let (cx, cy) = cell_of(&m.position);
+                let mut best: Option<(f64, usize, Position)> = None;
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let Some(bucket) = grid.get(&(cx + dx, cy + dy)) else { continue };
+                        for &j in bucket {
+                            if j == i {
+                                continue;
+                            }
+                            let (pos, fac, _, _) = &cs[j];
+                            if !creatures_hostile(&m.faction, fac) {
+                                continue;
+                            }
+                            let d = m.position.distance_to(pos);
+                            if d > skirmish_aggro {
+                                continue;
+                            }
+                            let better = match best {
+                                None => true,
+                                Some((bd, bj, _)) => d < bd || (d == bd && j < bj),
+                            };
+                            if better {
+                                best = Some((d, j, *pos));
+                            }
+                        }
+                    }
+                }
+                let creature_target = best.map(|(_, _, pos)| pos);
                 (player_target, creature_target)
             } else {
                 (None, None)
