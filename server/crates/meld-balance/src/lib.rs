@@ -22,6 +22,7 @@ pub struct Balance {
     pub world: World,
     pub runs: Runs,
     pub battle: Battle,
+    pub loot: Loot,
     pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -115,6 +116,18 @@ pub struct Battle {
     pub resonant_ward_barrier_fraction: f64,
 }
 
+/// Creature loot tunables (economy.md sources S1). See the `[loot]` block in
+/// balance.toml. Chits + biome material + red-chest gear on a felled encounter.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Loot {
+    pub chits_per_mlevel: f64,
+    pub chits_jitter: f64,
+    pub gear_drop_chance: f64,
+    pub gear_atk_per_tier: f64,
+    pub gear_atk_jitter: f64,
+    pub gear_base_durability: i32,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Meld {
     pub xp_per_level: i64,
@@ -155,6 +168,9 @@ pub struct WorldGen {
     pub resources_per_area: f64,
     pub resource_lateral_spread: f64,
     pub obstacles_per_area: f64,
+    /// Forest sections pack this multiple of `obstacles_per_area` extra trees into
+    /// the play area (dense maze); other biomes keep the base density.
+    pub forest_obstacle_mult: f64,
     pub obstacle_min_radius: f64,
     pub obstacle_max_radius: f64,
     pub path_clear_radius: f64,

@@ -79,6 +79,9 @@ pub struct GearView {
     pub name: String,
     pub slot: String,
     pub insurance: String,
+    /// Loot tier band at generation (`floor(d/100)`); 0 for the starter weapon.
+    #[serde(default)]
+    pub tier: i32,
     pub atk_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,

@@ -91,8 +91,9 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
-        // Blue-chest gear with a durability sink (CANON.md D6). Red gear, gems,
-        // and sockets land with later slices.
+        // Gear with a durability sink (CANON.md D6). Both blue-chest (insured) and
+        // extracted red-chest (run loot, gear-item-models.md) live here; `tier` is
+        // the loot band at generation (`floor(d/100)`). Gems/sockets: later slice.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS gear (
@@ -101,6 +102,7 @@ impl Db {
                 name                 TEXT NOT NULL,
                 slot                 TEXT NOT NULL,
                 insurance            TEXT NOT NULL,
+                tier                 INTEGER NOT NULL DEFAULT 0,
                 atk_bonus            INTEGER NOT NULL DEFAULT 0,
                 base_max_durability  INTEGER NOT NULL,
                 max_durability       INTEGER NOT NULL,
@@ -110,6 +112,11 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
+        // Forward-compat: add `tier` to any gear table created before this column
+        // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await?;
         // Persistent Meld skills (forging / mercantile / alchemy). Level is a
         // pure function of xp (derived on read); we persist total xp only.
         sqlx::query(
@@ -244,10 +251,10 @@ impl Db {
             .bind(player_id)
             .execute(&mut *tx)
             .await?;
-        // A humble starting weapon (blue-chest, equipped).
+        // A humble starting weapon (blue-chest, equipped, tier 0).
         sqlx::query(
-            "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, atk_bonus, base_max_durability, max_durability, equipped)
-             VALUES ($1, $2, 'Chipped Blade', 'weapon', 'blue', 3, 100, 100, TRUE)",
+            "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped)
+             VALUES ($1, $2, 'Chipped Blade', 'weapon', 'blue', 0, 3, 100, 100, TRUE)",
         )
         .bind(Uuid::now_v7())
         .bind(player_id)
@@ -400,13 +407,48 @@ impl Db {
     /// List a player's gear.
     pub async fn get_gear(&self, player_id: Uuid) -> Result<Vec<GearRow>, DbError> {
         let rows = sqlx::query(
-            "SELECT gear_id, name, slot, insurance, atk_bonus, base_max_durability, max_durability, equipped
-             FROM gear WHERE owner_player_id = $1 ORDER BY name",
+            "SELECT gear_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped
+             FROM gear WHERE owner_player_id = $1 ORDER BY equipped DESC, name",
         )
         .bind(player_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(row_to_gear).collect())
+    }
+
+    /// Bank a run's looted red-chest gear into the Vault as owned gear
+    /// (gear-item-models.md: extraction converts run loot to owned gear that stays
+    /// `red`). Inserted unequipped; the gear_id is the one already assigned at
+    /// drop time. Part of the extraction transaction's spirit; called alongside
+    /// [`Self::bank_extraction`].
+    pub async fn insert_looted_gear(
+        &self,
+        player_id: Uuid,
+        gear: &[LootedGear],
+    ) -> Result<(), DbError> {
+        if gear.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for g in gear {
+            sqlx::query(
+                "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped)
+                 VALUES ($1, $2, $3, $4, 'red', $5, $6, $7, $8, FALSE)
+                 ON CONFLICT (gear_id) DO NOTHING",
+            )
+            .bind(g.gear_id)
+            .bind(player_id)
+            .bind(&g.name)
+            .bind(&g.slot)
+            .bind(g.tier)
+            .bind(g.atk_bonus)
+            .bind(g.base_max_durability)
+            .bind(g.max_durability)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Total attack bonus from a player's currently-equipped gear.
@@ -433,21 +475,108 @@ impl Db {
         Ok(())
     }
 
-    /// Equip or unequip a gear item. Returns `true` if a row was affected.
+    /// Equip or unequip a gear item, enforcing the loadout rules (vault-gear.md
+    /// equip endpoint). Equipping is idempotent, rejects broken gear (max
+    /// durability 0, CANON.md D6), and enforces one item per `slot` (a different
+    /// item already in the slot is a conflict — the caller unequips it first).
+    /// Unequipping is idempotent. Returns [`EquipResult`] so the API can map to
+    /// the right HTTP status.
+    ///
+    /// Spike divergence (documented): the spec also locks the loadout while a run
+    /// is in progress and restricts equip to `insurance: blue`. This slice omits
+    /// the run-lock (the HTTP API has no view of in-memory run state) and — per
+    /// vault-gear.md's own "this is the endpoint to relax" note — allows equipping
+    /// extracted `red` loot, since red drops are the loop's main gear source.
     pub async fn set_equipped(
         &self,
         player_id: Uuid,
         gear_id: Uuid,
         equipped: bool,
-    ) -> Result<bool, DbError> {
-        let res = sqlx::query("UPDATE gear SET equipped = $3 WHERE gear_id = $2 AND owner_player_id = $1")
-            .bind(player_id)
+    ) -> Result<EquipResult, DbError> {
+        let mut tx = self.pool.begin().await?;
+        // Load the target (owner-scoped so existence isn't leaked cross-account).
+        let row = sqlx::query(
+            "SELECT slot, max_durability, equipped FROM gear
+             WHERE gear_id = $1 AND owner_player_id = $2",
+        )
+        .bind(gear_id)
+        .bind(player_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.rollback().await?;
+            return Ok(EquipResult::NotFound);
+        };
+        let slot: String = row.get("slot");
+        let max_durability: i32 = row.get("max_durability");
+        let already: bool = row.get("equipped");
+
+        if !equipped {
+            // Unequip is idempotent; just clear the flag.
+            sqlx::query("UPDATE gear SET equipped = FALSE WHERE gear_id = $1")
+                .bind(gear_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(EquipResult::Ok);
+        }
+
+        // Equip: idempotent no-op if already worn.
+        if already {
+            tx.rollback().await?;
+            return Ok(EquipResult::Ok);
+        }
+        // Broken gear cannot be equipped until repaired (CANON.md D6).
+        if max_durability == 0 {
+            tx.rollback().await?;
+            return Ok(EquipResult::Broken);
+        }
+        // One item per slot: a different equipped item in the same slot conflicts.
+        let occupied: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM gear
+             WHERE owner_player_id = $1 AND slot = $2 AND equipped = TRUE AND gear_id <> $3",
+        )
+        .bind(player_id)
+        .bind(&slot)
+        .bind(gear_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if occupied > 0 {
+            tx.rollback().await?;
+            return Ok(EquipResult::SlotOccupied);
+        }
+        sqlx::query("UPDATE gear SET equipped = TRUE WHERE gear_id = $1")
             .bind(gear_id)
-            .bind(equipped)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        Ok(res.rows_affected() > 0)
+        tx.commit().await?;
+        Ok(EquipResult::Ok)
     }
+}
+
+/// Outcome of [`Db::set_equipped`], mapped to HTTP status by the API layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquipResult {
+    /// Applied (or already in the requested state — idempotent).
+    Ok,
+    /// Gear does not exist or is not owned by the caller → 404.
+    NotFound,
+    /// Gear at 0 max durability → 409 conflict.
+    Broken,
+    /// Another item already occupies this slot → 409 conflict.
+    SlotOccupied,
+}
+
+/// A red-chest gear item to bank into the Vault on extraction.
+#[derive(Debug, Clone)]
+pub struct LootedGear {
+    pub gear_id: Uuid,
+    pub name: String,
+    pub slot: String,
+    pub tier: i32,
+    pub atk_bonus: i32,
+    pub base_max_durability: i32,
+    pub max_durability: i32,
 }
 
 /// A gear row (blue-chest only, this slice).
@@ -457,6 +586,7 @@ pub struct GearRow {
     pub name: String,
     pub slot: String,
     pub insurance: String,
+    pub tier: i32,
     pub atk_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
@@ -469,6 +599,7 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         name: row.get("name"),
         slot: row.get("slot"),
         insurance: row.get("insurance"),
+        tier: row.get("tier"),
         atk_bonus: row.get("atk_bonus"),
         base_max_durability: row.get("base_max_durability"),
         max_durability: row.get("max_durability"),

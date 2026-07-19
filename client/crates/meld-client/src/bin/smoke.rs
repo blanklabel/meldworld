@@ -95,8 +95,10 @@ fn main() {
                 ServerMsg::Gauge { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
+                | ServerMsg::LevelUp { .. }
                 | ServerMsg::WorldPath { .. }
                 | ServerMsg::TerrainSection { .. }
+                | ServerMsg::WorldFrame { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
                 | ServerMsg::ActionResolved { .. }

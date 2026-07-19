@@ -9,7 +9,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::common::{Combatant, ItemStack, Position};
+use crate::common::{Combatant, ItemStack, LootGear, Position};
 use crate::enums::*;
 use crate::Id;
 
@@ -323,6 +323,13 @@ pub mod battle {
         pub outcome: BattleOutcome,
         pub xp_awards: Vec<XpAward>,
         pub loot: Vec<ItemStack>,
+        /// Chits found by the recipient this encounter (economy.md S1). Banked on
+        /// extraction, lost on death (it never entered circulation).
+        #[serde(default)]
+        pub chits_found: i64,
+        /// Red-chest gear dropped to the recipient this encounter (deep fights only).
+        #[serde(default)]
+        pub gear_drops: Vec<LootGear>,
         pub class_emblem_drops: Vec<EmblemDrop>,
         pub gatekeeper_cleared: bool,
     }
@@ -381,10 +388,42 @@ pub mod run {
         pub base_run_level: i32,
         pub members: Vec<Member>,
         pub backpack: Vec<ItemStack>,
+        /// Chits carried in the run backpack at entry (always 0 — chits is found
+        /// in the maze and banked on extraction, economy.md S1).
+        #[serde(default)]
+        pub chits: i64,
+        /// Red-chest gear carried in the run backpack at entry (always empty at
+        /// entry; grows as deep creatures drop loot).
+        #[serde(default)]
+        pub backpack_gear: Vec<LootGear>,
         /// Waypoints of the guaranteed clear path from the hub to the deep portal.
         /// The client draws this as a faint trail so the feasible route is legible.
         #[serde(default)]
         pub path: Vec<Position>,
+        /// Walkable bounds — the client frames the map (edge cliffs/water + end
+        /// walls) from these so it reads as a contained map, not an endless plain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub bounds: Option<WorldBounds>,
+        /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
+        #[serde(default)]
+        pub seams: Vec<SeamView>,
+    }
+    /// Walkable extent of the instance (world-generation.md corridor bounds).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct WorldBounds {
+        pub x_min: f64,
+        pub x_max: f64,
+        /// Half-height of the corridor: walkable `y ∈ [-lateral, lateral]`.
+        pub lateral: f64,
+    }
+    /// One biome seam for the client to wall + gate.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SeamView {
+        pub x: f64,
+        pub gap_y: f64,
+        pub gap_half_width: f64,
+        pub biome_from: String,
+        pub biome_to: String,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Member {
@@ -423,6 +462,37 @@ pub mod run {
         const TYPE: &'static str = "run.party";
     }
 
+    /// S2C — the party gained one or more levels this victory. Carries the
+    /// before/after stats per hero so the client can play the classic JRPG
+    /// "LEVEL UP!" stat-gain sequence. Sent alongside the refreshed `run.party`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct LevelUp {
+        pub new_run_level: i32,
+        pub levels_gained: i32,
+        pub heroes: Vec<HeroLevelUp>,
+    }
+    /// One hero's stat gains across a level-up (before → after).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct HeroLevelUp {
+        pub slot: i32,
+        pub name: String,
+        pub class_key: String,
+        pub level: i32,
+        pub max_hp_before: i32,
+        pub max_hp_after: i32,
+        pub str_before: i32,
+        pub str_after: i32,
+        pub mnd_before: i32,
+        pub mnd_after: i32,
+        pub dex_before: i32,
+        pub dex_after: i32,
+        pub wll_before: i32,
+        pub wll_after: i32,
+    }
+    impl Message for LevelUp {
+        const TYPE: &'static str = "run.level_up";
+    }
+
     /// C2S — harvest a resource node the avatar is standing next to. The node's
     /// `material` banks into the backpack and its `skill` gains XP (world-gen.md).
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -431,6 +501,16 @@ pub mod run {
     }
     impl Message for Harvest {
         const TYPE: &'static str = "run.harvest";
+    }
+
+    /// C2S — open a treasure chest the avatar is standing next to. Rolls loot
+    /// (chits + materials + deep-enough red gear) into the backpack (economy.md S2).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct OpenChest {
+        pub entity_id: Id,
+    }
+    impl Message for OpenChest {
+        const TYPE: &'static str = "run.open_chest";
     }
 
     /// C2S — opt into the fight already in progress nearby (the avatar must be
@@ -499,6 +579,13 @@ pub mod run {
         pub max_distance_reached: i32,
         pub banked: Option<Vec<ItemStack>>,
         pub lost: Option<Vec<ItemStack>>,
+        /// Chits banked (on `extracted`) or forfeited (on `died`/`abandoned`) with
+        /// this run. Minted into the persistent economy only on extraction.
+        #[serde(default)]
+        pub chits: i64,
+        /// Red-chest gear banked into the Vault on extraction (empty on death).
+        #[serde(default)]
+        pub gear_banked: Vec<LootGear>,
         pub durability_loss_applied: bool,
     }
     impl Message for MemberResult {
@@ -509,6 +596,13 @@ pub mod run {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct BackpackUpdate {
         pub changes: Vec<BackpackChange>,
+        /// Signed change to the run's chits total (economy.md S1). Positive on a
+        /// loot drop, negative when chits leaves the backpack (banked/dropped).
+        #[serde(default)]
+        pub chits_delta: i64,
+        /// Red-chest gear added to the backpack by this update (loot drops).
+        #[serde(default)]
+        pub gear_added: Vec<LootGear>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct BackpackChange {

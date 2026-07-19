@@ -64,6 +64,16 @@ fn autoplay_flag() -> bool {
 fn autoplay_flag() -> bool {
     query_has("autoplay")
 }
+/// With autoplay, enter the maze but **idle** at the hub instead of walking east —
+/// a stable overworld frame for screenshotting the world art. `MELD_IDLE` / `?idle`.
+#[cfg(not(target_arch = "wasm32"))]
+fn world_idle_flag() -> bool {
+    std::env::var("MELD_IDLE").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn world_idle_flag() -> bool {
+    query_has("idle")
+}
 
 /// Offline render demo: no networking; scripted canned data drives the real
 /// rendering so the Overworld/Battle screens can be shown without a server.
@@ -140,6 +150,17 @@ fn levelup_mockup_flag() -> bool {
 fn levelup_mockup_flag() -> bool {
     query_has("levelup")
 }
+/// Offline mockup for the animated "LEVEL UP!" stat screen (`?levelup_anim` /
+/// `MELD_LEVELUP_ANIM`) — seeds a canned level-up so the sequence can be
+/// screenshotted without a battle.
+#[cfg(not(target_arch = "wasm32"))]
+fn levelup_anim_mockup_flag() -> bool {
+    std::env::var("MELD_LEVELUP_ANIM").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+fn levelup_anim_mockup_flag() -> bool {
+    query_has("levelup_anim")
+}
 
 fn main() {
     let base = server_base();
@@ -186,6 +207,8 @@ fn main() {
         .init_resource::<WorldPath>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
+        .init_resource::<LevelUpQueue>()
+        .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
         .init_resource::<Steer>()
         .init_resource::<TapTarget>()
@@ -236,6 +259,8 @@ fn main() {
                 despawn::<WorldEntity>,
                 despawn::<PathTrail>,
                 despawn::<TerrainMesh>,
+                despawn::<WorldWall>,
+                despawn::<ChestEntity>,
             ),
         )
         .add_systems(
@@ -260,6 +285,17 @@ fn main() {
                 animate_sway,
                 update_overworld_hud,
                 render_overlay,
+            )
+                .run_if(in_state(Screen::Overworld)),
+        )
+        .add_systems(
+            Update,
+            (
+                gear_click,
+                level_up_screen,
+                build_world_walls,
+                sync_chests,
+                auto_open_chest,
             )
                 .run_if(in_state(Screen::Overworld)),
         )
@@ -391,11 +427,13 @@ struct OwEntity {
     battling: bool,
     /// Elevation level (terraced verticality); render height rises by `level*STEP_HEIGHT`.
     level: u8,
+    /// For chests: whether it's been opened.
+    opened: bool,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -407,10 +445,11 @@ impl OwEntity {
             radius: 0.0,
             battling: false,
             level: 0,
+            opened: false,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false }
     }
 }
 
@@ -425,6 +464,10 @@ struct Overworld {
 #[derive(Resource, Default)]
 struct RunBackpack {
     items: Vec<(String, i32)>,
+    /// Chits found this run (banked on extraction, lost on death).
+    chits: i64,
+    /// Looted red-chest gear this run as (name, atk_bonus).
+    gear: Vec<(String, i32)>,
 }
 
 impl RunBackpack {
@@ -464,6 +507,31 @@ struct Terrain {
 #[derive(Component)]
 struct TerrainMesh(u32);
 
+/// Walkable bounds + biome seams for the instance. The client builds framing
+/// walls (edge cliffs/water + end walls + gated biome seams) from this once per
+/// run; `built` gates the one-time spawn.
+#[derive(Resource, Default)]
+struct WorldFrame {
+    have: bool,
+    built: bool,
+    x_min: f32,
+    x_max: f32,
+    lateral: f32,
+    seams: Vec<meld_client::net::SeamLine>,
+}
+
+/// Marker for spawned framing-wall geometry (despawned on run change / screen exit).
+#[derive(Component)]
+struct WorldWall;
+
+/// A spawned chest visual, tracked by id + opened state so it can be re-rendered
+/// when it opens.
+#[derive(Component)]
+struct ChestEntity {
+    id: String,
+    opened: bool,
+}
+
 /// The caller's hero roster (name/class/level/stats), shown on the inventory party
 /// screen — this is where stats live, not the battle HUD.
 #[derive(Resource, Default)]
@@ -477,6 +545,24 @@ struct HeroRename {
     slot: Option<usize>,
     buffer: String,
 }
+
+/// Queue of pending "LEVEL UP!" stat screens (one per leveled hero), played
+/// one-at-a-time old-school style. `elapsed` drives the line-by-line reveal +
+/// auto-advance; `run_level` is the party's new run level for the banner.
+#[derive(Resource, Default)]
+struct LevelUpQueue {
+    pending: std::collections::VecDeque<meld_client::net::HeroLevelUpLine>,
+    current: Option<meld_client::net::HeroLevelUpLine>,
+    run_level: i32,
+    elapsed: f32,
+    /// When set (offline demo/screenshot), the current hero is held on screen
+    /// until [Space] instead of auto-advancing. Off in normal play.
+    hold: bool,
+}
+
+/// Marker for the immediate-mode level-up screen root.
+#[derive(Component)]
+struct LevelUpRoot;
 
 /// Marker for spawned path-trail dots (despawned when the path changes).
 #[derive(Component)]
@@ -753,6 +839,10 @@ const FLASH_TTL: f32 = 0.18;
 struct EndInfo {
     outcome: String,
     banked: usize,
+    /// Chits banked (extracted) or forfeited (died) with this run.
+    chits: i64,
+    /// Count of red-chest gear banked to the Vault on extraction.
+    gear: usize,
 }
 
 /// Paces MoveIntents at a fixed cadence (see [`MOVE_INTENT_HZ`]) so walk speed
@@ -940,6 +1030,14 @@ struct HitFxRoot;
 /// Immediate-mode root for an overworld overlay (inventory / level-up).
 #[derive(Component)]
 struct OverlayRoot;
+/// A clickable gear row in the inventory overlay: clicking toggles its equip
+/// state over HTTP. `equipped` is the state at render time (so a click requests
+/// the opposite).
+#[derive(Component)]
+struct GearButton {
+    gear_id: String,
+    equipped: bool,
+}
 #[derive(Component)]
 struct EndedRoot;
 #[derive(Component)]
@@ -1965,6 +2063,7 @@ fn mock_overlay_setup(
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
     mut world: ResMut<Overworld>,
+    mut levelup: ResMut<LevelUpQueue>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if inventory_mockup_flag() {
@@ -1977,14 +2076,22 @@ fn mock_overlay_setup(
         ];
         inv.gear = vec![
             GearLine {
+                gear_id: "mock-weapon".into(),
                 name: "Chipped Blade".into(),
+                slot: "weapon".into(),
+                insurance: "blue".into(),
+                tier: 0,
                 equipped: true,
                 max_durability: 90,
                 base_max_durability: 100,
                 atk_bonus: 3,
             },
             GearLine {
-                name: "Bloom Ward".into(),
+                gear_id: "mock-accessory".into(),
+                name: "Duneglass Charm".into(),
+                slot: "accessory".into(),
+                insurance: "red".into(),
+                tier: 3,
                 equipped: false,
                 max_durability: 60,
                 base_max_durability: 60,
@@ -2001,6 +2108,32 @@ fn mock_overlay_setup(
         ];
         prog.classes = vec!["squire".into(), "dragoon".into()];
         overlay.kind = Some(OverlayKind::LevelUp);
+    } else if levelup_anim_mockup_flag() {
+        use meld_client::net::HeroLevelUpLine;
+        levelup.run_level = 5;
+        levelup.hold = true; // demo: hold each hero on screen for screenshots
+        levelup.pending.extend([
+            HeroLevelUpLine {
+                name: "Rurik".into(),
+                class_key: "squire".into(),
+                level: 5,
+                max_hp: (52, 62),
+                str_: (24, 27),
+                mnd: (4, 4),
+                dex: (12, 13),
+                wll: (20, 22),
+            },
+            HeroLevelUpLine {
+                name: "Yselle".into(),
+                class_key: "psyker".into(),
+                level: 5,
+                max_hp: (42, 46),
+                str_: (6, 6),
+                mnd: (32, 36),
+                dex: (14, 15),
+                wll: (12, 13),
+            },
+        ]);
     } else {
         return;
     }
@@ -2033,17 +2166,28 @@ fn pump_net(
     mut prog: ResMut<ProgressData>,
     mut lobby: ResMut<LobbyData>,
     mut backpack: ResMut<RunBackpack>,
-    mut world_path: ResMut<WorldPath>,
-    mut terrain: ResMut<Terrain>,
+    // Grouped as one tuple param to stay within Bevy's 16-param system limit.
+    mut world_res: (ResMut<WorldPath>, ResMut<WorldFrame>, ResMut<Terrain>),
     mut roster: ResMut<PartyRoster>,
+    mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    let (world_path, world_frame, terrain) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
-            ServerMsg::Backpack { items } => backpack.items = items,
+            ServerMsg::Backpack { items, chits, gear } => {
+                backpack.items = items;
+                backpack.chits = chits;
+                backpack.gear = gear;
+            }
             ServerMsg::Party { heroes } => roster.heroes = heroes,
+            ServerMsg::LevelUp { new_run_level, heroes, .. } => {
+                // Enqueue each leveled hero for the old-school stat screen.
+                levelup.run_level = new_run_level;
+                levelup.pending.extend(heroes);
+            }
             ServerMsg::WorldPath { points } => {
                 world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
                 world_path.drawn = false;
@@ -2058,6 +2202,14 @@ fn pump_net(
                     world_path.drawn = false;
                 }
                 terrain.sections.insert(section.index, section);
+            }
+            ServerMsg::WorldFrame { x_min, x_max, lateral, seams } => {
+                world_frame.have = true;
+                world_frame.built = false;
+                world_frame.x_min = x_min as f32;
+                world_frame.x_max = x_max as f32;
+                world_frame.lateral = lateral as f32;
+                world_frame.seams = seams;
             }
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
@@ -2119,6 +2271,7 @@ fn pump_net(
                             radius: e.radius as f32,
                             battling: e.battling,
                             level: e.level,
+                            opened: e.opened,
                         },
                     );
                 }
@@ -2184,6 +2337,8 @@ fn pump_net(
                 } else {
                     end.outcome = outcome;
                     end.banked = 0;
+                    end.chits = 0;
+                    end.gear = 0;
                     next.set(Screen::Ended);
                 }
             }
@@ -2195,10 +2350,12 @@ fn pump_net(
                 session.channeling = false;
                 session.status = "extraction interrupted".to_string();
             }
-            ServerMsg::RunEnded { result, banked } => {
+            ServerMsg::RunEnded { result, banked, chits, gear } => {
                 session.channeling = false;
                 end.outcome = result;
                 end.banked = banked;
+                end.chits = chits;
+                end.gear = gear;
                 next.set(Screen::Ended);
             }
             ServerMsg::InventoryData {
@@ -2881,8 +3038,15 @@ fn update_overworld_hud(
     let me_pos = Some((me.x, me.y));
     if let Ok(mut t) = q.single_mut() {
         let mut line = format!("distance {d}  -  {}  -  ⌂×{tp}", biome_display(d));
+        // Chits found this run (banked on extraction), then gathered materials.
+        if backpack.chits > 0 {
+            line.push_str(&format!("  -  {} chits", backpack.chits));
+        }
         if !mats.is_empty() {
             line.push_str(&format!("  -  {mats}"));
+        }
+        if !backpack.gear.is_empty() {
+            line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
         }
         if near_fight(&world, me_pos) {
             line.push_str("  -  ⚔ Press [J] to join the fight");
@@ -3117,7 +3281,7 @@ fn gather_steer(
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { right_amt -= 1.0; }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { right_amt += 1.0; }
     let mut mv = fwd * fwd_amt + right * right_amt;
-    if autoplay.0 {
+    if autoplay.0 && !world_idle_flag() {
         mv += Vec2::new(1.0, 0.0); // demo walks world-east, camera-independent
     }
     if mv != Vec2::ZERO {
@@ -3289,6 +3453,17 @@ fn render_overlay(
     rename: Res<HeroRename>,
     existing: Query<Entity, With<OverlayRoot>>,
 ) {
+    // Rebuild only when something the overlay shows changed. The gear rows are
+    // real buttons; they must persist across frames for click detection, so we
+    // must NOT despawn+respawn them every frame.
+    if !(overlay.is_changed()
+        || inv.is_changed()
+        || prog.is_changed()
+        || roster.is_changed()
+        || rename.is_changed())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -3378,18 +3553,61 @@ fn render_overlay(
                     for (kind, qty) in &inv.materials {
                         label(p, format!("  {} x{}", kind.replace('_', " "), qty), 15.0, dim);
                     }
-                    label(p, "- Gear -".into(), 15.0, gold);
+                    label(p, "- Gear -  (click to equip / unequip)".into(), 15.0, gold);
                     for g in &inv.gear {
-                        let tag = if g.equipped { "[equipped]" } else { "" };
-                        label(
-                            p,
-                            format!(
-                                "  {}  atk+{}  dur {}/{} {}",
-                                g.name, g.atk_bonus, g.max_durability, g.base_max_durability, tag
-                            ),
-                            15.0,
-                            if g.equipped { Color::srgb(0.6, 0.95, 0.7) } else { dim },
+                        let broken = g.max_durability == 0;
+                        let tag = if g.equipped {
+                            "  [equipped]"
+                        } else if broken {
+                            "  [broken]"
+                        } else {
+                            ""
+                        };
+                        let ins = if g.insurance == "red" { " red" } else { "" };
+                        let text = format!(
+                            "  {}  [{}{} t{}]  atk+{}  dur {}/{}{}",
+                            g.name,
+                            g.slot,
+                            ins,
+                            g.tier,
+                            g.atk_bonus,
+                            g.max_durability,
+                            g.base_max_durability,
+                            tag
                         );
+                        let col = if g.equipped {
+                            Color::srgb(0.6, 0.95, 0.7)
+                        } else if broken {
+                            Color::srgb(0.85, 0.45, 0.45)
+                        } else {
+                            Color::srgb(0.85, 0.92, 1.0)
+                        };
+                        // Each gear is a clickable button (handled by `gear_click`).
+                        p.spawn((
+                            Button,
+                            GearButton {
+                                gear_id: g.gear_id.clone(),
+                                equipped: g.equipped,
+                            },
+                            Node {
+                                width: Val::Percent(100.0),
+                                padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                                ..default()
+                            },
+                            BackgroundColor(if g.equipped {
+                                Color::srgba(0.12, 0.3, 0.16, 0.6)
+                            } else {
+                                Color::NONE
+                            }),
+                            BorderRadius::all(Val::Px(4.0)),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Text::new(text),
+                                TextFont { font_size: 15.0, ..default() },
+                                TextColor(col),
+                            ));
+                        });
                     }
                     label(p, "[ESC] close   [1-4] rename hero".into(), 13.0, dim);
                 }
@@ -3418,6 +3636,195 @@ fn render_overlay(
                     label(p, classes, 15.0, dim);
                     label(p, "[ESC] close   [I] inventory".into(), 13.0, dim);
                 }
+            });
+        });
+}
+
+/// Click / hover on the inventory gear rows. A press toggles the item's equip
+/// state over HTTP; the server enforces the rules (one per slot, not broken), and
+/// a rejected change (409) is a silent no-op — the refresh re-shows the truth.
+/// `Changed<Interaction>` makes each click fire exactly once.
+fn gear_click(
+    net: NonSend<NetRes>,
+    mut rows: Query<(&Interaction, &GearButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, g, mut bg) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                if !g.gear_id.is_empty() {
+                    net.0.equip_gear(g.gear_id.clone(), !g.equipped);
+                }
+            }
+            Interaction::Hovered => {
+                *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7));
+            }
+            Interaction::None => {
+                *bg = BackgroundColor(if g.equipped {
+                    Color::srgba(0.12, 0.3, 0.16, 0.6)
+                } else {
+                    Color::NONE
+                });
+            }
+        }
+    }
+}
+
+/// Seconds between each stat line revealing, and the hold before auto-advancing.
+const LU_REVEAL_STEP: f32 = 0.34;
+const LU_HOLD_AFTER: f32 = 1.6;
+
+/// Old-school "LEVEL UP!" stat screen: plays one hero at a time, revealing each
+/// stat gain line-by-line (the classic scroll), then auto-advances (or [Space]/
+/// [Enter] to hurry). Immediate-mode: the panel is rebuilt each frame while a
+/// hero is showing, and torn down when the queue drains.
+fn level_up_screen(
+    mut commands: Commands,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut lu: ResMut<LevelUpQueue>,
+    existing: Query<Entity, With<LevelUpRoot>>,
+) {
+    // Pull the next hero when none is on screen.
+    if lu.current.is_none() {
+        match lu.pending.pop_front() {
+            Some(h) => {
+                lu.current = Some(h);
+                lu.elapsed = 0.0;
+            }
+            None => {
+                for e in &existing {
+                    commands.entity(e).despawn();
+                }
+                return;
+            }
+        }
+    }
+    lu.elapsed += time.delta_secs();
+
+    const TOTAL_LINES: usize = 5; // HP, STR, MND, DEX, WLL
+    let reveal_full_at = LU_REVEAL_STEP * TOTAL_LINES as f32;
+    let hurry = keys.just_pressed(KeyCode::Space) || keys.just_pressed(KeyCode::Enter);
+    if hurry {
+        if lu.elapsed < reveal_full_at {
+            lu.elapsed = reveal_full_at; // reveal everything at once
+        } else {
+            lu.current = None; // advance to next hero (or finish)
+            for e in &existing {
+                commands.entity(e).despawn();
+            }
+            return;
+        }
+    } else if !lu.hold && lu.elapsed >= reveal_full_at + LU_HOLD_AFTER {
+        lu.current = None; // auto-advance (skipped in held demo mode)
+        for e in &existing {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+
+    let reveal = ((lu.elapsed / LU_REVEAL_STEP).floor() as usize + 1).min(TOTAL_LINES);
+    let h = lu.current.clone().unwrap();
+    let more = !lu.pending.is_empty();
+
+    // The five stat lines, in classic order.
+    let lines: [(&str, (i32, i32)); TOTAL_LINES] = [
+        ("HP ", h.max_hp),
+        ("STR", h.str_),
+        ("MND", h.mnd),
+        ("DEX", h.dex),
+        ("WLL", h.wll),
+    ];
+
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let gold = Color::srgb(0.98, 0.86, 0.42);
+    let dim = Color::srgb(0.72, 0.78, 0.9);
+    let gain_col = Color::srgb(0.55, 0.98, 0.62);
+    commands
+        .spawn((
+            LevelUpRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    width: Val::Px(420.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(6.0),
+                    padding: UiRect::all(Val::Px(20.0)),
+                    border: UiRect::all(Val::Px(3.0)),
+                    ..default()
+                },
+                BorderColor(gold),
+                BackgroundColor(Color::srgb(0.06, 0.05, 0.14)),
+                BorderRadius::all(Val::Px(6.0)),
+            ))
+            .with_children(|p| {
+                let label = |p: &mut ChildSpawnerCommands, text: String, size: f32, color: Color| {
+                    p.spawn((
+                        Text::new(text),
+                        TextFont { font_size: size, ..default() },
+                        TextColor(color),
+                    ));
+                };
+                label(p, "*  LEVEL UP!  *".into(), 26.0, gold);
+                label(p, h.name.clone(), 22.0, Color::srgb(0.9, 0.95, 1.0));
+                label(
+                    p,
+                    format!("{}  -  now Level {}", class_display(&h.class_key), h.level),
+                    14.0,
+                    dim,
+                );
+                // Divider.
+                p.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(2.0),
+                        margin: UiRect::vertical(Val::Px(4.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.4, 0.34, 0.14)),
+                ));
+                for (i, (name, (before, after))) in lines.iter().enumerate() {
+                    if i >= reveal {
+                        break;
+                    }
+                    let gain = after - before;
+                    let (arrow, gcol) = if gain > 0 {
+                        (format!("+{gain}"), gain_col)
+                    } else {
+                        ("--".to_string(), dim)
+                    };
+                    // One row: STAT   before -> after        +gain
+                    p.spawn((Node {
+                        width: Val::Percent(100.0),
+                        justify_content: JustifyContent::SpaceBetween,
+                        ..default()
+                    },))
+                        .with_children(|row| {
+                            row.spawn((
+                                Text::new(format!("{name}   {before} -> {after}")),
+                                TextFont { font_size: 18.0, ..default() },
+                                TextColor(if gain > 0 { Color::srgb(0.9, 0.95, 1.0) } else { dim }),
+                            ));
+                            row.spawn((
+                                Text::new(arrow),
+                                TextFont { font_size: 18.0, ..default() },
+                                TextColor(gcol),
+                            ));
+                        });
+                }
+                let footer = if more { "[Space] next hero" } else { "[Space] continue" };
+                label(p, footer.into(), 12.0, dim);
             });
         });
 }
@@ -3583,8 +3990,295 @@ fn sync_overworld_sprites(
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
             }
+            // Chests are static and change look when opened — a dedicated
+            // reconciler (`sync_chests`) owns them, not the generic sprite path.
+            EntityKind::Chest => {}
         }
     }
+}
+
+/// Biome cliff/rock tone for the boulder-ridge walls (indexed by biome).
+fn biome_rock_color(bi: usize) -> Color {
+    match bi {
+        1 => Color::srgb(0.66, 0.53, 0.33), // Desert — sandstone
+        2 => Color::srgb(0.24, 0.18, 0.17), // Ashfall — dark basalt
+        3 => Color::srgb(0.74, 0.82, 0.92), // Tundra — pale ice/snow rock
+        4 => Color::srgb(0.30, 0.36, 0.30), // Mire — mossy stone (rare; mire uses water)
+        _ => Color::srgb(0.44, 0.48, 0.42), // Forest — grey-green cliff (also fallback)
+    }
+}
+
+/// Spawn one biome-appropriate boundary prop at world (x, y), tagged [`WorldWall`]
+/// (so the snapshot sync leaves it alone). Reuses the world's own art: a painterly
+/// treeline in the forest, a rugged boulder ridge elsewhere, water in the mire —
+/// so the border looks like natural geography, not a slab.
+#[allow(clippy::too_many_arguments)]
+fn spawn_wall_prop(
+    commands: &mut Commands,
+    wa: &WorldAssets,
+    rock_mats: &[Handle<StandardMaterial>],
+    bi: usize,
+    x: f32,
+    y: f32,
+    idx: usize,
+) {
+    let id = format!("wall-{idx}");
+    match bi {
+        0 => {
+            // Forest → a dense treeline built from the real 3D tree models (same
+            // Kenney Nature Kit scenes the obstacles use), variant + yaw from the id.
+            if let Some(variants) = wa.prop_scenes.get("tree").filter(|v| !v.is_empty()) {
+                let (scene, base) = &variants[hash_pick(&id, variants.len())];
+                let scale = base * (1.0 + (hash_pick(&id, 24) as f32) * 0.012); // slight variety
+                let yaw = (hash_pick(&id, 360) as f32).to_radians();
+                commands.spawn((
+                    WorldWall,
+                    SceneRoot(scene.clone()),
+                    Transform::from_translation(world_pos(x, y, 0.0))
+                        .with_scale(Vec3::splat(scale))
+                        .with_rotation(Quat::from_rotation_y(yaw)),
+                ));
+            } else {
+                // Fallback: a rugged rock if the tree scenes failed to load.
+                let mat = rock_mats.first().cloned().unwrap_or_default();
+                let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08;
+                commands.spawn((
+                    WorldWall,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(world_pos(x, y, 0.24 * s))
+                        .with_scale(Vec3::splat(s * 0.9)),
+                ));
+            }
+        }
+        4 => {
+            // Mire → a border of the shared animated water blobs.
+            let spin = (hash_pick(&id, 360) as f32).to_radians();
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.water_mesh.clone()),
+                MeshMaterial3d(wa.water_mat.clone()),
+                Transform::from_translation(world_pos(x, y, 0.04))
+                    .with_rotation(
+                        Quat::from_rotation_y(spin)
+                            * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    )
+                    .with_scale(Vec3::splat(3.4)),
+            ));
+        }
+        _ => {
+            // Desert / Ashfall / Tundra → a rugged boulder-cliff ridge.
+            let mat = rock_mats.get(bi).cloned().unwrap_or_default();
+            let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08; // 3.2–5.1, varied
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(x, y, 0.24 * s))
+                    .with_scale(Vec3::splat(s * 0.9)),
+            ));
+        }
+    }
+}
+
+/// Build the map's framing once per run from [`WorldFrame`]: a natural biome
+/// border (treeline / boulder ridge / water) hugging both long edges and both
+/// ends, plus a gated ridge at each biome seam (a wall across the corridor with
+/// one gap, flanked by standing-stone gateposts). Contains the map using the
+/// world's own art — no primitive slabs.
+fn build_world_walls(
+    mut commands: Commands,
+    mut frame: ResMut<WorldFrame>,
+    wa: Option<Res<WorldAssets>>,
+    existing: Query<Entity, With<WorldWall>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(wa) = wa else { return };
+    if !frame.have || frame.built {
+        return;
+    }
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let (x_min, x_max, lat) = (frame.x_min, frame.x_max, frame.lateral);
+    if x_max <= x_min {
+        return;
+    }
+    // One shared rock material per biome (avoids allocating hundreds).
+    let rock_mats: Vec<Handle<StandardMaterial>> = (0..5)
+        .map(|bi| {
+            mats.add(StandardMaterial {
+                base_color: biome_rock_color(bi),
+                perceptual_roughness: 1.0,
+                ..default()
+            })
+        })
+        .collect();
+    let mut idx = 0usize;
+    let step = 3.0_f32;
+    // Long edges: a deep, jittered band of props just outside ±lateral so you see
+    // a solid mass fading into fog, not a thin hedge with field behind it. Forest
+    // gets a proper thicket (many ranks of trees out to ~fog start); the rockier
+    // biomes get a chunky 2-rank boulder ridge (opaque, cheaper).
+    let mut x = x_min;
+    while x <= x_max {
+        let bi = biome_index(x.floor().max(0.0) as i64);
+        let ranks = if bi == 0 { 6 } else { 2 };
+        for edge in [lat, -lat] {
+            let out = if edge > 0.0 { 1.0 } else { -1.0 };
+            for r in 0..ranks {
+                // Jitter x/y within the band so the mass looks natural, not gridded.
+                let jx = (hash_pick(&format!("jx{idx}"), 100) as f32 - 50.0) * 0.045;
+                let jy = (hash_pick(&format!("jy{idx}"), 100) as f32 - 50.0) * 0.03;
+                let depth = 0.6 + r as f32 * 2.3;
+                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, edge + out * depth + jy, idx);
+                idx += 1;
+            }
+        }
+        x += step;
+    }
+    // End caps across the full width (behind the hub, behind the deep portal),
+    // banded in x so looking down the corridor's ends is also a solid mass.
+    for xe in [x_min, x_max] {
+        let bi = biome_index(xe.floor().max(0.0) as i64);
+        let out = if xe < 0.0 { -1.0 } else { 1.0 };
+        let ranks = if bi == 0 { 4 } else { 2 };
+        let mut y = -lat;
+        while y <= lat {
+            for r in 0..ranks {
+                let jy = (hash_pick(&format!("ey{idx}"), 100) as f32 - 50.0) * 0.03;
+                let depth = 0.6 + r as f32 * 2.3;
+                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, xe + out * depth, y + jy, idx);
+                idx += 1;
+            }
+            y += step;
+        }
+    }
+    // Gated biome seams: a ridge across the corridor with one gap on the path,
+    // flanked by taller standing-stone gateposts so the pass reads as a doorway.
+    for s in &frame.seams {
+        let (sx, gap_y, gap_h) = (s.x as f32, s.gap_y as f32, s.gap_half_width as f32);
+        let bi = biome_index(sx.floor() as i64);
+        let mut y = -lat;
+        while y <= lat {
+            if (y - gap_y).abs() > gap_h {
+                spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, sx, y, idx);
+                idx += 1;
+            }
+            y += step;
+        }
+        for py in [gap_y - gap_h - 0.4, gap_y + gap_h + 0.4] {
+            let mat = rock_mats.get(bi.min(4)).cloned().unwrap_or_default();
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(sx, py, 1.4))
+                    .with_scale(Vec3::new(2.2, 6.0, 2.2)),
+            ));
+        }
+    }
+    frame.built = true;
+}
+
+/// Reconcile treasure-chest visuals from the snapshot: spawn a chest when it
+/// first appears, re-spawn it (opened look) when it's opened, and despawn it if
+/// it leaves the world. Chests are few and static, so this owns them directly
+/// rather than the smoothed sprite path.
+fn sync_chests(
+    mut commands: Commands,
+    world: Res<Overworld>,
+    existing: Query<(Entity, &ChestEntity)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    use std::collections::HashSet;
+    let mut present: HashSet<String> = HashSet::new();
+    for (entity, ce) in &existing {
+        match world.entities.get(&ce.id) {
+            Some(e) if e.kind == EntityKind::Chest && e.opened == ce.opened => {
+                present.insert(ce.id.clone()); // up to date, keep
+            }
+            _ => commands.entity(entity).despawn(), // gone or opened-state changed → rebuild
+        }
+    }
+    for (id, e) in &world.entities {
+        if e.kind != EntityKind::Chest || present.contains(id) {
+            continue;
+        }
+        // A little wooden chest built from a few parts: body + banded domed lid +
+        // gold trim + latch. Closed → gold trim glows to catch the eye; opened →
+        // the lid is thrown back and the glow dies.
+        let opened = e.opened;
+        let wood = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.46, 0.30, 0.16),
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+        let wood_dark = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.33, 0.21, 0.11),
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+        let gold = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.86, 0.68, 0.26),
+            emissive: if opened { LinearRgba::BLACK } else { LinearRgba::rgb(0.55, 0.42, 0.1) },
+            metallic: 0.6,
+            perceptual_roughness: 0.35,
+            ..default()
+        });
+        let body = meshes.add(Cuboid::new(1.1, 0.6, 0.72));
+        let lid = meshes.add(Cuboid::new(1.16, 0.26, 0.8));
+        let band = meshes.add(Cuboid::new(1.18, 0.1, 0.78));
+        let latch = meshes.add(Cuboid::new(0.16, 0.2, 0.06));
+        // Lid: shut on top, or flipped open and leaning back when opened.
+        let lid_tf = if opened {
+            Transform::from_xyz(0.0, 0.66, -0.36)
+                .with_rotation(Quat::from_rotation_x(-1.95))
+        } else {
+            Transform::from_xyz(0.0, 0.72, 0.0)
+        };
+        commands
+            .spawn((
+                ChestEntity { id: id.clone(), opened },
+                Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((Mesh3d(body), MeshMaterial3d(wood.clone()), Transform::from_xyz(0.0, 0.3, 0.0)));
+                p.spawn((Mesh3d(band), MeshMaterial3d(gold.clone()), Transform::from_xyz(0.0, 0.42, 0.0)));
+                p.spawn((Mesh3d(lid), MeshMaterial3d(wood_dark), lid_tf));
+                p.spawn((Mesh3d(latch), MeshMaterial3d(gold), Transform::from_xyz(0.0, 0.5, 0.39)));
+            });
+    }
+}
+
+/// Walk-into-to-open: when the avatar is within reach of an unopened chest, ask
+/// the server to open it (mirrors [`auto_harvest`]). The server rolls the loot.
+fn auto_open_chest(
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    overlay: Res<Overlay>,
+    mut sent: Local<std::collections::HashSet<String>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    for (id, e) in &world.entities {
+        if e.kind == EntityKind::Chest
+            && !e.opened
+            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
+            && !sent.contains(id)
+        {
+            net.0.send(ClientCmd::OpenChest { entity_id: id.clone() });
+            sent.insert(id.clone());
+        }
+    }
+    sent.retain(|id| world.entities.contains_key(id));
 }
 
 /// Spawn a player's overworld avatar: a ground-anchored, walk-animated psyker
@@ -5530,11 +6224,24 @@ fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
 fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
     let (title, color): (String, Color) = match end.outcome.as_str() {
         "victory" => ("VICTORY - the creature is slain!".into(), Color::srgb(0.5, 0.95, 0.6)),
-        "extracted" => (
-            format!("EXTRACTED - banked {} item(s) to your Vault", end.banked),
-            Color::srgb(0.4, 0.9, 0.95),
-        ),
-        "defeat" | "died" => ("DEFEAT - your hero has fallen.".into(), Color::srgb(0.95, 0.4, 0.4)),
+        "extracted" => {
+            let mut msg = format!(
+                "EXTRACTED - banked {} item(s) + {} chits to your Vault",
+                end.banked, end.chits
+            );
+            if end.gear > 0 {
+                msg.push_str(&format!(" - {} red-chest gear", end.gear));
+            }
+            (msg, Color::srgb(0.4, 0.9, 0.95))
+        }
+        "defeat" | "died" => {
+            let msg = if end.chits > 0 {
+                format!("DEFEAT - your hero has fallen. Lost {} chits.", end.chits)
+            } else {
+                "DEFEAT - your hero has fallen.".into()
+            };
+            (msg, Color::srgb(0.95, 0.4, 0.4))
+        }
         _ => ("The run is over.".into(), Color::srgb(0.8, 0.8, 0.8)),
     };
     commands

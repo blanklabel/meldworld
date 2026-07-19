@@ -110,6 +110,108 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// A biome's combat-drop material — banked into the run backpack when a creature
+/// is felled (feeds Forging/Alchemy crafting), distinct from harvestable resource
+/// nodes. Forest keeps `forest_bloom_petal` (the crafting recipe + conformance
+/// tests depend on that content id). Structural content; deeper bands repeat Mire.
+pub fn combat_material_for_biome(d: i64) -> &'static str {
+    match biome_for_distance(d) {
+        "forest" => "forest_bloom_petal",
+        "desert" => "sun_scarab_husk",
+        "ashfall" => "ember_cinder",
+        "tundra" => "frost_shard",
+        _ => "bog_ichor",
+    }
+}
+
+/// Red-chest gear rolled as creature loot (economy.md S1, gear-item-models.md).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GearDrop {
+    pub name: String,
+    pub slot: String,
+    pub tier: i32,
+    pub atk_bonus: i32,
+    pub max_durability: i32,
+}
+
+/// The loot a felled encounter yields to one participant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatureLoot {
+    /// Chits found (banked on extraction, lost on death). Scales with depth.
+    pub chits: i64,
+    /// The biome's combat material (one unit).
+    pub material: &'static str,
+    /// Red-chest gear, only rolled at/after `red_chest_floor_distance`.
+    pub gear: Option<GearDrop>,
+}
+
+/// Flavourful red-gear name for a biome + slot (deterministic given `rng`).
+fn gear_name(d: i64, slot: &str, rng: &mut Rng) -> String {
+    let adjectives: &[&str] = match biome_for_distance(d) {
+        "forest" => &["Verdant", "Bloomforged", "Thornwood"],
+        "desert" => &["Sunbaked", "Duneglass", "Scarab"],
+        "ashfall" => &["Ashfall", "Cinderforged", "Emberwrought"],
+        "tundra" => &["Rimebound", "Frostforged", "Glacial"],
+        _ => &["Miremere", "Fungal", "Peatbound"],
+    };
+    let nouns: &[&str] = match slot {
+        "weapon" => &["Greatblade", "Cleaver", "Warpick"],
+        "armor" => &["Plate", "Aegis", "Carapace"],
+        _ => &["Charm", "Sigil", "Band"],
+    };
+    let a = adjectives[rng.below(adjectives.len())];
+    let n = nouns[rng.below(nouns.len())];
+    format!("{a} {n}")
+}
+
+/// Roll the loot a felled encounter yields to one participant, deterministically
+/// from `seed` (economy.md S1; balance `[loot]`). `distance` is the encounter's
+/// floored distance (drives chit/gear scaling) and `monster_count` the number of
+/// creatures in the group. Pure — the caller owns the seed (server rolls it from
+/// the instance seed ⊕ player ⊕ clock, like the Town Portal drop).
+pub fn roll_creature_loot(
+    balance: &Balance,
+    distance: i64,
+    monster_count: i32,
+    seed: u64,
+) -> CreatureLoot {
+    let mut rng = Rng(seed);
+    let sc = Scaling::new(balance);
+    let l = &balance.loot;
+    // Chits scale with monster level × encounter size, with symmetric jitter.
+    let jitter = 1.0 + rng.signed() * l.chits_jitter;
+    let chits = (l.chits_per_mlevel
+        * sc.mlevel(distance) as f64
+        * monster_count.max(1) as f64
+        * jitter)
+        .round()
+        .max(0.0) as i64;
+    let material = combat_material_for_biome(distance);
+    // Red-chest gear only generates at/after the red-chest floor (tier 3, d 300).
+    let gear = if distance >= balance.world_scaling.red_chest_floor_distance
+        && rng.unit() < l.gear_drop_chance
+    {
+        let tier = sc.tier(distance) as i32;
+        let slot = ["weapon", "armor", "accessory"][rng.below(3)];
+        let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
+        let atk_bonus = (l.gear_atk_per_tier * tier as f64 * gjitter).round().max(1.0) as i32;
+        Some(GearDrop {
+            name: gear_name(distance, slot, &mut rng),
+            slot: slot.to_string(),
+            tier,
+            atk_bonus,
+            max_durability: l.gear_base_durability,
+        })
+    } else {
+        None
+    };
+    CreatureLoot {
+        chits,
+        material,
+        gear,
+    }
+}
+
 /// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
 fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -392,6 +494,35 @@ pub struct Area {
     pub terrain: Terrain,
 }
 
+/// A hand-placed treasure chest. Walk up and open it once for a loot roll — chits,
+/// materials, and deep-enough red gear — into the backpack, the overworld half of
+/// the loot economy (economy.md S2 world loot).
+#[derive(Debug, Clone)]
+pub struct Chest {
+    pub entity_id: Id,
+    pub position: Position,
+    /// Loot tier band at this depth (`tier(d) = floor(d/100)`), for loot scaling.
+    pub tier: i32,
+    pub opened: bool,
+}
+
+/// A biome boundary the player funnels through: a wall of impassable geo across
+/// the corridor with a single **gap** (aligned to the guaranteed clear path). The
+/// server enforces the wall (movement can only cross `x` inside the gap); the
+/// client draws cliffs/water with the opening. Makes "cross into the next region"
+/// a real, legible moment instead of an invisible distance threshold.
+#[derive(Debug, Clone)]
+pub struct Seam {
+    /// Corridor x where the biome changes.
+    pub x: f64,
+    /// Centre-y of the passable gap.
+    pub gap_y: f64,
+    /// Half-width of the gap (passable band is `[gap_y - h, gap_y + h]`).
+    pub gap_half_width: f64,
+    pub biome_from: &'static str,
+    pub biome_to: &'static str,
+}
+
 /// An impassable terrain feature (tree, cliff, pond, …). Circular for the spike;
 /// the player and roaming creatures cannot enter its radius.
 #[derive(Debug, Clone)]
@@ -432,6 +563,29 @@ fn dist_point_segment(p: &Position, a: &Position, b: &Position) -> f64 {
     ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt()
 }
 
+/// The clear path's y where it crosses `x` (linear interp between the waypoints
+/// that straddle `x`); clamps to the endpoints outside the path's x-range.
+fn path_y_at(path: &[Position], x: f64) -> f64 {
+    if path.is_empty() {
+        return 0.0;
+    }
+    for w in path.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (lo, hi) = if a.x <= b.x { (a, b) } else { (b, a) };
+        if x >= lo.x && x <= hi.x {
+            let span = (hi.x - lo.x).max(1e-6);
+            let t = (x - lo.x) / span;
+            return lo.y + (hi.y - lo.y) * t;
+        }
+    }
+    // Outside the path's x-range: use the nearest endpoint's y.
+    if x <= path[0].x {
+        path[0].y
+    } else {
+        path[path.len() - 1].y
+    }
+}
+
 /// A player avatar on the overworld.
 #[derive(Debug, Clone)]
 pub struct Avatar {
@@ -457,6 +611,10 @@ pub struct Arena {
     pub ground_loot: Vec<GroundLoot>,
     /// Impassable biome terrain (trees/cliffs/water/…). Never intrudes on `path`.
     pub obstacles: Vec<Obstacle>,
+    /// Hand-placed treasure chests scattered through the sections.
+    pub chests: Vec<Chest>,
+    /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
+    pub seams: Vec<Seam>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
     /// of `path_clear_radius` around it holds no obstacles AND no raised terrace, so
     /// the exit is always reachable on level 0; the client draws it as a faint trail.
@@ -514,6 +672,8 @@ impl Arena {
             resources: Vec::new(),
             ground_loot: Vec::new(),
             obstacles: Vec::new(),
+            chests: Vec::new(),
+            seams: Vec::new(),
             path: vec![Position::new(0.0, 0.0)],
             portal: Position::new(0.0, 0.0),
             avatars: Vec::new(),
@@ -615,6 +775,15 @@ impl Arena {
                 position: Position::new(wg.first_monster_x * 0.5, 3.0),
                 elevation: 0,
                 harvested: false,
+            });
+            // A guaranteed starter treasure chest opposite the node, so a new
+            // player sees the loot loop (open → chits/materials) in area 0.
+            let starter_chest_x = wg.first_monster_x * 0.5;
+            self.chests.push(Chest {
+                entity_id: format!("chest-{}", self.chests.len()),
+                position: Position::new(starter_chest_x, -3.0),
+                tier: Scaling::new(balance).tier(starter_chest_x.floor() as i64) as i32,
+                opened: false,
             });
             self.areas.push(Area {
                 index: i,
@@ -788,6 +957,90 @@ impl Arena {
                 }
             }
             tplaced += 1;
+        }
+
+        // One treasure chest per section, rejection-sampled to sit off the clear
+        // path and not on top of a creature/resource (reachable, but a small
+        // detour off the main line — old-school "explore for treasure").
+        for attempt in 0..24 {
+            let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+            let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
+            let cpos = Position::new(cx, cy);
+            let clear_of_path = dist_to_path(&cpos, &self.path) > wg.path_clear_radius;
+            let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
+                && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
+            if (clear_of_path && clear_of_mobs) || attempt == 23 {
+                self.chests.push(Chest {
+                    entity_id: format!("chest-{}", self.chests.len()),
+                    position: cpos,
+                    tier: Scaling::new(balance).tier(cx.floor() as i64) as i32,
+                    opened: false,
+                });
+                break;
+            }
+        }
+
+        // Biome-boundary chokepoints: if this section's span crosses a biome
+        // boundary, wall the corridor with a single gap centred on the clear path,
+        // so the player funnels through a visible "pass" into the next region.
+        for &bd in &[100.0_f64, 300.0, 500.0, 1000.0, 3000.0] {
+            if bd <= start_x || bd > end_x {
+                continue;
+            }
+            let from = biome_for_distance((bd - 1.0).floor() as i64);
+            let to = biome_for_distance(bd.floor() as i64);
+            if from == to {
+                continue;
+            }
+            self.seams.push(Seam {
+                x: bd,
+                gap_y: path_y_at(&self.path, bd),
+                gap_half_width: wg.path_clear_radius,
+                biome_from: from,
+                biome_to: to,
+            });
+        }
+
+        // Forest is a DENSE maze: pack the play area with extra trees so only the
+        // winding clear path stays open. Uses a SEPARATE rng stream (section_seed ⊕
+        // a constant) so main's creature/terrace/chest/seam draws stay byte-identical
+        // and every determinism test still holds. Ground level only (no floating
+        // trees on a terrace), and never buries the path/creatures/nodes/chests.
+        if biome == "forest" && wg.forest_obstacle_mult > 0.0 {
+            let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
+            let extra = (wg.forest_obstacle_mult * wg.obstacles_per_area).round().max(0.0) as usize;
+            let (mut fp, mut fa) = (0usize, 0usize);
+            while fp < extra && fa < extra * 12 {
+                fa += 1;
+                let ox = start_x + frng.unit() * length;
+                let oy = frng.signed() * (self.lateral - 1.0);
+                let radius = wg.obstacle_min_radius
+                    + frng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                let pos = Position::new(ox, oy);
+                if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
+                    continue;
+                }
+                if terrain.level_at(&pos) != 0 {
+                    continue;
+                }
+                let occupied = self
+                    .monsters
+                    .iter()
+                    .any(|m| m.position.distance_to(&pos) < radius + 1.2)
+                    || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.2)
+                    || self.chests.iter().any(|c| c.position.distance_to(&pos) < radius + 1.2)
+                    || self.obstacles.iter().any(|o| o.position.distance_to(&pos) < radius + o.radius);
+                if occupied {
+                    continue;
+                }
+                self.obstacles.push(Obstacle {
+                    entity_id: format!("obs-{}", self.obstacles.len()),
+                    kind: "tree".to_string(),
+                    position: pos,
+                    radius,
+                });
+                fp += 1;
+            }
         }
 
         self.areas.push(Area {
@@ -1086,6 +1339,29 @@ impl Arena {
         Some(node.kind.clone())
     }
 
+    /// Open the treasure chest `entity_id` if `player` is within interaction range
+    /// and it isn't already open. Marks it opened and returns `(tier, distance)`
+    /// so the caller can roll its loot via balance.
+    pub fn open_chest(&mut self, player_id: &str, entity_id: &str) -> Option<(i32, i64)> {
+        let ppos = self.avatar(player_id)?.position;
+        let radius = self.interaction_radius;
+        let chest = self
+            .chests
+            .iter_mut()
+            .find(|c| c.entity_id == entity_id && !c.opened)?;
+        if ppos.distance_to(&chest.position) > radius {
+            return None;
+        }
+        chest.opened = true;
+        Some((chest.tier, chest.position.distance_floor()))
+    }
+
+    /// Walkable bounds `(x_min, x_max, lateral)` — the client frames the map (edge
+    /// cliffs/water + end walls) from these so it reads as contained, not endless.
+    pub fn bounds(&self) -> (f64, f64, f64) {
+        (self.x_min, self.x_max, self.lateral)
+    }
+
     /// Spawn a player avatar near the Center Hub (staggered so parties don't
     /// stack). All start on the y=0 corridor (level 0) so they can walk east.
     pub fn add_avatar(&mut self, player_id: String, speed: f64) {
@@ -1142,6 +1418,9 @@ impl Arena {
         let pr = self.player_radius;
         let obstacles: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        // (seam_x, gap_y, gap_half_width) — you may only cross a seam inside its gap.
+        let seams: Vec<(f64, f64, f64)> =
+            self.seams.iter().map(|s| (s.x, s.gap_y, s.gap_half_width)).collect();
 
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
@@ -1158,6 +1437,15 @@ impl Arena {
         // same level, or a connector joins the current & destination levels.
         let accept = |cand: Position| -> Option<u8> {
             if Self::obstacle_blocks(&obstacles, &cand, pr) {
+                return None;
+            }
+            // Crossing a biome seam is only permitted inside its gap: reject a
+            // candidate that would step over the seam's x off-gap (you must funnel
+            // through the pass). Mirrors an impassable wall, so the slide logic runs.
+            if seams
+                .iter()
+                .any(|&(sx, gy, gh)| (cur.x < sx) != (cand.x < sx) && (cand.y - gy).abs() > gh)
+            {
                 return None;
             }
             let cl = self.level_at(&cand);
@@ -1261,6 +1549,76 @@ fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loot_is_deterministic_and_scales_with_depth() {
+        let b = Balance::load_default().unwrap();
+        // Same seed ⇒ identical loot (pure function).
+        assert_eq!(
+            roll_creature_loot(&b, 50, 1, 12345),
+            roll_creature_loot(&b, 50, 1, 12345)
+        );
+        // Forest keeps the crafting/conformance material id.
+        assert_eq!(roll_creature_loot(&b, 10, 1, 1).material, "forest_bloom_petal");
+        // Deeper fights pay more chits on average (sample a few seeds).
+        let shallow: i64 = (0..16).map(|s| roll_creature_loot(&b, 40, 1, s).chits).sum();
+        let deep: i64 = (0..16).map(|s| roll_creature_loot(&b, 800, 1, s).chits).sum();
+        assert!(deep > shallow, "deeper creatures should drop more chits");
+    }
+
+    #[test]
+    fn red_gear_never_drops_below_the_red_chest_floor() {
+        let b = Balance::load_default().unwrap();
+        let floor = b.world_scaling.red_chest_floor_distance;
+        // Below the floor: no gear across many seeds.
+        for s in 0..200 {
+            assert!(roll_creature_loot(&b, floor - 1, 1, s).gear.is_none());
+        }
+        // At/after the floor: gear does appear for some seeds, at the right tier.
+        let mut saw_gear = false;
+        for s in 0..200 {
+            if let Some(g) = roll_creature_loot(&b, floor, 1, s).gear {
+                saw_gear = true;
+                assert_eq!(g.tier, 3, "tier(300) = 3");
+                assert!(g.atk_bonus >= 1 && g.max_durability > 0);
+                assert!(["weapon", "armor", "accessory"].contains(&g.slot.as_str()));
+            }
+        }
+        assert!(saw_gear, "red gear should drop at/after the floor for some seeds");
+    }
+
+    #[test]
+    fn generates_chests_and_biome_seams() {
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7);
+        assert!(!arena.chests.is_empty(), "chests are placed");
+        assert!(arena.chests.iter().all(|c| !c.opened));
+        // The default world reaches the desert (d > 100), so at least a
+        // forest→desert seam exists with a positive gap.
+        assert!(!arena.seams.is_empty(), "biome seam(s) generated");
+        assert!(arena
+            .seams
+            .iter()
+            .any(|s| s.biome_from == "forest" && s.biome_to == "desert"));
+        assert!(arena.seams.iter().all(|s| s.gap_half_width > 0.0));
+    }
+
+    #[test]
+    fn seam_wall_blocks_crossing_outside_the_gap() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7);
+        let seam = arena.seams[0].clone();
+        arena.add_avatar("p".into(), 100.0); // fast: one step would cross the seam
+        // Far from the gap in y → the wall blocks the crossing.
+        let off_y = (seam.gap_y + seam.gap_half_width + 6.0).min(arena.lateral - 1.0);
+        arena.avatar_mut("p").unwrap().position = Position::new(seam.x - 0.5, off_y);
+        let after = arena.apply_move("p", 1.0, 0.0, 1).unwrap();
+        assert!(after.x < seam.x, "blocked away from the gap (x={})", after.x);
+        // Lined up with the gap → the crossing is allowed.
+        arena.avatar_mut("p").unwrap().position = Position::new(seam.x - 0.5, seam.gap_y);
+        let after2 = arena.apply_move("p", 1.0, 0.0, 2).unwrap();
+        assert!(after2.x >= seam.x, "can pass through the gap (x={})", after2.x);
+    }
 
     #[test]
     fn aggressive_creature_chases_a_nearby_player() {

@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use meld_db::{Db, DbError, PlayerRow};
+use meld_db::{Db, DbError, EquipResult, PlayerRow};
 use meld_proto::enums::CharacterClass;
 use meld_proto::http::*;
 use meld_proto::limits;
@@ -42,8 +42,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/players/me", get(players_me))
         .route("/v1/vault", get(vault))
         .route("/v1/vault/gear", get(vault_gear))
-        .route("/v1/vault/gear/{gear_id}/equip", post(equip))
-        .route("/v1/vault/gear/{gear_id}/unequip", post(unequip))
+        .route("/v1/vault/gear/:gear_id/equip", post(equip))
+        .route("/v1/vault/gear/:gear_id/unequip", post(unequip))
         .route("/v1/meld-skills", get(meld_skills))
         .route("/v1/heroes", get(heroes))
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
@@ -235,6 +235,7 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     name: g.name,
                     slot: g.slot,
                     insurance: g.insurance,
+                    tier: g.tier,
                     atk_bonus: g.atk_bonus,
                     base_max_durability: g.base_max_durability,
                     max_durability: g.max_durability,
@@ -273,8 +274,24 @@ async fn set_equipped(
     let gid = Uuid::parse_str(&gear_id)
         .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
     match st.db.set_equipped(player_id, gid, equipped).await {
-        Ok(true) => Ok((StatusCode::OK, Json(serde_json::json!({ "equipped": equipped }))).into_response()),
-        Ok(false) => Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Gear not owned by caller.")),
+        Ok(EquipResult::Ok) => {
+            Ok((StatusCode::OK, Json(serde_json::json!({ "equipped": equipped }))).into_response())
+        }
+        Ok(EquipResult::NotFound) => Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Gear not owned by caller.",
+        )),
+        Ok(EquipResult::Broken) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Gear at 0 max durability cannot be equipped until repaired.",
+        )),
+        Ok(EquipResult::SlotOccupied) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Another item already occupies this slot; unequip it first.",
+        )),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }
