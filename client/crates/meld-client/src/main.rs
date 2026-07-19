@@ -509,6 +509,12 @@ const STEP_HEIGHT: f32 = 2.0;
 const CLIFF_EDGE_SCALE: f32 = 1.9;
 const CLIFF_YAW_OFFSET: f32 = 0.0;
 
+/// Ramp (slope connector) tuning: a Kenney Nature Kit `cliff_blockSlope_rock` model
+/// (the slope sibling of the terrace `cliff_block_rock`) sized so one level's rise
+/// meets the terrace lip, and yawed so it ramps up from the path side (−Z) to the top.
+const SLOPE_SCALE: f32 = 2.0;
+const SLOPE_YAW: f32 = 0.0;
+
 /// Streamed terraced terrain: the elevation grid + connectors for every section the
 /// server has sent. `build_terrain_sections` turns each into a stepped ground+cliff
 /// mesh (rebuilding on return from battle, like the path trail).
@@ -4707,7 +4713,7 @@ fn build_terrain_sections(
         }
         // The ladders / ropes / slopes that make each terrace reachable.
         for c in &sec.connectors {
-            spawn_connector(&mut commands, &mut meshes, &mut mats, *idx, c);
+            spawn_connector(&mut commands, &mut meshes, &mut mats, &assets, *idx, c);
         }
     }
 }
@@ -4886,6 +4892,7 @@ fn spawn_connector(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     mats: &mut Assets<StandardMaterial>,
+    assets: &AssetServer,
     idx: u32,
     c: &meld_client::net::ConnectorView,
 ) {
@@ -4897,22 +4904,27 @@ fn spawn_connector(
     // reads as a distinct affordance and isn't swallowed by the cliff face.
     let z = c.y as f32 - 0.5; // overworld y → world Z
     let mid_y = (lo_y + hi_y) * 0.5;
-    // Bold, warm, emissive so the route up a cliff is unmistakable (and findable in
-    // shade) — the same "legible route" spirit as the glowing path trail.
+
+    // A slope is a real Kenney rock ramp (the slope sibling of the cliff-face models),
+    // so it reads as natural geography instead of a flat plank. Scaled per level count
+    // so it bridges the whole rise, its base sitting on the lower ground.
+    if c.kind == "slope" {
+        let scene =
+            assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_blockSlope_rock.glb"));
+        let levels = (c.hi.max(c.lo) - c.lo.min(c.hi)).max(1) as f32;
+        commands.spawn((
+            TerrainMesh(idx),
+            SceneRoot(scene),
+            Transform::from_xyz(x, lo_y, z)
+                .with_scale(Vec3::splat(SLOPE_SCALE * levels))
+                .with_rotation(Quat::from_rotation_y(SLOPE_YAW)),
+        ));
+        return;
+    }
+
+    // Ladder / rope are still bold, warm, emissive primitives so the route up a cliff
+    // is unmistakable (and findable in shade) — the "legible route" spirit of the path.
     let (mesh, color, emissive, transform) = match c.kind.as_str() {
-        "slope" => {
-            // A ramp board rising from the ground (−Z) up to the terrace lip (+Z).
-            let run = h * 1.8;
-            let len = (run * run + h * h).sqrt();
-            let angle = h.atan2(run);
-            (
-                meshes.add(Cuboid::new(2.6, 0.22, len)),
-                Color::srgb(0.72, 0.62, 0.5),
-                LinearRgba::new(0.28, 0.22, 0.12, 1.0),
-                Transform::from_xyz(x, mid_y, z + run * 0.5)
-                    .with_rotation(Quat::from_rotation_x(-angle)),
-            )
-        }
         "rope" => (
             meshes.add(Cuboid::new(0.22, h * 1.05, 0.22)),
             Color::srgb(0.95, 0.8, 0.42),
