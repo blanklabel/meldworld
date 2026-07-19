@@ -96,8 +96,9 @@ server/Postgres path — default builds and the wasm client are unchanged.
 (Windows `.exe`, macOS, Linux) there's a `dist` GitHub Actions workflow
 ([`.github/workflows/dist.yml`](.github/workflows/dist.yml)) that runs the same
 `embedded-server` release build on each native runner — no flaky cross-compiling.
-Trigger it from the repo's Actions tab ("dist" → "Run workflow"), or push a `v*`
-tag to also attach the per-OS binaries to a GitHub Release.
+It runs on every merge to `main` (binaries are downloadable run artifacts — the
+"latest main" build), on demand from the Actions tab ("dist" → "Run workflow"),
+and on a `v*` tag (which also attaches the per-OS binaries to a GitHub Release).
 
 `make play` builds the wasm client and has the **server itself serve it**, so the
 whole game lives at one URL (`$MELD_ADDR`, default `http://127.0.0.1:18090`) — no
