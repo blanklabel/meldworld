@@ -1,9 +1,27 @@
 # Verticality (terraces + ladders/ropes/slopes) — design + server plan
 
-> Status: **proposal**, not yet CANON. Grounds a multi-PR feature to replace the
-> flat overworld plane with stepped terraces joined by ladders/ropes/slopes. Written against the real
-> code: `meld-world::Arena` / `apply_move` / `Arena::path`, `meld-proto::Position`
-> / `SnapshotEntity`, and the HD-2D client ground plane.
+> Status: **IMPLEMENTED** as a spike (M0–M3), not yet folded into CANON. The
+> per-section streaming, terraces + connectors, elevation-aware movement, wire
+> additions, and client relief all ship and are unit- + integration-tested; see
+> "Implementation status" below. Grounds the feature that replaces the flat
+> overworld plane with stepped terraces joined by ladders/ropes/slopes. Written
+> against the real code: `meld-world::Arena` / `apply_move` / `Arena::path`,
+> `meld-proto::Position` / `SnapshotEntity`, and the HD-2D client ground plane.
+
+> ## Implementation status
+> - **M0 — per-section streaming.** `section_seed(run_seed, n)` + `Arena::push_section`
+>   / `Arena::ensure_frontier`: each section is generated from its own seed and
+>   streamed on demand past the initial chain (endless, reproducible). Server
+>   streams new sections' terrain + trail each tick.
+> - **M1 — terraces + connectors.** `Terrain` (elevation grid) + `Connector`
+>   (slope/ladder/rope) per section, kept out of the clear-path tube; elevation-aware
+>   `apply_move` / `check_touch` / `harvest` / `at_portal` (cliffs are walls, connectors
+>   are the only way up). `SnapshotEntity.level` + `world.terrain_section` on the wire.
+> - **M2 — client relief.** Stepped ground+cliff mesh per section, connector props,
+>   entities raised to their terrace, camera follows elevation.
+> - **M3 — polish.** Bold emissive connector props; balance `[TUNABLE]`s.
+> - **Deferred:** a CANON §/D-number + `behaviors/verticality.md`; true 2-D radial
+>   streaming (this is 1-D east streaming); multi-level connector chaining UX.
 
 ## The problem
 

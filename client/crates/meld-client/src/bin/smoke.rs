@@ -96,6 +96,7 @@ fn main() {
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
                 | ServerMsg::WorldPath { .. }
+                | ServerMsg::TerrainSection { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
                 | ServerMsg::ActionResolved { .. }

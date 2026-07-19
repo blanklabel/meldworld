@@ -184,6 +184,7 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<WorldPath>()
+        .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
         .init_resource::<HeroRename>()
         .init_resource::<Steer>()
@@ -210,6 +211,7 @@ fn main() {
                 advance_sky,
                 apply_sky,
                 anchor_sky_fx,
+                drive_rain,
                 animate_water,
             ),
         )
@@ -233,6 +235,7 @@ fn main() {
                 despawn::<OverlayRoot>,
                 despawn::<WorldEntity>,
                 despawn::<PathTrail>,
+                despawn::<TerrainMesh>,
             ),
         )
         .add_systems(
@@ -249,6 +252,7 @@ fn main() {
                 touch_action_buttons,
                 sync_overworld_sprites,
                 draw_path_trail,
+                build_terrain_sections,
                 hd2d::animate_chars,
                 hd2d_follow,
                 hd2d::place_billboards,
@@ -385,11 +389,13 @@ struct OwEntity {
     radius: f32,
     /// True for a player currently in a fight (drives the ⚔ marker + Join prompt).
     battling: bool,
+    /// Elevation level (terraced verticality); render height rises by `level*STEP_HEIGHT`.
+    level: u8,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -400,10 +406,11 @@ impl OwEntity {
             faction: Some(faction.to_string()),
             radius: 0.0,
             battling: false,
+            level: 0,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0 }
     }
 }
 
@@ -433,6 +440,29 @@ struct WorldPath {
     points: Vec<(f32, f32)>,
     drawn: bool,
 }
+
+/// One elevation level of a terrace lifts the ground (and anything standing on it)
+/// by this many world units — roughly one Kenney cliff-block tall, so a terrace
+/// edge is dressed with a single row of `cliff_rock` models (see `spawn_terrace_cliffs`).
+const STEP_HEIGHT: f32 = 2.0;
+
+/// Uniform scale + facing tuning for the cliff models lining terrace edges (sized so
+/// a one-level block rises ~STEP_HEIGHT to meet the grass top).
+const CLIFF_EDGE_SCALE: f32 = 1.9;
+const CLIFF_YAW_OFFSET: f32 = 0.0;
+
+/// Streamed terraced terrain: the elevation grid + connectors for every section the
+/// server has sent. `build_terrain_sections` turns each into a stepped ground+cliff
+/// mesh (rebuilding on return from battle, like the path trail).
+#[derive(Resource, Default)]
+struct Terrain {
+    sections: HashMap<u32, meld_client::net::TerrainSectionView>,
+}
+
+/// Marks a spawned terrain-mesh / connector-prop entity, tagged by section index so
+/// they can be despawned wholesale and rebuilt.
+#[derive(Component)]
+struct TerrainMesh(u32);
 
 /// The caller's hero roster (name/class/level/stats), shown on the inventory party
 /// screen — this is where stats live, not the battle HUD.
@@ -1472,17 +1502,43 @@ fn setup(
         ));
     }
 
-    // Rain — a camera-anchored column of thin streaks, shown only while it rains.
-    let drop_mesh = meshes.add(Cuboid::new(0.03, 0.9, 0.03));
+    // The rain cloud: a single dark, low storm cloud that drifts over the play area
+    // and CARRIES the rain — rain falls only in the disk beneath it (see `drive_rain`),
+    // not as a screen-wide slab. Darker than the fair-weather clouds so it reads as a
+    // storm cloud; shown only while it rains.
+    let rain_cloud_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.34, 0.36, 0.40),
+        emissive: LinearRgba::rgb(0.02, 0.02, 0.03),
+        unlit: false,
+        perceptual_roughness: 1.0,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    commands.spawn((
+        RainCloud { off: Vec2::new(-22.0, -6.0) },
+        Mesh3d(puff.clone()),
+        MeshMaterial3d(rain_cloud_mat),
+        Transform::from_xyz(0.0, RAIN_CLOUD_Y, 0.0).with_scale(Vec3::new(78.0, 34.0, 1.0)),
+        hd2d::Billboard,
+        Visibility::Hidden,
+    ));
+
+    // Rain — thin streaks confined to a DISK under the rain cloud (radius
+    // `RAIN_RADIUS`), so the shower tracks the cloud rather than filling the screen.
+    // `off.xz` is the drop's position within that disk; `off.y` is its fall height.
+    let drop_mesh = meshes.add(Cuboid::new(0.035, 1.3, 0.035));
     let drop_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.75, 0.82, 0.95, 0.55),
-        emissive: LinearRgba::rgb(0.3, 0.35, 0.45),
+        base_color: Color::srgba(0.78, 0.85, 0.97, 0.6),
+        emissive: LinearRgba::rgb(0.32, 0.38, 0.48),
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    for _ in 0..320 {
-        let off = Vec3::new((rnd() - 0.5) * 60.0, rnd() * 30.0, (rnd() - 0.5) * 60.0);
+    for _ in 0..900 {
+        // Uniform over the disk: sqrt(u) keeps it from clustering at the centre.
+        let ang = rnd() * std::f32::consts::TAU;
+        let r = rnd().sqrt() * RAIN_RADIUS;
+        let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
         commands.spawn((
             RainDrop { off },
             Mesh3d(drop_mesh.clone()),
@@ -1492,6 +1548,11 @@ fn setup(
         ));
     }
 }
+
+/// Height of the drifting rain cloud, and the footprint the rain falls within.
+const RAIN_CLOUD_Y: f32 = 32.0;
+const RAIN_RADIUS: f32 = 18.0;
+const RAIN_FALL_TOP: f32 = 30.0;
 
 /// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
 /// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
@@ -1617,10 +1678,18 @@ struct Star {
     off: Vec3,
 }
 
-/// A rain streak, camera-anchored (`off`); falls + wraps, shown only when raining.
+/// A rain streak. `off.xz` is its position within the rain cloud's footprint disk;
+/// `off.y` is its fall height. Positioned under the drifting rain cloud (`drive_rain`).
 #[derive(Component)]
 struct RainDrop {
     off: Vec3,
+}
+
+/// The single storm cloud that carries the rain. `off` is its xz offset from the
+/// camera; it drifts on the wind and the rain falls in the disk beneath it.
+#[derive(Component)]
+struct RainCloud {
+    off: Vec2,
 }
 
 /// Lerp two colours in sRGB space.
@@ -1721,29 +1790,61 @@ fn apply_sky(
     }
 }
 
-/// Keep stars + rain anchored around the camera (they'd otherwise be left behind).
+/// Keep the stars anchored around the camera (they'd otherwise be left behind).
 fn anchor_sky_fx(
     cam_q: Query<&Transform, With<Camera3d>>,
-    time: Res<Time>,
-    sky: Res<Sky>,
     mut stars: Query<(&Star, &mut Transform), (Without<Camera3d>, Without<RainDrop>)>,
-    mut rain: Query<(&mut RainDrop, &mut Transform, &mut Visibility), Without<Camera3d>>,
 ) {
     let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
     for (s, mut t) in &mut stars {
         t.translation = cam + s.off;
     }
+}
+
+/// Drift the rain cloud over the play area and rain ONLY in the disk beneath it, so
+/// the shower reads as "that cloud is raining" rather than a screen-wide slab. The
+/// cloud + drops are shown only while it's raining.
+fn drive_rain(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    time: Res<Time>,
+    sky: Res<Sky>,
+    mut cloud_q: Query<
+        (&mut RainCloud, &mut Transform, &mut Visibility),
+        (Without<Camera3d>, Without<RainDrop>),
+    >,
+    mut rain_q: Query<
+        (&mut RainDrop, &mut Transform, &mut Visibility),
+        (Without<Camera3d>, Without<RainCloud>),
+    >,
+) {
+    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
     let raining = sky.weather > 0.05;
     let vis = if raining { Visibility::Inherited } else { Visibility::Hidden };
     let dt = time.delta_secs();
-    for (mut d, mut t, mut v) in &mut rain {
+    // Drift the rain cloud on the wind, wrapping in a tight band so it keeps passing
+    // over the play area. Capture its ground position for the drops below.
+    let mut ground = Vec2::new(cam.x, cam.z);
+    for (mut rc, mut t, mut v) in &mut cloud_q {
+        rc.off.x += CLOUD_WIND * dt;
+        // Keep the cloud in a tight band over the play area so its shower passes over
+        // the player as it drifts (rather than wandering off to the horizon).
+        const BAND: f32 = 30.0;
+        if rc.off.x > BAND {
+            rc.off.x -= 2.0 * BAND;
+        }
+        t.translation = Vec3::new(cam.x + rc.off.x, RAIN_CLOUD_Y, cam.z + rc.off.y);
+        ground = Vec2::new(t.translation.x, t.translation.z);
+        *v = vis;
+    }
+    for (mut d, mut t, mut v) in &mut rain_q {
         *v = vis;
         if raining {
             d.off.y -= 55.0 * dt; // fall
             if d.off.y < 0.0 {
-                d.off.y += 30.0; // wrap to the top of the column
+                d.off.y += RAIN_FALL_TOP; // wrap to the top of the column
             }
-            t.translation = Vec3::new(cam.x + d.off.x, d.off.y, cam.z + d.off.z);
+            // Fall straight down under the cloud's current ground footprint.
+            t.translation = Vec3::new(ground.x + d.off.x, d.off.y, ground.y + d.off.z);
         }
     }
 }
@@ -1933,6 +2034,7 @@ fn pump_net(
     mut lobby: ResMut<LobbyData>,
     mut backpack: ResMut<RunBackpack>,
     mut world_path: ResMut<WorldPath>,
+    mut terrain: ResMut<Terrain>,
     mut roster: ResMut<PartyRoster>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
@@ -1945,6 +2047,17 @@ fn pump_net(
             ServerMsg::WorldPath { points } => {
                 world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
                 world_path.drawn = false;
+            }
+            ServerMsg::TerrainSection { section } => {
+                // A streamed section extends the clear-path trail (initial-chain
+                // sections carry no path — that already rode run.started).
+                if !section.path.is_empty() {
+                    for (x, y) in &section.path {
+                        world_path.points.push((*x as f32, *y as f32));
+                    }
+                    world_path.drawn = false;
+                }
+                terrain.sections.insert(section.index, section);
             }
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
@@ -1964,6 +2077,9 @@ fn pump_net(
                 }
             }
             ServerMsg::RunStarted => {
+                // Fresh dive: drop any terrain from the previous run before the new
+                // section stream arrives (server sends them right after this).
+                terrain.sections.clear();
                 // The dive can start from Join (solo) or Lobby (co-op).
                 lobby.in_lobby = false;
                 if matches!(*state.get(), Screen::Join | Screen::Lobby) {
@@ -2002,6 +2118,7 @@ fn pump_net(
                             faction: e.faction,
                             radius: e.radius as f32,
                             battling: e.battling,
+                            level: e.level,
                         },
                     );
                 }
@@ -2652,7 +2769,8 @@ fn hd2d_follow(
     else {
         return;
     };
-    let target = Vec3::new(pos.x, 1.0, pos.z);
+    // Rise with the player's terrace (pos.y already carries the smoothed elevation).
+    let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
         hd2d::apply_post(
@@ -3328,10 +3446,13 @@ fn sync_overworld_sprites(
     let mut seen = HashSet::new();
     for (entity, we, mut tf) in &mut q {
         if let Some(e) = world.entities.get(&we.0) {
-            // Only the ground-plane position updates; per-kind height/scale/facing
-            // stay as spawned (facing is driven by CharSprite/billboard).
+            // Ground-plane position + elevation update; per-kind height/scale/facing
+            // stay as spawned (facing is driven by CharSprite/billboard). Raising the
+            // parent by the entity's terrace height lifts the whole sprite onto it.
             tf.translation.x += (e.x - tf.translation.x) * k;
             tf.translation.z += (e.y - tf.translation.z) * k;
+            let target_y = e.level as f32 * STEP_HEIGHT;
+            tf.translation.y += (target_y - tf.translation.y) * k;
             seen.insert(we.0.clone());
         } else {
             commands.entity(entity).despawn();
@@ -3434,24 +3555,30 @@ fn sync_overworld_sprites(
                 }
             }
             EntityKind::Loot => {
-                // A dropped skirmish trophy — a small, glowing golden pickup that
-                // sparkles above the grass until a player walks over it.
-                let tex = e
-                    .name
-                    .as_deref()
-                    .and_then(|k| wa.resource_sprites.get(k).cloned())
-                    .unwrap_or_else(|| wa.resource_fallback.clone());
-                spawn_billboard_entity(
-                    &mut commands,
-                    &mut mats,
-                    &wa,
-                    id,
-                    e,
-                    tex,
-                    0.7,
-                    Color::srgb(1.7, 1.4, 0.7),
-                    0.35,
-                );
+                // A dropped skirmish trophy — a small glowing golden pickup on the
+                // grass until a player walks over it. Rendered from the 3D-era assets
+                // (glow disc + an emissive gold nub); there's no dedicated loot sprite
+                // in the current asset set.
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.glow_disc.clone()),
+                    MeshMaterial3d(wa.resource_glow.clone()),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.05))
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                ));
+                let nub = mats.add(StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.85, 0.35),
+                    emissive: LinearRgba::rgb(1.6, 1.2, 0.4),
+                    unlit: true,
+                    ..default()
+                });
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(nub),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.35))
+                        .with_scale(Vec3::splat(0.32)),
+                ));
             }
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
@@ -3536,6 +3663,304 @@ fn hash_pick(id: &str, n: usize) -> usize {
 /// (not `HeroBillboard`), so it keeps this spawn-baked scale/height and just yaws to
 /// face the camera — hero sprites alone follow the live-tuned `Look` size.
 #[allow(clippy::too_many_arguments)]
+/// Build the stepped ground+cliff relief for every streamed section that isn't
+/// rendered yet, and spawn its connector props. Rebuilds sections whose meshes are
+/// gone (e.g. after returning from a battle) — the same redraw-when-absent idea as
+/// the path trail. Terraces sit ON TOP of the existing flat ground plane; only
+/// raised cells get a top surface + cliff faces, so level 0 is the plain ground.
+fn build_terrain_sections(
+    mut commands: Commands,
+    terrain: Res<Terrain>,
+    wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    existing: Query<&TerrainMesh>,
+) {
+    let Some(wa) = wa else { return };
+    let built: HashSet<u32> = existing.iter().map(|t| t.0).collect();
+    for (idx, sec) in &terrain.sections {
+        if built.contains(idx) {
+            continue;
+        }
+        if sec.levels.iter().any(|&l| l > 0) {
+            let (top, cliff) = terrace_meshes(sec);
+            // Grassy plateau top: the grass texture over a SATURATED green base, so it
+            // reads as grass in every light (a pale base washes teal under the cool
+            // rain/dusk ambient). Terraces wear grass in all biomes — a mesa's top.
+            let grass_tex = wa.ground_tex.first().cloned(); // grass0.png
+            let top_mat = mats.add(StandardMaterial {
+                base_color: Color::srgb(0.36, 0.6, 0.26),
+                base_color_texture: grass_tex,
+                perceptual_roughness: 0.95,
+                cull_mode: None,
+                ..default()
+            });
+            // A dirt-textured backing mesh so the cliff reads as an earthy wall and
+            // never shows a gap behind the cliff models that dress the edges.
+            let dirt_tex = wa.ground_tex.get(2).cloned(); // dirt_full.png
+            let cliff_mat = mats.add(StandardMaterial {
+                base_color: Color::srgb(0.62, 0.5, 0.38),
+                base_color_texture: dirt_tex,
+                perceptual_roughness: 1.0,
+                cull_mode: None,
+                ..default()
+            });
+            commands.spawn((
+                TerrainMesh(*idx),
+                Mesh3d(meshes.add(top)),
+                MeshMaterial3d(top_mat),
+                Transform::default(),
+            ));
+            commands.spawn((
+                TerrainMesh(*idx),
+                Mesh3d(meshes.add(cliff)),
+                MeshMaterial3d(cliff_mat),
+                Transform::default(),
+            ));
+            // Dress the terrace edges with real Kenney cliff_rock models.
+            spawn_terrace_cliffs(&mut commands, &assets, sec, *idx);
+        } else {
+            // Flat section (e.g. the tutorial): record it as built so we don't
+            // rescan it every frame, but draw nothing.
+            commands.spawn((TerrainMesh(*idx), Transform::default(), Visibility::Hidden));
+        }
+        // The ladders / ropes / slopes that make each terrace reachable.
+        for c in &sec.connectors {
+            spawn_connector(&mut commands, &mut meshes, &mut mats, *idx, c);
+        }
+    }
+}
+
+/// Dress a section's terrace edges with real Kenney **cliff_rock** models: one per
+/// boundary cell (a raised cell with a lower neighbour), facing outward, so the
+/// terraces read as rocky cliffs rather than flat brown walls. The grass-top mesh
+/// covers the surface; these give the rocky face; the backing cliff mesh fills any
+/// gaps behind them.
+fn spawn_terrace_cliffs(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    sec: &meld_client::net::TerrainSectionView,
+    idx: u32,
+) {
+    // Blockier cliff pieces (flat rock faces) read as a clean terrace wall; the
+    // rounded cliff_rock is kept as an occasional accent.
+    let cliffs: [Handle<Scene>; 3] = [
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_rock.glb")),
+    ];
+    let cols = sec.cols as usize;
+    let rows = sec.rows as usize;
+    let cell = sec.cell as f32;
+    let sx = sec.start_x as f32;
+    let zmin = sec.y_min as f32;
+    let lvl = |gx: i64, gy: i64| -> u8 {
+        if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
+            0
+        } else {
+            sec.levels[gx as usize * rows + gy as usize]
+        }
+    };
+    let mut placed = 0u32;
+    for gx in 0..cols {
+        for gy in 0..rows {
+            let l = sec.levels[gx * rows + gy];
+            if l == 0 {
+                continue;
+            }
+            // Outward direction = sum of the lower-neighbour directions; the lowest
+            // neighbour sets how far the rock face drops.
+            let mut dir = Vec2::ZERO;
+            let mut lowest = l;
+            for (ddx, ddz) in [(0i64, -1i64), (0, 1), (-1, 0), (1, 0)] {
+                let nl = lvl(gx as i64 + ddx, gy as i64 + ddz);
+                if nl < l {
+                    dir += Vec2::new(ddx as f32, ddz as f32);
+                    lowest = lowest.min(nl);
+                }
+            }
+            if dir == Vec2::ZERO {
+                continue; // interior cell — the grass top mesh covers it
+            }
+            let dir = dir.normalize_or_zero();
+            let cx = sx + (gx as f32 + 0.5) * cell;
+            let cz = zmin + (gy as f32 + 0.5) * cell;
+            let by = lowest as f32 * STEP_HEIGHT;
+            let yaw = dir.x.atan2(dir.y) + CLIFF_YAW_OFFSET;
+            let scene = cliffs[(gx + gy) % cliffs.len()].clone();
+            commands.spawn((
+                TerrainMesh(idx),
+                SceneRoot(scene),
+                Transform::from_xyz(cx, by, cz)
+                    .with_scale(Vec3::splat(CLIFF_EDGE_SCALE))
+                    .with_rotation(Quat::from_rotation_y(yaw)),
+            ));
+            placed += 1;
+            if placed > 400 {
+                return; // safety cap on a pathological section
+            }
+        }
+    }
+}
+
+/// Append a quad (two triangles) with a flat `normal` and per-corner `uv`. Winding
+/// is fixed; the terrace materials render double-sided so face direction never
+/// hides a surface.
+#[allow(clippy::too_many_arguments)]
+fn push_quad(
+    p: &mut Vec<[f32; 3]>,
+    n: &mut Vec<[f32; 3]>,
+    u: &mut Vec<[f32; 2]>,
+    idx: &mut Vec<u32>,
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+    d: [f32; 3],
+    normal: [f32; 3],
+    uv: [[f32; 2]; 4],
+) {
+    let base = p.len() as u32;
+    p.extend_from_slice(&[a, b, c, d]);
+    n.extend_from_slice(&[normal; 4]);
+    u.extend_from_slice(&uv);
+    idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Turn a section's elevation grid into two meshes: the terrace **tops** (grass,
+/// biome-tinted) and the **cliff faces** (dirt/rock) dropping to each lower
+/// neighbour. Vertices are in world space; overworld `y` maps to world Z.
+fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mesh, Mesh) {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    let cols = sec.cols as usize;
+    let rows = sec.rows as usize;
+    let cell = sec.cell as f32;
+    let sx = sec.start_x as f32;
+    let zmin = sec.y_min as f32;
+    let tile = 0.22f32; // texture repeats per world unit
+    let lvl = |gx: i64, gy: i64| -> u8 {
+        if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
+            0
+        } else {
+            sec.levels[gx as usize * rows + gy as usize]
+        }
+    };
+    let (mut tp, mut tn, mut tu, mut ti) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut cp, mut cn, mut cu, mut ci) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for gx in 0..cols {
+        for gy in 0..rows {
+            let l = sec.levels[gx * rows + gy];
+            if l == 0 {
+                continue;
+            }
+            let topy = l as f32 * STEP_HEIGHT;
+            let x0 = sx + gx as f32 * cell;
+            let x1 = x0 + cell;
+            let z0 = zmin + gy as f32 * cell;
+            let z1 = z0 + cell;
+            // Terrace top.
+            push_quad(
+                &mut tp, &mut tn, &mut tu, &mut ti,
+                [x0, topy, z0], [x1, topy, z0], [x1, topy, z1], [x0, topy, z1],
+                [0.0, 1.0, 0.0],
+                [[x0 * tile, z0 * tile], [x1 * tile, z0 * tile], [x1 * tile, z1 * tile], [x0 * tile, z1 * tile]],
+            );
+            // Cliff faces toward any lower neighbour (outside grid counts as level 0).
+            let mut face = |gx2: i64, gy2: i64, quad: [[f32; 3]; 4], normal: [f32; 3]| {
+                let nl = lvl(gx2, gy2);
+                if (nl as f32) < l as f32 {
+                    let by = nl as f32 * STEP_HEIGHT;
+                    let hh = (topy - by) * tile;
+                    let mut q = quad;
+                    q[0][1] = by;
+                    q[1][1] = by;
+                    push_quad(
+                        &mut cp, &mut cn, &mut cu, &mut ci, q[0], q[1], q[2], q[3], normal,
+                        [[0.0, 0.0], [cell * tile, 0.0], [cell * tile, hh], [0.0, hh]],
+                    );
+                }
+            };
+            // -Z, +Z, -X, +X. Bottom two verts' Y is overwritten inside `face`.
+            face(gx as i64, gy as i64 - 1, [[x1, 0.0, z0], [x0, 0.0, z0], [x0, topy, z0], [x1, topy, z0]], [0.0, 0.0, -1.0]);
+            face(gx as i64, gy as i64 + 1, [[x0, 0.0, z1], [x1, 0.0, z1], [x1, topy, z1], [x0, topy, z1]], [0.0, 0.0, 1.0]);
+            face(gx as i64 - 1, gy as i64, [[x0, 0.0, z0], [x0, 0.0, z1], [x0, topy, z1], [x0, topy, z0]], [-1.0, 0.0, 0.0]);
+            face(gx as i64 + 1, gy as i64, [[x1, 0.0, z1], [x1, 0.0, z0], [x1, topy, z0], [x1, topy, z1]], [1.0, 0.0, 0.0]);
+        }
+    }
+    let build = |p: Vec<[f32; 3]>, n: Vec<[f32; 3]>, u: Vec<[f32; 2]>, i: Vec<u32>| {
+        let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
+        m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
+        m.insert_indices(Indices::U32(i));
+        m
+    };
+    (build(tp, tn, tu, ti), build(cp, cn, cu, ci))
+}
+
+/// Spawn the visible prop for one connector so the route up a cliff is legible: a
+/// **slope** as a tilted ramp board, a **ladder** as an upright rung post, a **rope**
+/// as a thin dangling line — each faintly emissive so it's findable in shade.
+fn spawn_connector(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    idx: u32,
+    c: &meld_client::net::ConnectorView,
+) {
+    let lo_y = c.lo as f32 * STEP_HEIGHT;
+    let hi_y = c.hi as f32 * STEP_HEIGHT;
+    let h = (hi_y - lo_y).max(0.2);
+    let x = c.x as f32;
+    // Stand the prop a touch proud of the cliff base (toward the camera / −Z) so it
+    // reads as a distinct affordance and isn't swallowed by the cliff face.
+    let z = c.y as f32 - 0.5; // overworld y → world Z
+    let mid_y = (lo_y + hi_y) * 0.5;
+    // Bold, warm, emissive so the route up a cliff is unmistakable (and findable in
+    // shade) — the same "legible route" spirit as the glowing path trail.
+    let (mesh, color, emissive, transform) = match c.kind.as_str() {
+        "slope" => {
+            // A ramp board rising from the ground (−Z) up to the terrace lip (+Z).
+            let run = h * 1.8;
+            let len = (run * run + h * h).sqrt();
+            let angle = h.atan2(run);
+            (
+                meshes.add(Cuboid::new(2.6, 0.22, len)),
+                Color::srgb(0.72, 0.62, 0.5),
+                LinearRgba::new(0.28, 0.22, 0.12, 1.0),
+                Transform::from_xyz(x, mid_y, z + run * 0.5)
+                    .with_rotation(Quat::from_rotation_x(-angle)),
+            )
+        }
+        "rope" => (
+            meshes.add(Cuboid::new(0.22, h * 1.05, 0.22)),
+            Color::srgb(0.95, 0.8, 0.42),
+            LinearRgba::new(0.5, 0.36, 0.12, 1.0),
+            Transform::from_xyz(x, mid_y, z),
+        ),
+        _ => (
+            // ladder: an upright post, bright wood, glowing rungs implied by emissive.
+            meshes.add(Cuboid::new(1.0, h * 1.05, 0.22)),
+            Color::srgb(0.9, 0.62, 0.28),
+            LinearRgba::new(0.55, 0.34, 0.1, 1.0),
+            Transform::from_xyz(x, mid_y, z),
+        ),
+    };
+    let mat = mats.add(StandardMaterial {
+        base_color: color,
+        emissive,
+        perceptual_roughness: 0.85,
+        ..default()
+    });
+    commands.spawn((
+        TerrainMesh(idx),
+        Mesh3d(mesh),
+        MeshMaterial3d(mat),
+        transform,
+    ));
+}
+
 fn spawn_billboard_entity(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
