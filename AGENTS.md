@@ -117,6 +117,69 @@ for deterministic screenshot states. The `meld-web` entry in `.claude/launch.jso
 runs the trunk step for the browser-preview tooling. Pre-build the wasm once
 (`trunk-build.sh`) so the preview server starts fast instead of timing out on the
 cold Bevy compile.
+## Working alongside other agents (up to ~20 concurrent)
+
+Many agents share this one repo at once. The workflow is built to make that safe — but
+only if you respect two shared, machine-global resources: the **server port** and the
+**local Postgres**. Read this before you run anything.
+
+- **One worktree per agent; stay in yours.** Each agent works in its own git worktree
+  under `.claude/worktrees/<slug>` on its own branch (`claude/<slug>`), branched off
+  `main`. Never edit, build in, or delete files in another worktree or in the primary
+  checkout — you only touch your own tree. When you're done, `make stop` (below) then
+  `git worktree remove <path>` to clean up.
+
+- **Never switch branches — one branch, one worktree.** Your worktree is pinned to
+  `claude/<slug>` and *stays there*. Do **not** `git checkout <other-branch>` / `git switch` /
+  `git reset --hard <other-branch>` / `git branch -f`, and never touch the primary checkout
+  or another agent's worktree. The worktree model exists precisely so nobody has to switch
+  branches in a shared tree — switching yanks the files out from under whatever you (and, in
+  the primary checkout, the other 19 agents) were doing. Need code from another branch? Bring
+  it *to* your branch with `git rebase main` / `git cherry-pick <sha>` / `git merge` — never by
+  checking the other branch out. (Git refuses to check out a branch already active in another
+  worktree, but don't lean on that as your only guard.)
+
+- **Give your server a unique port.** `MELD_ADDR` is a *single fixed port* (default
+  `127.0.0.1:18090`). If two agents run `make play` / `make server` / `make smoke` on the
+  default, the second fails to bind. Pick a per-agent port and export it, e.g.:
+  ```sh
+  export MELD_ADDR=127.0.0.1:181NN   # NN unique to your worktree (18101, 18102, …)
+  make server                        # or play / play-native / smoke — all honor MELD_ADDR
+  ```
+  `make stop` kills only the server on *your* `MELD_ADDR` port (`lsof tcp:$PORT`), so it
+  never disturbs anyone else. **Never** `pkill cargo` / `pkill meld-server` — that kills
+  every agent's server on the box. Stop yours by port.
+
+- **Postgres is shared on purpose — don't fight it.** `make play`/`make test` reuse a
+  single local Postgres (port `MELD_PGPORT`, default `5433`; data under `target/pg`; DB
+  `meldworld`; trust auth). Whoever boots first starts it; everyone else *reuses the one
+  already listening* on that port. This is by design and is safe because:
+  - the schema is idempotent + additive (concurrent boots don't clash), and
+  - the QA suite isolates every run behind **unique UUID-suffixed accounts**, so many
+    agents can `make test` at the same time without stepping on each other.
+  Therefore: **never** `pg_ctl stop`, `dropdb meldworld`, `rm -rf target/pg`, or truncate
+  tables — you'd break every other agent's server and tests. Don't write tests that assume
+  an empty DB or use fixed usernames; mint a fresh UUID account like the existing tests do.
+  If you genuinely need an isolated DB, set your own `MELD_PGPORT`/`MELD_PGDATA` (then you
+  own that instance's lifecycle) rather than mutating the shared one.
+
+- **Build cache & disk.** Each worktree compiles its own `target/` (several GB) — 20 of
+  them is a lot of disk and 20 cold Rust builds. To share one build cache across worktrees
+  on the same machine, export `CARGO_TARGET_DIR=/abs/shared/target` (Cargo serializes
+  builds behind a lock, so this trades disk for occasional build waits). The Bevy client is
+  a **separate** workspace under `client/` with its own target — the same applies there.
+  `target/` is gitignored, so build artifacts and `target/pg` never get committed.
+
+- **Coordinate on global files — prefer additive edits.** These are shared across every
+  branch and are the main merge-conflict hotspots: `balance/balance.toml`, `meld-proto`
+  wire types/enums, the spec docs (`GDD.md`, `CANON.md`, `behaviors/`, `interfaces/`),
+  `AGENTS.md`, and `Cargo.lock`. *Adding* a `[TUNABLE]`, an enum variant, or a new message
+  is conflict-friendly; renaming, reordering, or reformatting existing entries collides
+  with everyone. Keep each change small and scoped to one crate/feature, and rebase your
+  branch on `main` before opening a PR.
+
+- **Commit/push only when asked** (see Conventions). Twenty branches merge more cleanly
+  when each is a tight, single-purpose diff.
 
 ## Conventions
 
@@ -140,6 +203,8 @@ cold Bevy compile.
   `stat_mult(d)=(1+d/500)^1.25`. All threshold checks use the **floored integer** distance.
 - **Git worktree layout.** Work happens in worktrees under `.claude/worktrees/`. Branch off
   `main`; commit/push only when asked. Co-author trailer: `Co-Authored-By: Claude <noreply@anthropic.com>`.
+  Many agents share this repo at once — see [Working alongside other agents](#working-alongside-other-agents-up-to-20-concurrent)
+  for the port/Postgres/build rules that keep concurrent runs from colliding.
 
 ## Combat & class taxonomy
 

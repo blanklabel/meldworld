@@ -13,6 +13,7 @@ use bevy::prelude::*;
 
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::gltf::GltfAssetLabel;
 use bevy::math::Affine2;
 
 use meld_client::hd2d::{self, CharSprite, CharacterFrames};
@@ -205,6 +206,7 @@ fn main() {
                 demo_driver,
                 hd2d_remote,
                 drift_clouds,
+                anchor_backdrop,
                 advance_sky,
                 apply_sky,
                 anchor_sky_fx,
@@ -251,6 +253,7 @@ fn main() {
                 hd2d_follow,
                 hd2d::place_billboards,
                 hd2d::billboard,
+                animate_sway,
                 update_overworld_hud,
                 render_overlay,
             )
@@ -1024,23 +1027,24 @@ struct WorldAssets {
     shadow_mat: Handle<StandardMaterial>,
     /// CC0 pixel-art creature billboards keyed by creature content id (see
     /// `meld-world::creatures_for_biome`); unknown kinds fall back to [`Self::monster_pool`].
+    /// Creatures stay 2D sprites — the HD-2D convention (2D actors, 3D world).
     monster_sprites: HashMap<String, Handle<Image>>,
     monster_pool: Vec<Handle<Image>>,
-    /// Foliage/prop billboards keyed by terrain-obstacle kind → one of several
-    /// variants (picked per-entity by id hash) so a stand of "tree"s isn't clones.
-    foliage: HashMap<String, Vec<Handle<Image>>>,
-    /// Harvest-node billboards keyed by resource content id; else [`Self::resource_fallback`].
-    resource_sprites: HashMap<String, Handle<Image>>,
-    resource_fallback: Handle<Image>,
+    /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
+    /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
+    /// world is built from actual geometry instead of flat billboards.
+    prop_scenes: HashMap<String, Vec<(Handle<Scene>, f32)>>,
+    /// 3D harvest-node models keyed by resource content id → `(scene, baked_scale)`.
+    resource_scenes: HashMap<String, (Handle<Scene>, f32)>,
+    /// Emissive disc laid under a harvest node so it still reads as gatherable.
+    glow_disc: Handle<Mesh>,
+    resource_glow: Handle<StandardMaterial>,
     portal_sprite: Handle<Image>,
     portal_mesh: Handle<Mesh>,
     portal_mat: Handle<StandardMaterial>,
     // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
     // overworld uses creature billboards from `monster_sprites` instead.
-    // Painterly rendered-tree billboards (from PR #20) still render the `tree`
-    // obstacle; the other vegetation kinds use the CC0 pixel foliage billboards.
-    tree_quad: Handle<Mesh>,
-    tree_mats: Vec<Handle<StandardMaterial>>,
+    monster_mesh: Handle<Mesh>,
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
     water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
@@ -1135,9 +1139,9 @@ fn setup(
         Transform::default(),
     ));
 
-    // Shared assets. Player avatars use the pixel character sprite sets; monsters,
-    // foliage, harvest nodes and the portal now use CC0 pixel-art billboards
-    // (Dungeon Crawl Stone Soup / RLTiles — public domain; see assets/ATTRIBUTIONS.md).
+    // Shared assets. HD-2D split: 2D pixel sprites for the actors (heroes + monster
+    // billboards, from DCSS/RLTiles — public domain), real 3D models for the world
+    // (obstacles + harvest nodes, from Kenney Nature Kit — CC0). See assets/ATTRIBUTIONS.md.
     let ld = |p: &str| assets.load::<Image>(p);
     // Creature content id → billboard (biome-appropriate). Kinds come from
     // `meld-world::creatures_for_biome`.
@@ -1172,54 +1176,137 @@ fn setup(
     .into_iter()
     .map(ld)
     .collect();
-    // Terrain-obstacle kind → foliage variants (picked per entity by id hash). The
-    // forest "tree" is rendered by the painterly landscape billboards instead (see
-    // `spawn_obstacle`), so it's absent here.
-    let foliage: HashMap<String, Vec<Handle<Image>>> = [
+    // Load a Kenney Nature Kit GLB as a spawnable 3D scene, paired with a baked scale
+    // that brings its native size to a sensible world height (computed from each
+    // model's bounding box; see assets/ATTRIBUTIONS.md).
+    let sc = |p: &str, s: f32| -> (Handle<Scene>, f32) {
         (
-            "cactus",
+            assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))),
+            s,
+        )
+    };
+    // Terrain-obstacle kind → real 3D model variants (picked per entity by id hash),
+    // so every biome's cover is actual geometry that lights and casts shadow. Water
+    // kinds (pond/lava/…) stay flat pools; hard fallbacks use the boulder mesh.
+    let prop_scenes: HashMap<String, Vec<(Handle<Scene>, f32)>> = [
+        (
+            "tree",
             vec![
-                "foliage/oklob_plant.png",
-                "foliage/plant_05.png",
-                "foliage/briar_patch.png",
+                sc("tree_default", 3.045),
+                sc("tree_oak", 3.751),
+                sc("tree_detailed", 3.452),
+                sc("tree_fat", 3.651),
+                sc("tree_tall", 3.081),
+                sc("tree_thin", 3.221),
+                sc("tree_pineRoundC", 3.672),
+            ],
+        ),
+        (
+            "boulder",
+            vec![
+                sc("rock_largeA", 7.699),
+                sc("rock_largeC", 6.851),
+                sc("rock_largeD", 4.575),
+                sc("rock_largeE", 8.212),
+                sc("rock_largeF", 5.428),
+                sc("stone_largeA", 7.699),
+            ],
+        ),
+        (
+            "dune",
+            vec![
+                sc("stone_smallFlatA", 9.239),
+                sc("stone_smallFlatB", 9.239),
+                sc("rock_largeA", 7.699),
+            ],
+        ),
+        (
+            "rock_spire",
+            vec![
+                sc("rock_tallB", 3.621),
+                sc("rock_tallF", 4.532),
+                sc("rock_tallH", 4.784),
+                sc("rock_tallJ", 5.806),
+                sc("stone_tallC", 3.832),
+            ],
+        ),
+        ("cactus", vec![sc("cactus_tall", 3.467), sc("cactus_short", 3.189)]),
+        (
+            "cliff",
+            vec![
+                sc("cliff_large_rock", 4.2),
+                sc("cliff_cornerLarge_rock", 4.2),
+                sc("cliff_top_rock", 3.4),
+                sc("cliff_diagonal_rock", 3.4),
+                sc("cliff_waterfall_rock", 4.0),
+                sc("cliff_rock", 2.6),
+                sc("cliff_block_rock", 2.6),
+            ],
+        ),
+        (
+            "cinder_rock",
+            vec![
+                sc("rock_smallA", 5.229),
+                sc("rock_smallB", 5.656),
+                sc("stone_smallC", 7.337),
+            ],
+        ),
+        (
+            "ice_spire",
+            vec![
+                sc("rock_tallD", 3.885),
+                sc("rock_tallH", 4.784),
+                sc("rock_tallJ", 5.806),
+                sc("stone_tallC", 3.832),
+                sc("rock_tallB", 3.621),
+            ],
+        ),
+        (
+            "snow_drift",
+            vec![
+                sc("stone_smallFlatA", 9.239),
+                sc("stone_smallFlatB", 9.239),
+                sc("rock_smallA", 5.229),
             ],
         ),
         (
             "mire_root",
             vec![
-                "foliage/mangrove1.png",
-                "foliage/tree_dead1.png",
-                "foliage/briar_patch.png",
+                sc("stump_old", 3.752),
+                sc("stump_squareDetailed", 4.5),
+                sc("log_stack", 3.175),
+                sc("log", 4.041),
             ],
         ),
         (
             "fungal_wall",
             vec![
-                "foliage/deathcap.png",
-                "foliage/fungus1.png",
-                "foliage/fungus2.png",
-                "foliage/toadstool_left.png",
+                sc("mushroom_redGroup", 4.791),
+                sc("mushroom_redTall", 5.988),
+                sc("mushroom_tanGroup", 4.791),
+                sc("plant_bushLarge", 5.351),
             ],
         ),
     ]
     .into_iter()
-    .map(|(k, v)| (k.to_string(), v.into_iter().map(ld).collect()))
+    .map(|(k, v)| (k.to_string(), v))
     .collect();
-    // Resource content id → harvest-node billboard. Kinds from `resources_for_biome`.
-    let resource_sprites: HashMap<String, Handle<Image>> = [
-        ("bloom_herb", "foliage/starflower_1.png"),
-        ("frost_lichen", "foliage/plant_04.png"),
-        ("bog_myrrh", "foliage/sacred_lotus.png"),
-        ("sun_salts", "resources/crystal.png"),
-        ("ember_ash", "resources/gem_orange.png"),
-        ("heartoak_bark", "resources/gem_green.png"),
-        ("dune_iron", "resources/crystal.png"),
-        ("cinder_ore", "resources/gem_orange.png"),
-        ("rime_ore", "resources/gem_teal.png"),
-        ("peat_iron", "resources/gem_blue.png"),
+    // Resource content id → 3D harvest-node model (reagents read as plants/fungi,
+    // ores as rocks/stones). Kinds from `meld-world::resources_for_biome`.
+    let resource_scenes: HashMap<String, (Handle<Scene>, f32)> = [
+        ("bloom_herb", sc("flower_purpleA", 3.299)),
+        ("heartoak_bark", sc("log", 4.041)),
+        ("sun_salts", sc("stone_smallC", 7.337)),
+        ("dune_iron", sc("rock_smallB", 5.656)),
+        ("ember_ash", sc("flower_redA", 2.735)),
+        ("cinder_ore", sc("rock_smallA", 5.229)),
+        ("frost_lichen", sc("plant_bushSmall", 4.824)),
+        ("rime_ore", sc("stone_smallC", 7.337)),
+        ("bog_myrrh", sc("mushroom_redGroup", 4.791)),
+        ("peat_iron", sc("rock_smallB", 5.656)),
     ]
     .into_iter()
-    .map(|(k, p)| (k.to_string(), ld(p)))
+    .map(|(k, v)| (k.to_string(), v))
     .collect();
 
     commands.insert_resource(WorldAssets {
@@ -1241,9 +1328,16 @@ fn setup(
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
         monster_sprites,
         monster_pool,
-        foliage,
-        resource_sprites,
-        resource_fallback: ld("resources/crystal.png"),
+        prop_scenes,
+        resource_scenes,
+        glow_disc: meshes.add(Circle::new(0.6)),
+        resource_glow: mats.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.85, 0.35, 0.55),
+            emissive: LinearRgba::rgb(2.2, 1.6, 0.4),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
         portal_sprite: ld("fx/portal_arch.png"),
         // A faint emissive ground-ring keeps the portal glowing under the billboard.
         portal_mesh: meshes.add(Torus::new(0.18, 1.15)),
@@ -1252,26 +1346,7 @@ fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        // Painterly tree billboards from assets/landscape (a few rotations read as
-        // distinct trees). Unlit + alpha-masked = crisp, art already shaded. (PR #20;
-        // render the `tree` obstacle — other vegetation uses the CC0 pixel foliage.)
-        tree_quad: meshes.add(Rectangle::new(1.0, 1.0)),
-        tree_mats: [1usize, 5, 10, 14, 19, 23]
-            .into_iter()
-            .map(|f| {
-                mats.add(StandardMaterial {
-                    base_color: Color::WHITE,
-                    base_color_texture: Some(assets.load(format!(
-                        "landscape/Tree01/Green/256x256/Tree01_{f:04}.png"
-                    ))),
-                    unlit: true,
-                    double_sided: true,
-                    cull_mode: None,
-                    alpha_mode: AlphaMode::Mask(0.5),
-                    ..default()
-                })
-            })
-            .collect(),
+        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
         water_mat: mats.add(StandardMaterial {
@@ -1352,6 +1427,28 @@ fn setup(
     }
     commands.insert_resource(SkyMats { cloud: cloud_mat });
 
+    // Distant cliff/mountain backdrop: a sparse ring of BIG rock models far out on the
+    // horizon, anchored around the camera (see `anchor_backdrop`) so the diorama always
+    // has depth behind the play area. Sparse + far, so it reads as a scattered skyline
+    // rather than a wall, and the distance fog softens it into the sky.
+    let backdrop: Vec<Handle<Scene>> = ["cliff_large_rock", "rock_largeA", "cliff_cornerLarge_rock"]
+        .into_iter()
+        .map(|p| assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))))
+        .collect();
+    for i in 0..14 {
+        let ang = i as f32 / 14.0 * std::f32::consts::TAU + (rnd() - 0.5) * 0.35;
+        let rad = 165.0 + rnd() * 55.0;
+        let off = Vec2::new(ang.cos() * rad, ang.sin() * rad);
+        let size = 10.0 + rnd() * 10.0;
+        commands.spawn((
+            Backdrop { off },
+            SceneRoot(backdrop[i % backdrop.len()].clone()),
+            Transform::from_translation(Vec3::new(off.x, -0.5, off.y))
+                .with_scale(Vec3::splat(size))
+                .with_rotation(Quat::from_rotation_y(rnd() * std::f32::consts::TAU)),
+        ));
+    }
+
     // Stars — tiny emissive points on a camera-anchored dome, shown only at night.
     let star_mesh = meshes.add(Sphere::new(0.12));
     let star_mat = mats.add(StandardMaterial {
@@ -1400,6 +1497,62 @@ fn setup(
 /// [`drift_clouds`], but shadows stay flat on the ground (no billboarding).
 #[derive(Component)]
 struct CloudShadow;
+
+/// A far-off cliff/mountain on the horizon, anchored around the camera (like the
+/// clouds) so the diorama always has depth behind it. `off` is its xz offset from the
+/// camera; see [`anchor_backdrop`]. Fogged into the sky at that distance.
+#[derive(Component)]
+struct Backdrop {
+    off: Vec2,
+}
+
+/// Wind sway for foliage: the prop leans back and forth around its base (which sits
+/// on the ground) so the top travels most — reading as leaves moving in the wind.
+/// `base_yaw` preserves the spawn-time variety rotation the sway composes onto; the
+/// sway strengthens in rain (see [`animate_sway`]). Applied to trees/mushrooms/cacti.
+#[derive(Component)]
+struct Sway {
+    base_yaw: f32,
+    phase: f32,
+    amp: f32,
+    speed: f32,
+}
+
+/// Per-obstacle-kind wind-sway amplitude (radians of lean); `None` = rigid (rock/etc).
+fn sway_amp(kind: &str) -> Option<f32> {
+    match kind {
+        "tree" => Some(0.05),
+        "fungal_wall" => Some(0.045),
+        "cactus" => Some(0.02),
+        _ => None,
+    }
+}
+
+/// Lean every [`Sway`] prop on the wind — top-heavy (pivots at the grounded base),
+/// phase-offset per prop, and gustier while it's raining. Overworld only.
+fn animate_sway(time: Res<Time>, sky: Option<Res<Sky>>, mut q: Query<(&Sway, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    let gust = 1.0 + sky.map(|s| s.weather).unwrap_or(0.0) * 1.6;
+    for (s, mut tf) in &mut q {
+        let a = (t * s.speed + s.phase).sin() * s.amp * gust;
+        tf.rotation = Quat::from_rotation_y(s.base_yaw)
+            * Quat::from_rotation_z(a)
+            * Quat::from_rotation_x(a * 0.35);
+    }
+}
+
+/// Keep the [`Backdrop`] cliffs parked around the camera (they never get closer, like
+/// a parallax skyline) so the horizon always frames the scene with depth.
+fn anchor_backdrop(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<(&Backdrop, &mut Transform), Without<Camera3d>>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    for (b, mut tf) in &mut q {
+        tf.translation.x = cam.translation.x + b.off.x;
+        tf.translation.z = cam.translation.z + b.off.y;
+    }
+}
 
 /// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
 /// plane (so clouds stay overhead as you travel), `y` its altitude.
@@ -3209,15 +3362,12 @@ fn sync_overworld_sprites(
                 // fallback pool. Tinted faintly warm (like heroes) to stay vibrant
                 // under the cool ambient; a fighting creature glows hot.
                 let kind = e.name.as_deref().unwrap_or("");
-                let tex = wa
-                    .monster_sprites
-                    .get(kind)
-                    .cloned()
-                    .or_else(|| {
-                        (!wa.monster_pool.is_empty())
-                            .then(|| wa.monster_pool[hash_pick(id, wa.monster_pool.len())].clone())
-                    })
-                    .unwrap_or_else(|| wa.resource_fallback.clone());
+                let tex = wa.monster_sprites.get(kind).cloned().unwrap_or_else(|| {
+                    // Unmapped creature → deterministic pick from the fallback pool
+                    // (always non-empty, so this never panics).
+                    let pool = &wa.monster_pool;
+                    pool[hash_pick(id, pool.len().max(1))].clone()
+                });
                 let base = if e.battling {
                     Color::srgb(1.4, 0.75, 0.55)
                 } else {
@@ -3262,24 +3412,26 @@ fn sync_overworld_sprites(
                 ));
             }
             EntityKind::Resource => {
+                // A real 3D harvest-node model with a glowing ground disc under it so
+                // it still reads as gatherable out of the grass.
                 let kind = e.name.as_deref().unwrap_or("");
-                let tex = wa
-                    .resource_sprites
-                    .get(kind)
-                    .cloned()
-                    .unwrap_or_else(|| wa.resource_fallback.clone());
-                // Bright, faintly cool — harvest nodes should sparkle out of the grass.
-                spawn_billboard_entity(
-                    &mut commands,
-                    &mut mats,
-                    &wa,
-                    id,
-                    e,
-                    tex,
-                    0.95,
-                    Color::srgb(1.3, 1.3, 1.4),
-                    0.4,
-                );
+                if let Some((scene, scale)) = wa.resource_scenes.get(kind) {
+                    let yaw = (hash_pick(id, 360) as f32).to_radians();
+                    commands.spawn((
+                        WorldEntity(id.clone()),
+                        SceneRoot(scene.clone()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0))
+                            .with_scale(Vec3::splat(*scale))
+                            .with_rotation(Quat::from_rotation_y(yaw)),
+                    ));
+                    commands.spawn((
+                        WorldEntity(id.clone()),
+                        Mesh3d(wa.glow_disc.clone()),
+                        MeshMaterial3d(wa.resource_glow.clone()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.05))
+                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                    ));
+                }
             }
             EntityKind::Loot => {
                 // A dropped skirmish trophy — a small, glowing golden pickup that
@@ -3424,10 +3576,11 @@ fn spawn_billboard_entity(
         });
 }
 
-/// Spawn a terrain obstacle sized to its world radius: vegetation (tree/cactus/
-/// mire-root/fungal-wall) as a CC0 pixel foliage billboard — one of several variants
-/// picked by id hash so a grove isn't clones — water as a flat pool, everything else
-/// (boulders, cliffs, spires, dunes, snow) as a lit boulder.
+/// Spawn a terrain obstacle sized to its world radius. Vegetation and rock kinds are
+/// **real 3D models** (Kenney Nature Kit, CC0) — one of several variants picked by id
+/// hash and rotated for variety, so the world reads as dimensional HD-2D geometry
+/// rather than flat cut-outs. Water kinds stay flat pools; anything unmapped falls
+/// back to the lit boulder mesh.
 fn spawn_obstacle(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
@@ -3438,57 +3591,31 @@ fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
-    // Vegetation. The forest "tree" keeps the painterly rendered-tree billboard
-    // (PR #20); the other biomes' vegetation uses the CC0 pixel foliage billboards.
-    if name == "tree" {
-        let mat = wa
-            .tree_mats
-            .get(hash_pick(id, wa.tree_mats.len().max(1)))
-            .cloned()
-            .unwrap_or_default();
-        let h = 4.6 * (0.85 + r * 0.28).clamp(0.85, 1.7);
-        commands
-            .spawn((
-                WorldEntity(id.to_string()),
-                Transform::from_translation(world_pos(e.x, e.y, 0.0)),
-                Visibility::default(),
-            ))
-            .with_children(|p| {
-                p.spawn((
-                    Mesh3d(wa.tree_quad.clone()),
-                    MeshMaterial3d(mat),
-                    // Sink the quad so the trunk base (the art has transparent
-                    // padding below it) meets the ground instead of floating.
-                    Transform::from_translation(Vec3::new(0.0, h * 0.33, 0.0))
-                        .with_scale(Vec3::new(h, h, 1.0)),
-                    hd2d::Billboard,
-                ));
-                p.spawn((
-                    Mesh3d(wa.shadow_mesh.clone()),
-                    MeshMaterial3d(wa.shadow_mat.clone()),
-                    Transform::from_xyz(0.0, 0.03, 0.0)
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                        .with_scale(Vec3::new(h * 0.3, h * 0.17, 1.0)),
-                ));
-            });
-        return;
-    }
-    // Other vegetation → CC0 pixel foliage billboard (varies with the obstacle radius).
-    if let Some(variants) = wa.foliage.get(name) {
+    // 3D prop model (tree/rock/cliff/cactus/mushroom/…), variant + yaw from the id.
+    if let Some(variants) = wa.prop_scenes.get(name) {
         if !variants.is_empty() {
-            let tex = variants[hash_pick(id, variants.len())].clone();
-            let height = (1.4 + r * 0.7).min(3.2);
-            spawn_billboard_entity(
-                commands,
-                mats,
-                wa,
-                id,
-                e,
-                tex,
-                height,
-                Color::srgb(1.1, 1.12, 1.05),
-                (r * 0.9).min(1.2),
-            );
+            let (scene, base) = &variants[hash_pick(id, variants.len())];
+            // Gently modulate the baked scale by the collision radius so bigger
+            // obstacles read bigger, without drifting far from the tuned size.
+            let scale = base * (0.85 + r * 0.15).clamp(0.85, 1.5);
+            let yaw = (hash_pick(id, 360) as f32).to_radians();
+            let mut ent = commands.spawn((
+                WorldEntity(id.to_string()),
+                SceneRoot(scene.clone()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.0))
+                    .with_scale(Vec3::splat(scale))
+                    .with_rotation(Quat::from_rotation_y(yaw)),
+            ));
+            // Foliage sways in the wind (see `animate_sway`); rock/cliff stays rigid.
+            if let Some(amp) = sway_amp(name) {
+                let h = hash_pick(id, 10000);
+                ent.insert(Sway {
+                    base_yaw: yaw,
+                    phase: (h % 628) as f32 / 100.0,
+                    amp,
+                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
+                });
+            }
             return;
         }
     }
@@ -3669,15 +3796,12 @@ fn sync_battle_actors(
         // Same creature billboard the overworld uses: look up by content id (the
         // combatant name with underscores), else hash into the fallback pool.
         let kind = c.name.replace(' ', "_");
-        let tex = wa
-            .monster_sprites
-            .get(&kind)
-            .cloned()
-            .or_else(|| {
-                (!wa.monster_pool.is_empty())
-                    .then(|| wa.monster_pool[hash_pick(&c.id, wa.monster_pool.len())].clone())
-            })
-            .unwrap_or_else(|| wa.resource_fallback.clone());
+        let tex = wa.monster_sprites.get(&kind).cloned().unwrap_or_else(|| {
+            // Unmapped creature → deterministic pick from the fallback pool
+            // (always non-empty, so this never panics).
+            let pool = &wa.monster_pool;
+            pool[hash_pick(&c.id, pool.len().max(1))].clone()
+        });
         let h = 3.4;
         let root = Vec3::new(spread(i, enemies.len(), 3.6), 0.0, -4.5);
         let mat = mats.add(hd2d::sprite_material(Color::srgb(1.2, 1.15, 1.1), tex));
