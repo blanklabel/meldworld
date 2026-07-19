@@ -108,10 +108,19 @@ is just how the world is *chunked*, not a difficulty axis.
 - **Same seed ⇒ same terrain.** Fully derived from the instance seed; nothing about
   the terrain is stored or client-authored — the client rebuilds identical relief
   from the seeded terrain payload.
-- **Extraction is always feasible.** The guaranteed clear path (`Arena::path`)
-  must remain reachable — now routed *through* connectors. This is the riskiest
-  part and gets the same rejection-sampling + unit-test-across-seeds treatment the
-  current path already has.
+- **Extraction is always feasible — even though the path now CLIMBS.** As of the
+  climbing-maze work, a procedural section's clear path may rise onto a plateau over
+  the *interior* of its segment (`path_climb_chance`) and drop back down, so the
+  critical route itself has verticality. Feasibility is preserved by construction:
+  the plateau covers only 30–70% of the segment (both section waypoints stay on
+  level 0, so seams/portal/streaming are unaffected), the plateau's y-extent covers
+  the whole path tube (no cliff cuts the route), and a **Slope ramp** (≥
+  `path_clear_radius` reach) sits on the path at each level boundary. A walker that
+  follows the waypoints climbs the ramps and reaches the portal grounded — asserted
+  across seeds by `the_clear_path_climbs_a_plateau_and_still_reaches_the_portal`
+  (and the level-0-endpoints invariant still holds in
+  `no_obstacle_or_terrace_intrudes_on_the_clear_path`). Side terraces remain optional
+  off-path detours (grind + treasure). Connector type is now weighted toward slopes.
 - **Server-authoritative** (CANON §S, D11). The client renders relief + sends the
   same 2-D intents; the server owns all elevation/collision resolution.
 

@@ -171,6 +171,9 @@ pub struct WorldGen {
     /// Forest sections pack this multiple of `obstacles_per_area` extra trees into
     /// the play area (dense maze); other biomes keep the base density.
     pub forest_obstacle_mult: f64,
+    /// Non-forest biomes pack this multiple of `obstacles_per_area` extra props for
+    /// their maze fill (every biome is a maze; forest uses `forest_obstacle_mult`).
+    pub maze_obstacle_mult: f64,
     pub obstacle_min_radius: f64,
     pub obstacle_max_radius: f64,
     pub path_clear_radius: f64,
@@ -191,6 +194,10 @@ pub struct WorldGen {
     pub connector_radius: f64,
     /// How far ahead of the frontier player the world streams new sections in.
     pub stream_lookahead: f64,
+    /// Probability a procedural section's CLEAR PATH climbs onto a mid-segment
+    /// plateau (up a ramp, across, back down) — the "path itself is a maze" knob.
+    /// Endpoints stay on level 0, so feasibility is preserved.
+    pub path_climb_chance: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).
