@@ -3555,24 +3555,30 @@ fn sync_overworld_sprites(
                 }
             }
             EntityKind::Loot => {
-                // A dropped skirmish trophy — a small, glowing golden pickup that
-                // sparkles above the grass until a player walks over it.
-                let tex = e
-                    .name
-                    .as_deref()
-                    .and_then(|k| wa.resource_sprites.get(k).cloned())
-                    .unwrap_or_else(|| wa.resource_fallback.clone());
-                spawn_billboard_entity(
-                    &mut commands,
-                    &mut mats,
-                    &wa,
-                    id,
-                    e,
-                    tex,
-                    0.7,
-                    Color::srgb(1.7, 1.4, 0.7),
-                    0.35,
-                );
+                // A dropped skirmish trophy — a small glowing golden pickup on the
+                // grass until a player walks over it. Rendered from the 3D-era assets
+                // (glow disc + an emissive gold nub); there's no dedicated loot sprite
+                // in the current asset set.
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.glow_disc.clone()),
+                    MeshMaterial3d(wa.resource_glow.clone()),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.05))
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
+                ));
+                let nub = mats.add(StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.85, 0.35),
+                    emissive: LinearRgba::rgb(1.6, 1.2, 0.4),
+                    unlit: true,
+                    ..default()
+                });
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(nub),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.35))
+                        .with_scale(Vec3::splat(0.32)),
+                ));
             }
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);

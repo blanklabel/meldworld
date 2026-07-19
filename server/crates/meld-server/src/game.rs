@@ -2029,6 +2029,7 @@ impl GameState {
                 position: l.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("loot:{}", l.kind)),
+                level: None,
             });
         }
         // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
