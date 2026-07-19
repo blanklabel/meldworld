@@ -6,6 +6,8 @@
 //! maps onto `battle.*` wire messages. No wall-clock, no RNG globals, no I/O —
 //! so it is fully deterministic and unit-testable (BUILD-PLAN M2.3/M2.4).
 
+use std::collections::HashSet;
+
 use meld_balance::Balance;
 use meld_proto::common::Combatant as WireCombatant;
 use meld_proto::enums::{
@@ -279,7 +281,9 @@ pub struct Battle {
     flee_base: f64,
     flee_penalty_per_tier: f64,
     flee_floor: f64,
-    seen_actions: Vec<Id>,
+    /// Action ids already resolved (dedup / idempotency). A set so the check is
+    /// O(1) rather than an O(n) scan that grows over a long battle's lifetime.
+    seen_actions: HashSet<Id>,
     /// Tiny deterministic LCG for flee rolls (no global RNG — determinism).
     rng: u64,
 }
@@ -326,7 +330,7 @@ impl Battle {
             flee_base: balance.battle.flee_base,
             flee_penalty_per_tier: balance.battle.flee_penalty_per_tier,
             flee_floor: balance.battle.flee_floor,
-            seen_actions: Vec::new(),
+            seen_actions: HashSet::new(),
             rng: seed | 1,
         }
     }
@@ -515,7 +519,7 @@ impl Battle {
         if self.fighters[i].kind != CombatantKind::Player || !self.fighters[i].alive {
             return Err(Reject::NotFound);
         }
-        if self.seen_actions.iter().any(|a| a == &action_id) {
+        if self.seen_actions.contains(&action_id) {
             return Err(Reject::DuplicateAction);
         }
         if !self.fighters[i].awaiting || self.fighters[i].gauge < 1.0 {
@@ -526,7 +530,7 @@ impl Battle {
                 "Flee is disabled against Gatekeepers.",
             ));
         }
-        self.seen_actions.push(action_id.clone());
+        self.seen_actions.insert(action_id.clone());
 
         let mut events = Vec::new();
         // Start-of-turn upkeep (Regen heal, Barrier decay) fires before the action.
