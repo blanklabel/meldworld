@@ -8,6 +8,9 @@ description = "Postgres persistence: players + credentials (bcrypt), migrations 
 [dependencies]
 sqlx.workspace = true
 uuid.workspace = true
+# `rt` (via workspace "full") for spawn_blocking — bcrypt hashing is CPU-heavy and
+# must not run on an async worker thread (it would stall the WS gateway on a login burst).
+tokio.workspace = true
 bcrypt.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
