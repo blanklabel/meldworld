@@ -3140,10 +3140,24 @@ fn auto_harvest(
     sent.retain(|id| world.entities.contains_key(id)); // forget harvested/gone nodes
 }
 
+/// Distance in screen pixels from point `p` to the segment `a`–`b`.
+fn seg_point_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 > 1e-6 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * t)
+}
+
 /// Open the party + inventory menu (the old-school RPG screen) by **clicking or
 /// tapping your own character**. Replaces the inventory key/button. A click is a
 /// mouse press+release without a drag (drags orbit the camera); a tap is a touch on
-/// the character. Both raycast to the ground and check proximity to the player.
+/// the character. The hit-test is in SCREEN space against the sprite's projected
+/// extent — the avatar is an upright billboard and the camera is tilted, so a flat
+/// ground-plane hit lands well *behind* the sprite you actually clicked.
 #[allow(clippy::too_many_arguments)]
 fn overworld_click_menu(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -3152,6 +3166,7 @@ fn overworld_click_menu(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     world: Res<Overworld>,
     session: Res<Session>,
+    look: Res<hd2d::Look>,
     net: NonSend<NetRes>,
     ui_hit: Query<&Interaction, With<Button>>,
     mut overlay: ResMut<Overlay>,
@@ -3185,23 +3200,45 @@ fn overworld_click_menu(
         return; // clicked a UI button, not the world
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
-    let Ok(ray) = cam.viewport_to_world(cam_tf, p) else { return };
-    let dv = ray.direction.y;
-    if dv.abs() < 1e-6 {
-        return;
-    }
-    let dist = -ray.origin.y / dv;
-    if dist <= 0.0 {
-        return;
-    }
-    let hit = ray.get_point(dist);
-    if let Some(me) = world.entities.get(&session.player_id) {
-        // Tapped on (near) your own avatar → open the party/inventory screen.
-        if Vec2::new(hit.x, hit.z).distance(Vec2::new(me.x, me.y)) < 1.8 {
-            overlay.kind = Some(OverlayKind::Inventory);
-            inv.loaded = false;
-            net.0.fetch_inventory();
+    let Some(me) = world.entities.get(&session.player_id) else { return };
+
+    // Primary hit-test: project the sprite's vertical extent (feet→head) to the
+    // screen and measure the click's pixel distance to that line. This matches the
+    // billboard the player sees, regardless of camera tilt or zoom.
+    let base_y = me.level as f32 * STEP_HEIGHT;
+    let feet_w = Vec3::new(me.x, base_y, me.y);
+    let head_w = feet_w + Vec3::Y * (look.sprite_y * 2.0);
+    let on_sprite = match (
+        cam.world_to_viewport(cam_tf, feet_w).ok(),
+        cam.world_to_viewport(cam_tf, head_w).ok(),
+    ) {
+        (Some(feet_s), Some(head_s)) => {
+            // Tolerance scales with the sprite's on-screen height (bigger when
+            // zoomed in) with a floor so a small distant sprite is still clickable.
+            let radius = ((head_s - feet_s).length() * 0.6).max(40.0);
+            seg_point_dist(p, feet_s, head_s) < radius
         }
+        _ => false,
+    };
+
+    // Fallback: a click that raycasts to the ground right at the avatar's feet
+    // still counts (covers extreme camera angles where projection is degenerate).
+    let mut near_feet = false;
+    if let Ok(ray) = cam.viewport_to_world(cam_tf, p) {
+        let dv = ray.direction.y;
+        if dv.abs() >= 1e-6 {
+            let dist = -ray.origin.y / dv;
+            if dist > 0.0 {
+                let hit = ray.get_point(dist);
+                near_feet = Vec2::new(hit.x, hit.z).distance(Vec2::new(me.x, me.y)) < 1.8;
+            }
+        }
+    }
+
+    if on_sprite || near_feet {
+        overlay.kind = Some(OverlayKind::Inventory);
+        inv.loaded = false;
+        net.0.fetch_inventory();
     }
 }
 
@@ -3845,10 +3882,12 @@ fn sync_overworld_sprites(
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
-    // Server snapshots arrive at ~20 Hz; snapping the transform to them each render
-    // frame is what made the pixel sprite jitter. Smooth (exponential) toward the
-    // target on the ground plane instead — the camera follows the *smoothed* player
-    // (see `hd2d_follow`), so sprite and world stay locked together.
+    // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz); snapping
+    // the transform to them each render frame is what made the pixel sprite jitter.
+    // Smooth (frame-rate-independent exponential) toward the target on the ground
+    // plane instead — the camera follows the *smoothed* player (see `hd2d_follow`),
+    // so sprite and world stay locked together. Now that the server tick cadence is
+    // regular (no per-tick DB stalls / redundant serialization), this reads smooth.
     let k = 1.0 - (-time.delta_secs() * OW_SMOOTH_RATE).exp();
     let mut seen = HashSet::new();
     for (entity, we, mut tf) in &mut q {

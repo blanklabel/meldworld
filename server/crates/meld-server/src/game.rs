@@ -35,7 +35,7 @@ pub enum ServerEvent {
         player_id: String,
         username: String,
         session_id: String,
-        out: mpsc::UnboundedSender<String>,
+        out: mpsc::Sender<String>,
     },
     /// A socket closed.
     Disconnected { player_id: String },
@@ -55,11 +55,58 @@ impl GameHandle {
     }
 }
 
+/// A fire-and-forget persistence job. These writes never feed back into the game
+/// state, so they run on a dedicated DB task and NEVER block the single
+/// state-owning game loop on a Postgres round-trip — that inline blocking was the
+/// main source of tick stalls / jitter under load (harvest XP fired on every
+/// harvest, deaths, renames). Loads that *do* feed state back stay on the loop.
+enum DbWrite {
+    /// Apply the death durability sink for a player whose run just ended.
+    Death(String),
+    /// Credit harvested Meld-skill XP: (player, skill, xp).
+    SkillXp(String, String, i64),
+    /// Persist a hero rename: (player, slot, name).
+    HeroRename(String, i16, String),
+}
+
+/// Drain the DB-write queue on its own task, serializing writes off the hot path.
+async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
+    while let Some(job) = rx.recv().await {
+        match job {
+            DbWrite::Death(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.apply_death_durability(uid).await {
+                        tracing::error!("death durability failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::SkillXp(pid, skill, xp) => {
+                if xp > 0 {
+                    if let Ok(uid) = Uuid::parse_str(&pid) {
+                        if let Err(e) = db.add_skill_xp(uid, &skill, xp).await {
+                            tracing::error!("harvest skill xp failed for {pid}: {e}");
+                        }
+                    }
+                }
+            }
+            DbWrite::HeroRename(pid, slot, name) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_hero_name(uid, slot, &name).await {
+                        tracing::error!("hero rename persist failed for {pid}: {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Spawn the game loop; returns a handle for the gateway.
 pub fn spawn(balance: Arc<Balance>, db: Db) -> GameHandle {
     let (tx, rx) = mpsc::channel(1024);
+    let (db_tx, db_rx) = mpsc::unbounded_channel::<DbWrite>();
+    tokio::spawn(run_db_writer(db.clone(), db_rx));
     tokio::spawn(async move {
-        GameState::new(balance, db).run(rx).await;
+        GameState::new(balance, db, db_tx).run(rx).await;
     });
     GameHandle { tx }
 }
@@ -73,6 +120,14 @@ fn now_ms() -> u64 {
 
 /// Item kind of the Town Portal consumable — the primary extraction method.
 const TOWN_PORTAL: &str = "town_portal";
+
+/// Per-session outbound buffer. Bounded so a slow/stuck client can't make the
+/// queue (and server memory) grow without limit while its snapshots pile up. At
+/// the 10 Hz tick this is ~100 s of frames; a client that falls this far behind
+/// is treated as dead and dropped (see [`GameState::dispatch`]) rather than
+/// stalling the loop or leaking memory. The game loop only ever `try_send`s, so
+/// a slow client never back-pressures the single state-owning task.
+pub(crate) const OUT_CHANNEL_CAP: usize = 1024;
 
 /// A cheap uniform `[0,1)` roll from arbitrary material (splitmix64). Used for
 /// non-authoritative rolls like loot drops (game-loop side may use wall-clock;
@@ -139,7 +194,7 @@ fn world_seed() -> u64 {
 
 struct Session {
     username: String,
-    out: mpsc::UnboundedSender<String>,
+    out: mpsc::Sender<String>,
     /// Logical session id — surfaced in `resume` blocks (resume slice, deferred).
     #[allow(dead_code)]
     session_id: String,
@@ -159,18 +214,50 @@ struct Session {
 }
 
 /// One outbound message queued for a player, before seq assignment.
+///
+/// `payload` is *pre-serialized once* to raw JSON and shared via `Arc`. This is
+/// the hot path: a snapshot/gauge broadcast serializes its (potentially large)
+/// body a single time, then every recipient clones the cheap `Arc` and
+/// [`dispatch`] embeds the same bytes verbatim into each session's envelope —
+/// instead of the old path, which serialized the whole body once per recipient
+/// *and* again when stringifying the envelope (2×N full serializations/tick).
 struct Outgoing {
     player_id: String,
-    msg_type: String,
-    payload: serde_json::Value,
+    msg_type: &'static str,
+    payload: Arc<serde_json::value::RawValue>,
+}
+
+/// Serialize a message body to shared raw JSON exactly once.
+fn serialize_payload<M: Message>(m: &M) -> Arc<serde_json::value::RawValue> {
+    Arc::from(serde_json::value::to_raw_value(m).expect("payload serializes"))
 }
 
 fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
     Outgoing {
         player_id: player_id.to_string(),
-        msg_type: M::TYPE.to_string(),
-        payload: serde_json::to_value(m).expect("payload serializes"),
+        msg_type: M::TYPE,
+        payload: serialize_payload(m),
     }
+}
+
+/// Fan one message out to many recipients, serializing the body a single time.
+/// Use this for every broadcast (snapshots, gauge updates, battle events shared
+/// by a whole party) so per-tick cost is O(body) + O(recipients), not O(body ×
+/// recipients).
+fn broadcast<'a, M: Message>(
+    player_ids: impl IntoIterator<Item = &'a str>,
+    m: &M,
+) -> Vec<Outgoing> {
+    let payload = serialize_payload(m);
+    let msg_type = M::TYPE;
+    player_ids
+        .into_iter()
+        .map(|pid| Outgoing {
+            player_id: pid.to_string(),
+            msg_type,
+            payload: payload.clone(),
+        })
+        .collect()
 }
 
 /// Convert a generated [`Area`] into a `world.terrain_section` wire message. The
@@ -343,19 +430,17 @@ struct GameState {
     /// player_id -> the lobby code they're in.
     player_lobby: HashMap<String, String>,
     /// Players whose gear bonus needs (re)loading from the DB (post-connect).
+    /// Loads feed session state back, so they stay on the loop (they only await
+    /// Postgres when a player actually connects — infrequent, not per-tick).
     pending_gear_load: Vec<String>,
     /// Players whose persistent hero names should be loaded from Postgres.
     pending_hero_load: Vec<String>,
-    /// Hero renames to persist to Postgres: (player, slot, name).
-    pending_hero_rename: Vec<(String, i16, String)>,
-    /// Meld-skill XP earned by harvesting, flushed to Postgres: (player, skill, xp).
-    pending_skill_xp: Vec<(String, String, i64)>,
-    /// Players whose run just ended in death; durability sink applied async.
-    pending_deaths: Vec<String>,
+    /// Fire-and-forget persistence sink, drained by [`run_db_writer`] off the loop.
+    db_writes: mpsc::UnboundedSender<DbWrite>,
 }
 
 impl GameState {
-    fn new(balance: Arc<Balance>, db: Db) -> Self {
+    fn new(balance: Arc<Balance>, db: Db, db_writes: mpsc::UnboundedSender<DbWrite>) -> Self {
         GameState {
             balance,
             db,
@@ -366,9 +451,7 @@ impl GameState {
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
             pending_hero_load: Vec::new(),
-            pending_hero_rename: Vec::new(),
-            pending_skill_xp: Vec::new(),
-            pending_deaths: Vec::new(),
+            db_writes,
         }
     }
 
@@ -390,31 +473,51 @@ impl GameState {
                     self.dispatch(out);
                 }
             }
-            // Async DB side-effects run after either arm (the sync paths queue
-            // work; here we await Postgres): gear loads, extraction banking, and
-            // the death durability sink.
+            // Async DB side-effects that feed session/run state back run after
+            // either arm (they only await Postgres when there is pending work —
+            // a fresh connect or a completed extraction, not every tick). Deaths,
+            // harvest XP and renames are fire-and-forget and go to `run_db_writer`
+            // off this task, so the tick never blocks on those round-trips.
             self.flush_gear_loads().await;
             self.flush_hero_loads().await;
-            self.flush_hero_renames().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
-            self.flush_deaths().await;
-            self.flush_skill_xp().await;
         }
     }
 
     fn dispatch(&mut self, out: Vec<Outgoing>) {
+        if out.is_empty() {
+            return;
+        }
+        let ts = now_ms();
+        let mut slow: Vec<String> = Vec::new();
         for o in out {
             if let Some(s) = self.sessions.get_mut(&o.player_id) {
-                let env = serde_json::json!({
-                    "type": o.msg_type,
-                    "seq": s.seq_out,
-                    "ts": now_ms(),
-                    "payload": o.payload,
-                });
+                // Build the envelope by embedding the already-serialized payload
+                // bytes verbatim — `msg_type` is a static wire literal (no escaping
+                // needed) and `RawValue::get()` is the payload's raw JSON, so the
+                // (large) body is never walked again here.
+                let env = format!(
+                    "{{\"type\":\"{}\",\"seq\":{},\"ts\":{},\"payload\":{}}}",
+                    o.msg_type,
+                    s.seq_out,
+                    ts,
+                    o.payload.get(),
+                );
                 s.seq_out = s.seq_out.wrapping_add(1);
-                let _ = s.out.send(env.to_string());
+                // Non-blocking: the loop must never park on a slow socket. A full
+                // buffer means the client is too far behind to catch up — drop it.
+                if let Err(mpsc::error::TrySendError::Full(_)) = s.out.try_send(env) {
+                    slow.push(o.player_id.clone());
+                }
             }
+        }
+        // Force-disconnect over-buffered clients: removing the session drops its
+        // `out` sender, ending the gateway writer, which triggers the normal
+        // `Disconnected` cleanup path. Better a reconnect than an unbounded queue.
+        for pid in slow {
+            tracing::warn!("dropping slow client {pid}: outbound buffer full");
+            self.sessions.remove(&pid);
         }
     }
 
@@ -1393,7 +1496,9 @@ impl GameState {
             v[slot] = name.clone();
             s.hero_names = Some(v);
         }
-        self.pending_hero_rename.push((player_id.to_string(), slot as i16, name));
+        let _ = self
+            .db_writes
+            .send(DbWrite::HeroRename(player_id.to_string(), slot as i16, name));
         vec![out_msg(
             player_id,
             &wr::Party {
@@ -1758,45 +1863,6 @@ impl GameState {
         }
     }
 
-    /// Persist queued hero renames to Postgres.
-    async fn flush_hero_renames(&mut self) {
-        let jobs: Vec<(String, i16, String)> = std::mem::take(&mut self.pending_hero_rename);
-        for (pid, slot, name) in jobs {
-            if let Ok(uid) = Uuid::parse_str(&pid) {
-                if let Err(e) = self.db.set_hero_name(uid, slot, &name).await {
-                    tracing::error!("hero rename persist failed for {pid}: {e}");
-                }
-            }
-        }
-    }
-
-    /// Apply the death durability sink (Postgres) for players who just died.
-    async fn flush_deaths(&mut self) {
-        let deaths: Vec<String> = std::mem::take(&mut self.pending_deaths);
-        for pid in deaths {
-            if let Ok(uid) = Uuid::parse_str(&pid) {
-                if let Err(e) = self.db.apply_death_durability(uid).await {
-                    tracing::error!("death durability failed for {pid}: {e}");
-                }
-            }
-        }
-    }
-
-    /// Credit Meld-skill XP earned by harvesting to Postgres (Forging/Alchemy).
-    async fn flush_skill_xp(&mut self) {
-        let jobs: Vec<(String, String, i64)> = std::mem::take(&mut self.pending_skill_xp);
-        for (pid, skill, xp) in jobs {
-            if xp <= 0 {
-                continue;
-            }
-            if let Ok(uid) = Uuid::parse_str(&pid) {
-                if let Err(e) = self.db.add_skill_xp(uid, &skill, xp).await {
-                    tracing::error!("harvest skill xp failed for {pid}: {e}");
-                }
-            }
-        }
-    }
-
     /// Harvest the named resource node the avatar is standing next to: bank its
     /// material into the backpack and queue its Meld-skill XP. The node vanishes
     /// from the next snapshot (server-authoritative — client just renders).
@@ -1847,7 +1913,9 @@ impl GameState {
             }
             (item, res.skill.clone(), res.xp, kind)
         };
-        self.pending_skill_xp.push((player_id.to_string(), skill, xp));
+        let _ = self
+            .db_writes
+            .send(DbWrite::SkillXp(player_id.to_string(), skill, xp));
         vec![out_msg(
             player_id,
             &wr::BackpackUpdate {
@@ -2209,12 +2277,14 @@ impl GameState {
             server_tick: slot.battle.tick_count() as i64,
             combatants,
         };
-        inst.run
-            .runs
-            .iter()
-            .filter(|r| slot.parties.contains(&r.party_id))
-            .map(|r| out_msg(&r.player_id, &msg))
-            .collect()
+        broadcast(
+            inst.run
+                .runs
+                .iter()
+                .filter(|r| slot.parties.contains(&r.party_id))
+                .map(|r| r.player_id.as_str()),
+            &msg,
+        )
     }
 
     fn snapshot_msgs(&self) -> Vec<Outgoing> {
@@ -2308,12 +2378,14 @@ impl GameState {
         // on the battle screen and driven by battle messages instead; when no battle
         // is running, `in_battle` is empty so this sends to everyone.
         let in_battle = inst.parties_in_battle();
-        inst.run
-            .runs
-            .iter()
-            .filter(|r| !in_battle.contains(&r.party_id))
-            .map(|r| out_msg(&r.player_id, &msg))
-            .collect()
+        broadcast(
+            inst.run
+                .runs
+                .iter()
+                .filter(|r| !in_battle.contains(&r.party_id))
+                .map(|r| r.player_id.as_str()),
+            &msg,
+        )
     }
 
     /// Translate one battle's engine events into wire messages, handling its
@@ -2336,16 +2408,14 @@ impl GameState {
                         None
                     };
                     let members = self.members_of_battle(battle_id);
-                    for pid in &members {
-                        out.push(out_msg(
-                            pid,
-                            &wb::TurnReady {
-                                battle_id: battle_id.to_string(),
-                                combatant_id: combatant_id.clone(),
-                                timeout_at,
-                            },
-                        ));
-                    }
+                    out.extend(broadcast(
+                        members.iter().map(String::as_str),
+                        &wb::TurnReady {
+                            battle_id: battle_id.to_string(),
+                            combatant_id: combatant_id.clone(),
+                            timeout_at,
+                        },
+                    ));
                 }
                 BattleEvent::Resolved(res) => {
                     let members = self.members_of_battle(battle_id);
@@ -2368,9 +2438,7 @@ impl GameState {
                             })
                             .collect(),
                     };
-                    for pid in &members {
-                        out.push(out_msg(pid, &msg));
-                    }
+                    out.extend(broadcast(members.iter().map(String::as_str), &msg));
                 }
                 BattleEvent::Ended { outcome } => {
                     out.extend(self.handle_battle_end(battle_id, outcome));
@@ -2589,7 +2657,7 @@ impl GameState {
                 // with the run: its items, red-chest gear, and chits are all lost
                 // (economy.md S1 — un-extracted chits never entered circulation).
                 // Report the forfeited haul so the client can show what was lost.
-                // (Durability sink runs in flush_deaths against Postgres.)
+                // (Durability sink runs off-loop via `run_db_writer` in Postgres.)
                 let lost_hauls: Vec<(String, String, Vec<ItemStack>, i64)> = inst
                     .run
                     .runs
@@ -2641,7 +2709,9 @@ impl GameState {
             }
         }
         inst.battles.retain(|b| b.battle_id != battle_id);
-        self.pending_deaths.append(&mut dead);
+        for pid in dead {
+            let _ = self.db_writes.send(DbWrite::Death(pid));
+        }
         // Announce level-ups (classic stat-gain screen) then refresh the party
         // panel for anyone who leveled up (stats changed).
         for (pid, old_level, new_level) in &level_ups {

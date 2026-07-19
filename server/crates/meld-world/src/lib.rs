@@ -1136,22 +1136,31 @@ impl Arena {
                 "territorial" => terr_aggro,
                 _ => 0.0, // passive: never chases (but still retaliates below)
             };
-            // Nearest active player within aggro range.
-            let player_target = players
-                .iter()
-                .copied()
-                .filter(|p| aggro_range > 0.0 && m.position.distance_to(p) <= aggro_range)
-                .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
-            // Nearest hostile-faction creature within skirmish aggro (initiators only).
-            let creature_target = cs
-                .iter()
-                .enumerate()
-                .filter(|(j, (_, fac, alive, _))| {
-                    *j != i && *alive && aggro_range > 0.0 && creatures_hostile(&m.faction, fac)
-                })
-                .map(|(_, (pos, _, _, _))| *pos)
-                .filter(|pos| m.position.distance_to(pos) <= skirmish_aggro)
-                .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+            // A creature that can't chase (passive) has no player/creature target,
+            // so skip both O(players)/O(monsters) scans entirely — otherwise every
+            // passive creature still walks the whole monster list each tick just to
+            // produce `None`. (Same result, less work; behaviour unchanged.)
+            let (player_target, creature_target) = if aggro_range > 0.0 {
+                // Nearest active player within aggro range.
+                let player_target = players
+                    .iter()
+                    .copied()
+                    .filter(|p| m.position.distance_to(p) <= aggro_range)
+                    .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+                // Nearest hostile-faction creature within skirmish aggro (initiators only).
+                let creature_target = cs
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, (_, fac, alive, _))| {
+                        *j != i && *alive && creatures_hostile(&m.faction, fac)
+                    })
+                    .map(|(_, (pos, _, _, _))| *pos)
+                    .filter(|pos| m.position.distance_to(pos) <= skirmish_aggro)
+                    .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+                (player_target, creature_target)
+            } else {
+                (None, None)
+            };
             // Prefer whichever target is closer; a creature target lets us stop short
             // and brawl, a player target we must actually touch to trigger a battle.
             let (target, is_creature) = match (player_target, creature_target) {

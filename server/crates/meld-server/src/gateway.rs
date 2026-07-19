@@ -133,7 +133,9 @@ async fn handle_socket(socket: WebSocket, gw: GatewayState) {
     }
 
     // --- steady state ------------------------------------------------------
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    // Bounded so a slow client's queue can't grow without limit; the game loop
+    // `try_send`s and drops a client that overflows (see game.rs `dispatch`).
+    let (out_tx, mut out_rx) = mpsc::channel::<String>(crate::game::OUT_CHANNEL_CAP);
 
     // Writer task: forward loop output to the socket.
     let mut writer = tokio::spawn(async move {
