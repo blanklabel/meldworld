@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use meld_proto::common::Combatant;
 use meld_proto::realtime::{
-    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, Message as _,
+    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message as _,
 };
 use meld_proto::RawEnvelope;
 use serde_json::{json, Value};
@@ -130,6 +130,37 @@ pub struct EntityView {
     pub radius: f64,
     /// True if this is a player currently in a fight (`avatar_state == in_battle`).
     pub battling: bool,
+    /// Elevation level (terraced verticality) — the render height is raised by
+    /// `level × step_height`. Absent on the wire → 0 (ground).
+    pub level: u8,
+}
+
+/// A connector (ladder/rope/slope) joining two elevation levels — client view.
+#[derive(Clone)]
+pub struct ConnectorView {
+    pub kind: String,
+    pub x: f64,
+    pub y: f64,
+    pub lo: u8,
+    pub hi: u8,
+    pub radius: f64,
+}
+
+/// One streamed overworld **section**'s static geometry: its elevation grid +
+/// connectors (+ trail contribution). The client builds one stepped ground+cliff
+/// mesh per section and spawns the connector props.
+#[derive(Clone)]
+pub struct TerrainSectionView {
+    pub index: u32,
+    pub start_x: f64,
+    pub end_x: f64,
+    pub y_min: f64,
+    pub cell: f64,
+    pub cols: u32,
+    pub rows: u32,
+    pub levels: Vec<u8>,
+    pub connectors: Vec<ConnectorView>,
+    pub path: Vec<(f64, f64)>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -181,6 +212,9 @@ pub enum ServerMsg {
     Party { heroes: Vec<HeroLine> },
     /// Waypoints of the guaranteed clear path (world units) — drawn as a trail.
     WorldPath { points: Vec<(f64, f64)> },
+    /// One overworld section's elevation grid + connectors (terraced verticality).
+    /// Streamed at run start (initial chain) and as the frontier advances (endless).
+    TerrainSection { section: TerrainSectionView },
     /// Current run backpack (item_kind, quantity), sorted — drives the HUD.
     Backpack { items: Vec<(String, i32)> },
     Snapshot { entities: Vec<EntityView> },
@@ -799,10 +833,39 @@ impl Inner {
                                 faction,
                                 radius,
                                 battling,
+                                level: e.level.unwrap_or(0),
                             }
                         })
                         .collect();
                     self.out.push_back(ServerMsg::Snapshot { entities });
+                }
+            }
+            "world.terrain_section" => {
+                if let Ok(t) = serde_json::from_value::<ww::TerrainSection>(raw.payload) {
+                    let section = TerrainSectionView {
+                        index: t.index,
+                        start_x: t.start_x,
+                        end_x: t.end_x,
+                        y_min: t.y_min,
+                        cell: t.cell,
+                        cols: t.cols,
+                        rows: t.rows,
+                        levels: t.levels,
+                        connectors: t
+                            .connectors
+                            .into_iter()
+                            .map(|c| ConnectorView {
+                                kind: c.kind,
+                                x: c.position.x,
+                                y: c.position.y,
+                                lo: c.lo,
+                                hi: c.hi,
+                                radius: c.radius,
+                            })
+                            .collect(),
+                        path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
+                    };
+                    self.out.push_back(ServerMsg::TerrainSection { section });
                 }
             }
             "battle.started" => {
