@@ -44,7 +44,10 @@ impl Db {
     /// Connect to Postgres and return a pool handle.
     pub async fn connect(database_url: &str, bcrypt_cost: u32) -> Result<Self, DbError> {
         let pool = PgPoolOptions::new()
-            .max_connections(8)
+            // Sized above the expected concurrent-agent count (~20) so a connect
+            // burst (everyone hitting vault/gear/me at once) doesn't queue behind
+            // a small pool. Queries are short, so idle connections are cheap.
+            .max_connections(32)
             .connect(database_url)
             .await?;
         Ok(Db { pool, bcrypt_cost })
@@ -115,6 +118,13 @@ impl Db {
         // Forward-compat: add `tier` to any gear table created before this column
         // existed (CREATE TABLE IF NOT EXISTS won't alter an existing table).
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 0")
+            .execute(&self.pool)
+            .await?;
+        // Every hot gear query filters by `owner_player_id` (get_gear,
+        // equipped_atk_bonus on connect, death durability, equip checks), but a FK
+        // is NOT auto-indexed in Postgres — so each was a full-table Seq Scan, and
+        // `gear` is insert-only (never pruned), so it degraded linearly forever.
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_gear_owner ON gear(owner_player_id)")
             .execute(&self.pool)
             .await?;
         // Persistent Meld skills (forging / mercantile / alchemy). Level is a
@@ -228,7 +238,15 @@ impl Db {
     /// the password with bcrypt; the plaintext is dropped here and never stored.
     /// `Conflict` on dup username. All rows commit together.
     pub async fn register(&self, username: &str, password: &str) -> Result<PlayerRow, DbError> {
-        let password_hash = hash(password, self.bcrypt_cost)?;
+        // bcrypt is ~hundreds of ms of pure CPU — run it on the blocking pool so it
+        // never pins an async worker thread (a login burst would otherwise stall the
+        // HTTP + WS handling that shares those threads).
+        let password_hash = {
+            let (pw, cost) = (password.to_string(), self.bcrypt_cost);
+            tokio::task::spawn_blocking(move || hash(pw, cost))
+                .await
+                .expect("bcrypt hash task panicked")?
+        };
         let player_id = Uuid::now_v7();
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
@@ -373,10 +391,15 @@ impl Db {
         .fetch_optional(&self.pool)
         .await?;
 
+        // bcrypt verify is CPU-heavy — run it on the blocking pool (see `register`).
         match maybe {
             Some(row) => {
                 let stored: String = row.get("password_hash");
-                if verify(password, &stored).unwrap_or(false) {
+                let pw = password.to_string();
+                let ok = tokio::task::spawn_blocking(move || verify(pw, &stored).unwrap_or(false))
+                    .await
+                    .unwrap_or(false);
+                if ok {
                     Ok(Some(row_to_player(&row)))
                 } else {
                     Ok(None)
@@ -384,7 +407,8 @@ impl Db {
             }
             None => {
                 // Burn equivalent time so a missing account isn't faster.
-                let _ = verify(password, DUMMY_HASH);
+                let pw = password.to_string();
+                let _ = tokio::task::spawn_blocking(move || verify(pw, DUMMY_HASH)).await;
                 Ok(None)
             }
         }
