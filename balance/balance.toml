@@ -180,6 +180,10 @@ leash_radius = 9.0           # how far a creature wanders from its spawn (home)
 group_radius = 6.5           # creatures within this of the one you touch join the fight
 flee_hp_fraction = 0.3       # `flees` creatures bolt from battle below this HP fraction
 join_radius = 9.0            # a teammate this close to an ongoing fight may opt in to join it
+skirmish_aggro_radius = 6.5  # hostile-faction creatures hunt each other within this range
+skirmish_attack_range = 1.7  # ... and trade blows once this close (overworld skirmish)
+skirmish_attack_interval = 0.85 # seconds between a creature's overworld blows
+loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within this range
 
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,
@@ -192,9 +196,10 @@ base_def = 2
 speed_stat = 80
 xp_reward = 60
 encounter_class = "standard"
-faction = "beast"
+faction = "fungal"           # a spore-bloom stalker — rivals the forest's beasts
 aggression = "territorial"
 flees = false
+loot_kind = "bloom_petal"
 
 [creature.thornback_boar]
 base_hp = 78
@@ -206,6 +211,7 @@ encounter_class = "standard"
 faction = "beast"
 aggression = "passive"
 flees = false
+loot_kind = "boar_tusk"
 
 # --- Desert (d 100–300) ---
 [creature.dune_wyrm]
@@ -218,6 +224,7 @@ encounter_class = "standard"
 faction = "wyrm"
 aggression = "aggressive"
 flees = false
+loot_kind = "wyrm_scale"
 
 [creature.sand_shade]
 base_hp = 68
@@ -229,6 +236,7 @@ encounter_class = "standard"
 faction = "shade"
 aggression = "aggressive"
 flees = true
+loot_kind = "shade_essence"
 
 # --- Ashfall (d 300–500) ---
 [creature.cinder_imp]
@@ -241,6 +249,7 @@ encounter_class = "standard"
 faction = "fiend"
 aggression = "aggressive"
 flees = false
+loot_kind = "imp_horn"
 
 [creature.magma_golem]
 base_hp = 165
@@ -252,6 +261,7 @@ encounter_class = "standard"
 faction = "construct"
 aggression = "territorial"
 flees = false
+loot_kind = "molten_core"
 
 # --- Tundra (d 500–1000) ---
 [creature.frost_lurker]
@@ -264,6 +274,7 @@ encounter_class = "standard"
 faction = "beast"
 aggression = "aggressive"
 flees = false
+loot_kind = "frost_pelt"
 
 [creature.ice_revenant]
 base_hp = 142
@@ -275,6 +286,7 @@ encounter_class = "standard"
 faction = "undead"
 aggression = "territorial"
 flees = false
+loot_kind = "revenant_dust"
 
 # --- Mire (d 1000+) ---
 [creature.bog_serpent]
@@ -287,6 +299,7 @@ encounter_class = "standard"
 faction = "wyrm"
 aggression = "aggressive"
 flees = false
+loot_kind = "serpent_fang"
 
 [creature.myconid_brute]
 base_hp = 225
@@ -298,6 +311,7 @@ encounter_class = "standard"
 faction = "fungal"
 aggression = "passive"
 flees = false
+loot_kind = "myconid_cap"
 
 # Harvestable resource nodes, keyed by content id (biome→node assignment is
 # structural, in `meld-world::resources_for_biome`). Harvesting one banks its

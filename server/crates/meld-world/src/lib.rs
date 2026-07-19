@@ -17,6 +17,7 @@
 
 use meld_balance::Balance;
 use meld_proto::common::Position;
+use meld_proto::factions::creatures_hostile;
 use meld_proto::Id;
 
 /// Distance → difficulty formulas (world-generation.md). Structure in code;
@@ -163,9 +164,13 @@ pub struct MonsterSpawn {
     pub def: i32,
     pub speed_stat: i32,
     pub xp_reward: i64,
+    /// Item kind dropped as ground loot when felled by an overworld skirmish.
+    pub loot_kind: String,
     pub defeated: bool,
     /// True while this creature is locked in a battle (so it stops roaming).
     pub in_battle: bool,
+    /// Seconds until this creature can land its next overworld skirmish blow.
+    skirmish_cd: f64,
     /// Per-creature PRNG state for deterministic wander.
     rng: u64,
 }
@@ -198,11 +203,23 @@ impl MonsterSpawn {
             def: stats.base_def,
             speed_stat: stats.speed_stat,
             xp_reward: stats.xp_reward,
+            loot_kind: stats.loot_kind.clone(),
             defeated: false,
             in_battle: false,
+            skirmish_cd: 0.0,
             rng: seed | 1,
         }
     }
+}
+
+/// An item dropped on the ground when a creature is felled by an overworld
+/// skirmish. Players auto-collect it by walking within `loot_pickup_radius`.
+#[derive(Debug, Clone)]
+pub struct GroundLoot {
+    pub entity_id: Id,
+    /// Item kind banked into the backpack on pickup.
+    pub kind: String,
+    pub position: Position,
 }
 
 /// A harvestable resource node in the overworld. Walk up and harvest it once for
@@ -287,6 +304,8 @@ pub struct Arena {
     pub areas: Vec<Area>,
     pub monsters: Vec<MonsterSpawn>,
     pub resources: Vec<ResourceNode>,
+    /// Loot dropped by creatures felled in overworld skirmishes, awaiting pickup.
+    pub ground_loot: Vec<GroundLoot>,
     /// Impassable biome terrain (trees/cliffs/water/…). Never intrudes on `path`.
     pub obstacles: Vec<Obstacle>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
@@ -313,6 +332,10 @@ pub struct Arena {
     territorial_aggro_radius: f64,
     leash_radius: f64,
     group_radius: f64,
+    skirmish_aggro: f64,
+    skirmish_range: f64,
+    skirmish_interval: f64,
+    loot_pickup_radius: f64,
 }
 
 impl Arena {
@@ -482,6 +505,7 @@ impl Arena {
             areas,
             monsters,
             resources,
+            ground_loot: Vec::new(),
             obstacles,
             path,
             portal,
@@ -499,14 +523,20 @@ impl Arena {
             territorial_aggro_radius: balance.ai.territorial_aggro_radius,
             leash_radius: balance.ai.leash_radius,
             group_radius: balance.ai.group_radius,
+            skirmish_aggro: balance.ai.skirmish_aggro_radius,
+            skirmish_range: balance.ai.skirmish_attack_range,
+            skirmish_interval: balance.ai.skirmish_attack_interval,
+            loot_pickup_radius: balance.ai.loot_pickup_radius,
         }
     }
 
-    /// Advance every roaming creature one step of `dt` seconds. Aggressive creatures
-    /// chase the nearest active player within their aggro radius; territorial ones
-    /// only give chase when a player is close, else patrol near home; passive ones
-    /// just drift near home. Battling/defeated creatures hold still. Deterministic
-    /// given the per-creature seed (no wall-clock, no global RNG).
+    /// Advance every roaming creature one step of `dt` seconds. Creatures chase the
+    /// nearest target within their aggro radius — either an active player OR a
+    /// hostile-faction creature (overworld skirmishing); aggressive creatures hunt
+    /// on sight, territorial ones only when close, passive ones just drift near
+    /// home. Adjacent hostile creatures hold and trade blows (the damage pass); a
+    /// creature felled by a skirmish drops [`GroundLoot`] where it fell. Battling/
+    /// defeated creatures hold still. Deterministic given the per-creature seed.
     pub fn step_creatures(&mut self, dt: f64) {
         // Snapshot active-avatar positions (immutable borrow) before moving creatures.
         let players: Vec<Position> = self
@@ -518,33 +548,69 @@ impl Arena {
         let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
         let (wander, chase) = (self.wander_speed, self.chase_speed);
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
+        let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
+        let interval = self.skirmish_interval;
         let obstacles: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        // Combat state of every creature, snapshotted so a creature can target
+        // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
+        let cs: Vec<(Position, String, bool, i32)> = self
+            .monsters
+            .iter()
+            .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
+            .collect();
 
-        for m in self.monsters.iter_mut() {
+        // --- Movement pass: pick a target and close on it (or wander) ----------
+        for (i, m) in self.monsters.iter_mut().enumerate() {
             if m.defeated || m.in_battle {
                 continue;
             }
-            // Nearest active player.
-            let nearest = players
-                .iter()
-                .min_by(|a, b| {
-                    m.position
-                        .distance_to(a)
-                        .total_cmp(&m.position.distance_to(b))
-                })
-                .copied();
             let aggro_range = match m.aggression.as_str() {
                 "aggressive" => aggro,
                 "territorial" => terr_aggro,
-                _ => 0.0, // passive: never chases
+                _ => 0.0, // passive: never chases (but still retaliates below)
             };
-            let (mut dx, mut dy, speed) = match nearest {
-                Some(p) if m.position.distance_to(&p) <= aggro_range && aggro_range > 0.0 => {
-                    // Chase the player.
-                    (p.x - m.position.x, p.y - m.position.y, chase)
+            // Nearest active player within aggro range.
+            let player_target = players
+                .iter()
+                .copied()
+                .filter(|p| aggro_range > 0.0 && m.position.distance_to(p) <= aggro_range)
+                .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+            // Nearest hostile-faction creature within skirmish aggro (initiators only).
+            let creature_target = cs
+                .iter()
+                .enumerate()
+                .filter(|(j, (_, fac, alive, _))| {
+                    *j != i && *alive && aggro_range > 0.0 && creatures_hostile(&m.faction, fac)
+                })
+                .map(|(_, (pos, _, _, _))| *pos)
+                .filter(|pos| m.position.distance_to(pos) <= skirmish_aggro)
+                .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+            // Prefer whichever target is closer; a creature target lets us stop short
+            // and brawl, a player target we must actually touch to trigger a battle.
+            let (target, is_creature) = match (player_target, creature_target) {
+                (Some(p), Some(c)) => {
+                    if m.position.distance_to(&p) <= m.position.distance_to(&c) {
+                        (Some(p), false)
+                    } else {
+                        (Some(c), true)
+                    }
                 }
-                _ => {
+                (Some(p), None) => (Some(p), false),
+                (None, Some(c)) => (Some(c), true),
+                (None, None) => (None, false),
+            };
+            let (mut dx, mut dy, speed) = match target {
+                Some(p) => {
+                    // Hold position once adjacent to a creature rival (trade blows in
+                    // the damage pass) instead of jittering through it.
+                    if is_creature && m.position.distance_to(&p) <= skirmish_range {
+                        (0.0, 0.0, chase)
+                    } else {
+                        (p.x - m.position.x, p.y - m.position.y, chase)
+                    }
+                }
+                None => {
                     // Wander: drift toward a seeded random point within the leash.
                     let ang = next_unit(&mut m.rng) * std::f64::consts::TAU;
                     let target_x = m.home.x + ang.cos() * leash;
@@ -574,6 +640,81 @@ impl Arena {
                 }
             }
         }
+
+        // --- Damage pass: adjacent hostile creatures trade blows ---------------
+        // Any two living hostile-faction creatures within attack range hit each
+        // other on their own cooldown — passive creatures fight back too, they just
+        // never gave chase. Uses post-movement positions.
+        let now: Vec<(Position, String, bool, i32)> = self
+            .monsters
+            .iter()
+            .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
+            .collect();
+        let mut hits: Vec<(usize, i32)> = Vec::new();
+        for (i, m) in self.monsters.iter_mut().enumerate() {
+            if m.defeated || m.in_battle {
+                m.skirmish_cd = 0.0;
+                continue;
+            }
+            m.skirmish_cd = (m.skirmish_cd - dt).max(0.0);
+            if m.skirmish_cd > 0.0 {
+                continue;
+            }
+            let victim = now
+                .iter()
+                .enumerate()
+                .filter(|(j, (_, fac, alive, _))| {
+                    *j != i && *alive && creatures_hostile(&m.faction, fac)
+                })
+                .filter(|(_, (pos, _, _, _))| m.position.distance_to(pos) <= skirmish_range)
+                .min_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| {
+                    m.position.distance_to(a).total_cmp(&m.position.distance_to(b))
+                });
+            if let Some((j, (_, _, _, victim_def))) = victim {
+                let dmg = (m.atk - victim_def).max(1);
+                hits.push((j, dmg));
+                m.skirmish_cd = interval;
+            }
+        }
+        for (j, dmg) in hits {
+            self.monsters[j].hp -= dmg;
+        }
+
+        // --- Deaths → ground loot ---------------------------------------------
+        let mut drops: Vec<(Id, String, Position)> = Vec::new();
+        for m in self.monsters.iter_mut() {
+            if !m.defeated && !m.in_battle && m.hp <= 0 {
+                m.defeated = true;
+                drops.push((m.entity_id.clone(), m.loot_kind.clone(), m.position));
+            }
+        }
+        for (eid, kind, position) in drops {
+            let n = self.ground_loot.len();
+            self.ground_loot.push(GroundLoot {
+                entity_id: format!("loot-{eid}-{n}"),
+                kind,
+                position,
+            });
+        }
+    }
+
+    /// Collect (remove and return) every ground-loot drop within pickup range of
+    /// `player_id`. The caller banks each into the player's backpack.
+    pub fn collect_loot(&mut self, player_id: &str) -> Vec<GroundLoot> {
+        let Some(pos) = self.avatar(player_id).map(|a| a.position) else {
+            return Vec::new();
+        };
+        let radius = self.loot_pickup_radius;
+        let mut taken = Vec::new();
+        let mut i = 0;
+        while i < self.ground_loot.len() {
+            if pos.distance_to(&self.ground_loot[i].position) <= radius {
+                taken.push(self.ground_loot.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        taken
     }
 
     /// The living creatures within `group_radius` of creature `idx` (including it).
@@ -762,6 +903,83 @@ mod tests {
         arena.monsters[1].position = arena.monsters[0].position;
         let g = arena.group_around(0);
         assert!(g.contains(&0) && g.contains(&1), "close creatures group up");
+    }
+
+    #[test]
+    fn hostile_creatures_skirmish_and_drop_loot() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        assert!(arena.monsters.len() >= 2);
+        // Isolate the encounter to a single hostile pair (other creatures across
+        // the arena would skirmish too and add their own drops).
+        arena.monsters.truncate(2);
+        // Force a hostile pair adjacent: an aggressive attacker vs a weak rival.
+        // Widen both area bounds so neither is snapped back to its home area.
+        for k in 0..2 {
+            arena.monsters[k].area_min_x = f64::NEG_INFINITY;
+            arena.monsters[k].area_max_x = f64::INFINITY;
+        }
+        arena.monsters[0].faction = "beast".to_string();
+        arena.monsters[0].aggression = "aggressive".to_string();
+        arena.monsters[0].atk = 50;
+        arena.monsters[0].hp = 500;
+        let pos = arena.monsters[0].position;
+        arena.monsters[1].faction = "fiend".to_string(); // beast vs fiend = hostile
+        arena.monsters[1].aggression = "passive".to_string();
+        arena.monsters[1].hp = 20;
+        arena.monsters[1].def = 0;
+        arena.monsters[1].home = Position::new(pos.x + 1.0, pos.y);
+        arena.monsters[1].position = Position::new(pos.x + 1.0, pos.y);
+        // No players present, so the only thing that can happen is a skirmish.
+        for _ in 0..60 {
+            arena.step_creatures(0.1);
+        }
+        assert!(
+            arena.monsters[1].defeated,
+            "the weaker rival should be felled by the skirmish"
+        );
+        assert_eq!(arena.ground_loot.len(), 1, "a felled creature drops loot");
+        assert_eq!(arena.ground_loot[0].kind, arena.monsters[1].loot_kind);
+    }
+
+    #[test]
+    fn player_collects_nearby_ground_loot() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        arena.ground_loot.push(GroundLoot {
+            entity_id: "loot-x".into(),
+            kind: "boar_tusk".into(),
+            position: Position::new(20.0, 0.0),
+        });
+        arena.add_avatar("p".into(), 6.0);
+        // Too far to pick up.
+        arena.avatar_mut("p").unwrap().position = Position::new(30.0, 0.0);
+        assert!(arena.collect_loot("p").is_empty());
+        // Walk onto it.
+        arena.avatar_mut("p").unwrap().position = Position::new(20.0, 0.0);
+        let got = arena.collect_loot("p");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, "boar_tusk");
+        assert!(arena.ground_loot.is_empty(), "loot removed once collected");
+    }
+
+    #[test]
+    fn same_faction_creatures_do_not_skirmish() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 5);
+        arena.monsters[0].faction = "beast".to_string();
+        arena.monsters[0].aggression = "aggressive".to_string();
+        arena.monsters[1].faction = "beast".to_string();
+        let pos = arena.monsters[0].position;
+        arena.monsters[1].position = Position::new(pos.x + 1.0, pos.y);
+        let hp0 = arena.monsters[0].hp;
+        let hp1 = arena.monsters[1].hp;
+        for _ in 0..30 {
+            arena.step_creatures(0.1);
+        }
+        assert_eq!(arena.monsters[0].hp, hp0, "allies never damage each other");
+        assert_eq!(arena.monsters[1].hp, hp1);
+        assert!(arena.ground_loot.is_empty());
     }
 
     #[test]

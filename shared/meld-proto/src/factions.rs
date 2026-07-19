@@ -12,12 +12,17 @@
 /// The player's battle faction.
 pub const PLAYER: &str = "player";
 
-/// Unordered creature-faction pairs that don't get along.
+/// Unordered creature-faction pairs that don't get along. Tuned so **every**
+/// biome roster (`creatures_for_biome`) pairs two mutually-hostile factions, so
+/// overworld skirmishes are visible everywhere — not just tundra/mire.
 const HOSTILE_PAIRS: &[(&str, &str)] = &[
     ("beast", "fiend"),
-    ("beast", "undead"),
+    ("beast", "undead"),  // tundra: frost_lurker vs ice_revenant
+    ("beast", "fungal"),  // forest: thornback_boar vs forest_bloom_stalker
     ("construct", "fungal"),
-    ("wyrm", "fungal"),
+    ("wyrm", "fungal"),   // mire: bog_serpent vs myconid_brute
+    ("wyrm", "shade"),    // desert: dune_wyrm vs sand_shade
+    ("fiend", "construct"), // ashfall: cinder_imp vs magma_golem
     ("shade", "beast"),
 ];
 
