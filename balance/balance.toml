@@ -176,11 +176,13 @@ resource_lateral_spread = 22.0   # ± y range nodes scatter across
 # deep portal — obstacles never intrude within `path_clear_radius` of it, so a route
 # to the exit is ALWAYS feasible. Area 0 (tutorial) stays obstacle-free. [TUNABLE]
 obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1)
-# The Forest is a DENSE maze: procedural forest sections pack this multiple of
-# `obstacles_per_area` EXTRA trees into the play area (only the clear path stays
-# open), on a separate rng stream so world determinism is unchanged. Other biomes
-# keep the base density. [TUNABLE]
+# Every biome is a DENSE maze: procedural sections pack this multiple of
+# `obstacles_per_area` EXTRA props into the play area (only the clear path + branch
+# detours stay open), on a separate rng stream so world determinism is unchanged.
+# Forest is densest (`forest_obstacle_mult`); other biomes use `maze_obstacle_mult`.
+# [TUNABLE]
 forest_obstacle_mult = 4.0
+maze_obstacle_mult = 2.0         # extra prop density for non-forest biomes
 obstacle_min_radius = 0.9        # smallest feature (a lone tree/rock)
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
@@ -188,17 +190,19 @@ path_meander = 18.0              # how far ±y the clear path wanders between ar
 player_radius = 0.5              # the avatar's collision radius vs obstacles
 
 # Verticality: raised terraces joined to the ground by connectors (ladders/ropes/
-# slopes). Terraces are optional side-geography kept OUT of the clear-path tube, so
-# the extraction route stays entirely on level 0 and is always feasible. Each
-# terrace gets at least one connector so it's reachable. Cliffs are impassable
-# walls; the only way up is a connector (VERTICALITY-PROPOSAL.md). All [TUNABLE].
-terraces_per_area = 3.0          # avg raised terraces per section (area 0 stays flat)
+# slopes, now weighted toward slopes/ramps). SIDE terraces are optional detours kept
+# OUT of the clear-path tube (grind pockets + treasure). The CLEAR PATH itself also
+# climbs: `path_climb_chance` sections raise a mid-segment plateau the route crosses
+# via guaranteed ramps, with the endpoints staying on level 0 so extraction is always
+# feasible. Cliffs are impassable; the only way up is a connector. All [TUNABLE].
+terraces_per_area = 3.0          # avg raised SIDE terraces per section (area 0 stays flat)
 max_level = 2                    # tallest terrace (levels above ground)
 terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
 terrace_max_size = 14.0          # largest terrace footprint side (tiles)
 terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)
 connector_radius = 2.2           # reach around a connector that permits a level change
 stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
+path_climb_chance = 0.6          # chance a section's clear path climbs a plateau (0..1)
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

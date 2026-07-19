@@ -864,6 +864,16 @@ impl Arena {
             Position::new(end_x - wg.portal_setback, 0.0)
         };
 
+        // Climbing maze (#B): the terrain for this section is created up front so a
+        // plateau can be raised over the INTERIOR of the clear-path segment — the
+        // critical route itself climbs up a ramp and back down. Endpoints (the
+        // section waypoints) stay on level 0, so seams/portal/streaming and the
+        // "waypoints are grounded" guarantee are untouched; only the mid-segment
+        // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
+        // terrace/chest draws below stay byte-stable.
+        let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
+        self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance);
+
         // Scatter impassable biome terrain, rejecting anything that would block the
         // clear path tube or bury a creature/resource. Rejection-sampled so the
         // path (and the exit) is always feasible by construction.
@@ -880,6 +890,11 @@ impl Arena {
             if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
                 continue;
             }
+            // Don't strand an obstacle on (or half-buried under) the raised path
+            // plateau — keep them on the ground like the dense-forest pass does.
+            if terrain.level_at(&pos) != 0 {
+                continue;
+            }
             let buries = self.monsters.iter().any(|m| m.position.distance_to(&pos) < radius + 1.5)
                 || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.5);
             if buries {
@@ -894,12 +909,10 @@ impl Arena {
             placed += 1;
         }
 
-        // Raise a few terraces, kept OUT of the clear-path tube (so the route stays
-        // level 0 and feasible). Each gets a connector so it's reachable. Terraces
-        // never cover a creature/resource on the critical path — they'd be left on
-        // the ground otherwise unreachable — so overlapped ones are lifted with the
-        // terrace (a terrace node rewards climbing).
-        let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
+        // Raise a few SIDE terraces off the clear-path tube (optional detours: grind
+        // pockets + treasure). Each gets a connector so it's reachable; overlapped
+        // creatures/resources are lifted onto it (a reward for climbing). These are
+        // kept off the path — the path's own climb is the plateau raised above.
         let n_terraces = self.terraces_per_area.max(0.0).round() as usize;
         let (mut tplaced, mut tattempts) = (0usize, 0usize);
         while tplaced < n_terraces && tattempts < n_terraces * 12 {
@@ -933,7 +946,9 @@ impl Arena {
             // Place a connector on the middle of the terrace's south edge, nudged
             // outward toward the ground so it straddles the level boundary.
             let conn_pos = Position::new(cx, (y0 - terrain.cell * 0.5).max(-self.lateral));
-            let kind = match rng.below(3) {
+            // Ramps sell better: weight the connector roll toward slopes (½ slope,
+            // ¼ ladder, ¼ rope). One draw either way, so the main rng stays aligned.
+            let kind = match rng.below(4) {
                 0 => ConnectorKind::Ladder,
                 1 => ConnectorKind::Rope,
                 _ => ConnectorKind::Slope,
@@ -1003,14 +1018,22 @@ impl Arena {
             });
         }
 
-        // Forest is a DENSE maze: pack the play area with extra trees so only the
-        // winding clear path stays open. Uses a SEPARATE rng stream (section_seed ⊕
-        // a constant) so main's creature/terrace/chest/seam draws stay byte-identical
-        // and every determinism test still holds. Ground level only (no floating
-        // trees on a terrace), and never buries the path/creatures/nodes/chests.
-        if biome == "forest" && wg.forest_obstacle_mult > 0.0 {
+        // Every biome is a MAZE: pack the play area with extra impassable props so
+        // only the winding clear path (plus the branch detours) stays open. Forest is
+        // densest (forest_obstacle_mult); other biomes use maze_obstacle_mult. Uses a
+        // SEPARATE rng stream (section_seed ⊕ a constant) so main's creature/terrace/
+        // chest/seam draws stay byte-identical and every determinism test still holds.
+        // Ground level only (nothing floating on a terrace/plateau), and never buries
+        // the path/creatures/nodes/chests.
+        let maze_mult = if biome == "forest" {
+            wg.forest_obstacle_mult
+        } else {
+            wg.maze_obstacle_mult
+        };
+        if maze_mult > 0.0 {
             let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
-            let extra = (wg.forest_obstacle_mult * wg.obstacles_per_area).round().max(0.0) as usize;
+            let extra = (maze_mult * wg.obstacles_per_area).round().max(0.0) as usize;
+            let fill_kind = if biome == "forest" { "tree" } else { okinds[0] };
             let (mut fp, mut fa) = (0usize, 0usize);
             while fp < extra && fa < extra * 12 {
                 fa += 1;
@@ -1037,7 +1060,7 @@ impl Arena {
                 }
                 self.obstacles.push(Obstacle {
                     entity_id: format!("obs-{}", self.obstacles.len()),
-                    kind: "tree".to_string(),
+                    kind: fill_kind.to_string(),
                     position: pos,
                     radius,
                 });
@@ -1055,6 +1078,58 @@ impl Arena {
             terrain,
         });
         self.cursor = end_x;
+    }
+
+    /// Climbing maze (#B): with probability `climb_chance`, raise a plateau over the
+    /// INTERIOR of this section's clear-path segment and drop a guaranteed Slope ramp
+    /// at each level boundary, so the critical route itself climbs up and back down.
+    ///
+    /// Feasibility is preserved by construction:
+    /// - the plateau spans only the interior (30–70%) of the segment, so both section
+    ///   waypoints stay on level 0 (seams/portal/streaming + the grounded-waypoint
+    ///   invariant are untouched);
+    /// - the plateau's y-extent covers the whole path tube across that span (no cliff
+    ///   cuts through the route);
+    /// - a Slope connector joining 0↔level sits exactly on the path at each boundary,
+    ///   wide enough (≥ path_clear_radius) that any walker in the tube can climb it.
+    ///
+    /// Uses its own rng stream so the main creature/obstacle/terrace/chest draws stay
+    /// byte-stable.
+    fn maybe_climb_path(&self, terrain: &mut Terrain, i: usize, climb_chance: f64) {
+        if self.max_level < 1 || self.path.len() < 2 {
+            return;
+        }
+        let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x9A5E_9A5E_9A5E_9A5E);
+        if prng.unit() >= climb_chance {
+            return;
+        }
+        let from = self.path[self.path.len() - 2];
+        let to = self.path[self.path.len() - 1];
+        let dx = to.x - from.x;
+        // Need room for a level-0 approach, the plateau, and two ramps.
+        if dx <= 14.0 {
+            return;
+        }
+        let level: u8 = 1 + prng.below(self.max_level.max(1) as usize) as u8;
+        let px0 = from.x + dx * 0.30;
+        let px1 = from.x + dx * 0.70;
+        let y_at = |x: f64| from.y + (to.y - from.y) * (x - from.x) / dx;
+        let (y0, y1) = (y_at(px0), y_at(px1));
+        let clear = self.path_clear_radius + self.terrain_cell;
+        raise_terrace(terrain, px0, y0.min(y1) - clear, px1, y0.max(y1) + clear, level);
+        // Ramps ON the path at each boundary — always slopes, and wide enough that a
+        // walker anywhere in the path tube crosses within reach.
+        let ramp_r = (self.path_clear_radius + 0.5).max(self.connector_radius);
+        for (k, (rx, ry)) in [(px0, y0), (px1, y1)].into_iter().enumerate() {
+            terrain.connectors.push(Connector {
+                entity_id: format!("pramp-{i}-{k}"),
+                kind: ConnectorKind::Slope,
+                position: Position::new(rx, ry),
+                lo: 0,
+                hi: level,
+                radius: ramp_r,
+            });
+        }
     }
 
     /// Does the axis-aligned terrace rectangle come within the clear-path tube?
@@ -2011,6 +2086,51 @@ mod tests {
         let end = arena.avatar("p").unwrap().position;
         assert!(end.distance_to(&arena.portal) < 1.5, "walker ended at the portal");
         assert_eq!(arena.avatar("p").unwrap().elevation, 0, "walker stayed on the ground");
+    }
+
+    #[test]
+    fn the_clear_path_climbs_a_plateau_and_still_reaches_the_portal() {
+        // The #B guarantee: the critical route itself CLIMBS (up a ramp, across a
+        // plateau, back down) yet is still always completable, ending grounded at the
+        // portal. Pick a seed that actually generated a path-ramp, then walk it.
+        let b = Balance::load_default().unwrap();
+        let seed = [42u64, 1, 7, 999, 123456, 2, 3, 5, 11]
+            .into_iter()
+            .find(|&s| {
+                Arena::generate(&b, s).areas.iter().any(|a| {
+                    a.terrain.connectors.iter().any(|c| c.entity_id.starts_with("pramp-"))
+                })
+            })
+            .expect("some seed produces a climbing clear path");
+        let mut arena = Arena::generate(&b, seed);
+        let waypoints = arena.path.clone();
+        assert!(waypoints.len() >= 2);
+        arena.add_avatar("p".into(), 8.0);
+        let mut wp = 1usize;
+        let mut reached = false;
+        let mut max_elev = 0u8;
+        for _ in 0..80_000 {
+            let a = arena.avatar("p").unwrap();
+            max_elev = max_elev.max(a.elevation);
+            let pos = a.position;
+            let target = waypoints[wp];
+            if pos.distance_to(&target) < 0.6 {
+                if wp + 1 >= waypoints.len() {
+                    reached = true;
+                    break;
+                }
+                wp += 1;
+                continue;
+            }
+            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
+        }
+        assert!(reached, "seed {seed}: the climbing path still reaches the portal");
+        assert!(max_elev > 0, "seed {seed}: the walker actually climbed a plateau en route");
+        assert_eq!(
+            arena.avatar("p").unwrap().elevation,
+            0,
+            "seed {seed}: walker ends grounded at the portal"
+        );
     }
 
     #[test]
