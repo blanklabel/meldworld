@@ -212,6 +212,7 @@ fn main() {
         .init_resource::<BattleMenu>()
         .init_resource::<HitFx>()
         .init_resource::<AtbFlash>()
+        .init_resource::<AllyPanel>()
         .init_resource::<Overlay>()
         .init_resource::<InventoryData>()
         .init_resource::<ProgressData>()
@@ -341,18 +342,22 @@ fn main() {
                 render_enemy_panel,
                 render_party_window,
                 render_ally_parties,
+                ally_collapse_click,
                 advance_hit_fx,
                 advance_atb_flash,
                 render_hit_fx,
                 // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
-                sync_battle_actors,
-                battle_click_target,
-                highlight_target,
-                animate_battle_actors,
-                battle_camera,
-                hd2d::animate_chars,
-                hd2d::place_billboards,
-                hd2d::billboard,
+                // Nested so the battle system tuple stays under Bevy's 20-arg cap.
+                (
+                    sync_battle_actors,
+                    battle_click_target,
+                    highlight_target,
+                    animate_battle_actors,
+                    battle_camera,
+                    hd2d::animate_chars,
+                    hd2d::place_billboards,
+                    hd2d::billboard,
+                ),
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -1211,6 +1216,9 @@ struct WorldAssets {
     psyker: CharacterFrames,
     squire: CharacterFrames,
     sprite_quad: Handle<Mesh>,
+    /// Cropped billboard showing only head→torso — the back-row "bust" (see
+    /// [`hd2d::bust_billboard_mesh`]).
+    bust_quad: Handle<Mesh>,
     shadow_mesh: Handle<Mesh>,
     shadow_mat: Handle<StandardMaterial>,
     /// CC0 pixel-art creature billboards keyed by creature content id (see
@@ -1514,6 +1522,8 @@ fn setup(
         ),
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
+        // Head→torso crop (top 55%) for stacked back-row busts.
+        bust_quad: meshes.add(hd2d::bust_billboard_mesh(2.2, 2.2, 12, 60.0, 0.55)),
         shadow_mesh: meshes.add(Circle::new(0.7)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
         monster_sprites,
@@ -5315,7 +5325,8 @@ impl PartyEdge {
 }
 
 /// Spawn one hero billboard at `root` facing `facing` (idle sprite chosen from that
-/// heading, camera-relative). Shared by every party edge.
+/// heading, camera-relative). `bust` renders only head→torso (back-row heroes, so
+/// they stack tight behind the front) and drops the ground shadow.
 fn spawn_hero_actor(
     commands: &mut Commands,
     wa: &WorldAssets,
@@ -5323,6 +5334,7 @@ fn spawn_hero_actor(
     c: &CombatantView,
     root: Vec3,
     facing: Vec2,
+    bust: bool,
 ) {
     let class = c
         .statuses
@@ -5338,6 +5350,7 @@ fn spawn_hero_actor(
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
     cs.facing = facing;
     let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
+    let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
         .spawn((
             BattleActor { id: c.id.clone() },
@@ -5348,19 +5361,22 @@ fn spawn_hero_actor(
         .with_children(|p| {
             p.spawn((
                 SpriteQuad { id: c.id.clone(), mat: mat.clone(), base: base_tint, forward },
-                Mesh3d(wa.sprite_quad.clone()),
+                Mesh3d(quad),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, 0.72, 0.0),
                 hd2d::Billboard,
                 hd2d::HeroBillboard,
             ));
-            p.spawn((
-                Mesh3d(wa.shadow_mesh.clone()),
-                MeshMaterial3d(wa.shadow_mat.clone()),
-                Transform::from_xyz(0.0, 0.02, 0.0)
-                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                    .with_scale(Vec3::new(1.0, 0.55, 1.0)),
-            ));
+            // A bust has no legs to ground, so it skips the contact shadow.
+            if !bust {
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+                ));
+            }
         });
 }
 
@@ -5468,25 +5484,21 @@ fn sync_battle_actors(
     }
     let surrounded = !ally_order.is_empty();
 
-    // My party stands in two ranks near the camera: martials hold the FRONT line,
-    // casters (row:back) form the BACK line a clear step behind + up. Each rank is
-    // its own centred row (spread by its own count), so ~2 world-units of depth
-    // between them reads unmistakably as two rows. Both sit low, tucked over the
-    // HUD, facing north toward the foes (Octopath backs).
+    // My party in two tight ranks near the camera: martials hold the FRONT line
+    // (full sprites), casters (row:back) stack just behind as head→torso BUSTS, so
+    // their heads peek over the front without their legs cluttering. A small depth
+    // gap keeps them close. Both flank the central command cross; facing north.
     let is_back = |c: &&CombatantView| c.statuses.iter().any(|s| s == "row:back");
-    // Two ranks, spread wide so they flank the central command cross (no overlap):
-    // the front rank low over the cells, the back rank a clear step deeper so it
-    // reads higher + smaller behind — a distinct front line and back line.
-    for (rank_z, rank) in [
-        (3.2, mine.iter().copied().filter(|c| !is_back(c)).collect::<Vec<_>>()),
-        (-0.4, mine.iter().copied().filter(is_back).collect::<Vec<_>>()),
+    for (rank_z, bust, rank) in [
+        (3.4, false, mine.iter().copied().filter(|c| !is_back(c)).collect::<Vec<_>>()),
+        (2.5, true, mine.iter().copied().filter(is_back).collect::<Vec<_>>()),
     ] {
         for (i, c) in rank.iter().enumerate() {
             if seen.contains(&c.id) {
                 continue;
             }
             let x = (i as f32 - (rank.len().max(1) as f32 - 1.0) * 0.5) * 4.4;
-            spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, rank_z), Vec2::new(0.0, -1.0));
+            spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, rank_z), Vec2::new(0.0, -1.0), bust);
         }
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
@@ -5499,7 +5511,7 @@ fn sync_battle_actors(
                 continue;
             }
             let (root, facing) = edge.slot(i, heroes.len());
-            spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, facing);
+            spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, facing, false);
         }
     }
     // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
@@ -6252,7 +6264,7 @@ fn rebuild_command_menu(
                 position_type: PositionType::Absolute,
                 left: Val::Px(12.0),
                 right: Val::Px(12.0),
-                bottom: Val::Px(142.0), // just above the compact party HUD row
+                bottom: Val::Px(96.0), // just above the compact party HUD row
                 flex_direction: FlexDirection::Row,
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -6433,6 +6445,48 @@ fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color)
         });
 }
 
+/// A [`meter`] with a `label` (e.g. "32/40") centred *inside* the bar — saves a
+/// line vs a separate HP text row. The fill is absolutely positioned so it doesn't
+/// shove the label off-centre, and the label draws on top.
+fn meter_labeled(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, fill: Color, label: String) {
+    parent
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(height),
+                border: UiRect::all(Val::Px(1.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.35, 0.4, 0.55)),
+            BackgroundColor(Color::srgb(0.07, 0.08, 0.12)),
+            BorderRadius::all(Val::Px(3.0)),
+        ))
+        .with_children(|t| {
+            // Fill: absolute so the centred label stays centred over the whole track.
+            t.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    bottom: Val::Px(0.0),
+                    width: Val::Percent((frac * 100.0).clamp(0.0, 100.0)),
+                    ..default()
+                },
+                BackgroundColor(fill),
+                BorderRadius::all(Val::Px(2.0)),
+            ));
+            // Label on top (later sibling renders above the fill).
+            t.spawn((
+                Text::new(label),
+                TextFont { font_size: (height - 3.0).max(10.0), ..default() },
+                TextColor(Color::srgb(0.97, 0.99, 1.0)),
+            ));
+        });
+}
+
 /// True if a combatant was hit within the last [`FLASH_TTL`] seconds.
 fn flashing(hitfx: &HitFx, id: &str) -> bool {
     hitfx.items.iter().any(|h| h.target == id && h.age < FLASH_TTL)
@@ -6525,24 +6579,35 @@ fn render_enemy_panel(
         });
 }
 
-/// One joined ally party, pinned to a screen edge (north/west/east). Your own
-/// party is the bottom grid; up to three other players' full lineups line the
-/// other three edges so a co-op fight reads as several parties fighting together.
-#[derive(Clone, Copy)]
-enum AllyEdge {
-    North,
-    West,
-    East,
+/// Collapse state for the single ally box (toggled by its header button).
+#[derive(Resource, Default)]
+struct AllyPanel {
+    collapsed: bool,
 }
 
-/// Immediate-mode ally-party strips: group every joined hero (a player-combatant
-/// that isn't one of yours) by its owning `player_id`, then lay each party out as
-/// a compact lineup on the north, west, or east edge. Rebuilt each frame from
-/// [`BattleData`] like the other battle HUD panels.
+/// Marker on the ally box's collapse/expand header button.
+#[derive(Component)]
+struct AllyCollapseBtn;
+
+/// Flip [`AllyPanel::collapsed`] when the ally box header is clicked.
+fn ally_collapse_click(
+    mut panel: ResMut<AllyPanel>,
+    btn: Query<&Interaction, (Changed<Interaction>, With<AllyCollapseBtn>)>,
+) {
+    if btn.iter().any(|i| *i == Interaction::Pressed) {
+        panel.collapsed = !panel.collapsed;
+    }
+}
+
+/// Immediate-mode ally box: EVERY other player's party lives in ONE glass panel
+/// flush to the top of the screen (co-op status without eating the edges). Grouped
+/// by owner; each party is a labelled column of slim cells. Collapsible via its
+/// header so it can be tucked away to a thin bar.
 fn render_ally_parties(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    panel: Res<AllyPanel>,
     existing: Query<Entity, With<AllyPartyStrips>>,
 ) {
     for e in &existing {
@@ -6564,94 +6629,114 @@ fn render_ally_parties(
     if order.is_empty() {
         return;
     }
-    let edges = [AllyEdge::North, AllyEdge::West, AllyEdge::East];
-    for (gi, owner) in order.iter().enumerate() {
-        // Only three edges are free (your party owns the bottom); extra parties
-        // stack onto the north edge rather than vanish.
-        let edge = edges[gi.min(edges.len() - 1)];
-        let heroes = &parties[owner];
-        spawn_ally_party(&mut commands, &hitfx, edge, gi, heroes);
-    }
-}
-
-/// Spawn one edge-pinned ally party: a labelled container holding a slim cell per
-/// hero (name, Lv, HP + gauge bars), flashing when struck. North lays the heroes
-/// in a row; west/east stack them in a column.
-fn spawn_ally_party(
-    commands: &mut Commands,
-    hitfx: &HitFx,
-    edge: AllyEdge,
-    group_index: usize,
-    heroes: &[&CombatantView],
-) {
-    // Edge anchoring. North parties beyond the first are nudged down so they stack.
-    let mut node = Node {
-        position_type: PositionType::Absolute,
-        flex_direction: FlexDirection::Column,
-        row_gap: Val::Px(5.0),
-        padding: UiRect::all(Val::Px(8.0)),
-        border: UiRect::all(Val::Px(1.0)),
-        ..default()
-    };
-    match edge {
-        AllyEdge::North => {
-            node.top = Val::Px(92.0 + group_index.saturating_sub(1) as f32 * 116.0);
-            node.left = Val::Px(0.0);
-            node.right = Val::Px(0.0);
-            node.align_items = AlignItems::Center;
-        }
-        AllyEdge::West => {
-            node.left = Val::Px(10.0);
-            node.top = Val::Percent(30.0);
-            node.width = Val::Px(180.0);
-        }
-        AllyEdge::East => {
-            node.right = Val::Px(10.0);
-            node.top = Val::Percent(30.0);
-            node.width = Val::Px(180.0);
-        }
-    }
-    let label = heroes
-        .iter()
-        .find_map(|c| (!c.name.is_empty() && c.name != "Hero").then(|| c.name.clone()))
-        .map(|n| format!("{n}'s party"))
-        .unwrap_or_else(|| "Allied party".to_string());
+    let collapsed = panel.collapsed;
     commands
         .spawn((
             AllyPartyStrips,
-            node,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(0.0), // flush to the top — no buffer
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
             BorderColor(glass_edge()),
             BackgroundColor(glass_fill()),
-            BorderRadius::all(Val::Px(10.0)),
+            // Flat top edge (against the screen), rounded bottom.
+            BorderRadius {
+                top_left: Val::Px(0.0),
+                top_right: Val::Px(0.0),
+                bottom_left: Val::Px(12.0),
+                bottom_right: Val::Px(12.0),
+            },
         ))
-        .with_children(|panel| {
-            panel.spawn((
-                Text::new(label),
-                TextFont { font_size: 13.0, ..default() },
-                TextColor(Color::srgb(0.7, 0.85, 1.0)),
-            ));
-            // The heroes: a row on the north edge, a column on the sides.
-            let inner_dir = match edge {
-                AllyEdge::North => FlexDirection::Row,
-                _ => FlexDirection::Column,
-            };
-            panel
-                .spawn(Node {
-                    flex_direction: inner_dir,
-                    column_gap: Val::Px(8.0),
-                    row_gap: Val::Px(5.0),
-                    ..default()
-                })
-                .with_children(|row| {
-                    for c in heroes {
-                        ally_cell(row, hitfx, c);
-                    }
+        .with_children(|box_| {
+            // Header: "Allies (N)" + a clickable collapse/expand toggle.
+            box_.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(10.0),
+                ..default()
+            })
+            .with_children(|hdr| {
+                hdr.spawn((
+                    Text::new(format!("Allies ({})", order.len())),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.72, 0.85, 1.0)),
+                ));
+                hdr.spawn((
+                    Button,
+                    AllyCollapseBtn,
+                    Node {
+                        padding: UiRect::axes(Val::Px(7.0), Val::Px(1.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(glass_edge()),
+                    BackgroundColor(glass_fill()),
+                    BorderRadius::all(Val::Px(5.0)),
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(if collapsed { "[+]" } else { "[-]" }),
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(Color::srgb(0.85, 0.9, 1.0)),
+                    ));
                 });
+            });
+            if collapsed {
+                return;
+            }
+            // Body: each party a column (name + its heroes in a row), side by side.
+            box_.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(14.0),
+                ..default()
+            })
+            .with_children(|row| {
+                for owner in &order {
+                    let heroes = &parties[owner];
+                    let label = heroes
+                        .iter()
+                        .find_map(|c| (!c.name.is_empty() && c.name != "Hero").then(|| c.name.clone()))
+                        .map(|n| format!("{n}'s party"))
+                        .unwrap_or_else(|| "Allied party".to_string());
+                    row.spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(3.0),
+                        ..default()
+                    })
+                    .with_children(|col| {
+                        col.spawn((
+                            Text::new(label),
+                            TextFont { font_size: 12.0, ..default() },
+                            TextColor(Color::srgb(0.7, 0.82, 1.0)),
+                        ));
+                        col.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        })
+                        .with_children(|cells| {
+                            for c in heroes.iter() {
+                                ally_cell(cells, &hitfx, c);
+                            }
+                        });
+                    });
+                }
+            });
         });
 }
 
-/// A slim status cell for one joined ally hero: name + Lv, HP text (with Barrier/
-/// Regen suffixes), and HP + ATB meters. No command affordances — it's read-only.
+/// A compact read-only status cell for one joined ally hero: name (+ HP number
+/// inside its bar) and a slim ATB gauge. Kept narrow so a full co-op board fits in
+/// the single top ally box.
 fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView) {
     let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
     let gauge = c.gauge.clamp(0.0, 1.0) as f32;
@@ -6664,10 +6749,10 @@ fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView
     parent
         .spawn((
             Node {
-                width: Val::Px(158.0),
+                width: Val::Px(112.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(2.0),
-                padding: UiRect::all(Val::Px(5.0)),
+                padding: UiRect::all(Val::Px(4.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
@@ -6677,46 +6762,19 @@ fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView
             } else {
                 Color::srgba(0.09, 0.12, 0.22, 0.4)
             }),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderRadius::all(Val::Px(7.0)),
         ))
         .with_children(|cell| {
-            cell.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                justify_content: JustifyContent::SpaceBetween,
-                align_items: AlignItems::Center,
-                ..default()
-            })
-            .with_children(|line| {
-                line.spawn((
-                    Text::new(name),
-                    TextFont { font_size: 14.0, ..default() },
-                    TextColor(if c.hp == 0 {
-                        Color::srgb(0.55, 0.55, 0.6)
-                    } else {
-                        Color::srgb(0.8, 0.88, 1.0)
-                    }),
-                ));
-                line.spawn((
-                    Text::new(format!("Lv {}", c.level)),
-                    TextFont { font_size: 11.0, ..default() },
-                    TextColor(Color::srgb(0.85, 0.8, 0.45)),
-                ));
-            });
-            let barrier = status_num(&c.statuses, "barrier:");
-            let regen = status_num(&c.statuses, "regen:");
-            let mut hp_line = format!("Hp {}/{}", c.hp, c.max_hp);
-            if barrier > 0 {
-                hp_line.push_str(&format!("  +{barrier}\u{25c6}"));
-            }
-            if regen > 0 {
-                hp_line.push_str(&format!("  +{regen}/t"));
-            }
             cell.spawn((
-                Text::new(hp_line),
-                TextFont { font_size: 11.0, ..default() },
-                TextColor(Color::srgb(0.6, 0.75, 0.95)),
+                Text::new(name),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(if c.hp == 0 {
+                    Color::srgb(0.55, 0.55, 0.6)
+                } else {
+                    Color::srgb(0.8, 0.88, 1.0)
+                }),
             ));
-            meter(cell, hp_frac, 7.0, Color::srgb(0.35, 0.6, 0.95));
+            meter_labeled(cell, hp_frac, 13.0, Color::srgb(0.35, 0.6, 0.95), format!("{}/{}", c.hp, c.max_hp));
             meter(cell, gauge, 5.0, Color::srgb(0.4, 0.85, 0.5));
         });
 }
@@ -6786,90 +6844,80 @@ fn party_cell(
             BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|cell| {
-            // Left: name + Lv, HP, bars.
+            // Compact 3-line readout: name + Lv/tag, HP bar (number inside), ATB bar.
             cell.spawn(Node {
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
+                row_gap: Val::Px(2.0),
                 ..default()
             })
             .with_children(|col| {
+                // Line 1: name (left); Lv + action tag (right).
                 col.spawn(Node {
                     flex_direction: FlexDirection::Row,
                     justify_content: JustifyContent::SpaceBetween,
                     align_items: AlignItems::Center,
+                    column_gap: Val::Px(6.0),
                     ..default()
                 })
                 .with_children(|line| {
                     line.spawn((
                         Text::new(name),
-                        TextFont { font_size: 18.0, ..default() },
+                        TextFont { font_size: 16.0, ..default() },
                         TextColor(if c.hp == 0 {
                             Color::srgb(0.55, 0.55, 0.6)
                         } else {
                             Color::srgb(0.85, 0.92, 1.0)
                         }),
                     ));
-                    line.spawn((
-                        Text::new(format!("Lv {}", c.level)),
-                        TextFont { font_size: 14.0, ..default() },
-                        TextColor(Color::srgb(0.95, 0.85, 0.4)),
-                    ));
+                    line.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|right| {
+                        let (tag, tag_color) = match queued {
+                            Some(k) => (k.tag().to_string(), k.color()),
+                            None if ready => ("!".to_string(), Color::srgb(0.98, 0.8, 0.3)),
+                            None => (String::new(), Color::NONE),
+                        };
+                        if !tag.is_empty() {
+                            right.spawn((
+                                Text::new(tag),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(tag_color),
+                            ));
+                        }
+                        right.spawn((
+                            Text::new(format!("Lv{}", c.level)),
+                            TextFont { font_size: 12.0, ..default() },
+                            TextColor(Color::srgb(0.95, 0.85, 0.4)),
+                        ));
+                    });
                 });
-                col.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    ..default()
-                })
-                .with_children(|line| {
-                    // HP, with a Barrier (temp HP) suffix and a Regen tick when present.
-                    let barrier = status_num(&c.statuses, "barrier:");
-                    let regen = status_num(&c.statuses, "regen:");
-                    let mut hp_line = format!("Hp {}/{}", c.hp, c.max_hp);
-                    if barrier > 0 {
-                        hp_line.push_str(&format!("  +{barrier}\u{25c6}")); // ◆ = Barrier
-                    }
-                    if regen > 0 {
-                        hp_line.push_str(&format!("  +{regen}/t")); // Regen per turn
-                    }
-                    line.spawn((
-                        Text::new(hp_line),
-                        TextFont { font_size: 13.0, ..default() },
-                        TextColor(if barrier > 0 {
-                            Color::srgb(0.7, 0.8, 1.0)
-                        } else {
-                            Color::srgb(0.6, 0.75, 0.95)
-                        }),
-                    ));
-                    let (tag, tag_color) = match queued {
-                        Some(k) => (k.tag().to_string(), k.color()),
-                        None if ready => ("!".to_string(), Color::srgb(0.98, 0.8, 0.3)),
-                        None => (String::new(), Color::NONE),
-                    };
-                    line.spawn((
-                        Text::new(tag),
-                        TextFont { font_size: 14.0, ..default() },
-                        TextColor(tag_color),
-                    ));
-                });
-                // Attributes are intentionally NOT shown in battle — they live on
-                // the party screen in the inventory (keeps the combat HUD clean).
-                meter(col, hp_frac, 9.0, Color::srgb(0.35, 0.6, 0.95));
-                // ATB bar flares gold-white the instant the gauge fills, then settles.
+                // Line 2: HP bar with the number inside (+ Barrier suffix if any).
+                let barrier = status_num(&c.statuses, "barrier:");
+                let hp_label = if barrier > 0 {
+                    format!("{}/{}  +{barrier}", c.hp, c.max_hp)
+                } else {
+                    format!("{}/{}", c.hp, c.max_hp)
+                };
+                meter_labeled(col, hp_frac, 15.0, Color::srgb(0.35, 0.6, 0.95), hp_label);
+                // Line 3: ATB bar — flares gold-white the instant the gauge fills.
                 let atb_fill = lerp_color(
                     Color::srgb(0.4, 0.85, 0.5),
                     Color::srgb(1.0, 0.98, 0.7),
                     atb_pop,
                 );
-                meter(col, gauge, 7.0, atb_fill);
-                // Psyker: a row of Focus slots — filled slots show the manifestation
-                // abbreviation (+stacks), empty slots a dot.
+                meter(col, gauge, 6.0, atb_fill);
+                // Psyker: a compact row of Focus slots (filled = manifestation abbrev).
                 let (fmax, foci) = parse_foci(&c.statuses);
                 if fmax > 0 {
                     col.spawn(Node {
                         flex_direction: FlexDirection::Row,
                         column_gap: Val::Px(5.0),
-                        margin: UiRect::top(Val::Px(3.0)),
+                        margin: UiRect::top(Val::Px(1.0)),
                         ..default()
                     })
                     .with_children(|row| {
@@ -6887,7 +6935,7 @@ fn party_cell(
                             };
                             row.spawn((
                                 Text::new(label),
-                                TextFont { font_size: 13.0, ..default() },
+                                TextFont { font_size: 12.0, ..default() },
                                 TextColor(if filled {
                                     Color::srgb(0.8, 0.6, 1.0)
                                 } else {
@@ -6898,7 +6946,6 @@ fn party_cell(
                     });
                 }
             });
-            // The hero's avatar is now the 3D battle sprite; the cell is just status.
         });
 }
 
@@ -6926,7 +6973,7 @@ fn render_party_window(
                 left: Val::Px(10.0),
                 right: Val::Px(10.0),
                 bottom: Val::Px(10.0),
-                height: Val::Px(118.0),
+                height: Val::Px(74.0), // compact: name + HP bar + ATB bar (~3 lines)
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
                 ..default()

@@ -548,6 +548,51 @@ pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
     mesh
 }
 
+/// Like [`cyl_billboard_mesh`] but showing only the TOP `crop` fraction of the
+/// texture — a "bust" (head→torso). The top edge stays at `+h/2` (so a bust's head
+/// lines up with a full sprite's head at the same transform); the bottom edge and
+/// its UV are pulled up to `crop`. Used to stack a back row tight behind the front
+/// without their legs cluttering.
+pub fn bust_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32, crop: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+
+    let cols = cols.max(1);
+    let arc = arc_deg.to_radians();
+    let crop = crop.clamp(0.05, 1.0);
+    let mut positions = Vec::with_capacity((cols + 1) * 2);
+    let mut normals = Vec::with_capacity((cols + 1) * 2);
+    let mut uvs = Vec::with_capacity((cols + 1) * 2);
+    let mut indices = Vec::with_capacity(cols * 6);
+    for i in 0..=cols {
+        let t = i as f32 / cols as f32;
+        let x = (t - 0.5) * w;
+        let ang = (t - 0.5) * arc;
+        let n = [ang.sin(), 0.0, ang.cos()];
+        positions.push([x, h * 0.5, 0.0]); // top (head)
+        positions.push([x, h * 0.5 - crop * h, 0.0]); // cropped bottom
+        normals.push(n);
+        normals.push(n);
+        uvs.push([t, 0.0]);
+        uvs.push([t, crop]);
+    }
+    for i in 0..cols {
+        let (a, b, c, d) = (
+            (i * 2) as u32,
+            (i * 2 + 1) as u32,
+            (i * 2 + 2) as u32,
+            (i * 2 + 3) as u32,
+        );
+        indices.extend_from_slice(&[a, b, c, c, b, d]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 /// A small faceted octahedron — a "diamond" gem used as a floating target marker.
 /// Flat-shaded per face (verts duplicated with a face normal) so each facet catches
 /// the light + bloom as it spins. `r` is the equator radius, `half_h` the tip reach.
