@@ -1485,14 +1485,7 @@ fn setup(
     // adjacent biome textures across a band around every boundary, so the next biome
     // fades in ahead of you as you approach it (corridor transitions) instead of the
     // whole floor snapping when you cross the line. Boundaries mirror the server's
-    // `biome_for_distance` (radial distance). `MELD_BIOME_TEST` pulls them near the
-    // hub so the fades are visible without walking out to distance 100 (dev/QA only).
-    let test_biomes = std::env::var("MELD_BIOME_TEST").is_ok();
-    let boundaries = if test_biomes {
-        Vec4::new(12.0, 26.0, 40.0, 54.0)
-    } else {
-        Vec4::new(100.0, 300.0, 500.0, 1000.0)
-    };
+    // `biome_for_distance` (radial distance); the ~36-unit band gives a gradual fade.
     let ground_mat = ground_mats.add(GroundMat {
         base: StandardMaterial {
             // The shader multiplies the blended biome texture by this — keep it white
@@ -1508,9 +1501,9 @@ fn setup(
             tundra: ground_tex[3].clone(),
             mire: ground_tex[4].clone(),
             params: BiomeParams {
-                boundaries,
+                boundaries: Vec4::new(100.0, 300.0, 500.0, 1000.0),
                 uv_scale: 1.0 / 3.0, // ~3-world-unit tiles, matching the old uv_transform
-                blend_half: if test_biomes { 7.0 } else { 18.0 }, // ~36-unit cross-fade band
+                blend_half: 18.0,    // ~36-unit cross-fade band around each boundary
                 _pad0: 0.0,
                 _pad1: 0.0,
             },
