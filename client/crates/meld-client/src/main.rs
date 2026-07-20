@@ -218,6 +218,7 @@ fn main() {
         .init_resource::<AtbFlash>()
         .init_resource::<AllyPanel>()
         .init_resource::<Overlay>()
+        .init_resource::<OwInterp>()
         .init_resource::<InventoryData>()
         .init_resource::<ProgressData>()
         .init_resource::<Overworld>()
@@ -487,7 +488,39 @@ impl OwEntity {
 struct Overworld {
     /// entity id -> its render state
     entities: HashMap<String, OwEntity>,
+    /// Bumped on every snapshot so the render-side interpolation buffer
+    /// ([`OwInterp`]) can tell when a fresh snapshot arrived.
+    seq: u64,
 }
+
+/// One captured position sample, stamped with the client-clock time (seconds) it
+/// was received.
+#[derive(Clone, Copy, Default)]
+struct InterpSample {
+    x: f32,
+    y: f32,
+    level: f32,
+    t: f32,
+}
+
+/// Per-entity overworld interpolation buffer: the two most recent snapshot samples
+/// per entity. Remote sprites render by lerping between them (a little behind the
+/// latest), instead of exponentially chasing the newest position — which lagged
+/// and rubber-banded when snapshots arrived slightly irregularly. Purely
+/// client-side: derived from the positions the server already sends, so no wire or
+/// server change. The local player is exempt (kept responsive; see
+/// `sync_overworld_sprites`).
+#[derive(Resource, Default)]
+struct OwInterp {
+    seen_seq: u64,
+    /// entity id -> (previous sample, current sample)
+    states: HashMap<String, (InterpSample, InterpSample)>,
+}
+
+/// Render remote entities this many seconds behind the latest snapshot, so we
+/// always interpolate between two *received* samples rather than extrapolating
+/// past the newest one. One 100 ms server tick plus a little slack.
+const OW_INTERP_DELAY: f32 = 0.11;
 
 /// The current run's backpack (Town Portals + gathered materials), mirrored from
 /// the server for the overworld HUD.
@@ -2751,6 +2784,8 @@ fn pump_net(
                         },
                     );
                 }
+                // Mark a fresh snapshot so the interpolation buffer captures it.
+                world.seq = world.seq.wrapping_add(1);
             }
             ServerMsg::BattleStarted {
                 battle_id,
@@ -4352,29 +4387,67 @@ fn sync_overworld_sprites(
     time: Res<Time>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut interp: ResMut<OwInterp>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
-    // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz); snapping
-    // the transform to them each render frame is what made the pixel sprite jitter.
-    // Smooth (frame-rate-independent exponential) toward the target on the ground
-    // plane instead — the camera follows the *smoothed* player (see `hd2d_follow`),
-    // so sprite and world stay locked together. Now that the server tick cadence is
-    // regular (no per-tick DB stalls / redundant serialization), this reads smooth.
+    let now = time.elapsed_secs();
+
+    // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz). When a
+    // fresh one arrives, roll it into the interpolation buffer (shift current →
+    // previous), so remote sprites can lerp between the two most recent samples.
+    if interp.seen_seq != world.seq {
+        interp.seen_seq = world.seq;
+        for (id, e) in &world.entities {
+            let cur = InterpSample { x: e.x, y: e.y, level: e.level as f32, t: now };
+            interp
+                .states
+                .entry(id.clone())
+                .and_modify(|(prev, c)| {
+                    *prev = *c;
+                    *c = cur;
+                })
+                .or_insert((cur, cur));
+        }
+        interp.states.retain(|id, _| world.entities.contains_key(id));
+    }
+
+    // The LOCAL player stays on responsive frame-rate-independent exponential
+    // smoothing — the camera follows its transform (see `hd2d_follow`), so it must
+    // not render a snapshot behind. Every OTHER entity renders ~one tick behind,
+    // linearly interpolated between its two most recent snapshots: constant-velocity
+    // smooth motion with no rubber-banding and no extrapolation overshoot.
     let k = 1.0 - (-time.delta_secs() * OW_SMOOTH_RATE).exp();
+    let render_t = now - OW_INTERP_DELAY;
     let mut seen = HashSet::new();
     for (entity, we, mut tf) in &mut q {
-        if let Some(e) = world.entities.get(&we.0) {
-            // Ground-plane position + elevation update; per-kind height/scale/facing
-            // stay as spawned (facing is driven by CharSprite/billboard). Raising the
-            // parent by the entity's terrace height lifts the whole sprite onto it.
+        let Some(e) = world.entities.get(&we.0) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        seen.insert(we.0.clone());
+        if we.0 == session.player_id {
+            // Responsive: chase the latest snapshot directly.
             tf.translation.x += (e.x - tf.translation.x) * k;
             tf.translation.z += (e.y - tf.translation.z) * k;
             let target_y = e.level as f32 * STEP_HEIGHT;
             tf.translation.y += (target_y - tf.translation.y) * k;
-            seen.insert(we.0.clone());
+        } else if let Some((prev, cur)) = interp.states.get(&we.0) {
+            // Interpolate between the two most recent samples at the delayed clock.
+            let denom = cur.t - prev.t;
+            let f = if denom > 1e-4 {
+                ((render_t - prev.t) / denom).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            tf.translation.x = prev.x + (cur.x - prev.x) * f;
+            tf.translation.z = prev.y + (cur.y - prev.y) * f;
+            tf.translation.y = (prev.level + (cur.level - prev.level) * f) * STEP_HEIGHT;
         } else {
-            commands.entity(entity).despawn();
+            // Just appeared (no buffer yet): snap to its latest position.
+            tf.translation.x = e.x;
+            tf.translation.z = e.y;
+            tf.translation.y = e.level as f32 * STEP_HEIGHT;
         }
     }
     for (id, e) in &world.entities {
