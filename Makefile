@@ -24,10 +24,14 @@ SOLO_BIN      := $(CLIENT_TARGET)/release/meld-client
 DIST_OUT      := $(CURDIR)/dist
 DIST_NAME     := meldworld-$(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
 
+# owner/repo from the origin remote (handles git@ and https forms), for the URLs
+# `make release` prints. Empty if there's no GitHub origin.
+GH_SLUG := $(shell git remote get-url origin 2>/dev/null | sed -E 's|^.*github\.com[:/]||; s|\.git$$||')
+
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-native play-solo dist look server smoke test stop
+.PHONY: help play play-native play-solo dist release look server smoke test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
@@ -42,6 +46,9 @@ help:
 	@echo "  make dist         Build the shippable single-file QA binary (embeds the"
 	@echo "                     server + all assets). Hand the one file to a remote tester;"
 	@echo "                     they just run it — no Rust, no Postgres, nothing beside it."
+	@echo "  make release VERSION=v0.1.0"
+	@echo "                     Tag latest main + push it → CI builds the win/mac/linux"
+	@echo "                     binaries and attaches them to a GitHub Release."
 	@echo "  make look         HD-2D render look-dev scene (standalone; tune it live, native)."
 	@echo "  make server       Boot Postgres + server only (no client)."
 	@echo "  make smoke        Headless client run against the server (exits 0 on victory)."
@@ -87,6 +94,30 @@ dist:
 	@echo "  size: $$(du -h "$(DIST_OUT)/$(DIST_NAME)" | cut -f1)   (one file — no Postgres, no assets folder, no config)"
 	@echo "  Hand it to a tester; they just run it. Party/flags still work via env, e.g.:"
 	@echo "    MELD_PARTY=squire,psyker,resonant,squire $(DIST_OUT)/$(DIST_NAME)"
+
+# Cut a cross-platform QA release. Tags the LATEST origin/main (not your local
+# branch — releases ship canonical main, and this sidesteps tagging an orphaned
+# commit) with VERSION, then pushes the tag. The `dist` GitHub Actions workflow
+# picks up the `v*` tag, builds the native win/mac/linux binaries, and attaches
+# them to a GitHub Release. Builds happen in CI, so this is quick + local-toolchain
+# free. Needs only git + a GitHub origin.
+#
+#   make release VERSION=v0.1.0
+release:
+	@if [ -z "$(VERSION)" ]; then echo "✗ VERSION is required, e.g.  make release VERSION=v0.1.0"; exit 1; fi
+	@case "$(VERSION)" in v*) ;; *) echo "✗ VERSION must start with 'v' to match the dist workflow (got '$(VERSION)')"; exit 1;; esac
+	@echo "→ Fetching latest origin/main…"
+	@git fetch -q origin main
+	@if git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null || git ls-remote --tags --exit-code origin "$(VERSION)" >/dev/null 2>&1; then \
+		echo "✗ tag $(VERSION) already exists (local or remote) — pick a new version"; exit 1; \
+	fi
+	@echo "→ Tagging origin/main ($$(git rev-parse --short origin/main)) as $(VERSION) and pushing…"
+	@git tag -a "$(VERSION)" origin/main -m "MELDWORLD $(VERSION) — self-contained QA binaries (win/mac/linux)"
+	@git push origin "$(VERSION)" || { git tag -d "$(VERSION)" >/dev/null; echo "✗ push failed; removed the local tag. Nothing published."; exit 1; }
+	@echo ""
+	@echo "✔ Pushed $(VERSION). CI is building the binaries now (a few minutes)."
+	@echo "  Actions:  https://github.com/$(GH_SLUG)/actions/workflows/dist.yml"
+	@echo "  Release:  https://github.com/$(GH_SLUG)/releases/tag/$(VERSION)   (assets appear when the build finishes)"
 
 # HD-2D render look-dev scene — a standalone diorama (no Postgres/server) for
 # tuning the camera / bloom / tilt-shift DoF / fog live with the keyboard. The

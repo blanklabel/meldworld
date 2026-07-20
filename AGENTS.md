@@ -65,6 +65,7 @@ make play         # boot throwaway Postgres + server + browser client, then open
 make play-native  # same, but the native desktop window
 make play-solo    # self-contained native window: server baked in, no Postgres, no setup
 make dist         # build the shippable single-file QA binary (server + assets embedded)
+make release VERSION=v0.1.0   # tag latest main + push → CI builds win/mac/linux + cuts a Release
 make smoke        # headless: drive the whole loop through the real client netcode (exits 0 on victory)
 make server       # server only
 make test         # the Postgres-backed QA suite
@@ -99,6 +100,8 @@ server/Postgres path — default builds and the wasm client are unchanged.
 It runs on every merge to `main` (binaries are downloadable run artifacts — the
 "latest main" build), on demand from the Actions tab ("dist" → "Run workflow"),
 and on a `v*` tag (which also attaches the per-OS binaries to a GitHub Release).
+`make release VERSION=v0.1.0` is the one-liner for the tag path: it tags the
+latest `origin/main` and pushes, and CI does the rest.
 
 `make play` builds the wasm client and has the **server itself serve it**, so the
 whole game lives at one URL (`$MELD_ADDR`, default `http://127.0.0.1:18090`) — no
