@@ -357,7 +357,7 @@ pub mod run {
     /// C2S — start the party's run. Class selection is optional and back-compatible:
     /// `party` is the explicit per-hero composition from the party builder; if it is
     /// absent the server falls back to `character_class` as the party lead (building
-    /// a default mixed party around it), and to Squire if both are absent.
+    /// a default mixed party around it), and to Hunter if both are absent.
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct EnterMaze {
         #[serde(default, skip_serializing_if = "Option::is_none")]

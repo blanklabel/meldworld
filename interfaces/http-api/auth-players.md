@@ -18,7 +18,7 @@ The player account representation returned by `GET /v1/players/me` and embedded 
 | username | string (3–20 chars, pattern: `^[a-zA-Z0-9_]+$`) | No | v0.1 | No | Unique account name (CANON.md D17); the login identifier and public display name. |
 | created_at | string (date-time) | No | v0.1 | No | Account creation timestamp. |
 | active_title | string | Yes | v0.1 | No | Currently displayed cosmetic title. `null` when no title is set. |
-| class_unlocks | array of string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | Character classes unlocked on this account. Always contains at least `squire`. |
+| class_unlocks | array of string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | Character classes unlocked on this account. Always contains at least `hunter`. |
 | meld_skills | array of object | No | v0.1 | No | The three persistent meld skills. See [crafting-meld.md](crafting-meld.md#shared-object-meld-skill) for the entry shape. |
 
 The **public profile** (`GET /v1/players/{player_id}`) is a subset: `player_id`, `username`, `created_at`, `active_title`, and `class_unlocks`. Meld skill levels are not exposed publicly. The `password_hash` is internal storage only — it appears in no response, public or private.
@@ -27,7 +27,7 @@ The **public profile** (`GET /v1/players/{player_id}`) is a subset: `player_id`,
 
 ### POST /v1/auth/register
 
-Creates a new player account. The new account starts with `squire` unlocked (the default class), an empty Vault with 0 chits, all three meld skills at level 1 with 0 XP, and only the Center Hub unlocked.
+Creates a new player account. The new account starts with `hunter` unlocked (the default class), an empty Vault with 0 chits, all three meld skills at level 1 with 0 XP, and only the Center Hub unlocked.
 
 **Source:** GDD.md §2.1, §4.1; CANON.md §D9, §D17, §D18, §G (`Player`)
 **Added:** v0.1
@@ -67,7 +67,7 @@ Content-Type: application/json
 
 ```json
 HTTP/1.1 201 Created
-{"player": {"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": null, "class_unlocks": ["squire"], "meld_skills": [{"skill_kind": "forging", "level": 1, "xp": 0}, {"skill_kind": "mercantile", "level": 1, "xp": 0}, {"skill_kind": "alchemy", "level": 1, "xp": 0}]}}
+{"player": {"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": null, "class_unlocks": ["hunter"], "meld_skills": [{"skill_kind": "forging", "level": 1, "xp": 0}, {"skill_kind": "mercantile", "level": 1, "xp": 0}, {"skill_kind": "alchemy", "level": 1, "xp": 0}]}}
 ```
 
 **Example — error**
@@ -125,7 +125,7 @@ Content-Type: application/json
 
 ```json
 HTTP/1.1 200 OK
-{"session_token": "mw-sess-0195c9a4-example-opaque-token", "token_type": "Bearer", "expires_in": 86400, "realtime_ticket": "rt-0195c9a4-5d2e-7abc-8f01-23456789abcd", "player": {"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": null, "class_unlocks": ["squire"], "meld_skills": [{"skill_kind": "forging", "level": 1, "xp": 0}, {"skill_kind": "mercantile", "level": 1, "xp": 0}, {"skill_kind": "alchemy", "level": 1, "xp": 0}]}}
+{"session_token": "mw-sess-0195c9a4-example-opaque-token", "token_type": "Bearer", "expires_in": 86400, "realtime_ticket": "rt-0195c9a4-5d2e-7abc-8f01-23456789abcd", "player": {"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": null, "class_unlocks": ["hunter"], "meld_skills": [{"skill_kind": "forging", "level": 1, "xp": 0}, {"skill_kind": "mercantile", "level": 1, "xp": 0}, {"skill_kind": "alchemy", "level": 1, "xp": 0}]}}
 ```
 
 **Example — error (identical for unknown username and wrong password)**
@@ -163,7 +163,7 @@ Authorization: Bearer mw-sess-0195c9a4-example-opaque-token
 
 ```json
 HTTP/1.1 200 OK
-{"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": "Tundra Vanguard", "class_unlocks": ["squire", "dragoon"], "meld_skills": [{"skill_kind": "forging", "level": 22, "xp": 4100}, {"skill_kind": "mercantile", "level": 31, "xp": 900}, {"skill_kind": "alchemy", "level": 8, "xp": 55}]}
+{"player_id": "0195c9a2-7b1e-7f3a-9d2c-4e5f6a7b8c9d", "username": "MazeRunner_88", "created_at": "2026-07-11T10:30:00Z", "active_title": "Tundra Vanguard", "class_unlocks": ["hunter", "dragoon"], "meld_skills": [{"skill_kind": "forging", "level": 22, "xp": 4100}, {"skill_kind": "mercantile", "level": 31, "xp": 900}, {"skill_kind": "alchemy", "level": 8, "xp": 55}]}
 ```
 
 ---
@@ -193,7 +193,7 @@ Returns another player's public profile (used by stall UIs, contract listings, a
 | username | string | No | v0.1 | No | Unique account name; the public display name. |
 | created_at | string (date-time) | No | v0.1 | No | Account creation timestamp. |
 | active_title | string | Yes | v0.1 | No | Currently displayed cosmetic title, or `null`. |
-| class_unlocks | array of string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | Character classes unlocked on the account. |
+| class_unlocks | array of string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | Character classes unlocked on the account. |
 
 **Error responses**
 
@@ -210,7 +210,7 @@ Authorization: Bearer mw-sess-0195c9a4-example-opaque-token
 
 ```json
 HTTP/1.1 200 OK
-{"player_id": "0195c9b0-9f00-7abc-8f01-23456789abcd", "username": "ForgeQueen", "created_at": "2026-05-02T08:15:00Z", "active_title": null, "class_unlocks": ["squire", "sage", "bard"]}
+{"player_id": "0195c9b0-9f00-7abc-8f01-23456789abcd", "username": "ForgeQueen", "created_at": "2026-05-02T08:15:00Z", "active_title": null, "class_unlocks": ["hunter", "sage", "bard"]}
 ```
 
 ---
@@ -233,10 +233,10 @@ Returns per-class unlock state for the authenticated player, including which Gat
 | Field | Type | Nullable | Since | Deprecated | Description |
 |-------|------|----------|-------|------------|-------------|
 | data | array of object | No | v0.1 | No | One entry per launch-set class (6 entries; content team may extend, CANON.md §D9). |
-| data[].class | string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | The character class. |
-| data[].unlocked | boolean | No | v0.1 | No | Whether the class is unlocked on this account. `squire` is always `true`. |
-| data[].emblem_name | string | Yes | v0.1 | No | The class emblem that grants the unlock (e.g. `"Emblem of the Dragoon"`). `null` for `squire`, which has no emblem. |
-| data[].unlocked_at | string (date-time) | Yes | v0.1 | No | When the emblem was claimed. `null` if not yet unlocked; for `squire`, equals account creation time. |
+| data[].class | string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | The character class. |
+| data[].unlocked | boolean | No | v0.1 | No | Whether the class is unlocked on this account. `hunter` is always `true`. |
+| data[].emblem_name | string | Yes | v0.1 | No | The class emblem that grants the unlock (e.g. `"Emblem of the Dragoon"`). `null` for `hunter`, which has no emblem. |
+| data[].unlocked_at | string (date-time) | Yes | v0.1 | No | When the emblem was claimed. `null` if not yet unlocked; for `hunter`, equals account creation time. |
 
 Class unlocks are **account-level and permanent**; they are never wiped by death or season end (GDD.md §4; CANON.md §Sessions & seasons). Emblems are granted server-side when a Gatekeeper drop is extracted (realtime/run-end concern — not mutable via HTTP).
 
@@ -251,7 +251,7 @@ Authorization: Bearer mw-sess-0195c9a4-example-opaque-token
 
 ```json
 HTTP/1.1 200 OK
-{"data": [{"class": "squire", "unlocked": true, "emblem_name": null, "unlocked_at": "2026-07-11T10:30:00Z"}, {"class": "dragoon", "unlocked": true, "emblem_name": "Emblem of the Dragoon", "unlocked_at": "2026-07-14T21:02:11Z"}, {"class": "sage", "unlocked": false, "emblem_name": "Emblem of the Sage", "unlocked_at": null}, {"class": "ranger", "unlocked": false, "emblem_name": "Emblem of the Ranger", "unlocked_at": null}, {"class": "alchemist_knight", "unlocked": false, "emblem_name": "Emblem of the Alchemist-Knight", "unlocked_at": null}, {"class": "bard", "unlocked": false, "emblem_name": "Emblem of the Bard", "unlocked_at": null}]}
+{"data": [{"class": "hunter", "unlocked": true, "emblem_name": null, "unlocked_at": "2026-07-11T10:30:00Z"}, {"class": "dragoon", "unlocked": true, "emblem_name": "Emblem of the Dragoon", "unlocked_at": "2026-07-14T21:02:11Z"}, {"class": "sage", "unlocked": false, "emblem_name": "Emblem of the Sage", "unlocked_at": null}, {"class": "ranger", "unlocked": false, "emblem_name": "Emblem of the Ranger", "unlocked_at": null}, {"class": "alchemist_knight", "unlocked": false, "emblem_name": "Emblem of the Alchemist-Knight", "unlocked_at": null}, {"class": "bard", "unlocked": false, "emblem_name": "Emblem of the Bard", "unlocked_at": null}]}
 ```
 
 ---
