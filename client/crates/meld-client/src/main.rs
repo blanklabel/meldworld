@@ -314,6 +314,7 @@ fn main() {
             Update,
             (
                 gear_click,
+                formation_click,
                 level_up_screen,
                 build_world_walls,
                 sync_chests,
@@ -1223,6 +1224,13 @@ struct OverlayRoot;
 struct GearButton {
     gear_id: String,
     equipped: bool,
+}
+/// A per-hero front/back-row toggle on the party screen. Clicking flips the row and
+/// sends [`ClientCmd::SetFormation`]; `back_row` is the hero's current rank.
+#[derive(Component)]
+struct FormationButton {
+    slot: i32,
+    back_row: bool,
 }
 #[derive(Component)]
 struct EndedRoot;
@@ -2561,16 +2569,36 @@ fn mock_battle_setup(
 /// If an overlay-mockup flag is set, seed canned inventory/progress data and jump
 /// to the overworld with that screen open — so the overlays are viewable on their
 /// own without a server.
+#[allow(clippy::too_many_arguments)]
 fn mock_overlay_setup(
     mut overlay: ResMut<Overlay>,
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
     mut world: ResMut<Overworld>,
     mut levelup: ResMut<LevelUpQueue>,
+    mut roster: ResMut<PartyRoster>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if inventory_mockup_flag() {
         inv.loaded = true;
+        // Seed a party roster so the party screen (+ formation toggle) is visible.
+        let hero = |name: &str, class: &str, back_row| meld_client::net::HeroLine {
+            name: name.into(),
+            class_key: class.into(),
+            level: 1,
+            str_: 24,
+            mnd: 4,
+            dex: 12,
+            wll: 20,
+            max_hp: 40,
+            back_row,
+        };
+        roster.heroes = vec![
+            hero("Rurik", "hunter", false),
+            hero("Ivo", "psyker", true),
+            hero("Sten", "resonant", true),
+            hero("Bram", "hunter", false),
+        ];
         inv.chits = 1240;
         inv.materials = vec![
             ("forest_bloom_petal".into(), 7),
@@ -4074,9 +4102,32 @@ fn render_overlay(
                             13.0,
                             dim,
                         );
+                        // Clickable front/back-row toggle (handled by `formation_click`).
+                        let (row_text, row_col) = if h.back_row {
+                            ("       [ Back row ]  (half dmg, targeted less) - click to move up", Color::srgb(0.7, 0.8, 1.0))
+                        } else {
+                            ("       [ Front row ]  - click to move to the back", Color::srgb(0.95, 0.8, 0.55))
+                        };
+                        p.spawn((
+                            Button,
+                            FormationButton { slot: i as i32, back_row: h.back_row },
+                            Node {
+                                padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::NONE),
+                            BorderRadius::all(Val::Px(4.0)),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Text::new(row_text),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(row_col),
+                            ));
+                        });
                     }
                     if !roster.heroes.is_empty() {
-                        label(p, "  [1-4] rename hero · [Enter] save · [Esc] cancel".into(), 12.0, dim);
+                        label(p, "  [1-4] rename hero · [Enter] save · [Esc] cancel · click a row to swap formation".into(), 12.0, dim);
                     }
                     if !inv.loaded {
                         label(p, "loading…".into(), 16.0, dim);
@@ -4202,6 +4253,27 @@ fn gear_click(
                 } else {
                     Color::NONE
                 });
+            }
+        }
+    }
+}
+
+/// Party-screen front/back-row toggle: clicking a hero's row flips its formation
+/// (server persists it + re-sends the roster, which re-renders the button).
+fn formation_click(
+    net: NonSend<NetRes>,
+    mut rows: Query<(&Interaction, &FormationButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, f, mut bg) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                net.0.send(ClientCmd::SetFormation { slot: f.slot, back_row: !f.back_row });
+            }
+            Interaction::Hovered => {
+                *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7));
+            }
+            Interaction::None => {
+                *bg = BackgroundColor(Color::NONE);
             }
         }
     }

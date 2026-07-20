@@ -185,12 +185,18 @@ impl Db {
                 player_id UUID NOT NULL REFERENCES players(player_id),
                 slot      SMALLINT NOT NULL,
                 name      TEXT NOT NULL,
+                back_row  BOOLEAN NOT NULL DEFAULT false,
                 PRIMARY KEY (player_id, slot)
             )
             "#,
         )
         .execute(pool)
         .await?;
+        // Additive migration: `back_row` was added after the table shipped, and
+        // CREATE TABLE IF NOT EXISTS won't alter an existing table.
+        sqlx::query("ALTER TABLE heroes ADD COLUMN IF NOT EXISTS back_row BOOLEAN NOT NULL DEFAULT false")
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -237,6 +243,58 @@ impl Db {
                     .unwrap()
                     .heroes
                     .insert((player_id, slot), name.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// The player's hero formation flags by slot (0-based), ordered — `true` = back
+    /// row. Aligned with [`Self::get_hero_names`]; unset slots default to `false`.
+    pub async fn get_hero_rows(&self, player_id: Uuid) -> Result<Vec<bool>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows =
+                    sqlx::query("SELECT back_row FROM heroes WHERE player_id = $1 ORDER BY slot")
+                        .bind(player_id)
+                        .fetch_all(pool)
+                        .await?;
+                Ok(rows.iter().map(|r| r.get::<bool, _>("back_row")).collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                // Same slots as the names (seeded 0..N), each with its back_row flag.
+                let mut slots: Vec<i16> = m
+                    .heroes
+                    .keys()
+                    .filter(|(p, _)| *p == player_id)
+                    .map(|(_, slot)| *slot)
+                    .collect();
+                slots.sort_unstable();
+                Ok(slots
+                    .into_iter()
+                    .map(|slot| m.hero_rows.get(&(player_id, slot)).copied().unwrap_or(false))
+                    .collect())
+            }
+        }
+    }
+
+    /// Set a hero slot's formation rank (`true` = back row). Upsert; the row already
+    /// exists from account seeding, so the INSERT branch is just a safety net.
+    pub async fn set_hero_row(&self, player_id: Uuid, slot: i16, back_row: bool) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "INSERT INTO heroes (player_id, slot, name, back_row) VALUES ($1, $2, 'Hero', $3)
+                     ON CONFLICT (player_id, slot) DO UPDATE SET back_row = $3",
+                )
+                .bind(player_id)
+                .bind(slot)
+                .bind(back_row)
+                .execute(pool)
+                .await?;
+            }
+            Backend::Mem(m) => {
+                m.lock().unwrap().hero_rows.insert((player_id, slot), back_row);
             }
         }
         Ok(())
@@ -975,6 +1033,8 @@ struct Mem {
     skills: HashMap<(Uuid, String), i64>,
     /// heroes.name, keyed by (player_id, slot).
     heroes: HashMap<(Uuid, i16), String>,
+    /// heroes.back_row, keyed by (player_id, slot); absent = false (front).
+    hero_rows: HashMap<(Uuid, i16), bool>,
 }
 
 struct MemPlayer {
@@ -1149,5 +1209,18 @@ mod tests {
         db.add_skill_xp(p, "alchemy", 3).await.unwrap();
         let alchemy = db.get_skills(p).await.unwrap().into_iter().find(|(k, _)| k == "alchemy").unwrap().1;
         assert_eq!(alchemy, 15);
+    }
+
+    #[tokio::test]
+    async fn hero_formation_persists() {
+        let db = mem().await;
+        let p = db.register("nell", "pw").await.unwrap().player_id;
+        // Seeded slots default to the front row (all false), aligned with the names.
+        assert_eq!(db.get_hero_rows(p).await.unwrap(), vec![false, false, false, false]);
+        db.set_hero_row(p, 2, true).await.unwrap();
+        assert_eq!(db.get_hero_rows(p).await.unwrap(), vec![false, false, true, false]);
+        // Toggling back to the front is remembered too.
+        db.set_hero_row(p, 2, false).await.unwrap();
+        assert_eq!(db.get_hero_rows(p).await.unwrap()[2], false);
     }
 }
