@@ -14,7 +14,9 @@ use bevy::prelude::*;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::gltf::GltfAssetLabel;
-use bevy::math::Affine2;
+use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
+// `Affine2` (was: ground uv_transform) is now referenced fully-qualified in apply_sky.
 
 use meld_client::hd2d::{self, CharSprite, CharacterFrames};
 use meld_client::net;
@@ -193,6 +195,8 @@ fn main() {
                 }),
         )
         .init_state::<Screen>()
+        // The biome-blending ground material (see `GroundBiome`).
+        .add_plugins(MaterialPlugin::<GroundMat>::default())
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
         .insert_resource(hd2d::ambient_light())
@@ -1209,6 +1213,46 @@ fn overworld_camera_control(
     }
 }
 
+/// Uniform for [`GroundBiome`] — the biome band boundaries + fade width the shader
+/// blends by. `boundaries` mirror `meld_world::biome_for_distance` (radial distance).
+#[derive(Clone, Copy, ShaderType, Debug)]
+struct BiomeParams {
+    boundaries: Vec4,
+    uv_scale: f32,
+    blend_half: f32,
+    _pad0: f32,
+    _pad1: f32,
+}
+
+/// Ground material extension: blends the five biome ground textures by the fragment's
+/// world position so biome transitions fade in ahead of the player (see
+/// `assets/shaders/ground_biome.wgsl`). Replaces the old single-plane texture swap.
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+struct GroundBiome {
+    #[texture(100)]
+    #[sampler(105)]
+    forest: Handle<Image>,
+    #[texture(101)]
+    desert: Handle<Image>,
+    #[texture(102)]
+    ashfall: Handle<Image>,
+    #[texture(103)]
+    tundra: Handle<Image>,
+    #[texture(104)]
+    mire: Handle<Image>,
+    #[uniform(106)]
+    params: BiomeParams,
+}
+
+impl MaterialExtension for GroundBiome {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/ground_biome.wgsl".into()
+    }
+}
+
+/// The blended-biome ground material type (StandardMaterial lighting + our extension).
+type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
+
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
 /// overworld sync can spawn 3D entities without rebuilding assets each frame.
 #[derive(Resource)]
@@ -1246,25 +1290,7 @@ struct WorldAssets {
     rock_mesh: Handle<Mesh>,
     water_mesh: Handle<Mesh>,
     water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
-    ground_mat: Handle<StandardMaterial>,
-    ground_tex: Vec<Handle<Image>>, // per-biome ground textures (see biome_index)
-}
-
-/// Biome tint for the ground, distance-keyed. This now *multiplies* the tiled CC0
-/// grass texture (HDR pipeline, so values >1 brighten), recolouring one grass tile
-/// into forest green / desert sand / ashen / frosty / murky per biome — richer than
-/// the old flat colour band while keeping the geography legible.
-/// Subtle per-biome tint — each biome now has its OWN ground texture (see
-/// `biome_index` / `WorldAssets::ground_tex`), so the tint only nudges the mood
-/// rather than recolouring a single shared texture.
-fn hd2d_ground_color(d: i64) -> Color {
-    match biome_display(d) {
-        "Forest" => Color::srgb(0.92, 1.05, 0.85), // fresh green
-        "Desert" => Color::srgb(1.12, 1.02, 0.82), // warm sand
-        "Ashfall" => Color::srgb(1.05, 0.72, 0.66), // scorched
-        "Tundra" => Color::srgb(0.85, 0.95, 1.18), // frosted blue
-        _ => Color::srgb(0.82, 1.0, 0.86),          // Mire — murky green
-    }
+    ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
 }
 
 /// Biome → index into `WorldAssets::ground_tex` (Forest/Desert/Ashfall/Tundra/Mire).
@@ -1295,6 +1321,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut ground_mats: ResMut<Assets<GroundMat>>,
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     look: Res<hd2d::Look>,
@@ -1323,12 +1350,41 @@ fn setup(
     .iter()
     .map(|p| load_tiled(&assets, p))
     .collect();
-    let ground_mat = mats.add(StandardMaterial {
-        base_color: hd2d_ground_color(0),
-        base_color_texture: Some(ground_tex[0].clone()),
-        uv_transform: Affine2::from_scale(Vec2::new(2000.0 / 3.0, 600.0 / 3.0)),
-        perceptual_roughness: 0.95,
-        ..default()
+    // The ground is ONE plane wearing a biome-blending shader (`GroundBiome`): it
+    // picks the biome from each fragment's world position and cross-fades between
+    // adjacent biome textures across a band around every boundary, so the next biome
+    // fades in ahead of you as you approach it (corridor transitions) instead of the
+    // whole floor snapping when you cross the line. Boundaries mirror the server's
+    // `biome_for_distance` (radial distance). `MELD_BIOME_TEST` pulls them near the
+    // hub so the fades are visible without walking out to distance 100 (dev/QA only).
+    let test_biomes = std::env::var("MELD_BIOME_TEST").is_ok();
+    let boundaries = if test_biomes {
+        Vec4::new(12.0, 26.0, 40.0, 54.0)
+    } else {
+        Vec4::new(100.0, 300.0, 500.0, 1000.0)
+    };
+    let ground_mat = ground_mats.add(GroundMat {
+        base: StandardMaterial {
+            // The shader multiplies the blended biome texture by this — keep it white
+            // so the textures read true; lighting/shadow come from StandardMaterial.
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.95,
+            ..default()
+        },
+        extension: GroundBiome {
+            forest: ground_tex[0].clone(),
+            desert: ground_tex[1].clone(),
+            ashfall: ground_tex[2].clone(),
+            tundra: ground_tex[3].clone(),
+            mire: ground_tex[4].clone(),
+            params: BiomeParams {
+                boundaries,
+                uv_scale: 1.0 / 3.0, // ~3-world-unit tiles, matching the old uv_transform
+                blend_half: if test_biomes { 7.0 } else { 18.0 }, // ~36-unit cross-fade band
+                _pad0: 0.0,
+                _pad1: 0.0,
+            },
+        },
     });
     commands.spawn((
         WorldGround,
@@ -1562,7 +1618,6 @@ fn setup(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
-        ground_mat,
         ground_tex,
     });
 
@@ -3234,8 +3289,6 @@ fn hd2d_follow(
     session: Res<Session>,
     look: Res<hd2d::Look>,
     time: Res<Time>,
-    assets: Option<Res<WorldAssets>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
     // Follow the player's *smoothed* transform (not the raw 20 Hz snapshot), so the
     // camera and the sprite move together — no relative jitter. Exclude the camera
     // and sun so this `&Transform` read is disjoint from their `&mut Transform`.
@@ -3270,19 +3323,8 @@ fn hd2d_follow(
             fog.map(|f| f.into_inner()),
         );
     }
-    // The sun is owned by `apply_sky` (day/night). Swap the ground texture + tint to
-    // the player's biome (grass in the forest, sand in the desert, …).
-    if let Some(assets) = assets {
-        if let Some(m) = mats.get_mut(&assets.ground_mat) {
-            let d = (pos.x * pos.x + pos.z * pos.z).sqrt().floor() as i64;
-            m.base_color = hd2d_ground_color(d);
-            if let Some(tex) = assets.ground_tex.get(biome_index(d)) {
-                if m.base_color_texture.as_ref() != Some(tex) {
-                    m.base_color_texture = Some(tex.clone());
-                }
-            }
-        }
-    }
+    // The ground's biome is now painted by the `GroundBiome` shader from world
+    // position (blended across boundaries), so there's no per-frame texture swap here.
 }
 
 /// Roughly the server's `join_radius` — the client only shows the Join prompt /
