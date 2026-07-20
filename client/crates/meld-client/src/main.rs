@@ -5468,19 +5468,26 @@ fn sync_battle_actors(
     }
     let surrounded = !ally_order.is_empty();
 
-    // My party lines the south edge, each hero x-aligned to its HUD cell and pulled
-    // forward so the sprite pokes up *over* its box (saves the old gap between the
-    // sprite row and the cells). Casters (back row) sit a step behind the martial
-    // front line, so the formation reads as two ranks.
-    for (i, c) in mine.iter().enumerate() {
-        if seen.contains(&c.id) {
-            continue;
+    // My party stands in two ranks near the camera: martials hold the FRONT line,
+    // casters (row:back) form the BACK line a clear step behind + up. Each rank is
+    // its own centred row (spread by its own count), so ~2 world-units of depth
+    // between them reads unmistakably as two rows. Both sit low, tucked over the
+    // HUD, facing north toward the foes (Octopath backs).
+    let is_back = |c: &&CombatantView| c.statuses.iter().any(|s| s == "row:back");
+    // Two ranks, spread wide so they flank the central command cross (no overlap):
+    // the front rank low over the cells, the back rank a clear step deeper so it
+    // reads higher + smaller behind — a distinct front line and back line.
+    for (rank_z, rank) in [
+        (3.2, mine.iter().copied().filter(|c| !is_back(c)).collect::<Vec<_>>()),
+        (-0.4, mine.iter().copied().filter(is_back).collect::<Vec<_>>()),
+    ] {
+        for (i, c) in rank.iter().enumerate() {
+            if seen.contains(&c.id) {
+                continue;
+            }
+            let x = (i as f32 - (rank.len().max(1) as f32 - 1.0) * 0.5) * 4.4;
+            spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, rank_z), Vec2::new(0.0, -1.0));
         }
-        let back = c.statuses.iter().any(|s| s == "row:back");
-        let x = (i as f32 - (mine.len().max(1) as f32 - 1.0) * 0.5) * 2.4;
-        let z = if back { 2.6 } else { 3.3 }; // front rank a step forward over the cells
-        let root = Vec3::new(x, 0.0, z);
-        spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, Vec2::new(0.0, -1.0));
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
