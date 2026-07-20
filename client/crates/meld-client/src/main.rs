@@ -6159,6 +6159,27 @@ fn menu_click(
 }
 
 /// One command tile in the cross, tagged with its menu-entry index.
+// Frosted-glass battle-HUD palette (Dragon Quest HD-2D remake vibe): translucent
+// fills + hairline light edges so panels read as glass floating over the 3D arena
+// instead of opaque bordered boxes. Bevy UI has no true backdrop blur, so the low
+// alpha over the busy scene carries the effect.
+/// Default glass panel fill.
+fn glass_fill() -> Color {
+    Color::srgba(0.06, 0.09, 0.17, 0.5)
+}
+/// Hairline light edge for a glass panel.
+fn glass_edge() -> Color {
+    Color::srgba(0.78, 0.86, 1.0, 0.32)
+}
+/// Translucent gold wash for the active/selected element.
+fn glass_active() -> Color {
+    Color::srgba(0.85, 0.68, 0.28, 0.5)
+}
+/// Bright edge for the active/selected element.
+fn glass_active_edge() -> Color {
+    Color::srgba(1.0, 0.9, 0.5, 0.8)
+}
+
 fn cmd_tile(parent: &mut ChildSpawnerCommands, index: usize, label: &str) {
     parent
         .spawn((
@@ -6169,12 +6190,12 @@ fn cmd_tile(parent: &mut ChildSpawnerCommands, index: usize, label: &str) {
                 height: Val::Px(48.0),
                 justify_content: JustifyContent::Center,
                 align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(2.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.5, 0.55, 0.7)),
-            BackgroundColor(Color::srgb(0.1, 0.12, 0.22)),
-            BorderRadius::all(Val::Px(5.0)),
+            BorderColor(glass_edge()),
+            BackgroundColor(glass_fill()),
+            BorderRadius::all(Val::Px(8.0)),
         ))
         .with_children(|t| {
             t.spawn((
@@ -6280,12 +6301,12 @@ fn rebuild_command_menu(
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(2.0),
                         padding: UiRect::all(Val::Px(10.0)),
-                        border: UiRect::all(Val::Px(2.0)),
+                        border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(Color::srgb(0.45, 0.55, 0.85)),
-                    BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
-                    BorderRadius::all(Val::Px(6.0)),
+                    BorderColor(glass_edge()),
+                    BackgroundColor(glass_fill()),
+                    BorderRadius::all(Val::Px(10.0)),
                 ))
                 .with_children(|list| {
                     list.spawn((
@@ -6334,17 +6355,19 @@ fn style_command_menu(
     menu: Res<BattleMenu>,
     mut rows: Query<(&MenuRow, &Interaction, &mut BackgroundColor)>,
 ) {
+    // Cross tiles keep a faint glass base so they read as buttons; list rows are
+    // transparent until hovered/selected.
     let base = if menu.level == MenuLevel::Root {
-        Color::srgb(0.1, 0.12, 0.22)
+        glass_fill()
     } else {
         Color::NONE
     };
     for (row, interaction, mut bg) in &mut rows {
         let selected = row.index == menu.cursor;
         *bg = BackgroundColor(if *interaction == Interaction::Pressed || selected {
-            Color::srgb(0.4, 0.34, 0.12) // Lufia-gold selection
+            glass_active() // translucent gold selection
         } else if *interaction == Interaction::Hovered {
-            Color::srgb(0.18, 0.2, 0.32)
+            Color::srgba(0.5, 0.6, 0.9, 0.25)
         } else {
             base
         });
@@ -6567,7 +6590,7 @@ fn spawn_ally_party(
         flex_direction: FlexDirection::Column,
         row_gap: Val::Px(5.0),
         padding: UiRect::all(Val::Px(8.0)),
-        border: UiRect::all(Val::Px(2.0)),
+        border: UiRect::all(Val::Px(1.0)),
         ..default()
     };
     match edge {
@@ -6597,9 +6620,9 @@ fn spawn_ally_party(
         .spawn((
             AllyPartyStrips,
             node,
-            BorderColor(Color::srgba(0.4, 0.6, 0.95, 0.7)),
-            BackgroundColor(Color::srgba(0.05, 0.08, 0.16, 0.82)),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderColor(glass_edge()),
+            BackgroundColor(glass_fill()),
+            BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|panel| {
             panel.spawn((
@@ -6648,13 +6671,13 @@ fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(Color::srgba(0.4, 0.5, 0.8, 0.8)),
+            BorderColor(glass_edge()),
             BackgroundColor(if hurt {
-                Color::srgb(0.28, 0.1, 0.12)
+                Color::srgba(0.4, 0.12, 0.14, 0.5)
             } else {
-                Color::srgba(0.08, 0.11, 0.22, 0.9)
+                Color::srgba(0.09, 0.12, 0.22, 0.4)
             }),
-            BorderRadius::all(Val::Px(5.0)),
+            BorderRadius::all(Val::Px(8.0)),
         ))
         .with_children(|cell| {
             cell.spawn(Node {
@@ -6727,12 +6750,12 @@ fn party_cell(
         .get(id)
         .map(|a| (1.0 - a / ATB_FLASH_TTL).clamp(0.0, 1.0))
         .unwrap_or(0.0);
-    let base_border = if is_target_cursor {
-        Color::srgb(1.0, 0.95, 0.4)
-    } else if active {
-        Color::srgb(0.95, 0.85, 0.4)
+    // Frosted glass: hairline edge normally, a brighter gold edge for the active /
+    // target hero so it still stands out without a heavy border.
+    let base_border = if is_target_cursor || active {
+        glass_active_edge()
     } else {
-        Color::srgb(0.4, 0.5, 0.8)
+        glass_edge()
     };
     parent
         .spawn((
@@ -6742,25 +6765,25 @@ fn party_cell(
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
                 padding: UiRect::all(Val::Px(7.0)),
-                border: UiRect::all(Val::Px(2.0)),
+                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            // Flash the border toward bright gold-white as the turn comes up.
+            // Flash the edge toward bright gold-white as the turn comes up.
             BorderColor(if atb_pop > 0.0 {
                 lerp_color(base_border, Color::srgb(1.0, 0.98, 0.7), atb_pop)
             } else {
                 base_border
             }),
             BackgroundColor(if hurt {
-                Color::srgb(0.28, 0.1, 0.12)
+                Color::srgba(0.4, 0.12, 0.14, 0.55)
             } else if is_target_cursor {
-                Color::srgb(0.16, 0.2, 0.1)
+                Color::srgba(0.28, 0.26, 0.1, 0.5)
             } else if active {
-                Color::srgb(0.1, 0.14, 0.3)
+                glass_active()
             } else {
-                Color::srgb(0.05, 0.07, 0.16)
+                glass_fill()
             }),
-            BorderRadius::all(Val::Px(6.0)),
+            BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|cell| {
             // Left: name + Lv, HP, bars.
