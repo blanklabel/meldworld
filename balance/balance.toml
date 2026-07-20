@@ -51,15 +51,17 @@ mnd_to_power = 1.2      # +manifestation/skill power per Mnd above base (Mnd -> 
 dex_to_speed = 1.5      # +ATB speed_stat per Dex above base (Dex -> act faster)
 wll_to_hp = 2.5         # +max HP per Wll above base (Wll -> HP)
 wll_to_def = 0.25       # +defence per Wll above base (Wll -> resistance)
-dodge_dex_floor = 10    # Dex at/below this gives no dodge (every class starts here
-                        # or below, so dodge is earned purely through leveling)
+dodge_dex_floor = 10    # Dex at/below this gives no dodge (martial/caster classes
+                        # start here or below, so their dodge is earned by leveling;
+                        # the Shifter is the deliberate exception — its base Dex is
+                        # above the floor, so it slips attacks from level 1)
 dodge_per_dex = 0.012   # dodge chance gained per Dex above the floor
 dodge_cap = 0.35        # maximum dodge chance
 
 [battle]
 tick_ms = 100                    # CANON §B ATB tick
 # gauge += speed_stat / divisor per 100ms tick; a turn fires at gauge 1.0.
-# 5200 → a speed-110 squire acts every ~4.7s and the speed-80 stalker every
+# 5200 → a speed-110 hunter acts every ~4.7s and the speed-80 stalker every
 # ~6.5s: a readable FF5-style ATB cadence, eased off the previous 4400 (~4.0s)
 # after "too fast" playtest feedback while still keeping a 4-hero party busy
 # (a hero acts roughly every ~1.3s across the party, so nobody idles). Was
@@ -113,6 +115,57 @@ resonant_transfuse_heal_fraction = 0.4
 resonant_transfuse_cost_fraction = 0.5
 resonant_boon_regen = 3
 resonant_ward_barrier_fraction = 0.3
+
+# The Shifter (rogue / fortune-hunter, "Runner"). A fast, fragile front-line
+# skirmisher that reads the reality-glitches of the Shifting Lands. Its whole kit
+# is atk-driven (Str) precision:
+#   Backstab — heavy strike that pierces most of the target's armour (shines on
+#              deep, well-armoured creatures where a plain attack stalls).
+#   Flicker  — a reality-blink that grants the Shifter Evasion (a temporary dodge
+#              bonus, added to its Dex dodge) which decays each of its turns.
+#   Ransack  — a strike that also drains the enemy's ATB gauge (grab-and-run: it
+#              staggers, echoing the Psyker's Temporal Anchor but as a one-shot).
+# All [TUNABLE].
+shifter_backstab_mult = 1.5      # Backstab: dmg = atk*mult, minus reduced armour
+shifter_backstab_pierce = 0.75   # fraction of the target's defence Backstab ignores
+shifter_flicker_evasion = 0.4    # Flicker: dodge bonus granted (added to Dex dodge)
+shifter_flicker_decay = 0.15     # Evasion lost at the start of each of the Shifter's turns
+shifter_ransack_mult = 1.0       # Ransack: dmg = atk*mult - def
+shifter_ransack_drain = 0.35     # Ransack: enemy ATB gauge -= this on hit
+
+# The Hunter (martial baseline / default class). It has no special resource until
+# it earns one: every basic Attack banks `adrenaline_per_attack` Adrenaline (up to
+# `adrenaline_max`), and EVERY skill SPENDS that bank — a skill is rejected unless
+# the Hunter has banked its cost. So the Hunter's rhythm is attack-attack-attack,
+# then unleash:
+#   Power Strike — a heavy hit (reuses the generic `skill_power_mult`).
+#   Second Wind  — a self-heal for `skill_heal_fraction` of max HP.
+#   Snare        — pins the prey: damage plus an ATB-gauge drain (capture flavour).
+#   Frenzy       — an adrenaline-fuelled onslaught: the biggest hit, biggest cost.
+# All [TUNABLE].
+hunter_adrenaline_max = 100          # cap on banked Adrenaline
+hunter_adrenaline_per_attack = 25    # Adrenaline banked by each basic Attack
+hunter_power_strike_cost = 40        # Power Strike: Adrenaline spent (dmg uses skill_power_mult)
+hunter_second_wind_cost = 35         # Second Wind: Adrenaline spent (heal uses skill_heal_fraction)
+hunter_snare_cost = 30               # Snare: Adrenaline spent
+hunter_snare_mult = 1.0              # Snare: dmg = atk*mult - def
+hunter_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
+hunter_frenzy_cost = 80              # Frenzy: Adrenaline spent
+hunter_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
+
+# The Order of the Iron Hull (monk / tank). A dense, deliberate front-line wall
+# that channels the ocean's momentum into blunt-force kinetic strikes. Its kit is
+# level-gated (no build-up resource — its "equilibrium" is its Root stance):
+#   Swell Strike — a heavy blow that also staggers (drains the target's ATB gauge).
+#   Root         — Structural Rooting: grant self Barrier equal to a fraction of max HP.
+#   Kinetic Shock— a heavier blow that FULLY resets the target's ATB gauge (hard stagger).
+#   Toll of the Deep — an all-enemy shockwave (Destructive Wave); the Grandmaster's toll.
+# All [TUNABLE].
+ironhull_swell_mult = 1.4            # Swell Strike: dmg = atk*mult - def
+ironhull_swell_drain = 0.3          # Swell Strike: enemy ATB gauge -= this on hit
+ironhull_root_barrier_fraction = 0.25 # Root: Barrier granted = max_hp * fraction
+ironhull_shock_mult = 1.6           # Kinetic Shock: dmg = atk*mult - def (then gauge → 0)
+ironhull_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to EVERY enemy
 
 # Creature loot (economy.md sources S1). A felled encounter yields, banked into
 # the run backpack and minted into the persistent economy only on extraction
@@ -217,7 +270,7 @@ chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace 
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
-# menacing with depth. Forest bases are tuned so a solo squire can win the first
+# menacing with depth. Forest bases are tuned so a solo hunter can win the first
 # fight with tension; deeper biomes lean tankier / faster / harder-hitting. All
 # [TUNABLE] — pure balance. Biome→creature assignment is structural (in code).
 #
@@ -417,13 +470,13 @@ material = "peat_iron"
 skill = "forging"
 xp = 72
 
-[player.squire]
+[player.hunter]
 base_hp = 40
 base_atk = 12
 base_def = 3
 speed_stat = 110
-# Attributes: level-1 baseline + per-level auto-gain. The Squire is a martial:
-# it hardens (Str for damage, Wll for HP) with a little Dex. [TUNABLE]
+# Attributes: level-1 baseline + per-level auto-gain. The Hunter is the martial
+# baseline: it hardens (Str for damage, Wll for HP) with a little Dex. [TUNABLE]
 str = 12
 mnd = 4
 dex = 8
@@ -433,7 +486,7 @@ mnd_per_level = 0
 dex_per_level = 1
 wll_per_level = 2
 
-# Psyker: a squishy psychic controller. Less HP and armour than a Squire, but
+# Psyker: a squishy psychic controller. Less HP and armour than a Hunter, but
 # its Mind Spike ignores enemy defence (so it shines where raw attacks stall,
 # against armoured deep creatures) and its Psychic Barrier self-ward buys it
 # survivability under the new no-free-heal attrition. [TUNABLE]
@@ -470,3 +523,42 @@ str_per_level = 1
 mnd_per_level = 2
 dex_per_level = 0
 wll_per_level = 3
+
+# Shifter: the rogue / fortune-hunter. Lowest HP + armour of any class and the
+# fastest gauge, but the only class whose base Dex clears the dodge floor — so it
+# starts slippery and only gets harder to hit. Front-row skirmisher; its kit
+# (see [battle]) is Str/atk-driven burst. [TUNABLE]
+[player.shifter]
+base_hp = 32
+base_atk = 14
+base_def = 2
+speed_stat = 125
+# Dex-forward: fast turns + innate dodge, backed by enough Str for its strikes to
+# bite; almost no Mnd, thin Wll (it lives by not getting hit). [TUNABLE]
+str = 10
+mnd = 4
+dex = 16
+wll = 7
+str_per_level = 2
+mnd_per_level = 0
+dex_per_level = 3
+wll_per_level = 1
+
+# Iron Hull: the tankiest class. Most HP + armour of any hero and the slowest
+# gauge (deliberate, rooted), with no Dex (a wall, not a dodger). Front-row.
+# [TUNABLE]
+[player.iron_hull]
+base_hp = 52
+base_atk = 13
+base_def = 6
+speed_stat = 85
+# All Str (isometric strength → blunt damage) and Wll (density → HP + armour); it
+# hardens into an ever-thicker wall and never gets faster or dodgier. [TUNABLE]
+str = 14
+mnd = 4
+dex = 6
+wll = 14
+str_per_level = 3
+mnd_per_level = 0
+dex_per_level = 0
+wll_per_level = 4

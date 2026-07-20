@@ -162,7 +162,7 @@ An entity appeared inside the player's loaded chunks.
 |-------|------|----------|----------|---------|-------------|
 | player_id | string (uuid) | Yes | No | — | The owning player account. |
 | username | string | Yes | No | — | Player's account name (CANON.md D17). |
-| character_class | string (enum: `squire`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`) | Yes | No | — | Class of the avatar (CANON.md §G `CharacterClass`). |
+| character_class | string (enum: `hunter`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`) | Yes | No | — | Class of the avatar (CANON.md §G `CharacterClass`). |
 | avatar_state | string (enum: `active`, `in_battle`, `channeling`, `sleeping`) | Yes | No | — | Current avatar state. Sleeping avatars are attackable by roaming monsters (GDD.md §5). |
 
 #### entity_kind = `monster` / `gatekeeper_boss`

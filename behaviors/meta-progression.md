@@ -77,11 +77,11 @@ There is no run-level cap; the level grows during the run with XP per `xp_to_nex
 
 ## Class Unlocks (ClassEmblem Drops)
 
-Character classes beyond the default `squire` are permanent account unlocks obtained as `ClassEmblem` drops from Gatekeeper Bosses (e.g. defeating the Distance 500 Desert Gatekeeper drops the "Emblem of the Dragoon").
+Character classes beyond the default `hunter` are permanent account unlocks obtained as `ClassEmblem` drops from Gatekeeper Bosses (e.g. defeating the Distance 500 Desert Gatekeeper drops the "Emblem of the Dragoon").
 
 **Source:** GDD.md §4 (Gatekeeper Drops); CANON.md §D (D9), §G (CharacterClass, Emblem)
 
-- Launch class set (`CharacterClass` enum): `squire` (default, always unlocked), `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Content team may extend.
+- Launch class set (`CharacterClass` enum): `hunter` (default, always unlocked), `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Content team may extend.
 - A `ClassEmblem` is an account-level unlock item. Which Gatekeeper drops which emblem is a content-table mapping (GDD gives Dragoon ← D500 Gatekeeper as the example).
 - Drop crediting: every `Player` who is a combatant in the killing Battle rolls for the emblem drop independently. Drop rate **[TUNABLE]** (not specified in GDD/CANON — see Notes).
 - An emblem drops into the player's Backpack like other loot; it must be **extracted** to take effect. On extraction the class is permanently unlocked on the account. If the player dies with an unextracted emblem in the Backpack, it is deleted with the rest of the Backpack.

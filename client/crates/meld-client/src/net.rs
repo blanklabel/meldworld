@@ -846,7 +846,7 @@ impl Inner {
                         arr.iter()
                             .map(|h| HeroLine {
                                 name: h["name"].as_str().unwrap_or("Hero").to_string(),
-                                class_key: h["class_key"].as_str().unwrap_or("squire").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("hunter").to_string(),
                                 level: h["level"].as_i64().unwrap_or(1) as i32,
                                 str_: h["str_"].as_i64().unwrap_or(0) as i32,
                                 mnd: h["mnd"].as_i64().unwrap_or(0) as i32,
@@ -872,7 +872,7 @@ impl Inner {
                         arr.iter()
                             .map(|h| HeroLevelUpLine {
                                 name: h["name"].as_str().unwrap_or("Hero").to_string(),
-                                class_key: h["class_key"].as_str().unwrap_or("squire").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("hunter").to_string(),
                                 level: h["level"].as_i64().unwrap_or(1) as i32,
                                 max_hp: pair(h, "max_hp"),
                                 str_: pair(h, "str"),

@@ -47,7 +47,7 @@ Authoritative run and instance state at maze entry.
 | instance_id | string (uuid) | Yes | No | — | The new MazeInstance. |
 | departure_hub_distance | integer (int32, one of 0, 500, 1000, …, 5000) | Yes | No | — | The hub the run departs from. |
 | base_run_level | integer (int32, ≥ 1) | Yes | No | — | Starting run level for every member: `round(1 + hub.distance × 0.078)`. |
-| members | array of object (1–4 items) | Yes | No | — | The party. Fields: `player_id` string (uuid); `username` string; `character_class` string (enum: `squire`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`); `spawn_position` Position. |
+| members | array of object (1–4 items) | Yes | No | — | The party. Fields: `player_id` string (uuid); `username` string; `character_class` string (enum: `hunter`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`); `spawn_position` Position. |
 | backpack | array of ItemStack | Yes | No | — | The recipient's starting backpack contents (empty array on a fresh run). Authoritative baseline for all later `run.backpack_update` deltas. |
 
 **Example**

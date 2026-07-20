@@ -160,7 +160,7 @@ season lifecycle (archive, top-100 titles, resets).
 ### 2.12 Content — one hardcoded creature
 
 Missing: monster definitions (only `forest_bloom_stalker`), class stat blocks (only
-`squire`), biome content tables, loot tables, crafting/gem recipes, item catalog.
+`hunter`), biome content tables, loot tables, crafting/gem recipes, item catalog.
 `balance.toml` holds only the subset of `[TUNABLE]`s the slice reads — most CANON §B
 constants aren't there yet.
 

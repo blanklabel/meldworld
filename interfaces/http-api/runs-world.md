@@ -115,7 +115,7 @@ Stages a run: validates the departure hub, party, and build template, then eithe
 | departure_hub_distance | integer (int32) | Yes | No | — | v0.1 | No | The hub to depart from. Must be unlocked by every party member. Determines `base_run_level = round(1 + distance × 0.078)`. |
 | mode | string (enum: party, matchmaking) | Yes | No | — | v0.1 | No | `party`: enter with the listed members. `matchmaking`: solo-join the pool for this hub (CANON.md §D13); pool matches are filtered by departure hub. |
 | party_member_ids | array of string (uuid) (1–4 items) | When mode=party | No | — | v0.1 | No | Full party including the caller. All members must have consented via realtime party formation (out of scope); must not exceed 4 (CANON.md §D5, §D13). Must be omitted when `mode` is `matchmaking` (400 if present). |
-| class | string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | The class the caller plays this run. Must be unlocked on the caller's account. |
+| class | string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | The class the caller plays this run. Must be unlocked on the caller's account. |
 | build_template_id | string (uuid) | No | Yes | `null` | v0.1 | No | Training Ground template used to auto-allocate skill points at run start (GDD.md §4). `null` or omitted: points are allocated manually in-run (realtime concern). Template's `class` must match `class`. |
 
 **Response** — `202 Accepted`

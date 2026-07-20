@@ -14,7 +14,7 @@ Authoritative resolutions of every gap, ambiguity, and naming decision in `GDD.m
 | D6 | Durability loss on death unspecified | −10% of current max durability per death, floor 0. Gear at 0 max durability is unequippable until repaired. **[TUNABLE]** |
 | D7 | Hub tax unspecified | 10% sales tax on stall sales and contract payouts, reduced by Mercantile level (§Balance). **[TUNABLE]** |
 | D8 | Season length "e.g. 3 months" | 13 weeks exactly, rolling UTC boundary. |
-| D9 | Character classes | Launch set: Squire (default), Dragoon, Sage, Ranger, Alchemist-Knight, Bard. Classes beyond Squire are Gatekeeper drops. Placeholder — content team may extend. |
+| D9 | Character classes | Launch set: Hunter (default), Dragoon, Sage, Ranger, Alchemist-Knight, Bard. Classes beyond Hunter are Gatekeeper drops. Placeholder — content team may extend. |
 | D10 | Currency granularity | Currency is **Chits** (`chits`, symbol `c`), a 64-bit integer; no fractional chits. Every GDD "Gold"/"G" reference reads as Chits. |
 | D11 | Combat is server-authoritative | All ATB math (timers, damage, status) computed server-side; clients render and submit intents only. |
 | D12 | Persistence store | Single logical relational DB for persistent state; ephemeral run/instance state lives in server memory with periodic snapshots for crash recovery. Specs describe observable behavior only. |
@@ -33,7 +33,7 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 |------|-----------|------------|
 | Player / account | `Player` | The persistent account (username + bcrypt-hashed password, D17). Owns Vault, Meld Skills, class unlocks, cosmetics. |
 | Chits | `chits` | The currency (D10). 64-bit integer, symbol `c`. Replaces every "Gold"/"G" reference. |
-| Character class | `CharacterClass` | Enum: `squire`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. |
+| Character class | `CharacterClass` | Enum: `hunter`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Spike additions (implemented kits): `psyker`, `resonant`, `shifter`, `iron_hull`. |
 | Run | `Run` | One ephemeral maze excursion by an instance. Ends in `extracted`, `died`, or `abandoned`. |
 | Instance | `MazeInstance` | The 1–4 player shared maze world for a run set. Has its own world seed. |
 | Party | `Party` | The 1–4 players inside one MazeInstance. |

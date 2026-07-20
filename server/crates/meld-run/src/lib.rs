@@ -128,7 +128,7 @@ impl InstanceRun {
 /// Map a `CharacterClass` to its balance content key.
 pub fn class_key(class: CharacterClass) -> &'static str {
     match class {
-        CharacterClass::Squire => "squire",
+        CharacterClass::Hunter => "hunter",
         CharacterClass::Dragoon => "dragoon",
         CharacterClass::Sage => "sage",
         CharacterClass::Ranger => "ranger",
@@ -136,6 +136,8 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Bard => "bard",
         CharacterClass::Psyker => "psyker",
         CharacterClass::Resonant => "resonant",
+        CharacterClass::Shifter => "shifter",
+        CharacterClass::IronHull => "iron_hull",
     }
 }
 
@@ -160,7 +162,7 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
             let stats = balance
                 .player
                 .get(class_key(*class))
-                .unwrap_or_else(|| balance.player.get("squire").expect("squire stats"));
+                .unwrap_or_else(|| balance.player.get("hunter").expect("hunter stats"));
             let level = level_by_player
                 .get(player_id.as_str())
                 .copied()
@@ -226,7 +228,12 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                     f.regen = balance.battle.resonant_regen_per_turn;
                     f.back_row = true;
                 }
-                // Martial classes (Squire, …) hold the front line.
+                // The Hunter (martial baseline) earns Adrenaline through basic attacks
+                // and spends it on skills; it holds the front line. Starts at 0.
+                CharacterClass::Hunter => {
+                    f.adrenaline_max = balance.battle.hunter_adrenaline_max;
+                }
+                // Other martial classes hold the front line with no special resource.
                 _ => {}
             }
             f
@@ -314,7 +321,7 @@ mod tests {
             run_id: "r".into(),
             player_id: "p".into(),
             username: "u".into(),
-            character_class: CharacterClass::Squire,
+            character_class: CharacterClass::Hunter,
             run_level: 1,
             xp: 0,
             backpack: vec![],
@@ -357,7 +364,7 @@ mod tests {
         // base stats, so nothing about the existing balance shifts.
         let b = Balance::load_default().unwrap();
         for class in [
-            CharacterClass::Squire,
+            CharacterClass::Hunter,
             CharacterClass::Psyker,
             CharacterClass::Resonant,
         ] {
@@ -374,13 +381,39 @@ mod tests {
     }
 
     #[test]
+    fn shifter_starts_slippery_and_front_row() {
+        // The Shifter is the one class whose base Dex clears the dodge floor, so it
+        // dodges from level 1 (every other class starts at 0.0 — see the test above),
+        // and it holds the front line (not a back-row caster).
+        let b = Balance::load_default().unwrap();
+        let sh1 = solo_fighter(CharacterClass::Shifter, 1, &b);
+        assert!(sh1.dodge > 0.0, "the Shifter has innate dodge at level 1");
+        assert!(!sh1.back_row, "the Shifter is a front-row skirmisher");
+        // Leveling deepens the evasion + keeps it the fastest gauge.
+        let sh5 = solo_fighter(CharacterClass::Shifter, 5, &b);
+        assert!(sh5.dodge > sh1.dodge, "dodge grows with Dex");
+        assert!(sh5.speed_stat > sh1.speed_stat, "the gauge fills faster with Dex");
+    }
+
+    #[test]
+    fn hunter_starts_with_an_empty_adrenaline_pool() {
+        // The martial baseline earns its resource in-battle: the pool exists (max
+        // from balance) but starts empty, and it holds the front line.
+        let b = Balance::load_default().unwrap();
+        let h = solo_fighter(CharacterClass::Hunter, 1, &b);
+        assert_eq!(h.adrenaline_max, b.battle.hunter_adrenaline_max);
+        assert_eq!(h.adrenaline, 0, "Adrenaline is banked in-fight, not granted");
+        assert!(!h.back_row, "the Hunter holds the front line");
+    }
+
+    #[test]
     fn leveling_grows_stats_per_class_focus() {
         let b = Balance::load_default().unwrap();
-        let sq1 = solo_fighter(CharacterClass::Squire, 1, &b);
-        let sq5 = solo_fighter(CharacterClass::Squire, 5, &b);
-        // The Squire hardens: Str -> more atk, Wll -> more HP.
-        assert!(sq5.atk > sq1.atk, "squire atk grows with Str");
-        assert!(sq5.max_hp > sq1.max_hp, "squire HP grows with Wll");
+        let sq1 = solo_fighter(CharacterClass::Hunter, 1, &b);
+        let sq5 = solo_fighter(CharacterClass::Hunter, 5, &b);
+        // The Hunter hardens: Str -> more atk, Wll -> more HP.
+        assert!(sq5.atk > sq1.atk, "hunter atk grows with Str");
+        assert!(sq5.max_hp > sq1.max_hp, "hunter HP grows with Wll");
         assert!(sq5.str_ > sq1.str_ && sq5.wll > sq1.wll);
 
         // The Psyker's manifestation power grows with Mnd, not its atk.
@@ -398,13 +431,13 @@ mod tests {
         runs.add_party(vec![(
             "p1".into(),
             "u1".into(),
-            CharacterClass::Squire,
+            CharacterClass::Hunter,
             "r1".into(),
         )]);
         // Use a real generated creature as the enemy.
         let arena = meld_world::Arena::generate(&b, 5);
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Squire, 0)];
+        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, 0)];
         // Carry a wounded hero in: start at 17 HP rather than full.
         let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)]);
         let (allies, _) = battle.wire_combatants();

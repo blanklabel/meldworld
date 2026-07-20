@@ -116,6 +116,26 @@ pub struct Battle {
     pub resonant_transfuse_cost_fraction: f64,
     pub resonant_boon_regen: i32,
     pub resonant_ward_barrier_fraction: f64,
+    pub shifter_backstab_mult: f64,
+    pub shifter_backstab_pierce: f64,
+    pub shifter_flicker_evasion: f64,
+    pub shifter_flicker_decay: f64,
+    pub shifter_ransack_mult: f64,
+    pub shifter_ransack_drain: f64,
+    pub hunter_adrenaline_max: i32,
+    pub hunter_adrenaline_per_attack: i32,
+    pub hunter_power_strike_cost: i32,
+    pub hunter_second_wind_cost: i32,
+    pub hunter_snare_cost: i32,
+    pub hunter_snare_mult: f64,
+    pub hunter_snare_drain: f64,
+    pub hunter_frenzy_cost: i32,
+    pub hunter_frenzy_mult: f64,
+    pub ironhull_swell_mult: f64,
+    pub ironhull_swell_drain: f64,
+    pub ironhull_root_barrier_fraction: f64,
+    pub ironhull_shock_mult: f64,
+    pub ironhull_toll_mult: f64,
 }
 
 /// Creature loot tunables (economy.md sources S1). See the `[loot]` block in
@@ -347,6 +367,6 @@ mod tests {
         assert_eq!(b.battle.tick_ms, 100);
         assert_eq!(b.auth.bcrypt_cost, 12);
         assert!(b.creature.contains_key("forest_bloom_stalker"));
-        assert!(b.player.contains_key("squire"));
+        assert!(b.player.contains_key("hunter"));
     }
 }

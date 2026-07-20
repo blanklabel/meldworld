@@ -58,7 +58,7 @@ pub struct Fighter {
     pub dodge: f64,
     pub gauge: f64,
     pub statuses: Vec<String>,
-    /// Content key of the fighter's class (`squire`/`psyker`/`resonant`/…), surfaced
+    /// Content key of the fighter's class (`hunter`/`psyker`/`resonant`/…), surfaced
     /// to the client so it shows the right per-hero command menu. Empty for monsters.
     pub class_key: String,
     /// Barrier (temp HP): absorbs damage before HP, and decays each of this
@@ -67,6 +67,14 @@ pub struct Fighter {
     /// Regen: HP restored at the start of each of this fighter's turns (Resonant
     /// innate, or granted by Regen Boon).
     pub regen: i32,
+    /// Evasion: a temporary dodge bonus added to `dodge` against physical attacks,
+    /// decaying a fixed amount at the start of each of this fighter's turns. Granted
+    /// by the Shifter's Flicker blink.
+    pub evasion: f64,
+    /// Adrenaline: the Hunter's resource. Basic attacks bank it (up to `adrenaline_max`)
+    /// and skills spend it. Zero/`adrenaline_max == 0` for every non-Hunter.
+    pub adrenaline: i32,
+    pub adrenaline_max: i32,
     /// Battle faction — `"player"` for heroes, else the creature's faction. Drives
     /// AI targeting: a fighter attacks the nearest fighter hostile to its faction
     /// (see `meld_proto::factions::battle_hostile`).
@@ -135,6 +143,9 @@ impl Fighter {
             class_key: String::new(),
             barrier: 0,
             regen: 0,
+            evasion: 0.0,
+            adrenaline: 0,
+            adrenaline_max: 0,
             faction: if kind == CombatantKind::Player {
                 meld_proto::factions::PLAYER.to_string()
             } else {
@@ -172,6 +183,14 @@ impl Fighter {
         if self.regen > 0 {
             v.push(format!("regen:{}", self.regen));
         }
+        if self.evasion > 0.0 {
+            // Surfaced as a whole-percent dodge bonus for the client's status line.
+            v.push(format!("evasion:{}", (self.evasion * 100.0).round() as i32));
+        }
+        if self.adrenaline_max > 0 {
+            v.push(format!("adrenaline:{}", self.adrenaline));
+            v.push(format!("adrenaline_max:{}", self.adrenaline_max));
+        }
         if self.back_row {
             v.push("row:back".to_string());
         }
@@ -200,6 +219,8 @@ impl Fighter {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.barrier.hash(&mut h);
         self.regen.hash(&mut h);
+        ((self.evasion * 100.0).round() as i64).hash(&mut h);
+        self.adrenaline.hash(&mut h);
         self.focus_max.hash(&mut h);
         for f in &self.foci {
             f.kind.hash(&mut h);
@@ -324,6 +345,27 @@ pub struct Battle {
     resonant_transfuse_cost_fraction: f64,
     resonant_boon_regen: i32,
     resonant_ward_barrier_fraction: f64,
+    shifter_backstab_mult: f64,
+    shifter_backstab_pierce: f64,
+    shifter_flicker_evasion: f64,
+    shifter_flicker_decay: f64,
+    shifter_ransack_mult: f64,
+    shifter_ransack_drain: f64,
+    // Note: the Adrenaline *cap* rides on each Hunter `Fighter.adrenaline_max`
+    // (set from balance in meld-run); the engine only needs the per-attack gain.
+    hunter_adrenaline_per_attack: i32,
+    hunter_power_strike_cost: i32,
+    hunter_second_wind_cost: i32,
+    hunter_snare_cost: i32,
+    hunter_snare_mult: f64,
+    hunter_snare_drain: f64,
+    hunter_frenzy_cost: i32,
+    hunter_frenzy_mult: f64,
+    ironhull_swell_mult: f64,
+    ironhull_swell_drain: f64,
+    ironhull_root_barrier_fraction: f64,
+    ironhull_shock_mult: f64,
+    ironhull_toll_mult: f64,
     min_damage: i32,
     creature_flee_hp_fraction: f64,
     flee_base: f64,
@@ -375,6 +417,25 @@ impl Battle {
             resonant_transfuse_cost_fraction: balance.battle.resonant_transfuse_cost_fraction,
             resonant_boon_regen: balance.battle.resonant_boon_regen,
             resonant_ward_barrier_fraction: balance.battle.resonant_ward_barrier_fraction,
+            shifter_backstab_mult: balance.battle.shifter_backstab_mult,
+            shifter_backstab_pierce: balance.battle.shifter_backstab_pierce,
+            shifter_flicker_evasion: balance.battle.shifter_flicker_evasion,
+            shifter_flicker_decay: balance.battle.shifter_flicker_decay,
+            shifter_ransack_mult: balance.battle.shifter_ransack_mult,
+            shifter_ransack_drain: balance.battle.shifter_ransack_drain,
+            hunter_adrenaline_per_attack: balance.battle.hunter_adrenaline_per_attack,
+            hunter_power_strike_cost: balance.battle.hunter_power_strike_cost,
+            hunter_second_wind_cost: balance.battle.hunter_second_wind_cost,
+            hunter_snare_cost: balance.battle.hunter_snare_cost,
+            hunter_snare_mult: balance.battle.hunter_snare_mult,
+            hunter_snare_drain: balance.battle.hunter_snare_drain,
+            hunter_frenzy_cost: balance.battle.hunter_frenzy_cost,
+            hunter_frenzy_mult: balance.battle.hunter_frenzy_mult,
+            ironhull_swell_mult: balance.battle.ironhull_swell_mult,
+            ironhull_swell_drain: balance.battle.ironhull_swell_drain,
+            ironhull_root_barrier_fraction: balance.battle.ironhull_root_barrier_fraction,
+            ironhull_shock_mult: balance.battle.ironhull_shock_mult,
+            ironhull_toll_mult: balance.battle.ironhull_toll_mult,
             min_damage: balance.combat_math.min_damage,
             creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
@@ -678,10 +739,12 @@ impl Battle {
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
-        let effects = match self.roll_dodge(target_i) {
+        let mut effects = match self.roll_dodge(target_i) {
             Some(dodge) => dodge,
             None => self.apply_damage(target_i, self.damage(atk, def, defending)),
         };
+        // The Hunter banks Adrenaline on every basic attack (see `gain_adrenaline`).
+        effects.extend(self.gain_adrenaline(actor_i));
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
         Ok(Resolution {
@@ -694,10 +757,191 @@ impl Battle {
         })
     }
 
-    /// Class skills (slice content). `power_strike` is a heavier attack
-    /// (`atk * skill_power_mult - def`); `second_wind` (and the default) is a
-    /// self-heal for `skill_heal_fraction` of max HP. (The Psyker does not use
-    /// this path — it channels Foci via [`Battle::resolve_psyker`].)
+    /// Bank `hunter_adrenaline_per_attack` Adrenaline on a Hunter's basic attack,
+    /// clamped to `adrenaline_max`. A no-op (empty effects) for every other class
+    /// (`adrenaline_max == 0`). Reported as a StatusApplied so the client can react.
+    fn gain_adrenaline(&mut self, actor_i: usize) -> Vec<ResolvedEffect> {
+        let f = &mut self.fighters[actor_i];
+        if f.adrenaline_max <= 0 {
+            return Vec::new();
+        }
+        let before = f.adrenaline;
+        f.adrenaline = (f.adrenaline + self.hunter_adrenaline_per_attack).min(f.adrenaline_max);
+        if f.adrenaline == before {
+            return Vec::new(); // already capped
+        }
+        vec![ResolvedEffect {
+            target_id: f.combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: Some(f.adrenaline),
+            status: Some("adrenaline".to_string()),
+            hp_after: f.hp,
+        }]
+    }
+
+    /// Resolve a Hunter Adrenaline spender. EVERY Hunter skill spends banked
+    /// Adrenaline and is rejected unless the cost is met (the client also greys
+    /// unaffordable rows). `second_wind` is a self-heal; `power_strike`/`snare`/
+    /// `frenzy` strike an enemy (Snare also drains the target's ATB gauge).
+    fn resolve_hunter(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        let cost = match skill {
+            "power_strike" => self.hunter_power_strike_cost,
+            "second_wind" => self.hunter_second_wind_cost,
+            "snare" => self.hunter_snare_cost,
+            "frenzy" => self.hunter_frenzy_cost,
+            _ => return Err(Reject::ValidationError("unknown hunter skill")),
+        };
+        if self.fighters[actor_i].adrenaline < cost {
+            return Err(Reject::ValidationError("not enough adrenaline"));
+        }
+        // Second Wind is a self-heal — no target, spend and mend.
+        if skill == "second_wind" {
+            self.fighters[actor_i].adrenaline -= cost;
+            let raw = ((self.fighters[actor_i].max_hp as f64) * self.skill_heal_fraction).round()
+                as i32;
+            let effects = self.apply_heal(actor_i, raw);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Enemy strikes. Power Strike reuses the generic heavy-hit multiplier.
+        let (mult, drain) = match skill {
+            "power_strike" => (self.skill_power_mult, 0.0),
+            "snare" => (self.hunter_snare_mult, self.hunter_snare_drain),
+            "frenzy" => (self.hunter_frenzy_mult, 0.0),
+            _ => unreachable!("cost match already rejected other skills"),
+        };
+        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+        let target_i = match self.idx(target) {
+            Some(t) if self.fighters[t].alive => t,
+            _ => self
+                .fighters
+                .iter()
+                .position(|f| f.alive && f.kind != CombatantKind::Player)
+                .ok_or(Reject::NotFound)?,
+        };
+        // Spend the banked Adrenaline (reflected in wire statuses on the next snapshot).
+        self.fighters[actor_i].adrenaline -= cost;
+        let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+        let def = self.fighters[target_i].def;
+        let defending = self.fighters[target_i].defending;
+        let mut effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+        };
+        if drain > 0.0 && self.fighters[target_i].alive {
+            self.fighters[target_i].gauge = (self.fighters[target_i].gauge - drain).max(0.0);
+            effects.push(ResolvedEffect {
+                target_id: self.fighters[target_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some("slowed".to_string()),
+                hp_after: self.fighters[target_i].hp,
+            });
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// Resolve an Iron Hull (monk) skill:
+    /// - `root`             — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
+    /// - `swell_strike`     — a heavy blow that also drains the target's ATB gauge.
+    /// - `kinetic_shock`    — a heavier blow that fully resets the target's gauge (hard stagger).
+    /// - `toll_of_the_deep` — an AoE shockwave hitting EVERY living enemy.
+    fn resolve_ironhull(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        // Root is a self-cast stance — no target needed.
+        if skill == "root" {
+            let raw = ((self.fighters[actor_i].max_hp as f64)
+                * self.ironhull_root_barrier_fraction)
+                .round() as i32;
+            let effects = self.grant_barrier(actor_i, raw);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Toll of the Deep — the ocean's swell through the floorboards: strike every
+        // living enemy for `atk * toll_mult - def` (no single target).
+        if skill == "toll_of_the_deep" {
+            let atk = self.fighters[actor_i].atk;
+            let enemies: Vec<usize> = self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect();
+            let mut effects = Vec::new();
+            for t in enemies {
+                let scaled = (atk as f64 * self.ironhull_toll_mult).round() as i32;
+                let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
+                effects.extend(self.apply_damage(t, dmg));
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Single-target kinetic strikes: Swell Strike (drain) and Kinetic Shock (full stagger).
+        let mult = if skill == "kinetic_shock" {
+            self.ironhull_shock_mult
+        } else {
+            self.ironhull_swell_mult
+        };
+        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+        let target_i = match self.idx(target) {
+            Some(t) if self.fighters[t].alive => t,
+            _ => self
+                .fighters
+                .iter()
+                .position(|f| f.alive && f.kind != CombatantKind::Player)
+                .ok_or(Reject::NotFound)?,
+        };
+        let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+        let def = self.fighters[target_i].def;
+        let defending = self.fighters[target_i].defending;
+        let mut effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+        };
+        // The kinetic shock staggers a surviving target: Kinetic Shock zeroes its
+        // gauge outright, Swell Strike knocks a fixed amount off.
+        if self.fighters[target_i].alive {
+            if skill == "kinetic_shock" {
+                self.fighters[target_i].gauge = 0.0;
+            } else {
+                self.fighters[target_i].gauge =
+                    (self.fighters[target_i].gauge - self.ironhull_swell_drain).max(0.0);
+            }
+            effects.push(ResolvedEffect {
+                target_id: self.fighters[target_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some("slowed".to_string()),
+                hp_after: self.fighters[target_i].hp,
+            });
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// Class skills (slice content). The Hunter's `power_strike`/`second_wind`/
+    /// `snare`/`frenzy` all spend banked Adrenaline (see [`Battle::resolve_hunter`]);
+    /// the Iron Hull, Shifter, and Resonant arms handle their own kits. An unknown
+    /// skill is rejected. (The Psyker does not use this path — it channels Foci via
+    /// [`Battle::resolve_psyker`].)
     fn resolve_skill(
         &mut self,
         actor_i: usize,
@@ -712,13 +956,20 @@ impl Battle {
                 return Err(Reject::ValidationError("skill not unlocked at this level"));
             }
         }
-        if skill_kind == Some("second_wind") {
-            let raw = ((self.fighters[actor_i].max_hp as f64) * self.skill_heal_fraction).round()
-                as i32;
-            let effects = self.apply_heal(actor_i, raw);
-            self.fighters[actor_i].defending = false;
-            self.reset_gauge(actor_i);
-            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        // Hunter (martial baseline): every skill spends banked Adrenaline. Handled
+        // first so the affordability check runs before any other path.
+        if matches!(
+            skill_kind,
+            Some("power_strike") | Some("second_wind") | Some("snare") | Some("frenzy")
+        ) {
+            return self.resolve_hunter(actor_i, skill_kind.unwrap(), target_id, action_id);
+        }
+        // Iron Hull (monk / tank): kinetic strikes, the Root stance, and the AoE toll.
+        if matches!(
+            skill_kind,
+            Some("swell_strike") | Some("root") | Some("kinetic_shock") | Some("toll_of_the_deep")
+        ) {
+            return self.resolve_ironhull(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
         // Resonant healer skills. Aim at the chosen living ally if the player picked
         // one, else auto-target the most-wounded living ally (the classic default).
@@ -731,27 +982,70 @@ impl Battle {
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
         }
-        // Power Strike: retarget to the first living enemy if the chosen one died.
-        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
-        let target_i = match self.idx(target) {
-            Some(t) if self.fighters[t].alive => t,
-            _ => self
-                .fighters
-                .iter()
-                .position(|f| f.alive && f.kind != CombatantKind::Player)
-                .ok_or(Reject::NotFound)?,
-        };
-        let scaled_atk =
-            (self.fighters[actor_i].atk as f64 * self.skill_power_mult).round() as i32;
-        let def = self.fighters[target_i].def;
-        let defending = self.fighters[target_i].defending;
-        let effects = match self.roll_dodge(target_i) {
-            Some(dodge) => dodge,
-            None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
-        };
-        self.fighters[actor_i].defending = false;
-        self.reset_gauge(actor_i);
-        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+        // Shifter (rogue) Flicker: a self-cast reality-blink granting Evasion (a
+        // temporary dodge bonus that decays each of the Shifter's turns).
+        if skill_kind == Some("flicker") {
+            self.fighters[actor_i].evasion += self.shifter_flicker_evasion;
+            let pct = (self.fighters[actor_i].evasion * 100.0).round() as i32;
+            let effects = vec![ResolvedEffect {
+                target_id: self.fighters[actor_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: Some(pct),
+                status: Some("evasion".to_string()),
+                hp_after: self.fighters[actor_i].hp,
+            }];
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Shifter enemy strikes: Backstab (heavy, pierces most armour) and Ransack
+        // (modest hit that also drains the target's ATB gauge — grab-and-run tempo).
+        if matches!(skill_kind, Some("backstab") | Some("ransack")) {
+            let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+            let target_i = match self.idx(target) {
+                Some(t) if self.fighters[t].alive => t,
+                _ => self
+                    .fighters
+                    .iter()
+                    .position(|f| f.alive && f.kind != CombatantKind::Player)
+                    .ok_or(Reject::NotFound)?,
+            };
+            let atk = self.fighters[actor_i].atk;
+            let defending = self.fighters[target_i].defending;
+            let (scaled_atk, def) = if skill_kind == Some("backstab") {
+                let a = (atk as f64 * self.shifter_backstab_mult).round() as i32;
+                let d = (self.fighters[target_i].def as f64
+                    * (1.0 - self.shifter_backstab_pierce))
+                    .round() as i32;
+                (a, d)
+            } else {
+                (
+                    (atk as f64 * self.shifter_ransack_mult).round() as i32,
+                    self.fighters[target_i].def,
+                )
+            };
+            let mut effects = match self.roll_dodge(target_i) {
+                Some(dodge) => dodge,
+                None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+            };
+            // Ransack staggers a surviving target by draining its ATB gauge.
+            if skill_kind == Some("ransack") && self.fighters[target_i].alive {
+                self.fighters[target_i].gauge =
+                    (self.fighters[target_i].gauge - self.shifter_ransack_drain).max(0.0);
+                effects.push(ResolvedEffect {
+                    target_id: self.fighters[target_i].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("slowed".to_string()),
+                    hp_after: self.fighters[target_i].hp,
+                });
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Every class skill is handled by an arm above; anything else is unknown.
+        Err(Reject::ValidationError("unknown or unsupported skill"))
     }
 
     /// Resolve a Psyker's turn. First every active Focus fires (offense manifestations
@@ -995,6 +1289,11 @@ impl Battle {
             self.fighters[i].barrier =
                 (self.fighters[i].barrier - self.barrier_decay_per_turn).max(0);
         }
+        // Evasion (Shifter Flicker) fades a fixed amount each of the holder's turns.
+        if self.fighters[i].evasion > 0.0 {
+            self.fighters[i].evasion =
+                (self.fighters[i].evasion - self.shifter_flicker_decay).max(0.0);
+        }
         effects
     }
 
@@ -1225,7 +1524,9 @@ impl Battle {
     /// actually has dodge, so combatants with no Dex bonus don't perturb the
     /// deterministic stream (existing tests/replays are unaffected).
     fn roll_dodge(&mut self, target_i: usize) -> Option<Vec<ResolvedEffect>> {
-        let chance = self.fighters[target_i].dodge;
+        // Innate Dex dodge plus any temporary Evasion (Shifter Flicker), capped just
+        // shy of certain so an attack can always in principle land.
+        let chance = (self.fighters[target_i].dodge + self.fighters[target_i].evasion).min(0.95);
         if chance > 0.0 && self.next_rand_unit() < chance {
             let t = &self.fighters[target_i];
             Some(vec![ResolvedEffect {
@@ -1897,15 +2198,18 @@ mod tests {
     #[test]
     fn skill_hits_harder_than_a_plain_attack() {
         let b = balance();
-        // atk 12, def 4 → attack = 8; skill = round(12*1.75) - 4 = 21 - 4 = 17.
+        // atk 12, def 4 → attack = 8; Power Strike = round(12*1.75) - 4 = 21 - 4 = 17.
+        // Power Strike now spends Adrenaline, so the Hunter must have it banked.
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![player("a", 110)],
+            vec![hunter("a", 110, 1)],
             vec![monster("m", 1000, 1)],
             &b,
             7,
         );
+        let ai = battle.fighters.iter().position(|f| f.combatant_id == "a").unwrap();
+        battle.fighters[ai].adrenaline = 40; // enough for Power Strike
         tick_to_ready(&mut battle, "a");
         let evs = battle
             .submit(
@@ -2027,8 +2331,31 @@ mod tests {
 
     #[test]
     fn second_wind_skill_heals_a_fraction_of_max_hp() {
-        // 0.3 * 40 = 12; wounded to 18 → 30.
-        let eff = wounded_heal(Some("second_wind"), None);
+        let b = balance();
+        // Second Wind is now a Hunter Adrenaline spender: heal = 0.3 * 40 = 12;
+        // wounded to 18 → 30. It costs 35 Adrenaline, so the Hunter must have it.
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![hunter("a", 400, 2)], // Second Wind unlocks at L2
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        let ai = battle.fighters.iter().position(|f| f.combatant_id == "a").unwrap();
+        battle.fighters[ai].hp = 18;
+        battle.fighters[ai].adrenaline = 35;
+        tick_to_ready(&mut battle, "a");
+        let evs = battle
+            .submit("a", "sw".into(), BattleActionKind::Skill, None, Some("second_wind".into()), None)
+            .expect("heal resolves");
+        let eff = evs
+            .into_iter()
+            .find_map(|e| match e {
+                Event::Resolved(r) if r.action == BattleActionKind::Skill => Some(r.effects[0].clone()),
+                _ => None,
+            })
+            .expect("heal resolution present");
         assert_eq!(eff.kind, EffectKind::Heal);
         assert_eq!(eff.amount, Some(12));
         assert_eq!(eff.hp_after, 30);
@@ -2037,7 +2364,7 @@ mod tests {
     #[test]
     fn locked_skill_is_rejected_until_leveled() {
         let b = balance();
-        // A level-1 Squire cannot use Second Wind (unlocks at 2).
+        // A level-1 hero cannot use a level-2 skill (Second Wind unlocks at 2).
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
@@ -2165,5 +2492,273 @@ mod tests {
             None,
         );
         assert_eq!(second, Err(Reject::DuplicateAction));
+    }
+
+    /// A combatant's gauge and wire statuses, read off the authoritative snapshot.
+    fn gauge_of(battle: &Battle, cid: &str) -> f64 {
+        battle.gauge_state().into_iter().find(|(id, ..)| id == cid).unwrap().1
+    }
+    fn statuses_of(battle: &Battle, cid: &str) -> Vec<String> {
+        battle.gauge_state().into_iter().find(|(id, ..)| id == cid).unwrap().3
+    }
+
+    /// A player fighter at a chosen level (so level-gated skills are unlocked).
+    fn leveled_player(id: &str, speed: i32, level: i32) -> Fighter {
+        let mut f = player(id, speed);
+        f.level = level;
+        f
+    }
+
+    /// Backstab (Shifter) pierces most of the target's armour, so against a heavily
+    /// armoured creature it lands far more than a plain attack that the armour eats.
+    #[test]
+    fn shifter_backstab_pierces_armour() {
+        let b = balance();
+        // atk 12 (the `player` helper) vs def 10. Plain: max(1, 12−10)=2. Backstab:
+        // atk×1.5=18 minus def cut to 25% → 18−round(2.5)=15.
+        let dmg = |skill: Option<&str>| -> i32 {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("s", 400)],
+                vec![monster_def("m", 200, 1, 10)],
+                &b,
+                7,
+            );
+            tick_to_ready(&mut battle, "s");
+            let action = if skill.is_some() { BattleActionKind::Skill } else { BattleActionKind::Attack };
+            battle
+                .submit("s", "a1".into(), action, Some(vec!["m".into()]), skill.map(String::from), None)
+                .unwrap();
+            200 - player_hp(&battle, "m")
+        };
+        assert_eq!(dmg(None), 2, "a plain attack is eaten by def 10");
+        assert_eq!(dmg(Some("backstab")), 15, "Backstab pierces most of the armour");
+    }
+
+    /// Flicker (Shifter) grants Evasion — a dodge bonus surfaced on the wire that
+    /// then decays a fixed step at the start of the Shifter's next turn.
+    #[test]
+    fn shifter_flicker_grants_and_decays_evasion() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("s", 400, 2)], // Flicker unlocks at L2
+            vec![monster("m", 500, 1)], // slow, harmless punching bag
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "s");
+        battle
+            .submit("s", "a1".into(), BattleActionKind::Skill, None, Some("flicker".into()), None)
+            .unwrap();
+        // shifter_flicker_evasion = 0.4 → "evasion:40".
+        assert!(
+            statuses_of(&battle, "s").iter().any(|x| x == "evasion:40"),
+            "Flicker grants 40% evasion: {:?}",
+            statuses_of(&battle, "s")
+        );
+        // Next turn's start-of-turn upkeep decays it by 0.15 → 0.25 before the action.
+        tick_to_ready(&mut battle, "s");
+        battle
+            .submit("s", "a2".into(), BattleActionKind::Defend, None, None, None)
+            .unwrap();
+        assert!(
+            statuses_of(&battle, "s").iter().any(|x| x == "evasion:25"),
+            "evasion decays to 25%: {:?}",
+            statuses_of(&battle, "s")
+        );
+    }
+
+    /// Ransack (Shifter) both damages and drains the surviving target's ATB gauge.
+    #[test]
+    fn shifter_ransack_drains_enemy_gauge() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("s", 400, 3)], // Ransack unlocks at L3
+            vec![monster("m", 500, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "s");
+        // Seed the monster with a partial gauge so the drain is observable.
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        battle.fighters[mi].gauge = 0.6;
+        battle
+            .submit("s", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("ransack".into()), None)
+            .unwrap();
+        // shifter_ransack_drain = 0.35 → 0.6 − 0.35 = 0.25.
+        assert!((gauge_of(&battle, "m") - 0.25).abs() < 1e-9, "Ransack drains the gauge to 0.25");
+        assert!(player_hp(&battle, "m") < 500, "Ransack also deals damage");
+    }
+
+    /// A Hunter fighter with a banked Adrenaline pool, for the kit tests.
+    fn hunter(id: &str, speed: i32, level: i32) -> Fighter {
+        let b = balance();
+        let mut f = leveled_player(id, speed, level);
+        f.class_key = "hunter".into();
+        f.adrenaline_max = b.battle.hunter_adrenaline_max;
+        f
+    }
+
+    /// The Hunter banks Adrenaline on each basic attack, capped at its max, and
+    /// surfaces the running total on the wire.
+    #[test]
+    fn hunter_banks_adrenaline_on_basic_attacks() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hunter("h", 400, 1)],
+            vec![monster("m", 5000, 1)],
+            &b,
+            7,
+        );
+        // Two attacks → 2 × hunter_adrenaline_per_attack (25) = 50.
+        for n in 1..=2 {
+            tick_to_ready(&mut battle, "h");
+            battle
+                .submit("h", format!("a{n}"), BattleActionKind::Attack, Some(vec!["m".into()]), None, None)
+                .unwrap();
+        }
+        assert!(
+            statuses_of(&battle, "h").iter().any(|x| x == "adrenaline:50"),
+            "two attacks bank 50 Adrenaline: {:?}",
+            statuses_of(&battle, "h")
+        );
+    }
+
+    /// A Hunter skill is rejected until enough Adrenaline is banked, then spends it.
+    #[test]
+    fn hunter_power_strike_spends_banked_adrenaline() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hunter("h", 400, 1)],
+            vec![monster_def("m", 5000, 1, 4)],
+            &b,
+            7,
+        );
+        // With 0 Adrenaline, Power Strike (cost 40) is rejected.
+        tick_to_ready(&mut battle, "h");
+        let early = battle.submit(
+            "h", "x".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("power_strike".into()), None,
+        );
+        assert!(early.is_err(), "no Adrenaline → Power Strike rejected");
+        // Bank enough: two attacks (50 ≥ 40). The rejected submit didn't consume the
+        // turn, so the hero is still ready for this first attack.
+        for n in 1..=2 {
+            battle
+                .submit("h", format!("a{n}"), BattleActionKind::Attack, Some(vec!["m".into()]), None, None)
+                .unwrap();
+            tick_to_ready(&mut battle, "h");
+        }
+        let hp_before = player_hp(&battle, "m");
+        battle
+            .submit("h", "ps".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("power_strike".into()), None)
+            .unwrap();
+        // 50 − 40 = 10 Adrenaline remains, and Power Strike (atk 12 × 1.75 = 21 − def 4
+        // = 17) hits far harder than a basic attack (12 − 4 = 8).
+        assert!(
+            statuses_of(&battle, "h").iter().any(|x| x == "adrenaline:10"),
+            "Power Strike spent 40: {:?}",
+            statuses_of(&battle, "h")
+        );
+        assert_eq!(hp_before - player_hp(&battle, "m"), 17, "Power Strike lands atk×1.75 − def");
+    }
+
+    /// Iron Hull Swell Strike hits hard and staggers (drains the target's gauge).
+    #[test]
+    fn ironhull_swell_strike_hits_and_staggers() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("k", 400)], // atk 12
+            vec![monster_def("m", 500, 1, 4)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "k");
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        battle.fighters[mi].gauge = 0.5;
+        let hp0 = player_hp(&battle, "m");
+        battle
+            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("swell_strike".into()), None)
+            .unwrap();
+        // atk 12 × 1.4 = 16.8 → 17, − def 4 = 13.
+        assert_eq!(hp0 - player_hp(&battle, "m"), 13, "Swell Strike lands atk×1.4 − def");
+        // ironhull_swell_drain = 0.3 → 0.5 − 0.3 = 0.2.
+        assert!((gauge_of(&battle, "m") - 0.2).abs() < 1e-9, "Swell Strike drains the gauge");
+    }
+
+    /// Iron Hull Root grants the monk Barrier equal to a fraction of its max HP.
+    #[test]
+    fn ironhull_root_grants_barrier() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("k", 400, 2)], // Root unlocks at L2; max_hp 40
+            vec![monster("m", 500, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "k");
+        battle
+            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("root".into()), None)
+            .unwrap();
+        // ironhull_root_barrier_fraction = 0.25 → 40 × 0.25 = 10.
+        assert!(
+            statuses_of(&battle, "k").iter().any(|x| x == "barrier:10"),
+            "Root grants Barrier: {:?}",
+            statuses_of(&battle, "k")
+        );
+    }
+
+    /// Iron Hull Kinetic Shock fully resets the target's ATB gauge (hard stagger).
+    #[test]
+    fn ironhull_kinetic_shock_zeroes_gauge() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("k", 400, 3)], // Kinetic Shock unlocks at L3
+            vec![monster("m", 500, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "k");
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        battle.fighters[mi].gauge = 0.9;
+        battle
+            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("kinetic_shock".into()), None)
+            .unwrap();
+        assert_eq!(gauge_of(&battle, "m"), 0.0, "Kinetic Shock zeroes the gauge");
+        assert!(player_hp(&battle, "m") < 500, "Kinetic Shock also deals damage");
+    }
+
+    /// Iron Hull Toll of the Deep strikes every living enemy at once.
+    #[test]
+    fn ironhull_toll_hits_all_enemies() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("k", 400, 5)], // Toll unlocks at L5
+            vec![monster("m1", 500, 1), monster("m2", 500, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "k");
+        battle
+            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("toll_of_the_deep".into()), None)
+            .unwrap();
+        assert!(player_hp(&battle, "m1") < 500, "Toll hit the first enemy");
+        assert!(player_hp(&battle, "m2") < 500, "Toll hit the second enemy too");
     }
 }

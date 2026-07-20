@@ -89,13 +89,13 @@ async fn two_players_form_a_lobby_and_dive_together() {
     let mut guest = Bot::connect(&addr, &tb).await;
 
     // Host creates a lobby with a Resonant lead; reads back the join code.
-    host.send("lobby.create", json!({ "party": ["resonant", "psyker", "squire", "squire"] })).await;
+    host.send("lobby.create", json!({ "party": ["resonant", "psyker", "hunter", "hunter"] })).await;
     let state = host.recv_type("lobby.state").await;
     let code = state["payload"]["code"].as_str().unwrap().to_string();
     assert_eq!(state["payload"]["members"].as_array().unwrap().len(), 1);
 
     // Guest joins by code with a Psyker lead; both now see a 2-member lobby.
-    guest.send("lobby.join", json!({ "code": code, "party": ["psyker", "psyker", "resonant", "squire"] })).await;
+    guest.send("lobby.join", json!({ "code": code, "party": ["psyker", "psyker", "resonant", "hunter"] })).await;
     let gstate = guest.recv_type("lobby.state").await;
     assert_eq!(gstate["payload"]["members"].as_array().unwrap().len(), 2);
 

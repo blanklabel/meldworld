@@ -152,23 +152,23 @@ fn hash_str(s: &str) -> u64 {
 
 /// The per-hero class composition of a player's party of `size`. The picked class
 /// leads; the rest are a fixed spread so a single party mixes classes that play
-/// very differently (Squire bruiser + Psyker channeler + Resonant healer).
+/// very differently (Hunter bruiser + Psyker channeler + Resonant healer).
 fn party_composition(chosen: CharacterClass, size: usize) -> Vec<CharacterClass> {
     let base = [
         chosen,
         CharacterClass::Psyker,
         CharacterClass::Resonant,
-        CharacterClass::Squire,
+        CharacterClass::Hunter,
     ];
     (0..size.max(1)).map(|i| base[i % base.len()]).collect()
 }
 
-/// A class's starting/max HP from balance (falls back to squire).
+/// A class's starting/max HP from balance (falls back to hunter).
 fn class_base_hp(class: CharacterClass, balance: &Balance) -> i32 {
     balance
         .player
         .get(meld_run::class_key(class))
-        .or_else(|| balance.player.get("squire"))
+        .or_else(|| balance.player.get("hunter"))
         .map(|p| p.base_hp)
         .unwrap_or(40)
 }
@@ -203,7 +203,7 @@ struct Session {
     in_instance: bool,
     /// Attack bonus from equipped gear, loaded from the DB after connect.
     gear_atk_bonus: i32,
-    /// Class chosen at the player's most recent `run.enter_maze` (default Squire).
+    /// Class chosen at the player's most recent `run.enter_maze` (default Hunter).
     /// This is the party *lead* (slot 0).
     character_class: CharacterClass,
     /// Explicit per-hero party composition from the builder, if the client sent
@@ -565,7 +565,7 @@ impl GameState {
                         last_client_seq: 0,
                         in_instance: false,
                         gear_atk_bonus: 0,
-                        character_class: CharacterClass::Squire,
+                        character_class: CharacterClass::Hunter,
                         party_comp: None,
                         hero_names: None,
                     },
@@ -677,7 +677,7 @@ impl GameState {
             .as_ref()
             .and_then(|e| e.character_class)
             .or_else(|| party_comp.as_ref().and_then(|p| p.first().copied()))
-            .unwrap_or(CharacterClass::Squire);
+            .unwrap_or(CharacterClass::Hunter);
         let names = req
             .as_ref()
             .and_then(|e| e.names.clone())
@@ -800,7 +800,7 @@ impl GameState {
             let s = b
                 .player
                 .get(key)
-                .unwrap_or_else(|| b.player.get("squire").expect("squire stats"));
+                .unwrap_or_else(|| b.player.get("hunter").expect("hunter stats"));
             let (str_, mnd, dex, wll) = s.attributes_at(level);
             let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
             let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
@@ -870,7 +870,7 @@ impl GameState {
                     .sessions
                     .get(pid)
                     .map(|s| (s.username.clone(), s.character_class))
-                    .unwrap_or((String::new(), CharacterClass::Squire));
+                    .unwrap_or((String::new(), CharacterClass::Hunter));
                 (pid.clone(), username, class, Uuid::now_v7().to_string())
             })
             .collect();
@@ -908,15 +908,15 @@ impl GameState {
                 .sessions
                 .get(pid)
                 .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone()))
-                .unwrap_or((CharacterClass::Squire, None, None));
+                .unwrap_or((CharacterClass::Hunter, None, None));
             // The builder's explicit composition wins (normalized to party size,
-            // padded with Squire); otherwise build a default mixed party around
+            // padded with Hunter); otherwise build a default mixed party around
             // the lead.
             let comp = match explicit {
                 Some(mut p) => {
                     p.truncate(party_size);
                     while p.len() < party_size {
-                        p.push(CharacterClass::Squire);
+                        p.push(CharacterClass::Hunter);
                     }
                     p
                 }
@@ -1075,11 +1075,11 @@ impl GameState {
             Some(mut p) if !p.is_empty() => {
                 p.truncate(size);
                 while p.len() < size {
-                    p.push(CharacterClass::Squire);
+                    p.push(CharacterClass::Hunter);
                 }
                 p
             }
-            _ => party_composition(CharacterClass::Squire, size),
+            _ => party_composition(CharacterClass::Hunter, size),
         }
     }
 
@@ -1228,7 +1228,7 @@ impl GameState {
             .collect();
         for (pid, party) in &members {
             if let Some(s) = self.sessions.get_mut(pid) {
-                s.character_class = party.first().copied().unwrap_or(CharacterClass::Squire);
+                s.character_class = party.first().copied().unwrap_or(CharacterClass::Hunter);
                 s.party_comp = Some(party.clone());
             }
             self.player_lobby.remove(pid);
@@ -1592,7 +1592,7 @@ impl GameState {
                 .iter()
                 .find(|r| &r.player_id == pid)
                 .map(|r| r.character_class)
-                .unwrap_or(CharacterClass::Squire);
+                .unwrap_or(CharacterClass::Hunter);
             let comp = inst
                 .party_classes
                 .get(pid)

@@ -2,11 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Character classes (CANON.md §G `CharacterClass`, D9). `squire` is the default.
+/// Character classes (CANON.md §G `CharacterClass`, D9). `hunter` is the default —
+/// the martial baseline that builds Adrenaline with basic attacks and spends it on
+/// its skills (see `Battle::resolve_skill`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CharacterClass {
-    Squire,
+    /// Martial baseline / default. Basic attacks bank Adrenaline; skills (Power
+    /// Strike, Second Wind, Snare, Frenzy) spend it. The
+    /// disposal-of-dangerous-creatures guild.
+    Hunter,
     Dragoon,
     Sage,
     Ranger,
@@ -16,6 +21,13 @@ pub enum CharacterClass {
     Psyker,
     /// Healer: spends its own HP to mend allies, grants Regen + Barrier.
     Resonant,
+    /// Rogue / fortune-hunter ("Runner"): fast, fragile, evasive. Armour-piercing
+    /// Backstab, a Flicker evasion blink, and Ransack (damage + ATB-gauge steal).
+    Shifter,
+    /// Order of the Iron Hull monk: a dense, slow front-line tank. Blunt kinetic
+    /// strikes that stagger (drain the enemy's ATB gauge), a Root stance that
+    /// grants Barrier, and Toll of the Deep — an all-enemy shockwave.
+    IronHull,
 }
 
 /// A combatant's category, deciding friend-vs-foe and disconnect rules.

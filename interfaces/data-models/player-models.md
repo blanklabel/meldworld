@@ -18,7 +18,7 @@ The persistent account. Owns exactly one Vault, three Meld Skills, its class unl
 | username | string (3–20 chars, pattern: `^[a-zA-Z0-9_]+$`) | Yes | No | — | v0.1 | No | The unique account name (CANON D17): the login identifier and the player-visible name shown in hubs, battles, and leaderboards. |
 | password_hash | string | Yes | No | — | v0.1 | No | bcrypt hash (cost 12 **[TUNABLE]**) of the account password, stored in Postgres (CANON D17, D18). Internal storage only — never serialized into any API response, realtime message, or log. |
 | created_at | string (date-time) | Yes | No | — | v0.1 | No | Timestamp of account creation. Server-assigned. |
-| unlocked_classes | array of string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | `["squire"]` | v0.1 | No | Character classes available to the account. `squire` is always present; every other class is added by acquiring the matching `ClassEmblem`. The launch set is a content placeholder and may be extended (CANON D9). |
+| unlocked_classes | array of string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | `["hunter"]` | v0.1 | No | Character classes available to the account. `hunter` is always present; every other class is added by acquiring the matching `ClassEmblem`. The launch set is a content placeholder and may be extended (CANON D9). |
 | active_title_id | string (uuid) | No | Yes | null | v0.1 | No | The `CosmeticTitle` currently displayed in the Hub. `null` when no title is equipped. |
 | active_aura_id | string (uuid) | No | Yes | null | v0.1 | No | The `PrestigeAura` currently displayed on the avatar. `null` when no aura is equipped. |
 
@@ -33,7 +33,7 @@ The persistent account. Owns exactly one Vault, three Meld Skills, its class unl
 
 - Invariant: `username` is unique across all accounts and immutable at v0.1.
 - Invariant: `password_hash` is never returned by any endpoint or message; the plaintext password is never persisted or logged (CANON D17). There is no email, OAuth, or 2FA at v0.1.
-- Invariant: `unlocked_classes` always contains `squire` and contains no duplicates.
+- Invariant: `unlocked_classes` always contains `hunter` and contains no duplicates.
 - Invariant: `active_title_id` / `active_aura_id`, when non-null, must reference a cosmetic owned by this player.
 - Combat stats are deliberately absent: combat level (`run_level`) is ephemeral per-run state, never account state (GDD §2.2, §4.1).
 
@@ -97,7 +97,7 @@ An account-level class-unlock item dropped by Gatekeeper Bosses (e.g. "Emblem of
 |-------|------|----------|----------|---------|-------|------------|-------------|
 | id | string (uuid) | Yes | No | — | v0.1 | No | The unique emblem identifier. Server-assigned UUIDv7. |
 | player_id | string (uuid) | Yes | No | — | v0.1 | No | The player whose account the unlock belongs to. |
-| character_class | string (enum: dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | The character class this emblem unlocks. `squire` never appears — it is the default class, not a drop. |
+| character_class | string (enum: dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | The character class this emblem unlocks. `hunter` never appears — it is the default class, not a drop. |
 | source_distance | integer (int64, ≥ 499) | Yes | No | — | v0.1 | No | The distance of the Gatekeeper arena that dropped the emblem. Always of the form `500k − 1`. |
 | acquired_at | string (date-time) | Yes | No | — | v0.1 | No | Timestamp when the emblem was granted. Server-assigned. |
 

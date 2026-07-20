@@ -510,7 +510,7 @@ Lists the caller's Training Ground build templates. Returns full objects (there 
 | data | array of object | No | v0.1 | No | The caller's templates. |
 | data[].template_id | string (uuid) | No | v0.1 | No | Unique template identifier. |
 | data[].name | string (1–48 chars) | No | v0.1 | No | Player-chosen template name. |
-| data[].class | string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | The character class this template targets. |
+| data[].class | string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | No | v0.1 | No | The character class this template targets. |
 | data[].allocations | object (map of string → integer int32, ≥ 0) | No | v0.1 | No | Content-defined combat stat key → skill point weight. Applied proportionally when the template is used at run start (points available depend on `base_run_level`). |
 | data[].created_at | string (date-time) | No | v0.1 | No | Creation timestamp. |
 | data[].updated_at | string (date-time) | No | v0.1 | No | Last replacement timestamp. |
@@ -541,7 +541,7 @@ Creates a build template. A player may hold at most **20** templates (spec defau
 | Field | Type | Required | Nullable | Default | Since | Deprecated | Description |
 |-------|------|----------|----------|---------|-------|------------|-------------|
 | name | string (1–48 chars) | Yes | No | — | v0.1 | No | Template display name. |
-| class | string (enum: squire, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | Target character class. The class need not be unlocked to save a template, but it must be unlocked to *use* it at run start. |
+| class | string (enum: hunter, dragoon, sage, ranger, alchemist_knight, bard) | Yes | No | — | v0.1 | No | Target character class. The class need not be unlocked to save a template, but it must be unlocked to *use* it at run start. |
 | allocations | object (map of string → integer int32, ≥ 0) | Yes | No | — | v0.1 | No | Stat key → point weight map. Unknown stat keys return 400 `validation_error`. |
 
 **Response** — `201 Created` — the created template object (same shape as list entries).

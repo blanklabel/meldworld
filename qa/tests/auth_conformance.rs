@@ -90,7 +90,7 @@ async fn register_login_me_and_enumeration_safety() {
     assert_eq!(me.status(), 200);
     let mv: Value = me.json().await.unwrap();
     assert_eq!(mv["username"], serde_json::json!(username));
-    assert_eq!(mv["class_unlocks"][0], "squire");
+    assert_eq!(mv["class_unlocks"][0], "hunter");
 
     // players/me without a token → 401.
     let anon = client

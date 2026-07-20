@@ -108,7 +108,7 @@ fn class_flag() -> Option<String> {
 }
 
 /// Pre-build the whole party (comma-separated class keys) without the builder.
-/// Native: `MELD_PARTY=squire,psyker,resonant,squire`. Browser: `?party=…`.
+/// Native: `MELD_PARTY=hunter,psyker,resonant,hunter`. Browser: `?party=…`.
 #[cfg(not(target_arch = "wasm32"))]
 fn party_flag() -> Option<String> {
     std::env::var("MELD_PARTY").ok().filter(|s| !s.is_empty())
@@ -407,7 +407,7 @@ struct Session {
     channeling: bool,
     status: String,
     /// The party the player built on the Join screen — one class key per hero
-    /// slot (wire form: "squire" / "psyker" / "resonant"). Sent on enter_maze.
+    /// slot (wire form: "hunter" / "psyker" / "resonant"). Sent on enter_maze.
     party: Vec<String>,
     /// Which party slot the builder cursor is on.
     party_cursor: usize,
@@ -424,12 +424,12 @@ impl Default for Session {
             entered: false,
             channeling: false,
             status: String::new(),
-            // A diverse default so newcomers see all three classes at once.
+            // A diverse default so newcomers see a spread of classes at once.
             party: vec![
-                "squire".into(),
+                "hunter".into(),
                 "psyker".into(),
                 "resonant".into(),
-                "squire".into(),
+                "hunter".into(),
             ],
             party_cursor: 0,
             coop: false,
@@ -642,6 +642,13 @@ fn order_side(kind: QueuedKind) -> Option<Side> {
             Some(Side::Ally)
         }
         QueuedKind::Skill("second_wind") => None,
+        // Shifter Flicker is a self-cast evasion blink (Backstab/Ransack hit an enemy
+        // via the default arm below).
+        QueuedKind::Skill("flicker") => None,
+        // Iron Hull: Root is a self-cast stance; Toll of the Deep is an all-enemy
+        // shockwave that needs no single target (Swell Strike / Kinetic Shock hit an
+        // enemy via the default arm below).
+        QueuedKind::Skill("root") | QueuedKind::Skill("toll_of_the_deep") => None,
         // Any other/unknown skill defaults to an offensive (enemy) target.
         QueuedKind::Skill(_) => Some(Side::Enemy),
         QueuedKind::Item(_) => Some(Side::Ally),
@@ -680,7 +687,7 @@ impl BattleData {
             .as_ref()
             .and_then(|a| self.view(a))
             .map(hero_class)
-            .unwrap_or_else(|| "squire".to_string())
+            .unwrap_or_else(|| "hunter".to_string())
     }
     /// Level of the active hero (for level-gated menus), default 1.
     fn active_level(&self) -> i32 {
@@ -770,12 +777,12 @@ fn parse_foci(statuses: &[String]) -> (usize, Vec<(String, u8)>) {
     (max, foci)
 }
 
-/// A hero's class key parsed from its wire statuses (`class:<key>`), default squire.
+/// A hero's class key parsed from its wire statuses (`class:<key>`), default hunter.
 fn hero_class(view: &CombatantView) -> String {
     view.statuses
         .iter()
         .find_map(|s| s.strip_prefix("class:"))
-        .unwrap_or("squire")
+        .unwrap_or("hunter")
         .to_string()
 }
 
@@ -797,6 +804,61 @@ fn resonant_autoplay_op(battle: &BattleData) -> QueuedKind {
         QueuedKind::Skill("transfuse")
     } else {
         QueuedKind::Attack
+    }
+}
+
+/// Hunter kit catalog: (wire kind, unlock level, Adrenaline cost). A display/autoplay
+/// mirror of balance `[battle] hunter_*_cost` + `meld_proto::skills` unlock levels —
+/// the server stays authoritative; this only steers the menu/autoplay.
+const HUNTER_SKILLS: [(&str, i32, i32); 4] = [
+    ("power_strike", 1, 40),
+    ("second_wind", 2, 35),
+    ("snare", 2, 30),
+    ("frenzy", 3, 80),
+];
+
+/// Autoplay heuristic for a Hunter hero: build Adrenaline with basic attacks, then
+/// release. Heal with Second Wind when badly hurt and it can afford it; otherwise if
+/// it has leveled into Frenzy it banks toward that big hit, else cashes in Power
+/// Strike as soon as it can afford it.
+fn hunter_autoplay_op(view: &CombatantView) -> QueuedKind {
+    let adr = status_num(&view.statuses, "adrenaline:");
+    let skill = |kind: &str| HUNTER_SKILLS.iter().find(|(k, _, _)| *k == kind).unwrap();
+    let (_, sw_lv, sw_cost) = *skill("second_wind");
+    let hurt = (view.hp as f32) < 0.4 * view.max_hp.max(1) as f32;
+    if hurt && view.level >= sw_lv && adr >= sw_cost {
+        return QueuedKind::Skill("second_wind");
+    }
+    let (_, frenzy_lv, frenzy_cost) = *skill("frenzy");
+    if view.level >= frenzy_lv {
+        // Save up, then unleash Frenzy.
+        return if adr >= frenzy_cost { QueuedKind::Skill("frenzy") } else { QueuedKind::Attack };
+    }
+    let (_, ps_lv, ps_cost) = *skill("power_strike");
+    if view.level >= ps_lv && adr >= ps_cost {
+        return QueuedKind::Skill("power_strike");
+    }
+    QueuedKind::Attack // build Adrenaline
+}
+
+/// Autoplay heuristic for a Shifter hero: blink (Flicker) to stay slippery when it
+/// has none active and has leveled into it, otherwise stab with the armour-piercing
+/// Backstab (falling back to a plain Attack before the skill unlocks at L1).
+fn shifter_autoplay_op(view: &CombatantView) -> QueuedKind {
+    let has_evasion = status_num(&view.statuses, "evasion:") > 0;
+    if !has_evasion && view.level >= meld_proto::skills::unlock_level("flicker") {
+        return QueuedKind::Skill("flicker");
+    }
+    QueuedKind::Skill("backstab")
+}
+
+/// Autoplay heuristic for an Iron Hull hero: smash with the heaviest kinetic strike
+/// it has unlocked — Kinetic Shock once available (L3), otherwise Swell Strike (L1).
+fn ironhull_autoplay_op(view: &CombatantView) -> QueuedKind {
+    if view.level >= meld_proto::skills::unlock_level("kinetic_shock") {
+        QueuedKind::Skill("kinetic_shock")
+    } else {
+        QueuedKind::Skill("swell_strike")
     }
 }
 
@@ -1012,9 +1074,42 @@ fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry
             v.push(e("Back", EntryAction::Back));
             v
         }
+        MenuLevel::Skills if class == "shifter" => {
+            let mut v = skill_entries(
+                &[
+                    ("Backstab", "backstab"),
+                    ("Flicker", "flicker"),
+                    ("Ransack", "ransack"),
+                ],
+                hero_level,
+            );
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
+        MenuLevel::Skills if class == "iron_hull" => {
+            let mut v = skill_entries(
+                &[
+                    ("Swell Strike", "swell_strike"),
+                    ("Root", "root"),
+                    ("Kinetic Shock", "kinetic_shock"),
+                    ("Toll of the Deep", "toll_of_the_deep"),
+                ],
+                hero_level,
+            );
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
+        // Hunter (the martial baseline / default). Its skills spend banked Adrenaline;
+        // the row is shown once unlocked by level, and the server rejects it if the
+        // Hunter can't yet afford the cost (the Adrenaline bar shows the running total).
         MenuLevel::Skills => {
             let mut v = skill_entries(
-                &[("Power Strike", "power_strike"), ("Second Wind", "second_wind")],
+                &[
+                    ("Power Strike", "power_strike"),
+                    ("Second Wind", "second_wind"),
+                    ("Snare", "snare"),
+                    ("Frenzy", "frenzy"),
+                ],
                 hero_level,
             );
             v.push(e("Back", EntryAction::Back));
@@ -1214,7 +1309,9 @@ fn overworld_camera_control(
 #[derive(Resource)]
 struct WorldAssets {
     psyker: CharacterFrames,
-    squire: CharacterFrames,
+    /// The martial sprite (used by the Hunter and any class without its own art).
+    /// The on-disk art folder is still named `Squire`.
+    hunter: CharacterFrames,
     sprite_quad: Handle<Mesh>,
     /// Cropped billboard showing only head→torso — the back-row "bust" (see
     /// [`hd2d::bust_billboard_mesh`]).
@@ -1514,9 +1611,9 @@ fn setup(
             "Scary_Walking",
             8,
         ),
-        squire: hd2d::load_character(
+        hunter: hd2d::load_character(
             &assets,
-            "characters/PSYKER_Male/Squire",
+            "characters/PSYKER_Male/Squire", // martial art folder (kept as-is)
             "Walking",
             8,
         ),
@@ -2235,7 +2332,7 @@ fn animate_water(
 }
 
 /// The classes the party builder cycles through.
-const PARTY_CLASSES: [&str; 3] = ["squire", "psyker", "resonant"];
+const PARTY_CLASSES: [&str; 5] = ["hunter", "psyker", "resonant", "shifter", "iron_hull"];
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
@@ -2320,11 +2417,11 @@ fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // Two martial squires hold the front; a Psyker + Resonant sit the back row.
-        hero("h1", 32, 1.0, "squire", false),
+        // Two martial hunters hold the front; a Psyker + Resonant sit the back row.
+        hero("h1", 32, 1.0, "hunter", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
-        hero("h4", 36, 0.75, "squire", false),
+        hero("h4", 36, 0.75, "hunter", false),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),
@@ -2365,13 +2462,13 @@ fn mock_battle_setup(
             statuses: vec![format!("class:{class}")],
         };
         battle.combatants.extend([
-            ally("a1", "ally_a", "Bram", "squire", 34, 0.5),
+            ally("a1", "ally_a", "Bram", "hunter", 34, 0.5),
             ally("a2", "ally_a", "Ivo", "psyker", 28, 0.2),
             ally("a3", "ally_a", "Sten", "resonant", 40, 0.9),
             ally("b1", "ally_b", "Wren", "psyker", 22, 0.7),
-            ally("b2", "ally_b", "Cael", "squire", 37, 0.35),
+            ally("b2", "ally_b", "Cael", "hunter", 37, 0.35),
             ally("c1", "ally_c", "Doon", "resonant", 31, 0.6),
-            ally("c2", "ally_c", "Fisk", "squire", 40, 0.15),
+            ally("c2", "ally_c", "Fisk", "hunter", 40, 0.15),
         ]);
     }
     // Pre-pick a target so the shimmering reticle is visible in a static screenshot
@@ -2431,7 +2528,7 @@ fn mock_overlay_setup(
             SkillLine { kind: "forging".into(), level: 2, xp: 130 },
             SkillLine { kind: "gatekeeping".into(), level: 1, xp: 20 },
         ];
-        prog.classes = vec!["squire".into(), "dragoon".into()];
+        prog.classes = vec!["hunter".into(), "dragoon".into()];
         overlay.kind = Some(OverlayKind::LevelUp);
     } else if levelup_anim_mockup_flag() {
         use meld_client::net::HeroLevelUpLine;
@@ -2440,7 +2537,7 @@ fn mock_overlay_setup(
         levelup.pending.extend([
             HeroLevelUpLine {
                 name: "Rurik".into(),
-                class_key: "squire".into(),
+                class_key: "hunter".into(),
                 level: 5,
                 max_hp: (52, 62),
                 str_: (24, 27),
@@ -2838,7 +2935,7 @@ fn join_input(
     mut class_q: Query<&mut Text, (With<ClassText>, Without<StatusText>)>,
 ) {
     // Build the party before connecting: keys 1-4 cycle each slot's class through
-    // Squire → Psyker → Resonant. Locked in once we start connecting.
+    // Hunter → Psyker → Resonant. Locked in once we start connecting.
     if !session.connecting {
         let slots = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
         for (slot, key) in slots.iter().enumerate() {
@@ -2887,7 +2984,9 @@ fn nice_class(key: &str) -> &'static str {
     match key {
         "psyker" => "Psyker",
         "resonant" => "Resonant",
-        _ => "Squire",
+        "shifter" => "Shifter",
+        "iron_hull" => "Iron Hull",
+        _ => "Hunter",
     }
 }
 
@@ -4243,8 +4342,8 @@ fn sync_overworld_sprites(
         match e.kind {
             EntityKind::Player => {
                 // We only know the local player's lead class (from their party);
-                // remote avatars fall back to the Squire.
-                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("squire");
+                // remote avatars fall back to the Hunter.
+                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("hunter");
                 spawn_player_avatar(
                     &mut commands,
                     &mut mats,
@@ -4719,10 +4818,10 @@ fn spawn_player_avatar(
         Color::srgb(0.85, 1.0, 1.3) // ally
     };
     // The overworld shows one avatar per player; pick its sprite from the lead
-    // class (Resonant has no sprite yet → the Squire stands in).
+    // class (only the Psyker has bespoke art → everyone else uses the martial sprite).
     let frames = match class {
         "psyker" => &wa.psyker,
-        _ => &wa.squire,
+        _ => &wa.hunter,
     };
     let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
     let root = world_pos(e.x, e.y, 0.0);
@@ -5340,10 +5439,10 @@ fn spawn_hero_actor(
         .statuses
         .iter()
         .find_map(|s| s.strip_prefix("class:"))
-        .unwrap_or("squire");
+        .unwrap_or("hunter");
     let frames = match class {
         "psyker" => &wa.psyker,
-        _ => &wa.squire,
+        _ => &wa.hunter,
     };
     let base_tint = Color::srgb(1.2, 1.18, 1.08);
     let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
@@ -6079,10 +6178,13 @@ fn menu_keyboard(
         for h in idle {
             // Each hero autoplays by its own class: Psyker channels Foci, Resonant
             // mends the party, everyone else swings — each at a sensible default target.
-            let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "squire".into());
+            let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "hunter".into());
             let kind = match hc.as_str() {
                 "psyker" => battle.view(&h).map(psyker_autoplay_op).unwrap_or(QueuedKind::Hold),
                 "resonant" => resonant_autoplay_op(&battle),
+                "shifter" => battle.view(&h).map(shifter_autoplay_op).unwrap_or(QueuedKind::Attack),
+                "hunter" => battle.view(&h).map(hunter_autoplay_op).unwrap_or(QueuedKind::Attack),
+                "iron_hull" => battle.view(&h).map(ironhull_autoplay_op).unwrap_or(QueuedKind::Attack),
                 _ => QueuedKind::Attack,
             };
             let target = default_target(&battle, kind);
@@ -6896,13 +6998,27 @@ fn party_cell(
                         ));
                     });
                 });
-                // Line 2: HP bar with the number inside (+ Barrier suffix if any).
+                // Line 2: HP bar with the number inside, plus status suffixes when
+                // present — Barrier ◆, Regen /t, Evasion ~%, Adrenaline ⚡ (the
+                // action tag already rides Line 1, so it isn't repeated here).
                 let barrier = status_num(&c.statuses, "barrier:");
-                let hp_label = if barrier > 0 {
-                    format!("{}/{}  +{barrier}", c.hp, c.max_hp)
-                } else {
-                    format!("{}/{}", c.hp, c.max_hp)
-                };
+                let regen = status_num(&c.statuses, "regen:");
+                let evasion = status_num(&c.statuses, "evasion:");
+                let mut hp_label = format!("{}/{}", c.hp, c.max_hp);
+                if barrier > 0 {
+                    hp_label.push_str(&format!("  +{barrier}\u{25c6}")); // ◆ = Barrier
+                }
+                if regen > 0 {
+                    hp_label.push_str(&format!("  +{regen}/t")); // Regen per turn
+                }
+                if evasion > 0 {
+                    hp_label.push_str(&format!("  ~{evasion}%")); // ~ = Evasion (dodge)
+                }
+                let adrenaline_max = status_num(&c.statuses, "adrenaline_max:");
+                if adrenaline_max > 0 {
+                    let adr = status_num(&c.statuses, "adrenaline:");
+                    hp_label.push_str(&format!("  \u{26a1}{adr}/{adrenaline_max}")); // ⚡ = Adrenaline
+                }
                 meter_labeled(col, hp_frac, 15.0, Color::srgb(0.35, 0.6, 0.95), hp_label);
                 // Line 3: ATB bar — flares gold-white the instant the gauge fills.
                 let atb_fill = lerp_color(
@@ -7210,9 +7326,9 @@ mod tests {
         BattleData {
             your_ids: vec!["h1".into(), "h2".into()],
             combatants: vec![
-                cv("h1", true, 40, 40, &["class:squire"]),
+                cv("h1", true, 40, 40, &["class:hunter"]),
                 cv("h2", true, 12, 40, &["class:resonant"]), // most wounded ally
-                cv("ally", true, 30, 40, &["class:squire"]), // joined co-op hero
+                cv("ally", true, 30, 40, &["class:hunter"]), // joined co-op hero
                 cv("m1", false, 100, 100, &["faction:beast"]),
                 cv("m2", false, 40, 100, &["faction:beast"]),
             ],
