@@ -88,12 +88,13 @@ impl Default for Look {
                            // the followed hero (focus tracks cam_dist) + near play stay sharp
             bloom: 0.4, // warm HDR glow — lets emissives (portals, node glows, fiery mobs) read
             // Fog hugs the walkable corridor so you can't see off into an endless
-            // plain: the clearing (±lateral ≈ 28) stays crisp, the border thicket
-            // sits around fog start, and everything past it fades into misty depth.
-            // Pulled in from 40/115 so the far distance is occluded before you can
-            // see open ground beyond the enclosing edge.
-            fog_start: 30.0,
-            fog_end: 78.0,
+            // plain, but is loose enough forward that the NEXT biome fades into view
+            // ahead of you as you approach a border (the ground cross-fades by world
+            // position — see `GroundBiome`). The border thicket still walls the sides;
+            // this just lets you read the corridor ahead. (Was 30/78 in #40 — too tight
+            // to see a biome coming; nudged out so the transition is legible.)
+            fog_start: 42.0,
+            fog_end: 118.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
@@ -751,7 +752,11 @@ pub fn water_ripple_texture(size: u32) -> Image {
             data[i] = (l * 0.7 * 255.0) as u8;
             data[i + 1] = (l * 0.88 * 255.0) as u8;
             data[i + 2] = (l * 255.0) as u8;
-            data[i + 3] = 210 + (hi / 6);
+            // Near-opaque: a pool should read as (glassy) water, not a translucent
+            // film that lets the green grass beneath show through in the ripple
+            // troughs. Keep a sliver of translucency for depth; the low roughness +
+            // sky-sheen emissive carry the "water" read via specular, not see-through.
+            data[i + 3] = (243u16 + hi as u16 / 8).min(255) as u8;
         }
     }
     make_tex(s, data, true)
