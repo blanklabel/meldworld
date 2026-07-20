@@ -1285,25 +1285,43 @@ impl GameState {
             intent.input_seq,
         );
 
-        // Touching a free creature starts a NEW battle — independent battles run
-        // concurrently, so one party's fight no longer blocks another's. A player
-        // already in a fight isn't `active` (so `check_touch` skips them), and a
-        // creature already in someone's fight is `in_battle` (also skipped), so a
-        // touch is always a fresh, un-owned encounter. A teammate who wants to help
-        // an ongoing fight opts in explicitly with `run.join_battle` instead.
-        let decision = match inst.arena.check_touch() {
-            Some((toucher, monster_idx)) => inst
-                .run
-                .runs
-                .iter()
-                .find(|r| r.player_id == toucher)
-                .map(|r| (toucher, r.party_id, monster_idx)),
-            None => None,
-        };
-        match decision {
-            Some((toucher, pid, monster_idx)) => self.start_battle(&toucher, pid, monster_idx),
-            None => Vec::new(),
+        // Contact starts a battle. Checked here for an instant response to the
+        // player's own move, and again every tick (see `tick`) so a creature that
+        // walks into a *stationary* player also triggers the fight — otherwise
+        // standing still made you immune to an aggressive creature closing on you.
+        self.resolve_touches()
+    }
+
+    /// Start a fresh battle for every active avatar currently in contact with a free
+    /// creature. Loops because several players can be touched in the same tick;
+    /// `start_battle` flips the toucher's avatar and its creature to `in_battle`, so
+    /// each pass resolves a distinct contact and the loop drains in ≤ (avatars)
+    /// passes. Independent battles run concurrently — one party's fight never blocks
+    /// another's — and teammates still opt into an *ongoing* fight via `join_battle`.
+    fn resolve_touches(&mut self) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let max_passes = self
+            .instance
+            .as_ref()
+            .map(|i| i.arena.avatars.len())
+            .unwrap_or(0);
+        for _ in 0..max_passes {
+            let Some(inst) = self.instance.as_ref() else { break };
+            let decision = inst.arena.check_touch().and_then(|(toucher, monster_idx)| {
+                inst.run
+                    .runs
+                    .iter()
+                    .find(|r| r.player_id == toucher)
+                    .map(|r| (toucher, r.party_id, monster_idx))
+            });
+            match decision {
+                Some((toucher, pid, monster_idx)) => {
+                    out.extend(self.start_battle(&toucher, pid, monster_idx))
+                }
+                None => break,
+            }
         }
+        out
     }
 
     fn start_battle(&mut self, toucher: &str, party_id: u32, monster_idx: usize) -> Vec<Outgoing> {
@@ -2217,6 +2235,11 @@ impl GameState {
         // Ground loot dropped by creature-vs-creature kills, auto-collected by any
         // roaming player who walks over it.
         out.extend(self.collect_ground_loot());
+
+        // 1b) Creatures moved this tick (step_creatures), so a creature may have
+        // closed onto a stationary player. Start any contact battles now — otherwise
+        // an aggressive creature could reach you and just sit there until you moved.
+        out.extend(self.resolve_touches());
 
         // 2) Advance every active battle independently, for the parties fighting it.
         // Concurrent battles: separate groups fight different encounters at once, so
