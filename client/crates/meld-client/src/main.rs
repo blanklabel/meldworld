@@ -7232,7 +7232,10 @@ fn sync_battle_actors(
         // The up-screen row is the one cropped to a bust so it tucks behind cleanly.
         let x = (i as f32 - (n - 1.0) * 0.5) * 2.7;
         let z = if back { 3.7 } else { 2.7 };
-        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), !back);
+        // Full sprites for everyone: the head→torso "bust" crop dropped the legs +
+        // shadow, so cropped heroes read as floating torsos ("hovering"). Render
+        // the whole body grounded instead.
+        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -8752,7 +8755,10 @@ fn render_party_window(
                 left: Val::Px(10.0),
                 right: Val::Px(10.0),
                 bottom: Val::Px(10.0),
-                height: Val::Px(74.0), // compact: name + HP bar + ATB bar (~3 lines)
+                // Tall enough for 4 lines: name + HP + ATB + the Psyker's Focus-slot
+                // row. At 74px the Focus row overflowed and clipped the ATB bar, so
+                // a Psyker's gauge looked like it never filled.
+                height: Val::Px(92.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
                 ..default()
