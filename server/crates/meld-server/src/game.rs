@@ -635,6 +635,19 @@ impl GameState {
         }
     }
 
+    /// A player's run has ended (extracted or died): release them so they can
+    /// dive again from the hub. Clears the session's in-instance flag and drops
+    /// their run/avatar/bookkeeping from the shared instance (tearing the
+    /// instance down if they were the last one). Without this, `in_instance`
+    /// stays `true` after a run ends and the next `enter_maze` is rejected with
+    /// "A run is already active for you." — the extract-or-die loop can't close.
+    fn release_from_run(&mut self, player_id: &str) {
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            s.in_instance = false;
+        }
+        self.remove_from_instance(player_id);
+    }
+
     fn handle_client(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         // Per-session monotonic seq check (realtime-protocol.md §Sequencing).
         {
@@ -2209,6 +2222,9 @@ impl GameState {
         let db = self.db.clone();
         let alchemy_per = self.balance.meld.alchemy_xp_per_extracted_stack;
         let mut out = Vec::new();
+        // Players who extracted this pass — released from the instance after
+        // banking so they can dive again from the hub (see `release_from_run`).
+        let banked_pids: Vec<String> = banks.iter().map(|b| b.player_id.clone()).collect();
         for b in banks {
             let items_kv: Vec<(String, i32)> = b
                 .items
@@ -2284,6 +2300,9 @@ impl GameState {
                     },
                 ));
             }
+        }
+        for pid in &banked_pids {
+            self.release_from_run(pid);
         }
         out
     }
@@ -2948,7 +2967,10 @@ impl GameState {
         }
         inst.battles.retain(|b| b.battle_id != battle_id);
         for pid in dead {
-            let _ = self.db_writes.send(DbWrite::Death(pid));
+            let _ = self.db_writes.send(DbWrite::Death(pid.clone()));
+            // The run is over: release the player from the instance so they can
+            // dive again from the hub (see `release_from_run`).
+            self.release_from_run(&pid);
         }
         // Announce level-ups (classic stat-gain screen) then refresh the party
         // panel for anyone who leveled up (stats changed).

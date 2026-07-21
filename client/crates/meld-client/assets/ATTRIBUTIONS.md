@@ -15,6 +15,25 @@ billboards.
 - License: Creative Commons Zero (CC0)
 - Format: glTF (`.glb`); each model's spawn scale is baked from its bounding box.
 
+## `models/fantasy-town/`, `models/graveyard/`, `models/pirate/` — the hub city  (CC0)
+
+Low-poly 3D kits from **Kenney**, all licensed **CC0 (public domain)** — free for
+commercial use, attribution not required. They build **The Weld**, the walkable hub
+city (`Screen::City`; see `CITY-PROPOSAL.md`): the New Weird "last city" is welded
+together from a fantasy-town core, graveyard/crypt uncanny, and pirate salvage.
+
+- **Fantasy Town Kit** — https://kenney.nl/assets/fantasy-town-kit — stalls, cart,
+  fountain, lanterns, the Threshold archway, modular walls/roofs.
+- **Graveyard Kit** — https://kenney.nl/assets/graveyard-kit — crypts (district
+  buildings), gravestones (the Vanguard Wall), fire-basket, iron fences, and the
+  keeper/ghost/skeleton dwellers.
+- **Pirate Kit** — https://kenney.nl/assets/pirate-kit — the beached ship-wreck +
+  dock the city is salvaged from, chests, barrels, crates.
+- License: Creative Commons Zero (CC0).
+- Format: glTF (`.glb`); each kit's shared `Textures/colormap.png` is kept beside
+  its models (the GLBs reference it by relative path). Spawn scales are eyeballed
+  per model in `CITY_PROPS` (client `main.rs`).
+
 ## `monsters/` — creature billboards  (public domain)
 
 Pixel-art tiles from **Dungeon Crawl Stone Soup** (`rltiles`), which is **public
