@@ -1,8 +1,10 @@
 # Worldgen (Epic WG) — research spike + what shipped
 
 > Status: **WG-2 + WG-3 SHIPPED** (seeded biome randomization + first-run tutorial
-> carve-out); **WG-1 (dungeons) and WG-4 (radial) DESIGNED + DEFERRED** with the
-> recommended approach below. Tracked as epic **WG** in [`../ROADMAP.md`](../ROADMAP.md).
+> carve-out); **WG-1 SHIPPED as dungeon sections** and **WG-4 SHIPPED as the western
+> return-to-city anchor** — the full separately-instanced dungeons and 350° 2-D radial
+> streaming remain (see "what shipped" below). Tracked as epic **WG** in
+> [`../ROADMAP.md`](../ROADMAP.md).
 > Written against the real generator: `meld-world::Arena` / `section_biome` /
 > `push_section`, `meld-server::game.rs` (`form_run`), and the `has_dived` account
 > flag in `meld-db`.
@@ -88,18 +90,28 @@ randomized run a "Forest→Desert pass" label may sit inside a section that's ac
 biome. The wall is functionally correct (gap always on the clear path); only the label is
 cosmetic. Fix later by labelling the seam from the actual adjacent-section biomes.
 
-## Deferred, with the recommended approach
+## WG-1 + WG-4: what shipped (slices) and what remains
 
-- **WG-1 — Dungeons.** Implement **BSP room-and-corridor**, seeded
-  `section_seed(run_seed, dungeon_id)`, place start+exit leaves first (connectivity by
-  construction), difficulty = the entrance's overworld distance via existing
-  `mlevel`/`stat_mult`. Entrance is a portal-like entity; a dungeon is an off-corridor
-  sub-section. Ship BSP before any CA/grammar variety.
-- **WG-4 — Radial 350° + city to the west.** Keep Cartesian section storage; add a
-  **radial difficulty read** (`distance = hypot(pos − hub)`) instead of pure-x when you want
-  the arc. The wall-as-safe-return is an impassable hub-edge boundary the player can always
-  re-cross into Last City, mirroring how the clear-path already guarantees a feasible route.
-  **Do not** re-architect into polar chunks.
+**WG-1 — dungeon sections (shipped).** Rather than the full separately-instanced dungeon
+(which needs the multi-instance work the current one-shared-instance slice doesn't have), we
+ship dungeons as **sections**: every `dungeon_every`-th procedural section lays out
+`dungeon_rooms − 1` divider walls, each leaving one **door on the clear path** — so it reads
+as a chain of rooms, connectivity is guaranteed by construction (the door sits on the
+already-carved path, exactly the spike's "place the exit first / connectivity by construction"
+idea, achieved via the proven clear-path instead of BSP leaves), creatures pack denser, and
+the final room holds a **guaranteed loot chest**. Difficulty rides `distance` as always; the
+whole thing renders through the normal obstacle/creature path, so **zero client work**.
+Unit-tested (existence, walls + chest, path stays feasible through the doors, determinism,
+never in tutorial/spawn). *Remaining:* the portal-into-a-separate-instance dungeon + mini-boss,
+and true BSP rooms, once instances are per-party.
+
+**WG-4 — the western anchor (shipped).** Crossing `west_return_border` behind the hub returns
+you to **Last City** — the run is *abandoned* (backpack forfeited, no death penalty). Near
+spawn there's nothing to lose; from deep, the long walk back west is impractical, so it's
+never a free extraction. Reuses the existing run-end path (`RunResult::Abandoned` → the client's
+generic member-result → City). *Remaining:* the full ~350° arc (true 2-D radial streaming — keep
+**Cartesian storage** and add a **radial difficulty read** `hypot(pos − hub)`; **do not** store
+polar chunks) and a west-wall visual.
 
 ## Explicitly avoided as over-engineering (for now)
 Full biome permutation (breaks monotonic difficulty), polar/angular chunk storage,

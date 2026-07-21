@@ -199,12 +199,15 @@ Spec: [`behaviors/world-generation.md`](behaviors/world-generation.md) (radial
 distance model, biome bands, per-section streaming, verticality). Research +
 design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
-- [ ] **WG-1 — Dungeons.** Discrete, enterable sub-spaces off the overworld
-  (hand-flavored, denser encounters/loot, maybe a mini-boss) distinct from the
-  open corridor. **Designed, not built** — the spike recommends BSP room-and-corridor
-  (seeded `section_seed(run_seed, dungeon_id)`, exit leaf placed first for guaranteed
-  connectivity, difficulty = entrance's overworld distance). See
-  [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); new `behaviors/dungeons.md`
+- [ ] **WG-1 — Dungeons.** 🟡 *Shipped as dungeon sections:* every Nth procedural
+  section is now a **dungeon** — rooms divided by walls with a single door on the
+  clear path (connectivity guaranteed by construction, like a biome seam), packed
+  denser with creatures and ending in a **guaranteed loot chest**, all rendered by
+  the normal obstacle/creature path (`meld-world`, `[worldgen] dungeon_*`, unit-tested).
+  **Remaining:** the *separately-instanced* "walk through a portal into a discrete
+  sub-space" version + a mini-boss — that needs the multi-instance work (the current
+  slice is one shared instance). BSP room-and-corridor + `behaviors/dungeons.md`
+  when that lands. See
   when built.
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
@@ -221,12 +224,15 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   **right back into the city** — the one permanent, safe anchor in a world that
   worsens in every other direction. Establishes the city↔maze boundary as a
   walkable seam (ties LC-1's presence loop to the maze exit; reframes the current
-  Threshold entry). **Designed, not built** — the spike recommends keeping Cartesian
-  section storage and adding a *radial difficulty read* (`distance = hypot(pos − hub)`)
-  rather than re-architecting into polar chunks; the wall-as-return is an impassable
-  hub-edge boundary you can re-cross into Last City. See
-  [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
-  [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
+  Threshold entry). 🟡 *Shipped the anchor:* crossing the **western border** behind
+  the hub (`[worldgen] west_return_border`) now returns you to Last City — the run is
+  abandoned (backpack forfeited, no death penalty; near spawn there's nothing to lose,
+  from deep the long walk back is impractical, so it's never a free extraction). The
+  client routes the `abandoned` result to the City screen. **Remaining:** the full
+  ~350° arc needs true 2-D radial streaming (the spike says keep Cartesian storage +
+  a *radial difficulty read* `hypot(pos − hub)`; do **not** store polar chunks) and a
+  west-wall visual. See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold
+  into [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
 
 ---
 
