@@ -2343,7 +2343,7 @@ impl GameState {
         };
         // Deterministic per (chest, player); the chest can only be opened once.
         let seed = inst.arena.seed ^ hash_str(&req.entity_id) ^ hash_str(player_id);
-        let loot = meld_world::roll_creature_loot(&balance, distance, CHEST_RICHNESS, seed);
+        let loot = meld_world::roll_creature_loot(&balance, distance, CHEST_RICHNESS, 1.0, seed);
         let loot_item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
             item_kind: loot.material.to_string(),
@@ -3072,11 +3072,23 @@ impl GameState {
                 // like the Town Portal roll (instance ⊕ player ⊕ clock).
                 let loot_distance = battle_pos.distance_floor();
                 let monster_count = monster_ids.len() as i32;
+                // FS-4: the reward spike — the fattest encounter class among the felled
+                // creatures drives the loot multiplier (gatekeeper > elite > standard).
+                let loot_mult = monster_ids
+                    .iter()
+                    .filter_map(|id| inst.arena.monster_by_id(id))
+                    .map(|m| match m.encounter_class.as_str() {
+                        "gatekeeper" => balance.encounters.gatekeeper_loot_mult,
+                        "elite" => balance.encounters.elite_loot_mult,
+                        _ => 1.0,
+                    })
+                    .fold(1.0_f64, f64::max);
                 for (pid, run_level, _xp) in &runs_snapshot {
                     let loot = meld_world::roll_creature_loot(
                         &balance,
                         loot_distance,
                         monster_count,
+                        loot_mult,
                         inst.arena.seed ^ hash_str(pid) ^ now_ms(),
                     );
                     let loot_item = ItemStack {

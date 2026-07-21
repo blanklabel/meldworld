@@ -186,6 +186,22 @@ gear_atk_per_tier = 3.0
 gear_atk_jitter = 0.4
 gear_base_durability = 80
 
+# Encounter variety (FS-4). Most creatures are Standard; a fraction roll ELITE
+# (champions — tougher, richer loot), and a GATEKEEPER guards each biome-band
+# border (a big unavoidable boss with a guaranteed haul). Difficulty still rides
+# distance; these multiply on top. Elite/gatekeeper mobs are marked on the wire
+# (encounter_class) so the client sizes + tints them distinctly. [TUNABLE]
+[encounters]
+elite_chance = 0.11              # fraction of standard creatures promoted to Elite
+elite_hp_mult = 2.4              # Elite HP vs a standard creature at the same distance
+elite_atk_mult = 1.35
+elite_xp_mult = 3.0
+elite_loot_mult = 3.0            # chits ×, and boosts the gear-drop chance
+gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the party over a merge
+gatekeeper_atk_mult = 1.6
+gatekeeper_xp_mult = 9.0
+gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
+
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill
 # curves + recipe XP are content tables. [TUNABLE]

@@ -5755,7 +5755,14 @@ fn sync_overworld_sprites(
                     }
                     _ => base,
                 };
-                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, 1.6, tint, 0.55);
+                // FS-4: elites and gatekeepers read at a glance — bigger and menacingly
+                // tinted (a gatekeeper towers; an elite is a hot-glowing champion).
+                let (size, tint) = match e.encounter_class.as_deref() {
+                    Some("gatekeeper") => (1.6 * 2.2, Color::srgb(1.7, 0.45, 0.5)),
+                    Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
+                    _ => (1.6, tint),
+                };
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55);
             }
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so

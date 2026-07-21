@@ -210,23 +210,28 @@ pub fn roll_creature_loot(
     balance: &Balance,
     distance: i64,
     monster_count: i32,
+    loot_mult: f64,
     seed: u64,
 ) -> CreatureLoot {
     let mut rng = Rng(seed);
     let sc = Scaling::new(balance);
     let l = &balance.loot;
-    // Chits scale with monster level × encounter size, with symmetric jitter.
+    // Chits scale with monster level × encounter size, with symmetric jitter. The
+    // `loot_mult` is the encounter reward spike (1.0 standard; > 1 for elites /
+    // gatekeepers — it fattens the chit haul and the gear-drop chance, FS-4).
     let jitter = 1.0 + rng.signed() * l.chits_jitter;
     let chits = (l.chits_per_mlevel
         * sc.mlevel(distance) as f64
         * monster_count.max(1) as f64
-        * jitter)
+        * jitter
+        * loot_mult.max(0.0))
         .round()
         .max(0.0) as i64;
     let material = combat_material_for_biome(distance);
-    // Red-chest gear only generates at/after the red-chest floor (tier 3, d 300).
+    // Red-chest gear only generates at/after the red-chest floor (tier 3, d 300);
+    // a reward spike boosts (and can guarantee) the drop.
     let gear = if distance >= balance.world_scaling.red_chest_floor_distance
-        && rng.unit() < l.gear_drop_chance
+        && rng.unit() < (l.gear_drop_chance * loot_mult.max(0.0)).min(1.0)
     {
         let tier = sc.tier(distance) as i32;
         let slot = ["weapon", "armor", "accessory"][rng.below(3)];
@@ -503,6 +508,18 @@ impl MonsterSpawn {
             skirmish_cd: 0.0,
             rng: seed | 1,
         }
+    }
+
+    /// Promote a fresh standard spawn to an Elite champion or a Gatekeeper boss
+    /// (FS-4): scale its HP/atk/XP and tag the encounter class — which drives the
+    /// loot multiplier on the kill, the battle merge cap, and the client's size +
+    /// tint. Call once, on a standard spawn.
+    fn promote(&mut self, hp_mult: f64, atk_mult: f64, xp_mult: f64, class: &str) {
+        self.max_hp = ((self.max_hp as f64) * hp_mult).round().max(1.0) as i32;
+        self.hp = self.max_hp;
+        self.atk = ((self.atk as f64) * atk_mult).round().max(1.0) as i32;
+        self.xp_reward = ((self.xp_reward as f64) * xp_mult).round().max(0.0) as i64;
+        self.encounter_class = class.to_string();
     }
 }
 
@@ -894,6 +911,11 @@ impl Arena {
         };
         let inner_end = end_x - wg.portal_setback - 1.0;
         let mut x = start_x + 2.0;
+        // FS-4: a fraction of creatures roll ELITE (champions). A SEPARATE rng stream
+        // so the main placement draws stay byte-identical (determinism tests hold).
+        // Never in the spawn section (i == 0), which stays gentle onboarding.
+        let enc = &balance.encounters;
+        let mut erng = Rng(section_seed(self.seed_base, i) ^ 0xE117_E117_E117_E117);
         while x < inner_end {
             let kind = kinds[rng.below(kinds.len())];
             let y = wg.creature_lateral_spread * rng.signed();
@@ -904,6 +926,14 @@ impl Arena {
                 .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
+            if i > 0 && !self.tutorial && erng.unit() < enc.elite_chance {
+                self.monsters[idx].promote(
+                    enc.elite_hp_mult,
+                    enc.elite_atk_mult,
+                    enc.elite_xp_mult,
+                    "elite",
+                );
+            }
 
             let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
             x += gap.max(2.0);
@@ -1123,6 +1153,25 @@ impl Arena {
                 biome_from: from,
                 biome_to: to,
             });
+            // FS-4: a GATEKEEPER boss stands in the door — a big, unavoidable fight
+            // guarding the pass into the next region, with a fat guaranteed reward.
+            // Not on the tutorial run (a new player's first dive stays gentle).
+            if self.tutorial {
+                continue;
+            }
+            let gk_pos = Position::new(bd, path_y_at(&self.path, bd));
+            let gidx = self.monsters.len();
+            let gseed = section_seed(self.seed_base, i) ^ (0x6A7E_0000_0000_0000 | bd as u64);
+            self.monsters
+                .push(MonsterSpawn::build(balance, format!("mob-{gidx}"), kinds[0], gk_pos, gseed));
+            self.monsters[gidx].area_min_x = start_x;
+            self.monsters[gidx].area_max_x = end_x;
+            self.monsters[gidx].promote(
+                enc.gatekeeper_hp_mult,
+                enc.gatekeeper_atk_mult,
+                enc.gatekeeper_xp_mult,
+                "gatekeeper",
+            );
         }
 
         // Every biome is a MAZE: pack the play area with extra impassable props so
@@ -1872,14 +1921,14 @@ mod tests {
         let b = Balance::load_default().unwrap();
         // Same seed ⇒ identical loot (pure function).
         assert_eq!(
-            roll_creature_loot(&b, 50, 1, 12345),
-            roll_creature_loot(&b, 50, 1, 12345)
+            roll_creature_loot(&b, 50, 1, 1.0, 12345),
+            roll_creature_loot(&b, 50, 1, 1.0, 12345)
         );
         // Forest keeps the crafting/conformance material id.
-        assert_eq!(roll_creature_loot(&b, 10, 1, 1).material, "forest_bloom_petal");
+        assert_eq!(roll_creature_loot(&b, 10, 1, 1.0, 1).material, "forest_bloom_petal");
         // Deeper fights pay more chits on average (sample a few seeds).
-        let shallow: i64 = (0..16).map(|s| roll_creature_loot(&b, 40, 1, s).chits).sum();
-        let deep: i64 = (0..16).map(|s| roll_creature_loot(&b, 800, 1, s).chits).sum();
+        let shallow: i64 = (0..16).map(|s| roll_creature_loot(&b, 40, 1, 1.0, s).chits).sum();
+        let deep: i64 = (0..16).map(|s| roll_creature_loot(&b, 800, 1, 1.0, s).chits).sum();
         assert!(deep > shallow, "deeper creatures should drop more chits");
     }
 
@@ -1889,12 +1938,12 @@ mod tests {
         let floor = b.world_scaling.red_chest_floor_distance;
         // Below the floor: no gear across many seeds.
         for s in 0..200 {
-            assert!(roll_creature_loot(&b, floor - 1, 1, s).gear.is_none());
+            assert!(roll_creature_loot(&b, floor - 1, 1, 1.0, s).gear.is_none());
         }
         // At/after the floor: gear does appear for some seeds, at the right tier.
         let mut saw_gear = false;
         for s in 0..200 {
-            if let Some(g) = roll_creature_loot(&b, floor, 1, s).gear {
+            if let Some(g) = roll_creature_loot(&b, floor, 1, 1.0, s).gear {
                 saw_gear = true;
                 assert_eq!(g.tier, 3, "tier(300) = 3");
                 assert!(g.max_durability > 0);
@@ -2678,5 +2727,69 @@ mod tests {
             (a.areas.iter().map(|x| x.dungeon).collect(), a.obstacles.len(), a.chests.len())
         };
         assert_eq!(sig(55), sig(55), "same seed reproduces the same dungeons + walls");
+    }
+
+    // ---- FS-4: Elite champions + Gatekeeper bosses ----
+
+    #[test]
+    fn promote_scales_stats_and_tags_the_encounter_class() {
+        let b = Balance::load_default().unwrap();
+        let base = MonsterSpawn::build(&b, "m".into(), "forest_bloom_stalker", Position::new(50.0, 0.0), 1);
+        let mut elite = base.clone();
+        elite.promote(2.0, 1.5, 3.0, "elite");
+        assert_eq!(elite.encounter_class, "elite");
+        assert_eq!(elite.max_hp, base.max_hp * 2);
+        assert_eq!(elite.hp, elite.max_hp, "promoted spawn is at full HP");
+        assert!(elite.atk > base.atk && elite.xp_reward > base.xp_reward);
+    }
+
+    #[test]
+    fn gatekeepers_guard_biome_borders_and_are_a_wall_of_hp() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 7, false);
+        a.ensure_frontier(&b, 400.0); // cross the 100 + 300 borders
+        let gks: Vec<_> = a.monsters.iter().filter(|m| m.encounter_class == "gatekeeper").cloned().collect();
+        assert!(!gks.is_empty(), "a gatekeeper guards each crossed border");
+        for gk in &gks {
+            // Compare to a standard creature of the same kind at the same spot.
+            let std_hp = MonsterSpawn::build(&b, "s".into(), &gk.monster_kind, gk.position, 1).max_hp;
+            assert!(gk.max_hp > std_hp * 3, "gatekeeper is a real fight: {} vs {}", gk.max_hp, std_hp);
+        }
+    }
+
+    #[test]
+    fn elites_appear_among_mostly_standard_creatures() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 3, false);
+        a.ensure_frontier(&b, 500.0);
+        let elites = a.monsters.iter().filter(|m| m.encounter_class == "elite").count();
+        let standard = a.monsters.iter().filter(|m| m.encounter_class == "standard").count();
+        assert!(elites > 0, "some creatures are elite champions");
+        assert!(standard > elites, "but most creatures are still standard");
+    }
+
+    #[test]
+    fn the_tutorial_run_has_no_elites_or_gatekeepers() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 9, true);
+        a.ensure_frontier(&b, 400.0);
+        assert!(a.monsters.iter().all(|m| m.encounter_class == "standard"),
+            "a new player's first dive stays gentle");
+    }
+
+    #[test]
+    fn a_reward_spike_fattens_the_loot() {
+        // Same seed: a gatekeeper's loot_mult yields far more chits + a surer gear drop.
+        let b = Balance::load_default().unwrap();
+        let d = 600; // past the red-chest floor
+        let standard: i64 = (0..24).map(|s| roll_creature_loot(&b, d, 1, 1.0, s).chits).sum();
+        let boss: i64 = (0..24)
+            .map(|s| roll_creature_loot(&b, d, 1, b.encounters.gatekeeper_loot_mult, s).chits)
+            .sum();
+        assert!(boss > standard * 4, "a gatekeeper pays out far more: {boss} vs {standard}");
+        let boss_gear = (0..24)
+            .filter(|&s| roll_creature_loot(&b, d, 1, b.encounters.gatekeeper_loot_mult, s).gear.is_some())
+            .count();
+        assert!(boss_gear >= 20, "a gatekeeper almost always drops gear: {boss_gear}/24");
     }
 }
