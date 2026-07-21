@@ -232,6 +232,100 @@ Make time in the field a living, dangerous place worth screenshotting.
   and the source of **class-emblem** drops feeding CL-1. Add the encounter type,
   HP-sizing, arena placement in world gen, and the merge/raid behavior
   ([`behaviors/combat-atb.md`](behaviors/combat-atb.md) battle merge).
+- [ ] **FS-5 — Day/night cycle as a first-class system.** A seeded, server-
+  authoritative time-of-day clock that other systems read: it drives the fireflies
+  and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates
+  weather and encounter tables (FS-2). One source of truth for "what time is it in
+  this instance," on the wire so every client agrees.
+
+---
+
+## Epic CR — Creatures & the living world
+
+Make the overworld feel inhabited, not decorated. Creatures already roam, belong
+to **factions**, take real damage in hostile-faction skirmishes (their `hp/max_hp`
+is a live bar), and leash to their spawn / stop roaming when `in_battle` — see
+`meld-world::Arena::step_creatures` / `MonsterSpawn`. This epic builds the ecology
+on top. **Hard constraint (the user's, and correct): keep it tightly instanced and
+budgeted so the creature sim never threatens the single-owner loop or the server**
+— see CR-4.
+
+- [ ] **CR-1 — Per-creature distance modifiers + deep-biome palette & rarity.**
+  Beyond the global `stat_mult(d)`, give each creature its own distance-scaled
+  modifier table, so pushing *further out than usual* meaningfully changes what you
+  face. Signal it visually: deeper/harder zones get a **randomized, shifted color
+  palette** so a dangerous variant reads at a glance, and those tougher creatures
+  drop **higher-rarity** gear (GR) and collectables (CR-5). Loot rarity scales with
+  distance. *Accessibility: the palette is a bonus cue, never the only one — pair it
+  with a redundant non-color signal (level tag / nameplate / icon), see UX-2.*
+- [ ] **CR-2 — Creatures fight each other, visibly, with consequences.** 🟡
+  *Partial:* hostile factions already skirmish and lose `hp`. **Remaining:** show
+  the **fighting state on the map** (so you can read "those two are clashing"),
+  make skirmish **deaths drop loot** on the overworld (pickup per
+  [`behaviors/async-interaction.md`](behaviors/async-interaction.md)), **persist
+  damage** to the creature, and have it **slowly regenerate** as it roams (so a
+  wounded creature is a real, time-bound opportunity). Add regen + on-map combat
+  state to `MonsterSpawn`/`step_creatures`; tunables in `[worldgen]`/`[ai]`.
+- [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
+  **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
+  eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,
+  spawning more of their kind in an area **up to a hard cap**. Predator/prey
+  pressure keeps populations dynamic instead of static. Everything is
+  server-authoritative and seeded. **Must respect the CR-4 budget** — population
+  caps and per-area instancing are load-bearing, not polish.
+- [ ] **CR-4 — Ecology simulation budget & instancing (the guardrail).** Before
+  CR-2/CR-3 ship, define the perf envelope: creature sim stays **per-area /
+  per-instance**, hard population caps, a bounded tick cost, and it must **never**
+  block or contend with the authoritative maze loop (CANON §S — one task owns
+  ephemeral state, no locks; memory: game-loop-perf). Simulate only near active
+  players; freeze/serialize distant areas. This item is the explicit answer to
+  "keep it highly instanced so we don't crash servers." Add a QA load test.
+- [ ] **CR-5 — Bestiary / codex & collectables.** A persistent, account-level
+  record of creatures encountered/killed and **collectables** dropped by rarer/
+  deeper creatures (CR-1) — discovery as its own progression and completionist hook,
+  and a natural home for the "higher-rarity collectables" the loot scaling produces.
+  New persistent model + HTTP; surfaces in Last City.
+
+---
+
+## Epic SOC — Multiplayer: parties & guilds
+
+> **Terminology:** in this codebase **"party"** already means one player's team of
+> up to four *heroes* (mixed classes). The systems below are about grouping
+> *players* — so this doc calls them **"co-op groups"** and **"guilds."** Don't
+> overload "party." Today, players form up through an ephemeral **co-op lobby**
+> (join code, `run.join_battle`, the Threshold) — `meld-server::game.rs` `Lobby` /
+> `LobbyMember`. These items make grouping durable and social.
+
+- [ ] **SOC-1 — Co-op group system.** A real, managed player group that outlives a
+  single dive: invite/accept, a named roster, group presence in Last City, dive
+  together into one instance, and stay grouped across runs — built on the existing
+  lobby rather than replacing it. Clarify how a group maps onto the 4-player
+  instance cap and the expandable-party raid merge (GDD §5;
+  [`behaviors/combat-atb.md`](behaviors/combat-atb.md)).
+- [ ] **SOC-2 — Guild system.** Persistent player organizations: membership +
+  roles, a guild identity/tag, and a home in Last City. Later hooks (scope as it
+  firms up): shared guild bank/stash (relates to SV-1), guild bounties (EC/economy),
+  and a guild line on the Vanguard board
+  ([`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md)). New persistent
+  models + HTTP; fold into CANON when the design hardens.
+
+---
+
+## Epic UX — Navigation & legibility
+
+Small but high-leverage interface work the systems above create a need for.
+
+- [ ] **UX-1 — World map, minimap & compass.** With randomized starting biomes and
+  ordering (WG-2/WG-3) and the ~350° radial world anchored on Last City to the west
+  (WG-4), players need to read where they are, where the city/wall is, and how far
+  out they've pushed (distance = the core metric). Minimap + full map + a
+  city-relative compass. Client UX over the existing snapshot/terrain data.
+- [ ] **UX-2 — Difficulty legibility & accessibility.** Danger must be readable
+  without relying on color (CR-1's palette shift is a *secondary* cue): redundant
+  signals like creature level tags, nameplates, or threat icons, plus a
+  colorblind-safe palette option. Bakes accessibility in while the difficulty-
+  signaling systems are being built, instead of retrofitting later.
 
 ---
 
