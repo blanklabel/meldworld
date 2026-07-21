@@ -349,6 +349,42 @@ only the things that can't be class-gated.
 
 ---
 
+## Epic MON — Monetization
+
+Revenue features. **Design guardrail:** keep the competitive core (the Vanguard
+board, extract-or-die stakes, the player economy) fair — lean toward
+convenience/persistence/cosmetic value over raw power, and be explicit in each
+item about where it sits on the pay-for-power line, since that's the retention
+risk. These are the owner's calls to make; this epic just tracks them honestly.
+
+- [ ] **MON-1 — Subscription-gated Vault.** Put the persistent **Vault** (chits,
+  materials, gear storage — [`behaviors/economy.md`](behaviors/economy.md),
+  [`interfaces/data-models/`](interfaces/data-models/)) behind a subscription.
+  Decide the free-tier fallback carefully — what happens to a lapsed subscriber's
+  banked items, and how this interacts with the Safety Deposit Box (SV-1) and the
+  death/extract loop (a player who can't bank has no extract-or-die tension). Needs
+  a billing/entitlement layer + entitlement checks on the Vault HTTP surface.
+- [ ] **MON-2 — Private persistent instance for you + your guild (premium tier).**
+  A higher tier gives a player and their **guild** (SOC-2) their *own* instance of
+  Meldworld, which unlocks things the shared ephemeral world can't:
+  - **Pinned seeds** — reuse a fixed `run_seed` so the world *doesn't* reshuffle
+    every session (the opposite of WG-2/WG-3's per-run randomization). Technically
+    cheap: world gen is already fully deterministic from the seed
+    (`section_seed(run_seed, n)`), so a persistent instance just fixes the seed.
+  - **Buildable camps** — set up / build persistent camps in the field (generalizes
+    FS-1 camping), which **creatures may attack and try to destroy** (ties to the
+    ecology, CR-2/CR-3, and the ward/tent family in GDD §5). This is the big
+    architectural lift: today a `MazeInstance` is **ephemeral, discarded on close**
+    (CANON §S); a persistent instance keeps mutable world state across sessions —
+    new persistence + lifecycle, kept off the authoritative maze tick.
+  - **Better performance** — a dedicated/less-crowded instance for the paying group.
+    Reconcile with the CR-4 sim budget and the single-owner loop model.
+
+  Scope this as its own design doc before building — it touches guilds, world-gen
+  determinism, ecology, and instance lifecycle at once.
+
+---
+
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,
