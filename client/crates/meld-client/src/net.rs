@@ -49,6 +49,8 @@ pub enum ClientCmd {
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
     RenameHero { slot: i32, name: String },
+    /// Set a hero to the front (`false`) or back (`true`) row (persistent).
+    SetFormation { slot: i32, back_row: bool },
     /// Co-op lobby.
     LobbyCreate { party: Vec<String> },
     LobbyJoin { code: String, party: Vec<String> },
@@ -233,6 +235,8 @@ pub struct HeroLine {
     pub dex: i32,
     pub wll: i32,
     pub max_hp: i32,
+    /// Formation rank: `true` = back row (halved damage, targeted less).
+    pub back_row: bool,
 }
 
 type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>);
@@ -708,6 +712,9 @@ impl Inner {
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
             }
+            ClientCmd::SetFormation { slot, back_row } => {
+                self.send_env(wr::SetFormation::TYPE, json!({ "slot": slot, "back_row": back_row }))
+            }
             ClientCmd::LobbyCreate { party } => {
                 self.send_env(wl::Create::TYPE, json!({ "party": party }))
             }
@@ -853,6 +860,7 @@ impl Inner {
                                 dex: h["dex"].as_i64().unwrap_or(0) as i32,
                                 wll: h["wll"].as_i64().unwrap_or(0) as i32,
                                 max_hp: h["max_hp"].as_i64().unwrap_or(0) as i32,
+                                back_row: h["back_row"].as_bool().unwrap_or(false),
                             })
                             .collect()
                     })

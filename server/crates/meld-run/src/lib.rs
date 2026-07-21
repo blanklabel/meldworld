@@ -148,7 +148,15 @@ pub fn class_key(class: CharacterClass) -> &'static str {
 pub type PartyMember = (Id, Id, CharacterClass, i32);
 
 /// Build the ally `Fighter`s for a party (shared by battle start and raid merge).
-pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balance) -> Vec<Fighter> {
+/// `row_overrides` (aligned with `party`) lets the player's saved formation win over
+/// the class-default front/back row: `Some(true)` = back, `Some(false)` = front,
+/// `None`/absent = keep the class default.
+pub fn party_fighters(
+    party: &[PartyMember],
+    runs: &InstanceRun,
+    balance: &Balance,
+    row_overrides: &[Option<bool>],
+) -> Vec<Fighter> {
     // Index run level by player once so the per-member lookup is O(1) rather than
     // scanning every run per member (O(party × runs) — both grow with raid size).
     let level_by_player: HashMap<&str, i32> = runs
@@ -158,7 +166,8 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
         .collect();
     party
         .iter()
-        .map(|(player_id, combatant_id, class, atk_bonus)| {
+        .enumerate()
+        .map(|(i, (player_id, combatant_id, class, atk_bonus))| {
             let stats = balance
                 .player
                 .get(class_key(*class))
@@ -236,6 +245,10 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
                 // Other martial classes hold the front line with no special resource.
                 _ => {}
             }
+            // The player's saved formation choice overrides the class default.
+            if let Some(Some(row)) = row_overrides.get(i) {
+                f.back_row = *row;
+            }
             f
         })
         .collect()
@@ -255,8 +268,10 @@ pub fn build_battle(
     // Per-hero starting HP, aligned with `party`. `None` means full HP. Used to
     // carry wounds across a run's encounters (no free heal between fights).
     hp_overrides: &[Option<i32>],
+    // Per-hero saved formation, aligned with `party` (see [`party_fighters`]).
+    row_overrides: &[Option<bool>],
 ) -> Battle {
-    let mut allies = party_fighters(party, runs, balance);
+    let mut allies = party_fighters(party, runs, balance, row_overrides);
     for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
         if let Some(h) = hp {
             f.hp = (*h).clamp(0, f.max_hp);
@@ -355,7 +370,7 @@ mod tests {
         runs.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
         runs.runs[0].run_level = level;
         let party: Vec<PartyMember> = vec![("p".into(), "c".into(), class, 0)];
-        party_fighters(&party, &runs, b).pop().unwrap()
+        party_fighters(&party, &runs, b, &[]).pop().unwrap()
     }
 
     #[test]
@@ -439,10 +454,32 @@ mod tests {
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, 0)];
         // Carry a wounded hero in: start at 17 HP rather than full.
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)]);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[]);
         let (allies, _) = battle.wire_combatants();
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
         assert!(allies[0].max_hp > 17, "max HP stays at the class base");
+    }
+
+    #[test]
+    fn row_override_beats_the_class_default() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![
+            ("p".into(), "u".into(), CharacterClass::Psyker, "r1".into()),
+            ("p".into(), "u".into(), CharacterClass::Hunter, "r2".into()),
+        ]);
+        let party: Vec<PartyMember> = vec![
+            ("p".into(), "c1".into(), CharacterClass::Psyker, 0), // class default: back
+            ("p".into(), "c2".into(), CharacterClass::Hunter, 0), // class default: front
+        ];
+        // Override: send the Psyker to the front and pull the Hunter to the back.
+        let fighters = party_fighters(&party, &runs, &b, &[Some(false), Some(true)]);
+        assert!(!fighters[0].back_row, "Psyker forced to the front row");
+        assert!(fighters[1].back_row, "Hunter forced to the back row");
+        // An absent/None override keeps the class default.
+        let dflt = party_fighters(&party, &runs, &b, &[]);
+        assert!(dflt[0].back_row, "Psyker keeps its back-row default");
+        assert!(!dflt[1].back_row, "Hunter keeps its front-row default");
     }
 }

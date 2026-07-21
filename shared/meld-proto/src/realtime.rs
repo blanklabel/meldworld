@@ -450,6 +450,11 @@ pub mod run {
         pub dex: i32,
         pub wll: i32,
         pub max_hp: i32,
+        /// Formation rank: `true` = back row (halved damage, targeted less). The
+        /// player sets this per hero on the party screen; defaults to the class
+        /// default (casters back) until overridden. See [`SetFormation`].
+        #[serde(default)]
+        pub back_row: bool,
     }
 
     /// S2C — the caller's current party roster (sent at run start and refreshed on
@@ -531,6 +536,19 @@ pub mod run {
     }
     impl Message for RenameHero {
         const TYPE: &'static str = "run.rename_hero";
+    }
+
+    /// C2S — set one of the caller's heroes to the front (`back_row=false`) or back
+    /// (`back_row=true`) row. Persistent per-account, like [`RenameHero`]: takes
+    /// effect immediately (the roster is re-sent) and applies to the next/active
+    /// battle's Fighter, overriding the class default.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SetFormation {
+        pub slot: i32,
+        pub back_row: bool,
+    }
+    impl Message for SetFormation {
+        const TYPE: &'static str = "run.set_formation";
     }
 
     /// C2S — start an extraction channel. `method` is `"portal"` (stand at the

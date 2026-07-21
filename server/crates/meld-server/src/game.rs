@@ -67,6 +67,8 @@ enum DbWrite {
     SkillXp(String, String, i64),
     /// Persist a hero rename: (player, slot, name).
     HeroRename(String, i16, String),
+    /// Persist a hero's formation rank: (player, slot, back_row).
+    HeroFormation(String, i16, bool),
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
@@ -93,6 +95,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_hero_name(uid, slot, &name).await {
                         tracing::error!("hero rename persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::HeroFormation(pid, slot, back_row) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_hero_row(uid, slot, back_row).await {
+                        tracing::error!("hero formation persist failed for {pid}: {e}");
                     }
                 }
             }
@@ -211,6 +220,8 @@ struct Session {
     party_comp: Option<Vec<CharacterClass>>,
     /// Per-slot persistent hero names from the builder (also stored via `/v1/heroes`).
     hero_names: Option<Vec<String>>,
+    /// Per-slot persistent formation flags (`true` = back row), loaded from the DB.
+    hero_rows: Option<Vec<bool>>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -382,6 +393,9 @@ struct ActiveInstance {
     party_classes: HashMap<String, Vec<CharacterClass>>,
     /// player_id -> per-hero display name (parallel to `party_classes`).
     hero_names: HashMap<String, Vec<String>>,
+    /// player_id -> per-hero formation flag (`true` = back row), parallel to
+    /// `party_classes`. Empty = fall back to each class's default row.
+    hero_rows: HashMap<String, Vec<bool>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
 }
@@ -568,6 +582,7 @@ impl GameState {
                         character_class: CharacterClass::Hunter,
                         party_comp: None,
                         hero_names: None,
+                        hero_rows: None,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -612,6 +627,7 @@ impl GameState {
         inst.hero_hp.remove(player_id);
         inst.party_classes.remove(player_id);
         inst.hero_names.remove(player_id);
+        inst.hero_rows.remove(player_id);
         inst.extraction.remove(player_id);
         if inst.run.runs.is_empty() {
             self.instance = None;
@@ -654,6 +670,7 @@ impl GameState {
             wr::OpenChest::TYPE => self.handle_open_chest(player_id, raw),
             wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
             wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
+            wr::SetFormation::TYPE => self.handle_set_formation(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -754,11 +771,13 @@ impl GameState {
             return Vec::new();
         };
         let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
+        let rows = inst.hero_rows.get(pid).cloned().unwrap_or_default();
         let party: Vec<meld_run::PartyMember> = comp
             .iter()
             .map(|c| (pid.to_string(), String::new(), *c, 0))
             .collect();
-        let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance);
+        let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
+        let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance, &row_overrides);
         fighters
             .iter()
             .enumerate()
@@ -775,6 +794,7 @@ impl GameState {
                 dex: f.dex,
                 wll: f.wll,
                 max_hp: f.max_hp,
+                back_row: f.back_row,
             })
             .collect()
     }
@@ -856,6 +876,7 @@ impl GameState {
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
                 hero_names: HashMap::new(),
+                hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
             });
         }
@@ -904,11 +925,11 @@ impl GameState {
         // across battles (see hero_hp write-back).
         let party_size = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let (chosen, explicit, names) = self
+            let (chosen, explicit, names, rows) = self
                 .sessions
                 .get(pid)
-                .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone()))
-                .unwrap_or((CharacterClass::Hunter, None, None));
+                .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone(), s.hero_rows.clone()))
+                .unwrap_or((CharacterClass::Hunter, None, None, None));
             // The builder's explicit composition wins (normalized to party size,
             // padded with Hunter); otherwise build a default mixed party around
             // the lead.
@@ -930,9 +951,16 @@ impl GameState {
                 names.push(format!("Hero {}", names.len() + 1));
             }
             let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
+            // Saved formation by slot, normalized to party size (missing = false).
+            let mut rows = rows.unwrap_or_default();
+            rows.truncate(party_size);
+            while rows.len() < party_size {
+                rows.push(false);
+            }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
             inst.hero_names.insert(pid.clone(), names);
+            inst.hero_rows.insert(pid.clone(), rows);
         }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
@@ -1358,9 +1386,11 @@ impl GameState {
         // battle is (players × party size) combatants. Per-hero starting HP is
         // aligned with `party` (carried across the run so wounds persist).
         let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        let mut row_overrides: Vec<Option<bool>> = Vec::new();
         for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
             let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
             let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
+            let row_vec = inst.hero_rows.get(&r.player_id).cloned().unwrap_or_default();
             let comp = inst
                 .party_classes
                 .get(&r.player_id)
@@ -1372,6 +1402,8 @@ impl GameState {
                 combatant_player.insert(cid.clone(), r.player_id.clone());
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
+                // Some(row) forces the saved rank; None falls back to the class default.
+                row_overrides.push(row_vec.get(slot).copied());
                 cids.push(cid);
             }
             player_combatants.insert(r.player_id.clone(), cids);
@@ -1405,6 +1437,7 @@ impl GameState {
             &balance,
             seed,
             &hp_overrides,
+            &row_overrides,
         );
         // Store the group's stable ids (indices are only valid until the next prune).
         let monster_ids: Vec<String> = group_idxs
@@ -1552,6 +1585,51 @@ impl GameState {
         )]
     }
 
+    /// Set one of the caller's heroes to the front or back row: update the active
+    /// run's formation + the session cache (for the next dive), persist to Postgres,
+    /// and re-send the roster so the party panel updates at once. Applies to the
+    /// next battle assembled (an in-progress battle's Fighters are already built).
+    fn handle_set_formation(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::SetFormation = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad set_formation", Some(raw.seq))]
+            }
+        };
+        let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+        if req.slot < 0 || req.slot >= party_size {
+            return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))];
+        }
+        let slot = req.slot as usize;
+        let back = req.back_row;
+        // Active run's formation (so the panel + next battle reflect it).
+        if let Some(inst) = self.instance.as_mut() {
+            let rows = inst.hero_rows.entry(player_id.to_string()).or_default();
+            while rows.len() <= slot {
+                rows.push(false);
+            }
+            rows[slot] = back;
+        }
+        // Session cache (used to form the next dive).
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            let mut v = s.hero_rows.clone().unwrap_or_default();
+            while v.len() <= slot {
+                v.push(false);
+            }
+            v[slot] = back;
+            s.hero_rows = Some(v);
+        }
+        let _ = self
+            .db_writes
+            .send(DbWrite::HeroFormation(player_id.to_string(), slot as i16, back));
+        vec![out_msg(
+            player_id,
+            &wr::Party {
+                heroes: self.party_views(player_id),
+            },
+        )]
+    }
+
     /// Merge a party into the in-progress battle (the toucher opted in via
     /// `run.join_battle`). The joiner brings their full hero composition, exactly
     /// as if they'd started the fight.
@@ -1583,6 +1661,7 @@ impl GameState {
             .collect();
         let mut party: Vec<meld_run::PartyMember> = Vec::new();
         let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        let mut row_overrides: Vec<Option<bool>> = Vec::new();
         let mut add_combatant_player: HashMap<String, String> = HashMap::new();
         let mut add_player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         for pid in &joiners {
@@ -1599,6 +1678,7 @@ impl GameState {
                 .cloned()
                 .unwrap_or_else(|| vec![lead]);
             let hp_vec = inst.hero_hp.get(pid).cloned().unwrap_or_default();
+            let row_vec = inst.hero_rows.get(pid).cloned().unwrap_or_default();
             let bonus = bonuses.get(pid).copied().unwrap_or(0);
             let mut cids = Vec::new();
             for (slot, cls) in comp.iter().enumerate() {
@@ -1606,6 +1686,7 @@ impl GameState {
                 add_combatant_player.insert(cid.clone(), pid.clone());
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
+                row_overrides.push(row_vec.get(slot).copied());
                 cids.push(cid);
             }
             add_player_combatants.insert(pid.clone(), cids);
@@ -1619,7 +1700,7 @@ impl GameState {
             return Vec::new();
         }
 
-        let mut fighters = meld_run::party_fighters(&party, &inst.run, &balance);
+        let mut fighters = meld_run::party_fighters(&party, &inst.run, &balance, &row_overrides);
         // Carry each joining hero's persisted HP into the merged battle.
         for (f, hp) in fighters.iter_mut().zip(hp_overrides.iter()) {
             if let Some(h) = hp {
@@ -1892,7 +1973,8 @@ impl GameState {
         }
     }
 
-    /// Load persistent hero names from Postgres for freshly-connected players.
+    /// Load persistent hero names + formation from Postgres for freshly-connected
+    /// players.
     async fn flush_hero_loads(&mut self) {
         let loads: Vec<String> = std::mem::take(&mut self.pending_hero_load);
         for pid in loads {
@@ -1901,6 +1983,13 @@ impl GameState {
                     if !names.is_empty() {
                         if let Some(s) = self.sessions.get_mut(&pid) {
                             s.hero_names = Some(names);
+                        }
+                    }
+                }
+                if let Ok(rows) = self.db.get_hero_rows(uid).await {
+                    if !rows.is_empty() {
+                        if let Some(s) = self.sessions.get_mut(&pid) {
+                            s.hero_rows = Some(rows);
                         }
                     }
                 }
