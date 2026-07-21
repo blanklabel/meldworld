@@ -841,7 +841,7 @@ impl QueuedKind {
             QueuedKind::Focus("reinforce", _) => "RNF",
             QueuedKind::Focus("revoke", _) => "RVK",
             QueuedKind::Focus(_, _) => "FOC",
-            QueuedKind::Hold => "···",
+            QueuedKind::Hold => "...",
         }
     }
     fn color(self) -> Color {
@@ -3104,7 +3104,7 @@ fn pump_net(
             }
             ServerMsg::ChannelStarted { .. } => {
                 session.channeling = true;
-                session.status = "extracting…".to_string();
+                session.status = "extracting...".to_string();
             }
             ServerMsg::ChannelInterrupted => {
                 session.channeling = false;
@@ -3631,7 +3631,11 @@ fn city_move(
     // Camera-relative planar basis (at yaw 0 the camera looks toward -z).
     let yaw = look.cam_yaw.to_radians();
     let fwd = Vec2::new(-yaw.sin(), -yaw.cos()); // W = into the screen
-    let right = Vec2::new(fwd.y, -fwd.x); // D = screen-right
+    // D = screen-right. The camera's right is `fwd` rotated +90° in the xz plane
+    // (at yaw 0: fwd=(0,-1) → right=(1,0)=+x=east). The previous `(fwd.y,-fwd.x)`
+    // gave the opposite (-x), so A/D — and the walk-facing derived from motion —
+    // came out mirrored in town.
+    let right = Vec2::new(-fwd.y, fwd.x);
     let mut m = Vec2::ZERO;
     if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
         m += fwd;
@@ -3903,15 +3907,15 @@ fn render_lobby(
     for (id, username, ready) in &lobby.members {
         let you = if id == &session.player_id { " (you)" } else { "" };
         let host = if id == &lobby.host { " [host]" } else { "" };
-        let tag = if *ready { "READY" } else { "…" };
-        lines.push(format!("  {username}{you}{host}  —  {tag}"));
+        let tag = if *ready { "READY" } else { "..." };
+        lines.push(format!("  {username}{you}{host}  -  {tag}"));
     }
     lines.push(String::new());
     let all_ready = !lobby.members.is_empty() && lobby.members.iter().all(|(_, _, r)| *r);
     let start = if host_is_me {
         if all_ready { "ENTER: start the dive" } else { "ENTER: start (need everyone READY)" }
     } else {
-        "waiting for the host to start…"
+        "waiting for the host to start..."
     };
     lines.push(format!("R: toggle ready    {start}    ESC: leave"));
     **t = lines.join("\n");
@@ -3955,7 +3959,7 @@ fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows or drag = move · tap = go there · tap yourself = party/inventory · walk into nodes to harvest · T town portal · J join · E portal",
+                    "WASD/arrows or drag = move | tap = go there | tap yourself = party/inventory | walk into nodes to harvest | T town portal | J join | E portal",
                 ),
                 TextFont {
                     font_size: 14.0,
@@ -4281,7 +4285,7 @@ fn update_overworld_hud(
         .join(", ");
     let me_pos = Some((me.x, me.y));
     if let Ok(mut t) = q.single_mut() {
-        let mut line = format!("distance {d}  -  {}  -  ⌂×{tp}", biome_display(d));
+        let mut line = format!("distance {d}  -  {}  -  TP x{tp}", biome_display(d));
         // Chits found this run (banked on extraction), then gathered materials.
         if backpack.chits > 0 {
             line.push_str(&format!("  -  {} chits", backpack.chits));
@@ -4293,7 +4297,7 @@ fn update_overworld_hud(
             line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
         }
         if near_fight(&world, me_pos) {
-            line.push_str("  -  ⚔ Press [J] to join the fight");
+            line.push_str("  -  Press [J] to join the fight");
         }
         // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
         if perks.0.resonant_regen > 0.0 {
@@ -4953,7 +4957,7 @@ fn render_overlay(
                         .with_children(|content| match *tab {
                             OverlayTab::Items => {
                                 if !inv.loaded {
-                                    label(content, "loading…".into(), 16.0, dim);
+                                    label(content, "loading...".into(), 16.0, dim);
                                     return;
                                 }
                                 label(
@@ -4984,10 +4988,10 @@ fn render_overlay(
                                 for (i, h) in roster.heroes.iter().enumerate() {
                                     let focused = cursor.index == i;
                                     let name_line = if rename.slot == Some(i) {
-                                        format!("[{}] {}_   (typing…)", i + 1, rename.buffer)
+                                        format!("[{}] {}_   (typing...)", i + 1, rename.buffer)
                                     } else {
                                         format!(
-                                            "[{}] {}   {} · Lv {}",
+                                            "[{}] {}   {} | Lv {}",
                                             i + 1,
                                             h.name,
                                             class_display(&h.class_key),
@@ -5050,7 +5054,7 @@ fn render_overlay(
                                 if !roster.heroes.is_empty() {
                                     label(
                                         content,
-                                        "[Left/Right] select · [Space]/[1-4] rename · [Enter] save · [Esc] cancel · click a row to swap formation".into(),
+                                        "[Left/Right] select | [Space]/[1-4] rename | [Enter] save | [Esc] cancel | click a row to swap formation".into(),
                                         12.0,
                                         dim,
                                     );
@@ -5058,7 +5062,7 @@ fn render_overlay(
                             }
                             OverlayTab::Equip => {
                                 if !inv.loaded {
-                                    label(content, "loading…".into(), 16.0, dim);
+                                    label(content, "loading...".into(), 16.0, dim);
                                     return;
                                 }
                                 if roster.heroes.is_empty() {
@@ -5216,12 +5220,12 @@ fn render_overlay(
                             }
                         });
                     });
-                    label(p, "[Up/Down] tabs · [Left/Right] select · [Space] act · [ESC] close".into(), 13.0, dim);
+                    label(p, "[Up/Down] tabs | [Left/Right] select | [Space] act | [ESC] close".into(), 13.0, dim);
                 }
                 OverlayKind::LevelUp => {
                     label(p, "LEVEL UP".into(), 24.0, gold);
                     if !prog.loaded {
-                        label(p, "loading…".into(), 16.0, dim);
+                        label(p, "loading...".into(), 16.0, dim);
                         label(p, "[ESC] close".into(), 13.0, dim);
                         return;
                     }
@@ -7220,10 +7224,15 @@ fn sync_battle_actors(
             continue;
         }
         let back = is_back(c);
-        // Even spread across x; a small depth offset (and bust crop) sets the back row.
+        // Even spread across x; a small depth offset (and bust crop) sets the rows.
+        // Enemies are to the north (−z); the camera is to the south (+z). So the
+        // FRONT line belongs at the smaller z (nearer the foe, up-screen) and the
+        // protected BACK row at the larger z (nearer the camera, in the foreground)
+        // — matching the combat semantics (back row is targeted less / takes less).
+        // The up-screen row is the one cropped to a bust so it tucks behind cleanly.
         let x = (i as f32 - (n - 1.0) * 0.5) * 2.7;
-        let z = if back { 2.7 } else { 3.7 };
-        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), back);
+        let z = if back { 3.7 } else { 2.7 };
+        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), !back);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -7363,13 +7372,32 @@ fn animate_battle_actors(
         tf.translation.x = off.x;
         tf.translation.z = off.z;
 
-        // White impact flash on the instant of a hit (brighter than base → blooms).
+        // Hunter "rage": as banked Adrenaline climbs toward max, redden the sprite
+        // and add a faint hot glow so a Hunter *looks* angrier the more it's built.
+        // Only Hunters carry adrenaline_max > 0, so every other class stays neutral.
+        let rage = battle
+            .view(&s.id)
+            .map(|c| {
+                let max = status_num(&c.statuses, "adrenaline_max:");
+                if max > 0 {
+                    status_num(&c.statuses, "adrenaline:") as f32 / max as f32
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        // White impact flash on the instant of a hit (brighter than base → blooms);
+        // otherwise the base tint, warmed toward angry red by the rage fraction.
         if let Some(m) = mats.get_mut(&s.mat) {
-            m.base_color = if hit_age < HIT_WHITE_TTL {
-                lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / HIT_WHITE_TTL)
+            if hit_age < HIT_WHITE_TTL {
+                m.base_color =
+                    lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / HIT_WHITE_TTL);
+                m.emissive = LinearRgba::BLACK;
             } else {
-                s.base
-            };
+                m.base_color = lerp_color(s.base, Color::srgb(1.9, 0.5, 0.35), rage * 0.55);
+                m.emissive = LinearRgba::rgb(0.5 * rage, 0.04 * rage, 0.0);
+            }
         }
     }
 }
@@ -8637,8 +8665,11 @@ fn party_cell(
                 let regen = status_num(&c.statuses, "regen:");
                 let evasion = status_num(&c.statuses, "evasion:");
                 let mut hp_label = format!("{}/{}", c.hp, c.max_hp);
+                // NOTE: the default UI font is ASCII-only, so symbol glyphs
+                // (⚡ ◆ …) render as tofu boxes. Keep these labels ASCII until a
+                // symbol-capable font is bundled.
                 if barrier > 0 {
-                    hp_label.push_str(&format!("  +{barrier}\u{25c6}")); // ◆ = Barrier
+                    hp_label.push_str(&format!("  +{barrier} shld")); // Barrier (temp HP)
                 }
                 if regen > 0 {
                     hp_label.push_str(&format!("  +{regen}/t")); // Regen per turn
@@ -8649,7 +8680,7 @@ fn party_cell(
                 let adrenaline_max = status_num(&c.statuses, "adrenaline_max:");
                 if adrenaline_max > 0 {
                     let adr = status_num(&c.statuses, "adrenaline:");
-                    hp_label.push_str(&format!("  \u{26a1}{adr}/{adrenaline_max}")); // ⚡ = Adrenaline
+                    hp_label.push_str(&format!("  RAGE {adr}/{adrenaline_max}")); // Hunter Adrenaline
                 }
                 meter_labeled(col, hp_frac, 15.0, Color::srgb(0.35, 0.6, 0.95), hp_label);
                 // Line 3: ATB bar — flares gold-white the instant the gauge fills.
@@ -8679,7 +8710,7 @@ fn party_cell(
                                     };
                                     (tag, true)
                                 }
-                                None => ("·".to_string(), false),
+                                None => ("-".to_string(), false),
                             };
                             row.spawn((
                                 Text::new(label),
