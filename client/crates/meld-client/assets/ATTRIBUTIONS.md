@@ -19,7 +19,7 @@ billboards.
 
 Low-poly 3D kits from **Kenney**, all licensed **CC0 (public domain)** — free for
 commercial use, attribution not required. They build **The Weld**, the walkable hub
-city (`Screen::City`; see `CITY-PROPOSAL.md`): the New Weird "last city" is welded
+city (`Screen::City`; see `docs/proposals/last-city.md`): the New Weird "last city" is welded
 together from a fantasy-town core, graveyard/crypt uncanny, and pirate salvage.
 
 - **Fantasy Town Kit** — https://kenney.nl/assets/fantasy-town-kit — stalls, cart,

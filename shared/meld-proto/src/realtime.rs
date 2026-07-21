@@ -1,5 +1,5 @@
 //! Realtime C2S/S2C message payloads, grouped by domain
-//! (interfaces/realtime-protocol.md and its detail files).
+//! (docs/interfaces/realtime-protocol.md and its detail files).
 //!
 //! Each payload struct binds to its wire `type` string via [`Message::TYPE`],
 //! so the gateway can peek a [`crate::RawEnvelope`], match the string, and
@@ -172,7 +172,7 @@ pub mod movement {
 
 // ------------------------------------------------------------------ world ---
 
-/// Static section geometry for terraced verticality (VERTICALITY-PROPOSAL.md).
+/// Static section geometry for terraced verticality (docs/proposals/verticality.md).
 /// The overworld streams in as a sequence of **sections**; each carries a coarse
 /// elevation grid + the connectors (ladders/ropes/slopes) that join levels. The
 /// client builds one stepped ground+cliff mesh per section and spawns the

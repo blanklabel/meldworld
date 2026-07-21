@@ -1,4 +1,4 @@
-//! Realtime WebSocket gateway (interfaces/realtime-protocol.md §Connection
+//! Realtime WebSocket gateway (docs/interfaces/realtime-protocol.md §Connection
 //! lifecycle). Validates the ticket handshake, then bridges the socket to the
 //! game loop: inbound frames → `ServerEvent::Client`, and a per-connection
 //! outbound channel the loop writes authoritative messages to.

@@ -1,4 +1,4 @@
-//! HTTP request/response DTOs (interfaces/http-api.md, auth-players.md).
+//! HTTP request/response DTOs (docs/interfaces/http-api.md, auth-players.md).
 //! Only the auth + player surface the today-slice needs is modelled.
 
 use serde::{Deserialize, Serialize};

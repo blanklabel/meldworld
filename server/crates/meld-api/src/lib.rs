@@ -1,5 +1,5 @@
 //! HTTP API (axum) — auth + player surface for the today-slice
-//! (interfaces/http-api.md, auth-players.md; CANON.md D17).
+//! (docs/interfaces/http-api.md, auth-players.md; CANON.md D17).
 //!
 //! Also owns the two short-lived credential stores the realtime gateway needs:
 //! opaque Bearer **session tokens** (24 h) and single-use **realtime tickets**

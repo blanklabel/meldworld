@@ -8,7 +8,7 @@
 //! - [`common`] — shared payload objects (`Position`, `ItemStack`, `Combatant`).
 //! - [`realtime`] — C2S/S2C message payloads by domain.
 //! - [`http`] — HTTP request/response DTOs.
-//! - [`limits`] — field bounds and validators (edge-cases/limits.md).
+//! - [`limits`] — field bounds and validators (docs/edge-cases/limits.md).
 
 pub mod common;
 pub mod enums;

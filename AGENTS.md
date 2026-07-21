@@ -14,20 +14,46 @@ Hub, march outward through biome areas fighting creatures, and either extract yo
 loot at a portal (banked to a persistent Vault) or die and lose your backpack.
 Difficulty, monster level, and loot scale purely with **distance** from the origin.
 
-This repo is currently an **architecture spike**: a thin but honest vertical slice
-on the real stack. See [`SPIKE-NOTES.md`](SPIKE-NOTES.md) for exactly what is
-implemented vs deferred (chunk streaming, Gatekeepers, economy/meta, seasons).
+This started as an **architecture spike** and has grown into a working vertical
+slice on the real stack — the core loop plus Last City, verticality, per-character
+gear, and extraction all ship. Trust the **code** for what's live and
+[`ROADMAP.md`](docs/ROADMAP.md) for what's next; larger systems (full economy/meta,
+Gatekeepers, chunk streaming, seasons) are scoped there.
+
+## Docs live in `docs/`
+
+All design, spec, and planning docs live under [`docs/`](docs/) — start at its
+index, [`docs/README.md`](docs/README.md). Only `AGENTS.md`/`CLAUDE.md` and the
+repo `README.md` stay at the root. If you cite a doc in a code comment, use its
+`docs/…` path.
+
+## The roadmap is the worklist — check items off
+
+[`docs/ROADMAP.md`](docs/ROADMAP.md) is the **live list of what we're building
+next**, as checkboxes with stable IDs (`LC-2`, `GR-3`, …). It sits above
+`BUILD-PLAN.md` and below the spec. **When you pick up work:**
+
+- Find (or add) its roadmap item; cite the **ID** in your branch name, commits,
+  and PR title.
+- **Tick its checkbox** (`- [ ]` → `- [x]`) in `docs/ROADMAP.md` in the *same PR*
+  that lands it — and update its `behaviors/`/`interfaces/` spec if observable
+  behavior changed. A merged item with an unchecked box is a bug. Partial work
+  stays unchecked; record progress in the item's sub-bullets.
+- This file is a merge hotspot — edit only *your* item's line.
 
 ## Spec hierarchy — read this before changing behavior
 
 Behavior is specified top-down; **on conflict, the higher doc wins**:
 
-1. [`GDD.md`](GDD.md) — the game design vision (source of truth for *intent*).
-2. [`CANON.md`](CANON.md) — authoritative resolutions of every gap/ambiguity/name in the GDD. **CANON wins over GDD.** Names, enums, formulas, and `[TUNABLE]` constants live here. If you're implementing a rule, find its CANON §/D-number.
-3. [`behaviors/`](behaviors/) + [`interfaces/`](interfaces/) — the spec: observable behavior (behaviors) and wire/data contracts (interfaces). Each references its CANON source.
-4. [`BUILD-PLAN.md`](BUILD-PLAN.md) — milestones (M0–M…) and task IDs (T1–T6) the code is executed against.
+1. [`GDD.md`](docs/GDD.md) — the game design vision (source of truth for *intent*).
+2. [`CANON.md`](docs/CANON.md) — authoritative resolutions of every gap/ambiguity/name in the GDD. **CANON wins over GDD.** Names, enums, formulas, and `[TUNABLE]` constants live here. If you're implementing a rule, find its CANON §/D-number.
+3. [`behaviors/`](docs/behaviors/) + [`interfaces/`](docs/interfaces/) — the spec: observable behavior (behaviors) and wire/data contracts (interfaces). Each references its CANON source.
+4. [`BUILD-PLAN.md`](docs/BUILD-PLAN.md) — milestones (M0–M…) and task IDs (T1–T6) the code is executed against.
 
-When you add or change a gameplay rule, cite its spec (`combat-atb.md`, `CANON §B`, etc.) in the code comment, as the existing code does.
+*What to build next* comes from [`docs/ROADMAP.md`](docs/ROADMAP.md) (above); the
+four docs here specify *how it must behave*. When you add or change a gameplay
+rule, cite its spec (`combat-atb.md`, `CANON §B`, etc.) in the code comment, as the
+existing code does.
 
 ## Workspace layout
 
@@ -342,7 +368,7 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   climbing). `apply_move`/`check_touch`/`harvest`/`at_portal` are elevation-aware.
   Rides the wire as `SnapshotEntity.level` + the `world.terrain_section` message; the
   client builds a stepped ground+cliff mesh per section and connector props. See
-  [`VERTICALITY-PROPOSAL.md`](VERTICALITY-PROPOSAL.md). `[worldgen]` tunables:
+  [`VERTICALITY-PROPOSAL.md`](docs/proposals/verticality.md). `[worldgen]` tunables:
   `terraces_per_area`, `max_level`, `terrace_min/max_size`, `terrain_cell`,
   `connector_radius`, `stream_lookahead`.
 
@@ -383,12 +409,13 @@ joiners render as an "allies" strip on the battle screen.
 
 ## Deep Dives
 
-- **Combat / ATB** (gauges, turns, flee, merge, statuses): [`behaviors/combat-atb.md`](behaviors/combat-atb.md)
-- **World generation** (distance→difficulty, biome bands, areas, portals): [`behaviors/world-generation.md`](behaviors/world-generation.md)
-- **Run lifecycle** (enter-maze, extraction, death durability): [`behaviors/run-lifecycle.md`](behaviors/run-lifecycle.md)
-- **Economy / meta / endgame / disconnect / async**: [`behaviors/`](behaviors/) (`economy.md`, `meta-progression.md`, `endgame-seasons.md`, `disconnect-handling.md`, `async-interaction.md`)
-- **Realtime protocol** (session, movement, battle, run/social messages): [`interfaces/realtime-protocol.md`](interfaces/realtime-protocol.md) + [`interfaces/realtime-protocol/`](interfaces/realtime-protocol/)
-- **HTTP API** (auth, runs/world, vault/gear, crafting, economy, leaderboards): [`interfaces/http-api.md`](interfaces/http-api.md) + [`interfaces/http-api/`](interfaces/http-api/)
-- **Data models**: [`interfaces/data-models.md`](interfaces/data-models.md) + [`interfaces/data-models/`](interfaces/data-models/)
-- **What's implemented vs deferred**: [`SPIKE-NOTES.md`](SPIKE-NOTES.md) and [`GAP-ANALYSIS.md`](GAP-ANALYSIS.md)
-- **Milestones & tasks**: [`BUILD-PLAN.md`](BUILD-PLAN.md)
+- **Combat / ATB** (gauges, turns, flee, merge, statuses): [`behaviors/combat-atb.md`](docs/behaviors/combat-atb.md)
+- **World generation** (distance→difficulty, biome bands, areas, portals): [`behaviors/world-generation.md`](docs/behaviors/world-generation.md)
+- **Run lifecycle** (enter-maze, extraction, death durability): [`behaviors/run-lifecycle.md`](docs/behaviors/run-lifecycle.md)
+- **Economy / meta / endgame / disconnect / async**: [`behaviors/`](docs/behaviors/) (`economy.md`, `meta-progression.md`, `endgame-seasons.md`, `disconnect-handling.md`, `async-interaction.md`)
+- **Realtime protocol** (session, movement, battle, run/social messages): [`interfaces/realtime-protocol.md`](docs/interfaces/realtime-protocol.md) + [`interfaces/realtime-protocol/`](docs/interfaces/realtime-protocol/)
+- **HTTP API** (auth, runs/world, vault/gear, crafting, economy, leaderboards): [`interfaces/http-api.md`](docs/interfaces/http-api.md) + [`interfaces/http-api/`](docs/interfaces/http-api/)
+- **Data models**: [`interfaces/data-models.md`](docs/interfaces/data-models.md) + [`interfaces/data-models/`](docs/interfaces/data-models/)
+- **What we're building next (checkable worklist)**: [`ROADMAP.md`](docs/ROADMAP.md)
+- **Milestones & tasks**: [`BUILD-PLAN.md`](docs/BUILD-PLAN.md)
+- **Feature proposals**: [`proposals/last-city.md`](docs/proposals/last-city.md) (the hub), [`proposals/verticality.md`](docs/proposals/verticality.md)

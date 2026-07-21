@@ -4,7 +4,7 @@
 //!
 //! Loop: Join → City (The Weld hub) → Overworld (walk into the monster) →
 //! Battle (ATB) → Ended → back to City. The city is the persistent home the
-//! extract-or-die loop returns to (see CITY-PROPOSAL.md).
+//! extract-or-die loop returns to (see docs/proposals/last-city.md).
 //!
 //! Config: `MELD_SERVER` (default `http://127.0.0.1:8080`) and `MELD_NAME`
 //! (default a random guest name).
@@ -436,7 +436,7 @@ enum Screen {
     Join,
     /// The Weld — the persistent hub city. Post-auth home and the return target
     /// after every run: spend chits, read the Vault, and step through The
-    /// Threshold to dive again. Closes the extract-or-die loop (see CITY-PROPOSAL.md).
+    /// Threshold to dive again. Closes the extract-or-die loop (see docs/proposals/last-city.md).
     City,
     /// Co-op lobby: create/join by code, ready up, host starts the shared dive.
     Lobby,
@@ -3327,7 +3327,7 @@ fn nice_class(key: &str) -> &'static str {
 // / pirate — see assets/ATTRIBUTIONS.md) and interact with the one you're standing
 // in. M0 wires The Threshold (dive) + The Vault-Deep (live `GET /v1/vault`); the
 // rest are placed but not yet functional. This closes the extract-or-die loop —
-// you always come home here. See CITY-PROPOSAL.md.
+// you always come home here. See docs/proposals/last-city.md.
 
 /// What interacting with a district does.
 #[derive(Clone, Copy)]
@@ -3616,7 +3616,7 @@ fn city_input(
 
 /// Walk the avatar around the plaza with WASD/arrows (camera-relative), softly
 /// colliding out of building anchors and clamped to the plaza. Client-local — the
-/// city has no server-side simulation (see CITY-PROPOSAL.md).
+/// city has no server-side simulation (see docs/proposals/last-city.md).
 fn city_move(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,

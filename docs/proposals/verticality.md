@@ -73,8 +73,8 @@ splitmix64 ("Same seed ⇒ same world, always") — but **shifts from "generate 
 whole area-chain up front" to "generate section N on demand from `section_seed(n)`
 as the player approaches."** That gives:
 
-- **Endless outward progression** (the deferred "chunk streaming" in
-  `SPIKE-NOTES.md`): sections are made just-in-time, so a run isn't a fixed length —
+- **Endless outward progression** (the long-deferred "chunk streaming"):
+  sections are made just-in-time, so a run isn't a fixed length —
   difficulty keeps scaling with distance as far as you push.
 - **Perfect reproducibility**: `run_seed` → a deterministic sequence of
   `section_seed(n)` → the same world every time; and any `section_seed` alone
