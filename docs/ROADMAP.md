@@ -133,6 +133,19 @@ burns on death/leave; some is single-use. See
   [`behaviors/meta-progression.md`](behaviors/meta-progression.md) "class unlocks
   via ClassEmblem." Existing classes (Hunter/Psyker/Resonant/Shifter/Iron Hull)
   define the taxonomy — see [`CLAUDE.md`](../CLAUDE.md) "Combat & class taxonomy."
+- [ ] **CL-2 — Overworld class perks ("party sense") — deepen the system.** 🟡
+  *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
+  `game.rs::compute_perks`) — each class's *presence* in the party grants an
+  earned overworld capability that scales with the shared `run_level`: the
+  **Shifter grants a corner minimap** (+ mob/portal dots, coverage grows with
+  level), the **Hunter grants enemy-HP intel**, Iron Hull shrinks creature aggro
+  range, Resonant grants overworld regen. **This is where overworld map-reveal and
+  threat-reading belong — they're *what a class can do*, a reason to bring it, not
+  universal UI.** Remaining: flesh the system out — round out perks per class
+  (Psyker has none yet), tier them across run level, surface them clearly in the
+  HUD, and fold it into CANON with a §/D-number. Anything giving map/threat
+  *awareness in the maze* should extend this system, not bypass it. (Contrast UX-1,
+  which is town-only, and UX-2, which is universal accessibility.)
 
 ---
 
@@ -312,20 +325,27 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 
 ---
 
-## Epic UX — Navigation & legibility
+## Epic UX — Universal interface (town nav & accessibility)
 
-Small but high-leverage interface work the systems above create a need for.
+Small but high-leverage interface work — the parts that must work for **everyone,
+regardless of party**. Note the deliberate split from classes: **map/threat
+awareness *in the maze* is a class perk (CL-2), not universal UI.** These items are
+only the things that can't be class-gated.
 
-- [ ] **UX-1 — World map, minimap & compass.** With randomized starting biomes and
-  ordering (WG-2/WG-3) and the ~350° radial world anchored on Last City to the west
-  (WG-4), players need to read where they are, where the city/wall is, and how far
-  out they've pushed (distance = the core metric). Minimap + full map + a
-  city-relative compass. Client UX over the existing snapshot/terrain data.
-- [ ] **UX-2 — Difficulty legibility & accessibility.** Danger must be readable
-  without relying on color (CR-1's palette shift is a *secondary* cue): redundant
-  signals like creature level tags, nameplates, or threat icons, plus a
-  colorblind-safe palette option. Bakes accessibility in while the difficulty-
-  signaling systems are being built, instead of retrofitting later.
+- [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
+  **for Last City itself** so players can navigate the hub — locate the districts
+  (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
+  the Threshold gate out, vendors, and other players. Universal (the city is safe,
+  social, and shared — nothing to gate). Distinct from the maze minimap, which is
+  the Shifter's overworld perk (CL-2). Client UX over the Last City scene
+  ([`proposals/last-city.md`](proposals/last-city.md)).
+- [ ] **UX-2 — Accessibility & non-color legibility.** Danger and state must never
+  depend on **color alone** — CR-1's deep-biome palette shift is a *bonus* cue, so
+  pair it with universally-available redundant signals (creature level tags,
+  nameplates, threat icons) and a colorblind-safe palette option. Baseline
+  readability for all players; the *richer* HP/threat intel on top of this is the
+  Hunter's class perk (CL-2). Bake this in while the difficulty-signaling systems
+  (CR-1) are being built, not as a retrofit.
 
 ---
 
