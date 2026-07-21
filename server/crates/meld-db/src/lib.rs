@@ -156,8 +156,21 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS tier INTEGER NOT NULL DEFAULT 0")
             .execute(pool)
             .await?;
+        // Per-hero equip slots + the def/spd stats that came with them. Additive:
+        // `equipped_hero_slot` (NULL = unequipped, else which of the player's
+        // heroes is wearing it) supersedes the old `equipped` boolean, which stays
+        // in the table (unused by new code) rather than being dropped.
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS def_bonus INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS spd_bonus INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS equipped_hero_slot INTEGER")
+            .execute(pool)
+            .await?;
         // Every hot gear query filters by `owner_player_id` (get_gear,
-        // equipped_atk_bonus on connect, death durability, equip checks), but a FK
+        // equipped_gear_bonuses on connect, death durability, equip checks), but a FK
         // is NOT auto-indexed in Postgres — so each was a full-table Seq Scan, and
         // `gear` is insert-only (never pruned), so it degraded linearly forever.
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_gear_owner ON gear(owner_player_id)")
@@ -419,10 +432,10 @@ impl Db {
                     .bind(player_id)
                     .execute(&mut *tx)
                     .await?;
-                // A humble starting weapon (blue-chest, equipped, tier 0).
+                // A humble starting weapon (blue-chest, equipped to hero 0, tier 0).
                 sqlx::query(
-                    "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped)
-                     VALUES ($1, $2, 'Chipped Blade', 'weapon', 'blue', 0, 3, 100, 100, TRUE)",
+                    "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped_hero_slot)
+                     VALUES ($1, $2, 'Chipped Blade', 'weapon', 'blue', 0, 3, 100, 100, 0)",
                 )
                 .bind(Uuid::now_v7())
                 .bind(player_id)
@@ -462,7 +475,7 @@ impl Db {
                     },
                 );
                 m.chits.insert(player_id, 0);
-                // A humble starting weapon (blue-chest, equipped, tier 0).
+                // A humble starting weapon (blue-chest, equipped to hero 0, tier 0).
                 let gear_id = Uuid::now_v7();
                 m.gear.insert(
                     gear_id,
@@ -474,9 +487,11 @@ impl Db {
                         insurance: "blue".into(),
                         tier: 0,
                         atk_bonus: 3,
+                        def_bonus: 0,
+                        spd_bonus: 0,
                         base_max_durability: 100,
                         max_durability: 100,
-                        equipped: true,
+                        equipped_hero_slot: Some(0),
                     },
                 );
                 for kind in ["forging", "mercantile", "alchemy"] {
@@ -705,8 +720,8 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped
-                     FROM gear WHERE owner_player_id = $1 ORDER BY equipped DESC, name",
+                    "SELECT gear_id, name, slot, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot
+                     FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
                 .fetch_all(pool)
@@ -721,8 +736,10 @@ impl Db {
                     .filter(|g| g.owner_player_id == player_id)
                     .map(|g| g.to_row())
                     .collect();
-                // ORDER BY equipped DESC, name.
-                rows.sort_by(|a, b| b.equipped.cmp(&a.equipped).then(a.name.cmp(&b.name)));
+                // ORDER BY equipped_hero_slot IS NOT NULL DESC, name.
+                rows.sort_by(|a, b| {
+                    b.equipped_hero_slot.is_some().cmp(&a.equipped_hero_slot.is_some()).then(a.name.cmp(&b.name))
+                });
                 Ok(rows)
             }
         }
@@ -746,8 +763,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped)
-                         VALUES ($1, $2, $3, $4, 'red', $5, $6, $7, $8, FALSE)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
+                         VALUES ($1, $2, $3, $4, 'red', $5, $6, $7, $8, $9, $10, NULL)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -756,6 +773,8 @@ impl Db {
                     .bind(&g.slot)
                     .bind(g.tier)
                     .bind(g.atk_bonus)
+                    .bind(g.def_bonus)
+                    .bind(g.spd_bonus)
                     .bind(g.base_max_durability)
                     .bind(g.max_durability)
                     .execute(&mut *tx)
@@ -775,9 +794,11 @@ impl Db {
                         insurance: "red".into(),
                         tier: g.tier,
                         atk_bonus: g.atk_bonus,
+                        def_bonus: g.def_bonus,
+                        spd_bonus: g.spd_bonus,
                         base_max_durability: g.base_max_durability,
                         max_durability: g.max_durability,
-                        equipped: false,
+                        equipped_hero_slot: None,
                     });
                 }
             }
@@ -785,29 +806,46 @@ impl Db {
         Ok(())
     }
 
-    /// Total attack bonus from a player's currently-equipped gear.
-    pub async fn equipped_atk_bonus(&self, player_id: Uuid) -> Result<i32, DbError> {
+    /// Per-hero-slot totals from a player's currently-equipped gear, indexed
+    /// `0..party_size` (each hero's own weapon/armor/accessory summed).
+    pub async fn equipped_gear_bonuses(
+        &self,
+        player_id: Uuid,
+        party_size: i32,
+    ) -> Result<Vec<GearBonus>, DbError> {
+        let mut bonuses = vec![GearBonus::default(); party_size.max(0) as usize];
         match &self.backend {
             Backend::Pg(pool) => {
-                let bonus: Option<i64> = sqlx::query_scalar(
-                    "SELECT COALESCE(SUM(atk_bonus), 0) FROM gear WHERE owner_player_id = $1 AND equipped = TRUE",
+                let rows = sqlx::query(
+                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus FROM gear
+                     WHERE owner_player_id = $1 AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
-                .fetch_one(pool)
+                .fetch_all(pool)
                 .await?;
-                Ok(bonus.unwrap_or(0) as i32)
+                for row in rows {
+                    let slot: i32 = row.get("equipped_hero_slot");
+                    if let Some(b) = bonuses.get_mut(slot as usize) {
+                        b.atk += row.get::<i32, _>("atk_bonus");
+                        b.def += row.get::<i32, _>("def_bonus");
+                        b.spd += row.get::<i32, _>("spd_bonus");
+                    }
+                }
             }
             Backend::Mem(m) => {
                 let m = m.lock().unwrap();
-                let sum: i32 = m
-                    .gear
-                    .values()
-                    .filter(|g| g.owner_player_id == player_id && g.equipped)
-                    .map(|g| g.atk_bonus)
-                    .sum();
-                Ok(sum)
+                for g in m.gear.values().filter(|g| g.owner_player_id == player_id) {
+                    if let Some(slot) = g.equipped_hero_slot {
+                        if let Some(b) = bonuses.get_mut(slot as usize) {
+                            b.atk += g.atk_bonus;
+                            b.def += g.def_bonus;
+                            b.spd += g.spd_bonus;
+                        }
+                    }
+                }
             }
         }
+        Ok(bonuses)
     }
 
     /// Apply the death durability sink to equipped blue-chest gear:
@@ -817,7 +855,7 @@ impl Db {
             Backend::Pg(pool) => {
                 sqlx::query(
                     "UPDATE gear SET max_durability = (max_durability * 9) / 10
-                     WHERE owner_player_id = $1 AND insurance = 'blue' AND equipped = TRUE",
+                     WHERE owner_player_id = $1 AND insurance = 'blue' AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
                 .execute(pool)
@@ -826,7 +864,7 @@ impl Db {
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
                 for g in m.gear.values_mut() {
-                    if g.owner_player_id == player_id && g.insurance == "blue" && g.equipped {
+                    if g.owner_player_id == player_id && g.insurance == "blue" && g.equipped_hero_slot.is_some() {
                         g.max_durability = (g.max_durability * 9) / 10;
                     }
                 }
@@ -835,10 +873,13 @@ impl Db {
         Ok(())
     }
 
-    /// Equip or unequip a gear item, enforcing the loadout rules (vault-gear.md
-    /// equip endpoint). Equipping is idempotent, rejects broken gear (max
-    /// durability 0, CANON.md D6), and enforces one item per `slot` (a different
-    /// item already in the slot is a conflict — the caller unequips it first).
+    /// Equip a gear item to hero slot `Some(hero_slot)`, or unequip it with
+    /// `None`, enforcing the loadout rules (vault-gear.md equip endpoint).
+    /// Equipping is idempotent (already worn by that same hero → no-op),
+    /// rejects broken gear (max durability 0, CANON.md D6), and enforces one
+    /// item per `(hero, slot category)` — a different item already worn by that
+    /// hero in the same category conflicts, the caller unequips it first.
+    /// Equipping an item already worn by a *different* hero simply moves it.
     /// Unequipping is idempotent. Returns [`EquipResult`] so the API can map to
     /// the right HTTP status.
     ///
@@ -851,14 +892,14 @@ impl Db {
         &self,
         player_id: Uuid,
         gear_id: Uuid,
-        equipped: bool,
+        target: Option<i32>,
     ) -> Result<EquipResult, DbError> {
         match &self.backend {
             Backend::Pg(pool) => {
                 let mut tx = pool.begin().await?;
                 // Load the target (owner-scoped so existence isn't leaked cross-account).
                 let row = sqlx::query(
-                    "SELECT slot, max_durability, equipped FROM gear
+                    "SELECT slot, max_durability, equipped_hero_slot FROM gear
                      WHERE gear_id = $1 AND owner_player_id = $2",
                 )
                 .bind(gear_id)
@@ -871,20 +912,20 @@ impl Db {
                 };
                 let slot: String = row.get("slot");
                 let max_durability: i32 = row.get("max_durability");
-                let already: bool = row.get("equipped");
+                let already: Option<i32> = row.get("equipped_hero_slot");
 
-                if !equipped {
-                    // Unequip is idempotent; just clear the flag.
-                    sqlx::query("UPDATE gear SET equipped = FALSE WHERE gear_id = $1")
+                let Some(hero_slot) = target else {
+                    // Unequip is idempotent; just clear it.
+                    sqlx::query("UPDATE gear SET equipped_hero_slot = NULL WHERE gear_id = $1")
                         .bind(gear_id)
                         .execute(&mut *tx)
                         .await?;
                     tx.commit().await?;
                     return Ok(EquipResult::Ok);
-                }
+                };
 
-                // Equip: idempotent no-op if already worn.
-                if already {
+                // Equip: idempotent no-op if already worn by this same hero.
+                if already == Some(hero_slot) {
                     tx.rollback().await?;
                     return Ok(EquipResult::Ok);
                 }
@@ -893,13 +934,15 @@ impl Db {
                     tx.rollback().await?;
                     return Ok(EquipResult::Broken);
                 }
-                // One item per slot: a different equipped item in the same slot conflicts.
+                // One item per (hero, slot category): a different item already
+                // worn by this hero in the same category conflicts.
                 let occupied: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM gear
-                     WHERE owner_player_id = $1 AND slot = $2 AND equipped = TRUE AND gear_id <> $3",
+                     WHERE owner_player_id = $1 AND slot = $2 AND equipped_hero_slot = $3 AND gear_id <> $4",
                 )
                 .bind(player_id)
                 .bind(&slot)
+                .bind(hero_slot)
                 .bind(gear_id)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -907,8 +950,9 @@ impl Db {
                     tx.rollback().await?;
                     return Ok(EquipResult::SlotOccupied);
                 }
-                sqlx::query("UPDATE gear SET equipped = TRUE WHERE gear_id = $1")
+                sqlx::query("UPDATE gear SET equipped_hero_slot = $2 WHERE gear_id = $1")
                     .bind(gear_id)
+                    .bind(hero_slot)
                     .execute(&mut *tx)
                     .await?;
                 tx.commit().await?;
@@ -921,16 +965,16 @@ impl Db {
                     .gear
                     .get(&gear_id)
                     .filter(|g| g.owner_player_id == player_id)
-                    .map(|g| (g.slot.clone(), g.max_durability, g.equipped))
+                    .map(|g| (g.slot.clone(), g.max_durability, g.equipped_hero_slot))
                 else {
                     return Ok(EquipResult::NotFound);
                 };
 
-                if !equipped {
-                    m.gear.get_mut(&gear_id).unwrap().equipped = false;
+                let Some(hero_slot) = target else {
+                    m.gear.get_mut(&gear_id).unwrap().equipped_hero_slot = None;
                     return Ok(EquipResult::Ok);
-                }
-                if already {
+                };
+                if already == Some(hero_slot) {
                     return Ok(EquipResult::Ok);
                 }
                 if max_durability == 0 {
@@ -939,13 +983,13 @@ impl Db {
                 let occupied = m.gear.values().any(|g| {
                     g.owner_player_id == player_id
                         && g.slot == slot
-                        && g.equipped
+                        && g.equipped_hero_slot == Some(hero_slot)
                         && g.gear_id != gear_id
                 });
                 if occupied {
                     return Ok(EquipResult::SlotOccupied);
                 }
-                m.gear.get_mut(&gear_id).unwrap().equipped = true;
+                m.gear.get_mut(&gear_id).unwrap().equipped_hero_slot = Some(hero_slot);
                 Ok(EquipResult::Ok)
             }
         }
@@ -965,6 +1009,14 @@ pub enum EquipResult {
     SlotOccupied,
 }
 
+/// One hero's summed combat bonuses from their equipped gear.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GearBonus {
+    pub atk: i32,
+    pub def: i32,
+    pub spd: i32,
+}
+
 /// A red-chest gear item to bank into the Vault on extraction.
 #[derive(Debug, Clone)]
 pub struct LootedGear {
@@ -973,6 +1025,8 @@ pub struct LootedGear {
     pub slot: String,
     pub tier: i32,
     pub atk_bonus: i32,
+    pub def_bonus: i32,
+    pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
 }
@@ -986,9 +1040,12 @@ pub struct GearRow {
     pub insurance: String,
     pub tier: i32,
     pub atk_bonus: i32,
+    pub def_bonus: i32,
+    pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
-    pub equipped: bool,
+    /// Which of the owner's heroes has this equipped, if any.
+    pub equipped_hero_slot: Option<i32>,
 }
 
 fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
@@ -999,9 +1056,11 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         insurance: row.get("insurance"),
         tier: row.get("tier"),
         atk_bonus: row.get("atk_bonus"),
+        def_bonus: row.get("def_bonus"),
+        spd_bonus: row.get("spd_bonus"),
         base_max_durability: row.get("base_max_durability"),
         max_durability: row.get("max_durability"),
-        equipped: row.get("equipped"),
+        equipped_hero_slot: row.get("equipped_hero_slot"),
     }
 }
 
@@ -1064,9 +1123,11 @@ struct MemGear {
     insurance: String,
     tier: i32,
     atk_bonus: i32,
+    def_bonus: i32,
+    spd_bonus: i32,
     base_max_durability: i32,
     max_durability: i32,
-    equipped: bool,
+    equipped_hero_slot: Option<i32>,
 }
 
 impl MemGear {
@@ -1078,9 +1139,11 @@ impl MemGear {
             insurance: self.insurance.clone(),
             tier: self.tier,
             atk_bonus: self.atk_bonus,
+            def_bonus: self.def_bonus,
+            spd_bonus: self.spd_bonus,
             base_max_durability: self.base_max_durability,
             max_durability: self.max_durability,
-            equipped: self.equipped,
+            equipped_hero_slot: self.equipped_hero_slot,
         }
     }
 }
@@ -1112,13 +1175,13 @@ mod tests {
         assert!(db.verify_login("alice", "nope").await.unwrap().is_none());
         assert!(db.verify_login("ghost", "pw").await.unwrap().is_none());
 
-        // Seeded: 4 hero names, 3 skills, an equipped starter weapon, empty vault.
+        // Seeded: 4 hero names, 3 skills, a starter weapon equipped to hero 0, empty vault.
         assert_eq!(db.get_hero_names(p.player_id).await.unwrap().len(), 4);
         assert_eq!(db.get_skills(p.player_id).await.unwrap().len(), 3);
         let gear = db.get_gear(p.player_id).await.unwrap();
         assert_eq!(gear.len(), 1);
-        assert!(gear[0].equipped);
-        assert_eq!(db.equipped_atk_bonus(p.player_id).await.unwrap(), 3);
+        assert_eq!(gear[0].equipped_hero_slot, Some(0));
+        assert_eq!(db.equipped_gear_bonuses(p.player_id, 4).await.unwrap()[0].atk, 3);
         assert_eq!(db.get_vault(p.player_id).await.unwrap(), (0, vec![]));
     }
 
@@ -1161,7 +1224,8 @@ mod tests {
         let p = db.register("carol", "pw").await.unwrap().player_id;
         let starter = db.get_gear(p).await.unwrap()[0].gear_id;
 
-        // A second weapon; equipping it conflicts with the equipped starter.
+        // A second weapon; equipping it to the same hero (0) conflicts with the
+        // equipped starter (one weapon per hero).
         db.insert_looted_gear(
             p,
             &[LootedGear {
@@ -1170,6 +1234,8 @@ mod tests {
                 slot: "weapon".into(),
                 tier: 1,
                 atk_bonus: 7,
+                def_bonus: 0,
+                spd_bonus: 0,
                 base_max_durability: 80,
                 max_durability: 80,
             }],
@@ -1185,15 +1251,17 @@ mod tests {
             .unwrap()
             .gear_id;
 
-        assert_eq!(db.set_equipped(p, looted, true).await.unwrap(), EquipResult::SlotOccupied);
-        assert_eq!(db.set_equipped(p, starter, false).await.unwrap(), EquipResult::Ok);
-        assert_eq!(db.set_equipped(p, looted, true).await.unwrap(), EquipResult::Ok);
-        assert_eq!(db.equipped_atk_bonus(p).await.unwrap(), 7);
-        assert_eq!(db.set_equipped(p, Uuid::now_v7(), true).await.unwrap(), EquipResult::NotFound);
+        assert_eq!(db.set_equipped(p, looted, Some(0)).await.unwrap(), EquipResult::SlotOccupied);
+        // Per-character equip: the looted sword goes on hero 1 instead, no
+        // conflict, and hero 0 keeps the starter — two different heroes with
+        // two different weapons is exactly the point of this feature.
+        assert_eq!(db.set_equipped(p, looted, Some(1)).await.unwrap(), EquipResult::Ok);
+        let bonuses = db.equipped_gear_bonuses(p, 4).await.unwrap();
+        assert_eq!(bonuses[0].atk, 3);
+        assert_eq!(bonuses[1].atk, 7);
+        assert_eq!(db.set_equipped(p, Uuid::now_v7(), Some(0)).await.unwrap(), EquipResult::NotFound);
 
-        // Death sink only touches equipped blue-chest gear (starter is unequipped now).
-        db.set_equipped(p, looted, false).await.unwrap();
-        db.set_equipped(p, starter, true).await.unwrap();
+        // Death sink only touches equipped blue-chest gear (looted sword is red).
         db.apply_death_durability(p).await.unwrap();
         let starter_row = db.get_gear(p).await.unwrap().into_iter().find(|g| g.gear_id == starter).unwrap();
         assert_eq!(starter_row.max_durability, 90); // floor(100 * 0.9)

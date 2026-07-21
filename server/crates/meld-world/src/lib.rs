@@ -127,12 +127,16 @@ pub fn combat_material_for_biome(d: i64) -> &'static str {
 }
 
 /// Red-chest gear rolled as creature loot (economy.md S1, gear-item-models.md).
+/// Each slot carries exactly one relevant stat — weapon → atk, armor → def,
+/// accessory → spd — the other two stay 0 (no secondary stats/sockets yet).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GearDrop {
     pub name: String,
     pub slot: String,
     pub tier: i32,
     pub atk_bonus: i32,
+    pub def_bonus: i32,
+    pub spd_bonus: i32,
     pub max_durability: i32,
 }
 
@@ -196,12 +200,21 @@ pub fn roll_creature_loot(
         let tier = sc.tier(distance) as i32;
         let slot = ["weapon", "armor", "accessory"][rng.below(3)];
         let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
-        let atk_bonus = (l.gear_atk_per_tier * tier as f64 * gjitter).round().max(1.0) as i32;
+        // One roll, routed into whichever stat this slot cares about: weapon
+        // hits harder, armor shrugs off more, an accessory moves faster.
+        let stat = (l.gear_atk_per_tier * tier as f64 * gjitter).round().max(1.0) as i32;
+        let (atk_bonus, def_bonus, spd_bonus) = match slot {
+            "weapon" => (stat, 0, 0),
+            "armor" => (0, stat, 0),
+            _ => (0, 0, stat),
+        };
         Some(GearDrop {
             name: gear_name(distance, slot, &mut rng),
             slot: slot.to_string(),
             tier,
             atk_bonus,
+            def_bonus,
+            spd_bonus,
             max_durability: l.gear_base_durability,
         })
     } else {
@@ -1756,8 +1769,17 @@ mod tests {
             if let Some(g) = roll_creature_loot(&b, floor, 1, s).gear {
                 saw_gear = true;
                 assert_eq!(g.tier, 3, "tier(300) = 3");
-                assert!(g.atk_bonus >= 1 && g.max_durability > 0);
-                assert!(["weapon", "armor", "accessory"].contains(&g.slot.as_str()));
+                assert!(g.max_durability > 0);
+                // Exactly one stat is rolled, matching the drop's own slot.
+                let stat = match g.slot.as_str() {
+                    "weapon" => g.atk_bonus,
+                    "armor" => g.def_bonus,
+                    "accessory" => g.spd_bonus,
+                    other => panic!("unexpected gear slot {other}"),
+                };
+                assert!(stat >= 1, "the {} drop should roll a nonzero stat", g.slot);
+                let others = g.atk_bonus + g.def_bonus + g.spd_bonus - stat;
+                assert_eq!(others, 0, "only the {} slot's stat should be nonzero", g.slot);
             }
         }
         assert!(saw_gear, "red gear should drop at/after the floor for some seeds");
