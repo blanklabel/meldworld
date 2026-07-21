@@ -26,11 +26,43 @@ fi
 createdb -p "$PGPORT" -h 127.0.0.1 -U "$PGUSER" "$DBNAME" 2>/dev/null || true
 export MELD_DATABASE_URL="postgres://$PGUSER@127.0.0.1:$PGPORT/$DBNAME"
 
-echo "› building + starting server on $ADDR"
+# Free OUR server port first. A stale server from a previous session (or a
+# crashed run) that still holds $ADDR would make the freshly-built server fail to
+# bind — and the health check below would then pass against the OLD binary, so
+# the client silently plays against old code (the "minimap/perks don't work"
+# trap). Scoped to THIS run's port only; never a blanket `pkill`, so it's safe
+# beside other worktrees/agents on their own ports (AGENTS.md: stop by port).
+SRVPORT="${ADDR##*:}"
+STALE="$(lsof -nP -iTCP:"$SRVPORT" -sTCP:LISTEN -t 2>/dev/null || true)"
+if [ -n "$STALE" ]; then
+  echo "› freeing port $SRVPORT held by a stale server (pid $STALE)"
+  # shellcheck disable=SC2086
+  kill $STALE 2>/dev/null || true
+  for _ in $(seq 1 10); do
+    lsof -nP -iTCP:"$SRVPORT" -sTCP:LISTEN -t >/dev/null 2>&1 || break
+    sleep 0.3
+  done
+  if lsof -nP -iTCP:"$SRVPORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo "› still held — forcing (SIGKILL)"
+    lsof -nP -iTCP:"$SRVPORT" -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null || true
+    sleep 0.3
+  fi
+fi
+
+echo "› building + starting server on $ADDR ($(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null || echo '?'))"
 ( cd "$ROOT" && MELD_ADDR="$ADDR" cargo run -q -p meld-server ) >/tmp/meld-server.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true' EXIT
-until curl -sf "http://$ADDR/v1/healthz" >/dev/null 2>&1; do sleep 0.3; done
+# Wait for OUR server to become healthy — but fail loudly if it dies first (e.g.
+# the port was still blocked), instead of silently accepting a different server.
+until curl -sf "http://$ADDR/v1/healthz" >/dev/null 2>&1; do
+  if ! kill -0 "$SRV" 2>/dev/null; then
+    echo "✗ server exited before it was healthy — last lines of /tmp/meld-server.log:" >&2
+    tail -20 /tmp/meld-server.log >&2
+    exit 1
+  fi
+  sleep 0.3
+done
 echo "› server healthy at http://$ADDR"
 
 export MELD_SERVER="http://$ADDR"
