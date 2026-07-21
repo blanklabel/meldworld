@@ -298,23 +298,49 @@ pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroB
     }
 }
 
+/// Yaw-only rotation turning a billboard quad's FRONT (+Z) face toward the camera,
+/// with both points in **world** space. Upright (never pitches); returns identity
+/// when the camera is directly overhead (degenerate horizontal direction).
+///
+/// Facing the FRONT (+Z) — not the away-vector — matters: the away-vector shows the
+/// quad's back face, mirroring the sprite so side facings point the wrong way (a
+/// right-facing "east" sprite would read as walking left). Facing the front also
+/// keeps [`cyl_billboard_mesh`]'s cylindrical lighting normals bowed at the viewer.
+///
+/// Pure + world-space so it can be exhaustively unit-tested — see the tests below,
+/// which pin the facing dead-on at large world coordinates (the regression guard).
+pub fn billboard_yaw(sprite_world: Vec3, cam_world: Vec3) -> Quat {
+    let mut at = cam_world;
+    at.y = sprite_world.y; // upright — yaw only
+    let dir = (at - sprite_world).normalize_or_zero();
+    if dir.length_squared() > 0.0 {
+        Quat::from_rotation_arc(Vec3::Z, dir)
+    } else {
+        Quat::IDENTITY
+    }
+}
+
 /// System: rotate every [`Billboard`] to face the camera (yaw only, stays upright).
+///
+/// Both the sprite and the camera are read in **world** space via [`GlobalTransform`].
+/// This is load-bearing: billboards are children of a root translated to the entity's
+/// world position (so the walk-animation root can move the whole thing as one). Reading
+/// the child's *local* `Transform` — its translation is ~origin — would compute facing
+/// relative to the world origin, which only looks right *near* it. Far out in the maze
+/// that error grows until the sprite turns edge-on and collapses to a "paper" sliver
+/// (the overworld roams far from origin as you dive, so this is not hypothetical).
+///
+/// Invariant: a billboard's ancestors carry only translation/scale, never rotation —
+/// so writing the local rotation here sets the intended world rotation. (Every spawn
+/// site upholds this: hero/creature roots use `Transform::from_translation`.)
 pub fn billboard(
-    cam_q: Query<&Transform, (With<Camera3d>, Without<Billboard>)>,
-    mut q: Query<&mut Transform, With<Billboard>>,
+    cam_q: Query<&GlobalTransform, (With<Camera3d>, Without<Billboard>)>,
+    mut q: Query<(&mut Transform, &GlobalTransform), With<Billboard>>,
 ) {
     let Ok(cam) = cam_q.single() else { return };
-    for mut t in &mut q {
-        let mut at = cam.translation;
-        at.y = t.translation.y; // upright — yaw only
-        // Face the quad's FRONT (+Z) toward the camera. Using the away-vector would
-        // show the back face — mirroring the sprite so side facings point the wrong
-        // way (a right-facing "east" sprite reads as walking left). Toward-camera
-        // also keeps the cylindrical lighting normals bowed at the viewer.
-        let dir = (at - t.translation).normalize_or_zero();
-        if dir.length_squared() > 0.0 {
-            t.rotation = Quat::from_rotation_arc(Vec3::Z, dir);
-        }
+    let cam_world = cam.translation();
+    for (mut t, gt) in &mut q {
+        t.rotation = billboard_yaw(gt.translation(), cam_world);
     }
 }
 
@@ -837,5 +863,112 @@ pub fn contact_shadow_material() -> StandardMaterial {
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         ..default()
+    }
+}
+
+// ---- regression guard: billboards must never collapse to a "paper" sliver -------
+//
+// The overworld roams far from the world origin as you dive. A billboard is a child
+// of a root translated to its world position, so its *local* translation is ~origin.
+// Facing math that used the local translation only looked right near origin; far out
+// the yaw error grew until sprites turned edge-on (the "paper look" regression). These
+// tests pin the fix: facing is computed in world space and stays dead-on everywhere,
+// both for the pure [`billboard_yaw`] math and for the real [`billboard`] *system*
+// driving a far-from-origin child through actual transform propagation.
+#[cfg(test)]
+mod billboard_tests {
+    use super::*;
+
+    /// How squarely a billboard faces the camera: the dot of its rendered front (+Z)
+    /// against the flat sprite→camera direction. 1.0 = dead-on; 0.0 = edge-on (the
+    /// "paper" sliver). This is the exact quantity that regressed.
+    fn facing_dot(front: Vec3, sprite: Vec3, cam: Vec3) -> f32 {
+        let mut to_cam = cam - sprite;
+        to_cam.y = 0.0;
+        Vec3::new(front.x, 0.0, front.z).normalize_or_zero().dot(to_cam.normalize_or_zero())
+    }
+
+    #[test]
+    fn faces_camera_dead_on_regardless_of_world_position() {
+        // Sprites deep in the maze carry huge world coordinates. Every one must stay
+        // dead-on (dot ~ 1.0), not just those near origin — that's the whole bug.
+        let positions = [
+            Vec3::ZERO,
+            Vec3::new(600.0, 0.0, 800.0),
+            Vec3::new(1500.0, 0.0, 0.0),
+            Vec3::new(-1200.0, 0.0, 340.0),
+            Vec3::new(0.0, 0.0, -2000.0),
+        ];
+        let cam_offsets = [
+            Vec3::new(0.0, 12.0, 15.0),
+            Vec3::new(15.0, 12.0, 0.0),
+            Vec3::new(-9.0, 20.0, -9.0),
+            Vec3::new(0.0, 30.0, -14.0),
+        ];
+        for &s in &positions {
+            for &o in &cam_offsets {
+                let cam = s + o;
+                let front = billboard_yaw(s, cam) * Vec3::Z;
+                let d = facing_dot(front, s, cam);
+                assert!(d > 0.999, "sprite {s:?} + cam offset {o:?}: facing dot {d} (edge-on sliver!)");
+            }
+        }
+    }
+
+    #[test]
+    fn overhead_camera_stays_finite() {
+        // Camera directly above → no horizontal direction; must not NaN or produce a
+        // non-unit quat (which would garble the sprite) — just hold still.
+        let r = billboard_yaw(Vec3::new(500.0, 0.0, 500.0), Vec3::new(500.0, 40.0, 500.0));
+        assert!(r.is_finite(), "overhead camera produced a non-finite rotation");
+        assert!((r.length() - 1.0).abs() < 1e-4, "rotation is not unit-length");
+    }
+
+    /// End-to-end guard against the *wiring* mistake (reading local instead of world
+    /// space): drive the real `billboard` system over a child billboard whose parent
+    /// sits far from origin, through Bevy's own transform propagation, and assert the
+    /// child ends up facing the camera. This fails if `billboard` ever regresses to
+    /// reading a plain `&Transform` again.
+    #[test]
+    fn real_system_faces_a_far_from_origin_child() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(bevy::transform::TransformPlugin)
+            .add_systems(Update, billboard);
+
+        let hero = Vec3::new(900.0, 0.0, 1200.0);
+        let cam_pos = hero + Vec3::new(0.0, 14.0, 16.0); // parked behind + above
+        app.world_mut().spawn((
+            Camera3d::default(),
+            Transform::from_translation(cam_pos),
+            GlobalTransform::default(),
+        ));
+
+        // Root translated to the hero's world position; billboard is a CHILD (the
+        // exact structure that broke). The child's local translation is ~origin.
+        let child = app
+            .world_mut()
+            .spawn((Transform::from_xyz(0.0, 1.0, 0.0), GlobalTransform::default(), Billboard))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((Transform::from_translation(hero), GlobalTransform::default(), Visibility::default()))
+            .id();
+        app.world_mut().entity_mut(root).add_child(child);
+
+        // First tick populates GlobalTransforms; subsequent ticks let the system act
+        // on the propagated world positions and propagate the resulting rotation.
+        for _ in 0..3 {
+            app.update();
+        }
+
+        let gt = *app.world().entity(child).get::<GlobalTransform>().unwrap();
+        let front = gt.rotation() * Vec3::Z;
+        let child_world = gt.translation();
+        let d = facing_dot(front, child_world, cam_pos);
+        assert!(
+            d > 0.99,
+            "far-from-origin child billboard faced {d} (edge-on) — billboard() is reading local space again"
+        );
     }
 }
