@@ -399,6 +399,10 @@ struct ActiveInstance {
     hero_rows: HashMap<String, Vec<bool>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
+    /// player_id -> fractional HP carried over between ticks for the Resonant
+    /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
+    /// bank the sub-1 remainder here and apply whole HP as it accrues).
+    regen_accum: HashMap<String, f32>,
 }
 
 impl ActiveInstance {
@@ -806,6 +810,147 @@ impl GameState {
             .collect()
     }
 
+    /// A player's earned overworld class perks (Overworld Class Perks / "party
+    /// sense"): class *presence* in the party gates each perk, the shared
+    /// `run_level` scales its tier. Defaults (no perks) if the player isn't in
+    /// the instance. See [`Self::compute_perks`] and the `[perks]` balance block.
+    fn perks_for(&self, pid: &str) -> wr::Perks {
+        let Some(inst) = self.instance.as_ref() else {
+            return wr::Perks::default();
+        };
+        let Some(classes) = inst.party_classes.get(pid) else {
+            return wr::Perks::default();
+        };
+        let run_level = inst
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| r.run_level)
+            .unwrap_or(1);
+        self.compute_perks(classes, run_level)
+    }
+
+    /// Pure mapping from (party classes × run level) → earned perks against the
+    /// `[perks]` balance thresholds. A perk stays neutral unless its class is in
+    /// the party. Kept deterministic + side-effect-free so it can be unit-tested.
+    fn compute_perks(&self, classes: &[CharacterClass], run_level: i32) -> wr::Perks {
+        let p = &self.balance.perks;
+        let has = |c: CharacterClass| classes.contains(&c);
+        let lvl = run_level.max(1);
+        let above = |floor: i32| (lvl - floor).max(0) as f32;
+        let mut out = wr::Perks::default();
+        // Hunter — night glow + "predator's eye" monster intel.
+        if has(CharacterClass::Hunter) {
+            out.hunter_glow = p.hunter_glow_base + p.hunter_glow_per_level * (lvl - 1) as f32;
+            out.hunter_intel = if lvl >= p.hunter_intel_atb_at {
+                3
+            } else if lvl >= p.hunter_intel_hp_at {
+                2
+            } else if lvl >= p.hunter_intel_level_at {
+                1
+            } else {
+                0
+            };
+        }
+        // Shifter — corner minimap.
+        if has(CharacterClass::Shifter) && lvl >= p.shifter_map_at {
+            out.shifter_map = if lvl >= p.shifter_map_harvest_at {
+                3
+            } else if lvl >= p.shifter_map_chests_at {
+                2
+            } else {
+                1
+            };
+            out.shifter_map_radius =
+                p.shifter_map_radius_base + p.shifter_map_radius_per_level * above(p.shifter_map_at);
+        }
+        // Psyker — threat sense.
+        if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
+            out.psyker_threat = if lvl >= p.psyker_threat_aggro_at { 2 } else { 1 };
+            out.psyker_reveal_radius = (p.psyker_reveal_base
+                + p.psyker_reveal_per_level * above(p.psyker_threat_elites_at) as f64)
+                as f32;
+        }
+        // Resonant — overworld regen (HP/sec).
+        if has(CharacterClass::Resonant) {
+            out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
+        }
+        // Iron Hull — bulwark (shrinks how close creatures chase this party).
+        if has(CharacterClass::IronHull) {
+            let mult = 1.0 - p.ironhull_aggro_reduction_per_level * lvl as f64;
+            out.ironhull_aggro_mult = mult.max(p.ironhull_aggro_mult_floor) as f32;
+        }
+        out
+    }
+
+    /// Resonant "Overworld Regen": restore carried hero HP over time while a party
+    /// roams (not in battle). Regen is HP/sec but `hero_hp` is integer, so the
+    /// sub-1 remainder is banked in `regen_accum` and whole HP is applied as it
+    /// accrues, most-wounded living hero first (downed heroes at 0 HP are not
+    /// revived — that needs a real fight). Purely server state.
+    fn apply_overworld_regen(&mut self, dt: f64) {
+        // Plan first (shared borrow), then mutate hero_hp (exclusive borrow).
+        let plans: Vec<(String, f32, Vec<i32>)> = {
+            let Some(inst) = self.instance.as_ref() else {
+                return;
+            };
+            let in_battle = inst.parties_in_battle();
+            let mut v = Vec::new();
+            for r in &inst.run.runs {
+                if in_battle.contains(&r.party_id) {
+                    continue;
+                }
+                let regen = self.perks_for(&r.player_id).resonant_regen;
+                if regen <= 0.0 {
+                    continue;
+                }
+                let caps: Vec<i32> = self
+                    .party_views(&r.player_id)
+                    .iter()
+                    .map(|h| h.max_hp)
+                    .collect();
+                v.push((r.player_id.clone(), regen, caps));
+            }
+            v
+        };
+        if plans.is_empty() {
+            return;
+        }
+        let Some(inst) = self.instance.as_mut() else {
+            return;
+        };
+        for (pid, regen, caps) in plans {
+            let acc = inst.regen_accum.entry(pid.clone()).or_insert(0.0);
+            *acc += regen * dt as f32;
+            let whole = acc.floor();
+            if whole < 1.0 {
+                continue;
+            }
+            *acc -= whole;
+            let mut budget = whole as i32;
+            let Some(hps) = inst.hero_hp.get_mut(&pid) else {
+                continue;
+            };
+            while budget > 0 {
+                // Most-wounded living hero still below its cap.
+                let mut best: Option<usize> = None;
+                let mut best_deficit = 0;
+                for (i, h) in hps.iter().enumerate() {
+                    let cap = caps.get(i).copied().unwrap_or(*h);
+                    let deficit = cap - *h;
+                    if *h > 0 && deficit > best_deficit {
+                        best_deficit = deficit;
+                        best = Some(i);
+                    }
+                }
+                let Some(i) = best else { break };
+                hps[i] += 1;
+                budget -= 1;
+            }
+        }
+    }
+
     /// Per-hero stat gains for a party level-up (old_level → new_level), for the
     /// classic JRPG "LEVEL UP!" screen. Mirrors the `party_fighters` derivation
     /// (max HP from Wll; the four attributes from `attributes_at`) so the numbers
@@ -885,6 +1030,7 @@ impl GameState {
                 hero_names: HashMap::new(),
                 hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
+                regen_accum: HashMap::new(),
             });
         }
         let inst = self.instance.as_mut().expect("instance exists");
@@ -1059,6 +1205,8 @@ impl GameState {
                     heroes: rosters.get(pid).cloned().unwrap_or_default(),
                 },
             ));
+            // The caller's earned overworld class perks ("party sense").
+            out.push(out_msg(pid, &self.perks_for(pid)));
             // Stream the initial chain's terrain (elevation grid + connectors) so
             // the client can build the stepped relief. Path rides run.started, so
             // these carry no path segment.
@@ -2303,12 +2451,28 @@ impl GameState {
         // only in the no-battle branch) is what keeps players who *aren't* fighting
         // live: without it, one player's fight froze the whole instance and starved
         // everyone else of snapshots until their sockets dropped (the co-op crash).
+        // Iron Hull "Bulwark": per-player creature-aggro multipliers (≤1 shrinks how
+        // close a creature will chase/skirmish-pull that party). Built before the
+        // mut borrow below (perks_for needs a shared borrow of the instance).
+        let aggro_mult: HashMap<String, f64> = {
+            let ids: Vec<String> = self
+                .instance
+                .as_ref()
+                .map(|inst| inst.run.runs.iter().map(|r| r.player_id.clone()).collect())
+                .unwrap_or_default();
+            ids.into_iter()
+                .map(|pid| {
+                    let m = self.perks_for(&pid).ironhull_aggro_mult as f64;
+                    (pid, m)
+                })
+                .collect()
+        };
         let mut created_sections: Vec<usize> = Vec::new();
         {
             // `balance` and `instance` are disjoint fields → both borrowable.
             let balance = &self.balance;
             if let Some(inst) = self.instance.as_mut() {
-                inst.arena.step_creatures(dt);
+                inst.arena.step_creatures_with_aggro(dt, &aggro_mult);
                 // Stream in new sections as the frontier player advances (endless world).
                 let max_x = inst
                     .arena
@@ -2339,6 +2503,10 @@ impl GameState {
                 }
             }
         }
+        // Resonant "Overworld Regen": top up carried hero HP while walking (feeds
+        // the next fight's starting HP). Server-authoritative; emits no messages.
+        self.apply_overworld_regen(dt);
+
         // Ground loot dropped by creature-vs-creature kills, auto-collected by any
         // roaming player who walks over it.
         out.extend(self.collect_ground_loot());
@@ -2483,6 +2651,7 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(a.state.clone()),
                 level: Some(a.elevation),
+                ..Default::default()
             })
             .collect();
         // Every living creature is a dynamic entity too (movement-world.md:
@@ -2497,6 +2666,13 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
                 level: Some(m.elevation),
+                // Overworld mob intel (client shows each field only when the
+                // viewer's Hunter/Psyker perk unlocks it — see `run.perks`).
+                mob_level: Some(m.level),
+                hp: Some(m.hp),
+                max_hp: Some(m.max_hp),
+                encounter_class: Some(m.encounter_class.clone()),
+                aggression: Some(m.aggression.clone()),
             });
         }
         // The single deep extraction portal (extraction is otherwise the Town
@@ -2507,6 +2683,7 @@ impl GameState {
             velocity: wm::Velocity { x: 0.0, y: 0.0 },
             avatar_state: Some("portal".to_string()),
             level: Some(0),
+            ..Default::default()
         });
         // Treasure chests, tagged `chest:<tier>:<open>` (`open` = 0/1) so the client
         // draws unopened vs opened. Opened chests stay in the world (as opened).
@@ -2517,6 +2694,7 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
                 level: Some(c.elevation),
+                ..Default::default()
             });
         }
         // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
@@ -2527,6 +2705,7 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("resource:{}", n.kind)),
                 level: Some(n.elevation),
+                ..Default::default()
             });
         }
         // Ground loot dropped by creature-vs-creature skirmishes, tagged
@@ -2538,6 +2717,7 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("loot:{}", l.kind)),
                 level: None,
+                ..Default::default()
             });
         }
         // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
@@ -2550,6 +2730,7 @@ impl GameState {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
                 level: None,
+                ..Default::default()
             });
         }
         let server_tick = now_ms() as i64;
@@ -2581,6 +2762,10 @@ impl GameState {
                 .iter()
                 .find(|a| a.player_id == r.player_id)
                 .map(|a| a.position);
+            // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
+            // (dangerous foes sensed at range). Non-mob entities keep the base radius.
+            let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
+            let mob_radius2 = mob_radius * mob_radius;
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 Some(p) => entities
                     .iter()
@@ -2591,7 +2776,12 @@ impl GameState {
                             || e.entity_id == "portal"
                             || {
                                 let (dx, dy) = (e.position.x - p.x, e.position.y - p.y);
-                                dx * dx + dy * dy <= radius2
+                                let d2 = dx * dx + dy * dy;
+                                let is_mob = e
+                                    .avatar_state
+                                    .as_deref()
+                                    .is_some_and(|s| s.starts_with("mob:"));
+                                d2 <= if is_mob { mob_radius2 } else { radius2 }
                             }
                     })
                     .cloned()
@@ -2966,6 +3156,8 @@ impl GameState {
         for pid in &leveled {
             let heroes = self.party_views(pid);
             out.push(out_msg(pid, &wr::Party { heroes }));
+            // Perk tiers scale with run level, so refresh them on level-up too.
+            out.push(out_msg(pid, &self.perks_for(pid)));
         }
         out
     }

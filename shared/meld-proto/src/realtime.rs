@@ -131,7 +131,7 @@ pub mod movement {
         pub server_tick: i64,
         pub entities: Vec<SnapshotEntity>,
     }
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct SnapshotEntity {
         pub entity_id: Id,
         pub position: Position,
@@ -142,8 +142,25 @@ pub mod movement {
         /// render height by `level × step_height`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub level: Option<u8>,
+        /// Overworld mob intel (Hunter/Psyker perks). All absent for non-mobs and
+        /// old wire; the client renders each only when its own party perk unlocks
+        /// it (nameplates gated by `run.perks`). `mob_level` is the creature's
+        /// combat level; `hp`/`max_hp` drive the pre-fight HP bar (mobs already
+        /// lose HP to hostile-faction skirmishes out of battle); `encounter_class`
+        /// (standard|elite|gatekeeper) and `aggression` (passive|territorial|
+        /// aggressive) drive the Psyker threat marker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub mob_level: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub hp: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub max_hp: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub encounter_class: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub aggression: Option<String>,
     }
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
     pub struct Velocity {
         pub x: f64,
         pub y: f64,
@@ -467,6 +484,65 @@ pub mod run {
         const TYPE: &'static str = "run.party";
     }
 
+    /// S2C — the caller's earned **overworld class perks** ("party sense"). The
+    /// server computes these from the party's class composition × shared
+    /// `run_level` against the `[perks]` balance thresholds, and re-sends on run
+    /// start and every level-up (alongside `run.party`). Each field is 0/absent
+    /// when the gating class isn't in the party. The client gates all client-side
+    /// perk rendering (avatar glow, mob nameplates, minimap, battle ATB reveal) by
+    /// these values; `resonant_regen`/`ironhull_aggro_mult` are enforced
+    /// server-side and mirrored here only for a HUD hint. See CANON class taxonomy.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Perks {
+        /// Hunter avatar-light intensity factor (0 = no Hunter in party).
+        #[serde(default)]
+        pub hunter_glow: f32,
+        /// Hunter intel tier: 0 none · 1 mob level · 2 +HP bar · 3 +battle ATB reveal.
+        #[serde(default)]
+        pub hunter_intel: u8,
+        /// Shifter minimap tier: 0 none · 1 map+mob/portal · 2 +chests · 3 +harvestables.
+        #[serde(default)]
+        pub shifter_map: u8,
+        /// World-units the Shifter minimap covers (0 when no map).
+        #[serde(default)]
+        pub shifter_map_radius: f32,
+        /// Psyker threat tier: 0 none · 1 elites/gatekeepers · 2 +aggressive mobs.
+        #[serde(default)]
+        pub psyker_threat: u8,
+        /// Extended mob interest radius the Psyker reveals (0 when no Psyker).
+        #[serde(default)]
+        pub psyker_reveal_radius: f32,
+        /// Resonant overworld regen applied server-side, in HP/sec (display hint).
+        #[serde(default)]
+        pub resonant_regen: f32,
+        /// Iron Hull skirmish/aggro radius multiplier (≤1; 1 = no Iron Hull).
+        #[serde(default = "one_f32")]
+        pub ironhull_aggro_mult: f32,
+    }
+    fn one_f32() -> f32 {
+        1.0
+    }
+    /// Neutral perks (no gating class in the party). Note `ironhull_aggro_mult`
+    /// defaults to 1.0 (no aggro reduction), NOT 0.0 — so a derived `Default`
+    /// would be wrong; this is hand-written to match the serde `default`.
+    impl Default for Perks {
+        fn default() -> Self {
+            Self {
+                hunter_glow: 0.0,
+                hunter_intel: 0,
+                shifter_map: 0,
+                shifter_map_radius: 0.0,
+                psyker_threat: 0,
+                psyker_reveal_radius: 0.0,
+                resonant_regen: 0.0,
+                ironhull_aggro_mult: 1.0,
+            }
+        }
+    }
+    impl Message for Perks {
+        const TYPE: &'static str = "run.perks";
+    }
+
     /// S2C — the party gained one or more levels this victory. Carries the
     /// before/after stats per hero so the client can play the classic JRPG
     /// "LEVEL UP!" stat-gain sequence. Sent alongside the refreshed `run.party`.
@@ -745,6 +821,54 @@ mod tests {
         let json = r#"{"entity_id":"m","position":{"x":1.0,"y":2.0},"velocity":{"x":0.0,"y":0.0},"avatar_state":"active"}"#;
         let e: movement::SnapshotEntity = serde_json::from_str(json).unwrap();
         assert_eq!(e.level, None);
+    }
+
+    #[test]
+    fn snapshot_entity_mob_intel_is_optional_and_round_trips() {
+        // Old wire (no intel fields) still decodes; all absent → None.
+        let json = r#"{"entity_id":"m","position":{"x":1.0,"y":2.0},"velocity":{"x":0.0,"y":0.0},"avatar_state":"mob:dune_wyrm:beasts"}"#;
+        let e: movement::SnapshotEntity = serde_json::from_str(json).unwrap();
+        assert_eq!(e.mob_level, None);
+        assert_eq!(e.hp, None);
+        assert_eq!(e.encounter_class, None);
+        // A fully-populated mob round-trips.
+        let full = movement::SnapshotEntity {
+            entity_id: "m".into(),
+            position: Position { x: 1.0, y: 2.0 },
+            velocity: movement::Velocity { x: 0.0, y: 0.0 },
+            avatar_state: Some("mob:dune_wyrm:beasts".into()),
+            level: Some(1),
+            mob_level: Some(7),
+            hp: Some(30),
+            max_hp: Some(52),
+            encounter_class: Some("elite".into()),
+            aggression: Some("aggressive".into()),
+        };
+        let s = serde_json::to_string(&full).unwrap();
+        let back: movement::SnapshotEntity = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.mob_level, Some(7));
+        assert_eq!(back.hp, Some(30));
+        assert_eq!(back.max_hp, Some(52));
+        assert_eq!(back.encounter_class.as_deref(), Some("elite"));
+        assert_eq!(back.aggression.as_deref(), Some("aggressive"));
+    }
+
+    #[test]
+    fn perks_round_trips_and_defaults_sanely() {
+        assert_eq!(run::Perks::TYPE, "run.perks");
+        // Old/empty wire: aggro mult defaults to 1.0 (no Iron Hull), rest to 0.
+        let empty: run::Perks = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.ironhull_aggro_mult, 1.0);
+        assert_eq!(empty.hunter_intel, 0);
+        assert_eq!(empty.shifter_map, 0);
+        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"hunter_glow":2.5,"hunter_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"ironhull_aggro_mult":0.6}}"#;
+        let env: Envelope<run::Perks> = serde_json::from_str(env_json).unwrap();
+        assert_eq!(env.payload.hunter_intel, 3);
+        assert_eq!(env.payload.ironhull_aggro_mult, 0.6);
+        let s = serde_json::to_string(&env.payload).unwrap();
+        let back: run::Perks = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.shifter_map, 2);
+        assert_eq!(back.psyker_reveal_radius, 30.0);
     }
 
     #[test]

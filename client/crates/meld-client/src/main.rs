@@ -229,6 +229,7 @@ fn main() {
         .init_resource::<WorldPath>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
+        .init_resource::<PerksRes>()
         .init_resource::<LevelUpQueue>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
@@ -262,6 +263,9 @@ fn main() {
                 anchor_sky_fx,
                 drive_rain,
                 animate_water,
+                // Player characters carry their own light at night (overworld +
+                // battle) so the game stays readable in the dark.
+                illuminate_players,
             ),
         )
         // Join
@@ -329,6 +333,10 @@ fn main() {
                 sync_chests,
                 auto_open_chest,
                 pulse_collectibles,
+                // Overworld class perks ("party sense").
+                update_hunter_lamp,
+                update_mob_nameplates,
+                update_minimap,
             )
                 .run_if(in_state(Screen::Overworld)),
         )
@@ -470,11 +478,18 @@ struct OwEntity {
     level: u8,
     /// For chests: whether it's been opened.
     opened: bool,
+    /// Overworld mob intel (monsters only; `None` otherwise). Rendered as a
+    /// nameplate only when the viewer's Hunter/Psyker perk unlocks each field.
+    mob_level: Option<i32>,
+    hp: Option<i32>,
+    max_hp: Option<i32>,
+    encounter_class: Option<String>,
+    aggression: Option<String>,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -487,10 +502,15 @@ impl OwEntity {
             battling: false,
             level: 0,
             opened: false,
+            mob_level: None,
+            hp: None,
+            max_hp: None,
+            encounter_class: None,
+            aggression: None,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None }
     }
 }
 
@@ -616,6 +636,12 @@ struct ChestEntity {
 struct PartyRoster {
     heroes: Vec<meld_client::net::HeroLine>,
 }
+
+/// The caller's earned overworld class perks ("party sense"), from `run.perks`.
+/// Gates the Hunter avatar glow + monster intel, the Shifter minimap, the Psyker
+/// threat markers, and the battle ATB reveal. Default = no perks.
+#[derive(Resource, Default)]
+struct PerksRes(meld_client::net::PerksLine);
 
 /// In-progress hero rename on the party screen: the slot being edited + its buffer.
 #[derive(Resource, Default)]
@@ -2299,10 +2325,14 @@ struct Sky {
     weather: f32,
     weather_target: f32,
     weather_timer: f32,
+    /// Daylight factor (0 = night, 1 = day), recomputed each frame by [`apply_sky`]
+    /// so other systems (e.g. the Hunter avatar lamp) can read the darkness without
+    /// duplicating the sun-angle math.
+    day: f32,
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { t: 0.36, weather: 0.0, weather_target: 0.0, weather_timer: 55.0 }
+        Sky { t: 0.36, weather: 0.0, weather_target: 0.0, weather_timer: 55.0, day: 1.0 }
     }
 }
 
@@ -2362,7 +2392,7 @@ fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
 /// (so `hd2d_follow`/`battle_camera` no longer touch it).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_sky(
-    sky: Res<Sky>,
+    mut sky: ResMut<Sky>,
     skymats: Option<Res<SkyMats>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
@@ -2377,6 +2407,8 @@ fn apply_sky(
     let day = ((sun_h + 0.14) / 0.36).clamp(0.0, 1.0); // 0 night → 1 day
     let dusk = ((0.30 - sun_h.abs()).max(0.0) / 0.30).powf(1.2); // horizon glow
     let rain = sky.weather;
+    // Publish the daylight factor so other systems (Hunter lamp) can read darkness.
+    sky.day = day;
 
     let night_sky = Color::srgb(0.03, 0.05, 0.10);
     let day_sky = Color::srgb(0.50, 0.72, 0.93);
@@ -2788,13 +2820,19 @@ fn pump_net(
     mut lobby: ResMut<LobbyData>,
     mut backpack: ResMut<RunBackpack>,
     // Grouped as one tuple param to stay within Bevy's 16-param system limit.
-    mut world_res: (ResMut<WorldPath>, ResMut<WorldFrame>, ResMut<Terrain>, ResMut<LootReport>),
+    mut world_res: (
+        ResMut<WorldPath>,
+        ResMut<WorldFrame>,
+        ResMut<Terrain>,
+        ResMut<LootReport>,
+        ResMut<PerksRes>,
+    ),
     mut roster: ResMut<PartyRoster>,
     mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -2804,6 +2842,7 @@ fn pump_net(
                 backpack.gear = gear;
             }
             ServerMsg::Party { heroes } => roster.heroes = heroes,
+            ServerMsg::Perks { perks: p } => perks.0 = p,
             ServerMsg::LevelUp { new_run_level, heroes, .. } => {
                 // Enqueue each leveled hero for the old-school stat screen.
                 levelup.run_level = new_run_level;
@@ -2892,6 +2931,11 @@ fn pump_net(
                             battling: e.battling,
                             level: e.level,
                             opened: e.opened,
+                            mob_level: e.mob_level,
+                            hp: e.hp,
+                            max_hp: e.max_hp,
+                            encounter_class: e.encounter_class,
+                            aggression: e.aggression,
                         },
                     );
                 }
@@ -3435,6 +3479,35 @@ fn overworld_ui(mut commands: Commands) {
                 BorderRadius::all(Val::Percent(50.0)),
                 BackgroundColor(Color::srgba(0.8, 0.88, 1.0, 0.55)),
             ));
+            // Full-screen overlay that holds per-mob nameplates (Hunter/Psyker
+            // intel), positioned in screen space by `update_mob_nameplates`.
+            p.spawn((
+                NameplateRoot,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            // Shifter corner minimap (top-right). Hidden until the perk unlocks it;
+            // populated with dots by `update_minimap`.
+            p.spawn((
+                MinimapRoot,
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    top: Val::Px(14.0),
+                    width: Val::Px(140.0),
+                    height: Val::Px(140.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderColor(Color::srgba(0.6, 0.8, 1.0, 0.5)),
+                BorderRadius::all(Val::Px(6.0)),
+                BackgroundColor(Color::srgba(0.05, 0.08, 0.14, 0.65)),
+            ));
         });
 }
 
@@ -3656,6 +3729,7 @@ fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
     backpack: Res<RunBackpack>,
+    perks: Res<PerksRes>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
@@ -3686,6 +3760,13 @@ fn update_overworld_hud(
         }
         if near_fight(&world, me_pos) {
             line.push_str("  -  ⚔ Press [J] to join the fight");
+        }
+        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
+        if perks.0.resonant_regen > 0.0 {
+            line.push_str("  -  Regen");
+        }
+        if perks.0.ironhull_aggro_mult < 1.0 {
+            line.push_str("  -  Bulwark");
         }
         **t = line;
     }
@@ -5548,13 +5629,18 @@ fn spawn_player_avatar(
             CharSprite::new(frames.clone(), mat.clone(), root),
         ))
         .with_children(|p| {
-            p.spawn((
+            let mut bb = p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, look.sprite_y, 0.0),
                 hd2d::Billboard,
                 hd2d::HeroBillboard,
             ));
+            // The local hero's own sprite self-illuminates at night (a point light
+            // alone can't light the billboard it sits inside).
+            if id == me {
+                bb.insert(PlayerGlowSprite);
+            }
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
                 MeshMaterial3d(wa.shadow_mat.clone()),
@@ -5562,7 +5648,280 @@ fn spawn_player_avatar(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(1.0, 0.55, 1.0)),
             ));
+            // Hunter "Predator's Eye" lamp: a real point light on the local avatar,
+            // brightening at night as the perk levels (see `update_hunter_lamp`). Only
+            // the local player carries it; intensity 0 until the perk is earned.
+            if id == me {
+                p.spawn((
+                    HunterLamp,
+                    PointLight {
+                        color: Color::srgb(1.0, 0.86, 0.6),
+                        intensity: 0.0,
+                        range: 14.0,
+                        radius: 0.4,
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 2.2, 0.0),
+                ));
+            }
         });
+}
+
+// ---------------------------------------------------------- perks (party sense) ---
+
+/// Marks the point light carried by the local avatar (Hunter "Predator's Eye").
+#[derive(Component)]
+struct HunterLamp;
+/// Marks a PLAYER-CHARACTER sprite billboard (overworld local hero + every battle
+/// hero) so its material self-illuminates at night — a co-located point light
+/// can't light the billboard it sits inside, so player sprites would otherwise go
+/// black in the dark. See [`illuminate_players`].
+#[derive(Component)]
+struct PlayerGlowSprite;
+/// A warm point light carried by each battle hero so the party's own light spills
+/// onto the enemy creature in the arena at night. See [`illuminate_players`].
+#[derive(Component)]
+struct BattlePartyLamp;
+/// Root UI node that holds the per-mob nameplates (Hunter/Psyker intel).
+#[derive(Component)]
+struct NameplateRoot;
+/// One mob nameplate (rebuilt each frame).
+#[derive(Component)]
+struct Nameplate;
+/// Root UI node for the Shifter corner minimap.
+#[derive(Component)]
+struct MinimapRoot;
+/// One minimap dot (rebuilt each frame).
+#[derive(Component)]
+struct MinimapDot;
+
+/// Hunter "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
+/// perk levels, dark by day and absent without a Hunter (intensity from `run.perks`).
+/// Hunter "Predator's Eye": the avatar's point light illuminates the surrounding
+/// overworld at night, brighter + wider as the perk levels (from `run.perks`).
+fn update_hunter_lamp(
+    perks: Res<PerksRes>,
+    sky: Res<Sky>,
+    mut q: Query<&mut PointLight, With<HunterLamp>>,
+) {
+    let glow = perks.0.hunter_glow;
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    for mut light in &mut q {
+        light.intensity = glow * night;
+        light.range = 12.0 + glow / 8000.0;
+    }
+}
+
+/// Player characters carry their own light at night so the game stays readable in
+/// the dark — overworld AND battle. Two parts, both scaled by darkness (nothing by
+/// day): (1) every [`PlayerGlowSprite`] self-illuminates by emitting its own
+/// texture, so the hero never goes black; (2) each [`BattlePartyLamp`] point light
+/// throws warm light off the party onto the enemy creature in the arena.
+fn illuminate_players(
+    sky: Res<Sky>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    sprites: Query<&MeshMaterial3d<StandardMaterial>, With<PlayerGlowSprite>>,
+    mut lamps: Query<&mut PointLight, With<BattlePartyLamp>>,
+) {
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    // Self-illumination: warm glow keyed off each sprite's own texture colours.
+    let ef = night * 1.15;
+    for mh in &sprites {
+        if let Some(m) = mats.get_mut(&mh.0) {
+            if m.emissive_texture.is_none() {
+                m.emissive_texture = m.base_color_texture.clone();
+            }
+            m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
+        }
+    }
+    // The party's light spilling onto the creature.
+    for mut light in &mut lamps {
+        light.intensity = night * 70000.0;
+    }
+}
+
+/// Hunter/Psyker intel: float a nameplate over each overworld mob — its level
+/// (Hunter tier ≥1), an HP bar (tier ≥2), and a Psyker threat marker for
+/// elites/gatekeepers (≥1) and aggressive mobs (≥2). Rebuilt each frame from the
+/// mobs' rendered positions, projected to screen.
+#[allow(clippy::type_complexity)]
+fn update_mob_nameplates(
+    mut commands: Commands,
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    cam_q: Query<(&Camera, &GlobalTransform)>,
+    root_q: Query<Entity, With<NameplateRoot>>,
+    mob_q: Query<(&WorldEntity, &GlobalTransform)>,
+    old: Query<Entity, With<Nameplate>>,
+) {
+    // Clear last frame's plates.
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let intel = perks.0.hunter_intel;
+    let threat = perks.0.psyker_threat;
+    if intel == 0 && threat == 0 {
+        return;
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else {
+        return;
+    };
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    commands.entity(root).with_children(|p| {
+        for (we, gtf) in &mob_q {
+            let Some(ent) = world.entities.get(&we.0) else {
+                continue;
+            };
+            if !matches!(ent.kind, EntityKind::Monster) {
+                continue;
+            }
+            // Project a point above the mob's head to the screen.
+            let head = gtf.translation() + Vec3::Y * 2.6;
+            let Some(s) = cam.world_to_viewport(cam_tf, head).ok() else {
+                continue;
+            };
+            // Threat marker (Psyker): elites/gatekeepers, then aggressive mobs.
+            let ec = ent.encounter_class.as_deref().unwrap_or("standard");
+            let aggr = ent.aggression.as_deref().unwrap_or("passive");
+            let (marker, marker_col) = if threat >= 1 && ec == "gatekeeper" {
+                ("!!!", Color::srgb(1.0, 0.3, 0.3))
+            } else if threat >= 1 && ec == "elite" {
+                ("!!", Color::srgb(1.0, 0.55, 0.2))
+            } else if threat >= 2 && aggr == "aggressive" {
+                ("!", Color::srgb(1.0, 0.75, 0.3))
+            } else {
+                ("", Color::NONE)
+            };
+            p.spawn((
+                Nameplate,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(s.x - 24.0),
+                    top: Val::Px(s.y - 14.0),
+                    width: Val::Px(48.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(1.0),
+                    ..default()
+                },
+            ))
+            .with_children(|c| {
+                if !marker.is_empty() {
+                    c.spawn((
+                        Text::new(marker),
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(marker_col),
+                    ));
+                }
+                if intel >= 1 {
+                    let lvl = ent.mob_level.unwrap_or(0);
+                    c.spawn((
+                        Text::new(format!("Lv {lvl}")),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                    ));
+                }
+                if intel >= 2 {
+                    if let (Some(hp), Some(max)) = (ent.hp, ent.max_hp) {
+                        let frac = if max > 0 { (hp as f32 / max as f32).clamp(0.0, 1.0) } else { 0.0 };
+                        // Green → red as HP falls.
+                        let fill = Color::srgb(1.0 - frac * 0.8, 0.2 + frac * 0.7, 0.2);
+                        c.spawn((
+                            Node {
+                                width: Val::Px(40.0),
+                                height: Val::Px(5.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+                        ))
+                        .with_children(|bar| {
+                            bar.spawn((
+                                Node {
+                                    width: Val::Percent(frac * 100.0),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(fill),
+                            ));
+                        });
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Shifter "Scout's Instinct": rebuild the corner minimap. The panel shows/hides by
+/// the map tier; dots plot entities within `shifter_map_radius` of the player —
+/// mobs + portal (tier ≥1), chests (≥2), harvestables (≥3), self at centre.
+#[allow(clippy::type_complexity)]
+fn update_minimap(
+    mut commands: Commands,
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
+    old: Query<Entity, With<MinimapDot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Ok((root, mut node)) = root_q.single_mut() else {
+        return;
+    };
+    let tier = perks.0.shifter_map;
+    node.display = if tier >= 1 { Display::Flex } else { Display::None };
+    if tier == 0 {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    // Panel is 140px; keep dots inside a 64px radius from its centre.
+    const HALF: f32 = 70.0;
+    const R: f32 = 64.0;
+    let radius = perks.0.shifter_map_radius.max(1.0);
+    let scale = R / radius;
+    commands.entity(root).with_children(|p| {
+        // The player, dead centre.
+        spawn_dot(p, HALF, HALF, 6.0, Color::srgb(1.0, 1.0, 1.0));
+        for e in world.entities.values() {
+            let (col, size) = match e.kind {
+                EntityKind::Monster => (Color::srgb(1.0, 0.4, 0.35), 5.0),
+                EntityKind::Portal => (Color::srgb(0.4, 0.85, 1.0), 6.0),
+                EntityKind::Chest if tier >= 2 => (Color::srgb(1.0, 0.82, 0.3), 5.0),
+                EntityKind::Resource if tier >= 3 => (Color::srgb(0.5, 0.95, 0.5), 4.0),
+                _ => continue,
+            };
+            let (dx, dy) = ((e.x - me.x) * scale, (e.y - me.y) * scale);
+            if dx.abs() > R || dy.abs() > R {
+                continue; // outside the minimap's world radius
+            }
+            spawn_dot(p, HALF + dx, HALF + dy, size, col);
+        }
+    });
+}
+
+/// Spawn one absolutely-positioned minimap dot centred at (`cx`,`cy`) px.
+fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f32, col: Color) {
+    p.spawn((
+        MinimapDot,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(cx - size / 2.0),
+            top: Val::Px(cy - size / 2.0),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            ..default()
+        },
+        BorderRadius::all(Val::Percent(50.0)),
+        BackgroundColor(col),
+    ));
 }
 
 /// Deterministically pick an index in `0..n` from an entity id (FNV-1a). Lets a
@@ -6180,6 +6539,23 @@ fn spawn_hero_actor(
                 Transform::from_xyz(0.0, 0.72, 0.0),
                 hd2d::Billboard,
                 hd2d::HeroBillboard,
+                // Player-character sprite: self-illuminates at night (battle stays
+                // readable in the dark).
+                PlayerGlowSprite,
+            ));
+            // The hero carries a warm lamp so the party's own light reaches the
+            // enemy creature at night (driven by `illuminate_players`).
+            p.spawn((
+                BattlePartyLamp,
+                PointLight {
+                    color: Color::srgb(1.0, 0.88, 0.62),
+                    intensity: 0.0,
+                    range: 12.0,
+                    radius: 0.3,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 1.6, 0.0),
             ));
             // A bust has no legs to ground, so it skips the contact shadow.
             if !bust {
@@ -6298,22 +6674,22 @@ fn sync_battle_actors(
     }
     let surrounded = !ally_order.is_empty();
 
-    // My party in two tight ranks near the camera: martials hold the FRONT line
-    // (full sprites), casters (row:back) stack just behind as head→torso BUSTS, so
-    // their heads peek over the front without their legs cluttering. A small depth
-    // gap keeps them close. Both flank the central command cross; facing north.
+    // My party fans across the foreground so ALL FOUR read clearly (not two hidden
+    // behind two): laid out in party order along a shallow arc facing north, with
+    // row:back casters set a little deeper + rendered as head→torso BUSTS so they
+    // sit visually behind the front line without their legs cluttering. Shrinking
+    // the enemies (below) frees the centre this needs.
     let is_back = |c: &&CombatantView| c.statuses.iter().any(|s| s == "row:back");
-    for (rank_z, bust, rank) in [
-        (3.4, false, mine.iter().copied().filter(|c| !is_back(c)).collect::<Vec<_>>()),
-        (2.5, true, mine.iter().copied().filter(is_back).collect::<Vec<_>>()),
-    ] {
-        for (i, c) in rank.iter().enumerate() {
-            if seen.contains(&c.id) {
-                continue;
-            }
-            let x = (i as f32 - (rank.len().max(1) as f32 - 1.0) * 0.5) * 4.4;
-            spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, rank_z), Vec2::new(0.0, -1.0), bust);
+    let n = mine.len().max(1) as f32;
+    for (i, c) in mine.iter().enumerate() {
+        if seen.contains(&c.id) {
+            continue;
         }
+        let back = is_back(c);
+        // Even spread across x; a small depth offset (and bust crop) sets the back row.
+        let x = (i as f32 - (n - 1.0) * 0.5) * 2.7;
+        let z = if back { 2.7 } else { 3.7 };
+        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), back);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -6329,11 +6705,12 @@ fn sync_battle_actors(
         }
     }
     // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
-    // a surrounded one pulls them in tight and shrinks them.
+    // a surrounded one pulls them in tight and shrinks them. Kept modest so they read
+    // as foes without dwarfing the party (they used to tower over the heroes).
     let (h, gap, cz) = if surrounded {
-        (2.4, 2.3, -1.4)
+        (1.9, 2.0, -1.4)
     } else {
-        (3.4, 3.6, -4.5)
+        (2.5, 3.0, -4.5)
     };
     for (i, c) in enemies.iter().enumerate() {
         if seen.contains(&c.id) {
@@ -7332,6 +7709,7 @@ fn render_enemy_panel(
     hitfx: Res<HitFx>,
     menu: Res<BattleMenu>,
     target: Res<BattleTarget>,
+    perks: Res<PerksRes>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<BattleScene>>,
@@ -7391,6 +7769,11 @@ fn render_enemy_panel(
                         TextColor(name_color),
                     ));
                     meter(e, frac, 10.0, hp_fill);
+                    // Hunter "Predator's Eye" top tier: reveal the enemy's ATB gauge
+                    // (otherwise hidden — you only see foe HP). ATB shows in battle only.
+                    if perks.0.hunter_intel >= 3 {
+                        meter(e, c.gauge as f32, 5.0, Color::srgb(0.5, 0.72, 1.0));
+                    }
                 });
             }
         });

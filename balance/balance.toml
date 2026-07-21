@@ -290,6 +290,35 @@ skirmish_attack_range = 1.7  # ... and trade blows once this close (overworld sk
 skirmish_attack_interval = 0.85 # seconds between a creature's overworld blows
 loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within this range
 
+# Overworld class perks ("party sense"): each hero class, when present in the
+# party, grants a distinct overworld utility whose tier scales with the shared
+# run_level. Per-hero level is uniform, so thresholds are run-level values.
+# [TUNABLE] — see meld-balance::Perks and the CANON class taxonomy.
+[perks]
+# Hunter — night glow + "predator's eye" monster intel.
+hunter_glow_base = 180000.0       # avatar PointLight intensity at run level 1
+hunter_glow_per_level = 30000.0   # brighter (and, client-side, wider) per run level
+hunter_intel_level_at = 1         # run level to reveal a mob's LEVEL over its head
+hunter_intel_hp_at = 3            # run level to also reveal a mob's HP bar
+hunter_intel_atb_at = 6           # run level to reveal enemy ATB gauges in battle
+# Shifter — corner minimap.
+shifter_map_at = 1                # run level that unlocks the minimap (+ mob/portal dots)
+shifter_map_chests_at = 3         # + treasure-chest dots
+shifter_map_harvest_at = 5        # + harvestable (resource-node) dots
+shifter_map_radius_base = 30.0    # world-units the minimap covers at unlock
+shifter_map_radius_per_level = 2.0
+# Psyker — threat sense.
+psyker_threat_elites_at = 1       # run level to mark elite/gatekeeper mobs
+psyker_threat_aggro_at = 3        # + mark aggressive mobs
+psyker_reveal_base = 22.0         # extended mob interest radius (tiles) at unlock
+psyker_reveal_per_level = 2.0
+# Resonant — overworld regen (HP/sec per run level, applied while walking).
+resonant_regen_per_level = 0.4
+# Iron Hull — bulwark: creature aggro/skirmish radius shrinks per run level.
+ironhull_aggro_reduction_per_level = 0.04
+ironhull_aggro_mult_floor = 0.4   # mobs never fully ignore an Iron Hull party
+ironhull_trample_radius = 0.0     # stretch: trample obstacles this small (0 = off)
+
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,
 # aggressive = chase players on sight); `flees` marks skittish creatures that

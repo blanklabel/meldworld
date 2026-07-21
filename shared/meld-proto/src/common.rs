@@ -7,7 +7,7 @@ use crate::enums::{CombatantKind, Insurance};
 use crate::Id;
 
 /// A tile-space coordinate from the world origin (Center Hub). Y grows south.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
