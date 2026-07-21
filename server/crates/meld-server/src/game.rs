@@ -2643,6 +2643,18 @@ impl GameState {
                     if r.award_xp(xp_reward, &balance) > 0 {
                         leveled.push(r.player_id.clone());
                         level_ups.push((r.player_id.clone(), old_level, r.run_level));
+                        // A level-up heals every one of the player's heroes to their
+                        // new max HP (mid-run wounds otherwise persist between
+                        // battles — see `hero_hp`'s doc comment — but a level gain
+                        // always tops them up).
+                        if let (Some(classes), Some(hps)) = (
+                            inst.party_classes.get(&r.player_id),
+                            inst.hero_hp.get_mut(&r.player_id),
+                        ) {
+                            for (class, hp) in classes.iter().zip(hps.iter_mut()) {
+                                *hp = meld_run::max_hp_at_level(*class, r.run_level, &balance);
+                            }
+                        }
                     }
                 }
                 for pid in &members {

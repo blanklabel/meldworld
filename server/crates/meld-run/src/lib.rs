@@ -141,6 +141,19 @@ pub fn class_key(class: CharacterClass) -> &'static str {
     }
 }
 
+/// Max HP for a class at a given level (CANON.md §B attribute growth: Wll →
+/// HP). Shared by `party_fighters` (battle setup) and level-up handling (a
+/// level-up heals to the new max, unlike mid-run wounds which persist).
+pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> i32 {
+    let stats = balance
+        .player
+        .get(class_key(class))
+        .unwrap_or_else(|| balance.player.get("hunter").expect("hunter stats"));
+    let (_, _, _, wll) = stats.attributes_at(level);
+    let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
+    stats.base_hp + grow(wll, stats.wll, balance.attributes.wll_to_hp)
+}
+
 /// Assemble a battle from a party and one arena monster. `party` gives, per
 /// player, the (player_id, combatant_id, class); the server owns combatant ids.
 /// Per-player combatant inputs for a battle: (player_id, combatant_id, class,
@@ -177,7 +190,7 @@ pub fn party_fighters(party: &[PartyMember], runs: &InstanceRun, balance: &Balan
             let a = &balance.attributes;
             let (str_, mnd, dex, wll) = stats.attributes_at(level);
             let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
-            let max_hp = stats.base_hp + grow(wll, stats.wll, a.wll_to_hp);
+            let max_hp = max_hp_at_level(*class, level, balance);
             let atk = stats.base_atk + grow(str_, stats.str, a.str_to_atk) + atk_bonus; // + gear
             let def = stats.base_def + grow(wll, stats.wll, a.wll_to_def);
             let speed = stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed);
