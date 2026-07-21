@@ -65,7 +65,8 @@ impl<'a> Scaling<'a> {
 }
 
 /// Fixed biome band for a floored distance (world-generation.md Biome Bands).
-/// Structural order; bands past Mire repeat Mire content in this slice.
+/// The *tutorial* run walks these in order for a gentle, known onboarding; every
+/// other run draws its biomes per-section (see [`section_biome`]).
 pub fn biome_for_distance(d: i64) -> &'static str {
     match d {
         0..=99 => "forest",
@@ -74,6 +75,36 @@ pub fn biome_for_distance(d: i64) -> &'static str {
         500..=999 => "tundra",
         _ => "mire",
     }
+}
+
+/// The base biome set. Difficulty is carried entirely by `distance` (creature
+/// stats scale via `stat_mult` at spawn), so a biome is a difficulty-neutral
+/// **skin** — which is exactly what lets us vary the theme order per run without
+/// touching fairness. This is the Hades / Risk-of-Rain-2 model: fixed difficulty
+/// axis, shuffled theme. See docs/proposals/worldgen-wg.md and roadmap WG-2/WG-3.
+pub const BIOMES: [&str; 5] = ["forest", "desert", "ashfall", "tundra", "mire"];
+
+/// Independent per-section biome stream, salted off the section seed so the theme
+/// choice is stable even if unrelated placement draws change.
+fn biome_pick_seed(run_seed: u64, i: usize) -> u64 {
+    section_seed(run_seed ^ 0x1D8E_4E27_C47D_124F, i).wrapping_add(0xB105_F00D)
+}
+
+/// The biome THEME for section `i` at `distance`.
+/// - **Tutorial run** → the classic distance-ordered bands ([`biome_for_distance`]),
+///   so a new player's first dive is the hand-tuned Forest→Desert→… progression.
+/// - **Any other run** → a per-section draw (WG-3: the order varies every run;
+///   WG-2: the *first* section is randomized too, so you don't always start in
+///   Forest), excluding the previous section's biome so two identical themes never
+///   sit back-to-back. Uniform for this first pass; per-band weighting can layer on
+///   later without changing callers.
+fn section_biome(run_seed: u64, i: usize, distance: i64, prev: Option<&str>, tutorial: bool) -> &'static str {
+    if tutorial {
+        return biome_for_distance(distance);
+    }
+    let cands: Vec<&'static str> = BIOMES.iter().copied().filter(|b| Some(*b) != prev).collect();
+    let mut rng = Rng(biome_pick_seed(run_seed, i));
+    cands[rng.below(cands.len())]
 }
 
 /// Creature content ids that spawn in a biome. Structural (content-extensible);
@@ -658,6 +689,10 @@ pub struct Arena {
     sim_dt: f64,
     // World-gen tunables (snapshot from balance) needed for streaming.
     seed_base: u64,
+    /// Tutorial run (the account's first dive): classic distance-ordered biomes +
+    /// the centred area-0 onboarding. Otherwise biomes are drawn per-section
+    /// (roadmap WG-2/WG-3) and area 0 is a normal procedural section.
+    tutorial: bool,
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -685,7 +720,7 @@ impl Arena {
     /// Eagerly builds the initial `area_count`-section chain (so the deep portal +
     /// clear path are known at run start); further sections stream on demand via
     /// [`Arena::ensure_frontier`].
-    pub fn generate(balance: &Balance, seed: u64) -> Self {
+    pub fn generate(balance: &Balance, seed: u64, tutorial: bool) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
             seed,
@@ -708,6 +743,7 @@ impl Arena {
             interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
             seed_base: seed,
+            tutorial,
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -769,15 +805,24 @@ impl Arena {
         let wg = &balance.worldgen;
         let mut rng = Rng(section_seed(self.seed_base, i));
         let start_x = self.cursor;
-        let biome = biome_for_distance(start_x.floor() as i64);
+        // Theme rides the run (WG-2/WG-3) but difficulty rides `distance` as always.
+        let prev_biome = self.areas.last().map(|a| a.biome);
+        let biome = section_biome(
+            self.seed_base,
+            i,
+            start_x.floor() as i64,
+            prev_biome,
+            self.tutorial,
+        );
         let kinds = creatures_for_biome(biome);
 
-        // Area 0 is a small, deterministic "tutorial" section near the Center Hub:
-        // exactly one canonical creature on the centre line and a portal a short
-        // walk past it. Predictable onboarding (a straight east walk always meets
-        // one fightable target, then a portal) — and the e2e/conformance tests
-        // depend on this determinism. Procedural variety (and terraces) begin at 1.
-        if i == 0 {
+        // Area 0 of the TUTORIAL run is a small, deterministic onboarding section
+        // near the Center Hub: exactly one canonical creature on the centre line and
+        // a portal a short walk past it. Predictable onboarding (a straight east walk
+        // always meets one fightable target, then a portal) — and the e2e/conformance
+        // tests depend on this determinism. On non-tutorial runs area 0 is a normal
+        // procedural section (random biome, scattered creatures, terraces).
+        if i == 0 && self.tutorial {
             let pos = Position::new(wg.first_monster_x, 0.0);
             let idx = self.monsters.len();
             let mseed = rng.next_u64();
@@ -1809,7 +1854,7 @@ mod tests {
     #[test]
     fn generates_chests_and_biome_seams() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         assert!(!arena.chests.is_empty(), "chests are placed");
         assert!(arena.chests.iter().all(|c| !c.opened));
         // The default world reaches the desert (d > 100), so at least a
@@ -1825,7 +1870,7 @@ mod tests {
     #[test]
     fn seam_wall_blocks_crossing_outside_the_gap() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 7);
+        let mut arena = Arena::generate(&b, 7, true);
         let seam = arena.seams[0].clone();
         arena.add_avatar("p".into(), 100.0); // fast: one step would cross the seam
         // Far from the gap in y → the wall blocks the crossing.
@@ -1842,7 +1887,7 @@ mod tests {
     #[test]
     fn aggressive_creature_chases_a_nearby_player() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         arena.monsters[0].aggression = "aggressive".to_string();
         let m = arena.monsters[0].position;
         arena.add_avatar("p".into(), 6.0);
@@ -1863,7 +1908,7 @@ mod tests {
         // party (low multiplier) that falls outside the scaled range is not.
         let b = Balance::load_default().unwrap();
         let build = || {
-            let mut arena = Arena::generate(&b, 5);
+            let mut arena = Arena::generate(&b, 5, true);
             arena.monsters[0].aggression = "aggressive".to_string();
             let m = arena.monsters[0].position;
             arena.add_avatar("p".into(), 6.0);
@@ -1893,7 +1938,7 @@ mod tests {
     #[test]
     fn passive_creature_leashes_near_home() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         arena.monsters[0].aggression = "passive".to_string();
         let home = arena.monsters[0].home;
         // A player standing on it must NOT draw a passive creature.
@@ -1911,7 +1956,7 @@ mod tests {
     #[test]
     fn group_around_pulls_in_close_creatures() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         assert!(arena.monsters.len() >= 2);
         // Park the second creature right next to the first (same elevation).
         arena.monsters[1].position = arena.monsters[0].position;
@@ -1923,7 +1968,7 @@ mod tests {
     #[test]
     fn hostile_creatures_skirmish_and_drop_loot() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         assert!(arena.monsters.len() >= 2);
         // Isolate the encounter to a single hostile pair (other creatures across
         // the arena would skirmish too and add their own drops).
@@ -1960,7 +2005,7 @@ mod tests {
     #[test]
     fn player_collects_nearby_ground_loot() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         arena.ground_loot.push(GroundLoot {
             entity_id: "loot-x".into(),
             kind: "boar_tusk".into(),
@@ -1981,7 +2026,7 @@ mod tests {
     #[test]
     fn same_faction_creatures_do_not_skirmish() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 5);
+        let mut arena = Arena::generate(&b, 5, true);
         arena.monsters[0].faction = "beast".to_string();
         arena.monsters[0].aggression = "aggressive".to_string();
         arena.monsters[1].faction = "beast".to_string();
@@ -2011,8 +2056,8 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         let b = Balance::load_default().unwrap();
-        let a = Arena::generate(&b, 12345);
-        let c = Arena::generate(&b, 12345);
+        let a = Arena::generate(&b, 12345, true);
+        let c = Arena::generate(&b, 12345, true);
         assert_eq!(a.areas.len(), c.areas.len());
         assert_eq!(a.monsters.len(), c.monsters.len());
         for (m, n) in a.monsters.iter().zip(c.monsters.iter()) {
@@ -2023,7 +2068,7 @@ mod tests {
         // A different seed yields a different world (overwhelmingly likely). Compare
         // procedural content — monsters[0] is the fixed tutorial creature, identical
         // across seeds by design, so look past it (and at the terraces).
-        let d = Arena::generate(&b, 999);
+        let d = Arena::generate(&b, 999, true);
         let monsters_differ = a.monsters.len() != d.monsters.len()
             || a.monsters.iter().zip(d.monsters.iter()).any(|(m, n)| m.position != n.position);
         let terrain_differs = a
@@ -2043,8 +2088,8 @@ mod tests {
         assert_ne!(section_seed(42, 3), section_seed(43, 3));
         // Two arenas from the same run seed produce identical terraces per section.
         let b = Balance::load_default().unwrap();
-        let a = Arena::generate(&b, 77);
-        let c = Arena::generate(&b, 77);
+        let a = Arena::generate(&b, 77, true);
+        let c = Arena::generate(&b, 77, true);
         for (x, y) in a.areas.iter().zip(c.areas.iter()) {
             assert_eq!(x.terrain.level, y.terrain.level);
             assert_eq!(x.terrain.connectors.len(), y.terrain.connectors.len());
@@ -2054,7 +2099,7 @@ mod tests {
     #[test]
     fn areas_trend_larger_and_carry_creatures() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         assert_eq!(arena.areas.len(), b.worldgen.area_count);
         assert!(!arena.monsters.is_empty());
         // Every area has a portal past its creatures and at least one creature.
@@ -2083,7 +2128,7 @@ mod tests {
     #[test]
     fn one_deep_portal_only() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         // The single extraction portal is the last chain area's, deep from the hub.
         assert_eq!(arena.portal, arena.areas.last().unwrap().portal);
         let first_area_end = arena.areas.first().unwrap().end_x;
@@ -2096,7 +2141,7 @@ mod tests {
     #[test]
     fn creatures_scatter_off_the_centre_line() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         // Area 0's tutorial creature stays on the line; deeper ones scatter in y.
         assert_eq!(arena.monsters[0].position.y, 0.0);
         let spread = arena
@@ -2109,7 +2154,7 @@ mod tests {
     #[test]
     fn resource_nodes_generate_and_harvest_once_within_range() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 7);
+        let mut arena = Arena::generate(&b, 7, true);
         assert!(!arena.resources.is_empty(), "resource nodes are scattered in");
         // Use the guaranteed level-0 starter node (area 0) so elevation doesn't gate.
         let node = arena.resources[0].clone();
@@ -2131,7 +2176,7 @@ mod tests {
     #[test]
     fn terrain_generated_but_area0_stays_clear() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         assert!(!arena.obstacles.is_empty(), "biome terrain is generated");
         let area0_end = arena.areas[0].end_x;
         // The tutorial area is obstacle-free (deterministic onboarding).
@@ -2149,7 +2194,7 @@ mod tests {
     #[test]
     fn terraces_generate_with_reachable_connectors() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7);
+        let arena = Arena::generate(&b, 7, true);
         // Some section beyond the tutorial has a raised terrace.
         let raised: usize = arena
             .areas
@@ -2178,7 +2223,7 @@ mod tests {
         // level 0, so extraction is always feasible without ever needing to climb.
         for seed in [1u64, 7, 42, 999, 123456] {
             let b = Balance::load_default().unwrap();
-            let arena = Arena::generate(&b, seed);
+            let arena = Arena::generate(&b, seed, true);
             for o in &arena.obstacles {
                 let d = dist_to_path(&o.position, &arena.path);
                 assert!(
@@ -2199,7 +2244,7 @@ mod tests {
         // A walker that follows the waypoints reaches the portal without getting
         // stuck on terrain or a cliff — the route is feasible by construction.
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 42);
+        let mut arena = Arena::generate(&b, 42, true);
         let waypoints = arena.path.clone();
         assert!(waypoints.len() >= 2);
         arena.add_avatar("p".into(), 8.0);
@@ -2233,12 +2278,12 @@ mod tests {
         let seed = [42u64, 1, 7, 999, 123456, 2, 3, 5, 11]
             .into_iter()
             .find(|&s| {
-                Arena::generate(&b, s).areas.iter().any(|a| {
+                Arena::generate(&b, s, true).areas.iter().any(|a| {
                     a.terrain.connectors.iter().any(|c| c.entity_id.starts_with("pramp-"))
                 })
             })
             .expect("some seed produces a climbing clear path");
-        let mut arena = Arena::generate(&b, seed);
+        let mut arena = Arena::generate(&b, seed, true);
         let waypoints = arena.path.clone();
         assert!(waypoints.len() >= 2);
         arena.add_avatar("p".into(), 8.0);
@@ -2275,9 +2320,9 @@ mod tests {
         // ground below it — you must be up on the terrace (matching elevation).
         let b = Balance::load_default().unwrap();
         let seed = (1u64..300)
-            .find(|&s| Arena::generate(&b, s).chests.iter().any(|c| c.elevation > 0))
+            .find(|&s| Arena::generate(&b, s, true).chests.iter().any(|c| c.elevation > 0))
             .expect("some seed puts a chest on a terrace");
-        let mut arena = Arena::generate(&b, seed);
+        let mut arena = Arena::generate(&b, seed, true);
         let chest = arena.chests.iter().find(|c| c.elevation > 0).unwrap().clone();
         arena.add_avatar("p".into(), 8.0);
         // Standing at the chest's (x,y) but on the GROUND: blocked.
@@ -2303,7 +2348,7 @@ mod tests {
         // Find a raised terrace, prove you can't walk onto it across the cliff, then
         // prove stepping onto its connector carries you up.
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 7);
+        let mut arena = Arena::generate(&b, 7, true);
         let (conn, level) = arena
             .areas
             .iter()
@@ -2364,7 +2409,7 @@ mod tests {
     #[test]
     fn streaming_extends_the_world_endlessly_and_reproducibly() {
         let b = Balance::load_default().unwrap();
-        let mut a = Arena::generate(&b, 55);
+        let mut a = Arena::generate(&b, 55, true);
         let chain = a.areas.len();
         // Walking the frontier east streams in fresh sections beyond the chain.
         let created = a.ensure_frontier(&b, a.areas.last().unwrap().end_x + 100.0);
@@ -2373,7 +2418,7 @@ mod tests {
         // The deep portal does NOT move when streaming past it.
         assert_eq!(a.portal, a.areas[chain - 1].portal);
         // Reproducible: a second arena streamed the same way matches section-for-section.
-        let mut c = Arena::generate(&b, 55);
+        let mut c = Arena::generate(&b, 55, true);
         c.ensure_frontier(&b, c.areas.last().unwrap().end_x + 100.0);
         assert_eq!(a.areas.len(), c.areas.len());
         for (x, y) in a.areas.iter().zip(c.areas.iter()) {
@@ -2385,7 +2430,7 @@ mod tests {
     #[test]
     fn obstacles_block_movement() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 7);
+        let mut arena = Arena::generate(&b, 7, true);
         let obs = arena.obstacles[0].clone();
         arena.add_avatar("p".into(), 6.0);
         // Stand just outside the obstacle and push straight into it.
@@ -2405,7 +2450,7 @@ mod tests {
     #[test]
     fn walking_east_touches_the_first_creature_then_it_is_slain() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 42);
+        let mut arena = Arena::generate(&b, 42, true);
         arena.add_avatar("p1".into(), 6.0);
         assert!(arena.check_touch().is_none());
         // Walk east along the corridor for up to ~8 s of sim ticks.
@@ -2430,7 +2475,7 @@ mod tests {
     #[test]
     fn prune_defeated_reclaims_corpses_but_keeps_in_battle_and_ids_resolve() {
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 11);
+        let mut arena = Arena::generate(&b, 11, true);
         let before = arena.monsters.len();
         assert!(before >= 3, "need a few monsters for the test");
 
@@ -2457,5 +2502,52 @@ mod tests {
             arena.monster_by_id(&fighting).is_some(),
             "creature still in a battle is kept even if flagged defeated",
         );
+    }
+
+    // ---- WG-2 / WG-3: seeded biome randomization + tutorial carve-out ----
+
+    #[test]
+    fn tutorial_run_always_starts_in_forest() {
+        // The account's first dive is the hand-tuned onboarding, whatever the seed.
+        let b = Balance::load_default().unwrap();
+        for seed in [1u64, 42, 9999, 123_456] {
+            assert_eq!(Arena::generate(&b, seed, true).areas[0].biome, "forest");
+        }
+    }
+
+    #[test]
+    fn non_tutorial_start_biome_varies_and_is_not_pinned_to_forest() {
+        // WG-2: later runs start in a random biome, not always Forest.
+        let b = Balance::load_default().unwrap();
+        let starts: std::collections::HashSet<&str> = (0u64..40)
+            .map(|s| Arena::generate(&b, s, false).areas[0].biome)
+            .collect();
+        assert!(starts.len() > 1, "start biome should vary across runs: {starts:?}");
+        assert!(starts.iter().any(|&x| x != "forest"), "some runs start off-Forest");
+    }
+
+    #[test]
+    fn biome_order_is_deterministic_per_seed_and_varies_across_seeds() {
+        // WG-3: reproducible per seed (determinism is load-bearing), different per run.
+        let b = Balance::load_default().unwrap();
+        let order = |seed: u64| -> Vec<&'static str> {
+            let mut a = Arena::generate(&b, seed, false);
+            a.ensure_frontier(&b, 500.0);
+            a.areas.iter().map(|x| x.biome).collect()
+        };
+        assert_eq!(order(77), order(77), "same seed reproduces the same biome order");
+        assert_ne!(order(1), order(2), "different seeds vary the biome order");
+    }
+
+    #[test]
+    fn no_two_adjacent_sections_share_a_biome() {
+        // The no-adjacent-repeat rule: you never walk from one theme into the same one.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 31_337, false);
+        a.ensure_frontier(&b, 800.0);
+        assert!(a.areas.len() >= 3, "need a few sections to check adjacency");
+        for w in a.areas.windows(2) {
+            assert_ne!(w[0].biome, w[1].biome, "adjacent sections must differ in biome");
+        }
     }
 }
