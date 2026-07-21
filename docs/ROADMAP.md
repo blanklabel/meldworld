@@ -196,29 +196,37 @@ XP; harvesting exists but is instant.
 
 Make the world feel bigger, less predictable, and legibly anchored on Last City.
 Spec: [`behaviors/world-generation.md`](behaviors/world-generation.md) (radial
-distance model, biome bands, per-section streaming, verticality).
+distance model, biome bands, per-section streaming, verticality). Research +
+design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 - [ ] **WG-1 — Dungeons.** Discrete, enterable sub-spaces off the overworld
   (hand-flavored, denser encounters/loot, maybe a mini-boss) distinct from the
-  open corridor. Define generation, entry/exit, and how they scale with distance.
-  New `behaviors/dungeons.md` when the design hardens.
-- [ ] **WG-2 — Random starting biome (except the first run).** A player's dive
-  should start in a **random** biome every time — *except their very first run*,
-  which stays the deterministic Forest tutorial. Seed the run's origin biome from
-  account+run state with the first-run carve-out. Touches
-  [`behaviors/world-generation.md`](behaviors/world-generation.md) biome-band
-  assignment.
-- [ ] **WG-3 — Randomized biome ordering.** The sequence of biomes as you march
-  outward should be **randomized per run** (seeded), not a fixed Forest→Desert→…
-  chain — while keeping the distance→difficulty curve intact. Shuffle the biome
-  band order from the run seed.
+  open corridor. **Designed, not built** — the spike recommends BSP room-and-corridor
+  (seeded `section_seed(run_seed, dungeon_id)`, exit leaf placed first for guaranteed
+  connectivity, difficulty = entrance's overworld distance). See
+  [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); new `behaviors/dungeons.md`
+  when built.
+- [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
+  in a random biome, *except* an account's very first dive — the gentle Forest-first
+  onboarding (fixed biome order + centred area-0), gated on the persistent
+  `players.has_dived` flag. `meld-world::section_biome` + `meld-server` `form_run`.
+  (Hades/RoR2 model — see [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).)
+- [x] **WG-3 — Randomized biome ordering.** The biome *theme* order is now drawn per
+  run from the run seed (uniform per section, no adjacent repeat) while difficulty stays
+  a pure function of `distance` — biomes are difficulty-neutral skins (creatures scale via
+  `stat_mult`). `meld-world::section_biome`, unit-tested for determinism + variety.
 - [ ] **WG-4 — Radial spread with Last City always to the west.** The world opens
   outward across ~**350°**; **Last City always sits just to the west** of where
   you leave it, appearing as a giant wall. Cross the western border and you step
   **right back into the city** — the one permanent, safe anchor in a world that
   worsens in every other direction. Establishes the city↔maze boundary as a
   walkable seam (ties LC-1's presence loop to the maze exit; reframes the current
-  Threshold entry). Fold into [`behaviors/world-generation.md`](behaviors/world-generation.md).
+  Threshold entry). **Designed, not built** — the spike recommends keeping Cartesian
+  section storage and adding a *radial difficulty read* (`distance = hypot(pos − hub)`)
+  rather than re-architecting into polar chunks; the wall-as-return is an impassable
+  hub-edge boundary you can re-cross into Last City. See
+  [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
+  [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
 
 ---
 

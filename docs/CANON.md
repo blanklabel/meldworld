@@ -94,8 +94,8 @@ All constants **[TUNABLE]** unless noted structural.
 - Run Level cap: none (grows with XP during run); XP formula `xp_to_next(L) = 80 × L^1.6`.
 - Gatekeeper arenas at `d = 500k − 1` for k = 1..10 (structural); arena is a full-width chokepoint — no path past it without clearing (per-instance clear flag).
 
-### Biome bands (curated, structural order; content-extensible)
-`0–100` Forest, `100–300` Desert, `300–500` Ashfall, `500–1000` Tundra, `1000–1500` Mire, then repeating themed bands defined by content tables per 500.
+### Biome bands (curated tutorial order; theme is randomized per run)
+`0–100` Forest, `100–300` Desert, `300–500` Ashfall, `500–1000` Tundra, `1000–1500` Mire, then repeating themed bands defined by content tables per 500. This fixed order is the **tutorial** order (an account's first dive) and the difficulty-band reference. The biome is a **difficulty-neutral skin** (difficulty rides `distance`; creatures scale via `stat_mult`), so on every non-tutorial run the biome *theme* is drawn per section from the run seed with no adjacent repeat — the start and order both vary (roadmap WG-2/WG-3; [`behaviors/world-generation.md`](behaviors/world-generation.md)).
 
 ### ATB combat
 - ATB tick: 100 ms server tick. Gauge fill per tick: `speed_stat / 400` (gauge full at 1.0).

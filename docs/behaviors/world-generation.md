@@ -54,7 +54,10 @@ Notes:
 
 ## Biome Bands
 
-Biomes are fixed distance bands, identical in every instance (structural order; content-extensible past the curated list).
+Difficulty is a pure function of `distance` (below); the **biome is a difficulty-neutral *skin*** — it picks the section's theme (creature/resource/obstacle tables) but never its difficulty, since creature stats scale from `distance` via `stat_mult` at spawn. So biome *ordering* is randomized per run without affecting fairness (roadmap WG-2/WG-3; design in [`../proposals/worldgen-wg.md`](../proposals/worldgen-wg.md)):
+
+- **Tutorial run** (an account's first dive, gated on the persistent `has_dived` flag): biomes walk the **fixed distance bands** in the table below — the gentle Forest→Desert→… onboarding (plus the centred, single-creature area 0). The seed is still server-random; the tutorial shapes the biome *order* and area-0 structure, not a fixed world.
+- **Every other run:** each section draws a biome per `section_seed`, excluding the previous section's biome (no adjacent repeat). The *start* biome is randomized too (WG-2), and the *order* varies per run (WG-3). The fixed table below is the tutorial order and the difficulty-band reference; it is no longer the biome order for non-tutorial runs.
 
 **Source:** CANON.md §B (Biome bands); GDD.md §3
 

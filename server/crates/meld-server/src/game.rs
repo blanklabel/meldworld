@@ -69,6 +69,8 @@ enum DbWrite {
     HeroRename(String, i16, String),
     /// Persist a hero's formation rank: (player, slot, back_row).
     HeroFormation(String, i16, bool),
+    /// Mark that a player has begun their first dive (ends the tutorial world).
+    Dived(String),
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
@@ -102,6 +104,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_hero_row(uid, slot, back_row).await {
                         tracing::error!("hero formation persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::Dived(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_has_dived(uid).await {
+                        tracing::error!("mark-dived persist failed for {pid}: {e}");
                     }
                 }
             }
@@ -223,6 +232,11 @@ struct Session {
     hero_names: Option<Vec<String>>,
     /// Per-slot persistent formation flags (`true` = back row), loaded from the DB.
     hero_rows: Option<Vec<bool>>,
+    /// Has this account ever dived? Loaded from the DB on connect. The very first
+    /// dive is the gentle Forest-first tutorial (fixed biome order + centred area 0;
+    /// roadmap WG-2); every dive after gets a randomized biome order + start.
+    /// Defaults `false` until loaded; the load lands before the first `enter_maze`.
+    has_dived: bool,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -588,6 +602,7 @@ impl GameState {
                         party_comp: None,
                         hero_names: None,
                         hero_rows: None,
+                        has_dived: false,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -1031,11 +1046,21 @@ impl GameState {
         // Create the shared instance on the first entry.
         if self.instance.is_none() {
             let instance_id = Uuid::now_v7().to_string();
+            // The instance initiator's account decides the tutorial (roadmap WG-2):
+            // an account's very first dive walks the gentle Forest-first biome order
+            // with the centred area-0 onboarding; every dive after gets a randomized
+            // biome order + start (WG-3). The world seed is always server-random —
+            // the tutorial shapes the *structure*, not a fixed world.
+            let tutorial = !self
+                .sessions
+                .get(initiator)
+                .map(|s| s.has_dived)
+                .unwrap_or(false);
             // Server-generated world seed (CANON: the client never supplies or
-            // computes seeds). Derived from a fresh v7 UUID's bytes.
+            // computes seeds).
             let seed = world_seed();
             self.instance = Some(ActiveInstance {
-                arena: Arena::generate(&self.balance, seed),
+                arena: Arena::generate(&self.balance, seed, tutorial),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
@@ -1046,6 +1071,17 @@ impl GameState {
                 regen_accum: HashMap::new(),
             });
         }
+        // Every diver's first dive ends their tutorial state, so their *next* run is
+        // a fresh random world. Idempotent: only the not-yet-dived are persisted.
+        for pid in &party_ids {
+            if let Some(s) = self.sessions.get_mut(pid) {
+                if !s.has_dived {
+                    s.has_dived = true;
+                    let _ = self.db_writes.send(DbWrite::Dived(pid.clone()));
+                }
+            }
+        }
+
         let inst = self.instance.as_mut().expect("instance exists");
         let instance_id = inst.run.instance_id.clone();
         let base_run_level = inst.run.base_run_level;
@@ -2166,6 +2202,11 @@ impl GameState {
                         if let Some(s) = self.sessions.get_mut(&pid) {
                             s.hero_rows = Some(rows);
                         }
+                    }
+                }
+                if let Ok(dived) = self.db.get_has_dived(uid).await {
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.has_dived = dived;
                     }
                 }
             }

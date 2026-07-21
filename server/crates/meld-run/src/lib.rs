@@ -472,7 +472,7 @@ mod tests {
             "r1".into(),
         )]);
         // Use a real generated creature as the enemy.
-        let arena = meld_world::Arena::generate(&b, 5);
+        let arena = meld_world::Arena::generate(&b, 5, true);
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, GearBonus::default())];
         // Carry a wounded hero in: start at 17 HP rather than full.

@@ -104,6 +104,11 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // Tutorial gate (roadmap WG-2): true once the account has taken its first
+        // dive. Added via idempotent ALTER so existing player rows pick it up.
+        sqlx::query("ALTER TABLE players ADD COLUMN IF NOT EXISTS has_dived BOOLEAN NOT NULL DEFAULT false")
+            .execute(pool)
+            .await?;
         // The Vault: per-player persistent chits balance + banked item stacks.
         // (Gear/gems/durability land with the gear slice; materials/consumables
         // are stacked by kind here.) One statement per query() — sqlx uses
@@ -313,6 +318,45 @@ impl Db {
         Ok(())
     }
 
+    /// Has this account ever dived? Drives the WG-2 tutorial gate (false = the next
+    /// dive is the deterministic Forest onboarding world).
+    pub async fn get_has_dived(&self, player_id: Uuid) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let row = sqlx::query("SELECT has_dived FROM players WHERE player_id = $1")
+                    .bind(player_id)
+                    .fetch_optional(pool)
+                    .await?;
+                Ok(row.map(|r| r.get::<bool, _>("has_dived")).unwrap_or(false))
+            }
+            Backend::Mem(m) => Ok(m
+                .lock()
+                .unwrap()
+                .players
+                .get(&player_id)
+                .map(|p| p.has_dived)
+                .unwrap_or(false)),
+        }
+    }
+
+    /// Mark that this account has dived (ends its tutorial state). Idempotent.
+    pub async fn set_has_dived(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("UPDATE players SET has_dived = true WHERE player_id = $1")
+                    .bind(player_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                if let Some(p) = m.lock().unwrap().players.get_mut(&player_id) {
+                    p.has_dived = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Bank a run's backpack into the player's Vault atomically (extraction).
     /// Upserts each item stack and adds `chits`; creates the vault row if absent.
     pub async fn bank_extraction(
@@ -472,6 +516,7 @@ impl Db {
                         password_hash,
                         created_at,
                         active_title: None,
+                        has_dived: false,
                     },
                 );
                 m.chits.insert(player_id, 0);
@@ -1102,6 +1147,7 @@ struct MemPlayer {
     password_hash: String,
     created_at: DateTime<Utc>,
     active_title: Option<String>,
+    has_dived: bool,
 }
 
 impl MemPlayer {
