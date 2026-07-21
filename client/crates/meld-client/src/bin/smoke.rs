@@ -96,6 +96,7 @@ fn main() {
                 | ServerMsg::ChestOpened { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
+                | ServerMsg::Perks { .. }
                 | ServerMsg::LevelUp { .. }
                 | ServerMsg::WorldPath { .. }
                 | ServerMsg::TerrainSection { .. }

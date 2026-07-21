@@ -417,6 +417,10 @@ pub struct MonsterSpawn {
     pub flees: bool,
     /// World-scaled combat stats (stat_mult applied at spawn — no rescale later).
     pub hp: i32,
+    /// Full HP at spawn (= `hp` before any damage). Overworld mobs lose `hp` to
+    /// hostile-faction skirmishes, so `hp/max_hp` is a meaningful pre-fight bar
+    /// (surfaced to the client for the Hunter's HP-intel perk).
+    pub max_hp: i32,
     pub atk: i32,
     pub def: i32,
     pub speed_stat: i32,
@@ -457,6 +461,7 @@ impl MonsterSpawn {
             aggression: stats.aggression.clone(),
             flees: stats.flees,
             hp: ((stats.base_hp as f64) * mult).round() as i32,
+            max_hp: ((stats.base_hp as f64) * mult).round() as i32,
             atk: ((stats.base_atk as f64) * mult).round() as i32,
             def: stats.base_def,
             speed_stat: stats.speed_stat,
@@ -1219,12 +1224,26 @@ impl Arena {
     /// creature felled by a skirmish drops [`GroundLoot`] where it fell. Battling/
     /// defeated creatures hold still. Deterministic given the per-creature seed.
     pub fn step_creatures(&mut self, dt: f64) {
-        // Snapshot active-avatar positions (immutable borrow) before moving creatures.
-        let players: Vec<Position> = self
+        self.step_creatures_with_aggro(dt, &HashMap::new());
+    }
+
+    /// Like [`Arena::step_creatures`], but scales each player's effective aggro
+    /// radius by `aggro_mult[player_id]` (default 1.0) — the Iron Hull "Bulwark"
+    /// perk shrinks how close a creature will chase/skirmish-pull that party.
+    /// Deterministic given the per-creature seed and the multiplier map.
+    pub fn step_creatures_with_aggro(&mut self, dt: f64, aggro_mult: &HashMap<Id, f64>) {
+        // Snapshot active-avatar positions + their aggro multiplier (immutable
+        // borrow) before moving creatures.
+        let players: Vec<(Position, f64)> = self
             .avatars
             .iter()
             .filter(|a| a.state == "active")
-            .map(|a| a.position)
+            .map(|a| {
+                (
+                    a.position,
+                    aggro_mult.get(&a.player_id).copied().unwrap_or(1.0),
+                )
+            })
             .collect();
         let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
         let (wander, chase) = (self.wander_speed, self.chase_speed);
@@ -1273,11 +1292,13 @@ impl Arena {
             // passive creature still walks the whole monster list each tick just to
             // produce `None`. (Same result, less work; behaviour unchanged.)
             let (player_target, creature_target) = if aggro_range > 0.0 {
-                // Nearest active player within aggro range.
+                // Nearest active player within aggro range — each player's range is
+                // scaled by their Bulwark multiplier (Iron Hull parties are chased
+                // from closer).
                 let player_target = players
                     .iter()
-                    .copied()
-                    .filter(|p| m.position.distance_to(p) <= aggro_range)
+                    .filter(|(p, mult)| m.position.distance_to(p) <= aggro_range * mult)
+                    .map(|(p, _)| *p)
                     .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
                 // Nearest hostile-faction creature within skirmish aggro (initiators
                 // only), found via the spatial grid: scan just this creature's 3×3
@@ -1833,6 +1854,39 @@ mod tests {
         assert!(
             arena.monsters[0].position.x > before + 0.5,
             "aggressive creature should move toward the player"
+        );
+    }
+
+    #[test]
+    fn bulwark_multiplier_shrinks_a_creatures_effective_aggro() {
+        // Same seed + same player position: a full-aggro party is chased; a Bulwark
+        // party (low multiplier) that falls outside the scaled range is not.
+        let b = Balance::load_default().unwrap();
+        let build = || {
+            let mut arena = Arena::generate(&b, 5);
+            arena.monsters[0].aggression = "aggressive".to_string();
+            let m = arena.monsters[0].position;
+            arena.add_avatar("p".into(), 6.0);
+            // Inside the base aggro radius (11) but outside 0.5× of it.
+            arena.avatar_mut("p").unwrap().position = Position::new(m.x + 8.0, m.y);
+            arena
+        };
+        let mut normal = build();
+        let mut bulwark = build();
+        let start = normal.monsters[0].position.x;
+        let mut mult = HashMap::new();
+        mult.insert("p".to_string(), 0.5);
+        for _ in 0..10 {
+            normal.step_creatures(0.1);
+            bulwark.step_creatures_with_aggro(0.1, &mult);
+        }
+        assert!(
+            normal.monsters[0].position.x - start > 2.0,
+            "full-aggro creature chases the player"
+        );
+        assert!(
+            bulwark.monsters[0].position.x - start < 2.0,
+            "Bulwark shrinks the aggro radius so the creature doesn't chase"
         );
     }
 

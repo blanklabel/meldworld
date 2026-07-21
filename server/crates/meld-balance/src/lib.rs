@@ -32,6 +32,7 @@ pub struct Balance {
     pub creature: Creatures,
     pub player: Players,
     pub resource: Resources,
+    pub perks: Perks,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -246,6 +247,57 @@ pub struct Ai {
     pub loot_pickup_radius: f64,
 }
 
+/// Overworld class-perk tunables ("party sense"): each hero class, when present
+/// in the party, grants a distinct overworld utility whose tier scales with the
+/// shared `run_level`. See the `[perks]` block in balance.toml and the CANON
+/// class taxonomy. All thresholds are run-level values (per-hero level is uniform).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Perks {
+    // --- Hunter: night glow + "predator's eye" monster intel. ---
+    /// Avatar-light intensity at run level 1 (client scales it by night darkness).
+    pub hunter_glow_base: f32,
+    /// Added avatar-light intensity per run level above 1.
+    pub hunter_glow_per_level: f32,
+    /// Run level that reveals a mob's LEVEL over its head.
+    pub hunter_intel_level_at: i32,
+    /// Run level that additionally reveals a mob's HP bar.
+    pub hunter_intel_hp_at: i32,
+    /// Run level that additionally reveals enemy ATB gauges in battle.
+    pub hunter_intel_atb_at: i32,
+    // --- Shifter: corner minimap. ---
+    /// Run level that unlocks the minimap (+ mob/portal dots).
+    pub shifter_map_at: i32,
+    /// Run level that adds treasure-chest dots.
+    pub shifter_map_chests_at: i32,
+    /// Run level that adds harvestable (resource-node) dots.
+    pub shifter_map_harvest_at: i32,
+    /// World-units the minimap covers at unlock.
+    pub shifter_map_radius_base: f32,
+    /// Extra minimap coverage per run level above the unlock.
+    pub shifter_map_radius_per_level: f32,
+    // --- Psyker: threat sense. ---
+    /// Run level that marks elite/gatekeeper mobs.
+    pub psyker_threat_elites_at: i32,
+    /// Run level that additionally marks aggressive mobs.
+    pub psyker_threat_aggro_at: i32,
+    /// Extended mob interest radius (tiles) at unlock — dangerous mobs revealed
+    /// beyond the normal snapshot radius.
+    pub psyker_reveal_base: f64,
+    /// Extra reveal radius per run level.
+    pub psyker_reveal_per_level: f64,
+    // --- Resonant: overworld regen. ---
+    /// HP/sec restored to each carried hero while walking the overworld, per run
+    /// level (0 at level 0). Applied server-side; feeds next fight's start HP.
+    pub resonant_regen_per_level: f32,
+    // --- Iron Hull: bulwark (reduced skirmish/aggro pull). ---
+    /// Fraction the creature aggro/skirmish radius shrinks per run level.
+    pub ironhull_aggro_reduction_per_level: f64,
+    /// Lowest the aggro multiplier can fall to (a floor so mobs never fully ignore).
+    pub ironhull_aggro_mult_floor: f64,
+    /// Obstacle radius an Iron Hull party can trample through (0 = disabled; stretch).
+    pub ironhull_trample_radius: f64,
+}
+
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
 pub type Creatures = std::collections::HashMap<String, CreatureStats>;
 pub type Players = std::collections::HashMap<String, PlayerStats>;
@@ -368,5 +420,9 @@ mod tests {
         assert_eq!(b.auth.bcrypt_cost, 12);
         assert!(b.creature.contains_key("forest_bloom_stalker"));
         assert!(b.player.contains_key("hunter"));
+        // Overworld class perks load.
+        assert_eq!(b.perks.hunter_intel_hp_at, 3);
+        assert_eq!(b.perks.shifter_map_at, 1);
+        assert!(b.perks.ironhull_aggro_mult_floor > 0.0 && b.perks.ironhull_aggro_mult_floor <= 1.0);
     }
 }

@@ -141,6 +141,15 @@ pub struct EntityView {
     pub level: u8,
     /// For chests: whether it's already been opened.
     pub opened: bool,
+    /// Overworld mob intel (Hunter/Psyker perks). `None` for non-mobs. The client
+    /// shows each field only when the viewer's perk unlocks it (see `Perks`).
+    pub mob_level: Option<i32>,
+    pub hp: Option<i32>,
+    pub max_hp: Option<i32>,
+    /// `standard` | `elite` | `gatekeeper` — drives the Psyker threat marker.
+    pub encounter_class: Option<String>,
+    /// `passive` | `territorial` | `aggressive`.
+    pub aggression: Option<String>,
 }
 
 /// A connector (ladder/rope/slope) joining two elevation levels — client view.
@@ -227,6 +236,36 @@ pub struct HeroLevelUpLine {
     pub wll: (i32, i32),
 }
 
+/// The caller's earned overworld class perks ("party sense"), mirrored from the
+/// `run.perks` message. The client gates avatar glow, mob nameplates, the minimap,
+/// and the battle ATB reveal by these. Defaults to no perks (aggro mult 1.0).
+#[derive(Clone, Copy)]
+pub struct PerksLine {
+    pub hunter_glow: f32,
+    pub hunter_intel: u8,
+    pub shifter_map: u8,
+    pub shifter_map_radius: f32,
+    pub psyker_threat: u8,
+    pub psyker_reveal_radius: f32,
+    pub resonant_regen: f32,
+    pub ironhull_aggro_mult: f32,
+}
+
+impl Default for PerksLine {
+    fn default() -> Self {
+        Self {
+            hunter_glow: 0.0,
+            hunter_intel: 0,
+            shifter_map: 0,
+            shifter_map_radius: 0.0,
+            psyker_threat: 0,
+            psyker_reveal_radius: 0.0,
+            resonant_regen: 0.0,
+            ironhull_aggro_mult: 1.0,
+        }
+    }
+}
+
 /// A hero row for the party screen (name/class/level/stats live here, not battle).
 #[derive(Clone)]
 pub struct HeroLine {
@@ -252,6 +291,8 @@ pub enum ServerMsg {
     RunStarted,
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party { heroes: Vec<HeroLine> },
+    /// The caller's earned overworld class perks (avatar glow, minimap, intel).
+    Perks { perks: PerksLine },
     /// The party gained a level — play the classic stat-gain screen.
     LevelUp {
         new_run_level: i32,
@@ -910,6 +951,23 @@ impl Inner {
                     .unwrap_or_default();
                 self.out.push_back(ServerMsg::Party { heroes });
             }
+            "run.perks" => {
+                let p = &raw.payload;
+                let f = |k: &str| p[k].as_f64().unwrap_or(0.0) as f32;
+                let u = |k: &str| p[k].as_u64().unwrap_or(0) as u8;
+                let perks = PerksLine {
+                    hunter_glow: f("hunter_glow"),
+                    hunter_intel: u("hunter_intel"),
+                    shifter_map: u("shifter_map"),
+                    shifter_map_radius: f("shifter_map_radius"),
+                    psyker_threat: u("psyker_threat"),
+                    psyker_reveal_radius: f("psyker_reveal_radius"),
+                    resonant_regen: f("resonant_regen"),
+                    // Neutral default is 1.0 (no Iron Hull), not 0.0.
+                    ironhull_aggro_mult: p["ironhull_aggro_mult"].as_f64().unwrap_or(1.0) as f32,
+                };
+                self.out.push_back(ServerMsg::Perks { perks });
+            }
             "run.level_up" => {
                 let pair = |h: &Value, key: &str| {
                     (
@@ -1005,6 +1063,7 @@ impl Inner {
                             };
                             let battling = matches!(kind, EntityKind::Player)
                                 && e.avatar_state.as_deref() == Some("in_battle");
+                            let is_mob = matches!(kind, EntityKind::Monster);
                             EntityView {
                                 id: e.entity_id,
                                 x: e.position.x,
@@ -1016,6 +1075,11 @@ impl Inner {
                                 battling,
                                 level: e.level.unwrap_or(0),
                                 opened,
+                                mob_level: is_mob.then_some(e.mob_level).flatten(),
+                                hp: is_mob.then_some(e.hp).flatten(),
+                                max_hp: is_mob.then_some(e.max_hp).flatten(),
+                                encounter_class: if is_mob { e.encounter_class } else { None },
+                                aggression: if is_mob { e.aggression } else { None },
                             }
                         })
                         .collect();
