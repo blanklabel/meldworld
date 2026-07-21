@@ -32,6 +32,8 @@ pub struct ApiState {
     pub session_ttl_secs: i32,
     pub meld_xp_per_level: i64,
     pub meld_forging_xp: i64,
+    /// Bounds-checks the `hero_slot` an equip request targets.
+    pub party_size_per_player: i32,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -237,9 +239,11 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     insurance: g.insurance,
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,
+                    def_bonus: g.def_bonus,
+                    spd_bonus: g.spd_bonus,
                     base_max_durability: g.base_max_durability,
                     max_durability: g.max_durability,
-                    equipped: g.equipped,
+                    equipped_hero_slot: g.equipped_hero_slot,
                 })
                 .collect();
             Ok((StatusCode::OK, Json(GearListResponse { data })).into_response())
@@ -248,12 +252,21 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
     }
 }
 
+#[derive(serde::Deserialize)]
+struct EquipRequest {
+    hero_slot: i32,
+}
+
 async fn equip(
     State(st): State<ApiState>,
     headers: HeaderMap,
     Path(gear_id): Path<String>,
+    Json(req): Json<EquipRequest>,
 ) -> Result<Response, ApiReject> {
-    set_equipped(st, headers, gear_id, true).await
+    if !(0..st.party_size_per_player).contains(&req.hero_slot) {
+        return Err(ApiReject::new(StatusCode::BAD_REQUEST, "bad_request", "Invalid hero_slot."));
+    }
+    set_equipped(st, headers, gear_id, Some(req.hero_slot)).await
 }
 
 async fn unequip(
@@ -261,22 +274,24 @@ async fn unequip(
     headers: HeaderMap,
     Path(gear_id): Path<String>,
 ) -> Result<Response, ApiReject> {
-    set_equipped(st, headers, gear_id, false).await
+    set_equipped(st, headers, gear_id, None).await
 }
 
 async fn set_equipped(
     st: ApiState,
     headers: HeaderMap,
     gear_id: String,
-    equipped: bool,
+    target: Option<i32>,
 ) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
     let gid = Uuid::parse_str(&gear_id)
         .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
-    match st.db.set_equipped(player_id, gid, equipped).await {
-        Ok(EquipResult::Ok) => {
-            Ok((StatusCode::OK, Json(serde_json::json!({ "equipped": equipped }))).into_response())
-        }
+    match st.db.set_equipped(player_id, gid, target).await {
+        Ok(EquipResult::Ok) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({ "equipped_hero_slot": target })),
+        )
+            .into_response()),
         Ok(EquipResult::NotFound) => Err(ApiReject::new(
             StatusCode::NOT_FOUND,
             "not_found",

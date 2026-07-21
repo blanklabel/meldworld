@@ -55,8 +55,14 @@ pub struct LootGear {
     pub insurance: Insurance,
     /// Loot tier band at generation: `tier(d) = floor(d / 100)`.
     pub tier: i32,
-    /// Flat physical-attack bonus granted while equipped.
+    /// Flat physical-attack bonus granted while equipped (weapon slot).
     pub atk_bonus: i32,
+    /// Flat defence bonus granted while equipped (armor slot).
+    #[serde(default)]
+    pub def_bonus: i32,
+    /// Flat ATB-speed bonus granted while equipped (accessory slot).
+    #[serde(default)]
+    pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
 }

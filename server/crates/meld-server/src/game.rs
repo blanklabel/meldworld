@@ -210,8 +210,9 @@ struct Session {
     seq_out: u32,
     last_client_seq: u32,
     in_instance: bool,
-    /// Attack bonus from equipped gear, loaded from the DB after connect.
-    gear_atk_bonus: i32,
+    /// Per-hero-slot combat bonuses from equipped gear, loaded from the DB
+    /// after connect (each hero can wear different gear).
+    gear_bonuses: Vec<meld_db::GearBonus>,
     /// Class chosen at the player's most recent `run.enter_maze` (default Hunter).
     /// This is the party *lead* (slot 0).
     character_class: CharacterClass,
@@ -578,7 +579,7 @@ impl GameState {
                         seq_out: 2,
                         last_client_seq: 0,
                         in_instance: false,
-                        gear_atk_bonus: 0,
+                        gear_bonuses: Vec::new(),
                         character_class: CharacterClass::Hunter,
                         party_comp: None,
                         hero_names: None,
@@ -772,9 +773,15 @@ impl GameState {
         };
         let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
         let rows = inst.hero_rows.get(pid).cloned().unwrap_or_default();
+        // Reflect each hero's own equipped gear so the party panel matches combat.
+        let hero_bonuses = self.sessions.get(pid).map(|s| &s.gear_bonuses);
         let party: Vec<meld_run::PartyMember> = comp
             .iter()
-            .map(|c| (pid.to_string(), String::new(), *c, 0))
+            .enumerate()
+            .map(|(slot, c)| {
+                let b = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                (pid.to_string(), String::new(), *c, meld_run::GearBonus { atk: b.atk, def: b.def, spd: b.spd })
+            })
             .collect();
         let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
         let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance, &row_overrides);
@@ -1356,10 +1363,10 @@ impl GameState {
         let seed = now_ms();
         let balance = self.balance.clone();
         // Snapshot gear bonuses before borrowing the instance mutably.
-        let bonuses: HashMap<String, i32> = self
+        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self
             .sessions
             .iter()
-            .map(|(k, s)| (k.clone(), s.gear_atk_bonus))
+            .map(|(k, s)| (k.clone(), s.gear_bonuses.clone()))
             .collect();
         let Some(inst) = self.instance.as_mut() else {
             return Vec::new();
@@ -1388,7 +1395,7 @@ impl GameState {
         let mut hp_overrides: Vec<Option<i32>> = Vec::new();
         let mut row_overrides: Vec<Option<bool>> = Vec::new();
         for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
-            let bonus = bonuses.get(&r.player_id).copied().unwrap_or(0);
+            let hero_bonuses = bonuses.get(&r.player_id);
             let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
             let row_vec = inst.hero_rows.get(&r.player_id).cloned().unwrap_or_default();
             let comp = inst
@@ -1400,6 +1407,9 @@ impl GameState {
             for (slot, cls) in comp.iter().enumerate() {
                 let cid = Uuid::now_v7().to_string();
                 combatant_player.insert(cid.clone(), r.player_id.clone());
+                // Each hero wears their own gear (per-character equip slots).
+                let bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let bonus = meld_run::GearBonus { atk: bonus.atk, def: bonus.def, spd: bonus.spd };
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 // Some(row) forces the saved rank; None falls back to the class default.
@@ -1637,10 +1647,10 @@ impl GameState {
         let balance = self.balance.clone();
         let cap =
             meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
-        let bonuses: HashMap<String, i32> = self
+        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self
             .sessions
             .iter()
-            .map(|(k, s)| (k.clone(), s.gear_atk_bonus))
+            .map(|(k, s)| (k.clone(), s.gear_bonuses.clone()))
             .collect();
         let Some(inst) = self.instance.as_mut() else {
             return Vec::new();
@@ -1679,11 +1689,14 @@ impl GameState {
                 .unwrap_or_else(|| vec![lead]);
             let hp_vec = inst.hero_hp.get(pid).cloned().unwrap_or_default();
             let row_vec = inst.hero_rows.get(pid).cloned().unwrap_or_default();
-            let bonus = bonuses.get(pid).copied().unwrap_or(0);
+            let hero_bonuses = bonuses.get(pid);
             let mut cids = Vec::new();
             for (slot, cls) in comp.iter().enumerate() {
                 let cid = Uuid::now_v7().to_string();
                 add_combatant_player.insert(cid.clone(), pid.clone());
+                // Each hero wears their own gear (per-character equip slots).
+                let bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let bonus = meld_run::GearBonus { atk: bonus.atk, def: bonus.def, spd: bonus.spd };
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 row_overrides.push(row_vec.get(slot).copied());
@@ -1959,14 +1972,15 @@ impl GameState {
             .collect()
     }
 
-    /// Load equipped-gear attack bonuses for freshly-connected players.
+    /// Load equipped-gear bonuses (per hero slot) for freshly-connected players.
     async fn flush_gear_loads(&mut self) {
         let loads: Vec<String> = std::mem::take(&mut self.pending_gear_load);
+        let party_size = self.balance.battle.party_size_per_player as i32;
         for pid in loads {
             if let Ok(uid) = Uuid::parse_str(&pid) {
-                if let Ok(bonus) = self.db.equipped_atk_bonus(uid).await {
+                if let Ok(bonuses) = self.db.equipped_gear_bonuses(uid, party_size).await {
                     if let Some(s) = self.sessions.get_mut(&pid) {
-                        s.gear_atk_bonus = bonus;
+                        s.gear_bonuses = bonuses;
                     }
                 }
             }
@@ -2105,6 +2119,8 @@ impl GameState {
                 insurance: Insurance::Red,
                 tier: g.tier,
                 atk_bonus: g.atk_bonus,
+                def_bonus: g.def_bonus,
+                spd_bonus: g.spd_bonus,
                 base_max_durability: g.max_durability,
                 max_durability: g.max_durability,
             })
@@ -2215,6 +2231,8 @@ impl GameState {
                             slot: g.slot.clone(),
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
+                            def_bonus: g.def_bonus,
+                            spd_bonus: g.spd_bonus,
                             base_max_durability: g.base_max_durability,
                             max_durability: g.max_durability,
                         })
@@ -2790,6 +2808,8 @@ impl GameState {
                             insurance: Insurance::Red,
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
+                            def_bonus: g.def_bonus,
+                            spd_bonus: g.spd_bonus,
                             base_max_durability: g.max_durability,
                             max_durability: g.max_durability,
                         })

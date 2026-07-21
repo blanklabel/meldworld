@@ -42,6 +42,7 @@ pub async fn build(config: &Config) -> Result<Built, String> {
         session_ttl_secs: balance.auth.session_token_ttl_secs,
         meld_xp_per_level: balance.meld.xp_per_level,
         meld_forging_xp: balance.meld.forging_xp_per_craft,
+        party_size_per_player: balance.battle.party_size_per_player as i32,
     });
 
     // Realtime gateway.

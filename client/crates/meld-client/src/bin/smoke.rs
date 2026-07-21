@@ -79,7 +79,7 @@ fn main() {
                         my_turn = true;
                     }
                 }
-                ServerMsg::BattleEnded { outcome } => {
+                ServerMsg::BattleEnded { outcome, .. } => {
                     eprintln!("[smoke] battle ended: {outcome}");
                     match outcome.as_str() {
                         "victory" => std::process::exit(0),
@@ -93,6 +93,7 @@ fn main() {
                     std::process::exit(3);
                 }
                 ServerMsg::Gauge { .. }
+                | ServerMsg::ChestOpened { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
                 | ServerMsg::LevelUp { .. }

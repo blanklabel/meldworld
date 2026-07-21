@@ -72,7 +72,7 @@ pub struct VaultSummary {
     pub materials: Vec<VaultItemStack>,
 }
 
-/// A gear item (vault-gear.md subset — blue-chest, durability, atk bonus).
+/// A gear item (vault-gear.md subset — blue-chest, durability, per-slot stat).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GearView {
     pub gear_id: Id,
@@ -83,9 +83,14 @@ pub struct GearView {
     #[serde(default)]
     pub tier: i32,
     pub atk_bonus: i32,
+    #[serde(default)]
+    pub def_bonus: i32,
+    #[serde(default)]
+    pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
-    pub equipped: bool,
+    /// Which of the owner's heroes has this equipped, if any.
+    pub equipped_hero_slot: Option<i32>,
 }
 
 /// `GET /v1/vault/gear` response.

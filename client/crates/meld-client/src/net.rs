@@ -198,10 +198,13 @@ pub struct GearLine {
     /// `"blue"` (insured) or `"red"` (extracted run loot).
     pub insurance: String,
     pub tier: i32,
-    pub equipped: bool,
+    /// Which of the caller's heroes has this equipped, if any.
+    pub equipped_hero_slot: Option<usize>,
     pub max_durability: i32,
     pub base_max_durability: i32,
     pub atk_bonus: i32,
+    pub def_bonus: i32,
+    pub spd_bonus: i32,
 }
 
 /// A meld-skill row for the level-up screen.
@@ -294,7 +297,22 @@ pub enum ServerMsg {
     /// A second party merged into the battle (raid merge) — add their combatants.
     CombatantsJoined { combatants: Vec<CombatantView> },
     Gauge { updates: Vec<(String, f64, i32, Vec<String>)> },
-    BattleEnded { outcome: String },
+    /// Terminal battle resolution — on victory this feeds the after-action
+    /// report banner (XP/chits/items/gear gained this encounter).
+    BattleEnded {
+        outcome: String,
+        xp: i64,
+        chits: i64,
+        items: Vec<(String, i32)>,
+        gear_drops: Vec<String>,
+    },
+    /// A treasure chest was opened — feeds the same loot report banner as
+    /// `BattleEnded` (no XP line, chest-only chits/items/gear).
+    ChestOpened {
+        chits: i64,
+        items: Vec<(String, i32)>,
+        gear: Vec<String>,
+    },
     /// An extraction channel began / broke.
     ChannelStarted { completes_at: u64 },
     ChannelInterrupted,
@@ -409,10 +427,10 @@ impl Net {
         self.0.borrow_mut().fetch_progress();
     }
 
-    /// Equip (`equip = true`) or unequip a gear item over HTTP, then refresh the
-    /// inventory (→ a fresh `InventoryData`).
-    pub fn equip_gear(&self, gear_id: String, equip: bool) {
-        self.0.borrow_mut().equip_gear(gear_id, equip);
+    /// Equip a gear item to `Some(hero_slot)`, or unequip it with `None`, over
+    /// HTTP, then refresh the inventory (→ a fresh `InventoryData`).
+    pub fn equip_gear(&self, gear_id: String, hero_slot: Option<usize>) {
+        self.0.borrow_mut().equip_gear(gear_id, hero_slot);
     }
 
     /// Advance the state machine: fire queued commands, pump HTTP + WS.
@@ -508,20 +526,24 @@ impl Inner {
         spawn_inventory_fetch(self.base.clone(), self.session_token.clone(), tx);
     }
 
-    /// POST equip/unequip for a gear item, then refresh the inventory so the
-    /// overlay reflects the new loadout (a 409 leaves it unchanged). Loadout
-    /// changes take effect at the next dive (vault-gear.md).
-    fn equip_gear(&mut self, gear_id: String, equip: bool) {
+    /// POST equip (with a `{"hero_slot": N}` body) or unequip (empty body) for a
+    /// gear item, then refresh the inventory so the overlay reflects the new
+    /// loadout (a 409 leaves it unchanged). Loadout changes take effect at the
+    /// next dive (vault-gear.md).
+    fn equip_gear(&mut self, gear_id: String, hero_slot: Option<usize>) {
         if self.session_token.is_empty() || gear_id.is_empty() {
             return;
         }
         let base = self.base.clone();
         let token = self.session_token.clone();
-        let verb = if equip { "equip" } else { "unequip" };
-        let mut req = ehttp::Request::post(
-            format!("{base}/v1/vault/gear/{gear_id}/{verb}"),
-            Vec::new(),
-        );
+        let (verb, body) = match hero_slot {
+            Some(slot) => (
+                "equip",
+                serde_json::to_vec(&json!({ "hero_slot": slot })).unwrap_or_default(),
+            ),
+            None => ("unequip", Vec::new()),
+        };
+        let mut req = ehttp::Request::post(format!("{base}/v1/vault/gear/{gear_id}/{verb}"), body);
         req.headers.insert("Authorization", format!("Bearer {token}"));
         req.headers.insert("Content-Type", "application/json");
         let (tx, rx) = mpsc::channel();
@@ -821,6 +843,11 @@ impl Inner {
                 }
             }
             "run.backpack_update" => {
+                // A chest-open pays out in the same message shape as any other
+                // backpack change (kill loot, town-portal drops); `cause` tags
+                // which one this is, so the chest report only fires for chests.
+                let mut is_chest = false;
+                let mut chest_items: Vec<(String, i32)> = Vec::new();
                 for ch in raw.payload["changes"].as_array().into_iter().flatten() {
                     let kind = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
                     let qty = ch["item"]["quantity"].as_i64().unwrap_or(0) as i32;
@@ -828,6 +855,10 @@ impl Inner {
                         continue;
                     }
                     let signed = if ch["delta"].as_str() == Some("removed") { -qty } else { qty };
+                    if ch["cause"].as_str() == Some("chest") && signed > 0 {
+                        is_chest = true;
+                        chest_items.push((kind.clone(), signed));
+                    }
                     let e = self.backpack.entry(kind).or_insert(0);
                     *e += signed;
                     if *e <= 0 {
@@ -835,16 +866,28 @@ impl Inner {
                         self.backpack.remove(&k);
                     }
                 }
-                self.run_chits += raw.payload["chits_delta"].as_i64().unwrap_or(0);
+                let chits_delta = raw.payload["chits_delta"].as_i64().unwrap_or(0);
+                self.run_chits += chits_delta;
                 if self.run_chits < 0 {
                     self.run_chits = 0;
                 }
+                let mut chest_gear: Vec<String> = Vec::new();
                 for g in raw.payload["gear_added"].as_array().into_iter().flatten() {
                     let name = g["name"].as_str().unwrap_or("gear").to_string();
+                    if is_chest {
+                        chest_gear.push(name.clone());
+                    }
                     let atk = g["atk_bonus"].as_i64().unwrap_or(0) as i32;
                     self.run_gear.push((name, atk));
                 }
                 self.emit_backpack();
+                if is_chest {
+                    self.out.push_back(ServerMsg::ChestOpened {
+                        chits: chits_delta,
+                        items: chest_items,
+                        gear: chest_gear,
+                    });
+                }
             }
             "run.party" => {
                 let heroes = raw.payload["heroes"]
@@ -1081,11 +1124,30 @@ impl Inner {
             }
             "battle.ended" => {
                 if let Ok(e) = serde_json::from_value::<wb::Ended>(raw.payload) {
-                    let outcome = serde_json::to_value(e.outcome)
+                    let outcome = serde_json::to_value(&e.outcome)
                         .ok()
                         .and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_else(|| "over".to_string());
-                    self.out.push_back(ServerMsg::BattleEnded { outcome });
+                    // Our own XP award, if any (the payload lists every participant).
+                    let xp = e
+                        .xp_awards
+                        .iter()
+                        .find(|a| a.player_id == self.player_id)
+                        .map(|a| a.xp)
+                        .unwrap_or(0);
+                    let items = e
+                        .loot
+                        .into_iter()
+                        .map(|i| (i.item_kind, i.quantity))
+                        .collect();
+                    let gear_drops = e.gear_drops.into_iter().map(|g| g.name).collect();
+                    self.out.push_back(ServerMsg::BattleEnded {
+                        outcome,
+                        xp,
+                        chits: e.chits_found,
+                        items,
+                        gear_drops,
+                    });
                 }
             }
             "run.channel_started" => {
@@ -1160,11 +1222,13 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
                                 slot: g["slot"].as_str().unwrap_or("").to_string(),
                                 insurance: g["insurance"].as_str().unwrap_or("blue").to_string(),
                                 tier: g["tier"].as_i64().unwrap_or(0) as i32,
-                                equipped: g["equipped"].as_bool().unwrap_or(false),
+                                equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),
                                 max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
                                 base_max_durability: g["base_max_durability"].as_i64().unwrap_or(0)
                                     as i32,
                                 atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
+                                def_bonus: g["def_bonus"].as_i64().unwrap_or(0) as i32,
+                                spd_bonus: g["spd_bonus"].as_i64().unwrap_or(0) as i32,
                             })
                             .collect();
                     }

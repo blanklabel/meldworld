@@ -154,11 +154,20 @@ pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> 
     stats.base_hp + grow(wll, stats.wll, balance.attributes.wll_to_hp)
 }
 
+/// One hero's summed combat bonuses from their own equipped gear (per-hero
+/// equip slots — each hero in a party can wear different gear).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GearBonus {
+    pub atk: i32,
+    pub def: i32,
+    pub spd: i32,
+}
+
 /// Assemble a battle from a party and one arena monster. `party` gives, per
 /// player, the (player_id, combatant_id, class); the server owns combatant ids.
 /// Per-player combatant inputs for a battle: (player_id, combatant_id, class,
-/// equipped gear attack bonus).
-pub type PartyMember = (Id, Id, CharacterClass, i32);
+/// that hero's own equipped-gear bonus).
+pub type PartyMember = (Id, Id, CharacterClass, GearBonus);
 
 /// Build the ally `Fighter`s for a party (shared by battle start and raid merge).
 /// `row_overrides` (aligned with `party`) lets the player's saved formation win over
@@ -180,7 +189,7 @@ pub fn party_fighters(
     party
         .iter()
         .enumerate()
-        .map(|(i, (player_id, combatant_id, class, atk_bonus))| {
+        .map(|(i, (player_id, combatant_id, class, bonus))| {
             let stats = balance
                 .player
                 .get(class_key(*class))
@@ -200,9 +209,9 @@ pub fn party_fighters(
             let (str_, mnd, dex, wll) = stats.attributes_at(level);
             let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
             let max_hp = max_hp_at_level(*class, level, balance);
-            let atk = stats.base_atk + grow(str_, stats.str, a.str_to_atk) + atk_bonus; // + gear
-            let def = stats.base_def + grow(wll, stats.wll, a.wll_to_def);
-            let speed = stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed);
+            let atk = stats.base_atk + grow(str_, stats.str, a.str_to_atk) + bonus.atk; // + gear
+            let def = stats.base_def + grow(wll, stats.wll, a.wll_to_def) + bonus.def; // + gear
+            let speed = stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed) + bonus.spd; // + gear
             // Spell power keys off the class attack base (gear boosts physical, not
             // psychic) and scales with Mnd.
             let spell_power = stats.base_atk + grow(mnd, stats.mnd, a.mnd_to_power);
@@ -382,7 +391,7 @@ mod tests {
         let mut runs = InstanceRun::new("i".into(), 0, b);
         runs.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
         runs.runs[0].run_level = level;
-        let party: Vec<PartyMember> = vec![("p".into(), "c".into(), class, 0)];
+        let party: Vec<PartyMember> = vec![("p".into(), "c".into(), class, GearBonus::default())];
         party_fighters(&party, &runs, b, &[]).pop().unwrap()
     }
 
@@ -465,7 +474,7 @@ mod tests {
         // Use a real generated creature as the enemy.
         let arena = meld_world::Arena::generate(&b, 5);
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, 0)];
+        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, GearBonus::default())];
         // Carry a wounded hero in: start at 17 HP rather than full.
         let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[]);
         let (allies, _) = battle.wire_combatants();
@@ -483,8 +492,8 @@ mod tests {
             ("p".into(), "u".into(), CharacterClass::Hunter, "r2".into()),
         ]);
         let party: Vec<PartyMember> = vec![
-            ("p".into(), "c1".into(), CharacterClass::Psyker, 0), // class default: back
-            ("p".into(), "c2".into(), CharacterClass::Hunter, 0), // class default: front
+            ("p".into(), "c1".into(), CharacterClass::Psyker, GearBonus::default()), // class default: back
+            ("p".into(), "c2".into(), CharacterClass::Hunter, GearBonus::default()), // class default: front
         ];
         // Override: send the Psyker to the front and pull the Hunter to the back.
         let fighters = party_fighters(&party, &runs, &b, &[Some(false), Some(true)]);
@@ -494,5 +503,25 @@ mod tests {
         let dflt = party_fighters(&party, &runs, &b, &[]);
         assert!(dflt[0].back_row, "Psyker keeps its back-row default");
         assert!(!dflt[1].back_row, "Hunter keeps its front-row default");
+    }
+
+    #[test]
+    fn gear_bonus_adds_into_atk_def_speed() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Hunter, "r".into())]);
+        let bare: Vec<PartyMember> =
+            vec![("p".into(), "c".into(), CharacterClass::Hunter, GearBonus::default())];
+        let geared: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Hunter,
+            GearBonus { atk: 5, def: 3, spd: 2 },
+        )];
+        let f0 = party_fighters(&bare, &runs, &b, &[]).pop().unwrap();
+        let f1 = party_fighters(&geared, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f1.atk, f0.atk + 5);
+        assert_eq!(f1.def, f0.def + 3);
+        assert_eq!(f1.speed_stat, f0.speed_stat + 2);
     }
 }
