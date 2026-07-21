@@ -1,6 +1,6 @@
 # MELDWORLD Spec
 
-Forward-design behavior specifications derived from the source documents [`../GDD.md`](../GDD.md) and [`../CANON.md`](../CANON.md) (CANON wins on conflict). Execution plan: [`../BUILD-PLAN.md`](../BUILD-PLAN.md). Constants marked **[TUNABLE]** are server config, not hardcoded.
+Forward-design behavior specifications derived from the source documents [`../GDD.md`](GDD.md) and [`../CANON.md`](CANON.md) (CANON wins on conflict). Execution plan: [`../BUILD-PLAN.md`](BUILD-PLAN.md). Constants marked **[TUNABLE]** are server config, not hardcoded.
 
 ## Interfaces
 

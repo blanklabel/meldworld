@@ -1,4 +1,4 @@
-//! Field bounds + validators (edge-cases/limits.md), exposed as typed helpers
+//! Field bounds + validators (docs/edge-cases/limits.md), exposed as typed helpers
 //! so both server and client validate identically (BUILD-PLAN T1-13).
 
 /// Username: 3–20 chars, `^[a-zA-Z0-9_]+$` (CANON.md D17, limits.md).

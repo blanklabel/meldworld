@@ -60,7 +60,7 @@ fight you didn't pick.
 > a thin-but-honest cut of the full game. You can play the whole core loop today.
 > Larger systems (the full economy and meta-progression, seasons, gatekeepers,
 > world chunk streaming) are scoped and on the way. See
-> [`SPIKE-NOTES.md`](SPIKE-NOTES.md) for exactly what's live versus planned.
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) for exactly what's live versus planned.
 
 ---
 
@@ -139,12 +139,12 @@ opening prompt:
 Gameplay isn't defined by whatever the code happens to do — it's specified
 top-down, and **the higher document wins on conflict**:
 
-1. [`GDD.md`](GDD.md) — the design vision (the *intent*).
-2. [`CANON.md`](CANON.md) — authoritative answers to every ambiguity in the GDD:
+1. [`GDD.md`](docs/GDD.md) — the design vision (the *intent*).
+2. [`CANON.md`](docs/CANON.md) — authoritative answers to every ambiguity in the GDD:
    names, enums, formulas, and every tunable constant. **CANON beats GDD.**
-3. [`behaviors/`](behaviors/) + [`interfaces/`](interfaces/) — the spec: observable
+3. [`behaviors/`](docs/behaviors/) + [`interfaces/`](docs/interfaces/) — the spec: observable
    behavior and wire/data contracts, each citing its CANON source.
-4. [`BUILD-PLAN.md`](BUILD-PLAN.md) — the milestones and task IDs the code is built
+4. [`BUILD-PLAN.md`](docs/BUILD-PLAN.md) — the milestones and task IDs the code is built
    against.
 
 When your agent adds or changes a rule, it should cite the spec (`combat-atb.md`,

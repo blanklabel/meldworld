@@ -3,7 +3,7 @@
 //! session's `in_instance` flag stayed `true` after a run ended, so the second
 //! `run.enter_maze` was rejected with "A run is already active for you." and the
 //! extract-or-die loop never closed. This test asserts the second dive reaches a
-//! fresh `run.started` (see CITY-PROPOSAL.md M0).
+//! fresh `run.started` (see docs/proposals/last-city.md M0).
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 

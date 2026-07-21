@@ -89,7 +89,7 @@ Band boundaries use integer `distance` thresholds (a tile at floored distance ex
 
 1. Procedural generation forces geographic chokepoints (bridges, canyon passes, etc.) at intervals so that outward travel funnels players through shared narrow routes. Chokepoint frequency and geometry are content-table driven **[TUNABLE]**.
 2. Guarantee: the maze is never a fully open plane — every path from a hub to the next tier band crosses at least one generated chokepoint.
-3. Guarantee (reachability): generation never produces an unreachable ring; for every `distance` there exists at least one traversable path from the Center Hub, subject only to Gatekeeper blockers (below). The traversable path may change **elevation** (it can climb a plateau and descend again), but every such level change on the guaranteed path is served by a ramp connector, so the route is always completable — verified across seeds by the `meld-world` clear-path tests. See [`VERTICALITY-PROPOSAL.md`](../VERTICALITY-PROPOSAL.md).
+3. Guarantee (reachability): generation never produces an unreachable ring; for every `distance` there exists at least one traversable path from the Center Hub, subject only to Gatekeeper blockers (below). The traversable path may change **elevation** (it can climb a plateau and descend again), but every such level change on the guaranteed path is served by a ramp connector, so the route is always completable — verified across seeds by the `meld-world` clear-path tests. See [`VERTICALITY-PROPOSAL.md`](../proposals/verticality.md).
 
 ---
 

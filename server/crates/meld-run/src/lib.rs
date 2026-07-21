@@ -1,4 +1,4 @@
-//! Run & instance lifecycle for the spike (behaviors/run-lifecycle.md subset).
+//! Run & instance lifecycle for the spike (docs/behaviors/run-lifecycle.md subset).
 //!
 //! Provides: base-run-level derivation, per-player ephemeral run state
 //! (backpack + run level/XP), the victory/defeat outcome transitions, and the

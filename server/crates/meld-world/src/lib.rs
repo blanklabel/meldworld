@@ -1,4 +1,4 @@
-//! Overworld model for the spike (behaviors/world-generation.md subset).
+//! Overworld model for the spike (docs/behaviors/world-generation.md subset).
 //!
 //! The full spec is an infinite seeded radial plane with 64×64 chunk streaming,
 //! biomes, chokepoints and Gatekeeper arenas. This slice implements the part
@@ -9,7 +9,7 @@
 //! portal near the chain's end, and — new — **terraced verticality**: raised
 //! plateaus joined to the ground by connectors (ladders/ropes/slopes).
 //!
-//! **Per-section seeds & streaming** (VERTICALITY-PROPOSAL.md): each section `n`
+//! **Per-section seeds & streaming** (docs/proposals/verticality.md): each section `n`
 //! is generated from its OWN derived seed `section_seed(run_seed, n)`, so sections
 //! are independent (one section's RNG draws can't perturb another's) and any single
 //! section reproduces exactly from `(run_seed, n)`. Sections are generated
@@ -17,7 +17,7 @@
 //! endless, always fresh as you go deeper, and identical again on the same seed.
 //! This is the deferred "chunk streaming" landing as the procedural core.
 //!
-//! **Verticality** (VERTICALITY-PROPOSAL.md): elevation is a small number of
+//! **Verticality** (docs/proposals/verticality.md): elevation is a small number of
 //! integer levels, not a heightmap. Terraces are raised rectangles kept OUT of the
 //! guaranteed clear-path tube, so the extraction route stays entirely on level 0
 //! and is always feasible by construction. Cliffs are impassable walls; the only
@@ -236,7 +236,7 @@ fn splitmix64(mut z: u64) -> u64 {
 }
 
 /// Derive an independent, reproducible seed for section `n` from the run seed
-/// (VERTICALITY-PROPOSAL.md "per-section seeds"). Each section is generated from
+/// (docs/proposals/verticality.md "per-section seeds"). Each section is generated from
 /// its OWN seed stream, so crossing into a new section is like dropping into a
 /// fresh seed — endless variety as you go, identical again on the same run seed.
 pub fn section_seed(run_seed: u64, n: usize) -> u64 {
@@ -764,7 +764,7 @@ impl Arena {
     /// Build section `i` from its OWN seed (`section_seed`) and append it to the
     /// flat entity vectors + the path. Self-contained per section: no shared RNG
     /// state threads between sections, which is exactly what makes streaming and
-    /// reproducibility work (VERTICALITY-PROPOSAL.md per-section seeds).
+    /// reproducibility work (docs/proposals/verticality.md per-section seeds).
     fn push_section(&mut self, balance: &Balance, i: usize) {
         let wg = &balance.worldgen;
         let mut rng = Rng(section_seed(self.seed_base, i));

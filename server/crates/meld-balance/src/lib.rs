@@ -202,7 +202,7 @@ pub struct WorldGen {
     pub path_clear_radius: f64,
     pub path_meander: f64,
     pub player_radius: f64,
-    // --- Verticality (terraces + connectors), VERTICALITY-PROPOSAL.md. ---
+    // --- Verticality (terraces + connectors), docs/proposals/verticality.md. ---
     /// Avg raised terraces per procedural section (area 0 stays flat).
     pub terraces_per_area: f64,
     /// Highest elevation level a terrace can reach (0 = ground).

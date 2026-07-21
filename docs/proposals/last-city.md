@@ -1,11 +1,16 @@
-# The Central Hub — "The Weld," the last city — design + server plan
+# The Central Hub — **Last City** — design + server plan
 
+> **Name decided: the hub is "Last City."** This supersedes the "The Weld" working
+> name used throughout the rest of this doc; wherever it says "The Weld," read
+> "Last City." The district names and the whole design below stand. Tracked as
+> epic **LC** in [`../ROADMAP.md`](../ROADMAP.md).
+>
 > Status: **M0 SHIPPED (spike); M1–M3 proposed.** Grounds the persistent social +
 > economic core the loop was missing. Written against the real code: the client
-> `Screen` state machine ([client `main.rs`](client/crates/meld-client/src/main.rs)),
-> the single-owner authoritative loop ([`meld-server/game.rs`](server/crates/meld-server/src/game.rs)),
-> the persistent Vault/economy HTTP surface ([`meld-api`](server/crates/meld-api/)),
-> and the already-specced economy ([behaviors/economy.md](behaviors/economy.md)).
+> `Screen` state machine ([client `main.rs`](../../client/crates/meld-client/src/main.rs)),
+> the single-owner authoritative loop ([`meld-server/game.rs`](../../server/crates/meld-server/src/game.rs)),
+> the persistent Vault/economy HTTP surface ([`meld-api`](../../server/crates/meld-api/)),
+> and the already-specced economy ([behaviors/economy.md](../behaviors/economy.md)).
 > This reframes the GDD "Center Hub" (GDD §2.1, §4, §7) as **the New Weird last
 > city** and closes the biggest hole in the extract-or-die loop.
 >
@@ -14,7 +19,7 @@
 >   the return target after every run. `Connected → City`; The Threshold dives
 >   (`[ENTER]` solo / `[C]` co-op via the lobby); `Ended` demoted to a summary that
 >   routes **back to City** (`[ENTER]`) instead of quitting.
-> - **Server: `release_from_run`** ([game.rs](server/crates/meld-server/src/game.rs)) —
+> - **Server: `release_from_run`** ([game.rs](../../server/crates/meld-server/src/game.rs)) —
 >   extraction + death now clear the session's `in_instance` flag and drop the run,
 >   so a second `enter_maze` succeeds. Before this, re-diving was rejected with "A
 >   run is already active for you." — the loop could never close.
@@ -41,7 +46,7 @@
 ## The problem: the loop has no home
 
 The core loop is **extract-or-die**, but today it just *ends*. The client flow is
-`Join → Lobby → Overworld → Battle → Ended`, and [`ended_ui`](client/crates/meld-client/src/main.rs)
+`Join → Lobby → Overworld → Battle → Ended`, and [`ended_ui`](../../client/crates/meld-client/src/main.rs)
 is a terminal screen — "EXTRACTED — banked 3 items + 120 chits to your Vault …
 Press ESC to exit." You bank loot into a persistent Vault (real rows in Postgres),
 earn chits, level Meld skills — and then there is **nowhere to be**. No place to
@@ -50,7 +55,7 @@ soul. The persistent half of the game (GDD §2.1) is specced but roomless.
 
 Every downstream system already assumes this room exists:
 
-- [economy.md](behaviors/economy.md) — Stalls "deployed **in a Hub**," Bounty
+- [economy.md](../behaviors/economy.md) — Stalls "deployed **in a Hub**," Bounty
   Contracts "posted on **a Hub's** Bounty Board," Mercantile taxes, the durability
   sink that "keeps crafters employed."
 - GDD §4 — the Training Ground, Outer Hub unlocks, resource stratification.
@@ -120,7 +125,7 @@ to.
                                  └──────────────┘
 ```
 
-Concretely, in the client `Screen` enum ([main.rs:378](client/crates/meld-client/src/main.rs)):
+Concretely, in the client `Screen` enum ([main.rs:378](../../client/crates/meld-client/src/main.rs)):
 
 - **`Join`** stays (auth).
 - **New `Screen::City`** becomes the post-auth default and the return target.
@@ -150,7 +155,7 @@ already specced — the city is the **front door** to them, not new mechanics.
 | **The Bounty Board** — a bristling notice-wall of escrowed orders | **Contracts** (gathering bounties, chit rewards, expiry) | [economy.md] "Bounty Contracts" | **specced, unbuilt** |
 | **The Drill Yard** — training ground under the city lanterns | **Training Ground**: build templates, Base Level allocation | GDD §4 | **unbuilt** |
 | **The Vanguard Wall** — names carved by the wound's light | Leaderboards / Vanguard Board (seasonal) | [endgame-seasons.md]; CANON §seasons | **unbuilt** |
-| **The Threshold** — the gate onto the plane; a party rallying-point | Party formation + **the current Lobby** (create/join by code, ready, start) | `lobby.*` messages already exist ([net.rs](client/crates/meld-client/src/net.rs)) | **built** (as a screen) |
+| **The Threshold** — the gate onto the plane; a party rallying-point | Party formation + **the current Lobby** (create/join by code, ready, start) | `lobby.*` messages already exist ([net.rs](../../client/crates/meld-client/src/net.rs)) | **built** (as a screen) |
 | **The Commons** — the plaza: fungus-lantern square where everyone lands | **Social**: presence of 100s, proximity chat, emotes, hanging out | *new* (see scale section) | **new** |
 
 The Commons is the only genuinely new thing. Everything else is a room wrapped

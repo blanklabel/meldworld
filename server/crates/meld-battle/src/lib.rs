@@ -1,4 +1,4 @@
-//! Server-authoritative ATB engine (CANON.md §B, behaviors/combat-atb.md).
+//! Server-authoritative ATB engine (CANON.md §B, docs/behaviors/combat-atb.md).
 //!
 //! One [`Battle`] is a pure state machine: [`Battle::tick`] advances gauges on
 //! the 100 ms cadence and resolves monster/timeout actions; [`Battle::submit`]
