@@ -260,7 +260,7 @@ fn main() {
         .init_resource::<LootReport>()
         .add_systems(
             Startup,
-            (setup, apply_class_flag, mock_battle_setup, mock_overlay_setup),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -283,6 +283,8 @@ fn main() {
                 // Player characters carry their own light at night (overworld +
                 // battle) so the game stays readable in the dark.
                 illuminate_players,
+                // Route every UI text through the bundled symbol-capable font.
+                apply_ui_font,
             ),
         )
         // Join
@@ -2878,6 +2880,33 @@ fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
     }
 }
 
+/// The bundled UI font — JetBrainsMono Nerd Font (OFL): a monospace text face with
+/// Font-Awesome / Material-Design icons baked in at private-use codepoints, so the
+/// HUD renders both Latin text and real icons instead of the ASCII-only default
+/// (which drew `⚡`/`◆`/… as tofu boxes). See `assets/fonts/`.
+#[derive(Resource)]
+struct UiFont(Handle<Font>);
+
+fn load_ui_font(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(UiFont(
+        assets.load("fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+    ));
+}
+
+/// Retro-fit the bundled font onto every text node, so all UI (spawned across many
+/// call sites with `TextFont { ..default() }`) picks it up without threading a handle
+/// through each one. No call site sets its own font, so patching unconditionally is
+/// safe — and it avoids depending on Bevy's internal default-font handle. Idempotent:
+/// the id check means an already-patched node is never written again.
+fn apply_ui_font(ui: Option<Res<UiFont>>, mut q: Query<&mut TextFont>) {
+    let Some(ui) = ui else { return };
+    for mut tf in &mut q {
+        if tf.font.id() != ui.0.id() {
+            tf.font = ui.0.clone();
+        }
+    }
+}
+
 // --------------------------------------------------------------- net pump --
 
 /// Drain server messages every frame, update resources, drive transitions.
@@ -4285,7 +4314,7 @@ fn update_overworld_hud(
         .join(", ");
     let me_pos = Some((me.x, me.y));
     if let Ok(mut t) = q.single_mut() {
-        let mut line = format!("distance {d}  -  {}  -  TP x{tp}", biome_display(d));
+        let mut line = format!("distance {d}  -  {}  -  \u{f0f10}{tp}", biome_display(d)); // teleport = Town Portals
         // Chits found this run (banked on extraction), then gathered materials.
         if backpack.chits > 0 {
             line.push_str(&format!("  -  {} chits", backpack.chits));
@@ -4297,7 +4326,7 @@ fn update_overworld_hud(
             line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
         }
         if near_fight(&world, me_pos) {
-            line.push_str("  -  Press [J] to join the fight");
+            line.push_str("  -  \u{f0817} Press [J] to join the fight"); // crossed-swords marker
         }
         // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
         if perks.0.resonant_regen > 0.0 {
@@ -5644,7 +5673,14 @@ fn sync_overworld_sprites(
             commands.entity(entity).despawn();
             continue;
         };
-        seen.insert(we.0.clone());
+        // Idempotency guard: keep exactly one avatar per id. A rapid
+        // Battle→Overworld round-trip could otherwise leave a second sprite for
+        // the same id — it stops getting position updates and stands "frozen,
+        // facing the camera" while the live one moves. Despawn any such extra.
+        if !seen.insert(we.0.clone()) {
+            commands.entity(entity).despawn();
+            continue;
+        }
         if we.0 == session.player_id {
             // Responsive: chase the latest snapshot directly.
             tf.translation.x += (e.x - tf.translation.x) * k;
@@ -7232,7 +7268,10 @@ fn sync_battle_actors(
         // The up-screen row is the one cropped to a bust so it tucks behind cleanly.
         let x = (i as f32 - (n - 1.0) * 0.5) * 2.7;
         let z = if back { 3.7 } else { 2.7 };
-        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), !back);
+        // Full sprites for everyone: the head→torso "bust" crop dropped the legs +
+        // shadow, so cropped heroes read as floating torsos ("hovering"). Render
+        // the whole body grounded instead.
+        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -8665,22 +8704,21 @@ fn party_cell(
                 let regen = status_num(&c.statuses, "regen:");
                 let evasion = status_num(&c.statuses, "evasion:");
                 let mut hp_label = format!("{}/{}", c.hp, c.max_hp);
-                // NOTE: the default UI font is ASCII-only, so symbol glyphs
-                // (⚡ ◆ …) render as tofu boxes. Keep these labels ASCII until a
-                // symbol-capable font is bundled.
+                // Status suffixes use Nerd Font icons (see UiFont): shield =
+                // Barrier, heart-pulse = Regen, runner = Evasion, bolt = Adrenaline.
                 if barrier > 0 {
-                    hp_label.push_str(&format!("  +{barrier} shld")); // Barrier (temp HP)
+                    hp_label.push_str(&format!("  \u{f132}{barrier}")); // shield = Barrier
                 }
                 if regen > 0 {
-                    hp_label.push_str(&format!("  +{regen}/t")); // Regen per turn
+                    hp_label.push_str(&format!("  \u{f05f7}{regen}/t")); // heart-pulse = Regen/turn
                 }
                 if evasion > 0 {
-                    hp_label.push_str(&format!("  ~{evasion}%")); // ~ = Evasion (dodge)
+                    hp_label.push_str(&format!("  \u{f070e}{evasion}%")); // runner = Evasion (dodge)
                 }
                 let adrenaline_max = status_num(&c.statuses, "adrenaline_max:");
                 if adrenaline_max > 0 {
                     let adr = status_num(&c.statuses, "adrenaline:");
-                    hp_label.push_str(&format!("  RAGE {adr}/{adrenaline_max}")); // Hunter Adrenaline
+                    hp_label.push_str(&format!("  \u{f0e7}{adr}/{adrenaline_max}")); // bolt = Adrenaline
                 }
                 meter_labeled(col, hp_frac, 15.0, Color::srgb(0.35, 0.6, 0.95), hp_label);
                 // Line 3: ATB bar — flares gold-white the instant the gauge fills.
@@ -8752,7 +8790,10 @@ fn render_party_window(
                 left: Val::Px(10.0),
                 right: Val::Px(10.0),
                 bottom: Val::Px(10.0),
-                height: Val::Px(74.0), // compact: name + HP bar + ATB bar (~3 lines)
+                // Tall enough for 4 lines: name + HP + ATB + the Psyker's Focus-slot
+                // row. At 74px the Focus row overflowed and clipped the ATB bar, so
+                // a Psyker's gauge looked like it never filled.
+                height: Val::Px(92.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
                 ..default()
