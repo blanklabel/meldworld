@@ -18,7 +18,7 @@ A piece of equipment. Insurance tier determines whether it survives death (`blue
 | name | string | Yes | No | — | v0.1 | No | The display name. Content-defined. |
 | slot | string | Yes | No | — | v0.1 | No | The equipment slot this item occupies. Slot names are content-defined; CANON does not enumerate them. |
 | insurance | string (enum: blue, red) | Yes | No | — | v0.1 | No | The insurance tier. `blue`: permanent insured gear that returns to the Hub on death at reduced max durability. `red`: run-found power gear, lost on death; extraction converts it to Vault-owned gear that remains `red`. |
-| tier | integer (int32, ≥ 0) | Yes | No | — | v0.1 | No | The loot tier band at generation, `floor(drop_distance / 100)`. Red gear never generates below tier 3 (distance 300) [TUNABLE]. |
+| tier | integer (int32, ≥ 0) | Yes | No | — | v0.1 | No | The loot tier band at generation, `floor(drop_distance / 100)`. Red gear never generates below `world_scaling.red_chest_floor_distance` (currently distance 0 — gear can drop from the first kill) [TUNABLE]. |
 | durability | integer (int32, ≥ 0) | Yes | No | — | v0.1 | No | Current durability. Never exceeds `max_durability`. |
 | max_durability | integer (int32, ≥ 0) | Yes | No | — | v0.1 | No | Current durability ceiling. Reduced to `max_durability × 0.9` (rounded down) each time the owner dies in the Maze with this gear insured `blue` [TUNABLE]. Gear at 0 is unequippable until repaired. |
 | base_max_durability | integer (int32, ≥ 1) | Yes | No | — | v0.1 | No | The as-created durability ceiling. Repairs can restore `max_durability` up to `base_max_durability × (0.5 + forging_level/198)` [TUNABLE]. |

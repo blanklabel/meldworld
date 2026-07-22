@@ -237,9 +237,12 @@ fn main() {
         .init_resource::<OwInterp>()
         .init_resource::<OverlayTab>()
         .init_resource::<EquipSelection>()
+        .init_resource::<EquipPicker>()
         .init_resource::<OverlayCursor>()
         .init_resource::<InventoryData>()
+        .init_resource::<RunGearData>()
         .init_resource::<ProgressData>()
+        .init_resource::<AccountHeroNames>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<WorldPath>()
@@ -367,6 +370,7 @@ fn main() {
                 overlay_tab_click,
                 equip_hero_switch_click,
                 overlay_nav_input,
+                withdraw_click,
                 render_loot_report,
                 level_up_screen,
                 build_world_walls,
@@ -379,6 +383,40 @@ fn main() {
                 update_minimap,
             )
                 .run_if(in_state(Screen::Overworld)),
+        )
+        // Equip tab picker screen — a third group (rather than growing the
+        // tuple above further) to stay within Bevy's per-call system-tuple
+        // arity limit.
+        .add_systems(
+            Update,
+            (
+                category_button_click,
+                picker_unequip_click,
+                picker_back_click,
+                render_gear_tooltip,
+            )
+                .run_if(in_state(Screen::Overworld)),
+        )
+        // The storage chest (Vault-Deep) reuses the same tabbed inventory
+        // overlay as the Overworld — City and Overworld are mutually exclusive
+        // states, so registering these systems again here is safe (never both
+        // active at once).
+        .add_systems(
+            Update,
+            (
+                overlay_input,
+                render_overlay,
+                gear_click,
+                overlay_tab_click,
+                equip_hero_switch_click,
+                overlay_nav_input,
+                withdraw_click,
+                category_button_click,
+                picker_unequip_click,
+                picker_back_click,
+                render_gear_tooltip,
+            )
+                .run_if(in_state(Screen::City)),
         )
         // Battle
         .add_systems(OnEnter(Screen::Battle), (clear_overworld_sprites, enter_battle))
@@ -1035,33 +1073,157 @@ struct OverlayCursor {
     index: usize,
 }
 
-/// One keyboard/click-navigable row in the Equip tab: either a hero-switcher
-/// button or one piece of gear.
+/// Where a piece of gear in the Equip tab comes from — the caller's permanent
+/// Vault (equip persists to the account, HTTP, next-dive-only) or this run's
+/// not-yet-banked loot (equip is run-scoped, WS, effective immediately). Each
+/// routes an equip click/keypress to a different backend call.
+#[derive(Clone, Copy, PartialEq)]
+enum GearSource {
+    Vault,
+    RunLoot,
+}
+
+/// One keyboard/click-navigable row in the Equip tab's main (per-hero)
+/// screen: a hero-switcher button, or one equipment category — activating a
+/// category opens the picker screen for it (`EquipPicker`).
 #[derive(Clone)]
 enum EquipRow {
     Hero(usize),
-    Gear { gear_id: String },
+    Category(&'static str),
 }
 
-/// The Equip tab's full navigable row list for `selected` hero: hero
-/// switcher buttons, then each category's gear — but only gear that's
-/// unequipped or already worn by `selected`. A hero's row never shows gear
-/// another hero currently has on, so there's nothing to accidentally snipe.
-fn equip_tab_rows(inv: &InventoryData, roster: &PartyRoster, selected: usize) -> Vec<EquipRow> {
-    let mut rows: Vec<EquipRow> = (0..roster.heroes.len()).map(EquipRow::Hero).collect();
-    for category in ["weapon", "armor", "accessory"] {
-        let mut items: Vec<&GearLine> = inv
-            .gear
-            .iter()
-            .filter(|g| {
-                g.slot == category
-                    && (g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(selected))
-            })
-            .collect();
-        items.sort_by(|a, b| a.name.cmp(&b.name));
-        rows.extend(items.into_iter().map(|g| EquipRow::Gear { gear_id: g.gear_id.clone() }));
+/// One keyboard/click-navigable row in the Equip tab's picker screen (opened
+/// by activating a category on the main screen): an explicit unequip, or one
+/// candidate piece of gear. Selecting a `Gear` row is the only thing that
+/// equips it — nothing equips just by being found or browsed past.
+#[derive(Clone)]
+enum PickerRow {
+    Unequip,
+    Gear { gear_id: String, source: GearSource },
+}
+
+/// The Equip tab's optional second screen. `None` shows the per-hero summary
+/// (current item per category); `Some(category)` shows every candidate for
+/// that category — the picker is what a category row opens when activated.
+#[derive(Resource, Default)]
+struct EquipPicker {
+    category: Option<&'static str>,
+}
+
+/// This run's not-yet-banked loot gear (mirrors `run.gear` snapshots from the
+/// server) — separate from `InventoryData.gear`, which is the permanent
+/// Vault. Both feed the Equip tab; see `GearSource`.
+#[derive(Resource, Default)]
+struct RunGearData {
+    gear: Vec<GearLine>,
+}
+
+/// How many heroes the Equip/Status tabs have to show: the active run's
+/// `PartyRoster` when there is one, else the caller's persistent account names
+/// (e.g. opening the storage chest from the City, with no run in progress).
+fn hero_count(roster: &PartyRoster, names: &AccountHeroNames) -> usize {
+    if !roster.heroes.is_empty() {
+        roster.heroes.len()
+    } else {
+        names.names.len()
     }
+}
+
+/// The display name for hero slot `i`, from whichever source `hero_count` used.
+fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Option<String> {
+    if !roster.heroes.is_empty() {
+        roster.heroes.get(i).map(|h| h.name.clone())
+    } else {
+        names.names.get(i).cloned()
+    }
+}
+
+/// Gear from one source, filtered to one category and `selected` — unequipped
+/// or already worn by `selected`. A hero's row never shows gear another hero
+/// currently has on, so there's nothing to accidentally snipe. Shared by
+/// `equip_tab_rows` and the Equip tab's render body so the two can't drift.
+fn category_gear<'a>(
+    gear: &'a [GearLine],
+    category: &str,
+    selected: usize,
+) -> Vec<&'a GearLine> {
+    let mut items: Vec<&GearLine> = gear
+        .iter()
+        .filter(|g| {
+            g.slot == category
+                && (g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(selected))
+        })
+        .collect();
+    items.sort_by(|a, b| a.name.cmp(&b.name));
+    items
+}
+
+/// The Equip tab main screen's navigable row list: hero switcher buttons,
+/// then the three equipment categories (each opens the picker screen).
+fn equip_main_rows(hero_count: usize) -> Vec<EquipRow> {
+    let mut rows: Vec<EquipRow> = (0..hero_count).map(EquipRow::Hero).collect();
+    rows.push(EquipRow::Category("weapon"));
+    rows.push(EquipRow::Category("armor"));
+    rows.push(EquipRow::Category("accessory"));
     rows
+}
+
+/// The Equip tab picker screen's navigable row list for `category` +
+/// `selected`: an explicit unequip, then every candidate from the Vault and
+/// this run's not-yet-banked loot (`GearSource`) — Vault rows first.
+fn equip_picker_rows(
+    inv: &InventoryData,
+    run_gear: &RunGearData,
+    category: &str,
+    selected: usize,
+) -> Vec<PickerRow> {
+    let mut rows = vec![PickerRow::Unequip];
+    rows.extend(category_gear(&inv.gear, category, selected).into_iter().map(|g| {
+        PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::Vault }
+    }));
+    rows.extend(category_gear(&run_gear.gear, category, selected).into_iter().map(|g| {
+        PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::RunLoot }
+    }));
+    rows
+}
+
+/// Whichever item is actually contributing to combat for `selected` in
+/// `category` right now: a run-loot equip in that category overrides the
+/// Vault baseline (mirrors the server's `effective_gear_bonus`), so this is
+/// what the main screen displays as "currently worn" and what the picker's
+/// arrows compare against.
+fn effective_worn_item<'a>(
+    inv: &'a InventoryData,
+    run_gear: &'a RunGearData,
+    category: &str,
+    selected: usize,
+) -> Option<&'a GearLine> {
+    run_gear
+        .gear
+        .iter()
+        .find(|g| g.slot == category && g.equipped_hero_slot == Some(selected))
+        .or_else(|| inv.gear.iter().find(|g| g.slot == category && g.equipped_hero_slot == Some(selected)))
+}
+
+fn effective_baseline_stat(
+    inv: &InventoryData,
+    run_gear: &RunGearData,
+    category: &str,
+    selected: usize,
+) -> i32 {
+    effective_worn_item(inv, run_gear, category, selected).map(gear_slot_stat).unwrap_or(0)
+}
+
+/// Clear `selected`'s equipped item(s) in `category` — both the Vault's (if
+/// any) and this run's loot equip (if any), so the slot is genuinely empty
+/// afterward and every candidate becomes available to hand to another hero.
+fn unequip_category(net: &Net, inv: &InventoryData, run_gear: &RunGearData, category: &str, selected: usize) {
+    if let Some(g) = inv.gear.iter().find(|g| g.slot == category && g.equipped_hero_slot == Some(selected)) {
+        net.equip_gear(g.gear_id.clone(), None);
+    }
+    if let Some(g) = run_gear.gear.iter().find(|g| g.slot == category && g.equipped_hero_slot == Some(selected)) {
+        net.send(ClientCmd::EquipLoot { gear_id: g.gear_id.clone(), hero_slot: None });
+    }
 }
 
 /// Vault + gear for the inventory overlay (fetched over HTTP on open).
@@ -1071,6 +1233,9 @@ struct InventoryData {
     chits: i64,
     materials: Vec<(String, i32)>,
     gear: Vec<GearLine>,
+    /// Materials withdrawn from the Vault (storage chest), staged to seed the
+    /// next dive's Backpack.
+    pending: Vec<(String, i32)>,
 }
 
 /// Meld skills + class unlocks for the level-up overlay.
@@ -1079,6 +1244,15 @@ struct ProgressData {
     loaded: bool,
     skills: Vec<SkillLine>,
     classes: Vec<String>,
+}
+
+/// Persistent per-account hero names (`GET /v1/heroes`) — the Equip/Status tabs'
+/// hero-name fallback when there's no active run's `PartyRoster` to source
+/// names from (e.g. opening the storage chest from the City).
+#[derive(Resource, Default)]
+struct AccountHeroNames {
+    loaded: bool,
+    names: Vec<String>,
 }
 
 /// Floating hit-feedback numbers (damage/heal) with a short lifetime, plus the
@@ -1123,8 +1297,6 @@ struct AtbFlash {
 /// UI state for the City (The Weld) hub screen.
 #[derive(Resource, Default)]
 struct CityUi {
-    /// The Vault-Deep detail panel is expanded (materials + gear list).
-    vault_open: bool,
     /// A transient district notice (e.g. a not-yet-built district's status).
     notice: String,
     /// Index into [`CITY_DISTRICTS`] the avatar is currently standing in (for the
@@ -1379,19 +1551,37 @@ struct HitFxRoot;
 /// Immediate-mode root for an overworld overlay (inventory / level-up).
 #[derive(Component)]
 struct OverlayRoot;
-/// A clickable gear row in the inventory overlay: clicking toggles its equip
-/// state over HTTP. `equipped` is the state at render time (so a click requests
-/// the opposite).
+/// A clickable gear row in the Equip tab's picker screen: clicking equips it
+/// to the hero the picker was opened for — over HTTP for a Vault item, over
+/// WS for run-loot (see `GearSource`) — and closes back to the main screen.
+/// `worn` only drives the row's highlight, not the click behavior.
 #[derive(Component)]
 struct GearButton {
     gear_id: String,
-    /// Hero slot this row would equip to if clicked (the Equip tab's currently
-    /// selected hero at render time).
+    source: GearSource,
+    /// Hero slot this row equips to when clicked (whichever hero the picker
+    /// was opened for).
     target_hero_slot: usize,
-    /// True if the selected hero currently has this exact item equipped —
-    /// clicking unequips instead of equipping.
+    /// True if this hero already has this exact item equipped (highlight only).
     worn: bool,
 }
+/// A category row on the Equip tab's main screen ("Weapon", "Armor",
+/// "Accessory"). Clicking opens the picker screen for that category.
+#[derive(Component)]
+struct CategoryButton {
+    category: &'static str,
+}
+/// The picker screen's explicit "remove" row: clicking clears whatever the
+/// hero currently has equipped in `category` (both Vault and run-loot) and
+/// closes back to the main screen.
+#[derive(Component)]
+struct PickerUnequipButton {
+    category: &'static str,
+}
+/// The picker screen's "back" control: clicking closes it without changing
+/// anything, returning to the main Equip screen (mirrors pressing Escape).
+#[derive(Component)]
+struct PickerBackButton;
 /// A per-hero front/back-row toggle on the party screen. Clicking flips the row and
 /// sends [`ClientCmd::SetFormation`]; `back_row` is the hero's current rank.
 #[derive(Component)]
@@ -1405,6 +1595,12 @@ struct TabButton(OverlayTab);
 /// One hero-switcher button on the Equip tab.
 #[derive(Component)]
 struct HeroSwitchButton(usize);
+/// A "Withdraw" button on a material row in the Items tab: takes 1 unit out of
+/// the Vault into the pending-backpack queue for the next dive.
+#[derive(Component)]
+struct WithdrawButton {
+    item_kind: String,
+}
 #[derive(Component)]
 struct EndedRoot;
 /// Root of the City (The Weld) HUD (2D overlay).
@@ -2930,13 +3126,15 @@ fn pump_net(
         ResMut<Terrain>,
         ResMut<LootReport>,
         ResMut<PerksRes>,
+        ResMut<AccountHeroNames>,
+        ResMut<RunGearData>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -3151,16 +3349,25 @@ fn pump_net(
                 chits,
                 materials,
                 gear,
+                pending,
             } => {
                 inv.chits = chits;
                 inv.materials = materials;
                 inv.gear = gear;
+                inv.pending = pending;
                 inv.loaded = true;
             }
             ServerMsg::ProgressData { skills, classes } => {
                 prog.skills = skills;
                 prog.classes = classes;
                 prog.loaded = true;
+            }
+            ServerMsg::HeroNames { names } => {
+                hero_names.names = names;
+                hero_names.loaded = true;
+            }
+            ServerMsg::RunGear { gear } => {
+                run_gear.gear = gear;
             }
             ServerMsg::Error { message } => {
                 session.status = format!("error: {message}");
@@ -3478,7 +3685,6 @@ fn city_hud(
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
-    city.vault_open = false;
     city.notice.clear();
     city.near = None;
     session.entered = false;
@@ -3602,6 +3808,9 @@ fn city_input(
     city_idle: Res<CityIdle>,
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
+    mut overlay: ResMut<Overlay>,
+    mut tab: ResMut<OverlayTab>,
+    mut inv: ResMut<InventoryData>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     // Dive: ENTER anywhere, E while standing at The Threshold, or autoplay (which
@@ -3627,16 +3836,30 @@ fn city_input(
         next.set(Screen::Lobby);
         return;
     }
-    if keys.just_pressed(KeyCode::KeyV) {
-        city.vault_open = !city.vault_open;
+    // The storage chest: open the same tabbed Items/Equip/Status overlay the
+    // Overworld uses. Toggling closed just clears `overlay.kind`; opening always
+    // lands on Items and kicks off a fresh fetch (vault + persistent hero names,
+    // since there's no active run's `PartyRoster` to source names from here).
+    if keys.just_pressed(KeyCode::KeyV)
+        || (keys.just_pressed(KeyCode::KeyE)
+            && city.near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Vault)))
+    {
+        if overlay.kind == Some(OverlayKind::Inventory) {
+            overlay.kind = None;
+        } else {
+            overlay.kind = Some(OverlayKind::Inventory);
+            *tab = OverlayTab::Items;
+            inv.loaded = false;
+            net.0.fetch_inventory();
+            net.0.fetch_hero_names();
+        }
         return;
     }
-    // E interacts with whichever district the avatar is standing in.
+    // E interacts with whichever other district the avatar is standing in.
     if keys.just_pressed(KeyCode::KeyE) {
         if let Some(i) = city.near {
             match CITY_DISTRICTS[i].action {
-                CityAction::Dive => {} // handled by the dive branch above
-                CityAction::Vault => city.vault_open = !city.vault_open,
+                CityAction::Dive | CityAction::Vault => {} // handled above
                 CityAction::Notice(s) => city.notice = s.to_string(),
             }
         }
@@ -3759,7 +3982,7 @@ fn render_city(
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
     if let Ok(mut t) = q_vault.single_mut() {
-        **t = city_vault_text(&inv, city.vault_open);
+        **t = city_vault_text(&inv);
     }
     if let Ok(mut t) = q_status.single_mut() {
         let prompt = if !session.status.is_empty() {
@@ -3768,11 +3991,11 @@ fn render_city(
             let d = &CITY_DISTRICTS[i];
             match d.action {
                 CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
-                CityAction::Vault => format!("{}    [E] open your vault", d.label),
+                CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
-            "WASD move    [E] enter a district    [ENTER] dive    [C] co-op    [V] vault"
+            "WASD move    [E] enter a district    [ENTER] dive    [C] co-op    [V] storage chest"
                 .to_string()
         };
         **t = if city.notice.is_empty() {
@@ -3783,40 +4006,20 @@ fn render_city(
     }
 }
 
-/// Compose the Vault-Deep readout: a one-line summary, or (when open) the full
-/// material + gear list, from the live `GET /v1/vault` data.
-fn city_vault_text(inv: &InventoryData, open: bool) -> String {
+/// Compose the Vault-Deep's ambient one-line summary from the live `GET
+/// /v1/vault` data (the full material/gear/withdraw view lives in the tabbed
+/// inventory overlay now — `V`/`E` opens that instead of expanding this text).
+fn city_vault_text(inv: &InventoryData) -> String {
     if !inv.loaded {
         return "The Vault-Deep is being tallied...".to_string();
     }
     let mat_count: i32 = inv.materials.iter().map(|(_, n)| *n).sum();
-    let mut s = format!(
-        "The Vault-Deep:  {} chits    {} materials    {} gear",
+    format!(
+        "The Vault-Deep:  {} chits    {} materials    {} gear     [V] open",
         inv.chits,
         mat_count,
         inv.gear.len()
-    );
-    if !open {
-        s.push_str("     [V] open");
-        return s;
-    }
-    if inv.materials.is_empty() && inv.gear.is_empty() {
-        s.push_str("\n  (empty - extract from a dive to bank your first haul)");
-    }
-    for (kind, n) in &inv.materials {
-        s.push_str(&format!("\n  {n}x {}", kind.replace('_', " ")));
-    }
-    for g in &inv.gear {
-        let eq = if g.equipped_hero_slot.is_some() { " [equipped]" } else { "" };
-        s.push_str(&format!(
-            "\n  {} ({}, {}){eq}",
-            g.name,
-            g.slot.replace('_', " "),
-            g.insurance
-        ));
-    }
-    s.push_str("\n[V] close");
-    s
+    )
 }
 
 // ---------------------------------------------------------------- lobby ----
@@ -4709,8 +4912,11 @@ fn overlay_input(
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
+    mut picker: ResMut<EquipPicker>,
+    mut cursor: ResMut<OverlayCursor>,
     roster: Res<PartyRoster>,
     mut rename: ResMut<HeroRename>,
+    state: Res<State<Screen>>,
 ) {
     // While renaming a hero on the party screen, capture text and swallow the
     // other overlay hotkeys (so typing a name doesn't toggle screens).
@@ -4748,7 +4954,11 @@ fn overlay_input(
 
     // C or I toggles the inventory overlay (also openable by tapping your
     // character — see `overworld_click_menu`). Fresh opens land on Items.
-    if keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyI) {
+    // Overworld-only: in the City, `C` is already co-op ( `city_input`) and the
+    // storage chest opens the same overlay via its own `V`/`E` interact instead.
+    if *state.get() == Screen::Overworld
+        && (keys.just_pressed(KeyCode::KeyC) || keys.just_pressed(KeyCode::KeyI))
+    {
         if overlay.kind == Some(OverlayKind::Inventory) {
             overlay.kind = None;
         } else {
@@ -4757,10 +4967,17 @@ fn overlay_input(
             inv.loaded = false;
             net.0.fetch_inventory();
         }
+        picker.category = None;
     }
-    // ESC closes the menu.
+    // ESC backs out of the Equip picker screen first (if it's open), only
+    // closing the whole menu once that's already closed.
     if keys.just_pressed(KeyCode::Escape) {
-        overlay.kind = None;
+        if picker.category.is_some() {
+            picker.category = None;
+            cursor.index = 0;
+        } else {
+            overlay.kind = None;
+        }
     }
     // On the Status tab, digits 1-4 start renaming that hero slot.
     if overlay.kind == Some(OverlayKind::Inventory) && *tab == OverlayTab::Status {
@@ -4778,9 +4995,11 @@ fn overlay_input(
 
 /// Arrow-key navigation + Space-to-activate for the inventory overlay.
 /// Left/Right switch tabs (and reset the cursor); Up/Down move the cursor
-/// through the active tab's navigable rows (see `equip_tab_rows`); Space
-/// activates whatever the cursor is on (equip/unequip, switch hero, start a
-/// rename — mirrors what a click on that same row would do).
+/// through the active screen's navigable rows. Space activates whatever the
+/// cursor is on — mirrors what a click on that same row would do. The Equip
+/// tab has two screens (see `EquipPicker`): the main per-hero summary, and —
+/// once a category is activated — a picker of every candidate for it, so
+/// nothing ever equips just by being found or browsed past.
 fn overlay_nav_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
@@ -4788,16 +5007,23 @@ fn overlay_nav_input(
     mut tab: ResMut<OverlayTab>,
     mut cursor: ResMut<OverlayCursor>,
     mut equip_sel: ResMut<EquipSelection>,
+    mut picker: ResMut<EquipPicker>,
     mut rename: ResMut<HeroRename>,
     inv: Res<InventoryData>,
+    run_gear: Res<RunGearData>,
     roster: Res<PartyRoster>,
+    hero_names: Res<AccountHeroNames>,
 ) {
     if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
         return;
     }
     // Tabs are stacked vertically, so Up/Down cycles them; Left/Right moves
-    // the cursor through the active tab's (also vertically listed) rows.
-    if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown) {
+    // the cursor through the active screen's (also vertically listed) rows.
+    // Blocked while the Equip picker is open — Up/Down shouldn't leave the
+    // tab mid-pick; Escape (handled in `overlay_input`) backs out instead.
+    if picker.category.is_none()
+        && (keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown))
+    {
         let order = [OverlayTab::Items, OverlayTab::Equip, OverlayTab::Status];
         let i = order.iter().position(|t| *t == *tab).unwrap_or(0);
         let next = if keys.just_pressed(KeyCode::ArrowDown) {
@@ -4811,8 +5037,11 @@ fn overlay_nav_input(
     }
     let row_count = match *tab {
         OverlayTab::Items => 0,
-        OverlayTab::Equip => equip_tab_rows(&inv, &roster, equip_sel.hero_slot).len(),
-        OverlayTab::Status => roster.heroes.len(),
+        OverlayTab::Equip => match picker.category {
+            Some(cat) => equip_picker_rows(&inv, &run_gear, cat, equip_sel.hero_slot).len(),
+            None => equip_main_rows(hero_count(&roster, &hero_names)).len(),
+        },
+        OverlayTab::Status => hero_count(&roster, &hero_names),
     };
     if row_count > 0 {
         if keys.just_pressed(KeyCode::ArrowLeft) {
@@ -4824,26 +5053,44 @@ fn overlay_nav_input(
     if keys.just_pressed(KeyCode::Space) {
         match *tab {
             OverlayTab::Equip => {
-                let rows = equip_tab_rows(&inv, &roster, equip_sel.hero_slot);
-                match rows.get(cursor.index) {
-                    Some(EquipRow::Hero(i)) => equip_sel.hero_slot = *i,
-                    Some(EquipRow::Gear { gear_id }) => {
-                        let worn = inv
-                            .gear
-                            .iter()
-                            .find(|g| &g.gear_id == gear_id)
-                            .map(|g| g.equipped_hero_slot == Some(equip_sel.hero_slot))
-                            .unwrap_or(false);
-                        let target = if worn { None } else { Some(equip_sel.hero_slot) };
-                        net.0.equip_gear(gear_id.clone(), target);
+                if let Some(cat) = picker.category {
+                    let rows = equip_picker_rows(&inv, &run_gear, cat, equip_sel.hero_slot);
+                    match rows.get(cursor.index) {
+                        Some(PickerRow::Unequip) => {
+                            unequip_category(&net.0, &inv, &run_gear, cat, equip_sel.hero_slot);
+                            picker.category = None;
+                            cursor.index = 0;
+                        }
+                        Some(PickerRow::Gear { gear_id, source }) => {
+                            let target = Some(equip_sel.hero_slot);
+                            match source {
+                                GearSource::Vault => net.0.equip_gear(gear_id.clone(), target),
+                                GearSource::RunLoot => net.0.send(ClientCmd::EquipLoot {
+                                    gear_id: gear_id.clone(),
+                                    hero_slot: target.map(|s| s as i32),
+                                }),
+                            }
+                            picker.category = None;
+                            cursor.index = 0;
+                        }
+                        None => {}
                     }
-                    None => {}
+                } else {
+                    let rows = equip_main_rows(hero_count(&roster, &hero_names));
+                    match rows.get(cursor.index) {
+                        Some(EquipRow::Hero(i)) => equip_sel.hero_slot = *i,
+                        Some(EquipRow::Category(cat)) => {
+                            picker.category = Some(cat);
+                            cursor.index = 0;
+                        }
+                        None => {}
+                    }
                 }
             }
             OverlayTab::Status => {
-                if let Some(h) = roster.heroes.get(cursor.index) {
+                if let Some(name) = hero_name_at(&roster, &hero_names, cursor.index) {
                     rename.slot = Some(cursor.index);
-                    rename.buffer = h.name.clone();
+                    rename.buffer = name;
                 }
             }
             OverlayTab::Items => {}
@@ -4860,11 +5107,14 @@ fn render_overlay(
     overlay: Res<Overlay>,
     tab: Res<OverlayTab>,
     equip_sel: Res<EquipSelection>,
+    picker: Res<EquipPicker>,
     cursor: Res<OverlayCursor>,
     inv: Res<InventoryData>,
+    run_gear: Res<RunGearData>,
     prog: Res<ProgressData>,
     roster: Res<PartyRoster>,
     rename: Res<HeroRename>,
+    hero_names: Res<AccountHeroNames>,
     existing: Query<Entity, With<OverlayRoot>>,
 ) {
     // Rebuild only when something the overlay shows changed. The gear rows are
@@ -4873,11 +5123,14 @@ fn render_overlay(
     if !(overlay.is_changed()
         || tab.is_changed()
         || equip_sel.is_changed()
+        || picker.is_changed()
         || cursor.is_changed()
         || inv.is_changed()
+        || run_gear.is_changed()
         || prog.is_changed()
         || roster.is_changed()
-        || rename.is_changed())
+        || rename.is_changed()
+        || hero_names.is_changed())
     {
         return;
     }
@@ -4995,24 +5248,100 @@ fn render_overlay(
                                     18.0,
                                     Color::srgb(0.95, 0.85, 0.5),
                                 );
-                                label(content, "- Materials -".into(), 15.0, gold);
+                                label(
+                                    content,
+                                    "- Materials -  (Withdraw stages 1 for your next dive)".into(),
+                                    15.0,
+                                    gold,
+                                );
                                 if inv.materials.is_empty() {
                                     label(content, "  (none)".into(), 14.0, dim);
                                 }
                                 for (kind, qty) in &inv.materials {
-                                    label(
-                                        content,
-                                        format!("  {} x{}", kind.replace('_', " "), qty),
-                                        15.0,
-                                        dim,
-                                    );
+                                    content
+                                        .spawn(Node {
+                                            flex_direction: FlexDirection::Row,
+                                            align_items: AlignItems::Center,
+                                            column_gap: Val::Px(8.0),
+                                            ..default()
+                                        })
+                                        .with_children(|row| {
+                                            row.spawn((
+                                                Text::new(format!("  {} x{}", kind.replace('_', " "), qty)),
+                                                TextFont { font_size: 15.0, ..default() },
+                                                TextColor(dim),
+                                            ));
+                                            row.spawn((
+                                                Button,
+                                                WithdrawButton { item_kind: kind.clone() },
+                                                Node {
+                                                    padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(Color::srgba(0.18, 0.28, 0.5, 0.6)),
+                                                BorderRadius::all(Val::Px(4.0)),
+                                            ))
+                                            .with_children(|b| {
+                                                b.spawn((
+                                                    Text::new("Withdraw"),
+                                                    TextFont { font_size: 12.0, ..default() },
+                                                    TextColor(gold),
+                                                ));
+                                            });
+                                        });
+                                }
+                                if !inv.pending.is_empty() {
+                                    label(content, "- Queued for next run -".into(), 15.0, gold);
+                                    for (kind, qty) in &inv.pending {
+                                        label(
+                                            content,
+                                            format!("  {} x{}", kind.replace('_', " "), qty),
+                                            14.0,
+                                            Color::srgb(0.6, 0.95, 0.7),
+                                        );
+                                    }
                                 }
                             }
                             OverlayTab::Status => {
                                 // Every hero's name, class, level and stats — this is
-                                // where attributes live (not the battle HUD).
+                                // where attributes live (not the battle HUD). Outside
+                                // an active run (e.g. opened from the City's storage
+                                // chest) `roster.heroes` is empty, so fall back to
+                                // just the account's hero names — class/level/stats/
+                                // formation aren't known without a live run.
                                 if roster.heroes.is_empty() {
-                                    label(content, "(enter a dive to see your heroes)".into(), 13.0, dim);
+                                    if hero_names.names.is_empty() {
+                                        label(content, "(enter a dive to see your heroes)".into(), 13.0, dim);
+                                    } else {
+                                        for (i, name) in hero_names.names.iter().enumerate() {
+                                            let focused = cursor.index == i;
+                                            content
+                                                .spawn((
+                                                    Node {
+                                                        flex_direction: FlexDirection::Column,
+                                                        border: UiRect::all(Val::Px(2.0)),
+                                                        padding: UiRect::all(Val::Px(2.0)),
+                                                        ..default()
+                                                    },
+                                                    BorderColor(if focused { focus_border } else { no_border }),
+                                                    BorderRadius::all(Val::Px(4.0)),
+                                                ))
+                                                .with_children(|hero_box| {
+                                                    label(
+                                                        hero_box,
+                                                        format!("[{}] {}", i + 1, name),
+                                                        16.0,
+                                                        Color::srgb(0.85, 0.92, 1.0),
+                                                    );
+                                                });
+                                        }
+                                        label(
+                                            content,
+                                            "(enter a dive to see class/level/stats)".into(),
+                                            12.0,
+                                            dim,
+                                        );
+                                    }
                                 }
                                 for (i, h) in roster.heroes.iter().enumerate() {
                                     let focused = cursor.index == i;
@@ -5094,89 +5423,93 @@ fn render_overlay(
                                     label(content, "loading...".into(), 16.0, dim);
                                     return;
                                 }
-                                if roster.heroes.is_empty() {
+                                let n_heroes = hero_count(&roster, &hero_names);
+                                if n_heroes == 0 {
                                     label(content, "(enter a dive to see your heroes)".into(), 13.0, dim);
                                     return;
                                 }
-                                // Running position in the flat keyboard-nav list
-                                // (hero buttons, then each category's gear) — must
-                                // stay in lockstep with `equip_tab_rows`.
-                                let mut idx = 0usize;
-                                // Hero switcher.
-                                content
-                                    .spawn(Node {
-                                        flex_direction: FlexDirection::Row,
-                                        column_gap: Val::Px(4.0),
-                                        ..default()
-                                    })
-                                    .with_children(|hs| {
-                                        for (i, h) in roster.heroes.iter().enumerate() {
-                                            let active = equip_sel.hero_slot == i;
-                                            let focused = cursor.index == idx;
-                                            idx += 1;
-                                            hs.spawn((
+                                let selected = equip_sel.hero_slot;
+                                let hero_label = hero_name_at(&roster, &hero_names, selected)
+                                    .unwrap_or_else(|| format!("Hero {}", selected + 1));
+
+                                if let Some(category) = picker.category {
+                                    // Picker screen: every candidate for this one
+                                    // category + hero. Nothing here equips until
+                                    // it's actually clicked/Space'd.
+                                    label(
+                                        content,
+                                        format!(
+                                            "Equip {} - {}",
+                                            class_display(category),
+                                            hero_label
+                                        ),
+                                        16.0,
+                                        gold,
+                                    );
+                                    let mut idx = 0usize;
+                                    {
+                                        let focused = cursor.index == idx;
+                                        idx += 1;
+                                        content
+                                            .spawn((
                                                 Button,
-                                                HeroSwitchButton(i),
+                                                PickerBackButton,
                                                 Node {
-                                                    padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                                                    padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
                                                     border: UiRect::all(Val::Px(2.0)),
                                                     ..default()
                                                 },
                                                 BorderColor(if focused { focus_border } else { no_border }),
-                                                BackgroundColor(if active {
-                                                    Color::srgba(0.18, 0.28, 0.5, 0.85)
-                                                } else {
-                                                    Color::NONE
-                                                }),
+                                                BackgroundColor(Color::NONE),
                                                 BorderRadius::all(Val::Px(4.0)),
                                             ))
                                             .with_children(|b| {
-                                                b.spawn((
-                                                    Text::new(h.name.clone()),
-                                                    TextFont { font_size: 14.0, ..default() },
-                                                    TextColor(if active { gold } else { dim }),
-                                                ));
+                                                label(b, "< Back".into(), 14.0, dim);
                                             });
-                                        }
-                                    });
-                                let selected = equip_sel.hero_slot;
-                                // One block per equipment category; each shows the
-                                // relevant single stat (weapon→atk, armor→def,
-                                // accessory→spd) with a green/red arrow vs. whatever
-                                // the selected hero currently has worn there. Gear
-                                // worn by a DIFFERENT hero is hidden entirely here —
-                                // this hero can only see what's actually available to
-                                // them (unequipped) or already theirs.
-                                for category in ["weapon", "armor", "accessory"] {
-                                    label(
-                                        content,
-                                        format!("- {} -", class_display(category)),
-                                        15.0,
-                                        gold,
-                                    );
-                                    let baseline = inv
-                                        .gear
-                                        .iter()
-                                        .find(|g| {
-                                            g.slot == category && g.equipped_hero_slot == Some(selected)
-                                        })
-                                        .map(gear_slot_stat)
-                                        .unwrap_or(0);
-                                    let mut rows: Vec<&GearLine> = inv
-                                        .gear
-                                        .iter()
-                                        .filter(|g| {
-                                            g.slot == category
-                                                && (g.equipped_hero_slot.is_none()
-                                                    || g.equipped_hero_slot == Some(selected))
-                                        })
-                                        .collect();
-                                    if rows.is_empty() {
-                                        label(content, "  (none)".into(), 14.0, dim);
-                                        continue;
                                     }
-                                    rows.sort_by(|a, b| a.name.cmp(&b.name));
-                                    for g in rows {
+                                    let baseline =
+                                        effective_baseline_stat(&inv, &run_gear, category, selected);
+                                    {
+                                        let focused = cursor.index == idx;
+                                        idx += 1;
+                                        content
+                                            .spawn((
+                                                Button,
+                                                PickerUnequipButton { category },
+                                                Node {
+                                                    width: Val::Percent(100.0),
+                                                    padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                                                    border: UiRect::all(Val::Px(2.0)),
+                                                    ..default()
+                                                },
+                                                BorderColor(if focused { focus_border } else { no_border }),
+                                                BackgroundColor(Color::NONE),
+                                                BorderRadius::all(Val::Px(4.0)),
+                                            ))
+                                            .with_children(|b| {
+                                                label(
+                                                    b,
+                                                    "  ( remove - leave this slot empty )".into(),
+                                                    15.0,
+                                                    Color::srgb(0.9, 0.6, 0.55),
+                                                );
+                                            });
+                                    }
+                                    let rows: Vec<(&GearLine, GearSource)> = category_gear(
+                                        &inv.gear, category, selected,
+                                    )
+                                    .into_iter()
+                                    .map(|g| (g, GearSource::Vault))
+                                    .chain(
+                                        category_gear(&run_gear.gear, category, selected)
+                                            .into_iter()
+                                            .map(|g| (g, GearSource::RunLoot)),
+                                    )
+                                    .collect();
+                                    if rows.is_empty() {
+                                        label(content, "  (nothing else available)".into(), 14.0, dim);
+                                    }
+                                    for (g, source) in rows {
                                         let broken = g.max_durability == 0;
                                         let worn_here = g.equipped_hero_slot == Some(selected);
                                         let focused = cursor.index == idx;
@@ -5192,11 +5525,17 @@ fn render_overlay(
                                             " v"
                                         };
                                         let tag = if worn_here {
-                                            "  [equipped]"
+                                            match source {
+                                                GearSource::Vault => "  [equipped]",
+                                                GearSource::RunLoot => "  [worn this run]",
+                                            }
                                         } else if broken {
                                             "  [broken]"
                                         } else {
-                                            ""
+                                            match source {
+                                                GearSource::RunLoot => "  (found this run)",
+                                                GearSource::Vault => "",
+                                            }
                                         };
                                         let ins = if g.insurance == "red" { " red" } else { "" };
                                         let text = format!(
@@ -5220,6 +5559,7 @@ fn render_overlay(
                                                 Button,
                                                 GearButton {
                                                     gear_id: g.gear_id.clone(),
+                                                    source,
                                                     target_hero_slot: selected,
                                                     worn: worn_here,
                                                 },
@@ -5245,11 +5585,100 @@ fn render_overlay(
                                                 ));
                                             });
                                     }
+                                } else {
+                                    // Main screen: hero switcher, then one row per
+                                    // equipment category showing whatever's
+                                    // currently worn (from the Vault or this run's
+                                    // loot — see `effective_worn_item`). Selecting
+                                    // a category opens the picker for it; nothing
+                                    // equips from this screen directly.
+                                    let mut idx = 0usize;
+                                    content
+                                        .spawn(Node {
+                                            flex_direction: FlexDirection::Row,
+                                            column_gap: Val::Px(4.0),
+                                            ..default()
+                                        })
+                                        .with_children(|hs| {
+                                            for i in 0..n_heroes {
+                                                let name = hero_name_at(&roster, &hero_names, i)
+                                                    .unwrap_or_else(|| format!("Hero {}", i + 1));
+                                                let active = selected == i;
+                                                let focused = cursor.index == idx;
+                                                idx += 1;
+                                                hs.spawn((
+                                                    Button,
+                                                    HeroSwitchButton(i),
+                                                    Node {
+                                                        padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                                                        border: UiRect::all(Val::Px(2.0)),
+                                                        ..default()
+                                                    },
+                                                    BorderColor(if focused { focus_border } else { no_border }),
+                                                    BackgroundColor(if active {
+                                                        Color::srgba(0.18, 0.28, 0.5, 0.85)
+                                                    } else {
+                                                        Color::NONE
+                                                    }),
+                                                    BorderRadius::all(Val::Px(4.0)),
+                                                ))
+                                                .with_children(|b| {
+                                                    b.spawn((
+                                                        Text::new(name),
+                                                        TextFont { font_size: 14.0, ..default() },
+                                                        TextColor(if active { gold } else { dim }),
+                                                    ));
+                                                });
+                                            }
+                                        });
+                                    for category in ["weapon", "armor", "accessory"] {
+                                        let focused = cursor.index == idx;
+                                        idx += 1;
+                                        let worn = effective_worn_item(&inv, &run_gear, category, selected);
+                                        let text = match worn {
+                                            Some(g) => format!(
+                                                "- {} -   {}   +{}",
+                                                class_display(category),
+                                                g.name,
+                                                gear_slot_stat(g)
+                                            ),
+                                            None => {
+                                                format!("- {} -   (empty)", class_display(category))
+                                            }
+                                        };
+                                        content
+                                            .spawn((
+                                                Button,
+                                                CategoryButton { category },
+                                                Node {
+                                                    width: Val::Percent(100.0),
+                                                    padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
+                                                    border: UiRect::all(Val::Px(2.0)),
+                                                    ..default()
+                                                },
+                                                BorderColor(if focused { focus_border } else { no_border }),
+                                                BackgroundColor(Color::NONE),
+                                                BorderRadius::all(Val::Px(4.0)),
+                                            ))
+                                            .with_children(|b| {
+                                                label(
+                                                    b,
+                                                    text,
+                                                    15.0,
+                                                    if worn.is_some() { gold } else { dim },
+                                                );
+                                            });
+                                    }
                                 }
                             }
                         });
                     });
-                    label(p, "[Up/Down] tabs | [Left/Right] select | [Space] act | [ESC] close".into(), 13.0, dim);
+                    let hint = if *tab == OverlayTab::Equip && picker.category.is_some() {
+                        "[Left/Right] select | [Space] equip | [ESC] back"
+                    } else {
+                        "[Up/Down] tabs | [Left/Right] select | [Space] act | [ESC] close"
+                    };
+                    label(p, hint.into(), 13.0, dim);
                 }
                 OverlayKind::LevelUp => {
                     label(p, "LEVEL UP".into(), 24.0, gold);
@@ -5290,21 +5719,125 @@ fn gear_slot_stat(g: &GearLine) -> i32 {
     }
 }
 
-/// Click / hover on the Equip tab's gear rows. A press equips the item to the
-/// currently-selected hero, or unequips it if that hero already wears it; the
-/// server enforces the rules (one per hero+category, not broken), and a
+/// A floating box near the cursor with an item's full stat breakdown while
+/// hovering it in the Equip picker — the row text alone only shows the one
+/// stat that slot cares about; this spells out tier/durability/insurance too.
+/// Immediate-mode like the overlay itself: rebuilt every frame, cheap since
+/// it's at most a handful of text nodes.
+#[derive(Component)]
+struct GearTooltipRoot;
+
+fn render_gear_tooltip(
+    mut commands: Commands,
+    windows: Query<&Window>,
+    hovered: Query<(&Interaction, &GearButton)>,
+    inv: Res<InventoryData>,
+    run_gear: Res<RunGearData>,
+    roster: Res<PartyRoster>,
+    hero_names: Res<AccountHeroNames>,
+    existing: Query<Entity, With<GearTooltipRoot>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some((_, g)) = hovered.iter().find(|(i, _)| **i == Interaction::Hovered) else {
+        return;
+    };
+    let list = match g.source {
+        GearSource::Vault => &inv.gear,
+        GearSource::RunLoot => &run_gear.gear,
+    };
+    let Some(item) = list.iter().find(|it| it.gear_id == g.gear_id) else {
+        return;
+    };
+    let Some(pos) = windows.iter().next().and_then(|w| w.cursor_position()) else {
+        return;
+    };
+
+    let gold = Color::srgb(0.95, 0.85, 0.5);
+    let dim = Color::srgb(0.72, 0.78, 0.9);
+    let good = Color::srgb(0.6, 0.95, 0.7);
+    let stat_label = match item.slot.as_str() {
+        "weapon" => "Attack",
+        "armor" => "Defense",
+        _ => "Speed",
+    };
+    let ins_label = if item.insurance == "red" {
+        "red - run loot, lost on death"
+    } else {
+        "blue - insured, survives death"
+    };
+    let dur = if item.max_durability <= 0 {
+        "BROKEN".to_string()
+    } else {
+        format!("{}/{}", item.max_durability, item.base_max_durability)
+    };
+    let mut lines: Vec<(String, Color)> = vec![
+        (item.name.clone(), gold),
+        (format!("{} | Tier {} | {}", class_display(&item.slot), item.tier, ins_label), dim),
+        (format!("{stat_label}: +{}", gear_slot_stat(item)), good),
+        (format!("Durability: {dur}"), dim),
+    ];
+    if let Some(slot) = item.equipped_hero_slot {
+        let who = hero_name_at(&roster, &hero_names, slot).unwrap_or_else(|| format!("Hero {}", slot + 1));
+        lines.push((format!("Equipped - {who}"), good));
+    }
+
+    commands
+        .spawn((
+            GearTooltipRoot,
+            GlobalZIndex(1000),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(pos.x + 18.0),
+                top: Val::Px(pos.y + 18.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(8.0)),
+                row_gap: Val::Px(2.0),
+                max_width: Val::Px(260.0),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.05, 0.06, 0.12, 0.95)),
+            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
+            BorderRadius::all(Val::Px(6.0)),
+        ))
+        .with_children(|t| {
+            for (i, (text, color)) in lines.into_iter().enumerate() {
+                t.spawn((
+                    Text::new(text),
+                    TextFont { font_size: if i == 0 { 15.0 } else { 12.0 }, ..default() },
+                    TextColor(color),
+                ));
+            }
+        });
+}
+
+/// Click / hover on the Equip tab picker's gear rows. A press equips the item
+/// to the hero the picker was opened for and closes back to the main screen;
+/// the server enforces the rules (one per hero+category, not broken), and a
 /// rejected change (409) is a silent no-op — the refresh re-shows the truth.
 /// `Changed<Interaction>` makes each click fire exactly once.
 fn gear_click(
     net: NonSend<NetRes>,
+    mut picker: ResMut<EquipPicker>,
+    mut cursor: ResMut<OverlayCursor>,
     mut rows: Query<(&Interaction, &GearButton, &mut BackgroundColor), Changed<Interaction>>,
 ) {
     for (interaction, g, mut bg) in &mut rows {
         match *interaction {
             Interaction::Pressed => {
                 if !g.gear_id.is_empty() {
-                    let target = if g.worn { None } else { Some(g.target_hero_slot) };
-                    net.0.equip_gear(g.gear_id.clone(), target);
+                    let target = Some(g.target_hero_slot);
+                    match g.source {
+                        GearSource::Vault => net.0.equip_gear(g.gear_id.clone(), target),
+                        GearSource::RunLoot => net.0.send(ClientCmd::EquipLoot {
+                            gear_id: g.gear_id.clone(),
+                            hero_slot: target.map(|s| s as i32),
+                        }),
+                    }
+                    picker.category = None;
+                    cursor.index = 0;
                 }
             }
             Interaction::Hovered => {
@@ -5317,6 +5850,67 @@ fn gear_click(
                     Color::NONE
                 });
             }
+        }
+    }
+}
+
+/// Click a category row on the Equip tab's main screen: opens the picker
+/// screen for that category (nothing equips just by opening it).
+fn category_button_click(
+    mut picker: ResMut<EquipPicker>,
+    mut cursor: ResMut<OverlayCursor>,
+    mut rows: Query<(&Interaction, &CategoryButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, c, mut bg) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                picker.category = Some(c.category);
+                cursor.index = 0;
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7)),
+            Interaction::None => *bg = BackgroundColor(Color::NONE),
+        }
+    }
+}
+
+/// Click the picker screen's "remove" row: clears the hero's equipped item(s)
+/// in that category (Vault and/or run-loot) and closes back to the main screen.
+fn picker_unequip_click(
+    net: NonSend<NetRes>,
+    inv: Res<InventoryData>,
+    run_gear: Res<RunGearData>,
+    equip_sel: Res<EquipSelection>,
+    mut picker: ResMut<EquipPicker>,
+    mut cursor: ResMut<OverlayCursor>,
+    mut rows: Query<(&Interaction, &PickerUnequipButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, u, mut bg) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                unequip_category(&net.0, &inv, &run_gear, u.category, equip_sel.hero_slot);
+                picker.category = None;
+                cursor.index = 0;
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.4, 0.2, 0.22, 0.7)),
+            Interaction::None => *bg = BackgroundColor(Color::NONE),
+        }
+    }
+}
+
+/// Click the picker screen's "back" row: closes it without changing anything.
+fn picker_back_click(
+    mut picker: ResMut<EquipPicker>,
+    mut cursor: ResMut<OverlayCursor>,
+    mut rows: Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<PickerBackButton>)>,
+) {
+    for (interaction, mut bg) in &mut rows {
+        match *interaction {
+            Interaction::Pressed => {
+                picker.category = None;
+                cursor.index = 0;
+            }
+            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7)),
+            Interaction::None => *bg = BackgroundColor(Color::NONE),
         }
     }
 }
@@ -5362,6 +5956,20 @@ fn equip_hero_switch_click(
     for (interaction, h) in &rows {
         if *interaction == Interaction::Pressed {
             sel.hero_slot = h.0;
+        }
+    }
+}
+
+/// Click a material's "Withdraw" button on the Items tab: takes 1 unit out of
+/// the Vault into the pending-backpack queue (a 409 — not enough left — is a
+/// silent no-op; the refresh re-shows the truth).
+fn withdraw_click(
+    net: NonSend<NetRes>,
+    rows: Query<(&Interaction, &WithdrawButton), Changed<Interaction>>,
+) {
+    for (interaction, w) in &rows {
+        if *interaction == Interaction::Pressed {
+            net.0.withdraw_material(w.item_kind.clone(), 1);
         }
     }
 }

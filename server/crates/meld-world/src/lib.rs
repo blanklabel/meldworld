@@ -184,23 +184,93 @@ pub struct CreatureLoot {
     pub gear: Option<GearDrop>,
 }
 
-/// Flavourful red-gear name for a biome + slot (deterministic given `rng`).
-fn gear_name(d: i64, slot: &str, rng: &mut Rng) -> String {
-    let adjectives: &[&str] = match biome_for_distance(d) {
-        "forest" => &["Verdant", "Bloomforged", "Thornwood"],
-        "desert" => &["Sunbaked", "Duneglass", "Scarab"],
-        "ashfall" => &["Ashfall", "Cinderforged", "Emberwrought"],
-        "tundra" => &["Rimebound", "Frostforged", "Glacial"],
-        _ => &["Miremere", "Fungal", "Peatbound"],
+/// Named gear catalog — 20 curated items per slot, ordered weakest → strongest
+/// (economy.md S1 content pass). A drop's name is picked by its tier, indexed
+/// from the red-chest floor tier and clamped into the catalog range, so the
+/// *name* rides the same distance-driven power curve `roll_creature_loot`
+/// already uses for the numeric stat — a shallow kill can't hand out a name
+/// that reads as endgame gear, and a deep one won't hand out a name that reads
+/// as starter junk.
+const WEAPON_NAMES: [&str; 20] = [
+    "Ashfall Shortsword",
+    "Cinderforged Cleaver",
+    "Emberwrought Warpick",
+    "Scarab Fang Blade",
+    "Duneglass Broadsword",
+    "Sunbaked Warhammer",
+    "Rimebound Longsword",
+    "Frostforged Battleaxe",
+    "Glacial Warpick",
+    "Verdant Greatblade",
+    "Bloomforged Cleaver",
+    "Thornwood Reaver",
+    "Miremere Scythe",
+    "Fungal Ripper",
+    "Peatbound Warblade",
+    "Ashen Doomblade",
+    "Stormcaller's Edge",
+    "Voidforged Greatblade",
+    "Ancient Worldbreaker",
+    "Eternal Starfall Edge",
+];
+
+const ARMOR_NAMES: [&str; 20] = [
+    "Ashfall Cuirass",
+    "Cinderforged Plate",
+    "Emberwrought Carapace",
+    "Scarab Shell Armor",
+    "Duneglass Aegis",
+    "Sunbaked Bulwark",
+    "Rimebound Plate",
+    "Frostforged Aegis",
+    "Glacial Carapace",
+    "Verdant Aegis",
+    "Bloomforged Plate",
+    "Thornwood Carapace",
+    "Miremere Plate",
+    "Fungal Husk Armor",
+    "Peatbound Aegis",
+    "Ashen Bulwark",
+    "Stormguard Mantle",
+    "Voidforged Plate",
+    "Ancient Warplate",
+    "Eternal Aegis of the Deep",
+];
+
+const ACCESSORY_NAMES: [&str; 20] = [
+    "Ashfall Charm",
+    "Cinderforged Sigil",
+    "Emberwrought Band",
+    "Scarab Talisman",
+    "Duneglass Amulet",
+    "Sunbaked Ring",
+    "Rimebound Sigil",
+    "Frostforged Band",
+    "Glacial Talisman",
+    "Verdant Charm",
+    "Bloomforged Sigil",
+    "Thornwood Band",
+    "Miremere Talisman",
+    "Fungal Charm",
+    "Peatbound Sigil",
+    "Ashen Relic",
+    "Stormcaller's Pendant",
+    "Voidforged Sigil",
+    "Ancient Relic",
+    "Eternal Starfall Amulet",
+];
+
+/// Look up a drop's flavor name: index into the slot's 20-item catalog by how
+/// many tiers past `floor_tier` (the red-chest floor's tier — the earliest a
+/// drop can ever roll) this drop's tier is, clamped to the catalog's range.
+fn gear_catalog_name(slot: &str, tier: i32, floor_tier: i32) -> &'static str {
+    let names: &[&str; 20] = match slot {
+        "weapon" => &WEAPON_NAMES,
+        "armor" => &ARMOR_NAMES,
+        _ => &ACCESSORY_NAMES,
     };
-    let nouns: &[&str] = match slot {
-        "weapon" => &["Greatblade", "Cleaver", "Warpick"],
-        "armor" => &["Plate", "Aegis", "Carapace"],
-        _ => &["Charm", "Sigil", "Band"],
-    };
-    let a = adjectives[rng.below(adjectives.len())];
-    let n = nouns[rng.below(nouns.len())];
-    format!("{a} {n}")
+    let idx = (tier - floor_tier).clamp(0, names.len() as i32 - 1) as usize;
+    names[idx]
 }
 
 /// Roll the loot a felled encounter yields to one participant, deterministically
@@ -230,12 +300,15 @@ pub fn roll_creature_loot(
         .round()
         .max(0.0) as i64;
     let material = combat_material_for_biome(distance);
-    // Red-chest gear only generates at/after the red-chest floor (tier 3, d 300);
-    // a reward spike boosts (and can guarantee) the drop.
+    // Red-chest gear only generates at/after the red-chest floor
+    // (`world_scaling.red_chest_floor_distance`; content-tunable, currently 0
+    // — gear can drop from the very first kill); a reward spike (loot_mult)
+    // boosts (and can guarantee) the drop.
     let gear = if distance >= balance.world_scaling.red_chest_floor_distance
         && rng.unit() < (l.gear_drop_chance * loot_mult.max(0.0)).min(1.0)
     {
         let tier = sc.tier(distance) as i32;
+        let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
         let slot = ["weapon", "armor", "accessory"][rng.below(3)];
         let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
         // Rarity: the encounter's loot spike multiplies the rare/epic/legendary
@@ -271,7 +344,11 @@ pub fn roll_creature_loot(
             "armor" => (0, stat, 0),
             _ => (0, 0, stat),
         };
-        let base_name = gear_name(distance, slot, &mut rng);
+        // The catalog name already rides the depth curve (see `gear_catalog_name`);
+        // rarity prefixes it on top ("Legendary Ashfall Shortsword") rather than
+        // picking a separate biome-adjective name, so depth and rarity both read
+        // in the same name instead of fighting each other.
+        let base_name = gear_catalog_name(slot, tier, floor_tier).to_string();
         let name = if rarity == "common" {
             base_name
         } else {
@@ -2011,7 +2088,7 @@ mod tests {
         for s in 0..200 {
             if let Some(g) = roll_creature_loot(&b, floor, 1, 1.0, s).gear {
                 saw_gear = true;
-                assert_eq!(g.tier, 3, "tier(300) = 3");
+                assert_eq!(g.tier, Scaling::new(&b).tier(floor) as i32);
                 assert!(g.max_durability > 0);
                 // Exactly one stat is rolled, matching the drop's own slot.
                 let stat = match g.slot.as_str() {

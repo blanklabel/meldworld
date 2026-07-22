@@ -69,6 +69,11 @@ pub struct LootGear {
     pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
+    /// Which of the owner's heroes has this equipped *this run* (`run.equip_loot`).
+    /// Unlike a Vault item's equip state (persistent, DB-owned), this lives only
+    /// in the run and is lost with the rest of the backpack on death.
+    #[serde(default)]
+    pub equipped_hero_slot: Option<i32>,
 }
 
 /// A battle actor's public state (realtime-protocol.md Combatant).

@@ -51,6 +51,10 @@ pub enum ClientCmd {
     RenameHero { slot: i32, name: String },
     /// Set a hero to the front (`false`) or back (`true`) row (persistent).
     SetFormation { slot: i32, back_row: bool },
+    /// Equip (or unequip with `hero_slot: None`) a piece of this run's
+    /// not-yet-banked loot gear onto a hero slot — run-scoped, takes effect
+    /// immediately (unlike the Vault's HTTP equip, which is next-dive-only).
+    EquipLoot { gear_id: String, hero_slot: Option<i32> },
     /// Co-op lobby.
     LobbyCreate { party: Vec<String> },
     LobbyJoin { code: String, party: Vec<String> },
@@ -281,7 +285,7 @@ pub struct HeroLine {
     pub back_row: bool,
 }
 
-type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>);
+type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>, Vec<(String, i32)>);
 type ProgPayload = (Vec<SkillLine>, Vec<String>);
 
 /// Events emitted from the network layer up to Bevy.
@@ -370,7 +374,18 @@ pub enum ServerMsg {
         chits: i64,
         materials: Vec<(String, i32)>,
         gear: Vec<GearLine>,
+        /// Materials withdrawn from the Vault, staged to seed the next dive's
+        /// Backpack.
+        pending: Vec<(String, i32)>,
     },
+    /// Persistent per-account hero names (`GET /v1/heroes`), for the Equip/Status
+    /// tabs when there's no active run's `PartyRoster` to source names from
+    /// (e.g. opening the storage chest from the City).
+    HeroNames { names: Vec<String> },
+    /// Authoritative snapshot of this run's not-yet-banked loot gear (found
+    /// this run; empty once a fresh dive starts). Sent whenever it changes —
+    /// new loot, or an equip/unequip — so the Equip tab stays in sync.
+    RunGear { gear: Vec<GearLine> },
     /// Meld skills + class unlocks, for the overworld level-up screen.
     ProgressData {
         skills: Vec<SkillLine>,
@@ -407,6 +422,7 @@ struct Inner {
     http_rx: Option<mpsc::Receiver<LoginResult>>,
     inv_rx: Option<mpsc::Receiver<InvPayload>>,
     prog_rx: Option<mpsc::Receiver<ProgPayload>>,
+    heroes_rx: Option<mpsc::Receiver<Vec<String>>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -423,6 +439,10 @@ struct Inner {
     run_chits: i64,
     /// Looted red-chest gear this run as (name, atk_bonus), for the HUD.
     run_gear: Vec<(String, i32)>,
+    /// This run's not-yet-banked loot gear, structured for the Equip tab
+    /// (mirrors `run.gear` snapshots from the server). Separate from
+    /// `run_gear` above, which stays a flat display-only list for the HUD.
+    run_loot_gear: Vec<GearLine>,
 }
 
 /// Bevy-side handle. Cloneable (shared `Rc`), single-threaded (NonSend resource).
@@ -439,6 +459,7 @@ pub fn start(base: String) -> Net {
         http_rx: None,
         inv_rx: None,
         prog_rx: None,
+        heroes_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -449,6 +470,7 @@ pub fn start(base: String) -> Net {
         backpack: std::collections::HashMap::new(),
         run_chits: 0,
         run_gear: Vec::new(),
+        run_loot_gear: Vec::new(),
     })))
 }
 
@@ -472,6 +494,19 @@ impl Net {
     /// HTTP, then refresh the inventory (→ a fresh `InventoryData`).
     pub fn equip_gear(&self, gear_id: String, hero_slot: Option<usize>) {
         self.0.borrow_mut().equip_gear(gear_id, hero_slot);
+    }
+
+    /// Withdraw `qty` of a material from the Vault (storage chest) into the
+    /// pending-backpack queue, then refresh the inventory.
+    pub fn withdraw_material(&self, item_kind: String, qty: i32) {
+        self.0.borrow_mut().withdraw_material(item_kind, qty);
+    }
+
+    /// Kick off an authenticated GET of the caller's persistent hero names
+    /// (→ `HeroNames`) — for the Equip/Status tabs when opened outside of an
+    /// active run (no `PartyRoster` to source names from).
+    pub fn fetch_hero_names(&self) {
+        self.0.borrow_mut().fetch_hero_names();
     }
 
     /// Advance the state machine: fire queued commands, pump HTTP + WS.
@@ -529,12 +564,13 @@ impl Inner {
 
         // 2b. Drain any HTTP data fetches (inventory / progress screens).
         if let Some(rx) = &self.inv_rx {
-            if let Ok((chits, materials, gear)) = rx.try_recv() {
+            if let Ok((chits, materials, gear, pending)) = rx.try_recv() {
                 self.inv_rx = None;
                 self.out.push_back(ServerMsg::InventoryData {
                     chits,
                     materials,
                     gear,
+                    pending,
                 });
             }
         }
@@ -542,6 +578,12 @@ impl Inner {
             if let Ok((skills, classes)) = rx.try_recv() {
                 self.prog_rx = None;
                 self.out.push_back(ServerMsg::ProgressData { skills, classes });
+            }
+        }
+        if let Some(rx) = &self.heroes_rx {
+            if let Ok(names) = rx.try_recv() {
+                self.heroes_rx = None;
+                self.out.push_back(ServerMsg::HeroNames { names });
             }
         }
 
@@ -592,6 +634,52 @@ impl Inner {
         ehttp::fetch(req, move |_res| {
             // Regardless of 200/409, re-read the vault so the UI shows truth.
             spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// POST a Vault (storage chest) material withdrawal, then refresh the
+    /// inventory so the overlay reflects the new pending-backpack queue (a 409
+    /// — not enough in stock — leaves it unchanged).
+    fn withdraw_material(&mut self, item_kind: String, qty: i32) {
+        if self.session_token.is_empty() || item_kind.is_empty() || qty <= 0 {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "quantity": qty })).unwrap_or_default();
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/vault/materials/{item_kind}/withdraw"),
+            body,
+        );
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// GET `/v1/heroes` (Bearer auth) for persistent hero names.
+    fn fetch_hero_names(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.heroes_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/heroes", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut names = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    if let Some(arr) = v["names"].as_array() {
+                        names = arr.iter().filter_map(|n| n.as_str().map(String::from)).collect();
+                    }
+                }
+            }
+            let _ = tx.send(names);
         });
     }
 
@@ -778,6 +866,10 @@ impl Inner {
             ClientCmd::SetFormation { slot, back_row } => {
                 self.send_env(wr::SetFormation::TYPE, json!({ "slot": slot, "back_row": back_row }))
             }
+            ClientCmd::EquipLoot { gear_id, hero_slot } => self.send_env(
+                wr::EquipLoot::TYPE,
+                json!({ "gear_id": gear_id, "hero_slot": hero_slot }),
+            ),
             ClientCmd::LobbyCreate { party } => {
                 self.send_env(wl::Create::TYPE, json!({ "party": party }))
             }
@@ -834,6 +926,8 @@ impl Inner {
                 self.backpack.clear();
                 self.run_chits = raw.payload["chits"].as_i64().unwrap_or(0);
                 self.run_gear.clear();
+                self.run_loot_gear.clear();
+                self.out.push_back(ServerMsg::RunGear { gear: Vec::new() });
                 if let Some(items) = raw.payload["backpack"].as_array() {
                     for it in items {
                         let kind = it["item_kind"].as_str().unwrap_or("").to_string();
@@ -929,6 +1023,28 @@ impl Inner {
                         gear: chest_gear,
                     });
                 }
+            }
+            "run.gear" => {
+                let gear: Vec<GearLine> = raw.payload["gear"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|g| GearLine {
+                        gear_id: g["gear_id"].as_str().unwrap_or("").to_string(),
+                        name: g["name"].as_str().unwrap_or("?").to_string(),
+                        slot: g["slot"].as_str().unwrap_or("").to_string(),
+                        insurance: g["insurance"].as_str().unwrap_or("red").to_string(),
+                        tier: g["tier"].as_i64().unwrap_or(0) as i32,
+                        equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),
+                        max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
+                        base_max_durability: g["base_max_durability"].as_i64().unwrap_or(0) as i32,
+                        atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
+                        def_bonus: g["def_bonus"].as_i64().unwrap_or(0) as i32,
+                        spd_bonus: g["spd_bonus"].as_i64().unwrap_or(0) as i32,
+                    })
+                    .collect();
+                self.run_loot_gear = gear.clone();
+                self.out.push_back(ServerMsg::RunGear { gear });
             }
             "run.party" => {
                 let heroes = raw.payload["heroes"]
@@ -1255,20 +1371,26 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
     ehttp::fetch(req, move |vault_res| {
         let mut chits = 0i64;
         let mut materials = Vec::new();
+        let mut pending = Vec::new();
         if let Ok(resp) = &vault_res {
             if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
                 chits = v["chits"].as_i64().unwrap_or(0);
-                if let Some(arr) = v["materials"].as_array() {
-                    materials = arr
-                        .iter()
-                        .map(|m| {
-                            (
-                                m["item_kind"].as_str().unwrap_or("?").to_string(),
-                                m["quantity"].as_i64().unwrap_or(0) as i32,
-                            )
+                let stacks = |arr: &Value| -> Vec<(String, i32)> {
+                    arr.as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|m| {
+                                    (
+                                        m["item_kind"].as_str().unwrap_or("?").to_string(),
+                                        m["quantity"].as_i64().unwrap_or(0) as i32,
+                                    )
+                                })
+                                .collect()
                         })
-                        .collect();
-                }
+                        .unwrap_or_default()
+                };
+                materials = stacks(&v["materials"]);
+                pending = stacks(&v["pending"]);
             }
         }
         let mut greq = ehttp::Request::get(&gear_url);
@@ -1298,7 +1420,7 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
                     }
                 }
             }
-            let _ = tx.send((chits, materials, gear));
+            let _ = tx.send((chits, materials, gear, pending));
         });
     });
 }

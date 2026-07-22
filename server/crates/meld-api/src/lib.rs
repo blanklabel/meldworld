@@ -43,6 +43,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/auth/login", post(login))
         .route("/v1/players/me", get(players_me))
         .route("/v1/vault", get(vault))
+        .route("/v1/vault/materials/:item_kind/withdraw", post(withdraw_material))
         .route("/v1/vault/gear", get(vault_gear))
         .route("/v1/vault/gear/:gear_id/equip", post(equip))
         .route("/v1/vault/gear/:gear_id/unequip", post(unequip))
@@ -214,14 +215,49 @@ fn skill_entries(skills: Vec<(String, i64)>, xp_per_level: i64) -> Vec<MeldSkill
 
 async fn vault(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
-    match st.db.get_vault(player_id).await {
-        Ok((chits, items)) => {
-            let materials = items
-                .into_iter()
-                .map(|(item_kind, quantity)| VaultItemStack { item_kind, quantity })
-                .collect();
-            Ok((StatusCode::OK, Json(VaultSummary { chits, materials })).into_response())
+    let (chits, items) = st.db.get_vault(player_id).await.map_err(ApiReject::internal)?;
+    let pending = st
+        .db
+        .get_pending_backpack(player_id)
+        .await
+        .map_err(ApiReject::internal)?;
+    let materials = items
+        .into_iter()
+        .map(|(item_kind, quantity)| VaultItemStack { item_kind, quantity })
+        .collect();
+    let pending = pending
+        .into_iter()
+        .map(|(item_kind, quantity)| VaultItemStack { item_kind, quantity })
+        .collect();
+    Ok((StatusCode::OK, Json(VaultSummary { chits, materials, pending })).into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct WithdrawRequest {
+    quantity: i32,
+}
+
+/// Withdraw a material from the Vault (storage chest) into the caller's
+/// pending-backpack queue, staged to seed their next run's Backpack.
+async fn withdraw_material(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(item_kind): Path<String>,
+    Json(req): Json<WithdrawRequest>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if req.quantity <= 0 {
+        return Err(ApiReject::new(StatusCode::BAD_REQUEST, "bad_request", "Invalid quantity."));
+    }
+    match st.db.withdraw_material(player_id, &item_kind, req.quantity).await {
+        Ok(meld_db::WithdrawResult::Ok) => {
+            Ok((StatusCode::OK, Json(serde_json::json!({ "withdrawn": req.quantity }))).into_response())
         }
+        Ok(meld_db::WithdrawResult::InsufficientStock) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Not enough of that material in the Vault.",
+        )),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }

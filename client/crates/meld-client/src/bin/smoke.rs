@@ -94,6 +94,8 @@ fn main() {
                 }
                 ServerMsg::Gauge { .. }
                 | ServerMsg::ChestOpened { .. }
+                | ServerMsg::HeroNames { .. }
+                | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
                 | ServerMsg::Perks { .. }

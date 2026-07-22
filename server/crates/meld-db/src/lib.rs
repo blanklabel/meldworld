@@ -135,6 +135,21 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // Materials withdrawn from the Vault (storage chest), staged to seed the
+        // player's *next* run's Backpack (`form_run` drains + clears this at dive
+        // time). Same shape as `vault_items` — it's the mirror-image queue.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS pending_backpack (
+                player_id UUID NOT NULL REFERENCES players(player_id),
+                item_kind TEXT NOT NULL,
+                quantity  INTEGER NOT NULL,
+                PRIMARY KEY (player_id, item_kind)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
         // Gear with a durability sink (CANON.md D6). Both blue-chest (insured) and
         // extracted red-chest (run loot, gear-item-models.md) live here; `tier` is
         // the loot band at generation (`floor(d/100)`). Gems/sockets: later slice.
@@ -688,6 +703,114 @@ impl Db {
         }
     }
 
+    /// Withdraw `qty` of `item_kind` from the Vault (storage chest) into the
+    /// player's pending-backpack queue — staged to seed their *next* run's
+    /// Backpack (`form_run` drains + clears it at dive time). Atomic: fails with
+    /// `InsufficientStock` (no-op) if the Vault doesn't have enough.
+    pub async fn withdraw_material(
+        &self,
+        player_id: Uuid,
+        item_kind: &str,
+        qty: i32,
+    ) -> Result<WithdrawResult, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let res = sqlx::query(
+                    "UPDATE vault_items SET quantity = quantity - $3
+                     WHERE player_id = $1 AND item_kind = $2 AND quantity >= $3",
+                )
+                .bind(player_id)
+                .bind(item_kind)
+                .bind(qty)
+                .execute(&mut *tx)
+                .await?;
+                if res.rows_affected() == 0 {
+                    tx.rollback().await?;
+                    return Ok(WithdrawResult::InsufficientStock);
+                }
+                sqlx::query("DELETE FROM vault_items WHERE player_id = $1 AND quantity <= 0")
+                    .bind(player_id)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO pending_backpack (player_id, item_kind, quantity) VALUES ($1, $2, $3)
+                     ON CONFLICT (player_id, item_kind) DO UPDATE SET quantity = pending_backpack.quantity + $3",
+                )
+                .bind(player_id)
+                .bind(item_kind)
+                .bind(qty)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(WithdrawResult::Ok)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let key = (player_id, item_kind.to_string());
+                let have = m.vault_items.get(&key).copied().unwrap_or(0);
+                if have < qty {
+                    return Ok(WithdrawResult::InsufficientStock);
+                }
+                let q = m.vault_items.get_mut(&key).unwrap();
+                *q -= qty;
+                if *q <= 0 {
+                    m.vault_items.remove(&key);
+                }
+                *m.pending_backpack.entry(key).or_insert(0) += qty;
+                Ok(WithdrawResult::Ok)
+            }
+        }
+    }
+
+    /// Read a player's pending-backpack queue (materials withdrawn from the
+    /// Vault, staged for their next dive).
+    pub async fn get_pending_backpack(&self, player_id: Uuid) -> Result<Vec<(String, i32)>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT item_kind, quantity FROM pending_backpack WHERE player_id = $1 ORDER BY item_kind",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| (r.get::<String, _>("item_kind"), r.get::<i32, _>("quantity")))
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut items: Vec<(String, i32)> = m
+                    .pending_backpack
+                    .iter()
+                    .filter(|((p, _), _)| *p == player_id)
+                    .map(|((_, kind), qty)| (kind.clone(), *qty))
+                    .collect();
+                items.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(items)
+            }
+        }
+    }
+
+    /// Clear a player's pending-backpack queue — called once its contents have
+    /// been folded into a freshly-formed run's live Backpack.
+    pub async fn clear_pending_backpack(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("DELETE FROM pending_backpack WHERE player_id = $1")
+                    .bind(player_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                m.pending_backpack.retain(|(p, _), _| *p != player_id);
+            }
+        }
+        Ok(())
+    }
+
     /// Verify a login. Returns `Some(player)` on a correct password, `None` for
     /// an unknown username OR a wrong password — indistinguishable, with matched
     /// timing (D17, M1.9).
@@ -1054,6 +1177,15 @@ pub enum EquipResult {
     SlotOccupied,
 }
 
+/// Outcome of [`Db::withdraw_material`], mapped to HTTP status by the API layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawResult {
+    /// Applied — the Vault had enough of that material.
+    Ok,
+    /// Fewer than the requested quantity in the Vault → 409 conflict.
+    InsufficientStock,
+}
+
 /// One hero's summed combat bonuses from their equipped gear.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GearBonus {
@@ -1131,6 +1263,8 @@ struct Mem {
     chits: HashMap<Uuid, i64>,
     /// vault_items.quantity, keyed by (player_id, item_kind).
     vault_items: HashMap<(Uuid, String), i32>,
+    /// pending_backpack.quantity, keyed by (player_id, item_kind).
+    pending_backpack: HashMap<(Uuid, String), i32>,
     /// gear, keyed by gear_id.
     gear: HashMap<Uuid, MemGear>,
     /// meld_skills.xp, keyed by (player_id, skill_kind).
@@ -1262,6 +1396,52 @@ mod tests {
         assert!(!db.craft(p, &[("wood".into(), 99)], ("plank", 1), 5).await.unwrap());
         let (_, items) = db.get_vault(p).await.unwrap();
         assert_eq!(items, vec![("blade".to_string(), 1), ("wood".to_string(), 2)]);
+    }
+
+    #[tokio::test]
+    async fn withdraw_materials_stages_a_pending_backpack() {
+        let db = mem().await;
+        let test_password = Uuid::new_v4().to_string();
+        let p = db
+            .register("dana", &test_password)
+            .await
+            .unwrap()
+            .player_id;
+        db.bank_extraction(p, &[("iron".into(), 5)], 0).await.unwrap();
+
+        // Partial withdraw: decrements the Vault, stages the pending backpack.
+        assert_eq!(
+            db.withdraw_material(p, "iron", 2).await.unwrap(),
+            WithdrawResult::Ok
+        );
+        let (_, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(items, vec![("iron".to_string(), 3)]);
+        assert_eq!(
+            db.get_pending_backpack(p).await.unwrap(),
+            vec![("iron".to_string(), 2)]
+        );
+
+        // A second withdraw accumulates in the same pending row.
+        assert_eq!(
+            db.withdraw_material(p, "iron", 1).await.unwrap(),
+            WithdrawResult::Ok
+        );
+        assert_eq!(
+            db.get_pending_backpack(p).await.unwrap(),
+            vec![("iron".to_string(), 3)]
+        );
+
+        // Over-withdrawing what's left in the Vault is rejected, no-op.
+        assert_eq!(
+            db.withdraw_material(p, "iron", 99).await.unwrap(),
+            WithdrawResult::InsufficientStock
+        );
+        let (_, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(items, vec![("iron".to_string(), 2)]);
+
+        // Clearing empties the pending queue (simulates a dive consuming it).
+        db.clear_pending_backpack(p).await.unwrap();
+        assert!(db.get_pending_backpack(p).await.unwrap().is_empty());
     }
 
     #[tokio::test]
