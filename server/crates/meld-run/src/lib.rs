@@ -305,11 +305,18 @@ pub fn build_battle(
     let enemy_fighters: Vec<Fighter> = enemies
         .iter()
         .map(|(m, cid)| {
+            // FS-4: a champion's affix rides the battle name so it reads distinctly
+            // ("Swift dune wyrm"). The stat twist is already baked into the spawn.
+            let name = if m.affix.is_empty() {
+                m.monster_kind.clone()
+            } else {
+                format!("{} {}", m.affix, m.monster_kind)
+            };
             let mut f = Fighter::new(
                 cid.clone(),
                 CombatantKind::Monster,
                 None,
-                Some(m.monster_kind.clone()),
+                Some(name),
                 m.level,
                 m.hp,
                 m.atk,

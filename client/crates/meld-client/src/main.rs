@@ -5380,6 +5380,18 @@ const LOOT_REPORT_DURATION: f32 = 4.0;
 /// (Dismissing on any click was considered but dropped: a click here would
 /// also fall through to overworld movement/avatar-click handling with no way
 /// to consume it.)
+/// Colour a gear name by its rarity prefix (Rare/Epic/Legendary), else the neutral
+/// common colour. Rarity rides the name ("Legendary Frostforged Greatblade"), so
+/// this works for both fresh drops and banked Vault gear (FS gear-rarity).
+fn rarity_color(name: &str) -> Color {
+    match name.split_whitespace().next() {
+        Some("Legendary") => Color::srgb(1.0, 0.8, 0.3),
+        Some("Epic") => Color::srgb(0.78, 0.5, 1.0),
+        Some("Rare") => Color::srgb(0.45, 0.72, 1.0),
+        _ => Color::srgb(0.6, 0.95, 0.7),
+    }
+}
+
 fn render_loot_report(
     mut commands: Commands,
     time: Res<Time>,
@@ -5455,7 +5467,7 @@ fn render_loot_report(
                     p.spawn((
                         Text::new(format!("+1 {name}")),
                         TextFont { font_size: 16.0, ..default() },
-                        TextColor(Color::srgb(0.6, 0.95, 0.7)),
+                        TextColor(rarity_color(name)),
                     ));
                 }
             });
@@ -5755,7 +5767,14 @@ fn sync_overworld_sprites(
                     }
                     _ => base,
                 };
-                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, 1.6, tint, 0.55);
+                // FS-4: elites and gatekeepers read at a glance — bigger and menacingly
+                // tinted (a gatekeeper towers; an elite is a hot-glowing champion).
+                let (size, tint) = match e.encounter_class.as_deref() {
+                    Some("gatekeeper") => (1.6 * 2.2, Color::srgb(1.7, 0.45, 0.5)),
+                    Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
+                    _ => (1.6, tint),
+                };
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55);
             }
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so

@@ -50,6 +50,10 @@ pub struct ItemStack {
 pub struct LootGear {
     pub gear_id: Id,
     pub name: String,
+    /// Rarity tier ("common"/"rare"/"epic"/"legendary") — drives the stat roll and
+    /// the client's colour. Additive; old wire/clients default to common.
+    #[serde(default)]
+    pub rarity: String,
     /// Equipment slot key (content-defined opaque string, e.g. `weapon`).
     pub slot: String,
     pub insurance: Insurance,

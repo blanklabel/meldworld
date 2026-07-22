@@ -254,11 +254,18 @@ Make time in the field a living, dangerous place worth screenshotting.
   (the fireflies should actually emit light), plus more per-biome/per-time-of-day
   flourishes. Client HD-2D pass — see the HD-2D pipeline notes; verify by native
   screenshot at night.
-- [ ] **FS-4 — Gatekeepers & unique bosses.** Massive, unavoidable boss arenas at
-  biome/hub borders (GDD §3/§4) — progression blockers, multiplayer rally points,
-  and the source of **class-emblem** drops feeding CL-1. Add the encounter type,
-  HP-sizing, arena placement in world gen, and the merge/raid behavior
-  ([`behaviors/combat-atb.md`](behaviors/combat-atb.md) battle merge).
+- [ ] **FS-4 — Gatekeepers & unique bosses.** 🟡 *Shipped Elites + Gatekeepers:* the
+  (previously dormant) `EncounterClass` pipeline is now live — a fraction of creatures
+  roll **Elite** champions (tougher, ~3× loot) and a **Gatekeeper** boss guards every
+  biome-border pass (a wall of HP on the door, unavoidable, with a fat guaranteed
+  reward). Every champion also rolls an **affix** (Swift / Brutal / Armored / Giant /
+  Vicious) that twists the fight and rides its battle name, so no two feel the same.
+  Stats + loot scale via `[encounters]`; the client sizes + tints them distinctly;
+  the merge cap already differs for gatekeepers. `meld-world`
+  (`promote` + placement), `meld-server` (loot spike), unit-tested. **Remaining:**
+  unique *boss mechanics* (special attack patterns, not just big stats), **class-emblem**
+  drops feeding CL-1, party-scaled HP over a full merge, and a proper boss arena.
+  See [`behaviors/combat-atb.md`](behaviors/combat-atb.md) battle merge.
 - [ ] **FS-5 — Day/night cycle as a first-class system.** A seeded, server-
   authoritative time-of-day clock that other systems read: it drives the fireflies
   and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates

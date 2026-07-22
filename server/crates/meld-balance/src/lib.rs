@@ -23,6 +23,8 @@ pub struct Balance {
     pub runs: Runs,
     pub battle: Battle,
     pub loot: Loot,
+    pub encounters: Encounters,
+    pub gear_rarity: GearRarity,
     pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -149,6 +151,32 @@ pub struct Loot {
     pub gear_atk_per_tier: f64,
     pub gear_atk_jitter: f64,
     pub gear_base_durability: i32,
+}
+
+/// Encounter-variety tunables (FS-4): Elite champions + Gatekeeper bosses. See the
+/// `[encounters]` block in balance.toml.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Encounters {
+    pub elite_chance: f64,
+    pub elite_hp_mult: f64,
+    pub elite_atk_mult: f64,
+    pub elite_xp_mult: f64,
+    pub elite_loot_mult: f64,
+    pub gatekeeper_hp_mult: f64,
+    pub gatekeeper_atk_mult: f64,
+    pub gatekeeper_xp_mult: f64,
+    pub gatekeeper_loot_mult: f64,
+}
+
+/// Gear-rarity tunables (loot excitement). See the `[gear_rarity]` block.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GearRarity {
+    pub rare_weight: f64,
+    pub epic_weight: f64,
+    pub legendary_weight: f64,
+    pub rare_mult: f64,
+    pub epic_mult: f64,
+    pub legendary_mult: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
