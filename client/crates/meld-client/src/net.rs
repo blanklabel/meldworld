@@ -186,6 +186,8 @@ pub struct HitEffect {
     pub kind: String,
     pub amount: Option<i32>,
     pub hp_after: i32,
+    /// A critical hit — the client pops it bigger + gold ("CRIT!").
+    pub crit: bool,
 }
 
 /// A biome seam (chokepoint) for the client to wall + gate.
@@ -1151,6 +1153,7 @@ impl Inner {
                             HitEffect {
                                 target: e.target_id,
                                 kind,
+                                crit: e.status.as_deref() == Some("crit"),
                                 amount: e.amount,
                                 hp_after: e.hp_after,
                             }
