@@ -1,10 +1,11 @@
 # Worldgen (Epic WG) — research spike + what shipped
 
 > Status: **WG-2 + WG-3 SHIPPED** (seeded biome randomization + first-run tutorial
-> carve-out); **WG-1 SHIPPED as dungeon sections**; **WG-4 SHIPPED** — the radial ~340°
-> world, the western return-to-city anchor, AND endless outward ring streaming (the world
-> is now infinite). The full separately-instanced dungeons remain (see "what shipped"
-> below). Tracked as epic **WG** in [`../ROADMAP.md`](../ROADMAP.md).
+> carve-out); **WG-1 SHIPPED as dungeon sections**; **WG-4 SHIPPED + checked off** — the
+> radial ~340° world, endless outward ring streaming (the world is now infinite), the
+> western return-to-city anchor with its **Kenney castle wall + gate + city skyline**, and
+> ground/HUD biome that matches each section. The full separately-instanced dungeons remain
+> (see "what shipped" below). Tracked as epic **WG** in [`../ROADMAP.md`](../ROADMAP.md).
 > Written against the real generator: `meld-world::Arena` / `section_biome` /
 > `push_section`, `meld-server::game.rs` (`form_run`), and the `has_dived` account
 > flag in `meld-db`.
@@ -143,14 +144,17 @@ fan is endless AND monotonically harder the farther out you roam. Unit-tested
 much farther out, streamed content fans around the arc, the clear-path tube stays feasible across the
 whole streamed world, and it's deterministic per seed).
 
-Crossing `west_return_border` behind the hub returns you to **Last City** as an **instant free
-extraction home** — you **keep your backpack** (banked to the Vault), no channel, no death
-penalty, no item cost. Near spawn it's just "I changed my mind" (nothing to lose, and losing it
-would only feel punishing); from deep in the fan, walking all the way back to the western sliver
-is its own gauntlet, so it's a fair "fight your way home" route. It routes through the normal
+Crossing `west_return_border` (now −20, far enough west that you won't cross it by accident)
+returns you to **Last City** as an **instant free extraction home** — you **keep your backpack**
+(banked to the Vault), no channel, no death penalty, no item cost. It routes through the normal
 extraction banking (`complete_extractions`, method `west_return` → nothing consumed), never a
-death. *Remaining:* a west-wall visual, and re-homing terraces + biome-seam walls into the radial
-layout (both cosmetic — the world's core radial+infinite behavior is complete).
+death. The border is marked by a **castle wall + gate** built from real Kenney Pirate-Kit stone
+models (wall segments, a gatehouse, flanking towers with pennants) with a **city skyline behind
+it** (towers + crypt buildings) glimpsed through the open gate — so the boundary is visible before
+you cross it. All pieces are GLBs placed at `y=0` (Kenney base-origin), so nothing floats;
+`build_world_walls` builds the assembly once when the bounds arrive, from the streamed
+`WorldBounds.west_return_border`. *Remaining (minor cosmetic):* re-homing terraces + biome-seam
+walls into the radial layout — the world's core radial + infinite + anchored behavior is complete.
 
 ## Explicitly avoided as over-engineering (for now)
 Full biome permutation (breaks monotonic difficulty), polar/angular chunk storage,

@@ -218,29 +218,34 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   run from the run seed (uniform per section, no adjacent repeat) while difficulty stays
   a pure function of `distance` — biomes are difficulty-neutral skins (creatures scale via
   `stat_mult`). `meld-world::section_biome`, unit-tested for determinism + variety.
-- [ ] **WG-4 — Radial spread with Last City always to the west.** The world opens
-  outward across ~**350°**; **Last City always sits just to the west** of where
-  you leave it, appearing as a giant wall. Cross the western border and you step
-  **right back into the city** — the one permanent, safe anchor in a world that
-  worsens in every other direction. Establishes the city↔maze boundary as a
-  walkable seam (ties LC-1's presence loop to the maze exit; reframes the current
-  Threshold entry). 🟡 *Shipped the arc, the anchor, AND endless streaming*
-  (screenshot-verified): the overworld is now a **radial, infinite world** — the
-  generated corridor is bent into a ~340° arc around the hub (`radialize`: corridor
-  `x` → radius so difficulty is unchanged, lateral `y` → angle), so content fans out
-  in every direction with the western sliver kept for Last City, and it **streams
-  endlessly outward** — `ensure_frontier` generates new content rings keyed off the
-  player's radius (`hypot(pos − hub)`), each section built in the corridor frame then
-  bent into the arc (`stream_radial_section`), so the world is genuinely infinite AND
-  monotonically harder the farther you roam (difficulty stays a pure function of
-  `distance`). Difficulty is radial (`distance_floor` = Euclidean); the client's base
-  ground plane follows the player so the endless fan always has ground underfoot.
-  Crossing the **western border** (`west_return_border`) returns you to Last City as
-  an **instant free extraction home** — you **keep your backpack** (banked to the
-  Vault), no channel, no death penalty, no item cost. Unit-tested
-  (`wg4_radial_world_streams_endlessly_outward`). The world is flat (terraces off).
-  **Remaining (cosmetic only):** the giant west-**wall visual**, and re-homing
-  terraces/dungeon-seams into the radial layout.
+- [x] **WG-4 — Radial spread with Last City always to the west.** The world opens
+  outward across ~**340°** and **Last City sits just to the west**, marked by a
+  **castle wall + gate** with the city skyline behind it; cross the western border
+  and you step **right back into the city** — the one permanent, safe anchor in a
+  world that worsens in every other direction. Establishes the city↔maze boundary
+  (ties LC-1's presence loop to the maze exit; reframes the Threshold entry).
+  **Shipped (screenshot-verified):**
+  - **Radial + infinite:** the generated corridor is bent into a ~340° arc around
+    the hub (`radialize`: corridor `x` → radius so difficulty is unchanged, lateral
+    `y` → angle), and `ensure_frontier` streams new content rings endlessly outward
+    keyed off the player's radius (`stream_radial_section`) — genuinely infinite AND
+    monotonically harder outward (difficulty stays a pure function of `distance`).
+    Unit-tested (`wg4_radial_world_streams_endlessly_outward`). Ground plane follows
+    the player so the endless fan always has ground underfoot.
+  - **Western anchor:** crossing `west_return_border` (now −20, a deliberate walk
+    west across open ground, not an accidental step) returns you to Last City as an
+    **instant free extraction home** — you **keep your backpack** (banked to the
+    Vault), no channel, no death penalty, no item cost.
+  - **The wall + gate:** a real Kenney castle wall (Pirate-Kit stone segments +
+    gatehouse + towers/pennants) spans the border, with a **city skyline behind it**
+    (towers + crypt buildings) glimpsed through the open gate — so the boundary is
+    visible before you cross it. All GLBs sit at `y=0` (no floating).
+  - **Biome presentation matches the section:** ground texture + HUD label are keyed
+    off the ACTUAL per-section biome (streamed on `TerrainSection.biome`, radial LUT
+    in `ground_biome.wgsl`), cross-fading at real section boundaries; each biome has
+    its own fill density/props + edge taper (forest→open desert→Ashfall rock).
+  **Remaining (minor cosmetic):** re-homing terraces + biome-seam walls into the
+  radial layout (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
 
