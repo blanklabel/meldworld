@@ -2356,6 +2356,7 @@ impl GameState {
             .map(|g| LootGear {
                 gear_id: Uuid::now_v7().to_string(),
                 name: g.name.clone(),
+                rarity: g.rarity.clone(),
                 slot: g.slot.clone(),
                 insurance: Insurance::Red,
                 tier: g.tier,
@@ -3105,6 +3106,7 @@ impl GameState {
                         .map(|g| LootGear {
                             gear_id: Uuid::now_v7().to_string(),
                             name: g.name.clone(),
+                            rarity: g.rarity.clone(),
                             slot: g.slot.clone(),
                             insurance: Insurance::Red,
                             tier: g.tier,

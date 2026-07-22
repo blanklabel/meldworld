@@ -5380,6 +5380,18 @@ const LOOT_REPORT_DURATION: f32 = 4.0;
 /// (Dismissing on any click was considered but dropped: a click here would
 /// also fall through to overworld movement/avatar-click handling with no way
 /// to consume it.)
+/// Colour a gear name by its rarity prefix (Rare/Epic/Legendary), else the neutral
+/// common colour. Rarity rides the name ("Legendary Frostforged Greatblade"), so
+/// this works for both fresh drops and banked Vault gear (FS gear-rarity).
+fn rarity_color(name: &str) -> Color {
+    match name.split_whitespace().next() {
+        Some("Legendary") => Color::srgb(1.0, 0.8, 0.3),
+        Some("Epic") => Color::srgb(0.78, 0.5, 1.0),
+        Some("Rare") => Color::srgb(0.45, 0.72, 1.0),
+        _ => Color::srgb(0.6, 0.95, 0.7),
+    }
+}
+
 fn render_loot_report(
     mut commands: Commands,
     time: Res<Time>,
@@ -5455,7 +5467,7 @@ fn render_loot_report(
                     p.spawn((
                         Text::new(format!("+1 {name}")),
                         TextFont { font_size: 16.0, ..default() },
-                        TextColor(Color::srgb(0.6, 0.95, 0.7)),
+                        TextColor(rarity_color(name)),
                     ));
                 }
             });

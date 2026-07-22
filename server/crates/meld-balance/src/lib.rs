@@ -24,6 +24,7 @@ pub struct Balance {
     pub battle: Battle,
     pub loot: Loot,
     pub encounters: Encounters,
+    pub gear_rarity: GearRarity,
     pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -165,6 +166,17 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+}
+
+/// Gear-rarity tunables (loot excitement). See the `[gear_rarity]` block.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GearRarity {
+    pub rare_weight: f64,
+    pub epic_weight: f64,
+    pub legendary_weight: f64,
+    pub rare_mult: f64,
+    pub epic_mult: f64,
+    pub legendary_mult: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

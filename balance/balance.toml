@@ -202,6 +202,19 @@ gatekeeper_atk_mult = 1.6
 gatekeeper_xp_mult = 9.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
 
+# Gear rarity (loot excitement). A dropped piece rolls Common → Rare → Epic →
+# Legendary; higher rarity scales the stat bonus (and flavours the name). The
+# encounter's loot spike (elites/gatekeepers) multiplies the rare/epic/legendary
+# odds, so bosses drop the shiny stuff — capped so Common is always possible.
+# [TUNABLE]
+[gear_rarity]
+rare_weight = 0.28               # base P(Rare) on a standard drop
+epic_weight = 0.09
+legendary_weight = 0.02
+rare_mult = 1.5                  # stat-bonus multiplier vs a Common piece
+epic_mult = 2.3
+legendary_mult = 3.6
+
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill
 # curves + recipe XP are content tables. [TUNABLE]

@@ -163,6 +163,8 @@ pub fn combat_material_for_biome(d: i64) -> &'static str {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GearDrop {
     pub name: String,
+    /// Rarity tier: common/rare/epic/legendary (scales the stat + flavours the name).
+    pub rarity: String,
     pub slot: String,
     pub tier: i32,
     pub atk_bonus: i32,
@@ -236,16 +238,51 @@ pub fn roll_creature_loot(
         let tier = sc.tier(distance) as i32;
         let slot = ["weapon", "armor", "accessory"][rng.below(3)];
         let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
+        // Rarity: the encounter's loot spike multiplies the rare/epic/legendary
+        // odds (so elites/gatekeepers drop the shiny stuff), capped so Common is
+        // always possible. Rarity then scales the stat bonus + flavours the name.
+        let gr = &balance.gear_rarity;
+        let boost = loot_mult.max(1.0);
+        let (mut w_rare, mut w_epic, mut w_leg) =
+            (gr.rare_weight * boost, gr.epic_weight * boost, gr.legendary_weight * boost);
+        let noncommon = w_rare + w_epic + w_leg;
+        if noncommon > 0.95 {
+            let k = 0.95 / noncommon;
+            w_rare *= k;
+            w_epic *= k;
+            w_leg *= k;
+        }
+        let u = rng.unit();
+        let (rarity, rarity_mult) = if u < w_leg {
+            ("legendary", gr.legendary_mult)
+        } else if u < w_leg + w_epic {
+            ("epic", gr.epic_mult)
+        } else if u < w_leg + w_epic + w_rare {
+            ("rare", gr.rare_mult)
+        } else {
+            ("common", 1.0)
+        };
         // One roll, routed into whichever stat this slot cares about: weapon
         // hits harder, armor shrugs off more, an accessory moves faster.
-        let stat = (l.gear_atk_per_tier * tier as f64 * gjitter).round().max(1.0) as i32;
+        let stat =
+            (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult).round().max(1.0) as i32;
         let (atk_bonus, def_bonus, spd_bonus) = match slot {
             "weapon" => (stat, 0, 0),
             "armor" => (0, stat, 0),
             _ => (0, 0, stat),
         };
+        let base_name = gear_name(distance, slot, &mut rng);
+        let name = if rarity == "common" {
+            base_name
+        } else {
+            // Title-case the rarity for the name ("Legendary Frostforged Greatblade").
+            let mut c = rarity.chars();
+            let cap = c.next().unwrap().to_uppercase().collect::<String>() + c.as_str();
+            format!("{cap} {base_name}")
+        };
         Some(GearDrop {
-            name: gear_name(distance, slot, &mut rng),
+            name,
+            rarity: rarity.to_string(),
             slot: slot.to_string(),
             tier,
             atk_bonus,
@@ -2838,5 +2875,35 @@ mod tests {
             .filter(|&s| roll_creature_loot(&b, d, 1, b.encounters.gatekeeper_loot_mult, s).gear.is_some())
             .count();
         assert!(boss_gear >= 20, "a gatekeeper almost always drops gear: {boss_gear}/24");
+    }
+
+    #[test]
+    fn gear_rolls_rarities_and_bosses_favour_the_shiny() {
+        let b = Balance::load_default().unwrap();
+        let d = 600; // past the red-chest floor
+        // Standard drops span multiple rarities; the rarity word rides the name.
+        let mut kinds = std::collections::HashSet::new();
+        for s in 0..400u64 {
+            if let Some(g) = roll_creature_loot(&b, d, 1, 1.0, s).gear {
+                kinds.insert(g.rarity.clone());
+                if g.rarity != "common" {
+                    let cap = format!("{}{}", g.rarity[..1].to_uppercase(), &g.rarity[1..]);
+                    assert!(g.name.starts_with(&cap), "rarity rides the name: {} / {}", g.rarity, g.name);
+                }
+            }
+        }
+        assert!(kinds.contains("common"), "commons exist: {kinds:?}");
+        assert!(kinds.len() >= 2, "multiple rarities appear: {kinds:?}");
+        // A gatekeeper's loot spike shifts hard toward non-common gear.
+        let (mut drops, mut shiny) = (0, 0);
+        for s in 0..200u64 {
+            if let Some(g) = roll_creature_loot(&b, d, 1, b.encounters.gatekeeper_loot_mult, s).gear {
+                drops += 1;
+                if g.rarity != "common" {
+                    shiny += 1;
+                }
+            }
+        }
+        assert!(shiny * 4 > drops * 3, "bosses mostly drop non-common: {shiny}/{drops}");
     }
 }
