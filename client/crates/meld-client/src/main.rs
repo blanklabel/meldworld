@@ -6799,6 +6799,7 @@ fn build_world_walls(
     frame: Res<WorldFrame>,
     terrain: Res<Terrain>,
     wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
     existing: Query<Entity, With<WorldWall>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut walled: Local<std::collections::HashSet<u32>>,
@@ -6866,45 +6867,65 @@ fn build_world_walls(
             }
         }
 
-        // Last City's WALL + GATE: a giant crenellated stone rampart across the
-        // western return border, with a clear central doorway, so you can SEE the
-        // city boundary coming and know that stepping through sends you home. Crossing
-        // west of `west_return_border` (anywhere) returns you; the gate marks the line.
+        // Last City's WALL + GATE + skyline, built from real Kenney castle models
+        // (Pirate Kit, CC0) rather than scaled boxes. A stone rampart runs across the
+        // western return border with a central gatehouse; behind it, towers + rooftops
+        // read as the city itself — mostly glimpsed THROUGH the open gate as you
+        // approach. Crossing west of `west_return_border` returns you; the gate marks
+        // the line. All models sit at y=0 (Kenney base-origin), so nothing floats.
         let wx = frame.west_return_border;
-        let castle = mats.add(StandardMaterial {
-            base_color: Color::srgb(0.62, 0.6, 0.66), // weathered grey stone
-            perceptual_roughness: 1.0,
-            ..default()
-        });
-        const WALL_HALF: f32 = 55.0; // how far ±y the rampart runs
-        const DOOR_HALF: f32 = 6.0; // half-width of the central gateway
-        let mut cid = 800_000usize;
-        let mut y = -WALL_HALF;
-        while y <= WALL_HALF {
-            if y.abs() > DOOR_HALF {
-                // Crenellated: alternate merlon heights for a castle silhouette.
-                let tall = (cid % 2) == 0;
-                let h = if tall { 15.0 } else { 11.5 };
-                commands.spawn((
-                    WorldWall,
-                    Mesh3d(wa.rock_mesh.clone()),
-                    MeshMaterial3d(castle.clone()),
-                    Transform::from_translation(world_pos(wx, y, h * 0.5 - 1.0))
-                        .with_scale(Vec3::new(3.4, h, 3.4)),
-                ));
-            }
-            y += 3.0;
-            cid += 1;
-        }
-        // Two taller gate towers flanking the doorway so the entrance reads clearly.
-        for ty in [-(DOOR_HALF + 2.5), DOOR_HALF + 2.5] {
+        // "Into the city" is away from the hub; the wall faces back toward the player.
+        let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
+        let wall_yaw = 90.0_f32; // segments run north–south along world z
+        let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
+        let mut prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
             commands.spawn((
                 WorldWall,
-                Mesh3d(wa.rock_mesh.clone()),
-                MeshMaterial3d(castle.clone()),
-                Transform::from_translation(world_pos(wx, ty, 9.5))
-                    .with_scale(Vec3::new(5.0, 22.0, 5.0)),
+                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
+                Transform::from_xyz(x, 0.0, z)
+                    .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
+                    .with_scale(Vec3::splat(scale)),
             ));
+        };
+        // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5; tile at
+        // 6.5 so segments overlap slightly into a continuous rampart (no gaps).
+        const WALL_SCALE: f32 = 3.5;
+        const SEG_W: f32 = 6.5;
+        const WALL_HALF: f32 = 44.0; // how far ±z the rampart runs
+        const GATE_HALF: f32 = 7.0; // half-width of the central gateway (fits the gatehouse)
+        // The rampart: tiled wall segments, leaving the central gate gap.
+        let mut z = -WALL_HALF;
+        while z <= WALL_HALF {
+            if z.abs() > GATE_HALF {
+                prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
+            }
+            z += SEG_W;
+        }
+        // The gatehouse in the gap + two flanking towers (with pennants) framing it.
+        prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
+        for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
+            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+        }
+        // Towers punctuating the rampart at intervals.
+        for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
+            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+        }
+        // The city BEHIND the wall — a skyline of towers + rooftops set back so it's
+        // seen through the gate. Concentrated near z=0 (behind the doorway). Fixed
+        // layout: (model, back-offset, z, yaw°, scale).
+        let city: &[(&str, f32, f32, f32, f32)] = &[
+            ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
+            ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
+            ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
+            ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
+            ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
+            ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
+            ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
+            ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
+        ];
+        for (path, back, cz, yaw, scale) in city {
+            prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
         }
     }
 
