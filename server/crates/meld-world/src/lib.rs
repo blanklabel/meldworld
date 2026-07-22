@@ -434,6 +434,9 @@ impl Terrain {
 pub struct MonsterSpawn {
     pub entity_id: Id,
     pub monster_kind: String,
+    /// FS-4: an Elite's affix (Swift/Brutal/Armored/Giant/Vicious), empty otherwise.
+    /// Shown as a prefix on the battle name so the champion reads distinctly.
+    pub affix: String,
     pub position: Position,
     /// Where it spawned — passive/territorial creatures leash to it.
     pub home: Position,
@@ -486,6 +489,7 @@ impl MonsterSpawn {
         MonsterSpawn {
             entity_id,
             monster_kind: kind.to_string(),
+            affix: String::new(),
             position,
             home: position,
             area_min_x: f64::NEG_INFINITY,
@@ -520,6 +524,29 @@ impl MonsterSpawn {
         self.atk = ((self.atk as f64) * atk_mult).round().max(1.0) as i32;
         self.xp_reward = ((self.xp_reward as f64) * xp_mult).round().max(0.0) as i64;
         self.encounter_class = class.to_string();
+    }
+
+    /// Roll and apply one champion AFFIX (FS-4) — a stat-twist that makes every
+    /// elite/gatekeeper fight feel different: a Swift pack acts far more often, an
+    /// Armored one shrugs off blows, a Giant is a sponge, a Brutal/Vicious one hits
+    /// like a truck. Pure stat mods that carry straight into the battle Fighter, plus
+    /// a name prefix the client shows.
+    fn apply_affix(&mut self, seed: u64) {
+        // (name, hp_mult, atk_mult, def_add, speed_mult)
+        let affixes: [(&str, f64, f64, i32, f64); 5] = [
+            ("Swift", 1.0, 1.0, 0, 1.6),
+            ("Brutal", 1.0, 1.4, 0, 1.0),
+            ("Armored", 1.15, 1.0, 8, 1.0),
+            ("Giant", 1.5, 1.0, 0, 0.85),
+            ("Vicious", 1.0, 1.25, 0, 1.25),
+        ];
+        let (name, hp_m, atk_m, def_add, spd_m) = affixes[(seed % affixes.len() as u64) as usize];
+        self.max_hp = ((self.max_hp as f64) * hp_m).round().max(1.0) as i32;
+        self.hp = self.max_hp;
+        self.atk = ((self.atk as f64) * atk_m).round().max(1.0) as i32;
+        self.def += def_add;
+        self.speed_stat = ((self.speed_stat as f64) * spd_m).round().max(1.0) as i32;
+        self.affix = name.to_string();
     }
 }
 
@@ -933,6 +960,7 @@ impl Arena {
                     enc.elite_xp_mult,
                     "elite",
                 );
+                self.monsters[idx].apply_affix(erng.next_u64());
             }
 
             let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
@@ -1172,6 +1200,7 @@ impl Arena {
                 enc.gatekeeper_xp_mult,
                 "gatekeeper",
             );
+            self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
         }
 
         // Every biome is a MAZE: pack the play area with extra impassable props so
@@ -2775,6 +2804,24 @@ mod tests {
         a.ensure_frontier(&b, 400.0);
         assert!(a.monsters.iter().all(|m| m.encounter_class == "standard"),
             "a new player's first dive stays gentle");
+    }
+
+    #[test]
+    fn champions_roll_a_known_affix_and_standards_have_none() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 3, false);
+        a.ensure_frontier(&b, 500.0);
+        let known = ["Swift", "Brutal", "Armored", "Giant", "Vicious"];
+        let mut champions = 0;
+        for m in &a.monsters {
+            if m.encounter_class == "standard" {
+                assert!(m.affix.is_empty(), "standard creatures carry no affix");
+            } else {
+                assert!(known.contains(&m.affix.as_str()), "champion affix is known: {:?}", m.affix);
+                champions += 1;
+            }
+        }
+        assert!(champions > 0, "some champions exist to carry affixes");
     }
 
     #[test]

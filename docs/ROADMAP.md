@@ -258,8 +258,10 @@ Make time in the field a living, dangerous place worth screenshotting.
   (previously dormant) `EncounterClass` pipeline is now live — a fraction of creatures
   roll **Elite** champions (tougher, ~3× loot) and a **Gatekeeper** boss guards every
   biome-border pass (a wall of HP on the door, unavoidable, with a fat guaranteed
-  reward). Stats + loot scale via `[encounters]`; the client sizes + tints them
-  distinctly; the merge cap already differs for gatekeepers. `meld-world`
+  reward). Every champion also rolls an **affix** (Swift / Brutal / Armored / Giant /
+  Vicious) that twists the fight and rides its battle name, so no two feel the same.
+  Stats + loot scale via `[encounters]`; the client sizes + tints them distinctly;
+  the merge cap already differs for gatekeepers. `meld-world`
   (`promote` + placement), `meld-server` (loot spike), unit-tested. **Remaining:**
   unique *boss mechanics* (special attack patterns, not just big stats), **class-emblem**
   drops feeding CL-1, party-scaled HP over a full merge, and a proper boss arena.
