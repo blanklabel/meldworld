@@ -1,10 +1,10 @@
 # Worldgen (Epic WG) — research spike + what shipped
 
 > Status: **WG-2 + WG-3 SHIPPED** (seeded biome randomization + first-run tutorial
-> carve-out); **WG-1 SHIPPED as dungeon sections** and **WG-4 SHIPPED as the western
-> return-to-city anchor** — the full separately-instanced dungeons and 350° 2-D radial
-> streaming remain (see "what shipped" below). Tracked as epic **WG** in
-> [`../ROADMAP.md`](../ROADMAP.md).
+> carve-out); **WG-1 SHIPPED as dungeon sections**; **WG-4 SHIPPED** — the radial ~340°
+> world, the western return-to-city anchor, AND endless outward ring streaming (the world
+> is now infinite). The full separately-instanced dungeons remain (see "what shipped"
+> below). Tracked as epic **WG** in [`../ROADMAP.md`](../ROADMAP.md).
 > Written against the real generator: `meld-world::Arena` / `section_biome` /
 > `push_section`, `meld-server::game.rs` (`form_run`), and the `has_dived` account
 > flag in `meld-db`.
@@ -105,16 +105,27 @@ Unit-tested (existence, walls + chest, path stays feasible through the doors, de
 never in tutorial/spawn). *Remaining:* the portal-into-a-separate-instance dungeon + mini-boss,
 and true BSP rooms, once instances are per-party.
 
-**WG-4 — the radial world + western anchor (shipped, screenshot-verified).** The overworld is
-now radial. Rather than rewriting streaming into 2-D polar chunks (which the spike warned
-against), we **bend the generated corridor into a ~340° arc** as a post-process (`Arena::radialize`):
-a point's corridor `x` becomes its **radius** — so distance, and therefore difficulty, is
-unchanged (`distance_floor` was already Euclidean) — and its lateral `y` becomes an **angle**
-across the arc. The eastward tube spirals outward into a fan that fills every direction but the
-western sliver, which is kept for Last City. It reuses **all** existing content generation
-(biomes, dungeons, gatekeepers, loot, the clear-path — whose tube is re-cleared after the bend so
-a feasible route out survives), and the world is **flat** (terraces/connectors off), so it renders
-on the client's base ground plane (squared to 2000×2000) with no per-section relief mesh.
+**WG-4 — the radial, INFINITE world + western anchor (shipped, screenshot-verified).** The overworld
+is radial. Rather than rewriting streaming into 2-D polar chunks (which the spike warned against), we
+**bend the generated corridor into a ~340° arc** as a post-process (`Arena::radialize`): a point's
+corridor `x` becomes its **radius** — so distance, and therefore difficulty, is unchanged
+(`distance_floor` was already Euclidean) — and its lateral `y` becomes an **angle** across the arc.
+The eastward tube spirals outward into a fan that fills every direction but the western sliver, which
+is kept for Last City. It reuses **all** existing content generation (biomes, dungeons, gatekeepers,
+loot, the clear-path — whose tube is re-cleared after the bend so a feasible route out survives), and
+the world is **flat** (terraces/connectors off), so it renders on the client's base ground plane (which
+now follows the player so the endless fan always has ground underfoot) with no per-section relief mesh.
+
+**Endless outward streaming (shipped).** The world is now genuinely **infinite** — exactly the spike's
+"stream in Cartesian, read difficulty in polar" recipe. `ensure_frontier` streams new content **rings**
+outward keyed off the player's **radius** (`hypot(pos − hub)`): each new section is generated in the
+pristine corridor frame (so obstacle/terrace rejection stays correct against the unbent path and
+corridor extent — the storage stays Cartesian) and then its fresh tail is bent into the arc with the
+SAME map the initial disk got (`stream_radial_section`). Difficulty rides `distance` as always, so the
+fan is endless AND monotonically harder the farther out you roam. Unit-tested
+(`wg4_radial_world_streams_endlessly_outward`: the chain grows to meet a far radius, content reaches
+much farther out, streamed content fans around the arc, the clear-path tube stays feasible across the
+whole streamed world, and it's deterministic per seed).
 
 Crossing `west_return_border` behind the hub returns you to **Last City** as an **instant free
 extraction home** — you **keep your backpack** (banked to the Vault), no channel, no death
@@ -122,9 +133,8 @@ penalty, no item cost. Near spawn it's just "I changed my mind" (nothing to lose
 would only feel punishing); from deep in the fan, walking all the way back to the western sliver
 is its own gauntlet, so it's a fair "fight your way home" route. It routes through the normal
 extraction banking (`complete_extractions`, method `west_return` → nothing consumed), never a
-death. *Remaining:* endless **streaming** (the world is currently a large fixed radial disk, not
-infinite — the follow-on adds outward ring streaming), a west-wall visual, and re-homing terraces
-+ biome-seam walls into the radial layout.
+death. *Remaining:* a west-wall visual, and re-homing terraces + biome-seam walls into the radial
+layout (both cosmetic — the world's core radial+infinite behavior is complete).
 
 ## Explicitly avoided as over-engineering (for now)
 Full biome permutation (breaks monotonic difficulty), polar/angular chunk storage,

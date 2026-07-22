@@ -2728,14 +2728,17 @@ impl GameState {
             if let Some(inst) = self.instance.as_mut() {
                 inst.arena.step_creatures_with_aggro(dt, &aggro_mult);
                 // Stream in new sections as the frontier player advances (endless world).
-                let max_x = inst
+                // Difficulty is radial (distance = hypot from the hub), so in the radial
+                // world the frontier is the player's RADIUS; in corridor mode it's x.
+                let radial = balance.worldgen.radial_arc_degrees > 0.0;
+                let reach = inst
                     .arena
                     .avatars
                     .iter()
-                    .map(|a| a.position.x)
+                    .map(|a| if radial { a.position.x.hypot(a.position.y) } else { a.position.x })
                     .fold(f64::NEG_INFINITY, f64::max);
-                if max_x.is_finite() {
-                    created_sections = inst.arena.ensure_frontier(balance, max_x);
+                if reach.is_finite() {
+                    created_sections = inst.arena.ensure_frontier(balance, reach);
                 }
             }
         }
