@@ -263,7 +263,7 @@ dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall
 dungeon_door_half = 2.6          # half-width of the door gap a divider leaves on the path
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
 # the safe anchor is always just to the west. Negative = behind the origin.
-west_return_border = -2.5      # reachable before the x_min=-4 wall; walk west from spawn to return
+west_return_border = -20.0     # walk this far west (open ground) up to the city WALL+GATE to return; a clear deliberate distance, not an accidental step
 base_area_length = 20.0          # tiles: length of the first (shallowest) area
 area_length_growth = 7.0         # each successive area is ~this much longer on avg
 area_length_jitter = 0.35        # ± fraction applied to each area's length

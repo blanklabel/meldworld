@@ -299,7 +299,15 @@ fn main() {
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
         // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
-        .add_systems(OnEnter(Screen::City), (city_hud, city_scene, despawn::<BattleActor>))
+        // Each state ENTRY purges the actor kinds that don't belong to it, so a sprite
+        // can never stick across a transition: `WorldEntity` lives only in Overworld,
+        // `BattleActor` only in Battle, `CityScene` only in City. (OnExit handlers do
+        // this too, but a deferred spawn on the transition frame can slip past them —
+        // enforcing it on entry as well makes a stuck/double sprite impossible.)
+        .add_systems(
+            OnEnter(Screen::City),
+            (city_hud, city_scene, despawn::<BattleActor>, despawn::<WorldEntity>),
+        )
         .add_systems(
             OnExit(Screen::City),
             (despawn::<CityRoot>, despawn::<CityScene>),
@@ -334,7 +342,7 @@ fn main() {
         // Clearing it on entry guarantees exactly one avatar regardless of the race.
         .add_systems(
             OnEnter(Screen::Overworld),
-            (overworld_ui, despawn::<BattleActor>),
+            (overworld_ui, despawn::<BattleActor>, despawn::<CityScene>),
         )
         .add_systems(
             OnExit(Screen::Overworld),
@@ -474,8 +482,15 @@ fn main() {
             )
                 .run_if(in_state(Screen::Battle)),
         )
-        // Ended
-        .add_systems(OnEnter(Screen::Ended), ended_ui)
+        // Ended — the extract/death summary. Clean any lingering world/battle actors
+        // off it on entry, and (crucially) despawn the summary UI on EXIT: without
+        // this the `EndedRoot` text was never removed, so it stayed on screen after
+        // returning to The Weld and a second extraction stacked a duplicate on top.
+        .add_systems(
+            OnEnter(Screen::Ended),
+            (ended_ui, despawn::<BattleActor>, despawn::<WorldEntity>, despawn::<CityScene>),
+        )
+        .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
         .add_systems(Update, ended_input.run_if(in_state(Screen::Ended)))
         .run();
 }
@@ -709,6 +724,9 @@ struct WorldFrame {
     x_min: f32,
     x_max: f32,
     lateral: f32,
+    /// Crossing west of this world-x returns to Last City — the client marks it with
+    /// a castle wall + gate so the boundary is visible before you cross it.
+    west_return_border: f32,
     seams: Vec<meld_client::net::SeamLine>,
 }
 
@@ -3373,11 +3391,12 @@ fn pump_net(
                 }
                 terrain.sections.insert(section.index, section);
             }
-            ServerMsg::WorldFrame { x_min, x_max, lateral, seams } => {
+            ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, seams } => {
                 world_frame.have = true;
                 world_frame.x_min = x_min as f32;
                 world_frame.x_max = x_max as f32;
                 world_frame.lateral = lateral as f32;
+                world_frame.west_return_border = west_return_border as f32;
                 world_frame.seams = seams;
             }
             ServerMsg::Connected { player_id } => {
@@ -6845,6 +6864,47 @@ fn build_world_walls(
                         .with_scale(Vec3::new(2.2, 6.0, 2.2)),
                 ));
             }
+        }
+
+        // Last City's WALL + GATE: a giant crenellated stone rampart across the
+        // western return border, with a clear central doorway, so you can SEE the
+        // city boundary coming and know that stepping through sends you home. Crossing
+        // west of `west_return_border` (anywhere) returns you; the gate marks the line.
+        let wx = frame.west_return_border;
+        let castle = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.62, 0.6, 0.66), // weathered grey stone
+            perceptual_roughness: 1.0,
+            ..default()
+        });
+        const WALL_HALF: f32 = 55.0; // how far ±y the rampart runs
+        const DOOR_HALF: f32 = 6.0; // half-width of the central gateway
+        let mut cid = 800_000usize;
+        let mut y = -WALL_HALF;
+        while y <= WALL_HALF {
+            if y.abs() > DOOR_HALF {
+                // Crenellated: alternate merlon heights for a castle silhouette.
+                let tall = (cid % 2) == 0;
+                let h = if tall { 15.0 } else { 11.5 };
+                commands.spawn((
+                    WorldWall,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(castle.clone()),
+                    Transform::from_translation(world_pos(wx, y, h * 0.5 - 1.0))
+                        .with_scale(Vec3::new(3.4, h, 3.4)),
+                ));
+            }
+            y += 3.0;
+            cid += 1;
+        }
+        // Two taller gate towers flanking the doorway so the entrance reads clearly.
+        for ty in [-(DOOR_HALF + 2.5), DOOR_HALF + 2.5] {
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(castle.clone()),
+                Transform::from_translation(world_pos(wx, ty, 9.5))
+                    .with_scale(Vec3::new(5.0, 22.0, 5.0)),
+            ));
         }
     }
 

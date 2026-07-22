@@ -432,6 +432,10 @@ pub mod run {
         pub x_max: f64,
         /// Half-height of the corridor: walkable `y ∈ [-lateral, lateral]`.
         pub lateral: f64,
+        /// Crossing west of this world-x returns you to Last City. The client draws
+        /// the city's **wall + gate** here so you can see the boundary coming.
+        #[serde(default)]
+        pub west_return_border: f64,
     }
     /// One biome seam for the client to wall + gate.
     #[derive(Debug, Clone, Serialize, Deserialize)]
