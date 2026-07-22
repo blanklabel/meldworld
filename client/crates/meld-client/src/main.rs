@@ -9549,7 +9549,12 @@ fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
             if n == 0 {
                 return;
             }
-            (format!("-{n}"), Color::srgb(1.0, 0.5, 0.4))
+            if e.crit {
+                // Crits pop in gold with a "CRIT!" flourish.
+                (format!("-{n}  CRIT!"), Color::srgb(1.0, 0.85, 0.3))
+            } else {
+                (format!("-{n}"), Color::srgb(1.0, 0.5, 0.4))
+            }
         }
         "heal" => {
             let n = e.amount.unwrap_or(0);

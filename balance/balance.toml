@@ -86,6 +86,13 @@ skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def
 skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]
 item_heal_fraction = 0.4         # "Salve" item: heals this fraction of max HP [TUNABLE]
                                  # "Elixir" item: full heal (structural, no coefficient)
+# Critical hits — every basic attack can crit for a burst of damage. Chance scales
+# with the attacker's Dex, so the Shifter's precision theme lands more crits; the
+# damage is multiplied and the hit pops on the client. [TUNABLE]
+crit_chance_base = 0.08          # base crit chance on a basic attack
+crit_chance_per_dex = 0.004      # + this per point of the attacker's Dex
+crit_chance_cap = 0.5            # a crit is never a sure thing
+crit_mult = 1.8                  # damage multiplier on a crit
 # Psyker Focus system. A Psyker maintains several persistent Manifestations
 # ("Foci"); on each of its ATB turns every active Focus fires, then the player
 # casts/reinforces/revokes one. Focus slots and which manifestations are unlocked

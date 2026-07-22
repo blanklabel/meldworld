@@ -336,6 +336,10 @@ pub struct Battle {
     skill_power_mult: f64,
     skill_heal_fraction: f64,
     item_heal_fraction: f64,
+    crit_chance_base: f64,
+    crit_chance_per_dex: f64,
+    crit_chance_cap: f64,
+    crit_mult: f64,
     psyker_gravity_tick_mult: f64,
     psyker_spike_tick_mult: f64,
     psyker_aegis_tick_fraction: f64,
@@ -408,6 +412,10 @@ impl Battle {
             skill_power_mult: balance.battle.skill_power_mult,
             skill_heal_fraction: balance.battle.skill_heal_fraction,
             item_heal_fraction: balance.battle.item_heal_fraction,
+            crit_chance_base: balance.battle.crit_chance_base,
+            crit_chance_per_dex: balance.battle.crit_chance_per_dex,
+            crit_chance_cap: balance.battle.crit_chance_cap,
+            crit_mult: balance.battle.crit_mult,
             psyker_gravity_tick_mult: balance.battle.psyker_gravity_tick_mult,
             psyker_spike_tick_mult: balance.battle.psyker_spike_tick_mult,
             psyker_aegis_tick_fraction: balance.battle.psyker_aegis_tick_fraction,
@@ -720,6 +728,16 @@ impl Battle {
         (raw.round() as i32).max(self.min_damage)
     }
 
+    /// Roll a critical hit for the attacker. Crit chance scales with the attacker's
+    /// Dex (the Shifter's precision theme lands more), capped so it's never certain.
+    /// Deterministic off the battle RNG, like [`Self::roll_dodge`].
+    fn roll_crit(&mut self, actor_i: usize) -> bool {
+        let dex = self.fighters[actor_i].dex.max(0) as f64;
+        let chance =
+            (self.crit_chance_base + self.crit_chance_per_dex * dex).min(self.crit_chance_cap);
+        chance > 0.0 && self.next_rand_unit() < chance
+    }
+
     fn resolve_attack(
         &mut self,
         actor_i: usize,
@@ -741,7 +759,24 @@ impl Battle {
         let defending = self.fighters[target_i].defending;
         let mut effects = match self.roll_dodge(target_i) {
             Some(dodge) => dodge,
-            None => self.apply_damage(target_i, self.damage(atk, def, defending)),
+            None => {
+                // A crit multiplies the blow and tags the Damage effect so the client
+                // pops "CRIT!". Basic attacks only (skills are already the big hits).
+                let base = self.damage(atk, def, defending);
+                let crit = self.roll_crit(actor_i);
+                let dmg = if crit {
+                    (base as f64 * self.crit_mult).round() as i32
+                } else {
+                    base
+                };
+                let mut fx = self.apply_damage(target_i, dmg);
+                if crit {
+                    if let Some(e) = fx.iter_mut().find(|e| matches!(e.kind, EffectKind::Damage)) {
+                        e.status = Some("crit".to_string());
+                    }
+                }
+                fx
+            }
         };
         // The Hunter banks Adrenaline on every basic attack (see `gain_adrenaline`).
         effects.extend(self.gain_adrenaline(actor_i));
@@ -2629,6 +2664,49 @@ mod tests {
             "two attacks bank 50 Adrenaline: {:?}",
             statuses_of(&battle, "h")
         );
+    }
+
+    #[test]
+    fn basic_attacks_can_crit_for_extra_damage() {
+        let b = balance();
+        let (mut saw_crit, mut base_dmg, mut crit_dmg) = (false, None, None);
+        // Hammer a huge dummy across seeds; a crit tags the Damage effect + hits harder.
+        'outer: for seed in 0..40u64 {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![hunter("h", 400, 5)],
+                vec![monster("m", 1_000_000, 1)],
+                &b,
+                seed,
+            );
+            for n in 0..30 {
+                tick_to_ready(&mut battle, "h");
+                let events = battle
+                    .submit("h", format!("a{seed}_{n}"), BattleActionKind::Attack, Some(vec!["m".into()]), None, None)
+                    .unwrap();
+                for r in events.iter().filter_map(|ev| match ev {
+                    Event::Resolved(r) => Some(r),
+                    _ => None,
+                }) {
+                    for eff in r.effects.iter().filter(|e| matches!(e.kind, EffectKind::Damage)) {
+                        if eff.status.as_deref() == Some("crit") {
+                            saw_crit = true;
+                            crit_dmg = eff.amount;
+                        } else {
+                            base_dmg = eff.amount;
+                        }
+                    }
+                }
+                if saw_crit && base_dmg.is_some() {
+                    break 'outer;
+                }
+            }
+        }
+        assert!(saw_crit, "crits fire across many attacks");
+        if let (Some(bd), Some(cd)) = (base_dmg, crit_dmg) {
+            assert!(cd > bd, "a crit ({cd}) hits harder than a normal blow ({bd})");
+        }
     }
 
     /// A Hunter skill is rejected until enough Adrenaline is banked, then spends it.
