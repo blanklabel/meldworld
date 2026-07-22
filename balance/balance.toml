@@ -403,13 +403,13 @@ aggression = "passive"
 flees = false
 loot_kind = "boar_tusk"
 
-# --- Desert (d 100–300) ---
+# --- Desert theme (STANDARD) ---
 [creature.dune_wyrm]
-base_hp = 92
-base_atk = 12
-base_def = 4
+base_hp = 72
+base_atk = 11
+base_def = 3
 speed_stat = 74
-xp_reward = 120
+xp_reward = 58
 encounter_class = "standard"
 faction = "wyrm"
 aggression = "aggressive"
@@ -417,49 +417,49 @@ flees = false
 loot_kind = "wyrm_scale"
 
 [creature.sand_shade]
-base_hp = 68
-base_atk = 14
+base_hp = 62
+base_atk = 12
 base_def = 2
 speed_stat = 122
-xp_reward = 110
+xp_reward = 55
 encounter_class = "standard"
 faction = "shade"
 aggression = "aggressive"
 flees = true
 loot_kind = "shade_essence"
 
-# --- Ashfall (d 300–500) ---
+# --- Ashfall theme (STANDARD + a BRUISER golem) ---
 [creature.cinder_imp]
-base_hp = 80
-base_atk = 16
+base_hp = 66
+base_atk = 12
 base_def = 3
 speed_stat = 112
-xp_reward = 160
+xp_reward = 58
 encounter_class = "standard"
 faction = "fiend"
 aggression = "aggressive"
 flees = false
 loot_kind = "imp_horn"
 
-[creature.magma_golem]
-base_hp = 165
-base_atk = 15
+[creature.magma_golem]        # ashfall BRUISER — a slow, molten wall
+base_hp = 120
+base_atk = 13
 base_def = 8
 speed_stat = 44
-xp_reward = 230
+xp_reward = 70
 encounter_class = "standard"
 faction = "construct"
 aggression = "territorial"
 flees = false
 loot_kind = "molten_core"
 
-# --- Tundra (d 500–1000) ---
+# --- Tundra theme (STANDARD) ---
 [creature.frost_lurker]
-base_hp = 120
-base_atk = 18
-base_def = 6
+base_hp = 74
+base_atk = 12
+base_def = 4
 speed_stat = 86
-xp_reward = 270
+xp_reward = 60
 encounter_class = "standard"
 faction = "beast"
 aggression = "aggressive"
@@ -467,36 +467,36 @@ flees = false
 loot_kind = "frost_pelt"
 
 [creature.ice_revenant]
-base_hp = 142
-base_atk = 20
-base_def = 7
+base_hp = 80
+base_atk = 13
+base_def = 5
 speed_stat = 96
-xp_reward = 330
+xp_reward = 62
 encounter_class = "standard"
 faction = "undead"
 aggression = "territorial"
 flees = false
 loot_kind = "revenant_dust"
 
-# --- Mire (d 1000+) ---
+# --- Mire theme (STANDARD + a BRUISER brute) ---
 [creature.bog_serpent]
-base_hp = 150
-base_atk = 22
-base_def = 6
+base_hp = 76
+base_atk = 13
+base_def = 4
 speed_stat = 104
-xp_reward = 390
+xp_reward = 60
 encounter_class = "standard"
 faction = "wyrm"
 aggression = "aggressive"
 flees = false
 loot_kind = "serpent_fang"
 
-[creature.myconid_brute]
-base_hp = 225
-base_atk = 20
-base_def = 11
+[creature.myconid_brute]      # mire BRUISER — a huge, armoured fungal wall
+base_hp = 125
+base_atk = 13
+base_def = 9
 speed_stat = 52
-xp_reward = 470
+xp_reward = 72
 encounter_class = "standard"
 faction = "fungal"
 aggression = "passive"
@@ -505,7 +505,10 @@ loot_kind = "myconid_cap"
 
 # --- Archetype creatures (one per biome): SWARMERs (fast/weak/aggressive) and
 # BRUISERs (slow/tanky/hard-hitting), so the combat rhythm varies as you explore.
-# Reuse existing factions so they join the creature-vs-creature skirmish web.
+# All tuned to the same distance-0 power budget as the standards — the archetype
+# is a SHAPE (swarmer = fragile+fast, bruiser = tanky+slow), not an absolute power
+# jump — so any biome is fair at any distance and `stat_mult(distance)` does all the
+# ramping. Reuse existing factions so they join the creature-vs-creature skirmish web.
 [creature.sporeling]        # forest SWARMER — a fast, fragile spore that rushes you
 base_hp = 32
 base_atk = 7
@@ -519,11 +522,11 @@ flees = false
 loot_kind = "spore_pod"
 
 [creature.dune_colossus]    # desert BRUISER — a slow, armoured wall that hits hard
-base_hp = 135
-base_atk = 17
-base_def = 9
+base_hp = 118
+base_atk = 13
+base_def = 8
 speed_stat = 40
-xp_reward = 120
+xp_reward = 70
 encounter_class = "standard"
 faction = "construct"
 aggression = "territorial"
@@ -531,11 +534,11 @@ flees = false
 loot_kind = "colossus_core"
 
 [creature.ember_wisp]       # ashfall SKIRMISHER — fast, burns, and flees when losing
-base_hp = 42
-base_atk = 12
+base_hp = 44
+base_atk = 10
 base_def = 1
 speed_stat = 118
-xp_reward = 58
+xp_reward = 46
 encounter_class = "standard"
 faction = "fiend"
 aggression = "aggressive"
@@ -543,11 +546,11 @@ flees = true
 loot_kind = "ember_mote"
 
 [creature.glacier_maw]      # tundra BRUISER — a slow, immense maw of ice
-base_hp = 155
-base_atk = 16
-base_def = 10
+base_hp = 120
+base_atk = 13
+base_def = 9
 speed_stat = 38
-xp_reward = 130
+xp_reward = 70
 encounter_class = "standard"
 faction = "beast"
 aggression = "territorial"
@@ -556,10 +559,10 @@ loot_kind = "glacier_tooth"
 
 [creature.bog_stinger]      # mire SWARMER — a fast, venomous swarm
 base_hp = 34
-base_atk = 10
+base_atk = 8
 base_def = 0
 speed_stat = 128
-xp_reward = 46
+xp_reward = 42
 encounter_class = "standard"
 faction = "fiend"
 aggression = "aggressive"
