@@ -43,9 +43,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let uv = in.world_position.xz * params.uv_scale;
     let c_forest = textureSample(t_forest, samp, uv);
     let c_desert = textureSample(t_desert, samp, uv);
-    let c_ashfall = textureSample(t_ashfall, samp, uv);
-    let c_tundra = textureSample(t_tundra, samp, uv);
-    let c_mire = textureSample(t_mire, samp, uv);
+    // Ashfall reads as CHARRED VOLCANIC GROUND: tint the dirt a hot red-orange and
+    // deepen it, with a faint ember glow in the texture's dark crevices, so it never
+    // gets mistaken for the forest floor.
+    let ash_raw = textureSample(t_ashfall, samp, uv);
+    let ember = (1.0 - ash_raw.r) * 0.5; // darkest cracks glow hottest
+    // Deep burnt-red charred earth (not orange sand): redden hard, darken, then let
+    // the ember term glow the crevices hot — a molten-crack look, clearly volcanic.
+    let c_ashfall = vec4<f32>(
+        ash_raw.rgb * vec3<f32>(0.95, 0.24, 0.18) + vec3<f32>(ember, ember * 0.18, 0.02),
+        ash_raw.a,
+    );
+    // Tundra reads cold: a frost-blue cast over the dark grass.
+    let c_tundra = textureSample(t_tundra, samp, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
+    let c_mire = textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 
     // Partition-of-unity weights across the four boundaries: each `s` ramps 0->1
     // through its boundary's blend band, so only two adjacent biomes ever overlap.

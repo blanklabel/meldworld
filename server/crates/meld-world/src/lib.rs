@@ -622,7 +622,10 @@ impl MonsterSpawn {
             atk: ((stats.base_atk as f64) * mult).round() as i32,
             def: stats.base_def,
             speed_stat: stats.speed_stat,
-            xp_reward: stats.xp_reward,
+            // XP scales with distance too, so a deep kill out-rewards a shallow one of
+            // the same creature — difficulty AND reward both ride `distance`, and the
+            // biome stays a difficulty-neutral skin (base stats are the d=0 budget).
+            xp_reward: ((stats.xp_reward as f64) * mult).round().max(0.0) as i64,
             loot_kind: stats.loot_kind.clone(),
             defeated: false,
             in_battle: false,

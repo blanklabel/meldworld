@@ -228,6 +228,7 @@ fn main() {
         })
         .init_resource::<Session>()
         .init_resource::<Sky>()
+        .init_resource::<Ashfall>()
         .init_resource::<MoveClock>()
         .init_resource::<BattleMenu>()
         .init_resource::<HitFx>()
@@ -278,6 +279,7 @@ fn main() {
                 tile_ground_detail,
                 follow_world_ground,
                 drift_motes,
+                drive_ashfall,
                 anchor_backdrop,
                 advance_sky,
                 apply_sky,
@@ -297,7 +299,7 @@ fn main() {
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
         // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
-        .add_systems(OnEnter(Screen::City), (city_hud, city_scene))
+        .add_systems(OnEnter(Screen::City), (city_hud, city_scene, despawn::<BattleActor>))
         .add_systems(
             OnExit(Screen::City),
             (despawn::<CityRoot>, despawn::<CityScene>),
@@ -324,7 +326,16 @@ fn main() {
             (lobby_input, render_lobby).run_if(in_state(Screen::Lobby)),
         )
         // Overworld
-        .add_systems(OnEnter(Screen::Overworld), overworld_ui)
+        //
+        // Also despawn any lingering `BattleActor` on entry: a battle hero sprite
+        // spawned by `sync_battle_actors` on the very frame the fight ends can race
+        // past `OnExit(Battle)`'s cleanup and survive into the overworld, where it
+        // overlaps the local avatar as a "double sprite" (the lead hero drawn twice).
+        // Clearing it on entry guarantees exactly one avatar regardless of the race.
+        .add_systems(
+            OnEnter(Screen::Overworld),
+            (overworld_ui, despawn::<BattleActor>),
+        )
         .add_systems(
             OnExit(Screen::Overworld),
             (
@@ -2368,6 +2379,109 @@ fn setup(
             hd2d::Billboard,
         ));
     }
+
+    // ── Falling ash (Ashfall biome only) ────────────────────────────────────
+    // A column of drifting grey ash flecks anchored around the camera, hidden
+    // everywhere but the Ashfall band, where `drive_ashfall` fades them in as they
+    // sift down (with the reddened haze + charred ground) so the biome reads as a
+    // volcanic wasteland, not "the forest again".
+    let ash_tex = images.add(hd2d::soft_disc_texture(64));
+    let ash_mesh = meshes.add(Rectangle::new(0.2, 0.2));
+    let ash_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.82, 0.78, 0.74, 0.9), // pale drifting ash
+        base_color_texture: Some(ash_tex),
+        emissive: LinearRgba::rgb(0.35, 0.30, 0.27),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    for _ in 0..ASH_COUNT {
+        let off = Vec3::new((rnd() - 0.5) * 64.0, rnd() * ASH_FALL_TOP, (rnd() - 0.5) * 48.0);
+        commands.spawn((
+            AshFleck { off, sway: rnd() * std::f32::consts::TAU, fall: 3.2 + rnd() * 3.6 },
+            Mesh3d(ash_mesh.clone()),
+            MeshMaterial3d(ash_mat.clone()),
+            Transform::from_translation(off).with_scale(Vec3::splat(0.6 + rnd() * 1.1)),
+            hd2d::Billboard,
+            Visibility::Hidden,
+        ));
+    }
+
+    // ── Giant volcanoes (Ashfall biome only) ────────────────────────────────
+    // A ring of huge dark cones with glowing lava craters, looming on the horizon
+    // around the player through the ash haze — "giant volcanoes everywhere". Like
+    // the backdrop mountains, they anchor to the player (a distant skyline, not
+    // approachable geometry); `drive_ashfall` places + fades them by intensity.
+    let cone_mesh = meshes.add(Cone { radius: 26.0, height: 46.0 });
+    let crater_mesh = meshes.add(Cone { radius: 9.0, height: 8.0 });
+    let cone_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.16, 0.09, 0.09), // charred basalt
+        perceptual_roughness: 1.0,
+        ..default()
+    });
+    let crater_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.9, 0.3, 0.12),
+        emissive: LinearRgba::rgb(3.2, 0.9, 0.2), // molten glow
+        unlit: true,
+        ..default()
+    });
+    for i in 0..VOLCANO_COUNT {
+        let angle = (i as f32 / VOLCANO_COUNT as f32) * std::f32::consts::TAU;
+        let dist = 130.0 + rnd() * 70.0;
+        commands
+            .spawn((
+                VolcanoProp { angle, dist },
+                Mesh3d(cone_mesh.clone()),
+                MeshMaterial3d(cone_mat.clone()),
+                Transform::from_scale(Vec3::new(1.0, 0.7 + rnd() * 0.7, 1.0)),
+                Visibility::Hidden,
+            ))
+            .with_children(|p| {
+                // The lava crater sits at the cone's apex (Cone is centred on origin,
+                // apex at +height/2).
+                p.spawn((
+                    Mesh3d(crater_mesh.clone()),
+                    MeshMaterial3d(crater_mat.clone()),
+                    Transform::from_xyz(0.0, 23.0, 0.0),
+                ));
+            });
+    }
+}
+
+/// How many giant volcanoes ring the Ashfall horizon.
+const VOLCANO_COUNT: usize = 7;
+
+/// A distant volcano on the Ashfall skyline: `angle` around the player and `dist`
+/// out. Anchored to the player (a skyline, not walkable), shown only in Ashfall.
+#[derive(Component)]
+struct VolcanoProp {
+    angle: f32,
+    dist: f32,
+}
+
+/// Number of ash flecks in the recycled Ashfall pool, and the top of their fall
+/// column (they wrap to the top when they sift below the ground).
+const ASH_COUNT: usize = 150;
+const ASH_FALL_TOP: f32 = 26.0;
+
+/// A single drifting ash fleck: `off` is its position relative to the camera focus
+/// (so the ash travels with the player), `sway` a per-fleck phase for the lateral
+/// drift, `fall` its descent speed.
+#[derive(Component)]
+struct AshFleck {
+    off: Vec3,
+    sway: f32,
+    fall: f32,
+}
+
+/// How strongly the Ashfall biome atmosphere is showing (0 = off, 1 = full): a
+/// smoothed factor `drive_ashfall` ramps up while the player is in the Ashfall band
+/// and `apply_sky` reads to redden the haze + dim the light (reduced visibility).
+#[derive(Resource, Default)]
+struct Ashfall {
+    intensity: f32,
 }
 
 /// Grid cell size (world units) for the cosmetic ground-detail field.
@@ -2605,6 +2719,63 @@ fn drift_motes(
     }
 }
 
+/// Ramp the Ashfall atmosphere up while the local player is in the Ashfall band and
+/// down everywhere else (and outside the overworld), then sift the ash flecks down
+/// around the camera. The reddened haze + dimmed light is layered in by `apply_sky`
+/// from the shared [`Ashfall`] intensity this writes.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn drive_ashfall(
+    time: Res<Time>,
+    state: Res<State<Screen>>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut ash: ResMut<Ashfall>,
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut flecks: Query<(&mut AshFleck, &mut Transform, &mut Visibility), (Without<Camera3d>, Without<VolcanoProp>)>,
+    mut volcanoes: Query<(&VolcanoProp, &mut Transform, &mut Visibility), (Without<Camera3d>, Without<AshFleck>)>,
+) {
+    // In the Ashfall band (biome index 2) while roaming the overworld → target 1.
+    let in_ashfall = *state.get() == Screen::Overworld
+        && world
+            .entities
+            .get(&session.player_id)
+            .map(|e| biome_index((e.x * e.x + e.y * e.y).sqrt().floor() as i64) == 2)
+            .unwrap_or(false);
+    let target = if in_ashfall { 1.0 } else { 0.0 };
+    let dt = time.delta_secs();
+    ash.intensity += (target - ash.intensity).clamp(-dt * 0.8, dt * 0.8);
+
+    let focus = cam_q.single().map(ground_focus).unwrap_or(Vec3::ZERO);
+    let t = time.elapsed_secs();
+    let show = ash.intensity > 0.02;
+    for (mut f, mut tf, mut v) in &mut flecks {
+        *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+        if !show {
+            continue;
+        }
+        f.off.y -= f.fall * dt;
+        if f.off.y < 0.0 {
+            f.off.y += ASH_FALL_TOP; // wrap to the top of the column
+        }
+        // Sift down with a gentle lateral sway, anchored around the play area.
+        let sway = (t * 0.6 + f.sway).sin() * 1.3;
+        tf.translation = Vec3::new(focus.x + f.off.x + sway, f.off.y, focus.z + f.off.z);
+    }
+    // Loom the volcanoes on the horizon ring around the player (a skyline that
+    // travels with you), shown once the haze is well established.
+    let volcano_show = ash.intensity > 0.3;
+    for (vp, mut tf, mut v) in &mut volcanoes {
+        *v = if volcano_show { Visibility::Inherited } else { Visibility::Hidden };
+        if volcano_show {
+            tf.translation.x = focus.x + vp.angle.cos() * vp.dist;
+            tf.translation.z = focus.z + vp.angle.sin() * vp.dist;
+            // Base sits on the ground: Cone is centred on origin, so lift by half its
+            // (scaled) height — the y-scale is baked at spawn, read it back.
+            tf.translation.y = 46.0 * tf.scale.y * 0.5 - 2.0;
+        }
+    }
+}
+
 // ============================ time of day + weather ========================
 
 /// Seconds for one full day → night → day cycle.
@@ -2687,6 +2858,7 @@ fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
 fn apply_sky(
     mut sky: ResMut<Sky>,
     skymats: Option<Res<SkyMats>>,
+    ashfall: Res<Ashfall>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -2710,9 +2882,20 @@ fn apply_sky(
     let mut sky_col = mix_col(night_sky, day_sky, day);
     sky_col = mix_col(sky_col, dusk_sky, dusk * 0.6);
     sky_col = mix_col(sky_col, rain_sky, rain * 0.7 * (0.35 + day * 0.65));
-    clear.0 = sky_col;
+    // Ashfall haze: a thick, sooty red-grey smoke drops visibility and casts the
+    // whole scene volcanic. Layered on top of the day/weather sky by intensity.
+    let ash = ashfall.intensity.clamp(0.0, 1.0);
+    let ash_smoke = Color::srgb(0.30, 0.16, 0.13);
+    if ash > 0.0 {
+        clear.0 = mix_col(sky_col, ash_smoke, ash * 0.8);
+    } else {
+        clear.0 = sky_col;
+    }
     if let Ok(mut fog) = fog_q.single_mut() {
-        fog.color = mix_col(sky_col, Color::WHITE, 0.04);
+        let base_fog = mix_col(sky_col, Color::WHITE, 0.04);
+        // Pull the fog heavily toward the smoke so distance dissolves into red haze —
+        // reduced visibility without fighting the camera's per-frame falloff sync.
+        fog.color = mix_col(base_fog, ash_smoke, ash * 0.85);
     }
 
     if let Ok((mut t, mut light)) = sun_q.single_mut() {
@@ -2736,6 +2919,11 @@ fn apply_sky(
     // Moonlit-blue at night (not black), warm-white by day.
     ambient.color = mix_col(Color::srgb(0.34, 0.42, 0.68), Color::srgb(0.6, 0.7, 0.85), day);
     ambient.brightness = (95.0 + day * 165.0) * (1.0 - rain * 0.35);
+    // Ashfall dims + warms the ambient — an oppressive, smoke-choked half-light.
+    if ash > 0.0 {
+        ambient.color = mix_col(ambient.color, Color::srgb(0.9, 0.45, 0.32), ash * 0.6);
+        ambient.brightness *= 1.0 - ash * 0.4;
+    }
 
     let star_vis = if day < 0.22 && rain < 0.45 {
         Visibility::Inherited
