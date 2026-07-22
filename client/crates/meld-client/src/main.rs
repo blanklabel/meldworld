@@ -1904,7 +1904,9 @@ fn setup(
     });
     commands.spawn((
         WorldGround,
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 600.0))),
+        // Square (was 2000×600, a corridor) so the WG-4 radial fan has ground in
+        // every direction the player roams.
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),
     ));

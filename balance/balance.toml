@@ -309,8 +309,13 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # climbs: `path_climb_chance` sections raise a mid-segment plateau the route crosses
 # via guaranteed ramps, with the endpoints staying on level 0 so extraction is always
 # feasible. Cliffs are impassable; the only way up is a connector. All [TUNABLE].
-terraces_per_area = 3.0          # avg raised SIDE terraces per section (area 0 stays flat)
-max_level = 2                    # tallest terrace (levels above ground)
+terraces_per_area = 0.0          # WG-4 radial world is flat: no terraces/connectors (they can't survive the arc bend)
+max_level = 0                    # tallest terrace (levels above ground)
+# WG-4: the generated corridor is bent into a radial ARC of this many degrees around
+# the hub — the world fans out from the Center Hub, leaving the western sliver for
+# Last City. `x` becomes radius (distance = difficulty, unchanged), lateral `y`
+# becomes angle. 340 keeps a ~20° gap to the west for the city + its wall.
+radial_arc_degrees = 340.0
 terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
 terrace_max_size = 14.0          # largest terrace footprint side (tiles)
 terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)

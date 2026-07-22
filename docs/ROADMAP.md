@@ -224,15 +224,18 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   **right back into the city** — the one permanent, safe anchor in a world that
   worsens in every other direction. Establishes the city↔maze boundary as a
   walkable seam (ties LC-1's presence loop to the maze exit; reframes the current
-  Threshold entry). 🟡 *Shipped the anchor:* crossing the **western border** behind
-  the hub (`[worldgen] west_return_border`) now returns you to Last City — the run is
-  abandoned (backpack forfeited, no death penalty; near spawn there's nothing to lose,
-  from deep the long walk back is impractical, so it's never a free extraction). The
-  client routes the `abandoned` result to the City screen. **Remaining:** the full
-  ~350° arc needs true 2-D radial streaming (the spike says keep Cartesian storage +
-  a *radial difficulty read* `hypot(pos − hub)`; do **not** store polar chunks) and a
-  west-wall visual. See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold
-  into [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
+  Threshold entry). 🟡 *Shipped the arc + the anchor* (screenshot-verified):
+  the overworld is now a **radial world** — the generated corridor is bent into a
+  ~340° arc around the hub (`radialize`: corridor `x` → radius so difficulty is
+  unchanged, lateral `y` → angle), so content fans out in every direction with the
+  western sliver kept for Last City. Difficulty is already radial (`distance_floor`
+  = Euclidean). Crossing the **western border** (`west_return_border`) returns you
+  to Last City (run abandoned — backpack forfeited, no death penalty; never a free
+  extraction). The world is flat (terraces off; renders on the client's base ground
+  plane). **Remaining:** endless *streaming* (the current world is a large fixed
+  radial disk, not infinite — the follow-on adds outward ring streaming), a
+  west-wall visual, and re-homing terraces/dungeboss-seams into the radial layout.
+  See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 ---
 

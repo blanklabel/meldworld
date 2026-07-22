@@ -939,7 +939,66 @@ impl Arena {
             .map(|a| a.portal)
             .unwrap_or_else(|| Position::new(arena.cursor, 0.0));
         arena.x_max = arena.cursor + wg.world_margin;
+        // WG-4: bend the whole (flat) corridor into a radial arc around the hub, so
+        // the world fans out in every direction but the western city sliver.
+        arena.radialize(wg.radial_arc_degrees);
         arena
+    }
+
+    /// WG-4: bend the generated corridor into a radial arc around the Center Hub.
+    /// A point's corridor `x` becomes its **radius** (so distance — and therefore
+    /// difficulty — is unchanged), and its lateral `y` becomes an **angle** across
+    /// the arc. The eastward tube spirals outward into a ~350° fan, leaving the
+    /// western sliver for Last City. Purely a placement remap of already-generated
+    /// content, so biomes/dungeons/gatekeepers/loot/the-clear-path all come along;
+    /// the world is flat (terraces are off), so it renders on the client's base
+    /// ground plane with no per-section relief mesh. Bounds widen to a square box
+    /// that contains the fan; the western return-to-city border is unchanged.
+    fn radialize(&mut self, arc_degrees: f64) {
+        if arc_degrees <= 0.0 {
+            return; // corridor mode — no bend.
+        }
+        let half = arc_degrees.to_radians() * 0.5;
+        let lat = self.lateral.max(1.0);
+        let tf = |p: Position| -> Position {
+            let r = p.x.max(0.0);
+            let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
+            Position::new(r * theta.cos(), r * theta.sin())
+        };
+        for m in &mut self.monsters {
+            m.position = tf(m.position);
+            m.home = tf(m.home);
+            // Corridor x-bounds no longer map to world x; let creatures roam near home.
+            m.area_min_x = f64::NEG_INFINITY;
+            m.area_max_x = f64::INFINITY;
+        }
+        for r in &mut self.resources {
+            r.position = tf(r.position);
+        }
+        for o in &mut self.obstacles {
+            o.position = tf(o.position);
+        }
+        for c in &mut self.chests {
+            c.position = tf(c.position);
+        }
+        for p in &mut self.path {
+            *p = tf(*p);
+        }
+        self.portal = tf(self.portal);
+        // The non-linear bend distorts the carefully-carved clear-path tube, so an
+        // obstacle can end up on it. Re-clear the tube (in the bent coords) so a
+        // feasible route outward is preserved by construction, as in the corridor.
+        let clear_r = self.path_clear_radius;
+        let path = self.path.clone();
+        self.obstacles
+            .retain(|o| dist_to_path(&o.position, &path) > clear_r + o.radius);
+        // Straight-wall biome seams don't survive the bend — drop them.
+        self.seams.clear();
+        // A square box that contains the whole fan (radius up to the frontier).
+        let rmax = self.cursor + 4.0;
+        self.x_min = -rmax;
+        self.x_max = rmax;
+        self.lateral = rmax;
     }
 
     /// Generate one more section if the frontier is within `stream_lookahead` of
@@ -947,6 +1006,12 @@ impl Arena {
     /// (each from `section_seed(seed, n)`). Returns the indices of any sections
     /// newly created this call (so the caller can stream their terrain to clients).
     pub fn ensure_frontier(&mut self, balance: &Balance, player_x: f64) -> Vec<usize> {
+        // WG-4 radial world: the whole disk is generated up-front and bent into the
+        // arc, so there's no eastward frontier to stream (endless radial streaming is
+        // the follow-on). New sections would be un-bent corridor tails, so skip them.
+        if balance.worldgen.radial_arc_degrees > 0.0 {
+            return Vec::new();
+        }
         let mut created = Vec::new();
         let lookahead = balance.worldgen.stream_lookahead;
         // Cap growth per call so a teleport can't explode work in one tick.
@@ -2062,6 +2127,17 @@ fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8)
 mod tests {
     use super::*;
 
+    /// The default balance now generates the WG-4 **radial** world (flat, no
+    /// terraces/seams/streaming). Tests that specifically exercise those corridor
+    /// features build this corridor-mode balance instead (radial bend off).
+    fn corridor_balance() -> Balance {
+        let mut b = Balance::load_default().unwrap();
+        b.worldgen.radial_arc_degrees = 0.0;
+        b.worldgen.terraces_per_area = 3.0;
+        b.worldgen.max_level = 2;
+        b
+    }
+
     #[test]
     fn loot_is_deterministic_and_scales_with_depth() {
         let b = Balance::load_default().unwrap();
@@ -2110,7 +2186,7 @@ mod tests {
 
     #[test]
     fn generates_chests_and_biome_seams() {
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let arena = Arena::generate(&b, 7, true);
         assert!(!arena.chests.is_empty(), "chests are placed");
         assert!(arena.chests.iter().all(|c| !c.opened));
@@ -2126,7 +2202,7 @@ mod tests {
 
     #[test]
     fn seam_wall_blocks_crossing_outside_the_gap() {
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let mut arena = Arena::generate(&b, 7, true);
         let seam = arena.seams[0].clone();
         arena.add_avatar("p".into(), 100.0); // fast: one step would cross the seam
@@ -2432,7 +2508,7 @@ mod tests {
 
     #[test]
     fn terrain_generated_but_area0_stays_clear() {
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let arena = Arena::generate(&b, 7, true);
         assert!(!arena.obstacles.is_empty(), "biome terrain is generated");
         let area0_end = arena.areas[0].end_x;
@@ -2450,7 +2526,7 @@ mod tests {
 
     #[test]
     fn terraces_generate_with_reachable_connectors() {
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let arena = Arena::generate(&b, 7, true);
         // Some section beyond the tutorial has a raised terrace.
         let raised: usize = arena
@@ -2531,7 +2607,7 @@ mod tests {
         // The #B guarantee: the critical route itself CLIMBS (up a ramp, across a
         // plateau, back down) yet is still always completable, ending grounded at the
         // portal. Pick a seed that actually generated a path-ramp, then walk it.
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let seed = [42u64, 1, 7, 999, 123456, 2, 3, 5, 11]
             .into_iter()
             .find(|&s| {
@@ -2575,7 +2651,7 @@ mod tests {
     fn a_terrace_chest_only_opens_from_its_elevation() {
         // Treasure atop a climb: a chest sitting on a terrace can't be opened from the
         // ground below it — you must be up on the terrace (matching elevation).
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let seed = (1u64..300)
             .find(|&s| Arena::generate(&b, s, true).chests.iter().any(|c| c.elevation > 0))
             .expect("some seed puts a chest on a terrace");
@@ -2604,7 +2680,7 @@ mod tests {
     fn a_cliff_blocks_but_a_connector_lets_you_climb() {
         // Find a raised terrace, prove you can't walk onto it across the cliff, then
         // prove stepping onto its connector carries you up.
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let mut arena = Arena::generate(&b, 7, true);
         let (conn, level) = arena
             .areas
@@ -2665,7 +2741,7 @@ mod tests {
 
     #[test]
     fn streaming_extends_the_world_endlessly_and_reproducibly() {
-        let b = Balance::load_default().unwrap();
+        let b = corridor_balance();
         let mut a = Arena::generate(&b, 55, true);
         let chain = a.areas.len();
         // Walking the frontier east streams in fresh sections beyond the chain.
@@ -3003,5 +3079,32 @@ mod tests {
         // Each biome's creature pool grew to 3 (the tutorial creature, index 0, is kept).
         assert_eq!(creatures_for_biome("forest").len(), 3);
         assert_eq!(creatures_for_biome("forest")[0], "forest_bloom_stalker");
+    }
+
+    #[test]
+    fn wg4_radial_world_fans_content_around_the_hub() {
+        // The default balance bends the world into a radial arc: content spreads in
+        // every direction around the hub, leaving the western sliver for Last City.
+        let b = Balance::load_default().unwrap();
+        let arena = Arena::generate(&b, 7, false);
+        let angles: Vec<f64> = arena
+            .monsters
+            .iter()
+            .filter(|m| (m.position.x.powi(2) + m.position.y.powi(2)).sqrt() > 5.0)
+            .map(|m| m.position.y.atan2(m.position.x).to_degrees())
+            .collect();
+        assert!(angles.len() >= 5, "enough placed content to judge the spread");
+        let max_a = angles.iter().cloned().fold(f64::MIN, f64::max);
+        let min_a = angles.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(max_a - min_a > 120.0, "content fans across a wide arc: {min_a:.0}..{max_a:.0}");
+        // No content in the western sliver (kept for the city + its wall).
+        assert!(angles.iter().all(|a| a.abs() < 176.0), "western sliver stays clear");
+        // Difficulty is still radial distance — a deep creature is far from the hub.
+        let max_r = arena
+            .monsters
+            .iter()
+            .map(|m| (m.position.x.powi(2) + m.position.y.powi(2)).sqrt())
+            .fold(0.0_f64, f64::max);
+        assert!(max_r > 50.0, "the world extends outward, not just a ring");
     }
 }
