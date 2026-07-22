@@ -1603,9 +1603,11 @@ impl GameState {
             intent.input_seq,
         );
 
-        // WG-4: crossing the western border behind the hub returns you to Last City.
-        if let Some(out) = self.west_return(player_id) {
-            return out;
+        // WG-4: crossing the western border behind the hub returns you to Last City
+        // (an instant extraction home — you keep your backpack). `complete_extractions`
+        // banks it this same tick and sends the result, so no touch/battle is resolved.
+        if self.west_return(player_id) {
+            return Vec::new();
         }
 
         // Contact starts a battle. Checked here for an instant response to the
@@ -1621,32 +1623,34 @@ impl GameState {
     /// run (backpack forfeited, no death penalty): near spawn there's nothing to
     /// lose, and from deep the long walk back west is impractical, so it is never a
     /// free extraction. The client routes the `abandoned` result to the City screen.
-    fn west_return(&mut self, player_id: &str) -> Option<Vec<Outgoing>> {
+    fn west_return(&mut self, player_id: &str) -> bool {
         let border = self.balance.worldgen.west_return_border;
-        let (run_id, lost) = {
-            let inst = self.instance.as_ref()?;
-            if inst.arena.avatar(player_id)?.position.x >= border {
-                return None;
-            }
-            let run = inst.run.runs.iter().find(|r| r.player_id == player_id)?;
-            (run.run_id.clone(), run.backpack.clone())
+        let Some(inst) = self.instance.as_mut() else {
+            return false;
         };
-        let msg = out_msg(
-            player_id,
-            &wr::MemberResult {
-                run_id,
-                player_id: player_id.to_string(),
-                result: RunResult::Abandoned,
-                max_distance_reached: 0,
-                banked: None,
-                lost: Some(lost),
-                chits: 0,
-                gear_banked: vec![],
-                durability_loss_applied: false,
+        let west = inst
+            .arena
+            .avatar(player_id)
+            .map(|a| a.position.x < border)
+            .unwrap_or(false);
+        // Already heading home? don't re-enqueue.
+        if !west || inst.extraction.contains_key(player_id) {
+            return false;
+        }
+        // The city is right there to the west — step back in and KEEP your backpack.
+        // This is an INSTANT free extraction home (no channel, no death penalty, no
+        // item cost): near spawn it's just "I changed my mind" and you shouldn't be
+        // punished for it; from deep, walking all the way back west is its own
+        // gauntlet, so it's a fair "fight your way home" route. `complete_extractions`
+        // banks the backpack next tick (method != "town_portal", so nothing is spent).
+        inst.extraction.insert(
+            player_id.to_string(),
+            Extraction {
+                completes_at: now_ms(),
+                method: "west_return".to_string(),
             },
         );
-        self.release_from_run(player_id);
-        Some(vec![msg])
+        true
     }
 
     /// Start a fresh battle for every active avatar currently in contact with a free
