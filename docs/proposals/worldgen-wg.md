@@ -114,11 +114,17 @@ across the arc. The eastward tube spirals outward into a fan that fills every di
 western sliver, which is kept for Last City. It reuses **all** existing content generation
 (biomes, dungeons, gatekeepers, loot, the clear-path — whose tube is re-cleared after the bend so
 a feasible route out survives), and the world is **flat** (terraces/connectors off), so it renders
-on the client's base ground plane (squared to 2000×2000) with no per-section relief mesh. Crossing
-`west_return_border` returns you to **Last City** (run *abandoned* — backpack forfeited, no death
-penalty; never a free extraction). *Remaining:* endless **streaming** (the world is currently a
-large fixed radial disk, not infinite — the follow-on adds outward ring streaming), a west-wall
-visual, and re-homing terraces + biome-seam walls into the radial layout.
+on the client's base ground plane (squared to 2000×2000) with no per-section relief mesh.
+
+Crossing `west_return_border` behind the hub returns you to **Last City** as an **instant free
+extraction home** — you **keep your backpack** (banked to the Vault), no channel, no death
+penalty, no item cost. Near spawn it's just "I changed my mind" (nothing to lose, and losing it
+would only feel punishing); from deep in the fan, walking all the way back to the western sliver
+is its own gauntlet, so it's a fair "fight your way home" route. It routes through the normal
+extraction banking (`complete_extractions`, method `west_return` → nothing consumed), never a
+death. *Remaining:* endless **streaming** (the world is currently a large fixed radial disk, not
+infinite — the follow-on adds outward ring streaming), a west-wall visual, and re-homing terraces
++ biome-seam walls into the radial layout.
 
 ## Explicitly avoided as over-engineering (for now)
 Full biome permutation (breaks monotonic difficulty), polar/angular chunk storage,

@@ -230,12 +230,17 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   unchanged, lateral `y` → angle), so content fans out in every direction with the
   western sliver kept for Last City. Difficulty is already radial (`distance_floor`
   = Euclidean). Crossing the **western border** (`west_return_border`) returns you
-  to Last City (run abandoned — backpack forfeited, no death penalty; never a free
-  extraction). The world is flat (terraces off; renders on the client's base ground
-  plane). **Remaining:** endless *streaming* (the current world is a large fixed
-  radial disk, not infinite — the follow-on adds outward ring streaming), a
-  west-wall visual, and re-homing terraces/dungeboss-seams into the radial layout.
-  See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
+  to Last City as an **instant free extraction home** — you **keep your backpack**
+  (banked to the Vault), no channel, no death penalty, no item cost. Near spawn it's
+  just "I changed my mind" and shouldn't be punished; from deep in the fan, the long
+  walk back west is its own gauntlet, so it's a fair "fight your way home" route
+  (routes through the normal extraction banking, `complete_extractions`). The world
+  is flat (terraces off; renders on the client's base ground plane). **Remaining:**
+  endless *streaming* (the current world is a large fixed radial disk, not infinite —
+  the follow-on adds outward ring streaming), a west-wall visual, and re-homing
+  terraces/dungeon-seams into the radial layout.
+  See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
+  [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
 
 ---
 
