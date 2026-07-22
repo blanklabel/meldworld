@@ -707,6 +707,34 @@ pub mod run {
     impl Message for BackpackUpdate {
         const TYPE: &'static str = "run.backpack_update";
     }
+
+    /// C2S — equip (or unequip) a piece of this run's not-yet-banked loot gear
+    /// onto one of the caller's hero slots. Unlike Vault equip (HTTP,
+    /// persistent, effective from the next dive), this is run-scoped: it
+    /// applies immediately to the caller's remaining battles this run, and —
+    /// like the rest of the backpack — is lost on death; only a successful
+    /// extraction banks it (already equipped, if worn) into the Vault.
+    /// `hero_slot: None` unequips.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct EquipLoot {
+        pub gear_id: Id,
+        #[serde(default)]
+        pub hero_slot: Option<i32>,
+    }
+    impl Message for EquipLoot {
+        const TYPE: &'static str = "run.equip_loot";
+    }
+
+    /// S2C — authoritative snapshot of the recipient's current run-loot gear
+    /// (found this run, not yet banked): sent whenever it changes (new loot,
+    /// an equip/unequip) so the Equip tab always reflects the truth.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct RunGear {
+        pub gear: Vec<LootGear>,
+    }
+    impl Message for RunGear {
+        const TYPE: &'static str = "run.gear";
+    }
 }
 
 // -------------------------------------------------------------------- lobby ---

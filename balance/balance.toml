@@ -174,9 +174,12 @@ ironhull_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to 
 #     jitter ∈ [1-chits_jitter, 1+chits_jitter]. Deeper fights pay more.
 #   - One of the biome's combat materials per felled encounter (feeds crafting;
 #     biome→material map is structural, in meld-world::combat_material_for_biome).
-#   - Red-chest gear (insurance:red), only at/after world_scaling.red_chest_floor_
-#     distance (tier 3, d 300), dropping with `gear_drop_chance`. Rolled atk bonus
-#     = `round(gear_atk_per_tier * tier(d) * jitter)`, jitter ∈ [1±gear_atk_jitter].
+#   - Red-chest gear (insurance:red), at/after world_scaling.red_chest_floor_
+#     distance (0 — gear can drop from the very first kill), dropping with
+#     `gear_drop_chance`. Rolled atk bonus = `round(gear_atk_per_tier * tier(d) *
+#     jitter)`, jitter ∈ [1±gear_atk_jitter]; the catalog name (meld-world::
+#     gear_catalog_name) scales with the same tier, so early gear reads as early
+#     gear even though the floor is gone.
 # All [TUNABLE] — pure balance.
 [loot]
 chits_per_mlevel = 5.0
@@ -232,7 +235,7 @@ tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 stat_mult_exp = 1.25
-red_chest_floor_distance = 300
+red_chest_floor_distance = 0
 
 # Procedural area generation (world-generation.md subset). A MazeInstance is a
 # seeded chain of biome "areas" marching east from the Center Hub. Each area has

@@ -70,6 +70,10 @@ pub struct VaultItemStack {
 pub struct VaultSummary {
     pub chits: i64,
     pub materials: Vec<VaultItemStack>,
+    /// Materials withdrawn from the Vault (storage chest), staged to seed the
+    /// player's next run's Backpack.
+    #[serde(default)]
+    pub pending: Vec<VaultItemStack>,
 }
 
 /// A gear item (vault-gear.md subset — blue-chest, durability, per-slot stat).

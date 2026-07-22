@@ -71,6 +71,9 @@ enum DbWrite {
     HeroFormation(String, i16, bool),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
+    /// Clear a player's pending-backpack queue: its contents were just drained
+    /// into a freshly-formed run's live Backpack.
+    ClearPendingBackpack(String),
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
@@ -111,6 +114,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_has_dived(uid).await {
                         tracing::error!("mark-dived persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::ClearPendingBackpack(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.clear_pending_backpack(uid).await {
+                        tracing::error!("clear pending backpack failed for {pid}: {e}");
                     }
                 }
             }
@@ -166,6 +176,32 @@ fn hash_str(s: &str) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// Combine a hero's Vault-equipped bonus (this run's baseline, loaded from the
+/// account's persistent loadout at dive time) with any run-loot gear they've
+/// equipped *this run* (`run.equip_loot`) — worn loot overrides the vault
+/// baseline for its own category (weapon→atk, armor→def, accessory→spd)
+/// rather than stacking, mirroring the one-item-per-category rule the Vault
+/// already enforces. `hero_slot` is the party slot index (0-based).
+fn effective_gear_bonus(
+    vault: meld_db::GearBonus,
+    looted: &[LootGear],
+    hero_slot: i32,
+) -> meld_run::GearBonus {
+    let mut bonus = meld_run::GearBonus { atk: vault.atk, def: vault.def, spd: vault.spd };
+    for g in looted {
+        if g.equipped_hero_slot != Some(hero_slot) {
+            continue;
+        }
+        match g.slot.as_str() {
+            "weapon" => bonus.atk = g.atk_bonus,
+            "armor" => bonus.def = g.def_bonus,
+            "accessory" => bonus.spd = g.spd_bonus,
+            _ => {}
+        }
+    }
+    bonus
 }
 
 /// The per-hero class composition of a player's party of `size`. The picked class
@@ -237,6 +273,10 @@ struct Session {
     /// roadmap WG-2); every dive after gets a randomized biome order + start.
     /// Defaults `false` until loaded; the load lands before the first `enter_maze`.
     has_dived: bool,
+    /// Materials withdrawn from the Vault (storage chest), refreshed right
+    /// before `run.enter_maze` is handled so `form_run` can drain them
+    /// synchronously into the fresh run's Backpack (see `flush_pending_materials`).
+    pending_materials: Vec<(String, i32)>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -518,7 +558,7 @@ impl GameState {
             tokio::select! {
                 maybe = rx.recv() => match maybe {
                     Some(ev) => {
-                        let out = self.handle_event(ev);
+                        let out = self.handle_event(ev).await;
                         self.dispatch(out);
                     }
                     None => break, // all senders dropped
@@ -578,7 +618,7 @@ impl GameState {
 
     // --- event handling -----------------------------------------------------
 
-    fn handle_event(&mut self, ev: ServerEvent) -> Vec<Outgoing> {
+    async fn handle_event(&mut self, ev: ServerEvent) -> Vec<Outgoing> {
         match ev {
             ServerEvent::Connected {
                 player_id,
@@ -603,6 +643,7 @@ impl GameState {
                         hero_names: None,
                         hero_rows: None,
                         has_dived: false,
+                        pending_materials: Vec::new(),
                     },
                 );
                 self.order.push(player_id.clone());
@@ -622,7 +663,17 @@ impl GameState {
                 self.remove_from_instance(&player_id);
                 out
             }
-            ServerEvent::Client { player_id, raw } => self.handle_client(&player_id, raw),
+            ServerEvent::Client { player_id, raw } => {
+                // A dive is about to (re)seed the run's Backpack from whatever
+                // materials are pending withdrawal — make sure that's fresh
+                // *before* `form_run` runs synchronously inside `handle_client`
+                // (see `flush_pending_materials`'s doc comment for why this can't
+                // just be queued like the gear-bonus reload).
+                if raw.msg_type == wr::EnterMaze::TYPE {
+                    self.flush_pending_materials(&player_id).await;
+                }
+                self.handle_client(&player_id, raw)
+            }
         }
     }
 
@@ -704,6 +755,7 @@ impl GameState {
             wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
             wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
             wr::SetFormation::TYPE => self.handle_set_formation(player_id, raw),
+            wr::EquipLoot::TYPE => self.handle_equip_loot(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -805,14 +857,22 @@ impl GameState {
         };
         let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
         let rows = inst.hero_rows.get(pid).cloned().unwrap_or_default();
-        // Reflect each hero's own equipped gear so the party panel matches combat.
+        // Reflect each hero's own equipped gear (Vault baseline + any run-loot
+        // worn this run) so the party panel matches combat.
         let hero_bonuses = self.sessions.get(pid).map(|s| &s.gear_bonuses);
+        let looted = inst
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| r.looted_gear.as_slice())
+            .unwrap_or(&[]);
         let party: Vec<meld_run::PartyMember> = comp
             .iter()
             .enumerate()
             .map(|(slot, c)| {
                 let b = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
-                (pid.to_string(), String::new(), *c, meld_run::GearBonus { atk: b.atk, def: b.def, spd: b.spd })
+                (pid.to_string(), String::new(), *c, effective_gear_bonus(b, looted, slot as i32))
             })
             .collect();
         let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
@@ -1118,6 +1178,32 @@ impl GameState {
                     });
                 }
             }
+        }
+        // Materials withdrawn from the Vault (storage chest) since the last dive
+        // ride along into this fresh Backpack — `flush_pending_materials` (called
+        // just before this handler, see `handle_event`) guarantees the session
+        // field is current. Persisted clearing is fire-and-forget; it doesn't
+        // block forming the run.
+        for pid in &party_ids {
+            let materials = self
+                .sessions
+                .get_mut(pid)
+                .map(|s| std::mem::take(&mut s.pending_materials))
+                .unwrap_or_default();
+            if materials.is_empty() {
+                continue;
+            }
+            if let Some(r) = inst.run.run_mut(pid) {
+                for (item_kind, quantity) in materials {
+                    r.backpack.push(ItemStack {
+                        item_id: Uuid::now_v7().to_string(),
+                        item_kind,
+                        quantity,
+                        insurance: None,
+                    });
+                }
+            }
+            let _ = self.db_writes.send(DbWrite::ClearPendingBackpack(pid.clone()));
         }
         for pid in &party_ids {
             inst.arena.add_avatar(pid.clone(), speed);
@@ -1644,8 +1730,8 @@ impl GameState {
                 let cid = Uuid::now_v7().to_string();
                 combatant_player.insert(cid.clone(), r.player_id.clone());
                 // Each hero wears their own gear (per-character equip slots).
-                let bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
-                let bonus = meld_run::GearBonus { atk: bonus.atk, def: bonus.def, spd: bonus.spd };
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 // Some(row) forces the saved rank; None falls back to the class default.
@@ -1876,6 +1962,49 @@ impl GameState {
         )]
     }
 
+    /// Equip (or unequip) a piece of this run's not-yet-banked loot gear onto a
+    /// hero slot. Unlike Vault equip (HTTP, persists to Postgres, effective
+    /// from the next dive), this only touches the in-memory run — no DB write,
+    /// since red gear isn't owned until extraction anyway — and takes effect
+    /// on the caller's very next battle via `effective_gear_bonus`.
+    fn handle_equip_loot(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::EquipLoot = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad equip_loot", Some(raw.seq))]
+            }
+        };
+        if let Some(slot) = req.hero_slot {
+            let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+            if slot < 0 || slot >= party_size {
+                return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))];
+            }
+        }
+        let Some(inst) = self.instance.as_mut() else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+        };
+        let Some(r) = inst.run.run_mut(player_id) else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+        };
+        let Some(idx) = r.looted_gear.iter().position(|g| g.gear_id == req.gear_id) else {
+            return vec![error(player_id, ErrorCode::NotFound, "No such loot gear.", Some(raw.seq))];
+        };
+        if let Some(slot) = req.hero_slot {
+            // One item per hero+category: unequip anything else this hero has
+            // worn this run in the same category before wearing the new one.
+            let category = r.looted_gear[idx].slot.clone();
+            for g in r.looted_gear.iter_mut() {
+                if g.slot == category && g.equipped_hero_slot == Some(slot) {
+                    g.equipped_hero_slot = None;
+                }
+            }
+            r.looted_gear[idx].equipped_hero_slot = Some(slot);
+        } else {
+            r.looted_gear[idx].equipped_hero_slot = None;
+        }
+        vec![out_msg(player_id, &wr::RunGear { gear: r.looted_gear.clone() })]
+    }
+
     /// Merge a party into the in-progress battle (the toucher opted in via
     /// `run.join_battle`). The joiner brings their full hero composition, exactly
     /// as if they'd started the fight.
@@ -1911,13 +2040,9 @@ impl GameState {
         let mut add_combatant_player: HashMap<String, String> = HashMap::new();
         let mut add_player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         for pid in &joiners {
-            let lead = inst
-                .run
-                .runs
-                .iter()
-                .find(|r| &r.player_id == pid)
-                .map(|r| r.character_class)
-                .unwrap_or(CharacterClass::Hunter);
+            let r_ref = inst.run.runs.iter().find(|r| &r.player_id == pid);
+            let lead = r_ref.map(|r| r.character_class).unwrap_or(CharacterClass::Hunter);
+            let looted = r_ref.map(|r| r.looted_gear.as_slice()).unwrap_or(&[]);
             let comp = inst
                 .party_classes
                 .get(pid)
@@ -1931,8 +2056,8 @@ impl GameState {
                 let cid = Uuid::now_v7().to_string();
                 add_combatant_player.insert(cid.clone(), pid.clone());
                 // Each hero wears their own gear (per-character equip slots).
-                let bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
-                let bonus = meld_run::GearBonus { atk: bonus.atk, def: bonus.def, spd: bonus.spd };
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let bonus = effective_gear_bonus(vault_bonus, looted, slot as i32);
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 row_overrides.push(row_vec.get(slot).copied());
@@ -2223,6 +2348,22 @@ impl GameState {
         }
     }
 
+    /// Refresh one player's pending-backpack materials (withdrawn from the Vault
+    /// storage chest) right before `run.enter_maze` is handled, so `form_run` can
+    /// drain them synchronously into the fresh run's Backpack in the same call.
+    /// Unlike `flush_gear_loads`, this can't be a queue-drained-next-tick load:
+    /// the value is needed *this* call, not later at battle time, so it's fetched
+    /// on demand for the one player about to dive.
+    async fn flush_pending_materials(&mut self, pid: &str) {
+        if let Ok(uid) = Uuid::parse_str(pid) {
+            if let Ok(items) = self.db.get_pending_backpack(uid).await {
+                if let Some(s) = self.sessions.get_mut(pid) {
+                    s.pending_materials = items;
+                }
+            }
+        }
+    }
+
     /// Load persistent hero names + formation from Postgres for freshly-connected
     /// players.
     async fn flush_hero_loads(&mut self) {
@@ -2365,14 +2506,19 @@ impl GameState {
                 spd_bonus: g.spd_bonus,
                 base_max_durability: g.max_durability,
                 max_durability: g.max_durability,
+                equipped_hero_slot: None,
             })
             .collect();
+        let mut run_gear_snapshot = None;
         if let Some(r) = inst.run.run_mut(player_id) {
             r.backpack.push(loot_item.clone());
             r.chits += loot.chits;
             r.looted_gear.extend(gear.iter().cloned());
+            if !gear.is_empty() {
+                run_gear_snapshot = Some(r.looted_gear.clone());
+            }
         }
-        vec![out_msg(
+        let mut out = vec![out_msg(
             player_id,
             &wr::BackpackUpdate {
                 changes: vec![wr::BackpackChange {
@@ -2383,7 +2529,11 @@ impl GameState {
                 chits_delta: loot.chits,
                 gear_added: gear,
             },
-        )]
+        )];
+        if let Some(gear) = run_gear_snapshot {
+            out.push(out_msg(player_id, &wr::RunGear { gear }));
+        }
+        out
     }
 
     /// Complete any extraction channels whose timer elapsed: bank the backpack
@@ -3115,13 +3265,18 @@ impl GameState {
                             spd_bonus: g.spd_bonus,
                             base_max_durability: g.max_durability,
                             max_durability: g.max_durability,
+                            equipped_hero_slot: None,
                         })
                         .collect();
                     // Record loot in the run so extraction can bank it.
+                    let mut run_gear_snapshot = None;
                     if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
                         r.backpack.push(loot_item.clone());
                         r.chits += loot.chits;
                         r.looted_gear.extend(gear_drops.iter().cloned());
+                        if !gear_drops.is_empty() {
+                            run_gear_snapshot = Some(r.looted_gear.clone());
+                        }
                     }
                     let ended = wb::Ended {
                         battle_id: battle_id.to_string(),
@@ -3150,6 +3305,9 @@ impl GameState {
                             gear_added: gear_drops,
                         },
                     ));
+                    if let Some(gear) = run_gear_snapshot {
+                        out.push(out_msg(pid, &wr::RunGear { gear }));
+                    }
                     // A felled creature may drop a Town Portal, topping up the
                     // player's ability to extract (start with one, find more).
                     let roll = roll_unit(inst.arena.seed ^ hash_str(pid) ^ now_ms());
