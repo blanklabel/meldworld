@@ -146,6 +146,32 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// The SIGNATURE prop a biome's dense maze fill is made of — the thing you're walking
+/// through (a wood of trees, a scatter of cacti, a field of volcanic rock, …). Solid
+/// geometry only (never a flat water pool), so the fill reads as cover.
+fn fill_kind_for_biome(biome: &str) -> &'static str {
+    match biome {
+        "forest" => "tree",
+        "desert" => "cactus",
+        "ashfall" => "cinder_rock",
+        "tundra" => "ice_spire",
+        _ => "mire_root",
+    }
+}
+
+/// A biome's maze-fill density multiplier (× `obstacles_per_area`). Each biome has its
+/// own so it FEELS distinct; unlisted biomes fall back to `maze_obstacle_mult`.
+fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
+    match biome {
+        "forest" => wg.forest_obstacle_mult,
+        "desert" => wg.desert_obstacle_mult,
+        "ashfall" => wg.ashfall_obstacle_mult,
+        "tundra" => wg.tundra_obstacle_mult,
+        "mire" => wg.mire_obstacle_mult,
+        _ => wg.maze_obstacle_mult,
+    }
+}
+
 /// A biome's combat-drop material — banked into the run backpack when a creature
 /// is felled (feeds Forging/Alchemy crafting), distinct from harvestable resource
 /// nodes. Forest keeps `forest_bloom_petal` (the crafting recipe + conformance
@@ -1505,21 +1531,50 @@ impl Arena {
         // chest/seam draws stay byte-identical and every determinism test still holds.
         // Ground level only (nothing floating on a terrace/plateau), and never buries
         // the path/creatures/nodes/chests.
-        let maze_mult = if biome == "forest" {
-            wg.forest_obstacle_mult
-        } else {
-            wg.maze_obstacle_mult
-        };
+        let maze_mult = biome_obstacle_mult(wg, biome);
         // A dungeon lays out rooms-and-corridors instead of the scattered maze fill.
         if maze_mult > 0.0 && !is_dungeon {
             let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
             let extra = (maze_mult * wg.obstacles_per_area).round().max(0.0) as usize;
-            let fill_kind = if biome == "forest" { "tree" } else { okinds[0] };
+            let fill_kind = fill_kind_for_biome(biome);
+            // Density taper: near each edge, blend toward the NEIGHBOUR section's
+            // density so a dense biome visibly THINS as it gives way to a sparser one
+            // (trees scarce into desert) and thickens into a denser one (rock into
+            // Ashfall) — matching the ground cross-fade. Only ever thins (a section
+            // never exceeds its own count), and the neighbour ramps up from its side.
+            let tw = wg.biome_transition_width.max(0.0);
+            let next_biome = section_biome(
+                self.seed_base,
+                i + 1,
+                end_x.floor() as i64,
+                Some(biome),
+                self.tutorial,
+            );
+            let prev_ratio = (biome_obstacle_mult(wg, prev_biome.unwrap_or(biome)) / maze_mult).min(1.0);
+            let next_ratio = (biome_obstacle_mult(wg, next_biome) / maze_mult).min(1.0);
+            let keep_prob = |ox: f64| -> f64 {
+                let mut p = 1.0_f64;
+                if tw > 0.0 {
+                    if ox < start_x + tw {
+                        let t = ((ox - start_x) / tw).clamp(0.0, 1.0);
+                        p = p.min(prev_ratio + (1.0 - prev_ratio) * t);
+                    }
+                    if ox > end_x - tw {
+                        let t = ((end_x - ox) / tw).clamp(0.0, 1.0);
+                        p = p.min(next_ratio + (1.0 - next_ratio) * t);
+                    }
+                }
+                p
+            };
             let (mut fp, mut fa) = (0usize, 0usize);
             while fp < extra && fa < extra * 12 {
                 fa += 1;
                 let ox = start_x + frng.unit() * length;
                 let oy = frng.signed() * (self.lateral - 1.0);
+                // Taper toward the neighbouring biome near the section edges.
+                if frng.unit() > keep_prob(ox) {
+                    continue;
+                }
                 let radius = wg.obstacle_min_radius
                     + frng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
                 let pos = Position::new(ox, oy);

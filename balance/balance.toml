@@ -293,10 +293,20 @@ obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1
 # Every biome is a DENSE maze: procedural sections pack this multiple of
 # `obstacles_per_area` EXTRA props into the play area (only the clear path + branch
 # detours stay open), on a separate rng stream so world determinism is unchanged.
-# Forest is densest (`forest_obstacle_mult`); other biomes use `maze_obstacle_mult`.
+# Each biome has its OWN fill density so it FEELS distinct: forest is a dense wood,
+# desert is open (a few cacti), Ashfall is a dense rocky mountain-pass, mire a choked
+# swamp, tundra sparse. `maze_obstacle_mult` is the fallback for unlisted biomes.
+# `biome_transition_width` tapers the density near a section's edges toward the
+# neighbouring section's density, so a forest visibly THINS as it gives way to desert
+# and the rock THICKENS as it gives way to Ashfall (matching the ground cross-fade).
 # [TUNABLE]
-forest_obstacle_mult = 4.0
-maze_obstacle_mult = 2.0         # extra prop density for non-forest biomes
+forest_obstacle_mult = 4.0       # dense wood
+desert_obstacle_mult = 0.8       # open desert — a scattering of cacti
+ashfall_obstacle_mult = 3.4      # dense volcanic rock — a mountain pass
+tundra_obstacle_mult = 1.6       # sparse frozen spires
+mire_obstacle_mult = 2.8         # choked swamp
+maze_obstacle_mult = 2.0         # fallback for any unlisted biome
+biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 0.9        # smallest feature (a lone tree/rock)
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 path_clear_radius = 4.0          # half-width of the guaranteed clear path tube

@@ -236,9 +236,17 @@ pub struct WorldGen {
     /// Forest sections pack this multiple of `obstacles_per_area` extra trees into
     /// the play area (dense maze); other biomes keep the base density.
     pub forest_obstacle_mult: f64,
-    /// Non-forest biomes pack this multiple of `obstacles_per_area` extra props for
-    /// their maze fill (every biome is a maze; forest uses `forest_obstacle_mult`).
+    /// Per-biome fill density so each biome FEELS distinct (open desert, dense
+    /// Ashfall mountain-pass, choked mire, …). `maze_obstacle_mult` is the fallback.
+    pub desert_obstacle_mult: f64,
+    pub ashfall_obstacle_mult: f64,
+    pub tundra_obstacle_mult: f64,
+    pub mire_obstacle_mult: f64,
+    /// Fallback fill density for any biome without its own multiplier.
     pub maze_obstacle_mult: f64,
+    /// World units over which a section's fill density blends toward the neighbouring
+    /// section's near its edges (forest thins into desert; rock thickens into Ashfall).
+    pub biome_transition_width: f64,
     pub obstacle_min_radius: f64,
     pub obstacle_max_radius: f64,
     pub path_clear_radius: f64,
