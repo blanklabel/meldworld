@@ -182,6 +182,9 @@ pub struct TerrainSectionView {
     pub levels: Vec<u8>,
     pub connectors: Vec<ConnectorView>,
     pub path: Vec<(f64, f64)>,
+    /// The section's biome theme, so the client keys ground + HUD off the actual
+    /// per-section biome (radius ring) rather than fixed distance bands.
+    pub biome: String,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -1228,6 +1231,7 @@ impl Inner {
                             })
                             .collect(),
                         path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
+                        biome: t.biome,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }

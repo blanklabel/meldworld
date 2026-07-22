@@ -208,6 +208,13 @@ pub mod world {
         /// trail. Empty for initial-chain sections (already in `run.started.path`).
         #[serde(default)]
         pub path: Vec<Position>,
+        /// The section's biome theme (`forest`/`desert`/`ashfall`/`tundra`/`mire`).
+        /// Since a section occupies a radius ring (radius = corridor x in the radial
+        /// world), the client keys the ground texture + biome HUD off the ACTUAL
+        /// per-section biome from these, not the fixed distance bands — so ground,
+        /// label, and the section's creatures/obstacles finally agree.
+        #[serde(default)]
+        pub biome: String,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";

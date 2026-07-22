@@ -375,6 +375,7 @@ fn terrain_section_msg(area: &Area, path: Vec<Position>) -> ww::TerrainSection {
             })
             .collect(),
         path,
+        biome: area.biome.to_string(),
     }
 }
 
@@ -1111,11 +1112,15 @@ impl GameState {
             // with the centred area-0 onboarding; every dive after gets a randomized
             // biome order + start (WG-3). The world seed is always server-random —
             // the tutorial shapes the *structure*, not a fixed world.
-            let tutorial = !self
-                .sessions
-                .get(initiator)
-                .map(|s| s.has_dived)
-                .unwrap_or(false);
+            // `MELD_NO_TUTORIAL=1` forces a randomized-biome world on the first dive
+            // too (dev/QA/screenshots — the in-memory build always starts fresh, so
+            // you'd otherwise only ever see the distance-ordered tutorial order).
+            let tutorial = !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
+                && !self
+                    .sessions
+                    .get(initiator)
+                    .map(|s| s.has_dived)
+                    .unwrap_or(false);
             // Server-generated world seed (CANON: the client never supplies or
             // computes seeds).
             let seed = world_seed();

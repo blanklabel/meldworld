@@ -278,6 +278,7 @@ fn main() {
                 drift_clouds,
                 tile_ground_detail,
                 follow_world_ground,
+                update_ground_biome_rings,
                 drift_motes,
                 drive_ashfall,
                 anchor_backdrop,
@@ -1746,15 +1747,34 @@ fn overworld_camera_control(
     }
 }
 
-/// Uniform for [`GroundBiome`] — the biome band boundaries + fade width the shader
-/// blends by. `boundaries` mirror `meld_world::biome_for_distance` (radial distance).
+/// Max radial biome rings the ground shader blends across (near the player). A
+/// section = one concentric ring, so this bounds how many nearby sections colour the
+/// visible ground; deeper/closer sections beyond the window clamp to the ends.
+const MAX_BIOME_RINGS: usize = 32;
+
+/// Uniform for [`GroundBiome`] — the ACTUAL per-section biome rings, so the ground
+/// matches each section's real biome (radius ring) instead of fixed distance bands.
+/// `rings[i] = (outer_radius, biome_index, _, _)`, sorted by radius; `count` entries
+/// are live. `update_ground_biome_rings` rebuilds it from the streamed sections.
 #[derive(Clone, Copy, ShaderType, Debug)]
 struct BiomeParams {
-    boundaries: Vec4,
+    rings: [Vec4; MAX_BIOME_RINGS],
+    count: u32,
     uv_scale: f32,
     blend_half: f32,
     _pad0: f32,
-    _pad1: f32,
+}
+
+impl Default for BiomeParams {
+    fn default() -> Self {
+        BiomeParams {
+            rings: [Vec4::ZERO; MAX_BIOME_RINGS],
+            count: 0,
+            uv_scale: 1.0 / 3.0,
+            blend_half: 18.0,
+            _pad0: 0.0,
+        }
+    }
 }
 
 /// Ground material extension: blends the five biome ground textures by the fragment's
@@ -1905,13 +1925,9 @@ fn setup(
             ashfall: ground_tex[2].clone(),
             tundra: ground_tex[3].clone(),
             mire: ground_tex[4].clone(),
-            params: BiomeParams {
-                boundaries: Vec4::new(100.0, 300.0, 500.0, 1000.0),
-                uv_scale: 1.0 / 3.0, // ~3-world-unit tiles, matching the old uv_transform
-                blend_half: 18.0,    // ~36-unit cross-fade band around each boundary
-                _pad0: 0.0,
-                _pad1: 0.0,
-            },
+            // Rings start empty; `update_ground_biome_rings` fills them from the
+            // streamed sections each frame (count 0 ⇒ shader falls back to forest).
+            params: BiomeParams::default(),
         },
     });
     commands.spawn((
@@ -2703,6 +2719,72 @@ fn follow_world_ground(
     }
 }
 
+/// Capitalize the first letter for display ("ashfall" → "Ashfall").
+fn title_case(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Biome theme name → ground-texture / ring index (matches `BIOMES` order in
+/// meld-world and the texture bindings in `ground_biome.wgsl`).
+fn biome_ring_index(name: &str) -> usize {
+    match name {
+        "desert" => 1,
+        "ashfall" => 2,
+        "tundra" => 3,
+        "mire" => 4,
+        _ => 0, // forest / unknown
+    }
+}
+
+/// Rebuild the ground shader's radial biome LUT from the streamed sections, so the
+/// floor is coloured by each section's ACTUAL biome (its concentric radius ring)
+/// instead of fixed distance bands — the fix for the ground/creature biome mismatch.
+/// A window of `MAX_BIOME_RINGS` rings centred on the player covers the visible fan;
+/// deeper dives clamp the far/near ends (out in the haze / behind you anyway).
+fn update_ground_biome_rings(
+    terrain: Res<Terrain>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
+    mut mats: ResMut<Assets<GroundMat>>,
+) {
+    let Ok(handle) = ground_q.single() else { return };
+    let Some(mat) = mats.get_mut(&handle.0) else { return };
+    // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
+    let mut rings: Vec<(f32, f32)> = terrain
+        .sections
+        .values()
+        .map(|s| (s.end_x as f32, biome_ring_index(&s.biome) as f32))
+        .collect();
+    rings.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    // Window the rings around the player's radius when there are more than fit.
+    let pr = world
+        .entities
+        .get(&session.player_id)
+        .map(|e| (e.x.hypot(e.y)) as f32)
+        .unwrap_or(0.0);
+    let start = if rings.len() <= MAX_BIOME_RINGS {
+        0
+    } else {
+        let center = rings.iter().position(|(r, _)| *r >= pr).unwrap_or(rings.len() - 1);
+        center
+            .saturating_sub(MAX_BIOME_RINGS / 2)
+            .min(rings.len() - MAX_BIOME_RINGS)
+    };
+    let window = &rings[start..(start + MAX_BIOME_RINGS).min(rings.len())];
+
+    let p = &mut mat.extension.params;
+    p.count = window.len() as u32;
+    for (i, (radius, biome)) in window.iter().enumerate() {
+        p.rings[i] = Vec4::new(*radius, *biome, 0.0, 0.0);
+    }
+}
+
 /// Bob the atmosphere motes and keep them anchored around the camera (like the
 /// clouds) so the near air is always alive as the player travels.
 fn drift_motes(
@@ -2729,18 +2811,25 @@ fn drive_ashfall(
     state: Res<State<Screen>>,
     world: Res<Overworld>,
     session: Res<Session>,
+    terrain: Res<Terrain>,
     mut ash: ResMut<Ashfall>,
     cam_q: Query<&Transform, With<Camera3d>>,
     mut flecks: Query<(&mut AshFleck, &mut Transform, &mut Visibility), (Without<Camera3d>, Without<VolcanoProp>)>,
     mut volcanoes: Query<(&VolcanoProp, &mut Transform, &mut Visibility), (Without<Camera3d>, Without<AshFleck>)>,
 ) {
-    // In the Ashfall band (biome index 2) while roaming the overworld → target 1.
+    // The Ashfall atmosphere follows the ACTUAL section the player is standing in
+    // (its radius ring), so it fires exactly where the charred ground + ashfall
+    // creatures are — not on a fixed distance band.
     let in_ashfall = *state.get() == Screen::Overworld
-        && world
-            .entities
-            .get(&session.player_id)
-            .map(|e| biome_index((e.x * e.x + e.y * e.y).sqrt().floor() as i64) == 2)
-            .unwrap_or(false);
+        && world.entities.get(&session.player_id).is_some_and(|e| {
+            let r = (e.x * e.x + e.y * e.y).sqrt() as f64;
+            terrain
+                .sections
+                .values()
+                .find(|s| r >= s.start_x && r < s.end_x)
+                .map(|s| s.biome == "ashfall")
+                .unwrap_or(false)
+        });
     let target = if in_ashfall { 1.0 } else { 0.0 };
     let dt = time.delta_secs();
     ash.intensity += (target - ash.intensity).clamp(-dt * 0.8, dt * 0.8);
@@ -4708,12 +4797,22 @@ fn update_overworld_hud(
     session: Res<Session>,
     backpack: Res<RunBackpack>,
     perks: Res<PerksRes>,
+    terrain: Res<Terrain>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
     };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    // The biome label reads the ACTUAL section the player stands in (its radius ring),
+    // so it agrees with the ground + the creatures — not the fixed distance bands.
+    let r = d as f64;
+    let biome = terrain
+        .sections
+        .values()
+        .find(|s| r >= s.start_x && r < s.end_x)
+        .map(|s| title_case(&s.biome))
+        .unwrap_or_else(|| biome_display(d).to_string());
     // Town Portals first (your way home), then a compact tally of gathered materials.
     let tp = backpack.count("town_portal");
     let mats: String = backpack
@@ -4725,7 +4824,7 @@ fn update_overworld_hud(
         .join(", ");
     let me_pos = Some((me.x, me.y));
     if let Ok(mut t) = q.single_mut() {
-        let mut line = format!("distance {d}  -  {}  -  \u{f0f10}{tp}", biome_display(d)); // teleport = Town Portals
+        let mut line = format!("distance {d}  -  {biome}  -  \u{f0f10}{tp}"); // teleport = Town Portals
         // Chits found this run (banked on extraction), then gathered materials.
         if backpack.chits > 0 {
             line.push_str(&format!("  -  {} chits", backpack.chits));
