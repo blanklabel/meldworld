@@ -1517,11 +1517,50 @@ impl GameState {
             intent.input_seq,
         );
 
+        // WG-4: crossing the western border behind the hub returns you to Last City.
+        if let Some(out) = self.west_return(player_id) {
+            return out;
+        }
+
         // Contact starts a battle. Checked here for an instant response to the
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
         self.resolve_touches()
+    }
+
+    /// WG-4: if the player has walked WEST of the return border (behind the hub),
+    /// send them home to Last City — the safe anchor is always just to the west,
+    /// "behind a giant wall you can always step back through." This *abandons* the
+    /// run (backpack forfeited, no death penalty): near spawn there's nothing to
+    /// lose, and from deep the long walk back west is impractical, so it is never a
+    /// free extraction. The client routes the `abandoned` result to the City screen.
+    fn west_return(&mut self, player_id: &str) -> Option<Vec<Outgoing>> {
+        let border = self.balance.worldgen.west_return_border;
+        let (run_id, lost) = {
+            let inst = self.instance.as_ref()?;
+            if inst.arena.avatar(player_id)?.position.x >= border {
+                return None;
+            }
+            let run = inst.run.runs.iter().find(|r| r.player_id == player_id)?;
+            (run.run_id.clone(), run.backpack.clone())
+        };
+        let msg = out_msg(
+            player_id,
+            &wr::MemberResult {
+                run_id,
+                player_id: player_id.to_string(),
+                result: RunResult::Abandoned,
+                max_distance_reached: 0,
+                banked: None,
+                lost: Some(lost),
+                chits: 0,
+                gear_banked: vec![],
+                durability_loss_applied: false,
+            },
+        );
+        self.release_from_run(player_id);
+        Some(vec![msg])
     }
 
     /// Start a fresh battle for every active avatar currently in contact with a free

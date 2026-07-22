@@ -542,6 +542,9 @@ pub struct Area {
     pub portal: Position,
     /// The section's elevation field (terraces + connectors).
     pub terrain: Terrain,
+    /// WG-1: this section is a dungeon (rooms divided by walls with a door on the
+    /// clear path, denser creatures, a guaranteed loot chest). Flat (no terraces).
+    pub dungeon: bool,
 }
 
 /// A hand-placed treasure chest. Walk up and open it once for a loot roll — chits,
@@ -859,6 +862,7 @@ impl Arena {
                 portal: Position::new(portal_x, 0.0),
                 // The tutorial section is entirely flat (level 0).
                 terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
+                dungeon: false,
             });
             // The tutorial path is a straight, obstacle-free line to y=0.
             self.path.push(Position::new(end_x, 0.0));
@@ -873,9 +877,21 @@ impl Arena {
         let length = (nominal * (1.0 + wg.area_length_jitter * rng.signed())).max(8.0);
         let end_x = start_x + length;
 
+        // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
+        // with a door on the clear path (connectivity guaranteed like a biome seam),
+        // packed denser with creatures and ending in a guaranteed loot chest. Never
+        // the tutorial run or the spawn section (i == 0). Dungeons stay flat.
+        let is_dungeon =
+            !self.tutorial && i > 0 && wg.dungeon_every > 0 && i.is_multiple_of(wg.dungeon_every);
+
         // Walk the corridor placing creatures at jittered gaps. Creatures scatter
         // across ±y so the map is populated in every direction and you explore to
-        // find fights.
+        // find fights. A dungeon packs them denser (tighter spacing).
+        let creature_spacing = if is_dungeon {
+            wg.monster_spacing / wg.dungeon_creature_mult.max(1.0)
+        } else {
+            wg.monster_spacing
+        };
         let inner_end = end_x - wg.portal_setback - 1.0;
         let mut x = start_x + 2.0;
         while x < inner_end {
@@ -889,7 +905,7 @@ impl Arena {
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
 
-            let gap = wg.monster_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
+            let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
             x += gap.max(2.0);
         }
 
@@ -1121,7 +1137,8 @@ impl Arena {
         } else {
             wg.maze_obstacle_mult
         };
-        if maze_mult > 0.0 {
+        // A dungeon lays out rooms-and-corridors instead of the scattered maze fill.
+        if maze_mult > 0.0 && !is_dungeon {
             let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
             let extra = (maze_mult * wg.obstacles_per_area).round().max(0.0) as usize;
             let fill_kind = if biome == "forest" { "tree" } else { okinds[0] };
@@ -1159,6 +1176,50 @@ impl Arena {
             }
         }
 
+        // WG-1 dungeon layout: `dungeon_rooms − 1` divider walls span the corridor,
+        // each leaving a single door gap centred on the clear path — so the section
+        // reads as a chain of rooms, and connectivity is guaranteed by construction
+        // (every door sits on the already-carved, obstacle-free clear path). The
+        // final room holds a guaranteed loot chest. Walls skip terraced cells and
+        // never bury a creature/resource. Rendered by the normal obstacle path.
+        if is_dungeon {
+            let r = wg.dungeon_wall_radius.max(0.4);
+            let rooms = wg.dungeon_rooms.max(2);
+            for w in 1..rooms {
+                let wall_x = start_x + length * (w as f64) / (rooms as f64);
+                let door_y = path_y_at(&self.path, wall_x);
+                let mut y = -self.lateral + 1.0;
+                while y <= self.lateral - 1.0 {
+                    let pos = Position::new(wall_x, y);
+                    let in_door = (y - door_y).abs() < wg.dungeon_door_half;
+                    let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
+                        || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
+                        || self.chests.iter().any(|c| c.position.distance_to(&pos) < r + 1.0);
+                    if !in_door && terrain.level_at(&pos) == 0 && !occupied {
+                        self.obstacles.push(Obstacle {
+                            entity_id: format!("obs-{}", self.obstacles.len()),
+                            kind: okinds[0].to_string(),
+                            position: pos,
+                            radius: r,
+                        });
+                    }
+                    y += r * 1.8;
+                }
+            }
+            // Guaranteed loot chest in the final room, just inside the exit.
+            let chest_x = end_x - wg.portal_setback - 2.0;
+            let cy = path_y_at(&self.path, chest_x) + 2.0;
+            let cpos = Position::new(chest_x, cy);
+            let elevation = terrain.level_at(&cpos);
+            self.chests.push(Chest {
+                entity_id: format!("chest-{}", self.chests.len()),
+                position: cpos,
+                tier: Scaling::new(balance).tier(chest_x.floor() as i64) as i32,
+                opened: false,
+                elevation,
+            });
+        }
+
         self.areas.push(Area {
             index: i,
             biome,
@@ -1166,6 +1227,7 @@ impl Arena {
             end_x,
             portal,
             terrain,
+            dungeon: is_dungeon,
         });
         self.cursor = end_x;
     }
@@ -2549,5 +2611,72 @@ mod tests {
         for w in a.areas.windows(2) {
             assert_ne!(w[0].biome, w[1].biome, "adjacent sections must differ in biome");
         }
+    }
+
+    // ---- WG-1: dungeons (BSP-ish rooms via divider walls + guaranteed loot) ----
+
+    #[test]
+    fn dungeons_appear_with_walls_and_a_guaranteed_loot_chest() {
+        let b = Balance::load_default().unwrap();
+        // dungeon_every=4, area_count=8 → section 4 is a dungeon in the initial chain.
+        let arena = Arena::generate(&b, 7, false);
+        let dungeon = arena
+            .areas
+            .iter()
+            .find(|a| a.dungeon)
+            .expect("a dungeon section exists in the chain");
+        let (s, e) = (dungeon.start_x, dungeon.end_x);
+        let walls = arena.obstacles.iter().filter(|o| o.position.x >= s && o.position.x <= e).count();
+        assert!(walls > 0, "dungeon carries divider-wall obstacles");
+        assert!(
+            arena.chests.iter().any(|c| c.position.x >= s && c.position.x <= e),
+            "dungeon has a guaranteed loot chest",
+        );
+    }
+
+    #[test]
+    fn tutorial_and_spawn_are_never_dungeons() {
+        let b = Balance::load_default().unwrap();
+        // The whole tutorial run is dungeon-free (gentle onboarding).
+        assert!(Arena::generate(&b, 3, true).areas.iter().all(|a| !a.dungeon));
+        // Non-tutorial: the spawn section (index 0) is never a dungeon.
+        assert!(!Arena::generate(&b, 3, false).areas[0].dungeon);
+    }
+
+    #[test]
+    fn the_clear_path_reaches_the_portal_through_dungeons() {
+        // Feasibility survives the divider walls: a walker following the waypoints
+        // still reaches the deep portal (every door sits on the clear path).
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 9, false);
+        assert!(arena.areas.iter().any(|a| a.dungeon), "chain contains a dungeon");
+        let waypoints = arena.path.clone();
+        arena.add_avatar("p".into(), 2.0);
+        let mut wp = 1usize;
+        let mut reached = false;
+        for _ in 0..100_000 {
+            let target = waypoints[wp];
+            let pos = arena.avatar("p").unwrap().position;
+            if pos.distance_to(&target) < 0.6 {
+                if wp + 1 >= waypoints.len() {
+                    reached = true;
+                    break;
+                }
+                wp += 1;
+                continue;
+            }
+            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
+        }
+        assert!(reached, "the path stays feasible through the dungeon doors");
+    }
+
+    #[test]
+    fn dungeon_layout_is_deterministic() {
+        let b = Balance::load_default().unwrap();
+        let sig = |seed: u64| -> (Vec<bool>, usize, usize) {
+            let a = Arena::generate(&b, seed, false);
+            (a.areas.iter().map(|x| x.dungeon).collect(), a.obstacles.len(), a.chests.len())
+        };
+        assert_eq!(sig(55), sig(55), "same seed reproduces the same dungeons + walls");
     }
 }

@@ -8965,6 +8965,11 @@ fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
             };
             (msg, Color::srgb(0.95, 0.4, 0.4))
         }
+        // WG-4: walked back west across the border into Last City (run abandoned).
+        "abandoned" => (
+            "RETURNED to Last City - you slipped back west through the wall.".into(),
+            Color::srgb(0.75, 0.85, 0.95),
+        ),
         _ => ("The run is over.".into(), Color::srgb(0.8, 0.8, 0.8)),
     };
     commands

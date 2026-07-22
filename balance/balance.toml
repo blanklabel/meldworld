@@ -213,6 +213,18 @@ red_chest_floor_distance = 300
 # more. All [TUNABLE] — structure is code, coefficients here (working agreement #2).
 [worldgen]
 area_count = 8                   # how many areas to pre-generate for the instance
+# Dungeons (WG-1): every Nth procedural (non-tutorial) section is a "dungeon" —
+# rooms divided by walls with a single door on the clear path (connectivity is
+# guaranteed by construction, like a biome seam), packed denser with creatures and
+# ending in a guaranteed loot chest. Rendered by the normal obstacle/creature path.
+dungeon_every = 4                # 0 disables dungeons; else every Nth section (i>0) is one
+dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal divider walls)
+dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
+dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall
+dungeon_door_half = 2.6          # half-width of the door gap a divider leaves on the path
+# WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
+# the safe anchor is always just to the west. Negative = behind the origin.
+west_return_border = -2.5      # reachable before the x_min=-4 wall; walk west from spawn to return
 base_area_length = 20.0          # tiles: length of the first (shallowest) area
 area_length_growth = 7.0         # each successive area is ~this much longer on avg
 area_length_jitter = 0.35        # ± fraction applied to each area's length

@@ -176,6 +176,14 @@ pub struct WorldScaling {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorldGen {
     pub area_count: usize,
+    /// Dungeons (WG-1): every Nth procedural section is a dungeon (0 = disabled).
+    pub dungeon_every: usize,
+    pub dungeon_rooms: usize,
+    pub dungeon_creature_mult: f64,
+    pub dungeon_wall_radius: f64,
+    pub dungeon_door_half: f64,
+    /// WG-4: crossing this far west of the hub returns the player to Last City.
+    pub west_return_border: f64,
     pub base_area_length: f64,
     pub area_length_growth: f64,
     pub area_length_jitter: f64,
