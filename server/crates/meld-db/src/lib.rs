@@ -1401,7 +1401,12 @@ mod tests {
     #[tokio::test]
     async fn withdraw_materials_stages_a_pending_backpack() {
         let db = mem().await;
-        let p = db.register("dana", "pw").await.unwrap().player_id;
+        let test_password = Uuid::new_v4().to_string();
+        let p = db
+            .register("dana", &test_password)
+            .await
+            .unwrap()
+            .player_id;
         db.bank_extraction(p, &[("iron".into(), 5)], 0).await.unwrap();
 
         // Partial withdraw: decrements the Vault, stages the pending backpack.
