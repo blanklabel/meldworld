@@ -216,6 +216,8 @@ pub struct WorldGen {
     pub dungeon_door_half: f64,
     /// WG-4: crossing this far west of the hub returns the player to Last City.
     pub west_return_border: f64,
+    /// WG-4: bend the generated corridor into a radial arc of this many degrees.
+    pub radial_arc_degrees: f64,
     pub base_area_length: f64,
     pub area_length_growth: f64,
     pub area_length_jitter: f64,

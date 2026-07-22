@@ -105,13 +105,20 @@ Unit-tested (existence, walls + chest, path stays feasible through the doors, de
 never in tutorial/spawn). *Remaining:* the portal-into-a-separate-instance dungeon + mini-boss,
 and true BSP rooms, once instances are per-party.
 
-**WG-4 — the western anchor (shipped).** Crossing `west_return_border` behind the hub returns
-you to **Last City** — the run is *abandoned* (backpack forfeited, no death penalty). Near
-spawn there's nothing to lose; from deep, the long walk back west is impractical, so it's
-never a free extraction. Reuses the existing run-end path (`RunResult::Abandoned` → the client's
-generic member-result → City). *Remaining:* the full ~350° arc (true 2-D radial streaming — keep
-**Cartesian storage** and add a **radial difficulty read** `hypot(pos − hub)`; **do not** store
-polar chunks) and a west-wall visual.
+**WG-4 — the radial world + western anchor (shipped, screenshot-verified).** The overworld is
+now radial. Rather than rewriting streaming into 2-D polar chunks (which the spike warned
+against), we **bend the generated corridor into a ~340° arc** as a post-process (`Arena::radialize`):
+a point's corridor `x` becomes its **radius** — so distance, and therefore difficulty, is
+unchanged (`distance_floor` was already Euclidean) — and its lateral `y` becomes an **angle**
+across the arc. The eastward tube spirals outward into a fan that fills every direction but the
+western sliver, which is kept for Last City. It reuses **all** existing content generation
+(biomes, dungeons, gatekeepers, loot, the clear-path — whose tube is re-cleared after the bend so
+a feasible route out survives), and the world is **flat** (terraces/connectors off), so it renders
+on the client's base ground plane (squared to 2000×2000) with no per-section relief mesh. Crossing
+`west_return_border` returns you to **Last City** (run *abandoned* — backpack forfeited, no death
+penalty; never a free extraction). *Remaining:* endless **streaming** (the world is currently a
+large fixed radial disk, not infinite — the follow-on adds outward ring streaming), a west-wall
+visual, and re-homing terraces + biome-seam walls into the radial layout.
 
 ## Explicitly avoided as over-engineering (for now)
 Full biome permutation (breaks monotonic difficulty), polar/angular chunk storage,
