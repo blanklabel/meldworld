@@ -83,12 +83,28 @@ randomized world. Both Postgres and the in-memory backend implement it.
 > (Aside: `two_parties_fight_separate_battles_at_once` is a pre-existing flaky concurrent-ATB
 > test — it fails on clean `main` too — not related to this work.)
 
+### Biome presentation now matches the section (fixed)
+The ground texture AND the HUD biome label used to key off the *fixed* distance bands
+(100/300/500/1000), so on a randomized run they disagreed with the section's actual
+creatures/obstacles ("Ashfall didn't look different than the forest"). Fixed by
+streaming each section's biome on `TerrainSection.biome` and keying both off the ACTUAL
+per-section biome: a section is a concentric **radius ring** (radius = corridor x), so
+the client builds a radial biome LUT from the streamed sections and the ground shader
+(`ground_biome.wgsl`) picks each fragment's biome by its radius, cross-fading at the real
+section boundaries. Each biome also has its own fill density + signature prop
+(`biome_obstacle_mult` / `fill_kind_for_biome`) with a `biome_transition_width` taper, so
+forest (dense trees) thins into open desert (cacti) and rock thickens into the Ashfall
+mountain-pass. `MELD_NO_TUTORIAL=1` forces a randomized world for dev/QA.
+
 ### Known cosmetic follow-up
-Biome-boundary **seams** (chokepoint walls) still fire at the fixed distances
-(100/300/500/1000/3000) for pacing and label themselves from the *fixed* bands, so on a
-randomized run a "Forest→Desert pass" label may sit inside a section that's actually another
-biome. The wall is functionally correct (gap always on the clear path); only the label is
-cosmetic. Fix later by labelling the seam from the actual adjacent-section biomes.
+- Biome-boundary **seams** (chokepoint walls) still fire at the fixed distances
+  (100/300/500/1000/3000) for pacing and label themselves from the *fixed* bands, so a
+  seam's "Forest→Desert pass" label may not match a randomized section. The wall is
+  functionally correct (gap always on the clear path); only the label is cosmetic.
+- **True elevation relief** for Ashfall ("walking through a mountain") — the radial
+  world is still flat (terraces off); Ashfall reads as mountainous via dense dark rock +
+  horizon volcanoes, not real terrain height. Re-enabling per-biome relief in the radial
+  layout is the follow-on.
 
 ## WG-1 + WG-4: what shipped (slices) and what remains
 
