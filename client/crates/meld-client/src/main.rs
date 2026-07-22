@@ -276,6 +276,7 @@ fn main() {
                 hd2d_remote,
                 drift_clouds,
                 tile_ground_detail,
+                follow_world_ground,
                 drift_motes,
                 anchor_backdrop,
                 advance_sky,
@@ -2568,6 +2569,23 @@ fn tile_ground_detail(
         tf.rotation = Quat::from_rotation_y(yaw);
         tf.scale = Vec3::splat(sc);
         *vis = Visibility::Inherited;
+    }
+}
+
+/// Keep the base ground plane centred under the player so the endless radial world
+/// (WG-4 streaming) always has ground underfoot — the plane is huge but still finite,
+/// and difficulty is unbounded, so far-out dives would otherwise walk off its edge.
+/// Safe because `ground_biome.wgsl` keys BOTH its texture UV and its biome/distance
+/// off `world_position.xz`, so sliding the mesh never swims the texture or the biome.
+fn follow_world_ground(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut ground_q: Query<&mut Transform, (With<WorldGround>, Without<Camera3d>)>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    let focus = ground_focus(cam);
+    for mut tf in &mut ground_q {
+        tf.translation.x = focus.x;
+        tf.translation.z = focus.z;
     }
 }
 

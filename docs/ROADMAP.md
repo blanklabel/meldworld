@@ -224,20 +224,22 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   **right back into the city** — the one permanent, safe anchor in a world that
   worsens in every other direction. Establishes the city↔maze boundary as a
   walkable seam (ties LC-1's presence loop to the maze exit; reframes the current
-  Threshold entry). 🟡 *Shipped the arc + the anchor* (screenshot-verified):
-  the overworld is now a **radial world** — the generated corridor is bent into a
-  ~340° arc around the hub (`radialize`: corridor `x` → radius so difficulty is
-  unchanged, lateral `y` → angle), so content fans out in every direction with the
-  western sliver kept for Last City. Difficulty is already radial (`distance_floor`
-  = Euclidean). Crossing the **western border** (`west_return_border`) returns you
-  to Last City as an **instant free extraction home** — you **keep your backpack**
-  (banked to the Vault), no channel, no death penalty, no item cost. Near spawn it's
-  just "I changed my mind" and shouldn't be punished; from deep in the fan, the long
-  walk back west is its own gauntlet, so it's a fair "fight your way home" route
-  (routes through the normal extraction banking, `complete_extractions`). The world
-  is flat (terraces off; renders on the client's base ground plane). **Remaining:**
-  endless *streaming* (the current world is a large fixed radial disk, not infinite —
-  the follow-on adds outward ring streaming), a west-wall visual, and re-homing
+  Threshold entry). 🟡 *Shipped the arc, the anchor, AND endless streaming*
+  (screenshot-verified): the overworld is now a **radial, infinite world** — the
+  generated corridor is bent into a ~340° arc around the hub (`radialize`: corridor
+  `x` → radius so difficulty is unchanged, lateral `y` → angle), so content fans out
+  in every direction with the western sliver kept for Last City, and it **streams
+  endlessly outward** — `ensure_frontier` generates new content rings keyed off the
+  player's radius (`hypot(pos − hub)`), each section built in the corridor frame then
+  bent into the arc (`stream_radial_section`), so the world is genuinely infinite AND
+  monotonically harder the farther you roam (difficulty stays a pure function of
+  `distance`). Difficulty is radial (`distance_floor` = Euclidean); the client's base
+  ground plane follows the player so the endless fan always has ground underfoot.
+  Crossing the **western border** (`west_return_border`) returns you to Last City as
+  an **instant free extraction home** — you **keep your backpack** (banked to the
+  Vault), no channel, no death penalty, no item cost. Unit-tested
+  (`wg4_radial_world_streams_endlessly_outward`). The world is flat (terraces off).
+  **Remaining (cosmetic only):** the giant west-**wall visual**, and re-homing
   terraces/dungeon-seams into the radial layout.
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.

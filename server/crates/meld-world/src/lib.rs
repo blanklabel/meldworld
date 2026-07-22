@@ -840,12 +840,25 @@ pub struct Arena {
     /// Extraction is otherwise the Town Portal item (works anywhere).
     pub portal: Position,
     pub avatars: Vec<Avatar>,
-    /// East edge of generated content; grows as sections stream in.
+    /// Frontier of generated content in **corridor** space (= max radius in radial
+    /// mode). Grows as sections stream in.
     cursor: f64,
-    /// Walkable bounds: `x ∈ [x_min, x_max]`, `y ∈ [-lateral, lateral]`.
+    /// Walkable bounds: `x ∈ [x_min, x_max]`, `y ∈ [-lateral, lateral]`. In radial
+    /// mode these are the fan's bounding box, NOT the corridor extent.
     x_min: f64,
     x_max: f64,
     lateral: f64,
+    /// WG-4 radial world: half the arc in radians (0.0 ⇒ corridor mode, no bend).
+    /// Set once at generation; drives both the initial bend and outward streaming.
+    radial_half: f64,
+    /// The corridor y half-extent used for the arc angle mapping and for placing a
+    /// section's content. Preserved even after `radialize` widens `lateral` to the
+    /// fan's bounding box, so streamed sections bend with the SAME mapping.
+    corridor_lateral: f64,
+    /// The clear path in **unbent corridor** space. `path` is the public (bent, in
+    /// radial mode) copy sent to clients; `corridor_path` is what section generation
+    /// rejects obstacles/terraces against, so streaming stays in the corridor frame.
+    corridor_path: Vec<Position>,
     /// The avatar's collision radius against obstacles.
     player_radius: f64,
     touch_radius: f64,
@@ -902,6 +915,13 @@ impl Arena {
             x_min: -4.0, // a little slack behind the hub
             x_max: 0.0,
             lateral: wg.lateral_half_extent,
+            radial_half: if wg.radial_arc_degrees > 0.0 {
+                wg.radial_arc_degrees.to_radians() * 0.5
+            } else {
+                0.0
+            },
+            corridor_lateral: wg.lateral_half_extent,
+            corridor_path: vec![Position::new(0.0, 0.0)],
             player_radius: wg.player_radius,
             touch_radius: balance.world.touch_radius_tiles,
             interaction_radius: balance.world.interaction_radius_tiles,
@@ -939,6 +959,9 @@ impl Arena {
             .map(|a| a.portal)
             .unwrap_or_else(|| Position::new(arena.cursor, 0.0));
         arena.x_max = arena.cursor + wg.world_margin;
+        // Snapshot the unbent corridor path BEFORE the bend — outward streaming
+        // regenerates in this corridor frame, then bends each new section's tail.
+        arena.corridor_path = arena.path.clone();
         // WG-4: bend the whole (flat) corridor into a radial arc around the hub, so
         // the world fans out in every direction but the western city sliver.
         arena.radialize(wg.radial_arc_degrees);
@@ -959,7 +982,9 @@ impl Arena {
             return; // corridor mode — no bend.
         }
         let half = arc_degrees.to_radians() * 0.5;
-        let lat = self.lateral.max(1.0);
+        // Bend against the corridor half-extent (self.lateral still equals it here,
+        // but corridor_lateral is what streaming reuses after lateral widens).
+        let lat = self.corridor_lateral.max(1.0);
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
@@ -1005,18 +1030,29 @@ impl Arena {
     /// `player_x`. Sections beyond the initial chain are endless and reproducible
     /// (each from `section_seed(seed, n)`). Returns the indices of any sections
     /// newly created this call (so the caller can stream their terrain to clients).
-    pub fn ensure_frontier(&mut self, balance: &Balance, player_x: f64) -> Vec<usize> {
-        // WG-4 radial world: the whole disk is generated up-front and bent into the
-        // arc, so there's no eastward frontier to stream (endless radial streaming is
-        // the follow-on). New sections would be un-bent corridor tails, so skip them.
-        if balance.worldgen.radial_arc_degrees > 0.0 {
-            return Vec::new();
-        }
-        let mut created = Vec::new();
+    pub fn ensure_frontier(&mut self, balance: &Balance, reach: f64) -> Vec<usize> {
         let lookahead = balance.worldgen.stream_lookahead;
         // Cap growth per call so a teleport can't explode work in one tick.
         let mut budget = 4;
-        while self.cursor < player_x + lookahead && budget > 0 {
+        // WG-4 radial world: stream new content **rings** outward. The frontier lives
+        // in corridor space (`cursor` = the ring's radius, since `radialize` maps
+        // corridor x → radius), and `reach` is the player's RADIUS (`hypot(pos−hub)`).
+        // Each new section is generated in the pristine corridor frame (so obstacle/
+        // terrace rejection stays correct against the unbent path and corridor extent),
+        // then its freshly-added tail is bent into the arc and appended — the same
+        // remap the initial disk got, applied incrementally. Difficulty rides
+        // `distance` as always, so the world is endless AND monotonically harder outward.
+        if self.radial_half > 0.0 {
+            let mut created = Vec::new();
+            while self.cursor < reach + lookahead && budget > 0 {
+                let i = self.areas.len();
+                created.push(self.stream_radial_section(balance, i));
+                budget -= 1;
+            }
+            return created;
+        }
+        let mut created = Vec::new();
+        while self.cursor < reach + lookahead && budget > 0 {
             let i = self.areas.len();
             self.push_section(balance, i);
             self.x_max = self.cursor + self.world_margin;
@@ -1024,6 +1060,80 @@ impl Arena {
             budget -= 1;
         }
         created
+    }
+
+    /// Generate section `i` in the corridor frame, then bend its new content into the
+    /// radial arc and append it — the streaming counterpart to the one-shot bend in
+    /// [`Arena::radialize`]. Returns `i`. Only called in radial mode.
+    fn stream_radial_section(&mut self, balance: &Balance, i: usize) -> usize {
+        // Enter the pristine corridor frame: `push_section` reads `self.lateral` (the
+        // placement extent) and `self.path` (the rejection polyline), both of which
+        // `radialize` repurposed for the bent world — so swap the corridor values in
+        // for the duration of the call, then swap the bent world back.
+        let saved_lateral = self.lateral;
+        let saved_path = std::mem::replace(&mut self.path, std::mem::take(&mut self.corridor_path));
+        self.lateral = self.corridor_lateral;
+        // Snapshot the tails so we can bend exactly what this section appends.
+        let (m0, r0, o0, c0, s0) = (
+            self.monsters.len(),
+            self.resources.len(),
+            self.obstacles.len(),
+            self.chests.len(),
+            self.seams.len(),
+        );
+        let p0 = self.path.len();
+
+        self.push_section(balance, i); // corridor-space append; advances `cursor`.
+
+        // Leave the corridor frame: the (now-extended) corridor path goes back to
+        // `corridor_path`; restore the bent public `path` + the fan's bounds `lateral`.
+        self.corridor_path = std::mem::replace(&mut self.path, saved_path);
+        self.lateral = saved_lateral;
+
+        // Bend this section's freshly-added tail into the arc (same map as radialize).
+        let half = self.radial_half;
+        let lat = self.corridor_lateral.max(1.0);
+        let tf = |p: Position| -> Position {
+            let r = p.x.max(0.0);
+            let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
+            Position::new(r * theta.cos(), r * theta.sin())
+        };
+        for m in &mut self.monsters[m0..] {
+            m.position = tf(m.position);
+            m.home = tf(m.home);
+            m.area_min_x = f64::NEG_INFINITY; // roam near home, not a corridor x-band.
+            m.area_max_x = f64::INFINITY;
+        }
+        for r in &mut self.resources[r0..] {
+            r.position = tf(r.position);
+        }
+        for o in &mut self.obstacles[o0..] {
+            o.position = tf(o.position);
+        }
+        for c in &mut self.chests[c0..] {
+            c.position = tf(c.position);
+        }
+        // Append this section's new corridor waypoint(s) to the bent public path.
+        for k in p0..self.corridor_path.len() {
+            self.path.push(tf(self.corridor_path[k]));
+        }
+        // Straight-wall biome seams don't survive the bend — drop the ones just added.
+        self.seams.truncate(s0);
+        // The bend distorts the clear-path tube AND appending this section's waypoint
+        // adds a new path segment near the previous frontier — either can pull an
+        // already-placed obstacle into the tube. Re-clear ALL obstacles against the
+        // full bent path, exactly as the one-shot `radialize` does, so a feasible route
+        // outward stays guaranteed by construction across the whole streamed world.
+        let clear_r = self.path_clear_radius;
+        let path = self.path.clone();
+        self.obstacles
+            .retain(|o| dist_to_path(&o.position, &path) > clear_r + o.radius);
+        // Grow the fan's bounding box to contain the new outer ring.
+        let rmax = self.cursor + 4.0;
+        self.x_min = -rmax;
+        self.x_max = rmax;
+        self.lateral = rmax;
+        i
     }
 
     /// Build section `i` from its OWN seed (`section_seed`) and append it to the
@@ -3106,5 +3216,80 @@ mod tests {
             .map(|m| (m.position.x.powi(2) + m.position.y.powi(2)).sqrt())
             .fold(0.0_f64, f64::max);
         assert!(max_r > 50.0, "the world extends outward, not just a ring");
+    }
+
+    #[test]
+    fn wg4_radial_world_streams_endlessly_outward() {
+        // The radial world is INFINITE: as a player's radius grows, new content rings
+        // stream outward — bent into the arc, harder with distance, route stays feasible.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 11, false);
+        let r_of = |p: &Position| p.x.hypot(p.y);
+
+        let initial_frontier = arena.cursor; // corridor frontier = outer ring radius
+        let initial_sections = arena.areas.len();
+        let initial_max_r = arena.monsters.iter().map(|m| r_of(&m.position)).fold(0.0_f64, f64::max);
+
+        // Walk the frontier out to a much larger RADIUS; the world must generate to meet it.
+        let target_radius = initial_frontier + 400.0;
+        let mut created_total = 0usize;
+        for _ in 0..200 {
+            let created = arena.ensure_frontier(&b, target_radius);
+            created_total += created.len();
+            if arena.cursor >= target_radius {
+                break;
+            }
+        }
+        assert!(created_total > 0, "streaming created new sections outward");
+        assert!(arena.areas.len() > initial_sections, "the section chain grew");
+        assert!(
+            arena.cursor >= target_radius,
+            "frontier ({:.0}) reached the far radius ({:.0})",
+            arena.cursor,
+            target_radius
+        );
+
+        // New creatures live out past the old frontier — the world is genuinely endless,
+        // and difficulty (radial distance) keeps climbing.
+        let new_max_r = arena.monsters.iter().map(|m| r_of(&m.position)).fold(0.0_f64, f64::max);
+        assert!(
+            new_max_r > initial_max_r + 200.0,
+            "content now reaches much farther out ({initial_max_r:.0} → {new_max_r:.0})"
+        );
+
+        // The streamed content is BENT into the arc, not a straight +x corridor tail:
+        // some far creature sits well outside the corridor's lateral half-extent in |y|.
+        let lat = b.worldgen.lateral_half_extent;
+        assert!(
+            arena
+                .monsters
+                .iter()
+                .filter(|m| r_of(&m.position) > initial_frontier)
+                .any(|m| m.position.y.abs() > lat + 5.0),
+            "streamed content fans around the arc (|y| exceeds the corridor width)"
+        );
+
+        // A feasible route outward is preserved by construction: no obstacle sits inside
+        // the bent clear-path tube (checked across the whole streamed world).
+        let clear_r = arena.path_clear_radius;
+        for o in &arena.obstacles {
+            assert!(
+                dist_to_path(&o.position, &arena.path) > clear_r + o.radius - 1e-6,
+                "obstacle at ({:.1},{:.1}) blocks the clear path",
+                o.position.x,
+                o.position.y
+            );
+        }
+
+        // Determinism: same seed + same reach ⇒ identical streamed world.
+        let mut twin = Arena::generate(&b, 11, false);
+        for _ in 0..200 {
+            twin.ensure_frontier(&b, target_radius);
+            if twin.cursor >= target_radius {
+                break;
+            }
+        }
+        assert_eq!(twin.monsters.len(), arena.monsters.len(), "streaming is deterministic");
+        assert_eq!(twin.areas.len(), arena.areas.len());
     }
 }
