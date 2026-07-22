@@ -300,7 +300,15 @@ fn main() {
         .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
         // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
-        .add_systems(OnEnter(Screen::City), (city_hud, city_scene, despawn::<BattleActor>))
+        // Each state ENTRY purges the actor kinds that don't belong to it, so a sprite
+        // can never stick across a transition: `WorldEntity` lives only in Overworld,
+        // `BattleActor` only in Battle, `CityScene` only in City. (OnExit handlers do
+        // this too, but a deferred spawn on the transition frame can slip past them —
+        // enforcing it on entry as well makes a stuck/double sprite impossible.)
+        .add_systems(
+            OnEnter(Screen::City),
+            (city_hud, city_scene, despawn::<BattleActor>, despawn::<WorldEntity>),
+        )
         .add_systems(
             OnExit(Screen::City),
             (despawn::<CityRoot>, despawn::<CityScene>),
@@ -335,7 +343,7 @@ fn main() {
         // Clearing it on entry guarantees exactly one avatar regardless of the race.
         .add_systems(
             OnEnter(Screen::Overworld),
-            (overworld_ui, despawn::<BattleActor>),
+            (overworld_ui, despawn::<BattleActor>, despawn::<CityScene>),
         )
         .add_systems(
             OnExit(Screen::Overworld),
@@ -475,8 +483,15 @@ fn main() {
             )
                 .run_if(in_state(Screen::Battle)),
         )
-        // Ended
-        .add_systems(OnEnter(Screen::Ended), ended_ui)
+        // Ended — the extract/death summary. Clean any lingering world/battle actors
+        // off it on entry, and (crucially) despawn the summary UI on EXIT: without
+        // this the `EndedRoot` text was never removed, so it stayed on screen after
+        // returning to The Weld and a second extraction stacked a duplicate on top.
+        .add_systems(
+            OnEnter(Screen::Ended),
+            (ended_ui, despawn::<BattleActor>, despawn::<WorldEntity>, despawn::<CityScene>),
+        )
+        .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
         .add_systems(Update, ended_input.run_if(in_state(Screen::Ended)))
         .run();
 }
@@ -710,6 +725,9 @@ struct WorldFrame {
     x_min: f32,
     x_max: f32,
     lateral: f32,
+    /// Crossing west of this world-x returns to Last City — the client marks it with
+    /// a castle wall + gate so the boundary is visible before you cross it.
+    west_return_border: f32,
     seams: Vec<meld_client::net::SeamLine>,
 }
 
@@ -3462,11 +3480,12 @@ fn pump_net(
                 }
                 terrain.sections.insert(section.index, section);
             }
-            ServerMsg::WorldFrame { x_min, x_max, lateral, seams } => {
+            ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, seams } => {
                 world_frame.have = true;
                 world_frame.x_min = x_min as f32;
                 world_frame.x_max = x_max as f32;
                 world_frame.lateral = lateral as f32;
+                world_frame.west_return_border = west_return_border as f32;
                 world_frame.seams = seams;
             }
             ServerMsg::Connected { player_id } => {
@@ -6879,6 +6898,7 @@ fn build_world_walls(
     frame: Res<WorldFrame>,
     terrain: Res<Terrain>,
     wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
     existing: Query<Entity, With<WorldWall>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut walled: Local<std::collections::HashSet<u32>>,
@@ -6944,6 +6964,67 @@ fn build_world_walls(
                         .with_scale(Vec3::new(2.2, 6.0, 2.2)),
                 ));
             }
+        }
+
+        // Last City's WALL + GATE + skyline, built from real Kenney castle models
+        // (Pirate Kit, CC0) rather than scaled boxes. A stone rampart runs across the
+        // western return border with a central gatehouse; behind it, towers + rooftops
+        // read as the city itself — mostly glimpsed THROUGH the open gate as you
+        // approach. Crossing west of `west_return_border` returns you; the gate marks
+        // the line. All models sit at y=0 (Kenney base-origin), so nothing floats.
+        let wx = frame.west_return_border;
+        // "Into the city" is away from the hub; the wall faces back toward the player.
+        let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
+        let wall_yaw = 90.0_f32; // segments run north–south along world z
+        let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
+        let mut prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
+            commands.spawn((
+                WorldWall,
+                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
+                Transform::from_xyz(x, 0.0, z)
+                    .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
+                    .with_scale(Vec3::splat(scale)),
+            ));
+        };
+        // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5; tile at
+        // 6.5 so segments overlap slightly into a continuous rampart (no gaps).
+        const WALL_SCALE: f32 = 3.5;
+        const SEG_W: f32 = 6.5;
+        const WALL_HALF: f32 = 44.0; // how far ±z the rampart runs
+        const GATE_HALF: f32 = 7.0; // half-width of the central gateway (fits the gatehouse)
+        // The rampart: tiled wall segments, leaving the central gate gap.
+        let mut z = -WALL_HALF;
+        while z <= WALL_HALF {
+            if z.abs() > GATE_HALF {
+                prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
+            }
+            z += SEG_W;
+        }
+        // The gatehouse in the gap + two flanking towers (with pennants) framing it.
+        prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
+        for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
+            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+        }
+        // Towers punctuating the rampart at intervals.
+        for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
+            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+        }
+        // The city BEHIND the wall — a skyline of towers + rooftops set back so it's
+        // seen through the gate. Concentrated near z=0 (behind the doorway). Fixed
+        // layout: (model, back-offset, z, yaw°, scale).
+        let city: &[(&str, f32, f32, f32, f32)] = &[
+            ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
+            ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
+            ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
+            ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
+            ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
+            ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
+            ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
+            ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
+        ];
+        for (path, back, cz, yaw, scale) in city {
+            prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
         }
     }
 

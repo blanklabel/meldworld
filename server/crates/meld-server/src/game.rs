@@ -1290,6 +1290,7 @@ impl GameState {
             x_min: bx_min,
             x_max: bx_max,
             lateral: blat,
+            west_return_border: self.balance.worldgen.west_return_border,
         };
         let seam_views: Vec<wr::SeamView> = inst
             .arena
