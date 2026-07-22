@@ -488,6 +488,69 @@ aggression = "passive"
 flees = false
 loot_kind = "myconid_cap"
 
+# --- Archetype creatures (one per biome): SWARMERs (fast/weak/aggressive) and
+# BRUISERs (slow/tanky/hard-hitting), so the combat rhythm varies as you explore.
+# Reuse existing factions so they join the creature-vs-creature skirmish web.
+[creature.sporeling]        # forest SWARMER — a fast, fragile spore that rushes you
+base_hp = 32
+base_atk = 7
+base_def = 1
+speed_stat = 125
+xp_reward = 42
+encounter_class = "standard"
+faction = "fungal"
+aggression = "aggressive"
+flees = false
+loot_kind = "spore_pod"
+
+[creature.dune_colossus]    # desert BRUISER — a slow, armoured wall that hits hard
+base_hp = 135
+base_atk = 17
+base_def = 9
+speed_stat = 40
+xp_reward = 120
+encounter_class = "standard"
+faction = "construct"
+aggression = "territorial"
+flees = false
+loot_kind = "colossus_core"
+
+[creature.ember_wisp]       # ashfall SKIRMISHER — fast, burns, and flees when losing
+base_hp = 42
+base_atk = 12
+base_def = 1
+speed_stat = 118
+xp_reward = 58
+encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = true
+loot_kind = "ember_mote"
+
+[creature.glacier_maw]      # tundra BRUISER — a slow, immense maw of ice
+base_hp = 155
+base_atk = 16
+base_def = 10
+speed_stat = 38
+xp_reward = 130
+encounter_class = "standard"
+faction = "beast"
+aggression = "territorial"
+flees = false
+loot_kind = "glacier_tooth"
+
+[creature.bog_stinger]      # mire SWARMER — a fast, venomous swarm
+base_hp = 34
+base_atk = 10
+base_def = 0
+speed_stat = 128
+xp_reward = 46
+encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = false
+loot_kind = "venom_sac"
+
 # Harvestable resource nodes, keyed by content id (biome→node assignment is
 # structural, in `meld-world::resources_for_biome`). Harvesting one banks its
 # `material` into the run backpack (extract to keep it, feeds crafting) and

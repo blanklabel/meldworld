@@ -110,12 +110,15 @@ fn section_biome(run_seed: u64, i: usize, distance: i64, prev: Option<&str>, tut
 /// Creature content ids that spawn in a biome. Structural (content-extensible);
 /// stats for each key live in `balance.toml` under `[creature.<key>]`.
 fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
+    // Each biome's 3rd creature is a distinct archetype — a fast aggressive SWARMER
+    // or a slow tanky BRUISER — so the combat rhythm varies as you explore. Appended
+    // (index 0 stays the tutorial creature). Stats live under `[creature.<key>]`.
     match biome {
-        "forest" => &["forest_bloom_stalker", "thornback_boar"],
-        "desert" => &["dune_wyrm", "sand_shade"],
-        "ashfall" => &["cinder_imp", "magma_golem"],
-        "tundra" => &["frost_lurker", "ice_revenant"],
-        _ => &["bog_serpent", "myconid_brute"],
+        "forest" => &["forest_bloom_stalker", "thornback_boar", "sporeling"],
+        "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
+        "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
+        "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
+        _ => &["bog_serpent", "myconid_brute", "bog_stinger"],
     }
 }
 
@@ -2905,5 +2908,23 @@ mod tests {
             }
         }
         assert!(shiny * 4 > drops * 3, "bosses mostly drop non-common: {shiny}/{drops}");
+    }
+
+    #[test]
+    fn each_biome_gains_a_distinct_archetype_creature() {
+        let b = Balance::load_default().unwrap();
+        let p = Position::new(50.0, 0.0);
+        // Every new creature is defined in balance (build panics if a key is missing).
+        for k in ["sporeling", "dune_colossus", "ember_wisp", "glacier_maw", "bog_stinger"] {
+            let _ = MonsterSpawn::build(&b, "m".into(), k, p, 1);
+        }
+        // A SWARMER is fast + fragile; a BRUISER is slow + tanky — the rhythm differs.
+        let swarmer = MonsterSpawn::build(&b, "s".into(), "sporeling", p, 1);
+        let bruiser = MonsterSpawn::build(&b, "br".into(), "dune_colossus", p, 1);
+        assert!(swarmer.speed_stat > bruiser.speed_stat, "swarmer acts faster");
+        assert!(bruiser.max_hp > swarmer.max_hp * 3, "bruiser is a tank vs the swarmer");
+        // Each biome's creature pool grew to 3 (the tutorial creature, index 0, is kept).
+        assert_eq!(creatures_for_biome("forest").len(), 3);
+        assert_eq!(creatures_for_biome("forest")[0], "forest_bloom_stalker");
     }
 }
