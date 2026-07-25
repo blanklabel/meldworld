@@ -106,6 +106,7 @@ fn main() {
         .init_resource::<Sky>()
         .init_resource::<Ashfall>()
         .init_resource::<MoveClock>()
+        .init_resource::<JoinFocus>()
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
         .init_resource::<PartyView>()
@@ -175,7 +176,10 @@ fn main() {
         // Join
         .add_systems(OnEnter(Screen::Join), join_ui)
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
-        .add_systems(Update, join_input.run_if(in_state(Screen::Join)))
+        .add_systems(
+            Update,
+            (join_input, join_interact, join_refresh).run_if(in_state(Screen::Join)),
+        )
         // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
         // Each state ENTRY purges the actor kinds that don't belong to it, so a sprite
@@ -1596,9 +1600,6 @@ struct CityVaultText;
 struct CityStatusText;
 #[derive(Component)]
 struct StatusText;
-/// Join-screen line showing the currently-selected class.
-#[derive(Component)]
-struct ClassText;
 
 /// A sprite representing an overworld entity, tagged by its server id.
 #[derive(Component)]
@@ -1660,16 +1661,6 @@ fn hd2d_remote(
 
 
 
-/// Display name for a class key.
-fn nice_class(key: &str) -> &'static str {
-    match key {
-        "psyker" => "Psyker",
-        "resonant" => "Resonant",
-        "shifter" => "Shifter",
-        "iron_hull" => "Iron Hull",
-        _ => "Hunter",
-    }
-}
 
 
 
