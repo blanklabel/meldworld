@@ -1,0 +1,148 @@
+//! Launch-time flags: server URL + `MELD_*`/`?query` toggles (native vs wasm).
+//! Extracted from `main.rs` during the module reorg.
+
+/// Where the API + realtime socket live. Native: `MELD_SERVER` env (default
+/// localhost). Browser: the page origin (trunk proxies `/v1` to the server).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn server_base() -> String {
+    std::env::var("MELD_SERVER").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn server_base() -> String {
+    let win = web_sys::window();
+    let search = win
+        .as_ref()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    // `?server=<url>` override (for the local demo); else the page origin.
+    if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(s) = params.get("server") {
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    win.and_then(|w| w.location().origin().ok())
+        .unwrap_or_else(|| "http://127.0.0.1:8080".to_string())
+}
+
+/// Autopilot self-drives the loop (connect → walk → attack) for demos and
+/// headless screenshots. Native: `MELD_AUTOPLAY` env. Browser: `?autoplay` in
+/// the URL. Real players use the keyboard as normal.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn autoplay_flag() -> bool {
+    std::env::var("MELD_AUTOPLAY").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn autoplay_flag() -> bool {
+    query_has("autoplay")
+}
+/// With autoplay, enter the maze but **idle** at the hub instead of walking east —
+/// a stable overworld frame for screenshotting the world art. `MELD_IDLE` / `?idle`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn world_idle_flag() -> bool {
+    std::env::var("MELD_IDLE").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn world_idle_flag() -> bool {
+    query_has("idle")
+}
+
+/// Connect, then **park in The Weld** (the hub city) instead of diving — a stable
+/// City frame for screenshotting / iterating on the hub. Reuses the autoplay
+/// connect path but gates the auto-dive. Native: `MELD_CITY`. Browser: `?city`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn city_idle_flag() -> bool {
+    std::env::var("MELD_CITY").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn city_idle_flag() -> bool {
+    query_has("city")
+}
+
+/// Offline render demo: no networking; scripted canned data drives the real
+/// rendering so the Overworld/Battle screens can be shown without a server.
+/// Native: `MELD_DEMO` env. Browser: `?demo`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn demo_flag() -> bool {
+    std::env::var("MELD_DEMO").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn demo_flag() -> bool {
+    query_has("demo")
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn query_has(key: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .map(|s| s.contains(key))
+        .unwrap_or(false)
+}
+
+/// Pre-select a class without the Join screen (handy for demos/headless runs and
+/// with `?autoplay`). Native: `MELD_CLASS` env. Browser: `?class=psyker`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn class_flag() -> Option<String> {
+    std::env::var("MELD_CLASS").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn class_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("class").filter(|s| !s.is_empty())
+}
+
+/// Pre-build the whole party (comma-separated class keys) without the builder.
+/// Native: `MELD_PARTY=hunter,psyker,resonant,hunter`. Browser: `?party=…`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn party_flag() -> Option<String> {
+    std::env::var("MELD_PARTY").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn party_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("party").filter(|s| !s.is_empty())
+}
+
+/// Offline battle-screen mockup: jump straight into the Battle screen with canned
+/// combatants and the command window open, so the subscreen can be inspected
+/// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn battle_mockup_flag() -> bool {
+    std::env::var("MELD_BATTLE").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn battle_mockup_flag() -> bool {
+    query_has("battle")
+}
+
+/// Offline mockups for the overworld overlays (`?inventory` / `?levelup`, or
+/// `MELD_INVENTORY` / `MELD_LEVELUP`).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn inventory_mockup_flag() -> bool {
+    std::env::var("MELD_INVENTORY").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn inventory_mockup_flag() -> bool {
+    query_has("inventory")
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn levelup_mockup_flag() -> bool {
+    std::env::var("MELD_LEVELUP").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn levelup_mockup_flag() -> bool {
+    query_has("levelup")
+}
+/// Offline mockup for the animated "LEVEL UP!" stat screen (`?levelup_anim` /
+/// `MELD_LEVELUP_ANIM`) — seeds a canned level-up so the sequence can be
+/// screenshotted without a battle.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn levelup_anim_mockup_flag() -> bool {
+    std::env::var("MELD_LEVELUP_ANIM").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn levelup_anim_mockup_flag() -> bool {
+    query_has("levelup_anim")
+}

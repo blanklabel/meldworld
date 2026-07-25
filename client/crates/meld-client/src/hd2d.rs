@@ -424,6 +424,11 @@ pub struct CharSprite {
     pub facing: Vec2, // world-space heading (xz) the character faces
     pub last: Vec3,
     pub still: f32, // seconds since last movement (grace against snapshot gaps)
+    /// When set, the character's world facing is pinned to this heading and never
+    /// follows its movement — a battle hero keeps facing the monsters even as it
+    /// lunges in and recoils back (otherwise the recoil would spin it around). The
+    /// walk cycle still plays while it moves; only the direction is locked.
+    pub locked: Option<Vec2>,
 }
 
 impl CharSprite {
@@ -436,6 +441,7 @@ impl CharSprite {
             facing: Vec2::new(0.0, 1.0), // world south (+Z) — faces a yaw-0 camera
             last: start,
             still: 1.0, // start idle
+            locked: None,
         }
     }
 }
@@ -473,13 +479,20 @@ pub fn animate_chars(
         let d = pos - cs.last;
         cs.last = pos;
         let horiz = Vec2::new(d.x, d.z);
-        // Update the WORLD facing only while actually moving (a small threshold so
-        // smoothed near-stop jitter doesn't spin it).
-        if horiz.length() > 2e-3 {
-            cs.facing = horiz.normalize();
+        // Track movement for the walk/idle cycle regardless of facing.
+        let moving = horiz.length() > 2e-3;
+        if moving {
             cs.still = 0.0;
         } else {
             cs.still += dt;
+        }
+        // Update the WORLD facing from movement (a small threshold so smoothed
+        // near-stop jitter doesn't spin it) — UNLESS the facing is pinned (battle
+        // heroes always face the monsters).
+        if let Some(l) = cs.locked {
+            cs.facing = l;
+        } else if moving {
+            cs.facing = horiz.normalize();
         }
         // Pick the sprite for the world facing *as seen from the camera* — this is
         // what makes the character look 3D when you orbit: same facing, new side.

@@ -3408,7 +3408,100 @@ impl GameState {
                 }
                 dead = members.clone();
             }
-            BattleOutcome::Fled => {}
+            BattleOutcome::Fled => {
+                // Fleeing saves your heroes but not your whole haul (combat-atb.md).
+                // Unlike Defeat the run CONTINUES — you're back in the overworld — but
+                // you bolt and spill some of what you were carrying: forfeit a fraction
+                // of your un-banked chits, and roll each non-permanent item (backpack
+                // material + red-chest looted gear) to drop. Insured (blue) equipped
+                // gear is owned, not in the backpack, so it's never at risk. This is the
+                // cost that makes fleeing a real decision rather than a free escape.
+                let frac = balance.battle.flee_chit_loss_fraction.clamp(0.0, 1.0);
+                let drop_chance = balance.battle.flee_item_drop_chance.clamp(0.0, 1.0);
+                let seed = inst.arena.seed ^ now_ms();
+                // Everyone who was in the fight is roaming again (they didn't die).
+                for pid in &members {
+                    if let Some(a) = inst.arena.avatar_mut(pid) {
+                        a.state = "active".to_string();
+                    }
+                }
+                // (player_id, run_id, dropped items, chits lost, gear snapshot, gear changed)
+                let mut losses: Vec<(String, Vec<ItemStack>, i64, Vec<LootGear>, bool)> =
+                    Vec::new();
+                for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
+                    let base = seed ^ hash_str(&r.player_id);
+                    let lost_chits = ((r.chits.max(0) as f64) * frac).floor() as i64;
+                    r.chits -= lost_chits;
+                    // Roll each backpack stack independently (keyed by its stable id, so
+                    // the outcome is deterministic and reproducible).
+                    let mut dropped: Vec<ItemStack> = Vec::new();
+                    r.backpack.retain(|it| {
+                        if roll_unit(base ^ hash_str(&it.item_id)) < drop_chance {
+                            dropped.push(it.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    // And each piece of not-yet-banked red-chest gear.
+                    let before_gear = r.looted_gear.len();
+                    r.looted_gear
+                        .retain(|g| roll_unit(base ^ hash_str(&g.gear_id)) >= drop_chance);
+                    let gear_changed = r.looted_gear.len() != before_gear;
+                    losses.push((
+                        r.player_id.clone(),
+                        dropped,
+                        lost_chits,
+                        r.looted_gear.clone(),
+                        gear_changed,
+                    ));
+                }
+                for (pid, dropped, lost_chits, gear, gear_changed) in losses {
+                    // `battle.ended`/Fled takes the client out of the battle screen and
+                    // back to the overworld (see the client's `BattleEnded` handler).
+                    // For the Fled outcome these fields report what was DROPPED (not
+                    // gained), so the client can show a "fled — dropped N" line.
+                    out.push(out_msg(
+                        &pid,
+                        &wb::Ended {
+                            battle_id: battle_id.to_string(),
+                            outcome: BattleOutcome::Fled,
+                            xp_awards: vec![],
+                            loot: dropped.clone(),
+                            chits_found: lost_chits,
+                            gear_drops: vec![],
+                            class_emblem_drops: vec![],
+                            gatekeeper_cleared: false,
+                        },
+                    ));
+                    // Authoritatively mutate the client's mirrored backpack: the same
+                    // message shape every other backpack change uses (the client just
+                    // applies the removals + negative chit delta).
+                    if !dropped.is_empty() || lost_chits > 0 {
+                        let changes = dropped
+                            .iter()
+                            .map(|it| wr::BackpackChange {
+                                item: it.clone(),
+                                delta: "removed".to_string(),
+                                cause: "fled".to_string(),
+                            })
+                            .collect();
+                        out.push(out_msg(
+                            &pid,
+                            &wr::BackpackUpdate {
+                                changes,
+                                chits_delta: -lost_chits,
+                                gear_added: vec![],
+                            },
+                        ));
+                    }
+                    // Correct the run-loot (equip tab) with a fresh full snapshot when
+                    // any red-chest gear was dropped.
+                    if gear_changed {
+                        out.push(out_msg(&pid, &wr::RunGear { gear }));
+                    }
+                }
+            }
         }
         // Battle over: any surviving grouped creatures (e.g. after a flee) resume
         // roaming, then drop the battle slot entirely (its combatant bookkeeping

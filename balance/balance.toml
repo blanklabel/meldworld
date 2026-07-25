@@ -71,6 +71,13 @@ turn_timeout_ms = 15000          # 15s -> auto-defend
 flee_base = 0.60
 flee_penalty_per_tier = 0.10
 flee_floor = 0.05
+# Fleeing saves your heroes but not your haul — you bolt and spill some of what
+# you were carrying (combat-atb.md). On a successful flee the run CONTINUES (unlike
+# death), but you forfeit this fraction of your un-banked chits and each
+# non-permanent item (backpack material / red-chest looted gear) rolls to drop at
+# `flee_item_drop_chance`. Insured (blue) equipped gear is never at risk. [TUNABLE]
+flee_chit_loss_fraction = 0.5
+flee_item_drop_chance = 0.25
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
