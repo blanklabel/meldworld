@@ -315,7 +315,8 @@ fn main() {
         // Optional "show the whole party" entourage that trails the lead avatar.
         .add_systems(
             Update,
-            (toggle_party_view, sync_party_followers).run_if(in_state(Screen::Overworld)),
+            (toggle_party_view, sync_party_followers, cull_stray_avatars)
+                .run_if(in_state(Screen::Overworld)),
         )
         // The storage chest (Vault-Deep) reuses the same tabbed inventory
         // overlay as the Overworld — City and Overworld are mutually exclusive

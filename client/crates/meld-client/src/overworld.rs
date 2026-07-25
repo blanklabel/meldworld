@@ -292,6 +292,24 @@ pub(crate) fn hd2d_follow(
     // position (blended across boundaries), so there's no per-frame texture swap here.
 }
 
+/// Despawn any stray character sprite that has slipped into the overworld without a
+/// valid owner — a `CharSprite` that is neither a snapshot-driven `WorldEntity` avatar
+/// nor a [`PartyFollower`]. In the overworld those are the ONLY legitimate character
+/// sprites, so anything else is a leftover from another screen (a battle hero or a
+/// city avatar that raced past its `OnExit`/`OnEnter` cleanup on the transition
+/// frame). Such a leftover never receives movement, so it stands frozen facing the
+/// camera and reads as a "second sprite overlaying" the real one. The per-id
+/// reconciler dedup can't catch it (it only dedups WorldEntity avatars by id); this
+/// guard runs every overworld frame and removes it regardless of how it arrived.
+pub(crate) fn cull_stray_avatars(
+    mut commands: Commands,
+    strays: Query<Entity, (With<CharSprite>, Without<WorldEntity>, Without<PartyFollower>)>,
+) {
+    for e in &strays {
+        commands.entity(e).despawn();
+    }
+}
+
 /// Roughly the server's `join_radius` — the client only shows the Join prompt /
 /// accepts J within this of a fighting teammate; the server does the real check.
 pub(crate) const JOIN_PROMPT_RADIUS: f32 = 9.0;
