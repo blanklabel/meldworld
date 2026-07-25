@@ -709,8 +709,10 @@ pub(crate) fn setup(
         cull_mode: None,
         ..default()
     });
-    for _ in 0..90 {
-        let off = Vec2::new((rnd() - 0.5) * 60.0, (rnd() - 0.5) * 44.0);
+    // A wide, deep spread centred on the player (see `drift_motes`), so fireflies
+    // surround you instead of bunching in one patch of the view.
+    for _ in 0..140 {
+        let off = Vec2::new((rnd() - 0.5) * 72.0, (rnd() - 0.5) * 60.0);
         commands.spawn((
             Mote {
                 off,
@@ -1115,14 +1117,28 @@ pub(crate) fn update_ground_biome_rings(
     }
 }
 
-/// Bob the atmosphere motes and keep them anchored around the camera (like the
-/// clouds) so the near air is always alive as the player travels.
+/// Bob the atmosphere motes and keep them anchored around the PLAYER (in the
+/// overworld) so the near air around you is always alive as you travel. Anchoring to
+/// the player — not the camera's ground-aim point — keeps the fireflies centred on
+/// you at any camera pitch/zoom (the aim point drifts up-screen as the camera tilts
+/// down, which used to bunch every mote into the mid-distance). Off the overworld
+/// (city/battle) there's no player, so fall back to the camera's ground focus.
 pub(crate) fn drift_motes(
     time: Res<Time>,
+    state: Res<State<Screen>>,
+    world: Res<Overworld>,
+    session: Res<Session>,
     cam_q: Query<&Transform, With<Camera3d>>,
     mut q: Query<(&Mote, &mut Transform), Without<Camera3d>>,
 ) {
-    let focus = cam_q.single().map(ground_focus).unwrap_or(Vec3::ZERO);
+    // Anchor on the player's snapshot position in the overworld (x,y → world x,z);
+    // otherwise the camera's ground-aim point.
+    let focus = (*state.get() == Screen::Overworld)
+        .then(|| world.entities.get(&session.player_id))
+        .flatten()
+        .map(|e| Vec3::new(e.x, 0.0, e.y))
+        .or_else(|| cam_q.single().ok().map(ground_focus))
+        .unwrap_or(Vec3::ZERO);
     let t = time.elapsed_secs();
     for (m, mut tf) in &mut q {
         tf.translation.x = focus.x + m.off.x + (t * m.speed + m.phase).sin() * m.amp;
