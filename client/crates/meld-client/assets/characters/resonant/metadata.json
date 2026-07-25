@@ -1,0 +1,447 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "eb55cee0-e04d-4a27-be1e-c2da20bf4ba7",
+        "name": "resonant",
+        "prompt": "Serene healer-cleric in a weird HD-2D fantasy style, flowing pale-and-gold layered hooded robes, holding a glowing crystal-topped staff, soft teal healing light haloing the hands. Calm and supportive.",
+        "size": {
+          "width": 184,
+          "height": 184
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-25T13:41:49.746297+00:00"
+      },
+      "folder": "resonant",
+      "frames": {
+        "rotations": {
+          "south": "resonant/rotations/south.png",
+          "south-east": "resonant/rotations/south-east.png",
+          "east": "resonant/rotations/east.png",
+          "north-east": "resonant/rotations/north-east.png",
+          "north": "resonant/rotations/north.png",
+          "north-west": "resonant/rotations/north-west.png",
+          "west": "resonant/rotations/west.png",
+          "south-west": "resonant/rotations/south-west.png"
+        },
+        "animations": {
+          "transfuse": {
+            "south": [
+              "resonant/animations/transfuse/south/frame_000.png",
+              "resonant/animations/transfuse/south/frame_001.png",
+              "resonant/animations/transfuse/south/frame_002.png",
+              "resonant/animations/transfuse/south/frame_003.png",
+              "resonant/animations/transfuse/south/frame_004.png",
+              "resonant/animations/transfuse/south/frame_005.png",
+              "resonant/animations/transfuse/south/frame_006.png",
+              "resonant/animations/transfuse/south/frame_007.png"
+            ],
+            "north": [
+              "resonant/animations/transfuse/north/frame_000.png",
+              "resonant/animations/transfuse/north/frame_001.png",
+              "resonant/animations/transfuse/north/frame_002.png",
+              "resonant/animations/transfuse/north/frame_003.png",
+              "resonant/animations/transfuse/north/frame_004.png",
+              "resonant/animations/transfuse/north/frame_005.png",
+              "resonant/animations/transfuse/north/frame_006.png",
+              "resonant/animations/transfuse/north/frame_007.png"
+            ],
+            "north-west": [
+              "resonant/animations/transfuse/north-west/frame_000.png",
+              "resonant/animations/transfuse/north-west/frame_001.png",
+              "resonant/animations/transfuse/north-west/frame_002.png",
+              "resonant/animations/transfuse/north-west/frame_003.png",
+              "resonant/animations/transfuse/north-west/frame_004.png",
+              "resonant/animations/transfuse/north-west/frame_005.png",
+              "resonant/animations/transfuse/north-west/frame_006.png",
+              "resonant/animations/transfuse/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "resonant/animations/transfuse/north-east/frame_000.png",
+              "resonant/animations/transfuse/north-east/frame_001.png",
+              "resonant/animations/transfuse/north-east/frame_002.png",
+              "resonant/animations/transfuse/north-east/frame_003.png",
+              "resonant/animations/transfuse/north-east/frame_004.png",
+              "resonant/animations/transfuse/north-east/frame_005.png",
+              "resonant/animations/transfuse/north-east/frame_006.png",
+              "resonant/animations/transfuse/north-east/frame_007.png"
+            ],
+            "west": [
+              "resonant/animations/transfuse/west/frame_000.png",
+              "resonant/animations/transfuse/west/frame_001.png",
+              "resonant/animations/transfuse/west/frame_002.png",
+              "resonant/animations/transfuse/west/frame_003.png",
+              "resonant/animations/transfuse/west/frame_004.png",
+              "resonant/animations/transfuse/west/frame_005.png",
+              "resonant/animations/transfuse/west/frame_006.png",
+              "resonant/animations/transfuse/west/frame_007.png"
+            ],
+            "east": [
+              "resonant/animations/transfuse/east/frame_000.png",
+              "resonant/animations/transfuse/east/frame_001.png",
+              "resonant/animations/transfuse/east/frame_002.png",
+              "resonant/animations/transfuse/east/frame_003.png",
+              "resonant/animations/transfuse/east/frame_004.png",
+              "resonant/animations/transfuse/east/frame_005.png",
+              "resonant/animations/transfuse/east/frame_006.png",
+              "resonant/animations/transfuse/east/frame_007.png"
+            ],
+            "south-east": [
+              "resonant/animations/transfuse/south-east/frame_000.png",
+              "resonant/animations/transfuse/south-east/frame_001.png",
+              "resonant/animations/transfuse/south-east/frame_002.png",
+              "resonant/animations/transfuse/south-east/frame_003.png",
+              "resonant/animations/transfuse/south-east/frame_004.png",
+              "resonant/animations/transfuse/south-east/frame_005.png",
+              "resonant/animations/transfuse/south-east/frame_006.png",
+              "resonant/animations/transfuse/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "resonant/animations/transfuse/south-west/frame_000.png",
+              "resonant/animations/transfuse/south-west/frame_001.png",
+              "resonant/animations/transfuse/south-west/frame_002.png",
+              "resonant/animations/transfuse/south-west/frame_003.png",
+              "resonant/animations/transfuse/south-west/frame_004.png",
+              "resonant/animations/transfuse/south-west/frame_005.png",
+              "resonant/animations/transfuse/south-west/frame_006.png",
+              "resonant/animations/transfuse/south-west/frame_007.png"
+            ]
+          },
+          "attack": {
+            "south-west": [
+              "resonant/animations/attack/south-west/frame_000.png",
+              "resonant/animations/attack/south-west/frame_001.png",
+              "resonant/animations/attack/south-west/frame_002.png",
+              "resonant/animations/attack/south-west/frame_003.png",
+              "resonant/animations/attack/south-west/frame_004.png",
+              "resonant/animations/attack/south-west/frame_005.png",
+              "resonant/animations/attack/south-west/frame_006.png",
+              "resonant/animations/attack/south-west/frame_007.png"
+            ],
+            "south": [
+              "resonant/animations/attack/south/frame_000.png",
+              "resonant/animations/attack/south/frame_001.png",
+              "resonant/animations/attack/south/frame_002.png",
+              "resonant/animations/attack/south/frame_003.png",
+              "resonant/animations/attack/south/frame_004.png",
+              "resonant/animations/attack/south/frame_005.png",
+              "resonant/animations/attack/south/frame_006.png",
+              "resonant/animations/attack/south/frame_007.png"
+            ],
+            "north-west": [
+              "resonant/animations/attack/north-west/frame_000.png",
+              "resonant/animations/attack/north-west/frame_001.png",
+              "resonant/animations/attack/north-west/frame_002.png",
+              "resonant/animations/attack/north-west/frame_003.png",
+              "resonant/animations/attack/north-west/frame_004.png",
+              "resonant/animations/attack/north-west/frame_005.png",
+              "resonant/animations/attack/north-west/frame_006.png",
+              "resonant/animations/attack/north-west/frame_007.png"
+            ],
+            "east": [
+              "resonant/animations/attack/east/frame_000.png",
+              "resonant/animations/attack/east/frame_001.png",
+              "resonant/animations/attack/east/frame_002.png",
+              "resonant/animations/attack/east/frame_003.png",
+              "resonant/animations/attack/east/frame_004.png",
+              "resonant/animations/attack/east/frame_005.png",
+              "resonant/animations/attack/east/frame_006.png",
+              "resonant/animations/attack/east/frame_007.png"
+            ],
+            "north": [
+              "resonant/animations/attack/north/frame_000.png",
+              "resonant/animations/attack/north/frame_001.png",
+              "resonant/animations/attack/north/frame_002.png",
+              "resonant/animations/attack/north/frame_003.png",
+              "resonant/animations/attack/north/frame_004.png",
+              "resonant/animations/attack/north/frame_005.png",
+              "resonant/animations/attack/north/frame_006.png",
+              "resonant/animations/attack/north/frame_007.png"
+            ],
+            "west": [
+              "resonant/animations/attack/west/frame_000.png",
+              "resonant/animations/attack/west/frame_001.png",
+              "resonant/animations/attack/west/frame_002.png",
+              "resonant/animations/attack/west/frame_003.png",
+              "resonant/animations/attack/west/frame_004.png",
+              "resonant/animations/attack/west/frame_005.png",
+              "resonant/animations/attack/west/frame_006.png",
+              "resonant/animations/attack/west/frame_007.png"
+            ],
+            "south-east": [
+              "resonant/animations/attack/south-east/frame_000.png",
+              "resonant/animations/attack/south-east/frame_001.png",
+              "resonant/animations/attack/south-east/frame_002.png",
+              "resonant/animations/attack/south-east/frame_003.png",
+              "resonant/animations/attack/south-east/frame_004.png",
+              "resonant/animations/attack/south-east/frame_005.png",
+              "resonant/animations/attack/south-east/frame_006.png",
+              "resonant/animations/attack/south-east/frame_007.png"
+            ],
+            "north-east": [
+              "resonant/animations/attack/north-east/frame_000.png",
+              "resonant/animations/attack/north-east/frame_001.png",
+              "resonant/animations/attack/north-east/frame_002.png",
+              "resonant/animations/attack/north-east/frame_003.png",
+              "resonant/animations/attack/north-east/frame_004.png",
+              "resonant/animations/attack/north-east/frame_005.png",
+              "resonant/animations/attack/north-east/frame_006.png",
+              "resonant/animations/attack/north-east/frame_007.png"
+            ]
+          },
+          "ward": {
+            "south": [
+              "resonant/animations/ward/south/frame_000.png",
+              "resonant/animations/ward/south/frame_001.png",
+              "resonant/animations/ward/south/frame_002.png",
+              "resonant/animations/ward/south/frame_003.png",
+              "resonant/animations/ward/south/frame_004.png",
+              "resonant/animations/ward/south/frame_005.png",
+              "resonant/animations/ward/south/frame_006.png",
+              "resonant/animations/ward/south/frame_007.png"
+            ],
+            "west": [
+              "resonant/animations/ward/west/frame_000.png",
+              "resonant/animations/ward/west/frame_001.png",
+              "resonant/animations/ward/west/frame_002.png",
+              "resonant/animations/ward/west/frame_003.png",
+              "resonant/animations/ward/west/frame_004.png",
+              "resonant/animations/ward/west/frame_005.png",
+              "resonant/animations/ward/west/frame_006.png",
+              "resonant/animations/ward/west/frame_007.png"
+            ],
+            "south-west": [
+              "resonant/animations/ward/south-west/frame_000.png",
+              "resonant/animations/ward/south-west/frame_001.png",
+              "resonant/animations/ward/south-west/frame_002.png",
+              "resonant/animations/ward/south-west/frame_003.png",
+              "resonant/animations/ward/south-west/frame_004.png",
+              "resonant/animations/ward/south-west/frame_005.png",
+              "resonant/animations/ward/south-west/frame_006.png",
+              "resonant/animations/ward/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "resonant/animations/ward/south-east/frame_000.png",
+              "resonant/animations/ward/south-east/frame_001.png",
+              "resonant/animations/ward/south-east/frame_002.png",
+              "resonant/animations/ward/south-east/frame_003.png",
+              "resonant/animations/ward/south-east/frame_004.png",
+              "resonant/animations/ward/south-east/frame_005.png",
+              "resonant/animations/ward/south-east/frame_006.png",
+              "resonant/animations/ward/south-east/frame_007.png"
+            ],
+            "north-east": [
+              "resonant/animations/ward/north-east/frame_000.png",
+              "resonant/animations/ward/north-east/frame_001.png",
+              "resonant/animations/ward/north-east/frame_002.png",
+              "resonant/animations/ward/north-east/frame_003.png",
+              "resonant/animations/ward/north-east/frame_004.png",
+              "resonant/animations/ward/north-east/frame_005.png",
+              "resonant/animations/ward/north-east/frame_006.png",
+              "resonant/animations/ward/north-east/frame_007.png"
+            ],
+            "east": [
+              "resonant/animations/ward/east/frame_000.png",
+              "resonant/animations/ward/east/frame_001.png",
+              "resonant/animations/ward/east/frame_002.png",
+              "resonant/animations/ward/east/frame_003.png",
+              "resonant/animations/ward/east/frame_004.png",
+              "resonant/animations/ward/east/frame_005.png",
+              "resonant/animations/ward/east/frame_006.png",
+              "resonant/animations/ward/east/frame_007.png"
+            ],
+            "north-west": [
+              "resonant/animations/ward/north-west/frame_000.png",
+              "resonant/animations/ward/north-west/frame_001.png",
+              "resonant/animations/ward/north-west/frame_002.png",
+              "resonant/animations/ward/north-west/frame_003.png",
+              "resonant/animations/ward/north-west/frame_004.png",
+              "resonant/animations/ward/north-west/frame_005.png",
+              "resonant/animations/ward/north-west/frame_006.png",
+              "resonant/animations/ward/north-west/frame_007.png"
+            ],
+            "north": [
+              "resonant/animations/ward/north/frame_000.png",
+              "resonant/animations/ward/north/frame_001.png",
+              "resonant/animations/ward/north/frame_002.png",
+              "resonant/animations/ward/north/frame_003.png",
+              "resonant/animations/ward/north/frame_004.png",
+              "resonant/animations/ward/north/frame_005.png",
+              "resonant/animations/ward/north/frame_006.png",
+              "resonant/animations/ward/north/frame_007.png"
+            ]
+          },
+          "regen_boon": {
+            "north": [
+              "resonant/animations/regen_boon/north/frame_000.png",
+              "resonant/animations/regen_boon/north/frame_001.png",
+              "resonant/animations/regen_boon/north/frame_002.png",
+              "resonant/animations/regen_boon/north/frame_003.png",
+              "resonant/animations/regen_boon/north/frame_004.png",
+              "resonant/animations/regen_boon/north/frame_005.png",
+              "resonant/animations/regen_boon/north/frame_006.png",
+              "resonant/animations/regen_boon/north/frame_007.png"
+            ],
+            "south-east": [
+              "resonant/animations/regen_boon/south-east/frame_000.png",
+              "resonant/animations/regen_boon/south-east/frame_001.png",
+              "resonant/animations/regen_boon/south-east/frame_002.png",
+              "resonant/animations/regen_boon/south-east/frame_003.png",
+              "resonant/animations/regen_boon/south-east/frame_004.png",
+              "resonant/animations/regen_boon/south-east/frame_005.png",
+              "resonant/animations/regen_boon/south-east/frame_006.png",
+              "resonant/animations/regen_boon/south-east/frame_007.png"
+            ],
+            "south": [
+              "resonant/animations/regen_boon/south/frame_000.png",
+              "resonant/animations/regen_boon/south/frame_001.png",
+              "resonant/animations/regen_boon/south/frame_002.png",
+              "resonant/animations/regen_boon/south/frame_003.png",
+              "resonant/animations/regen_boon/south/frame_004.png",
+              "resonant/animations/regen_boon/south/frame_005.png",
+              "resonant/animations/regen_boon/south/frame_006.png",
+              "resonant/animations/regen_boon/south/frame_007.png"
+            ],
+            "south-west": [
+              "resonant/animations/regen_boon/south-west/frame_000.png",
+              "resonant/animations/regen_boon/south-west/frame_001.png",
+              "resonant/animations/regen_boon/south-west/frame_002.png",
+              "resonant/animations/regen_boon/south-west/frame_003.png",
+              "resonant/animations/regen_boon/south-west/frame_004.png",
+              "resonant/animations/regen_boon/south-west/frame_005.png",
+              "resonant/animations/regen_boon/south-west/frame_006.png",
+              "resonant/animations/regen_boon/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "resonant/animations/regen_boon/north-east/frame_000.png",
+              "resonant/animations/regen_boon/north-east/frame_001.png",
+              "resonant/animations/regen_boon/north-east/frame_002.png",
+              "resonant/animations/regen_boon/north-east/frame_003.png",
+              "resonant/animations/regen_boon/north-east/frame_004.png",
+              "resonant/animations/regen_boon/north-east/frame_005.png",
+              "resonant/animations/regen_boon/north-east/frame_006.png",
+              "resonant/animations/regen_boon/north-east/frame_007.png"
+            ],
+            "east": [
+              "resonant/animations/regen_boon/east/frame_000.png",
+              "resonant/animations/regen_boon/east/frame_001.png",
+              "resonant/animations/regen_boon/east/frame_002.png",
+              "resonant/animations/regen_boon/east/frame_003.png",
+              "resonant/animations/regen_boon/east/frame_004.png",
+              "resonant/animations/regen_boon/east/frame_005.png",
+              "resonant/animations/regen_boon/east/frame_006.png",
+              "resonant/animations/regen_boon/east/frame_007.png"
+            ],
+            "north-west": [
+              "resonant/animations/regen_boon/north-west/frame_000.png",
+              "resonant/animations/regen_boon/north-west/frame_001.png",
+              "resonant/animations/regen_boon/north-west/frame_002.png",
+              "resonant/animations/regen_boon/north-west/frame_003.png",
+              "resonant/animations/regen_boon/north-west/frame_004.png",
+              "resonant/animations/regen_boon/north-west/frame_005.png",
+              "resonant/animations/regen_boon/north-west/frame_006.png",
+              "resonant/animations/regen_boon/north-west/frame_007.png"
+            ],
+            "west": [
+              "resonant/animations/regen_boon/west/frame_000.png",
+              "resonant/animations/regen_boon/west/frame_001.png",
+              "resonant/animations/regen_boon/west/frame_002.png",
+              "resonant/animations/regen_boon/west/frame_003.png",
+              "resonant/animations/regen_boon/west/frame_004.png",
+              "resonant/animations/regen_boon/west/frame_005.png",
+              "resonant/animations/regen_boon/west/frame_006.png",
+              "resonant/animations/regen_boon/west/frame_007.png"
+            ]
+          },
+          "walk": {
+            "north": [
+              "resonant/animations/walk/north/frame_000.png",
+              "resonant/animations/walk/north/frame_001.png",
+              "resonant/animations/walk/north/frame_002.png",
+              "resonant/animations/walk/north/frame_003.png",
+              "resonant/animations/walk/north/frame_004.png",
+              "resonant/animations/walk/north/frame_005.png",
+              "resonant/animations/walk/north/frame_006.png",
+              "resonant/animations/walk/north/frame_007.png"
+            ],
+            "south-east": [
+              "resonant/animations/walk/south-east/frame_000.png",
+              "resonant/animations/walk/south-east/frame_001.png",
+              "resonant/animations/walk/south-east/frame_002.png",
+              "resonant/animations/walk/south-east/frame_003.png",
+              "resonant/animations/walk/south-east/frame_004.png",
+              "resonant/animations/walk/south-east/frame_005.png",
+              "resonant/animations/walk/south-east/frame_006.png",
+              "resonant/animations/walk/south-east/frame_007.png"
+            ],
+            "east": [
+              "resonant/animations/walk/east/frame_000.png",
+              "resonant/animations/walk/east/frame_001.png",
+              "resonant/animations/walk/east/frame_002.png",
+              "resonant/animations/walk/east/frame_003.png",
+              "resonant/animations/walk/east/frame_004.png",
+              "resonant/animations/walk/east/frame_005.png",
+              "resonant/animations/walk/east/frame_006.png",
+              "resonant/animations/walk/east/frame_007.png"
+            ],
+            "north-west": [
+              "resonant/animations/walk/north-west/frame_000.png",
+              "resonant/animations/walk/north-west/frame_001.png",
+              "resonant/animations/walk/north-west/frame_002.png",
+              "resonant/animations/walk/north-west/frame_003.png",
+              "resonant/animations/walk/north-west/frame_004.png",
+              "resonant/animations/walk/north-west/frame_005.png",
+              "resonant/animations/walk/north-west/frame_006.png",
+              "resonant/animations/walk/north-west/frame_007.png"
+            ],
+            "south": [
+              "resonant/animations/walk/south/frame_000.png",
+              "resonant/animations/walk/south/frame_001.png",
+              "resonant/animations/walk/south/frame_002.png",
+              "resonant/animations/walk/south/frame_003.png",
+              "resonant/animations/walk/south/frame_004.png",
+              "resonant/animations/walk/south/frame_005.png",
+              "resonant/animations/walk/south/frame_006.png",
+              "resonant/animations/walk/south/frame_007.png"
+            ],
+            "west": [
+              "resonant/animations/walk/west/frame_000.png",
+              "resonant/animations/walk/west/frame_001.png",
+              "resonant/animations/walk/west/frame_002.png",
+              "resonant/animations/walk/west/frame_003.png",
+              "resonant/animations/walk/west/frame_004.png",
+              "resonant/animations/walk/west/frame_005.png",
+              "resonant/animations/walk/west/frame_006.png",
+              "resonant/animations/walk/west/frame_007.png"
+            ],
+            "south-west": [
+              "resonant/animations/walk/south-west/frame_000.png",
+              "resonant/animations/walk/south-west/frame_001.png",
+              "resonant/animations/walk/south-west/frame_002.png",
+              "resonant/animations/walk/south-west/frame_003.png",
+              "resonant/animations/walk/south-west/frame_004.png",
+              "resonant/animations/walk/south-west/frame_005.png",
+              "resonant/animations/walk/south-west/frame_006.png",
+              "resonant/animations/walk/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "resonant/animations/walk/north-east/frame_000.png",
+              "resonant/animations/walk/north-east/frame_001.png",
+              "resonant/animations/walk/north-east/frame_002.png",
+              "resonant/animations/walk/north-east/frame_003.png",
+              "resonant/animations/walk/north-east/frame_004.png",
+              "resonant/animations/walk/north-east/frame_005.png",
+              "resonant/animations/walk/north-east/frame_006.png",
+              "resonant/animations/walk/north-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-25T19:18:55.705033"
+}

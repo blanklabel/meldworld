@@ -935,7 +935,26 @@ pub(crate) fn sync_overworld_sprites(
                 // A real 3D harvest-node model that draws the eye by slowly pulsing
                 // its own emissive glow (`pulse_collectibles`) — no ground disc.
                 let kind = e.name.as_deref().unwrap_or("");
-                if let Some((scene, scale)) = wa.resource_scenes.get(kind) {
+                // Prefer the bespoke HD-2D harvest-node billboard (PixelLab); fall back
+                // to the 3D model for any unmapped kind.
+                if let Some(tex) = wa.prop_sprites.get(&format!("resource_{kind}")) {
+                    let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex.clone()));
+                    commands
+                        .spawn((
+                            WorldEntity(id.clone()),
+                            Collectible,
+                            Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                            Visibility::default(),
+                        ))
+                        .with_children(|p| {
+                            p.spawn((
+                                Mesh3d(wa.sprite_quad.clone()),
+                                MeshMaterial3d(mat),
+                                Transform::from_xyz(0.0, 0.85, 0.0).with_scale(Vec3::splat(1.7 / 2.2)),
+                                hd2d::Billboard,
+                            ));
+                        });
+                } else if let Some((scene, scale)) = wa.resource_scenes.get(kind) {
                     let yaw = (hash_pick(id, 360) as f32).to_radians();
                     commands.spawn((
                         WorldEntity(id.clone()),
@@ -948,22 +967,29 @@ pub(crate) fn sync_overworld_sprites(
                 }
             }
             EntityKind::Loot => {
-                // A dropped skirmish trophy — a small golden pickup nub on the grass
-                // until a player walks over it. It slowly pulses its own emissive glow
-                // (`pulse_collectibles`) to catch the eye — no ground disc.
-                let nub = mats.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.85, 0.35),
-                    emissive: LinearRgba::rgb(1.6, 1.2, 0.4),
-                    ..default()
-                });
-                commands.spawn((
-                    WorldEntity(id.clone()),
-                    Collectible,
-                    Mesh3d(wa.rock_mesh.clone()),
-                    MeshMaterial3d(nub),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.35))
-                        .with_scale(Vec3::splat(0.32)),
-                ));
+                // A dropped skirmish trophy — an HD-2D gold-pile pickup billboard
+                // (PixelLab) until a player walks over it.
+                let tex = wa
+                    .prop_sprites
+                    .get("item_gold_pile")
+                    .cloned()
+                    .unwrap_or_default();
+                let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
+                commands
+                    .spawn((
+                        WorldEntity(id.clone()),
+                        Collectible,
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                        Visibility::default(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Mesh3d(wa.sprite_quad.clone()),
+                            MeshMaterial3d(mat),
+                            Transform::from_xyz(0.0, 0.5, 0.0).with_scale(Vec3::splat(1.0 / 2.2)),
+                            hd2d::Billboard,
+                        ));
+                    });
             }
             EntityKind::Obstacle => {
                 spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
@@ -1283,8 +1309,9 @@ pub(crate) fn sync_chests(
     mut commands: Commands,
     world: Res<Overworld>,
     existing: Query<(Entity, &ChestEntity)>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    _meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    wa: Res<WorldAssets>,
 ) {
     use std::collections::HashSet;
     let mut present: HashSet<String> = HashSet::new();
@@ -1304,34 +1331,10 @@ pub(crate) fn sync_chests(
         // gold trim + latch. Closed → gold trim glows to catch the eye; opened →
         // the lid is thrown back and the glow dies.
         let opened = e.opened;
-        let wood = mats.add(StandardMaterial {
-            base_color: Color::srgb(0.46, 0.30, 0.16),
-            perceptual_roughness: 0.85,
-            ..default()
-        });
-        let wood_dark = mats.add(StandardMaterial {
-            base_color: Color::srgb(0.33, 0.21, 0.11),
-            perceptual_roughness: 0.85,
-            ..default()
-        });
-        let gold = mats.add(StandardMaterial {
-            base_color: Color::srgb(0.86, 0.68, 0.26),
-            emissive: if opened { LinearRgba::BLACK } else { LinearRgba::rgb(0.55, 0.42, 0.1) },
-            metallic: 0.6,
-            perceptual_roughness: 0.35,
-            ..default()
-        });
-        let body = meshes.add(Cuboid::new(1.1, 0.6, 0.72));
-        let lid = meshes.add(Cuboid::new(1.16, 0.26, 0.8));
-        let band = meshes.add(Cuboid::new(1.18, 0.1, 0.78));
-        let latch = meshes.add(Cuboid::new(0.16, 0.2, 0.06));
-        // Lid: shut on top, or flipped open and leaning back when opened.
-        let lid_tf = if opened {
-            Transform::from_xyz(0.0, 0.66, -0.36)
-                .with_rotation(Quat::from_rotation_x(-1.95))
-        } else {
-            Transform::from_xyz(0.0, 0.72, 0.0)
-        };
+        // Bespoke HD-2D chest billboard (PixelLab): closed vs. overflowing-open art.
+        let key = if opened { "item_chest_open" } else { "item_chest_common" };
+        let tex = wa.prop_sprites.get(key).cloned().unwrap_or_default();
+        let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
         commands
             .spawn((
                 ChestEntity { id: id.clone(), opened },
@@ -1341,10 +1344,12 @@ pub(crate) fn sync_chests(
                 Visibility::default(),
             ))
             .with_children(|p| {
-                p.spawn((Mesh3d(body), MeshMaterial3d(wood.clone()), Transform::from_xyz(0.0, 0.3, 0.0)));
-                p.spawn((Mesh3d(band), MeshMaterial3d(gold.clone()), Transform::from_xyz(0.0, 0.42, 0.0)));
-                p.spawn((Mesh3d(lid), MeshMaterial3d(wood_dark), lid_tf));
-                p.spawn((Mesh3d(latch), MeshMaterial3d(gold), Transform::from_xyz(0.0, 0.5, 0.39)));
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(1.5 / 2.2)),
+                    hd2d::Billboard,
+                ));
             });
     }
 }
@@ -1403,10 +1408,7 @@ pub(crate) fn spawn_player_avatar(
     };
     // The overworld shows one avatar per player; pick its sprite from the lead
     // class (only the Psyker has bespoke art → everyone else uses the martial sprite).
-    let frames = match class {
-        "psyker" => &wa.psyker,
-        _ => &wa.hunter,
-    };
+    let frames = wa.class_frames(class);
     let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
     let root = world_pos(e.x, e.y, 0.0);
     commands
@@ -1467,10 +1469,7 @@ pub(crate) fn spawn_follower(
     slot: usize,
     pos: Vec3,
 ) {
-    let frames = match class {
-        "psyker" => &wa.psyker,
-        _ => &wa.hunter,
-    };
+    let frames = wa.class_frames(class);
     let tint = Color::srgb(1.1, 1.12, 1.18); // party members read a touch cooler than the lead
     let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
     commands
@@ -1911,23 +1910,26 @@ pub(crate) fn build_terrain_sections(
         }
         if sec.levels.iter().any(|&l| l > 0) {
             let (top, cliff) = terrace_meshes(sec);
-            // Grassy plateau top: the grass texture over a SATURATED green base, so it
-            // reads as grass in every light (a pale base washes teal under the cool
-            // rain/dusk ambient). Terraces wear grass in all biomes — a mesa's top.
-            let grass_tex = wa.ground_tex.first().cloned(); // grass0.png
+            // Plateau top wears the SECTION's own biome ground tile (a desert mesa,
+            // ashfall shelf or tundra plateau no longer shows grass) — biome-aware
+            // instead of always grass. Neutral white base so the tile's colour shows.
+            let bi = crate::world_render::biome_ring_index(&sec.biome)
+                .min(wa.ground_tex.len().saturating_sub(1));
             let top_mat = mats.add(StandardMaterial {
-                base_color: Color::srgb(0.36, 0.6, 0.26),
-                base_color_texture: grass_tex,
+                base_color: Color::WHITE,
+                base_color_texture: wa.ground_tex.get(bi).cloned(),
                 perceptual_roughness: 0.95,
                 cull_mode: None,
                 ..default()
             });
-            // A dirt-textured backing mesh so the cliff reads as an earthy wall and
-            // never shows a gap behind the cliff models that dress the edges.
-            let dirt_tex = wa.ground_tex.get(2).cloned(); // dirt_full.png
+            // Earthy tiled rock wall behind the cliff-edge dressing (loaded directly so
+            // it's independent of the repurposed biome ground tiles above).
             let cliff_mat = mats.add(StandardMaterial {
                 base_color: Color::srgb(0.62, 0.5, 0.38),
-                base_color_texture: dirt_tex,
+                base_color_texture: Some(crate::world_render::load_tiled(
+                    &assets,
+                    "ground/dirt_full.png",
+                )),
                 perceptual_roughness: 1.0,
                 cull_mode: None,
                 ..default()
@@ -2143,57 +2145,35 @@ pub(crate) fn spawn_connector(
     // Stand the prop a touch proud of the cliff base (toward the camera / −Z) so it
     // reads as a distinct affordance and isn't swallowed by the cliff face.
     let z = c.y as f32 - 0.5; // overworld y → world Z
-    let mid_y = (lo_y + hi_y) * 0.5;
 
-    // A slope is a real Kenney rock ramp (the slope sibling of the cliff-face models),
-    // so it reads as natural geography instead of a flat plank. Scaled per level count
-    // so it bridges the whole rise, its base sitting on the lower ground.
-    if c.kind == "slope" {
-        let scene =
-            assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_blockSlope_rock.glb"));
-        let levels = (c.hi.max(c.lo) - c.lo.min(c.hi)).max(1) as f32;
-        commands.spawn((
-            TerrainMesh(idx),
-            SceneRoot(scene),
-            Transform::from_xyz(x, lo_y, z)
-                .with_scale(Vec3::splat(SLOPE_SCALE * levels))
-                .with_rotation(Quat::from_rotation_y(SLOPE_YAW)),
-        ));
-        return;
-    }
-
-    // Ladder / rope are still bold, warm, emissive primitives so the route up a cliff
-    // is unmistakable (and findable in shade) — the "legible route" spirit of the path.
-    let (mesh, color, emissive, transform) = match c.kind.as_str() {
-        "rope" => (
-            meshes.add(Cuboid::new(0.22, h * 1.05, 0.22)),
-            Color::srgb(0.95, 0.8, 0.42),
-            LinearRgba::new(0.5, 0.36, 0.12, 1.0),
-            Transform::from_xyz(x, mid_y, z),
-        ),
-        _ => (
-            // ladder: an upright post, bright wood, glowing rungs implied by emissive.
-            meshes.add(Cuboid::new(1.0, h * 1.05, 0.22)),
-            Color::srgb(0.9, 0.62, 0.28),
-            LinearRgba::new(0.55, 0.34, 0.1, 1.0),
-            Transform::from_xyz(x, mid_y, z),
-        ),
+    // HD-2D pixel billboard for the connector (PixelLab art): a plank ramp for a
+    // slope, a rung ladder, or a dangling rope — standing the whole rise so the route
+    // up/down a cliff reads clearly. Billboards face the camera (`hd2d::Billboard`), so
+    // they stay legible as the view orbits (no more stretched rock or glowing cuboids).
+    let key = match c.kind.as_str() {
+        "slope" => "connector_ramp",
+        "rope" => "connector_rope",
+        _ => "connector_ladder",
     };
-    let mat = mats.add(StandardMaterial {
-        base_color: color,
-        emissive,
-        perceptual_roughness: 0.85,
-        ..default()
-    });
-    // Lift the whole prop a touch so its low end clears the ground plane — a slope's
-    // base otherwise lies flush with y=0 and z-fights the ground (shimmering).
-    let transform = transform.with_translation(transform.translation + Vec3::Y * 0.14);
-    commands.spawn((
-        TerrainMesh(idx),
-        Mesh3d(mesh),
-        MeshMaterial3d(mat),
-        transform,
-    ));
+    let tex: Handle<Image> = assets.load(format!("props/{key}.png"));
+    let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
+    // Span the rise plus a little overlap so the ends tuck onto both levels.
+    let span = (h + STEP_HEIGHT * 0.5).max(1.6);
+    let quad = meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0));
+    commands
+        .spawn((
+            TerrainMesh(idx),
+            Transform::from_xyz(x, lo_y + 0.1, z),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(quad),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, span * 0.5, 0.0).with_scale(Vec3::splat(span / 2.2)),
+                hd2d::Billboard,
+            ));
+        });
 }
 
 pub(crate) fn spawn_billboard_entity(
@@ -2251,6 +2231,17 @@ pub(crate) fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
+    // Prefer the bespoke HD-2D pixel billboard for this obstacle (PixelLab art),
+    // scaled by the collision radius. Water pools keep their animated shader (below),
+    // where the moving surface reads better than a flat sprite.
+    let is_water = matches!(name, "pond" | "frozen_pond" | "bog_pool");
+    if !is_water {
+        if let Some(tex) = wa.prop_sprites.get(&format!("obstacle_{name}")) {
+            let height = (1.8 + r * 0.8).clamp(1.8, 4.5);
+            spawn_billboard_entity(commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55);
+            return;
+        }
+    }
     // 3D prop model (tree/rock/cliff/cactus/mushroom/…), variant + yaw from the id.
     if let Some(variants) = wa.prop_scenes.get(name) {
         if !variants.is_empty() {

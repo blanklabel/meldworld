@@ -203,7 +203,7 @@ pub(crate) fn pump_net(
             }
             ServerMsg::ActionResolved {
                 actor,
-                action: _,
+                action,
                 effects,
             } => {
                 let mut did_damage = false;
@@ -219,7 +219,24 @@ pub(crate) fn pump_net(
                 }
                 // A damaging action makes its actor lunge in to strike.
                 if did_damage {
-                    hitfx.acts.insert(actor, 0.0);
+                    hitfx.acts.insert(actor.clone(), 0.0);
+                }
+                // Pick the sprite clip: the basic `attack`, or the exact skill the
+                // client last fired (the wire `action` is only Attack/Skill/…). A
+                // non-damaging skill (heal/buff) still plays its clip, just no lunge.
+                let clip = match action.as_str() {
+                    "attack" => Some("attack".to_string()),
+                    "skill" => Some(
+                        battle
+                            .last_skill
+                            .get(&actor)
+                            .cloned()
+                            .unwrap_or_else(|| "attack".to_string()),
+                    ),
+                    _ => None,
+                };
+                if let Some(clip) = clip {
+                    hitfx.act_clip.insert(actor, clip);
                 }
             }
             ServerMsg::CombatantsJoined { combatants } => {

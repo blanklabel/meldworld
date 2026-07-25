@@ -1,0 +1,529 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "3b796e9b-2543-43b7-bfe5-3c3b8bcb26c1",
+        "name": "psyker",
+        "prompt": "Robed psychic mystic in a weird HD-2D fantasy style, hooded layered violet-and-indigo robes, eyes glowing with psionic light, floating faint arcane glyphs, one hand raised channeling telekinetic force. Reality-bender, not a spellcaster.",
+        "size": {
+          "width": 184,
+          "height": 184
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-25T13:41:48.836111+00:00"
+      },
+      "folder": "psyker",
+      "frames": {
+        "rotations": {
+          "south": "psyker/rotations/south.png",
+          "south-east": "psyker/rotations/south-east.png",
+          "east": "psyker/rotations/east.png",
+          "north-east": "psyker/rotations/north-east.png",
+          "north": "psyker/rotations/north.png",
+          "north-west": "psyker/rotations/north-west.png",
+          "west": "psyker/rotations/west.png",
+          "south-west": "psyker/rotations/south-west.png"
+        },
+        "animations": {
+          "attack": {
+            "south": [
+              "psyker/animations/attack/south/frame_000.png",
+              "psyker/animations/attack/south/frame_001.png",
+              "psyker/animations/attack/south/frame_002.png",
+              "psyker/animations/attack/south/frame_003.png",
+              "psyker/animations/attack/south/frame_004.png",
+              "psyker/animations/attack/south/frame_005.png",
+              "psyker/animations/attack/south/frame_006.png",
+              "psyker/animations/attack/south/frame_007.png"
+            ],
+            "north-east": [
+              "psyker/animations/attack/north-east/frame_000.png",
+              "psyker/animations/attack/north-east/frame_001.png",
+              "psyker/animations/attack/north-east/frame_002.png",
+              "psyker/animations/attack/north-east/frame_003.png",
+              "psyker/animations/attack/north-east/frame_004.png",
+              "psyker/animations/attack/north-east/frame_005.png",
+              "psyker/animations/attack/north-east/frame_006.png",
+              "psyker/animations/attack/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/attack/north-west/frame_000.png",
+              "psyker/animations/attack/north-west/frame_001.png",
+              "psyker/animations/attack/north-west/frame_002.png",
+              "psyker/animations/attack/north-west/frame_003.png",
+              "psyker/animations/attack/north-west/frame_004.png",
+              "psyker/animations/attack/north-west/frame_005.png",
+              "psyker/animations/attack/north-west/frame_006.png",
+              "psyker/animations/attack/north-west/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/attack/north/frame_000.png",
+              "psyker/animations/attack/north/frame_001.png",
+              "psyker/animations/attack/north/frame_002.png",
+              "psyker/animations/attack/north/frame_003.png",
+              "psyker/animations/attack/north/frame_004.png",
+              "psyker/animations/attack/north/frame_005.png",
+              "psyker/animations/attack/north/frame_006.png",
+              "psyker/animations/attack/north/frame_007.png"
+            ],
+            "south-east": [
+              "psyker/animations/attack/south-east/frame_000.png",
+              "psyker/animations/attack/south-east/frame_001.png",
+              "psyker/animations/attack/south-east/frame_002.png",
+              "psyker/animations/attack/south-east/frame_003.png",
+              "psyker/animations/attack/south-east/frame_004.png",
+              "psyker/animations/attack/south-east/frame_005.png",
+              "psyker/animations/attack/south-east/frame_006.png",
+              "psyker/animations/attack/south-east/frame_007.png"
+            ],
+            "west": [
+              "psyker/animations/attack/west/frame_000.png",
+              "psyker/animations/attack/west/frame_001.png",
+              "psyker/animations/attack/west/frame_002.png",
+              "psyker/animations/attack/west/frame_003.png",
+              "psyker/animations/attack/west/frame_004.png",
+              "psyker/animations/attack/west/frame_005.png",
+              "psyker/animations/attack/west/frame_006.png",
+              "psyker/animations/attack/west/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/attack/south-west/frame_000.png",
+              "psyker/animations/attack/south-west/frame_001.png",
+              "psyker/animations/attack/south-west/frame_002.png",
+              "psyker/animations/attack/south-west/frame_003.png",
+              "psyker/animations/attack/south-west/frame_004.png",
+              "psyker/animations/attack/south-west/frame_005.png",
+              "psyker/animations/attack/south-west/frame_006.png",
+              "psyker/animations/attack/south-west/frame_007.png"
+            ],
+            "east": [
+              "psyker/animations/attack/east/frame_000.png",
+              "psyker/animations/attack/east/frame_001.png",
+              "psyker/animations/attack/east/frame_002.png",
+              "psyker/animations/attack/east/frame_003.png",
+              "psyker/animations/attack/east/frame_004.png",
+              "psyker/animations/attack/east/frame_005.png",
+              "psyker/animations/attack/east/frame_006.png",
+              "psyker/animations/attack/east/frame_007.png"
+            ]
+          },
+          "temporal_anchor": {
+            "west": [
+              "psyker/animations/temporal_anchor/west/frame_000.png",
+              "psyker/animations/temporal_anchor/west/frame_001.png",
+              "psyker/animations/temporal_anchor/west/frame_002.png",
+              "psyker/animations/temporal_anchor/west/frame_003.png",
+              "psyker/animations/temporal_anchor/west/frame_004.png",
+              "psyker/animations/temporal_anchor/west/frame_005.png",
+              "psyker/animations/temporal_anchor/west/frame_006.png",
+              "psyker/animations/temporal_anchor/west/frame_007.png"
+            ],
+            "south": [
+              "psyker/animations/temporal_anchor/south/frame_000.png",
+              "psyker/animations/temporal_anchor/south/frame_001.png",
+              "psyker/animations/temporal_anchor/south/frame_002.png",
+              "psyker/animations/temporal_anchor/south/frame_003.png",
+              "psyker/animations/temporal_anchor/south/frame_004.png",
+              "psyker/animations/temporal_anchor/south/frame_005.png",
+              "psyker/animations/temporal_anchor/south/frame_006.png",
+              "psyker/animations/temporal_anchor/south/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/temporal_anchor/north/frame_000.png",
+              "psyker/animations/temporal_anchor/north/frame_001.png",
+              "psyker/animations/temporal_anchor/north/frame_002.png",
+              "psyker/animations/temporal_anchor/north/frame_003.png",
+              "psyker/animations/temporal_anchor/north/frame_004.png",
+              "psyker/animations/temporal_anchor/north/frame_005.png",
+              "psyker/animations/temporal_anchor/north/frame_006.png",
+              "psyker/animations/temporal_anchor/north/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/temporal_anchor/north-west/frame_000.png",
+              "psyker/animations/temporal_anchor/north-west/frame_001.png",
+              "psyker/animations/temporal_anchor/north-west/frame_002.png",
+              "psyker/animations/temporal_anchor/north-west/frame_003.png",
+              "psyker/animations/temporal_anchor/north-west/frame_004.png",
+              "psyker/animations/temporal_anchor/north-west/frame_005.png",
+              "psyker/animations/temporal_anchor/north-west/frame_006.png",
+              "psyker/animations/temporal_anchor/north-west/frame_007.png"
+            ],
+            "east": [
+              "psyker/animations/temporal_anchor/east/frame_000.png",
+              "psyker/animations/temporal_anchor/east/frame_001.png",
+              "psyker/animations/temporal_anchor/east/frame_002.png",
+              "psyker/animations/temporal_anchor/east/frame_003.png",
+              "psyker/animations/temporal_anchor/east/frame_004.png",
+              "psyker/animations/temporal_anchor/east/frame_005.png",
+              "psyker/animations/temporal_anchor/east/frame_006.png",
+              "psyker/animations/temporal_anchor/east/frame_007.png"
+            ],
+            "north-east": [
+              "psyker/animations/temporal_anchor/north-east/frame_000.png",
+              "psyker/animations/temporal_anchor/north-east/frame_001.png",
+              "psyker/animations/temporal_anchor/north-east/frame_002.png",
+              "psyker/animations/temporal_anchor/north-east/frame_003.png",
+              "psyker/animations/temporal_anchor/north-east/frame_004.png",
+              "psyker/animations/temporal_anchor/north-east/frame_005.png",
+              "psyker/animations/temporal_anchor/north-east/frame_006.png",
+              "psyker/animations/temporal_anchor/north-east/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/temporal_anchor/south-west/frame_000.png",
+              "psyker/animations/temporal_anchor/south-west/frame_001.png",
+              "psyker/animations/temporal_anchor/south-west/frame_002.png",
+              "psyker/animations/temporal_anchor/south-west/frame_003.png",
+              "psyker/animations/temporal_anchor/south-west/frame_004.png",
+              "psyker/animations/temporal_anchor/south-west/frame_005.png",
+              "psyker/animations/temporal_anchor/south-west/frame_006.png",
+              "psyker/animations/temporal_anchor/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "psyker/animations/temporal_anchor/south-east/frame_000.png",
+              "psyker/animations/temporal_anchor/south-east/frame_001.png",
+              "psyker/animations/temporal_anchor/south-east/frame_002.png",
+              "psyker/animations/temporal_anchor/south-east/frame_003.png",
+              "psyker/animations/temporal_anchor/south-east/frame_004.png",
+              "psyker/animations/temporal_anchor/south-east/frame_005.png",
+              "psyker/animations/temporal_anchor/south-east/frame_006.png",
+              "psyker/animations/temporal_anchor/south-east/frame_007.png"
+            ]
+          },
+          "mind_spike": {
+            "south-east": [
+              "psyker/animations/mind_spike/south-east/frame_000.png",
+              "psyker/animations/mind_spike/south-east/frame_001.png",
+              "psyker/animations/mind_spike/south-east/frame_002.png",
+              "psyker/animations/mind_spike/south-east/frame_003.png",
+              "psyker/animations/mind_spike/south-east/frame_004.png",
+              "psyker/animations/mind_spike/south-east/frame_005.png",
+              "psyker/animations/mind_spike/south-east/frame_006.png",
+              "psyker/animations/mind_spike/south-east/frame_007.png"
+            ],
+            "south": [
+              "psyker/animations/mind_spike/south/frame_000.png",
+              "psyker/animations/mind_spike/south/frame_001.png",
+              "psyker/animations/mind_spike/south/frame_002.png",
+              "psyker/animations/mind_spike/south/frame_003.png",
+              "psyker/animations/mind_spike/south/frame_004.png",
+              "psyker/animations/mind_spike/south/frame_005.png",
+              "psyker/animations/mind_spike/south/frame_006.png",
+              "psyker/animations/mind_spike/south/frame_007.png"
+            ],
+            "north-east": [
+              "psyker/animations/mind_spike/north-east/frame_000.png",
+              "psyker/animations/mind_spike/north-east/frame_001.png",
+              "psyker/animations/mind_spike/north-east/frame_002.png",
+              "psyker/animations/mind_spike/north-east/frame_003.png",
+              "psyker/animations/mind_spike/north-east/frame_004.png",
+              "psyker/animations/mind_spike/north-east/frame_005.png",
+              "psyker/animations/mind_spike/north-east/frame_006.png",
+              "psyker/animations/mind_spike/north-east/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/mind_spike/north/frame_000.png",
+              "psyker/animations/mind_spike/north/frame_001.png",
+              "psyker/animations/mind_spike/north/frame_002.png",
+              "psyker/animations/mind_spike/north/frame_003.png",
+              "psyker/animations/mind_spike/north/frame_004.png",
+              "psyker/animations/mind_spike/north/frame_005.png",
+              "psyker/animations/mind_spike/north/frame_006.png",
+              "psyker/animations/mind_spike/north/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/mind_spike/north-west/frame_000.png",
+              "psyker/animations/mind_spike/north-west/frame_001.png",
+              "psyker/animations/mind_spike/north-west/frame_002.png",
+              "psyker/animations/mind_spike/north-west/frame_003.png",
+              "psyker/animations/mind_spike/north-west/frame_004.png",
+              "psyker/animations/mind_spike/north-west/frame_005.png",
+              "psyker/animations/mind_spike/north-west/frame_006.png",
+              "psyker/animations/mind_spike/north-west/frame_007.png"
+            ],
+            "east": [
+              "psyker/animations/mind_spike/east/frame_000.png",
+              "psyker/animations/mind_spike/east/frame_001.png",
+              "psyker/animations/mind_spike/east/frame_002.png",
+              "psyker/animations/mind_spike/east/frame_003.png",
+              "psyker/animations/mind_spike/east/frame_004.png",
+              "psyker/animations/mind_spike/east/frame_005.png",
+              "psyker/animations/mind_spike/east/frame_006.png",
+              "psyker/animations/mind_spike/east/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/mind_spike/south-west/frame_000.png",
+              "psyker/animations/mind_spike/south-west/frame_001.png",
+              "psyker/animations/mind_spike/south-west/frame_002.png",
+              "psyker/animations/mind_spike/south-west/frame_003.png",
+              "psyker/animations/mind_spike/south-west/frame_004.png",
+              "psyker/animations/mind_spike/south-west/frame_005.png",
+              "psyker/animations/mind_spike/south-west/frame_006.png",
+              "psyker/animations/mind_spike/south-west/frame_007.png"
+            ],
+            "west": [
+              "psyker/animations/mind_spike/west/frame_000.png",
+              "psyker/animations/mind_spike/west/frame_001.png",
+              "psyker/animations/mind_spike/west/frame_002.png",
+              "psyker/animations/mind_spike/west/frame_003.png",
+              "psyker/animations/mind_spike/west/frame_004.png",
+              "psyker/animations/mind_spike/west/frame_005.png",
+              "psyker/animations/mind_spike/west/frame_006.png",
+              "psyker/animations/mind_spike/west/frame_007.png"
+            ]
+          },
+          "gravity_well": {
+            "north-east": [
+              "psyker/animations/gravity_well/north-east/frame_000.png",
+              "psyker/animations/gravity_well/north-east/frame_001.png",
+              "psyker/animations/gravity_well/north-east/frame_002.png",
+              "psyker/animations/gravity_well/north-east/frame_003.png",
+              "psyker/animations/gravity_well/north-east/frame_004.png",
+              "psyker/animations/gravity_well/north-east/frame_005.png",
+              "psyker/animations/gravity_well/north-east/frame_006.png",
+              "psyker/animations/gravity_well/north-east/frame_007.png"
+            ],
+            "south": [
+              "psyker/animations/gravity_well/south/frame_000.png",
+              "psyker/animations/gravity_well/south/frame_001.png",
+              "psyker/animations/gravity_well/south/frame_002.png",
+              "psyker/animations/gravity_well/south/frame_003.png",
+              "psyker/animations/gravity_well/south/frame_004.png",
+              "psyker/animations/gravity_well/south/frame_005.png",
+              "psyker/animations/gravity_well/south/frame_006.png",
+              "psyker/animations/gravity_well/south/frame_007.png"
+            ],
+            "west": [
+              "psyker/animations/gravity_well/west/frame_000.png",
+              "psyker/animations/gravity_well/west/frame_001.png",
+              "psyker/animations/gravity_well/west/frame_002.png",
+              "psyker/animations/gravity_well/west/frame_003.png",
+              "psyker/animations/gravity_well/west/frame_004.png",
+              "psyker/animations/gravity_well/west/frame_005.png",
+              "psyker/animations/gravity_well/west/frame_006.png",
+              "psyker/animations/gravity_well/west/frame_007.png"
+            ],
+            "east": [
+              "psyker/animations/gravity_well/east/frame_000.png",
+              "psyker/animations/gravity_well/east/frame_001.png",
+              "psyker/animations/gravity_well/east/frame_002.png",
+              "psyker/animations/gravity_well/east/frame_003.png",
+              "psyker/animations/gravity_well/east/frame_004.png",
+              "psyker/animations/gravity_well/east/frame_005.png",
+              "psyker/animations/gravity_well/east/frame_006.png",
+              "psyker/animations/gravity_well/east/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/gravity_well/south-west/frame_000.png",
+              "psyker/animations/gravity_well/south-west/frame_001.png",
+              "psyker/animations/gravity_well/south-west/frame_002.png",
+              "psyker/animations/gravity_well/south-west/frame_003.png",
+              "psyker/animations/gravity_well/south-west/frame_004.png",
+              "psyker/animations/gravity_well/south-west/frame_005.png",
+              "psyker/animations/gravity_well/south-west/frame_006.png",
+              "psyker/animations/gravity_well/south-west/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/gravity_well/north/frame_000.png",
+              "psyker/animations/gravity_well/north/frame_001.png",
+              "psyker/animations/gravity_well/north/frame_002.png",
+              "psyker/animations/gravity_well/north/frame_003.png",
+              "psyker/animations/gravity_well/north/frame_004.png",
+              "psyker/animations/gravity_well/north/frame_005.png",
+              "psyker/animations/gravity_well/north/frame_006.png",
+              "psyker/animations/gravity_well/north/frame_007.png"
+            ],
+            "south-east": [
+              "psyker/animations/gravity_well/south-east/frame_000.png",
+              "psyker/animations/gravity_well/south-east/frame_001.png",
+              "psyker/animations/gravity_well/south-east/frame_002.png",
+              "psyker/animations/gravity_well/south-east/frame_003.png",
+              "psyker/animations/gravity_well/south-east/frame_004.png",
+              "psyker/animations/gravity_well/south-east/frame_005.png",
+              "psyker/animations/gravity_well/south-east/frame_006.png",
+              "psyker/animations/gravity_well/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/gravity_well/north-west/frame_000.png",
+              "psyker/animations/gravity_well/north-west/frame_001.png",
+              "psyker/animations/gravity_well/north-west/frame_002.png",
+              "psyker/animations/gravity_well/north-west/frame_003.png",
+              "psyker/animations/gravity_well/north-west/frame_004.png",
+              "psyker/animations/gravity_well/north-west/frame_005.png",
+              "psyker/animations/gravity_well/north-west/frame_006.png",
+              "psyker/animations/gravity_well/north-west/frame_007.png"
+            ]
+          },
+          "kinetic_aegis": {
+            "east": [
+              "psyker/animations/kinetic_aegis/east/frame_000.png",
+              "psyker/animations/kinetic_aegis/east/frame_001.png",
+              "psyker/animations/kinetic_aegis/east/frame_002.png",
+              "psyker/animations/kinetic_aegis/east/frame_003.png",
+              "psyker/animations/kinetic_aegis/east/frame_004.png",
+              "psyker/animations/kinetic_aegis/east/frame_005.png",
+              "psyker/animations/kinetic_aegis/east/frame_006.png",
+              "psyker/animations/kinetic_aegis/east/frame_007.png"
+            ],
+            "south-east": [
+              "psyker/animations/kinetic_aegis/south-east/frame_000.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_001.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_002.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_003.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_004.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_005.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_006.png",
+              "psyker/animations/kinetic_aegis/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/kinetic_aegis/south-west/frame_000.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_001.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_002.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_003.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_004.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_005.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_006.png",
+              "psyker/animations/kinetic_aegis/south-west/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/kinetic_aegis/north/frame_000.png",
+              "psyker/animations/kinetic_aegis/north/frame_001.png",
+              "psyker/animations/kinetic_aegis/north/frame_002.png",
+              "psyker/animations/kinetic_aegis/north/frame_003.png",
+              "psyker/animations/kinetic_aegis/north/frame_004.png",
+              "psyker/animations/kinetic_aegis/north/frame_005.png",
+              "psyker/animations/kinetic_aegis/north/frame_006.png",
+              "psyker/animations/kinetic_aegis/north/frame_007.png"
+            ],
+            "west": [
+              "psyker/animations/kinetic_aegis/west/frame_000.png",
+              "psyker/animations/kinetic_aegis/west/frame_001.png",
+              "psyker/animations/kinetic_aegis/west/frame_002.png",
+              "psyker/animations/kinetic_aegis/west/frame_003.png",
+              "psyker/animations/kinetic_aegis/west/frame_004.png",
+              "psyker/animations/kinetic_aegis/west/frame_005.png",
+              "psyker/animations/kinetic_aegis/west/frame_006.png",
+              "psyker/animations/kinetic_aegis/west/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/kinetic_aegis/north-west/frame_000.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_001.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_002.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_003.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_004.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_005.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_006.png",
+              "psyker/animations/kinetic_aegis/north-west/frame_007.png"
+            ],
+            "south": [
+              "psyker/animations/kinetic_aegis/south/frame_000.png",
+              "psyker/animations/kinetic_aegis/south/frame_001.png",
+              "psyker/animations/kinetic_aegis/south/frame_002.png",
+              "psyker/animations/kinetic_aegis/south/frame_003.png",
+              "psyker/animations/kinetic_aegis/south/frame_004.png",
+              "psyker/animations/kinetic_aegis/south/frame_005.png",
+              "psyker/animations/kinetic_aegis/south/frame_006.png",
+              "psyker/animations/kinetic_aegis/south/frame_007.png"
+            ],
+            "north-east": [
+              "psyker/animations/kinetic_aegis/north-east/frame_000.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_001.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_002.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_003.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_004.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_005.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_006.png",
+              "psyker/animations/kinetic_aegis/north-east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "west": [
+              "psyker/animations/walk/west/frame_000.png",
+              "psyker/animations/walk/west/frame_001.png",
+              "psyker/animations/walk/west/frame_002.png",
+              "psyker/animations/walk/west/frame_003.png",
+              "psyker/animations/walk/west/frame_004.png",
+              "psyker/animations/walk/west/frame_005.png",
+              "psyker/animations/walk/west/frame_006.png",
+              "psyker/animations/walk/west/frame_007.png"
+            ],
+            "north-west": [
+              "psyker/animations/walk/north-west/frame_000.png",
+              "psyker/animations/walk/north-west/frame_001.png",
+              "psyker/animations/walk/north-west/frame_002.png",
+              "psyker/animations/walk/north-west/frame_003.png",
+              "psyker/animations/walk/north-west/frame_004.png",
+              "psyker/animations/walk/north-west/frame_005.png",
+              "psyker/animations/walk/north-west/frame_006.png",
+              "psyker/animations/walk/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "psyker/animations/walk/south-west/frame_000.png",
+              "psyker/animations/walk/south-west/frame_001.png",
+              "psyker/animations/walk/south-west/frame_002.png",
+              "psyker/animations/walk/south-west/frame_003.png",
+              "psyker/animations/walk/south-west/frame_004.png",
+              "psyker/animations/walk/south-west/frame_005.png",
+              "psyker/animations/walk/south-west/frame_006.png",
+              "psyker/animations/walk/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "psyker/animations/walk/south-east/frame_000.png",
+              "psyker/animations/walk/south-east/frame_001.png",
+              "psyker/animations/walk/south-east/frame_002.png",
+              "psyker/animations/walk/south-east/frame_003.png",
+              "psyker/animations/walk/south-east/frame_004.png",
+              "psyker/animations/walk/south-east/frame_005.png",
+              "psyker/animations/walk/south-east/frame_006.png",
+              "psyker/animations/walk/south-east/frame_007.png"
+            ],
+            "north": [
+              "psyker/animations/walk/north/frame_000.png",
+              "psyker/animations/walk/north/frame_001.png",
+              "psyker/animations/walk/north/frame_002.png",
+              "psyker/animations/walk/north/frame_003.png",
+              "psyker/animations/walk/north/frame_004.png",
+              "psyker/animations/walk/north/frame_005.png",
+              "psyker/animations/walk/north/frame_006.png",
+              "psyker/animations/walk/north/frame_007.png"
+            ],
+            "east": [
+              "psyker/animations/walk/east/frame_000.png",
+              "psyker/animations/walk/east/frame_001.png",
+              "psyker/animations/walk/east/frame_002.png",
+              "psyker/animations/walk/east/frame_003.png",
+              "psyker/animations/walk/east/frame_004.png",
+              "psyker/animations/walk/east/frame_005.png",
+              "psyker/animations/walk/east/frame_006.png",
+              "psyker/animations/walk/east/frame_007.png"
+            ],
+            "south": [
+              "psyker/animations/walk/south/frame_000.png",
+              "psyker/animations/walk/south/frame_001.png",
+              "psyker/animations/walk/south/frame_002.png",
+              "psyker/animations/walk/south/frame_003.png",
+              "psyker/animations/walk/south/frame_004.png",
+              "psyker/animations/walk/south/frame_005.png",
+              "psyker/animations/walk/south/frame_006.png",
+              "psyker/animations/walk/south/frame_007.png"
+            ],
+            "north-east": [
+              "psyker/animations/walk/north-east/frame_000.png",
+              "psyker/animations/walk/north-east/frame_001.png",
+              "psyker/animations/walk/north-east/frame_002.png",
+              "psyker/animations/walk/north-east/frame_003.png",
+              "psyker/animations/walk/north-east/frame_004.png",
+              "psyker/animations/walk/north-east/frame_005.png",
+              "psyker/animations/walk/north-east/frame_006.png",
+              "psyker/animations/walk/north-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-25T19:18:39.972583"
+}
