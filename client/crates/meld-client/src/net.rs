@@ -37,6 +37,11 @@ pub enum ClientCmd {
     Defend { battle_id: String, actor: String },
     Skill { battle_id: String, actor: String, target: String, skill_kind: String },
     Item { battle_id: String, actor: String, item_id: String, target: String },
+    /// Flee the battle (self-cast on the acting hero). A successful flee ends the
+    /// whole encounter and returns the party to the overworld — but the server
+    /// charges a toll (dropped chits + a chance to lose non-permanent items), so
+    /// it's a real escape decision, not a free reset (combat-atb.md).
+    Flee { battle_id: String, actor: String },
     /// Begin an extraction channel at the single deep fixed portal.
     Extract,
     /// Consume a Town Portal item to extract from anywhere (the primary way out).
@@ -812,6 +817,18 @@ impl Inner {
                     "action_id": uuid::Uuid::new_v4().to_string(),
                     "actor_combatant_id": actor,
                     "action": "defend",
+                    "skill_kind": null,
+                    "item_id": null,
+                    "target_ids": null
+                }),
+            ),
+            ClientCmd::Flee { battle_id, actor } => self.send_env(
+                wb::SubmitAction::TYPE,
+                json!({
+                    "battle_id": battle_id,
+                    "action_id": uuid::Uuid::new_v4().to_string(),
+                    "actor_combatant_id": actor,
+                    "action": "flee",
                     "skill_kind": null,
                     "item_id": null,
                     "target_ids": null

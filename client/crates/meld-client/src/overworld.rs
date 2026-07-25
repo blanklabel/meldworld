@@ -1,0 +1,2431 @@
+//! Overworld: movement + camera, snapshot→sprite reconciliation, terrain/walls,
+//! chests, HUD/minimap, party-follower entourage, and the perk overlays (lamp,
+//! nameplates). Extracted from `main.rs` during the module reorg.
+
+use std::collections::HashSet;
+
+use bevy::prelude::*;
+use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::gltf::GltfAssetLabel;
+
+use meld_client::hd2d::{self, CharSprite};
+use meld_client::net::{ClientCmd, EntityKind};
+
+use super::*;
+
+// -------------------------------------------------------------- overworld --
+
+/// An overworld action reachable by a keyboard key OR an on-screen (touch) button.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum OverworldAct {
+    Extract,
+    TownPortal,
+    Join,
+}
+
+/// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
+#[derive(Component)]
+pub(crate) struct TouchActionButton(OverworldAct);
+
+pub(crate) fn overworld_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            OverworldRoot,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(12.0)),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            p.spawn((
+                HudText,
+                Text::new("distance 0  -  Forest"),
+                TextFont {
+                    font_size: 20.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.9, 0.92, 1.0)),
+            ));
+            p.spawn((
+                Text::new(
+                    "WASD/arrows or drag = move | tap = go there | tap yourself = party/inventory | walk into nodes to harvest | T town portal | J join | E portal",
+                ),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+            ));
+            // Touch action bar (bottom-right). Also clickable with the mouse.
+            p.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    bottom: Val::Px(14.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(8.0),
+                    align_items: AlignItems::FlexEnd,
+                    ..default()
+                },
+            ))
+            .with_children(|bar| {
+                // Harvest is automatic (walk into a node); inventory/party opens by
+                // tapping your character — so the bar is just the situational actions.
+                for (act, label) in [
+                    (OverworldAct::Join, "Join"),
+                    (OverworldAct::Extract, "Portal"),
+                    (OverworldAct::TownPortal, "Town Portal"),
+                ] {
+                    action_button(bar, act, label);
+                }
+            });
+            // Virtual thumbstick (base ring + knob), shown only while dragging.
+            p.spawn((
+                JoystickBase,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(120.0),
+                    height: Val::Px(120.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderColor(Color::srgba(0.7, 0.8, 1.0, 0.5)),
+                BorderRadius::all(Val::Percent(50.0)),
+                BackgroundColor(Color::srgba(0.3, 0.4, 0.7, 0.15)),
+            ));
+            p.spawn((
+                JoystickKnob,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(56.0),
+                    height: Val::Px(56.0),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderRadius::all(Val::Percent(50.0)),
+                BackgroundColor(Color::srgba(0.8, 0.88, 1.0, 0.55)),
+            ));
+            // Full-screen overlay that holds per-mob nameplates (Hunter/Psyker
+            // intel), positioned in screen space by `update_mob_nameplates`.
+            p.spawn((
+                NameplateRoot,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+            // Shifter corner minimap (top-right). Hidden until the perk unlocks it;
+            // populated with dots by `update_minimap`.
+            p.spawn((
+                MinimapRoot,
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    top: Val::Px(14.0),
+                    width: Val::Px(140.0),
+                    height: Val::Px(140.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderColor(Color::srgba(0.6, 0.8, 1.0, 0.5)),
+                BorderRadius::all(Val::Px(6.0)),
+                BackgroundColor(Color::srgba(0.05, 0.08, 0.14, 0.65)),
+            ));
+        });
+}
+
+/// Position + show/hide the thumbstick from the [`Joystick`] state (touch UI).
+#[allow(clippy::type_complexity)]
+pub(crate) fn joystick_visual(
+    stick: Res<Joystick>,
+    mut base: Query<&mut Node, (With<JoystickBase>, Without<JoystickKnob>)>,
+    mut knob: Query<&mut Node, (With<JoystickKnob>, Without<JoystickBase>)>,
+) {
+    let active = stick.touch.is_some();
+    if let Ok(mut b) = base.single_mut() {
+        b.display = if active { Display::Flex } else { Display::None };
+        if active {
+            b.left = Val::Px(stick.origin.x - 60.0);
+            b.top = Val::Px(stick.origin.y - 60.0);
+        }
+    }
+    if let Ok(mut k) = knob.single_mut() {
+        k.display = if active { Display::Flex } else { Display::None };
+        if active {
+            let off = (stick.cur - stick.origin).clamp_length_max(60.0);
+            k.left = Val::Px(stick.origin.x + off.x - 28.0);
+            k.top = Val::Px(stick.origin.y + off.y - 28.0);
+        }
+    }
+}
+
+/// Spawn one action button into the touch bar.
+pub(crate) fn action_button(parent: &mut ChildSpawnerCommands, act: OverworldAct, label: &str) {
+    parent
+        .spawn((
+            Button,
+            TouchActionButton(act),
+            Node {
+                width: Val::Px(150.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(11.0)),
+                justify_content: JustifyContent::Center,
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.4, 0.5, 0.8)),
+            BorderRadius::all(Val::Px(8.0)),
+            BackgroundColor(Color::srgba(0.08, 0.11, 0.22, 0.9)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.88, 0.92, 1.0)),
+            ));
+        });
+}
+
+/// Handle taps/clicks on the overworld action buttons — same effects as the
+/// keyboard shortcuts, so touch and keyboard are fully interchangeable.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn touch_action_buttons(
+    q: Query<(&Interaction, &TouchActionButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    backpack: Res<RunBackpack>,
+) {
+    for (interaction, btn) in &q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+        match btn.0 {
+            OverworldAct::Extract => net.0.send(ClientCmd::Extract),
+            OverworldAct::TownPortal => {
+                if backpack.count("town_portal") > 0 {
+                    net.0.send(ClientCmd::TownPortal);
+                }
+            }
+            OverworldAct::Join => {
+                if near_fight(&world, me) {
+                    net.0.send(ClientCmd::JoinBattle);
+                }
+            }
+        }
+    }
+}
+
+/// Display name of the biome band at a floored distance (client-side mirror of
+/// the server's structural biome table — display only; the server stays
+/// authoritative for what actually spawns).
+pub(crate) fn biome_display(d: i64) -> &'static str {
+    match d {
+        0..=99 => "Forest",
+        100..=299 => "Desert",
+        300..=499 => "Ashfall",
+        500..=999 => "Tundra",
+        _ => "Mire",
+    }
+}
+
+/// Server (x, y) → HD-2D world space: x east, **z = server y** (south, +Z toward
+/// the camera parked behind the player). Y is up (height above the ground plane).
+pub(crate) fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
+    Vec3::new(x, height, y)
+}
+
+/// Exponential rate the rendered overworld positions chase the 20 Hz server
+/// snapshots (higher = snappier + less smoothing). Kills the pixel-sprite jitter.
+pub(crate) const OW_SMOOTH_RATE: f32 = 16.0;
+
+/// Drive the HD-2D camera each frame: orbit-follow the player, push the live
+/// `Look` post params into the camera, aim the sun, and recolour the ground to the
+/// player's current biome. Replaces the old flat 2D `follow_camera`.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(crate) fn hd2d_follow(
+    session: Res<Session>,
+    look: Res<hd2d::Look>,
+    time: Res<Time>,
+    // Follow the player's *smoothed* transform (not the raw 20 Hz snapshot), so the
+    // camera and the sprite move together — no relative jitter. Exclude the camera
+    // and sun so this `&Transform` read is disjoint from their `&mut Transform`.
+    players: Query<(&WorldEntity, &Transform), (Without<Camera3d>, Without<DirectionalLight>)>,
+    mut cam_q: Query<
+        (
+            &mut Transform,
+            &mut Projection,
+            Option<&mut bevy::core_pipeline::bloom::Bloom>,
+            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::pbr::DistanceFog>,
+        ),
+        With<Camera3d>,
+    >,
+) {
+    let Some(pos) = players
+        .iter()
+        .find(|(we, _)| we.0 == session.player_id)
+        .map(|(_, tf)| tf.translation)
+    else {
+        return;
+    };
+    // Rise with the player's terrace (pos.y already carries the smoothed elevation).
+    let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
+    if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
+        *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        hd2d::apply_post(
+            &look,
+            &mut proj,
+            bloom.map(|b| b.into_inner()),
+            dof.map(|d| d.into_inner()),
+            fog.map(|f| f.into_inner()),
+        );
+    }
+    // The ground's biome is now painted by the `GroundBiome` shader from world
+    // position (blended across boundaries), so there's no per-frame texture swap here.
+}
+
+/// Roughly the server's `join_radius` — the client only shows the Join prompt /
+/// accepts J within this of a fighting teammate; the server does the real check.
+pub(crate) const JOIN_PROMPT_RADIUS: f32 = 9.0;
+
+/// Is the player within join range of a teammate's ongoing fight?
+pub(crate) fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
+    let Some((mx, my)) = me else { return false };
+    world
+        .entities
+        .values()
+        .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
+}
+
+/// Draw the guaranteed clear path as a faint glowing trail of ground discs so the
+/// feasible route through the terrain reads at a glance. Redraws whenever the trail
+/// is gone (e.g. after returning from a battle, where the overworld is despawned).
+pub(crate) fn draw_path_trail(
+    mut commands: Commands,
+    mut world_path: ResMut<WorldPath>,
+    existing: Query<Entity, With<PathTrail>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    if world_path.points.len() < 2 {
+        return;
+    }
+    if world_path.drawn && !existing.is_empty() {
+        return;
+    }
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let disc = meshes.add(Circle::new(0.35));
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.95, 0.9, 0.5, 0.2),
+        emissive: LinearRgba::rgb(0.5, 0.45, 0.15),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let step = 2.5_f32; // world units between dots
+    for w in world_path.points.windows(2) {
+        let (ax, ay) = w[0];
+        let (bx, by) = w[1];
+        let seg = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let n = (seg / step).ceil().max(1.0) as i32;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let x = ax + (bx - ax) * t;
+            let y = ay + (by - ay) * t;
+            commands.spawn((
+                PathTrail,
+                Mesh3d(disc.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_translation(world_pos(x, y, 0.15)).with_rotation(flat),
+            ));
+        }
+    }
+    world_path.drawn = true;
+}
+
+/// Update the distance/biome HUD from the player's authoritative position.
+pub(crate) fn update_overworld_hud(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    backpack: Res<RunBackpack>,
+    perks: Res<PerksRes>,
+    terrain: Res<Terrain>,
+    mut q: Query<&mut Text, With<HudText>>,
+) {
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    // The biome label reads the ACTUAL section the player stands in (its radius ring),
+    // so it agrees with the ground + the creatures — not the fixed distance bands.
+    let r = d as f64;
+    let biome = terrain
+        .sections
+        .values()
+        .find(|s| r >= s.start_x && r < s.end_x)
+        .map(|s| title_case(&s.biome))
+        .unwrap_or_else(|| biome_display(d).to_string());
+    // Town Portals first (your way home), then a compact tally of gathered materials.
+    let tp = backpack.count("town_portal");
+    let mats: String = backpack
+        .items
+        .iter()
+        .filter(|(k, _)| k != "town_portal")
+        .map(|(k, q)| format!("{} {}", nice_name(k), q))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let me_pos = Some((me.x, me.y));
+    if let Ok(mut t) = q.single_mut() {
+        let mut line = format!("distance {d}  -  {biome}  -  \u{f0f10}{tp}"); // teleport = Town Portals
+        // Chits found this run (banked on extraction), then gathered materials.
+        if backpack.chits > 0 {
+            line.push_str(&format!("  -  {} chits", backpack.chits));
+        }
+        if !mats.is_empty() {
+            line.push_str(&format!("  -  {mats}"));
+        }
+        if !backpack.gear.is_empty() {
+            line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
+        }
+        if near_fight(&world, me_pos) {
+            line.push_str("  -  \u{f0817} Press [J] to join the fight"); // crossed-swords marker
+        }
+        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
+        if perks.0.resonant_regen > 0.0 {
+            line.push_str("  -  Regen");
+        }
+        if perks.0.ironhull_aggro_mult < 1.0 {
+            line.push_str("  -  Bulwark");
+        }
+        **t = line;
+    }
+}
+
+/// Keyboard-only overworld *actions* (E/T/H/J). Movement is device-agnostic in
+/// [`gather_steer`] + [`emit_move`]; the touch bar mirrors these actions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn overworld_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    autoplay: Res<Autoplay>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    overlay: Res<Overlay>,
+    backpack: Res<RunBackpack>,
+) {
+    // No actions while a screen is open or while channeling an extraction.
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+
+    let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+    // Nearest portal to the player (there is one per area now).
+    let portal = match me {
+        Some((mx, my)) => world
+            .entities
+            .values()
+            .filter(|e| e.kind == EntityKind::Portal)
+            .min_by(|a, b| {
+                let da = (a.x - mx).powi(2) + (a.y - my).powi(2);
+                let db = (b.x - mx).powi(2) + (b.y - my).powi(2);
+                da.total_cmp(&db)
+            })
+            .map(|e| (e.x, e.y)),
+        None => None,
+    };
+    let near_portal = match (me, portal) {
+        (Some((mx, my)), Some((px, py))) => ((mx - px).powi(2) + (my - py).powi(2)).sqrt() <= 2.0,
+        _ => false,
+    };
+
+    // Extract at the deep portal (E key, or autopilot once it arrives).
+    if keys.just_pressed(KeyCode::KeyE) || (autoplay.0 && near_portal) {
+        net.0.send(ClientCmd::Extract);
+        return;
+    }
+    // Town Portal (T): the primary way out — spend a Town Portal item to extract
+    // from anywhere.
+    if keys.just_pressed(KeyCode::KeyT) && backpack.count("town_portal") > 0 {
+        net.0.send(ClientCmd::TownPortal);
+        return;
+    }
+    // Harvesting is automatic now (walk into a node → `auto_harvest`); no key.
+    // Join a nearby fight (J): opt into a teammate's ongoing battle (never pulled
+    // in automatically). The server re-checks range.
+    if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
+        net.0.send(ClientCmd::JoinBattle);
+    }
+}
+
+/// Harvest resource nodes automatically the moment you walk within reach — so
+/// "touching" a node picks it up (and tapping/clicking a distant node just walks
+/// you there via tap-to-move, then this fires on arrival). `sent` dedupes so a node
+/// isn't requested twice before the server removes it.
+pub(crate) fn auto_harvest(
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    overlay: Res<Overlay>,
+    mut sent: Local<HashSet<String>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    for (id, e) in &world.entities {
+        if e.kind == EntityKind::Resource
+            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
+            && !sent.contains(id)
+        {
+            net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
+            sent.insert(id.clone());
+        }
+    }
+    sent.retain(|id| world.entities.contains_key(id)); // forget harvested/gone nodes
+}
+
+/// Distance in screen pixels from point `p` to the segment `a`–`b`.
+pub(crate) fn seg_point_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 > 1e-6 {
+        ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + ab * t)
+}
+
+/// Open the party + inventory menu (the old-school RPG screen) by **clicking or
+/// tapping your own character**. Replaces the inventory key/button. A click is a
+/// mouse press+release without a drag (drags orbit the camera); a tap is a touch on
+/// the character. The hit-test is in SCREEN space against the sprite's projected
+/// extent — the avatar is an upright billboard and the camera is tilted, so a flat
+/// ground-plane hit lands well *behind* the sprite you actually clicked.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn overworld_click_menu(
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    look: Res<hd2d::Look>,
+    net: NonSend<NetRes>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    mut overlay: ResMut<Overlay>,
+    mut inv: ResMut<InventoryData>,
+    mut press: Local<Option<Vec2>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let win = windows.iter().next();
+    // Gather a click point: a no-drag mouse click, or a touch tap.
+    let mut point = None;
+    if let Some(w) = win {
+        if mouse.just_pressed(MouseButton::Left) {
+            *press = w.cursor_position();
+        }
+        if mouse.just_released(MouseButton::Left) {
+            if let (Some(p0), Some(p1)) = (*press, w.cursor_position()) {
+                if p0.distance(p1) < 6.0 {
+                    point = Some(p1);
+                }
+            }
+            *press = None;
+        }
+    }
+    for t in touches.iter_just_pressed() {
+        point = Some(t.position());
+    }
+    let Some(p) = point else { return };
+    if ui_hit.iter().any(|i| *i != Interaction::None) {
+        return; // clicked a UI button, not the world
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    let Some(me) = world.entities.get(&session.player_id) else { return };
+
+    // Primary hit-test: project the sprite's vertical extent (feet→head) to the
+    // screen and measure the click's pixel distance to that line. This matches the
+    // billboard the player sees, regardless of camera tilt or zoom.
+    let base_y = me.level as f32 * STEP_HEIGHT;
+    let feet_w = Vec3::new(me.x, base_y, me.y);
+    let head_w = feet_w + Vec3::Y * (look.sprite_y * 2.0);
+    let on_sprite = match (
+        cam.world_to_viewport(cam_tf, feet_w).ok(),
+        cam.world_to_viewport(cam_tf, head_w).ok(),
+    ) {
+        (Some(feet_s), Some(head_s)) => {
+            // Tolerance scales with the sprite's on-screen height (bigger when
+            // zoomed in) with a floor so a small distant sprite is still clickable.
+            let radius = ((head_s - feet_s).length() * 0.6).max(40.0);
+            seg_point_dist(p, feet_s, head_s) < radius
+        }
+        _ => false,
+    };
+
+    // Fallback: a click that raycasts to the ground right at the avatar's feet
+    // still counts (covers extreme camera angles where projection is degenerate).
+    let mut near_feet = false;
+    if let Ok(ray) = cam.viewport_to_world(cam_tf, p) {
+        let dv = ray.direction.y;
+        if dv.abs() >= 1e-6 {
+            let dist = -ray.origin.y / dv;
+            if dist > 0.0 {
+                let hit = ray.get_point(dist);
+                near_feet = Vec2::new(hit.x, hit.z).distance(Vec2::new(me.x, me.y)) < 1.8;
+            }
+        }
+    }
+
+    if on_sprite || near_feet {
+        overlay.kind = Some(OverlayKind::Inventory);
+        inv.loaded = false;
+        net.0.fetch_inventory();
+    }
+}
+
+/// Server-frame (x = east, y = south) steering vector for this frame, filled by
+/// keyboard, the virtual joystick, or tap-to-move — whichever is active. Consumed
+/// by [`emit_move`]. Unifying here is what makes keyboard + touch interchangeable.
+#[derive(Resource, Default)]
+pub(crate) struct Steer(Vec2);
+
+/// A tap-to-move destination in *server* coords; cleared on arrival or when the
+/// player takes direct control (keyboard/joystick).
+#[derive(Resource, Default)]
+pub(crate) struct TapTarget(Option<Vec2>);
+
+/// The active virtual-joystick touch: its id + on-screen origin + current point.
+#[derive(Resource, Default)]
+pub(crate) struct Joystick {
+    touch: Option<u64>,
+    origin: Vec2,
+    cur: Vec2,
+}
+
+/// Markers for the on-screen thumbstick (base ring + knob).
+#[derive(Component)]
+pub(crate) struct JoystickBase;
+#[derive(Component)]
+pub(crate) struct JoystickKnob;
+
+/// Collect this frame's movement from keyboard OR the virtual joystick OR a
+/// tap-to-move target, into [`Steer`] (server frame). Priority: direct input
+/// (keyboard/joystick) overrides and cancels any tap-to-move.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn gather_steer(
+    keys: Res<ButtonInput<KeyCode>>,
+    touches: Res<Touches>,
+    autoplay: Res<Autoplay>,
+    overlay: Res<Overlay>,
+    session: Res<Session>,
+    world: Res<Overworld>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    mut steer: ResMut<Steer>,
+    mut tap: ResMut<TapTarget>,
+    mut stick: ResMut<Joystick>,
+) {
+    steer.0 = Vec2::ZERO;
+    if overlay.kind.is_some() || session.channeling {
+        stick.touch = None;
+        tap.0 = None;
+        return;
+    }
+    let win = windows.iter().next();
+    let joy_zone = win.map(|w| Vec2::new(w.width() * 0.38, w.height())); // left ~third
+
+    // Camera ground basis (server frame: x east, y south), so movement is
+    // **camera-relative** — "up" walks the way the camera faces, not a fixed world
+    // axis. Keeps the camera and movement married as you orbit.
+    let (fwd, right) = cam_q
+        .iter()
+        .next()
+        .map(|(_, tf)| {
+            let f = Vec3::from(tf.forward());
+            let r = Vec3::from(tf.right());
+            (
+                Vec2::new(f.x, f.z).normalize_or_zero(),
+                Vec2::new(r.x, r.z).normalize_or_zero(),
+            )
+        })
+        .unwrap_or((Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0)));
+
+    // 1) Keyboard — forward/right in the camera's frame.
+    let mut fwd_amt = 0.0;
+    let mut right_amt = 0.0;
+    if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) { fwd_amt += 1.0; }
+    if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) { fwd_amt -= 1.0; }
+    if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { right_amt -= 1.0; }
+    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { right_amt += 1.0; }
+    let mut mv = fwd * fwd_amt + right * right_amt;
+    if autoplay.0 && !world_idle_flag() {
+        mv += Vec2::new(1.0, 0.0); // demo walks world-east, camera-independent
+    }
+    if mv != Vec2::ZERO {
+        steer.0 = mv;
+        tap.0 = None;
+        stick.touch = None;
+        return;
+    }
+
+    // 2) Virtual joystick — a touch that began in the left zone. Window coords are
+    // y-down, which is exactly the server frame (south positive), so no flip.
+    if let Some(id) = stick.touch {
+        match touches.get_pressed(id) {
+            Some(t) => {
+                stick.cur = t.position();
+                let v = stick.cur - stick.origin; // screen px, y-down
+                if v.length() > 4.0 {
+                    // Camera-relative: up-drag walks the way the camera faces.
+                    let m = (right * v.x + fwd * -v.y) / 60.0; // full tilt ≈ 60px
+                    steer.0 = m.clamp_length_max(1.0);
+                }
+                tap.0 = None;
+                return;
+            }
+            None => stick.touch = None, // released
+        }
+    }
+    if let Some(zone) = joy_zone {
+        for t in touches.iter_just_pressed() {
+            let p = t.position();
+            if p.x <= zone.x && p.y >= zone.y * 0.35 {
+                stick.touch = Some(t.id());
+                stick.origin = p;
+                stick.cur = p;
+                tap.0 = None;
+                return;
+            }
+        }
+    }
+
+    // 3) Tap-to-move — a fresh tap on the world (not the joystick zone, not a UI
+    // button) sets a destination; we steer toward it until we arrive.
+    let ui_busy = ui_hit.iter().any(|i| *i != Interaction::None);
+    if !ui_busy {
+        if let (Some((cam, cam_tf)), Some(zone)) = (cam_q.iter().next(), joy_zone) {
+            for t in touches.iter_just_pressed() {
+                let p = t.position();
+                if p.x > zone.x {
+                    // Cast the tap through the 3D camera onto the ground plane
+                    // (y=0); the hit's (x, z) are the server (x, y) coords.
+                    if let Ok(ray) = cam.viewport_to_world(cam_tf, p) {
+                        let dy = ray.direction.y;
+                        if dy.abs() > 1e-6 {
+                            let dist = -ray.origin.y / dy;
+                            if dist > 0.0 {
+                                let hit = ray.get_point(dist);
+                                tap.0 = Some(Vec2::new(hit.x, hit.z));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let (Some(target), Some(me)) = (tap.0, world.entities.get(&session.player_id)) {
+        let dir = target - Vec2::new(me.x, me.y);
+        if dir.length() < 0.6 {
+            tap.0 = None;
+        } else {
+            steer.0 = dir.normalize_or_zero();
+        }
+    }
+}
+
+/// Send `movement.move_intent` from [`Steer`] at a fixed cadence so walk speed is
+/// frame-rate-independent (device-agnostic — keyboard and touch feed the same
+/// path).
+pub(crate) fn emit_move(
+    steer: Res<Steer>,
+    net: NonSend<NetRes>,
+    time: Res<Time>,
+    mut clock: ResMut<MoveClock>,
+) {
+    if steer.0 == Vec2::ZERO {
+        clock.acc = 0.0;
+        return;
+    }
+    let step = 1.0 / MOVE_INTENT_HZ;
+    clock.acc = (clock.acc + time.delta_secs()).min(0.25);
+    while clock.acc >= step {
+        clock.acc -= step;
+        net.0.send(ClientCmd::Move { dx: steer.0.x as f64, dy: steer.0.y as f64 });
+    }
+}
+
+
+/// Reconcile sprites to the authoritative snapshot: spawn new entities, move
+/// known ones, despawn the gone.
+/// Reconcile the 3D overworld scene with the latest server snapshot: move entities
+/// that persist, spawn newcomers as HD-2D visuals (billboard sprites for players,
+/// lit primitives for monsters/portals/resources/terrain), and despawn the gone.
+pub(crate) fn sync_overworld_sprites(
+    mut commands: Commands,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    look: Res<hd2d::Look>,
+    time: Res<Time>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut interp: ResMut<OwInterp>,
+    mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
+) {
+    let Some(wa) = wa else { return };
+    let now = time.elapsed_secs();
+
+    // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz). When a
+    // fresh one arrives, roll it into the interpolation buffer (shift current →
+    // previous), so remote sprites can lerp between the two most recent samples.
+    if interp.seen_seq != world.seq {
+        interp.seen_seq = world.seq;
+        for (id, e) in &world.entities {
+            let cur = InterpSample { x: e.x, y: e.y, level: e.level as f32, t: now };
+            interp
+                .states
+                .entry(id.clone())
+                .and_modify(|(prev, c)| {
+                    *prev = *c;
+                    *c = cur;
+                })
+                .or_insert((cur, cur));
+        }
+        interp.states.retain(|id, _| world.entities.contains_key(id));
+    }
+
+    // The LOCAL player stays on responsive frame-rate-independent exponential
+    // smoothing — the camera follows its transform (see `hd2d_follow`), so it must
+    // not render a snapshot behind. Every OTHER entity renders ~one tick behind,
+    // linearly interpolated between its two most recent snapshots: constant-velocity
+    // smooth motion with no rubber-banding and no extrapolation overshoot.
+    let k = 1.0 - (-time.delta_secs() * OW_SMOOTH_RATE).exp();
+    let render_t = now - OW_INTERP_DELAY;
+    let mut seen = HashSet::new();
+    for (entity, we, mut tf) in &mut q {
+        let Some(e) = world.entities.get(&we.0) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        // Idempotency guard: keep exactly one avatar per id. A rapid
+        // Battle→Overworld round-trip could otherwise leave a second sprite for
+        // the same id — it stops getting position updates and stands "frozen,
+        // facing the camera" while the live one moves. Despawn any such extra.
+        if !seen.insert(we.0.clone()) {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if we.0 == session.player_id {
+            // Responsive: chase the latest snapshot directly.
+            tf.translation.x += (e.x - tf.translation.x) * k;
+            tf.translation.z += (e.y - tf.translation.z) * k;
+            let target_y = e.level as f32 * STEP_HEIGHT;
+            tf.translation.y += (target_y - tf.translation.y) * k;
+        } else if let Some((prev, cur)) = interp.states.get(&we.0) {
+            // Interpolate between the two most recent samples at the delayed clock.
+            let denom = cur.t - prev.t;
+            let f = if denom > 1e-4 {
+                ((render_t - prev.t) / denom).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            tf.translation.x = prev.x + (cur.x - prev.x) * f;
+            tf.translation.z = prev.y + (cur.y - prev.y) * f;
+            tf.translation.y = (prev.level + (cur.level - prev.level) * f) * STEP_HEIGHT;
+        } else {
+            // Just appeared (no buffer yet): snap to its latest position.
+            tf.translation.x = e.x;
+            tf.translation.z = e.y;
+            tf.translation.y = e.level as f32 * STEP_HEIGHT;
+        }
+    }
+    for (id, e) in &world.entities {
+        if seen.contains(id) {
+            continue;
+        }
+        match e.kind {
+            EntityKind::Player => {
+                // We only know the local player's lead class (from their party);
+                // remote avatars fall back to the Hunter.
+                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("hunter");
+                spawn_player_avatar(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    &look,
+                    id,
+                    e,
+                    &session.player_id,
+                    lead,
+                );
+            }
+            EntityKind::Monster => {
+                // Pick the creature's billboard by normalized kind (shared with the
+                // battle arena so the same creature looks the same in both). Tinted
+                // faintly warm (like heroes) to stay vibrant under the cool ambient;
+                // a fighting creature glows hot.
+                let tex = creature_sprite(&wa, e.name.as_deref().unwrap_or(""));
+                let base = if e.battling {
+                    Color::srgb(1.4, 0.75, 0.55)
+                } else {
+                    Color::srgb(1.2, 1.15, 1.1)
+                };
+                // Nudge the (bright) tint faintly toward the faction hue so a clan of
+                // creatures still reads as belonging together, as the old colours did.
+                let tint = match (&e.faction, e.battling) {
+                    (Some(f), false) => {
+                        let (b, fc) = (base.to_srgba(), faction_color(f).to_srgba());
+                        let k = 0.2;
+                        Color::srgb(
+                            b.red * (1.0 - k) + fc.red * 1.5 * k,
+                            b.green * (1.0 - k) + fc.green * 1.5 * k,
+                            b.blue * (1.0 - k) + fc.blue * 1.5 * k,
+                        )
+                    }
+                    _ => base,
+                };
+                // FS-4: elites and gatekeepers read at a glance — bigger and menacingly
+                // tinted (a gatekeeper towers; an elite is a hot-glowing champion).
+                let (size, tint) = match e.encounter_class.as_deref() {
+                    Some("gatekeeper") => (1.6 * 2.2, Color::srgb(1.7, 0.45, 0.5)),
+                    Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
+                    _ => (1.6, tint),
+                };
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55);
+            }
+            EntityKind::Portal => {
+                // The stone-gateway billboard, plus a faint emissive ground ring so
+                // it still reads as a glowing exit at a distance.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    3.0,
+                    Color::srgb(1.2, 1.2, 1.3),
+                    0.0,
+                );
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Mesh3d(wa.portal_mesh.clone()),
+                    MeshMaterial3d(wa.portal_mat.clone()),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.08))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            }
+            EntityKind::Resource => {
+                // A real 3D harvest-node model that draws the eye by slowly pulsing
+                // its own emissive glow (`pulse_collectibles`) — no ground disc.
+                let kind = e.name.as_deref().unwrap_or("");
+                if let Some((scene, scale)) = wa.resource_scenes.get(kind) {
+                    let yaw = (hash_pick(id, 360) as f32).to_radians();
+                    commands.spawn((
+                        WorldEntity(id.clone()),
+                        Collectible,
+                        SceneRoot(scene.clone()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0))
+                            .with_scale(Vec3::splat(*scale))
+                            .with_rotation(Quat::from_rotation_y(yaw)),
+                    ));
+                }
+            }
+            EntityKind::Loot => {
+                // A dropped skirmish trophy — a small golden pickup nub on the grass
+                // until a player walks over it. It slowly pulses its own emissive glow
+                // (`pulse_collectibles`) to catch the eye — no ground disc.
+                let nub = mats.add(StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.85, 0.35),
+                    emissive: LinearRgba::rgb(1.6, 1.2, 0.4),
+                    ..default()
+                });
+                commands.spawn((
+                    WorldEntity(id.clone()),
+                    Collectible,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(nub),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.35))
+                        .with_scale(Vec3::splat(0.32)),
+                ));
+            }
+            EntityKind::Obstacle => {
+                spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
+            }
+            // Chests are static and change look when opened — a dedicated
+            // reconciler (`sync_chests`) owns them, not the generic sprite path.
+            EntityKind::Chest => {}
+        }
+    }
+}
+
+/// Slowly pulse the emissive glow of every [`Collectible`] (harvest node + ground
+/// loot) so pickups draw the eye without a flat disc on the ground that z-fights the
+/// grass. Drives the item's own material(s): a GLB harvest node keeps its meshes in a
+/// child scene (walk descendants), while a loot nub carries the material directly.
+pub(crate) fn pulse_collectibles(
+    time: Res<Time>,
+    roots: Query<Entity, With<Collectible>>,
+    child_q: Query<&Children>,
+    mat_of: Query<&MeshMaterial3d<StandardMaterial>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    // ~2.5 s breathe; `strength` scales each material's own colour into its emissive,
+    // so a blue gem glows blue and a gold trophy glows gold.
+    let phase = (time.elapsed_secs() * std::f32::consts::TAU * 0.4).sin() * 0.5 + 0.5;
+    let strength = 0.5 + 2.2 * phase;
+    for root in &roots {
+        for e in std::iter::once(root).chain(child_q.iter_descendants::<Children>(root)) {
+            let Ok(mm) = mat_of.get(e) else { continue };
+            let Some(m) = mats.get_mut(&mm.0) else {
+                continue;
+            };
+            let c = m.base_color.to_linear();
+            m.emissive = LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength);
+        }
+    }
+}
+
+/// Biome cliff/rock tone for the boulder-ridge walls (indexed by biome).
+pub(crate) fn biome_rock_color(bi: usize) -> Color {
+    match bi {
+        1 => Color::srgb(0.66, 0.53, 0.33), // Desert — sandstone
+        2 => Color::srgb(0.24, 0.18, 0.17), // Ashfall — dark basalt
+        3 => Color::srgb(0.74, 0.82, 0.92), // Tundra — pale ice/snow rock
+        4 => Color::srgb(0.30, 0.36, 0.30), // Mire — mossy stone (rare; mire uses water)
+        _ => Color::srgb(0.44, 0.48, 0.42), // Forest — grey-green cliff (also fallback)
+    }
+}
+
+/// Spawn one biome-appropriate boundary prop at world (x, y), tagged [`WorldWall`]
+/// (so the snapshot sync leaves it alone). Reuses the world's own art: a painterly
+/// treeline in the forest, a rugged boulder ridge elsewhere, water in the mire —
+/// so the border looks like natural geography, not a slab.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_wall_prop(
+    commands: &mut Commands,
+    wa: &WorldAssets,
+    rock_mats: &[Handle<StandardMaterial>],
+    bi: usize,
+    x: f32,
+    y: f32,
+    idx: usize,
+) {
+    let id = format!("wall-{idx}");
+    match bi {
+        0 => {
+            // Forest → a dense treeline built from the real 3D tree models (same
+            // Kenney Nature Kit scenes the obstacles use), variant + yaw from the id.
+            if let Some(variants) = wa.prop_scenes.get("tree").filter(|v| !v.is_empty()) {
+                let (scene, base) = &variants[hash_pick(&id, variants.len())];
+                let scale = base * (1.0 + (hash_pick(&id, 24) as f32) * 0.012); // slight variety
+                let yaw = (hash_pick(&id, 360) as f32).to_radians();
+                commands.spawn((
+                    WorldWall,
+                    SceneRoot(scene.clone()),
+                    Transform::from_translation(world_pos(x, y, 0.0))
+                        .with_scale(Vec3::splat(scale))
+                        .with_rotation(Quat::from_rotation_y(yaw)),
+                ));
+            } else {
+                // Fallback: a rugged rock if the tree scenes failed to load.
+                let mat = rock_mats.first().cloned().unwrap_or_default();
+                let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08;
+                commands.spawn((
+                    WorldWall,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(world_pos(x, y, 0.24 * s))
+                        .with_scale(Vec3::splat(s * 0.9)),
+                ));
+            }
+        }
+        4 => {
+            // Mire → a border of the shared animated water blobs.
+            let spin = (hash_pick(&id, 360) as f32).to_radians();
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.water_mesh.clone()),
+                MeshMaterial3d(wa.water_mat.clone()),
+                Transform::from_translation(world_pos(x, y, 0.2))
+                    .with_rotation(
+                        Quat::from_rotation_y(spin)
+                            * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    )
+                    .with_scale(Vec3::splat(3.4)),
+            ));
+        }
+        _ => {
+            // Desert / Ashfall / Tundra → a rugged boulder-cliff ridge.
+            let mat = rock_mats.get(bi).cloned().unwrap_or_default();
+            let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08; // 3.2–5.1, varied
+            commands.spawn((
+                WorldWall,
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(x, y, 0.24 * s))
+                    .with_scale(Vec3::splat(s * 0.9)),
+            ));
+        }
+    }
+}
+
+/// Build the map's framing, STREAMING with the endless world (#29): as each
+/// terrain section arrives it hugs that section's ±lateral edges with the biome
+/// border (treeline / boulder ridge / water), so "you can't leave the corridor"
+/// holds for the whole run — not just the starting chunk. The west end-cap
+/// (behind the hub) and the initial biome-seam gates are built once when the
+/// run's bounds arrive. No east cap — the world streams on forever.
+pub(crate) fn build_world_walls(
+    mut commands: Commands,
+    frame: Res<WorldFrame>,
+    terrain: Res<Terrain>,
+    wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
+    existing: Query<Entity, With<WorldWall>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut walled: Local<std::collections::HashSet<u32>>,
+) {
+    let Some(wa) = wa else { return };
+    if !frame.have {
+        return;
+    }
+    // A fresh run (new bounds) wipes the old framing + per-section tracking.
+    let new_run = frame.is_changed();
+    if new_run {
+        for e in &existing {
+            commands.entity(e).despawn();
+        }
+        walled.clear();
+    }
+    // Sections still needing edge walls (grows as the world streams east).
+    let mut todo: Vec<u32> = terrain
+        .sections
+        .keys()
+        .copied()
+        .filter(|i| !walled.contains(i))
+        .collect();
+    if !new_run && todo.is_empty() {
+        return;
+    }
+    todo.sort_unstable();
+    // One shared rock material per biome (avoids allocating hundreds).
+    let rock_mats: Vec<Handle<StandardMaterial>> = (0..5)
+        .map(|bi| {
+            mats.add(StandardMaterial {
+                base_color: biome_rock_color(bi),
+                perceptual_roughness: 1.0,
+                ..default()
+            })
+        })
+        .collect();
+    let step = 3.0_f32;
+
+    // Initial biome-seam gates (a ridge across the corridor with one gap you funnel
+    // through, flanked by standing-stone posts), built once when bounds arrive.
+    if new_run {
+        let lat = frame.lateral;
+        let mut sid = 900_000usize;
+        for s in &frame.seams {
+            let (sx, gap_y, gap_h) = (s.x as f32, s.gap_y as f32, s.gap_half_width as f32);
+            let bi = biome_index(sx.floor() as i64);
+            let mut y = -lat;
+            while y <= lat {
+                if (y - gap_y).abs() > gap_h {
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, sx, y, sid);
+                    sid += 1;
+                }
+                y += step;
+            }
+            for py in [gap_y - gap_h - 0.4, gap_y + gap_h + 0.4] {
+                let mat = rock_mats.get(bi.min(4)).cloned().unwrap_or_default();
+                commands.spawn((
+                    WorldWall,
+                    Mesh3d(wa.rock_mesh.clone()),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(world_pos(sx, py, 1.4))
+                        .with_scale(Vec3::new(2.2, 6.0, 2.2)),
+                ));
+            }
+        }
+
+        // Last City's WALL + GATE + skyline, built from real Kenney castle models
+        // (Pirate Kit, CC0) rather than scaled boxes. A stone rampart runs across the
+        // western return border with a central gatehouse; behind it, towers + rooftops
+        // read as the city itself — mostly glimpsed THROUGH the open gate as you
+        // approach. Crossing west of `west_return_border` returns you; the gate marks
+        // the line. All models sit at y=0 (Kenney base-origin), so nothing floats.
+        let wx = frame.west_return_border;
+        // "Into the city" is away from the hub; the wall faces back toward the player.
+        let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
+        let wall_yaw = 90.0_f32; // segments run north–south along world z
+        let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
+        let prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
+            commands.spawn((
+                WorldWall,
+                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
+                Transform::from_xyz(x, 0.0, z)
+                    .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
+                    .with_scale(Vec3::splat(scale)),
+            ));
+        };
+        // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5; tile at
+        // 6.5 so segments overlap slightly into a continuous rampart (no gaps).
+        const WALL_SCALE: f32 = 3.5;
+        const SEG_W: f32 = 6.5;
+        const WALL_HALF: f32 = 44.0; // how far ±z the rampart runs
+        const GATE_HALF: f32 = 7.0; // half-width of the central gateway (fits the gatehouse)
+        // The rampart: tiled wall segments, leaving the central gate gap.
+        let mut z = -WALL_HALF;
+        while z <= WALL_HALF {
+            if z.abs() > GATE_HALF {
+                prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
+            }
+            z += SEG_W;
+        }
+        // The gatehouse in the gap + two flanking towers (with pennants) framing it.
+        prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
+        for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
+            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+        }
+        // Towers punctuating the rampart at intervals.
+        for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
+            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+        }
+        // The city BEHIND the wall — a skyline of towers + rooftops set back so it's
+        // seen through the gate. Concentrated near z=0 (behind the doorway). Fixed
+        // layout: (model, back-offset, z, yaw°, scale).
+        let city: &[(&str, f32, f32, f32, f32)] = &[
+            ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
+            ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
+            ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
+            ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
+            ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
+            ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
+            ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
+            ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
+        ];
+        for (path, back, cz, yaw, scale) in city {
+            prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
+        }
+    }
+
+    // Per-section edge walls (deep forest thicket / 2-rank ridge) + the west
+    // end-cap for the first section (behind the hub).
+    for sidx in todo {
+        let sec = &terrain.sections[&sidx];
+        let lat = (-sec.y_min) as f32;
+        let (sx0, sx1) = (sec.start_x as f32, sec.end_x as f32);
+        let bi = biome_index(sx0.floor().max(0.0) as i64);
+        // Thick enough to fully occlude the distance now that fog is pulled in — the
+        // forest is deepest, but every biome gets a real enclosing band, not 2 props.
+        let ranks = if bi == 0 { 7 } else { 5 };
+        let mut id = sidx as usize * 8192; // unique-per-section so props vary, not tile
+        let mut x = sx0;
+        while x < sx1 {
+            for side in [1.0_f32, -1.0] {
+                // Organic edge: the wall line bulges OUTWARD by a smooth 0..~3.4 units
+                // that meanders along x (two out-of-phase sines, different per side), so
+                // the treeline reads as natural geography rather than a ruler-straight
+                // hedge. Outward-only keeps it clear of the walkable clamp at ±lateral.
+                let ph = if side > 0.0 { 0.0 } else { 2.3 };
+                let wave = ((x * 0.16 + ph).sin() + (x * 0.41 + ph * 1.7).sin()) * 0.5; // -1..1
+                let base = lat + (wave + 1.0) * 1.7; // lat .. lat+3.4, outward
+                for r in 0..ranks {
+                    let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.06;
+                    let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.05;
+                    let depth = 0.6 + r as f32 * 2.3;
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, side * (base + depth) + jy, id);
+                    id += 1;
+                }
+            }
+            x += step;
+        }
+        if sec.start_x <= 0.5 {
+            let xe = frame.x_min;
+            let ranks_e = if bi == 0 { 4 } else { 2 };
+            let mut y = -lat;
+            while y <= lat {
+                for r in 0..ranks_e {
+                    let depth = 0.6 + r as f32 * 2.3;
+                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, xe - depth, y, id);
+                    id += 1;
+                }
+                y += step;
+            }
+        }
+        walled.insert(sidx);
+    }
+}
+
+/// Reconcile treasure-chest visuals from the snapshot: spawn a chest when it
+/// first appears, re-spawn it (opened look) when it's opened, and despawn it if
+/// it leaves the world. Chests are few and static, so this owns them directly
+/// rather than the smoothed sprite path.
+pub(crate) fn sync_chests(
+    mut commands: Commands,
+    world: Res<Overworld>,
+    existing: Query<(Entity, &ChestEntity)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    use std::collections::HashSet;
+    let mut present: HashSet<String> = HashSet::new();
+    for (entity, ce) in &existing {
+        match world.entities.get(&ce.id) {
+            Some(e) if e.kind == EntityKind::Chest && e.opened == ce.opened => {
+                present.insert(ce.id.clone()); // up to date, keep
+            }
+            _ => commands.entity(entity).despawn(), // gone or opened-state changed → rebuild
+        }
+    }
+    for (id, e) in &world.entities {
+        if e.kind != EntityKind::Chest || present.contains(id) {
+            continue;
+        }
+        // A little wooden chest built from a few parts: body + banded domed lid +
+        // gold trim + latch. Closed → gold trim glows to catch the eye; opened →
+        // the lid is thrown back and the glow dies.
+        let opened = e.opened;
+        let wood = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.46, 0.30, 0.16),
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+        let wood_dark = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.33, 0.21, 0.11),
+            perceptual_roughness: 0.85,
+            ..default()
+        });
+        let gold = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.86, 0.68, 0.26),
+            emissive: if opened { LinearRgba::BLACK } else { LinearRgba::rgb(0.55, 0.42, 0.1) },
+            metallic: 0.6,
+            perceptual_roughness: 0.35,
+            ..default()
+        });
+        let body = meshes.add(Cuboid::new(1.1, 0.6, 0.72));
+        let lid = meshes.add(Cuboid::new(1.16, 0.26, 0.8));
+        let band = meshes.add(Cuboid::new(1.18, 0.1, 0.78));
+        let latch = meshes.add(Cuboid::new(0.16, 0.2, 0.06));
+        // Lid: shut on top, or flipped open and leaning back when opened.
+        let lid_tf = if opened {
+            Transform::from_xyz(0.0, 0.66, -0.36)
+                .with_rotation(Quat::from_rotation_x(-1.95))
+        } else {
+            Transform::from_xyz(0.0, 0.72, 0.0)
+        };
+        commands
+            .spawn((
+                ChestEntity { id: id.clone(), opened },
+                // Lift onto its terrace so a treasure-atop-a-climb chest sits on the
+                // plateau, not buried in the cliff below it.
+                Transform::from_translation(world_pos(e.x, e.y, e.level as f32 * STEP_HEIGHT)),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((Mesh3d(body), MeshMaterial3d(wood.clone()), Transform::from_xyz(0.0, 0.3, 0.0)));
+                p.spawn((Mesh3d(band), MeshMaterial3d(gold.clone()), Transform::from_xyz(0.0, 0.42, 0.0)));
+                p.spawn((Mesh3d(lid), MeshMaterial3d(wood_dark), lid_tf));
+                p.spawn((Mesh3d(latch), MeshMaterial3d(gold), Transform::from_xyz(0.0, 0.5, 0.39)));
+            });
+    }
+}
+
+/// Walk-into-to-open: when the avatar is within reach of an unopened chest, ask
+/// the server to open it (mirrors [`auto_harvest`]). The server rolls the loot.
+pub(crate) fn auto_open_chest(
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    overlay: Res<Overlay>,
+    mut sent: Local<std::collections::HashSet<String>>,
+) {
+    if overlay.kind.is_some() || session.channeling {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    for (id, e) in &world.entities {
+        if e.kind == EntityKind::Chest
+            && !e.opened
+            && e.level == me.level // must be on the chest's level (a terrace-top chest)
+            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
+            && !sent.contains(id)
+        {
+            net.0.send(ClientCmd::OpenChest { entity_id: id.clone() });
+            sent.insert(id.clone());
+        }
+    }
+    sent.retain(|id| world.entities.contains_key(id));
+}
+
+/// Spawn a player's overworld avatar: a ground-anchored, walk-animated psyker
+/// billboard (the placeholder for every class until per-class sprites land) with a
+/// soft contact shadow. Tinted so you (white) read apart from allies/fighters.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_player_avatar(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    look: &hd2d::Look,
+    id: &str,
+    e: &OwEntity,
+    me: &str,
+    class: &str,
+) {
+    // Tints run slightly hot to counter the cool ambient dimming the now-lit
+    // sprite, keeping the pixel art vibrant while it still catches the sun.
+    let tint = if id == me {
+        Color::srgb(1.25, 1.22, 1.12) // you — bright, faintly warm
+    } else if e.battling {
+        Color::srgb(1.3, 0.7, 0.5) // a fighting ally glows warm — go join
+    } else {
+        Color::srgb(0.85, 1.0, 1.3) // ally
+    };
+    // The overworld shows one avatar per player; pick its sprite from the lead
+    // class (only the Psyker has bespoke art → everyone else uses the martial sprite).
+    let frames = match class {
+        "psyker" => &wa.psyker,
+        _ => &wa.hunter,
+    };
+    let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
+    let root = world_pos(e.x, e.y, 0.0);
+    commands
+        .spawn((
+            WorldEntity(id.to_string()),
+            Transform::from_translation(root),
+            Visibility::default(),
+            CharSprite::new(frames.clone(), mat.clone(), root),
+        ))
+        .with_children(|p| {
+            let mut bb = p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, look.sprite_y, 0.0),
+                hd2d::Billboard,
+                hd2d::HeroBillboard,
+            ));
+            // The local hero's own sprite self-illuminates at night (a point light
+            // alone can't light the billboard it sits inside).
+            if id == me {
+                bb.insert(PlayerGlowSprite);
+            }
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+            ));
+            // Hunter "Predator's Eye" lamp: a real point light on the local avatar,
+            // brightening at night as the perk levels (see `update_hunter_lamp`). Only
+            // the local player carries it; intensity 0 until the perk is earned.
+            if id == me {
+                p.spawn((
+                    HunterLamp,
+                    PointLight {
+                        color: Color::srgb(1.0, 0.86, 0.6),
+                        intensity: 0.0,
+                        range: 14.0,
+                        radius: 0.4,
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 2.2, 0.0),
+                ));
+            }
+        });
+}
+
+/// Spawn one trailing party-member avatar (cosmetic; see [`sync_party_followers`]).
+/// Lighter than the lead: a movement-animated billboard + shadow, no lamp/glow.
+pub(crate) fn spawn_follower(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    look: &hd2d::Look,
+    class: &str,
+    slot: usize,
+    pos: Vec3,
+) {
+    let frames = match class {
+        "psyker" => &wa.psyker,
+        _ => &wa.hunter,
+    };
+    let tint = Color::srgb(1.1, 1.12, 1.18); // party members read a touch cooler than the lead
+    let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
+    commands
+        .spawn((
+            PartyFollower { slot },
+            Transform::from_translation(pos),
+            Visibility::default(),
+            CharSprite::new(frames.clone(), mat.clone(), pos),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, look.sprite_y, 0.0),
+                hd2d::Billboard,
+                hd2d::HeroBillboard,
+                PlayerGlowSprite, // stay visible at night like the lead
+            ));
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(1.0, 0.55, 1.0)),
+            ));
+        });
+}
+
+/// `P` toggles showing the whole party trailing you in the overworld (the menu's
+/// party screen offers the same toggle — see the inventory Status tab hint).
+pub(crate) fn toggle_party_view(keys: Res<ButtonInput<KeyCode>>, overlay: Res<Overlay>, mut pv: ResMut<PartyView>) {
+    // Ignore while a full-screen overlay owns the keyboard.
+    if overlay.kind.is_none() && keys.just_pressed(KeyCode::KeyP) {
+        pv.show = !pv.show;
+    }
+}
+
+/// Keep the cosmetic party-follower avatars in step with [`PartyView`]: spawn one per
+/// non-lead hero when on (despawn them when off), and trail them behind the lead in a
+/// loose V so the whole party appears to travel together.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_party_followers(
+    mut commands: Commands,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    time: Res<Time>,
+    wa: Res<WorldAssets>,
+    look: Res<hd2d::Look>,
+    pv: Res<PartyView>,
+    session: Res<Session>,
+    lead_q: Query<(&WorldEntity, &Transform, &CharSprite), Without<PartyFollower>>,
+    mut followers: Query<(Entity, &PartyFollower, &mut Transform), With<PartyFollower>>,
+) {
+    // How many followers we want: every party member after the lead (cap 3).
+    let want = if pv.show {
+        session.party.len().min(4).saturating_sub(1)
+    } else {
+        0
+    };
+    // Drop any follower that's no longer wanted (toggle off, or party shrank).
+    for (e, f, _) in &followers {
+        if f.slot > want {
+            commands.entity(e).despawn();
+        }
+    }
+    if want == 0 {
+        return;
+    }
+    // Find the lead avatar (the local player's) for the formation anchor.
+    let Some((lead_pos, facing)) = lead_q
+        .iter()
+        .find(|(we, _, _)| we.0 == session.player_id)
+        .map(|(_, t, cs)| (t.translation, cs.facing))
+    else {
+        return;
+    };
+    let f = facing.normalize_or_zero();
+    let fwd = Vec3::new(f.x, 0.0, f.y);
+    let right = Vec3::new(-f.y, 0.0, f.x);
+    // Per-slot trailing offset (behind the lead, fanned into a V).
+    let slot_offset = |slot: usize| -> Vec3 {
+        let (back, side) = match slot {
+            1 => (2.0, -1.3),
+            2 => (2.9, 0.0),
+            3 => (2.0, 1.3),
+            _ => (3.6, 0.0),
+        };
+        -fwd * back + right * side
+    };
+    // Ensure a follower exists for each wanted slot; ones present just get steered.
+    let mut present: Vec<usize> = followers.iter().map(|(_, f, _)| f.slot).collect();
+    for slot in 1..=want {
+        if !present.contains(&slot) {
+            let class = session.party.get(slot).map(String::as_str).unwrap_or("hunter");
+            spawn_follower(&mut commands, &mut mats, &wa, &look, class, slot, lead_pos + slot_offset(slot));
+            present.push(slot);
+        }
+    }
+    // Steer existing followers toward their formation slot (smooth, frame-rate independent).
+    let k = 1.0 - (-time.delta_secs() * 6.0).exp();
+    for (_, f, mut t) in &mut followers {
+        let target = lead_pos + slot_offset(f.slot);
+        t.translation.x += (target.x - t.translation.x) * k;
+        t.translation.z += (target.z - t.translation.z) * k;
+        t.translation.y += (lead_pos.y - t.translation.y) * k;
+    }
+}
+
+// ---------------------------------------------------------- perks (party sense) ---
+
+/// Marks the point light carried by the local avatar (Hunter "Predator's Eye").
+#[derive(Component)]
+pub(crate) struct HunterLamp;
+/// Marks a PLAYER-CHARACTER sprite billboard (overworld local hero + every battle
+/// hero) so its material self-illuminates at night — a co-located point light
+/// can't light the billboard it sits inside, so player sprites would otherwise go
+/// black in the dark. See [`illuminate_players`].
+#[derive(Component)]
+pub(crate) struct PlayerGlowSprite;
+/// A warm point light carried by each battle hero at night. The **Hunter** carries a
+/// big, bright lamp — its "Predator's Eye" class feature — with enough reach to light
+/// the enemy row across the arena; every other class carries only a soft, short-range
+/// glow so it stays visible without washing the scene or overflowing the renderer's
+/// light clusters (which read as flicker). `strength` is the full-dark intensity that
+/// [`illuminate_players`] scales by nightfall; the range/radius are baked at spawn.
+#[derive(Component)]
+pub(crate) struct BattlePartyLamp {
+    pub(crate) strength: f32,
+}
+/// Root UI node that holds the per-mob nameplates (Hunter/Psyker intel).
+#[derive(Component)]
+pub(crate) struct NameplateRoot;
+/// One mob nameplate (rebuilt each frame).
+#[derive(Component)]
+pub(crate) struct Nameplate;
+/// Root UI node for the Shifter corner minimap.
+#[derive(Component)]
+pub(crate) struct MinimapRoot;
+/// One minimap dot (rebuilt each frame).
+#[derive(Component)]
+pub(crate) struct MinimapDot;
+
+/// Hunter "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
+/// perk levels, dark by day and absent without a Hunter (intensity from `run.perks`).
+/// Hunter "Predator's Eye": the avatar's point light illuminates the surrounding
+/// overworld at night, brighter + wider as the perk levels (from `run.perks`).
+pub(crate) fn update_hunter_lamp(
+    perks: Res<PerksRes>,
+    sky: Res<Sky>,
+    mut q: Query<&mut PointLight, With<HunterLamp>>,
+) {
+    let glow = perks.0.hunter_glow;
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    for mut light in &mut q {
+        light.intensity = glow * night;
+        light.range = 12.0 + glow / 8000.0;
+    }
+}
+
+/// Player characters carry their own light at night so the game stays readable in
+/// the dark — overworld AND battle. Two parts, both scaled by darkness (nothing by
+/// day): (1) every [`PlayerGlowSprite`] self-illuminates by emitting its own
+/// texture, so the hero never goes black; (2) each [`BattlePartyLamp`] point light
+/// throws warm light off the party onto the enemy creature in the arena.
+pub(crate) fn illuminate_players(
+    sky: Res<Sky>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    sprites: Query<&MeshMaterial3d<StandardMaterial>, With<PlayerGlowSprite>>,
+    mut lamps: Query<(&mut PointLight, &BattlePartyLamp)>,
+) {
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    // Self-illumination: warm glow keyed off each sprite's own texture colours.
+    let ef = night * 1.15;
+    for mh in &sprites {
+        if let Some(m) = mats.get_mut(&mh.0) {
+            if m.emissive_texture.is_none() {
+                m.emissive_texture = m.base_color_texture.clone();
+            }
+            m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
+        }
+    }
+    // Each hero's lamp, scaled by nightfall and its own strength (the Hunter's is far
+    // brighter — its class feature — while the rest stay a soft fill).
+    for (mut light, lamp) in &mut lamps {
+        light.intensity = night * lamp.strength;
+    }
+}
+
+/// Hunter/Psyker intel: float a nameplate over each overworld mob — its level
+/// (Hunter tier ≥1), an HP bar (tier ≥2), and a Psyker threat marker for
+/// elites/gatekeepers (≥1) and aggressive mobs (≥2). Rebuilt each frame from the
+/// mobs' rendered positions, projected to screen.
+#[allow(clippy::type_complexity)]
+pub(crate) fn update_mob_nameplates(
+    mut commands: Commands,
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    cam_q: Query<(&Camera, &GlobalTransform)>,
+    root_q: Query<Entity, With<NameplateRoot>>,
+    mob_q: Query<(&WorldEntity, &GlobalTransform)>,
+    old: Query<Entity, With<Nameplate>>,
+) {
+    // Clear last frame's plates.
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let intel = perks.0.hunter_intel;
+    let threat = perks.0.psyker_threat;
+    if intel == 0 && threat == 0 {
+        return;
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else {
+        return;
+    };
+    let Ok(root) = root_q.single() else {
+        return;
+    };
+    commands.entity(root).with_children(|p| {
+        for (we, gtf) in &mob_q {
+            let Some(ent) = world.entities.get(&we.0) else {
+                continue;
+            };
+            if !matches!(ent.kind, EntityKind::Monster) {
+                continue;
+            }
+            // Project a point above the mob's head to the screen.
+            let head = gtf.translation() + Vec3::Y * 2.6;
+            let Some(s) = cam.world_to_viewport(cam_tf, head).ok() else {
+                continue;
+            };
+            // Threat marker (Psyker): elites/gatekeepers, then aggressive mobs.
+            let ec = ent.encounter_class.as_deref().unwrap_or("standard");
+            let aggr = ent.aggression.as_deref().unwrap_or("passive");
+            let (marker, marker_col) = if threat >= 1 && ec == "gatekeeper" {
+                ("!!!", Color::srgb(1.0, 0.3, 0.3))
+            } else if threat >= 1 && ec == "elite" {
+                ("!!", Color::srgb(1.0, 0.55, 0.2))
+            } else if threat >= 2 && aggr == "aggressive" {
+                ("!", Color::srgb(1.0, 0.75, 0.3))
+            } else {
+                ("", Color::NONE)
+            };
+            p.spawn((
+                Nameplate,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(s.x - 24.0),
+                    top: Val::Px(s.y - 14.0),
+                    width: Val::Px(48.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(1.0),
+                    ..default()
+                },
+            ))
+            .with_children(|c| {
+                if !marker.is_empty() {
+                    c.spawn((
+                        Text::new(marker),
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(marker_col),
+                    ));
+                }
+                if intel >= 1 {
+                    let lvl = ent.mob_level.unwrap_or(0);
+                    c.spawn((
+                        Text::new(format!("Lv {lvl}")),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgb(0.95, 0.95, 1.0)),
+                    ));
+                }
+                if intel >= 2 {
+                    if let (Some(hp), Some(max)) = (ent.hp, ent.max_hp) {
+                        let frac = if max > 0 { (hp as f32 / max as f32).clamp(0.0, 1.0) } else { 0.0 };
+                        // Green → red as HP falls.
+                        let fill = Color::srgb(1.0 - frac * 0.8, 0.2 + frac * 0.7, 0.2);
+                        c.spawn((
+                            Node {
+                                width: Val::Px(40.0),
+                                height: Val::Px(5.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+                        ))
+                        .with_children(|bar| {
+                            bar.spawn((
+                                Node {
+                                    width: Val::Percent(frac * 100.0),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(fill),
+                            ));
+                        });
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Shifter "Scout's Instinct": rebuild the corner minimap. The panel shows/hides by
+/// the map tier; dots plot entities within `shifter_map_radius` of the player —
+/// mobs + portal (tier ≥1), chests (≥2), harvestables (≥3), self at centre.
+#[allow(clippy::type_complexity)]
+pub(crate) fn update_minimap(
+    mut commands: Commands,
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
+    old: Query<Entity, With<MinimapDot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Ok((root, mut node)) = root_q.single_mut() else {
+        return;
+    };
+    let tier = perks.0.shifter_map;
+    node.display = if tier >= 1 { Display::Flex } else { Display::None };
+    if tier == 0 {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    // Panel is 140px; keep dots inside a 64px radius from its centre.
+    const HALF: f32 = 70.0;
+    const R: f32 = 64.0;
+    let radius = perks.0.shifter_map_radius.max(1.0);
+    let scale = R / radius;
+    commands.entity(root).with_children(|p| {
+        // The player, dead centre.
+        spawn_dot(p, HALF, HALF, 6.0, Color::srgb(1.0, 1.0, 1.0));
+        for e in world.entities.values() {
+            let (col, size) = match e.kind {
+                EntityKind::Monster => (Color::srgb(1.0, 0.4, 0.35), 5.0),
+                EntityKind::Portal => (Color::srgb(0.4, 0.85, 1.0), 6.0),
+                EntityKind::Chest if tier >= 2 => (Color::srgb(1.0, 0.82, 0.3), 5.0),
+                EntityKind::Resource if tier >= 3 => (Color::srgb(0.5, 0.95, 0.5), 4.0),
+                _ => continue,
+            };
+            let (dx, dy) = ((e.x - me.x) * scale, (e.y - me.y) * scale);
+            if dx.abs() > R || dy.abs() > R {
+                continue; // outside the minimap's world radius
+            }
+            spawn_dot(p, HALF + dx, HALF + dy, size, col);
+        }
+    });
+}
+
+/// Spawn one absolutely-positioned minimap dot centred at (`cx`,`cy`) px.
+pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f32, col: Color) {
+    p.spawn((
+        MinimapDot,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(cx - size / 2.0),
+            top: Val::Px(cy - size / 2.0),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            ..default()
+        },
+        BorderRadius::all(Val::Percent(50.0)),
+        BackgroundColor(col),
+    ));
+}
+
+/// Deterministically pick an index in `0..n` from an entity id (FNV-1a). Lets a
+/// grove of identical-kind obstacles show varied art without any per-entity state.
+pub(crate) fn hash_pick(id: &str, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let mut h: u32 = 2166136261;
+    for b in id.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    (h as usize) % n
+}
+
+/// Normalize a creature's wire name to its bare content-id **kind**. The overworld
+/// tags a mob `mob:<kind>:<faction>` (client parses out `<kind>`, e.g. `dune_wyrm`),
+/// but the battle sends a champion's affix prepended (`"Swift dune_wyrm"`, affixes
+/// Swift/Brutal/Armored/Giant/Vicious — see meld-world `apply_affix`). A content-id
+/// kind is a single underscored token with no spaces, so the kind is the last
+/// whitespace-delimited word; lowercased for good measure.
+pub(crate) fn creature_kind(name: &str) -> String {
+    name.trim()
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Resolve the billboard sprite for a creature by its normalized [`creature_kind`],
+/// so the SAME creature always renders the SAME sprite in the overworld and in
+/// battle. Mapped kinds hit `monster_sprites`; anything else hashes the *kind*
+/// (not the per-entity id) into the fallback pool, so every instance of an unmapped
+/// kind — and its later battle combatant — still agree on one sprite. (Fixes the
+/// overworld↔battle sprite mismatch, which was worst for affixed champions.)
+pub(crate) fn creature_sprite(wa: &WorldAssets, name: &str) -> Handle<Image> {
+    let kind = creature_kind(name);
+    wa.monster_sprites.get(&kind).cloned().unwrap_or_else(|| {
+        let pool = &wa.monster_pool;
+        pool[hash_pick(&kind, pool.len().max(1))].clone()
+    })
+}
+
+/// Spawn a camera-facing pixel-sprite billboard for a world entity (monster, prop,
+/// harvest node, portal): a lit, alpha-masked, ground-anchored quad plus (optionally)
+/// a soft contact shadow. `height` is the sprite's world height; `tint` recolours it;
+/// `shadow` is the shadow disc radius (0 = none). Tagged only [`hd2d::Billboard`]
+/// (not `HeroBillboard`), so it keeps this spawn-baked scale/height and just yaws to
+/// face the camera — hero sprites alone follow the live-tuned `Look` size.
+#[allow(clippy::too_many_arguments)]
+/// Build the stepped ground+cliff relief for every streamed section that isn't
+/// rendered yet, and spawn its connector props. Rebuilds sections whose meshes are
+/// gone (e.g. after returning from a battle) — the same redraw-when-absent idea as
+/// the path trail. Terraces sit ON TOP of the existing flat ground plane; only
+/// raised cells get a top surface + cliff faces, so level 0 is the plain ground.
+pub(crate) fn build_terrain_sections(
+    mut commands: Commands,
+    terrain: Res<Terrain>,
+    wa: Option<Res<WorldAssets>>,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    existing: Query<&TerrainMesh>,
+) {
+    let Some(wa) = wa else { return };
+    let built: HashSet<u32> = existing.iter().map(|t| t.0).collect();
+    for (idx, sec) in &terrain.sections {
+        if built.contains(idx) {
+            continue;
+        }
+        if sec.levels.iter().any(|&l| l > 0) {
+            let (top, cliff) = terrace_meshes(sec);
+            // Grassy plateau top: the grass texture over a SATURATED green base, so it
+            // reads as grass in every light (a pale base washes teal under the cool
+            // rain/dusk ambient). Terraces wear grass in all biomes — a mesa's top.
+            let grass_tex = wa.ground_tex.first().cloned(); // grass0.png
+            let top_mat = mats.add(StandardMaterial {
+                base_color: Color::srgb(0.36, 0.6, 0.26),
+                base_color_texture: grass_tex,
+                perceptual_roughness: 0.95,
+                cull_mode: None,
+                ..default()
+            });
+            // A dirt-textured backing mesh so the cliff reads as an earthy wall and
+            // never shows a gap behind the cliff models that dress the edges.
+            let dirt_tex = wa.ground_tex.get(2).cloned(); // dirt_full.png
+            let cliff_mat = mats.add(StandardMaterial {
+                base_color: Color::srgb(0.62, 0.5, 0.38),
+                base_color_texture: dirt_tex,
+                perceptual_roughness: 1.0,
+                cull_mode: None,
+                ..default()
+            });
+            commands.spawn((
+                TerrainMesh(*idx),
+                Mesh3d(meshes.add(top)),
+                MeshMaterial3d(top_mat),
+                Transform::default(),
+            ));
+            commands.spawn((
+                TerrainMesh(*idx),
+                Mesh3d(meshes.add(cliff)),
+                MeshMaterial3d(cliff_mat),
+                Transform::default(),
+            ));
+            // Dress the terrace edges with real Kenney cliff_rock models.
+            spawn_terrace_cliffs(&mut commands, &assets, sec, *idx);
+        } else {
+            // Flat section (e.g. the tutorial): record it as built so we don't
+            // rescan it every frame, but draw nothing.
+            commands.spawn((TerrainMesh(*idx), Transform::default(), Visibility::Hidden));
+        }
+        // The ladders / ropes / slopes that make each terrace reachable.
+        for c in &sec.connectors {
+            spawn_connector(&mut commands, &mut meshes, &mut mats, &assets, *idx, c);
+        }
+    }
+}
+
+/// Dress a section's terrace edges with real Kenney **cliff_rock** models: one per
+/// boundary cell (a raised cell with a lower neighbour), facing outward, so the
+/// terraces read as rocky cliffs rather than flat brown walls. The grass-top mesh
+/// covers the surface; these give the rocky face; the backing cliff mesh fills any
+/// gaps behind them.
+pub(crate) fn spawn_terrace_cliffs(
+    commands: &mut Commands,
+    assets: &AssetServer,
+    sec: &meld_client::net::TerrainSectionView,
+    idx: u32,
+) {
+    // Blockier cliff pieces (flat rock faces) read as a clean terrace wall; the
+    // rounded cliff_rock is kept as an occasional accent.
+    let cliffs: [Handle<Scene>; 3] = [
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
+        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_rock.glb")),
+    ];
+    let cols = sec.cols as usize;
+    let rows = sec.rows as usize;
+    let cell = sec.cell as f32;
+    let sx = sec.start_x as f32;
+    let zmin = sec.y_min as f32;
+    let lvl = |gx: i64, gy: i64| -> u8 {
+        if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
+            0
+        } else {
+            sec.levels[gx as usize * rows + gy as usize]
+        }
+    };
+    let mut placed = 0u32;
+    for gx in 0..cols {
+        for gy in 0..rows {
+            let l = sec.levels[gx * rows + gy];
+            if l == 0 {
+                continue;
+            }
+            // Outward direction = sum of the lower-neighbour directions; the lowest
+            // neighbour sets how far the rock face drops.
+            let mut dir = Vec2::ZERO;
+            let mut lowest = l;
+            for (ddx, ddz) in [(0i64, -1i64), (0, 1), (-1, 0), (1, 0)] {
+                let nl = lvl(gx as i64 + ddx, gy as i64 + ddz);
+                if nl < l {
+                    dir += Vec2::new(ddx as f32, ddz as f32);
+                    lowest = lowest.min(nl);
+                }
+            }
+            if dir == Vec2::ZERO {
+                continue; // interior cell — the grass top mesh covers it
+            }
+            let dir = dir.normalize_or_zero();
+            let cx = sx + (gx as f32 + 0.5) * cell;
+            let cz = zmin + (gy as f32 + 0.5) * cell;
+            let by = lowest as f32 * STEP_HEIGHT;
+            let yaw = dir.x.atan2(dir.y) + CLIFF_YAW_OFFSET;
+            let scene = cliffs[(gx + gy) % cliffs.len()].clone();
+            commands.spawn((
+                TerrainMesh(idx),
+                SceneRoot(scene),
+                Transform::from_xyz(cx, by, cz)
+                    .with_scale(Vec3::splat(CLIFF_EDGE_SCALE))
+                    .with_rotation(Quat::from_rotation_y(yaw)),
+            ));
+            placed += 1;
+            if placed > 400 {
+                return; // safety cap on a pathological section
+            }
+        }
+    }
+}
+
+/// Append a quad (two triangles) with a flat `normal` and per-corner `uv`. Winding
+/// is fixed; the terrace materials render double-sided so face direction never
+/// hides a surface.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_quad(
+    p: &mut Vec<[f32; 3]>,
+    n: &mut Vec<[f32; 3]>,
+    u: &mut Vec<[f32; 2]>,
+    idx: &mut Vec<u32>,
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+    d: [f32; 3],
+    normal: [f32; 3],
+    uv: [[f32; 2]; 4],
+) {
+    let base = p.len() as u32;
+    p.extend_from_slice(&[a, b, c, d]);
+    n.extend_from_slice(&[normal; 4]);
+    u.extend_from_slice(&uv);
+    idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Turn a section's elevation grid into two meshes: the terrace **tops** (grass,
+/// biome-tinted) and the **cliff faces** (dirt/rock) dropping to each lower
+/// neighbour. Vertices are in world space; overworld `y` maps to world Z.
+pub(crate) fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mesh, Mesh) {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    let cols = sec.cols as usize;
+    let rows = sec.rows as usize;
+    let cell = sec.cell as f32;
+    let sx = sec.start_x as f32;
+    let zmin = sec.y_min as f32;
+    let tile = 0.22f32; // texture repeats per world unit
+    let lvl = |gx: i64, gy: i64| -> u8 {
+        if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
+            0
+        } else {
+            sec.levels[gx as usize * rows + gy as usize]
+        }
+    };
+    let (mut tp, mut tn, mut tu, mut ti) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut cp, mut cn, mut cu, mut ci) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for gx in 0..cols {
+        for gy in 0..rows {
+            let l = sec.levels[gx * rows + gy];
+            if l == 0 {
+                continue;
+            }
+            let topy = l as f32 * STEP_HEIGHT;
+            let x0 = sx + gx as f32 * cell;
+            let x1 = x0 + cell;
+            let z0 = zmin + gy as f32 * cell;
+            let z1 = z0 + cell;
+            // Terrace top.
+            push_quad(
+                &mut tp, &mut tn, &mut tu, &mut ti,
+                [x0, topy, z0], [x1, topy, z0], [x1, topy, z1], [x0, topy, z1],
+                [0.0, 1.0, 0.0],
+                [[x0 * tile, z0 * tile], [x1 * tile, z0 * tile], [x1 * tile, z1 * tile], [x0 * tile, z1 * tile]],
+            );
+            // Cliff faces toward any lower neighbour (outside grid counts as level 0).
+            let mut face = |gx2: i64, gy2: i64, quad: [[f32; 3]; 4], normal: [f32; 3]| {
+                let nl = lvl(gx2, gy2);
+                if (nl as f32) < l as f32 {
+                    let by = nl as f32 * STEP_HEIGHT;
+                    let hh = (topy - by) * tile;
+                    let mut q = quad;
+                    q[0][1] = by;
+                    q[1][1] = by;
+                    push_quad(
+                        &mut cp, &mut cn, &mut cu, &mut ci, q[0], q[1], q[2], q[3], normal,
+                        [[0.0, 0.0], [cell * tile, 0.0], [cell * tile, hh], [0.0, hh]],
+                    );
+                }
+            };
+            // -Z, +Z, -X, +X. Bottom two verts' Y is overwritten inside `face`.
+            face(gx as i64, gy as i64 - 1, [[x1, 0.0, z0], [x0, 0.0, z0], [x0, topy, z0], [x1, topy, z0]], [0.0, 0.0, -1.0]);
+            face(gx as i64, gy as i64 + 1, [[x0, 0.0, z1], [x1, 0.0, z1], [x1, topy, z1], [x0, topy, z1]], [0.0, 0.0, 1.0]);
+            face(gx as i64 - 1, gy as i64, [[x0, 0.0, z0], [x0, 0.0, z1], [x0, topy, z1], [x0, topy, z0]], [-1.0, 0.0, 0.0]);
+            face(gx as i64 + 1, gy as i64, [[x1, 0.0, z1], [x1, 0.0, z0], [x1, topy, z0], [x1, topy, z1]], [1.0, 0.0, 0.0]);
+        }
+    }
+    let build = |p: Vec<[f32; 3]>, n: Vec<[f32; 3]>, u: Vec<[f32; 2]>, i: Vec<u32>| {
+        let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        m.insert_attribute(Mesh::ATTRIBUTE_POSITION, p);
+        m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n);
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, u);
+        m.insert_indices(Indices::U32(i));
+        m
+    };
+    (build(tp, tn, tu, ti), build(cp, cn, cu, ci))
+}
+
+/// Spawn the visible prop for one connector so the route up a cliff is legible: a
+/// **slope** as a tilted ramp board, a **ladder** as an upright rung post, a **rope**
+/// as a thin dangling line — each faintly emissive so it's findable in shade.
+pub(crate) fn spawn_connector(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    assets: &AssetServer,
+    idx: u32,
+    c: &meld_client::net::ConnectorView,
+) {
+    let lo_y = c.lo as f32 * STEP_HEIGHT;
+    let hi_y = c.hi as f32 * STEP_HEIGHT;
+    let h = (hi_y - lo_y).max(0.2);
+    let x = c.x as f32;
+    // Stand the prop a touch proud of the cliff base (toward the camera / −Z) so it
+    // reads as a distinct affordance and isn't swallowed by the cliff face.
+    let z = c.y as f32 - 0.5; // overworld y → world Z
+    let mid_y = (lo_y + hi_y) * 0.5;
+
+    // A slope is a real Kenney rock ramp (the slope sibling of the cliff-face models),
+    // so it reads as natural geography instead of a flat plank. Scaled per level count
+    // so it bridges the whole rise, its base sitting on the lower ground.
+    if c.kind == "slope" {
+        let scene =
+            assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_blockSlope_rock.glb"));
+        let levels = (c.hi.max(c.lo) - c.lo.min(c.hi)).max(1) as f32;
+        commands.spawn((
+            TerrainMesh(idx),
+            SceneRoot(scene),
+            Transform::from_xyz(x, lo_y, z)
+                .with_scale(Vec3::splat(SLOPE_SCALE * levels))
+                .with_rotation(Quat::from_rotation_y(SLOPE_YAW)),
+        ));
+        return;
+    }
+
+    // Ladder / rope are still bold, warm, emissive primitives so the route up a cliff
+    // is unmistakable (and findable in shade) — the "legible route" spirit of the path.
+    let (mesh, color, emissive, transform) = match c.kind.as_str() {
+        "rope" => (
+            meshes.add(Cuboid::new(0.22, h * 1.05, 0.22)),
+            Color::srgb(0.95, 0.8, 0.42),
+            LinearRgba::new(0.5, 0.36, 0.12, 1.0),
+            Transform::from_xyz(x, mid_y, z),
+        ),
+        _ => (
+            // ladder: an upright post, bright wood, glowing rungs implied by emissive.
+            meshes.add(Cuboid::new(1.0, h * 1.05, 0.22)),
+            Color::srgb(0.9, 0.62, 0.28),
+            LinearRgba::new(0.55, 0.34, 0.1, 1.0),
+            Transform::from_xyz(x, mid_y, z),
+        ),
+    };
+    let mat = mats.add(StandardMaterial {
+        base_color: color,
+        emissive,
+        perceptual_roughness: 0.85,
+        ..default()
+    });
+    // Lift the whole prop a touch so its low end clears the ground plane — a slope's
+    // base otherwise lies flush with y=0 and z-fights the ground (shimmering).
+    let transform = transform.with_translation(transform.translation + Vec3::Y * 0.14);
+    commands.spawn((
+        TerrainMesh(idx),
+        Mesh3d(mesh),
+        MeshMaterial3d(mat),
+        transform,
+    ));
+}
+
+pub(crate) fn spawn_billboard_entity(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    id: &str,
+    e: &OwEntity,
+    tex: Handle<Image>,
+    height: f32,
+    tint: Color,
+    shadow: f32,
+) {
+    // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
+    // lift it so the sprite's feet sit on the ground plane.
+    let scale = height / 2.2;
+    let mat = mats.add(hd2d::sprite_material(tint, tex));
+    commands
+        .spawn((
+            WorldEntity(id.to_string()),
+            Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
+                hd2d::Billboard,
+            ));
+            if shadow > 0.0 {
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(shadow, shadow * 0.55, shadow)),
+                ));
+            }
+        });
+}
+
+/// Spawn a terrain obstacle sized to its world radius. Vegetation and rock kinds are
+/// **real 3D models** (Kenney Nature Kit, CC0) — one of several variants picked by id
+/// hash and rotated for variety, so the world reads as dimensional HD-2D geometry
+/// rather than flat cut-outs. Water kinds stay flat pools; anything unmapped falls
+/// back to the lit boulder mesh.
+pub(crate) fn spawn_obstacle(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    id: &str,
+    e: &OwEntity,
+) {
+    let name = e.name.as_deref().unwrap_or("");
+    let r = e.radius.max(0.4);
+    let col = obstacle_color(name);
+    // 3D prop model (tree/rock/cliff/cactus/mushroom/…), variant + yaw from the id.
+    if let Some(variants) = wa.prop_scenes.get(name) {
+        if !variants.is_empty() {
+            let (scene, base) = &variants[hash_pick(id, variants.len())];
+            // Gently modulate the baked scale by the collision radius so bigger
+            // obstacles read bigger, without drifting far from the tuned size.
+            let scale = base * (0.85 + r * 0.15).clamp(0.85, 1.5);
+            let yaw = (hash_pick(id, 360) as f32).to_radians();
+            let mut ent = commands.spawn((
+                WorldEntity(id.to_string()),
+                SceneRoot(scene.clone()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.0))
+                    .with_scale(Vec3::splat(scale))
+                    .with_rotation(Quat::from_rotation_y(yaw)),
+            ));
+            // Foliage sways in the wind (see `animate_sway`); rock/cliff stays rigid.
+            if let Some(amp) = sway_amp(name) {
+                let h = hash_pick(id, 10000);
+                ent.insert(Sway {
+                    base_yaw: yaw,
+                    phase: (h % 628) as f32 / 100.0,
+                    amp,
+                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
+                });
+            }
+            return;
+        }
+    }
+    match name {
+        "pond" | "frozen_pond" | "bog_pool" => {
+            // Shared animated water material (scrolled by `animate_water`); spin each
+            // organic blob a different way so pools don't look stamped from one shape.
+            let spin = (hash_pick(id, 360) as f32).to_radians();
+            commands.spawn((
+                WorldEntity(id.to_string()),
+                Mesh3d(wa.water_mesh.clone()),
+                MeshMaterial3d(wa.water_mat.clone()),
+                Transform::from_translation(world_pos(e.x, e.y, 0.2))
+                    .with_rotation(
+                        Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                    )
+                    .with_scale(Vec3::splat(r * 2.0)),
+            ));
+        }
+        _ => {
+            let mat = mats.add(StandardMaterial {
+                base_color: col,
+                perceptual_roughness: 1.0,
+                ..default()
+            });
+            commands.spawn((
+                WorldEntity(id.to_string()),
+                Mesh3d(wa.rock_mesh.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_translation(world_pos(e.x, e.y, 0.24 * r))
+                    .with_scale(Vec3::splat(r * 0.7)),
+            ));
+        }
+    }
+}
+
+/// Turn a creature content id into a display name (`dune_wyrm` → `dune wyrm`).
+pub(crate) fn nice_name(kind: &str) -> String {
+    kind.replace('_', " ")
+}
+
+/// Title-case a class key for display (`alchemist_knight` → `Alchemist Knight`).
+pub(crate) fn class_display(key: &str) -> String {
+    key.split('_')
+        .map(|w| {
+            let mut cs = w.chars();
+            match cs.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + cs.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Colour for a terrain obstacle kind — greenery, stone, water and lava read
+/// distinctly so the map's geography is legible.
+pub(crate) fn obstacle_color(kind: &str) -> Color {
+    match kind {
+        "tree" | "cactus" | "mire_root" | "fungal_wall" => Color::srgb(0.18, 0.42, 0.22), // foliage
+        "pond" | "frozen_pond" | "bog_pool" => Color::srgb(0.22, 0.4, 0.6), // water
+        "lava" => Color::srgb(0.75, 0.32, 0.12), // molten
+        "ice_spire" | "snow_drift" => Color::srgb(0.72, 0.82, 0.9), // ice
+        // cliffs, boulders, dunes, spires, cinder rock — stone tones
+        _ => Color::srgb(0.42, 0.4, 0.38),
+    }
+}
+
+/// A distinct, deterministic colour per creature **faction** (FNV-1a hash → hue),
+/// so you can read who belongs together (and who doesn't) at a glance.
+pub(crate) fn faction_color(faction: &str) -> Color {
+    let mut h: u32 = 2166136261;
+    for b in faction.bytes() {
+        h = (h ^ b as u32).wrapping_mul(16777619);
+    }
+    Color::hsl((h % 360) as f32, 0.62, 0.56)
+}
+
+pub(crate) fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEntity>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+/// Move + pivot the overworld camera: **mouse** left/right-drag orbits, wheel
+/// zooms; **touch** two-finger drag orbits, pinch zooms. Both nudge the live
+/// `Look` (yaw/pitch/dist), which `hd2d_follow` then applies while keeping the
+/// player centred. Camera-relative facing keeps the hero oriented as you orbit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn overworld_camera_control(
+    mut look: ResMut<hd2d::Look>,
+    overlay: Res<Overlay>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut motion: EventReader<MouseMotion>,
+    mut wheel: EventReader<MouseWheel>,
+    touches: Res<Touches>,
+    mut pinch: Local<Option<f32>>,
+    mut two_mid: Local<Option<Vec2>>,
+) {
+    // Don't pivot while a full-screen overlay (inventory / level-up) is up.
+    if overlay.kind.is_some() {
+        motion.clear();
+        wheel.clear();
+        return;
+    }
+    let orbit = |look: &mut hd2d::Look, dx: f32, dy: f32| {
+        look.cam_yaw -= dx * 0.4;
+        // Cap the tilt well below overhead. The sprites are upright billboards that
+        // only yaw to face the camera, so their apparent height falls off as ~cos(pitch)
+        // as you tilt down — at 60° they're half-height (a sliver) and near overhead they
+        // vanish edge-on. Capping at 50° keeps them at ~64% height and clearly readable
+        // at every allowed angle (the HD-2D convention: never let the camera go overhead).
+        look.cam_pitch = (look.cam_pitch + dy * 0.4).clamp(10.0, 50.0);
+    };
+    let zoom = |look: &mut hd2d::Look, d: f32| {
+        look.cam_dist = (look.cam_dist + d).clamp(8.0, 60.0);
+    };
+
+    // Mouse: drag (either button) to orbit, wheel to zoom.
+    if buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right) {
+        let mut d = Vec2::ZERO;
+        for e in motion.read() {
+            d += e.delta;
+        }
+        if d != Vec2::ZERO {
+            orbit(&mut look, d.x, d.y);
+        }
+    } else {
+        motion.clear();
+    }
+    for e in wheel.read() {
+        zoom(&mut look, -e.y * 2.0);
+    }
+
+    // Touch: two-finger pinch to zoom + two-finger drag to orbit.
+    let pts: Vec<Vec2> = touches.iter().map(|t| t.position()).collect();
+    if pts.len() == 2 {
+        let dist = pts[0].distance(pts[1]);
+        let mid = (pts[0] + pts[1]) * 0.5;
+        if let Some(prev) = *pinch {
+            zoom(&mut look, -(dist - prev) * 0.05);
+        }
+        if let Some(pm) = *two_mid {
+            let dm = mid - pm;
+            orbit(&mut look, dm.x, dm.y);
+        }
+        *pinch = Some(dist);
+        *two_mid = Some(mid);
+    } else {
+        *pinch = None;
+        *two_mid = None;
+    }
+}

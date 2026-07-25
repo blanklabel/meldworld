@@ -97,6 +97,12 @@ pub struct Battle {
     pub flee_base: f64,
     pub flee_penalty_per_tier: f64,
     pub flee_floor: f64,
+    /// Fraction of un-banked chits forfeited on a successful flee (the run
+    /// continues, unlike death — see `handle_battle_end`'s `Fled` arm).
+    pub flee_chit_loss_fraction: f64,
+    /// Per-item probability that a non-permanent item (backpack material or
+    /// red-chest looted gear) is dropped when you flee.
+    pub flee_item_drop_chance: f64,
     pub merge_cap_normal_instances: i32,
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,

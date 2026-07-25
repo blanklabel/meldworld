@@ -1,0 +1,393 @@
+//! Net glue: pump server messages into game state/screens, the demo driver,
+//! the shared `despawn::<T>` helper, and the UI font install.
+//! Extracted from `main.rs` during the module reorg.
+
+
+use bevy::prelude::*;
+
+use meld_client::net::{CombatantView, ServerMsg};
+
+use super::*;
+
+pub(crate) fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, With<T>>) {
+    for e in &q {
+        commands.entity(e).despawn();
+    }
+}
+
+/// The bundled UI font — JetBrainsMono Nerd Font (OFL): a monospace text face with
+/// Font-Awesome / Material-Design icons baked in at private-use codepoints, so the
+/// HUD renders both Latin text and real icons instead of the ASCII-only default
+/// (which drew `⚡`/`◆`/… as tofu boxes). See `assets/fonts/`.
+#[derive(Resource)]
+pub(crate) struct UiFont(Handle<Font>);
+
+pub(crate) fn load_ui_font(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(UiFont(
+        assets.load("fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+    ));
+}
+
+/// Retro-fit the bundled font onto every text node, so all UI (spawned across many
+/// call sites with `TextFont { ..default() }`) picks it up without threading a handle
+/// through each one. No call site sets its own font, so patching unconditionally is
+/// safe — and it avoids depending on Bevy's internal default-font handle. Idempotent:
+/// the id check means an already-patched node is never written again.
+pub(crate) fn apply_ui_font(ui: Option<Res<UiFont>>, mut q: Query<&mut TextFont>) {
+    let Some(ui) = ui else { return };
+    for mut tf in &mut q {
+        if tf.font.id() != ui.0.id() {
+            tf.font = ui.0.clone();
+        }
+    }
+}
+
+// --------------------------------------------------------------- net pump --
+
+/// Drain server messages every frame, update resources, drive transitions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pump_net(
+    net: NonSend<NetRes>,
+    mut session: ResMut<Session>,
+    mut world: ResMut<Overworld>,
+    mut battle: ResMut<BattleData>,
+    mut end: ResMut<EndInfo>,
+    mut menu: ResMut<BattleMenu>,
+    mut hitfx: ResMut<HitFx>,
+    mut inv: ResMut<InventoryData>,
+    mut prog: ResMut<ProgressData>,
+    mut lobby: ResMut<LobbyData>,
+    mut backpack: ResMut<RunBackpack>,
+    // Grouped as one tuple param to stay within Bevy's 16-param system limit.
+    mut world_res: (
+        ResMut<WorldPath>,
+        ResMut<WorldFrame>,
+        ResMut<Terrain>,
+        ResMut<LootReport>,
+        ResMut<PerksRes>,
+        ResMut<AccountHeroNames>,
+        ResMut<RunGearData>,
+    ),
+    mut roster: ResMut<PartyRoster>,
+    mut levelup: ResMut<LevelUpQueue>,
+    state: Res<State<Screen>>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear) = &mut world_res;
+    net.0.poll();
+    while let Some(msg) = net.0.try_recv() {
+        match msg {
+            ServerMsg::Backpack { items, chits, gear } => {
+                backpack.items = items;
+                backpack.chits = chits;
+                backpack.gear = gear;
+            }
+            ServerMsg::Party { heroes } => roster.heroes = heroes,
+            ServerMsg::Perks { perks: p } => perks.0 = p,
+            ServerMsg::LevelUp { new_run_level, heroes, .. } => {
+                // Enqueue each leveled hero for the old-school stat screen.
+                levelup.run_level = new_run_level;
+                levelup.pending.extend(heroes);
+            }
+            ServerMsg::WorldPath { points } => {
+                world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
+                world_path.drawn = false;
+            }
+            ServerMsg::TerrainSection { section } => {
+                // A streamed section extends the clear-path trail (initial-chain
+                // sections carry no path — that already rode run.started).
+                if !section.path.is_empty() {
+                    for (x, y) in &section.path {
+                        world_path.points.push((*x as f32, *y as f32));
+                    }
+                    world_path.drawn = false;
+                }
+                terrain.sections.insert(section.index, section);
+            }
+            ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, seams } => {
+                world_frame.have = true;
+                world_frame.x_min = x_min as f32;
+                world_frame.x_max = x_max as f32;
+                world_frame.lateral = lateral as f32;
+                world_frame.west_return_border = west_return_border as f32;
+                world_frame.seams = seams;
+            }
+            ServerMsg::Connected { player_id } => {
+                session.player_id = player_id;
+                // Post-auth home is the hub city (The Weld). From there the player
+                // steps through The Threshold to dive (solo or co-op). This is what
+                // makes the city the always-there base of the extract-or-die loop.
+                session.status = "arrived in The Weld".to_string();
+                if *state.get() == Screen::Join {
+                    next.set(Screen::City);
+                }
+            }
+            ServerMsg::RunStarted => {
+                // Fresh dive: drop any terrain from the previous run before the new
+                // section stream arrives (server sends them right after this).
+                terrain.sections.clear();
+                // The dive can start from the City (solo, via The Threshold) or
+                // the Lobby (co-op).
+                lobby.in_lobby = false;
+                if matches!(*state.get(), Screen::City | Screen::Lobby) {
+                    next.set(Screen::Overworld);
+                }
+            }
+            ServerMsg::LobbyState { code, host, members } => {
+                lobby.in_lobby = true;
+                lobby.code = code;
+                lobby.my_ready = members
+                    .iter()
+                    .find(|(id, _, _)| id == &session.player_id)
+                    .map(|(_, _, r)| *r)
+                    .unwrap_or(false);
+                lobby.host = host;
+                lobby.members = members;
+                if matches!(*state.get(), Screen::Join | Screen::City) {
+                    next.set(Screen::Lobby);
+                }
+            }
+            ServerMsg::LobbyClosed => {
+                lobby.in_lobby = false;
+                lobby.members.clear();
+                lobby.code.clear();
+            }
+            ServerMsg::Snapshot { entities } => {
+                world.entities.clear();
+                for e in entities {
+                    world.entities.insert(
+                        e.id,
+                        OwEntity {
+                            x: e.x as f32,
+                            y: e.y as f32,
+                            kind: e.kind,
+                            name: e.monster_kind,
+                            faction: e.faction,
+                            radius: e.radius as f32,
+                            battling: e.battling,
+                            level: e.level,
+                            opened: e.opened,
+                            mob_level: e.mob_level,
+                            hp: e.hp,
+                            max_hp: e.max_hp,
+                            encounter_class: e.encounter_class,
+                            aggression: e.aggression,
+                        },
+                    );
+                }
+                // Mark a fresh snapshot so the interpolation buffer captures it.
+                world.seq = world.seq.wrapping_add(1);
+            }
+            ServerMsg::BattleStarted {
+                battle_id,
+                your_combatant_id: _,
+                your_combatant_ids,
+                combatants,
+                monster_combatant,
+            } => {
+                battle.battle_id = battle_id;
+                battle.your_ids = your_combatant_ids;
+                battle.monster_combatant = monster_combatant;
+                battle.combatants = combatants;
+                battle.ready.clear();
+                battle.queued.clear();
+                battle.active = battle.your_ids.first().cloned();
+                reset_menu(&mut menu);
+                if *state.get() != Screen::Battle {
+                    next.set(Screen::Battle);
+                }
+            }
+            ServerMsg::TurnReady { combatant_id } => {
+                // A hero's gauge filled; it can now act (its queued order fires).
+                battle.ready.insert(combatant_id);
+            }
+            ServerMsg::ActionResolved {
+                actor,
+                action: _,
+                effects,
+            } => {
+                let mut did_damage = false;
+                for e in effects {
+                    // Reflect the authoritative HP immediately + spawn feedback.
+                    if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
+                        c.hp = e.hp_after;
+                    }
+                    if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
+                        did_damage = true;
+                    }
+                    push_hit_fx(&mut hitfx, &e);
+                }
+                // A damaging action makes its actor lunge in to strike.
+                if did_damage {
+                    hitfx.acts.insert(actor, 0.0);
+                }
+            }
+            ServerMsg::CombatantsJoined { combatants } => {
+                for c in combatants {
+                    if !battle.combatants.iter().any(|x| x.id == c.id) {
+                        battle.combatants.push(c);
+                    }
+                }
+            }
+            ServerMsg::Gauge { updates } => {
+                for (id, gauge, hp, statuses) in updates {
+                    if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == id) {
+                        c.gauge = gauge;
+                        c.hp = hp;
+                        c.statuses = statuses;
+                    }
+                }
+            }
+            ServerMsg::BattleEnded { outcome, xp, chits, items, gear_drops } => {
+                // Victory returns to the overworld (go extract!) and pops up the
+                // after-action report; defeat ends the run.
+                if outcome == "victory" {
+                    if *state.get() == Screen::Battle {
+                        next.set(Screen::Overworld);
+                    }
+                    report.active = true;
+                    report.title = "VICTORY".to_string();
+                    report.xp = Some(xp);
+                    report.chits = chits;
+                    report.items = items;
+                    report.gear = gear_drops;
+                    report.elapsed = 0.0;
+                } else if outcome == "fled" {
+                    // Fleeing keeps the run alive — back to the overworld, not the
+                    // death screen. The server already charged the toll and mirrored
+                    // it into the backpack; here we just surface what it cost. (For
+                    // the Fled outcome, `chits`/`items` carry what was DROPPED.)
+                    if *state.get() == Screen::Battle {
+                        next.set(Screen::Overworld);
+                    }
+                    let dropped: i32 = items.iter().map(|(_, q)| *q).sum();
+                    session.status = if chits > 0 || dropped > 0 {
+                        format!("Fled — dropped {chits} chits, {dropped} item(s)")
+                    } else {
+                        "Fled the battle".to_string()
+                    };
+                } else {
+                    end.outcome = outcome;
+                    end.banked = 0;
+                    end.chits = 0;
+                    end.gear = 0;
+                    next.set(Screen::Ended);
+                }
+            }
+            ServerMsg::ChestOpened { chits, items, gear } => {
+                report.active = true;
+                report.title = "TREASURE!".to_string();
+                report.xp = None;
+                report.chits = chits;
+                report.items = items;
+                report.gear = gear;
+                report.elapsed = 0.0;
+            }
+            ServerMsg::ChannelStarted { .. } => {
+                session.channeling = true;
+                session.status = "extracting...".to_string();
+            }
+            ServerMsg::ChannelInterrupted => {
+                session.channeling = false;
+                session.status = "extraction interrupted".to_string();
+            }
+            ServerMsg::RunEnded { result, banked, chits, gear } => {
+                session.channeling = false;
+                end.outcome = result;
+                end.banked = banked;
+                end.chits = chits;
+                end.gear = gear;
+                next.set(Screen::Ended);
+            }
+            ServerMsg::InventoryData {
+                chits,
+                materials,
+                gear,
+                pending,
+            } => {
+                inv.chits = chits;
+                inv.materials = materials;
+                inv.gear = gear;
+                inv.pending = pending;
+                inv.loaded = true;
+            }
+            ServerMsg::ProgressData { skills, classes } => {
+                prog.skills = skills;
+                prog.classes = classes;
+                prog.loaded = true;
+            }
+            ServerMsg::HeroNames { names } => {
+                hero_names.names = names;
+                hero_names.loaded = true;
+            }
+            ServerMsg::RunGear { gear } => {
+                run_gear.gear = gear;
+            }
+            ServerMsg::Error { message } => {
+                session.status = format!("error: {message}");
+            }
+            ServerMsg::Disconnected => {
+                session.status = "disconnected".to_string();
+            }
+        }
+    }
+}
+
+/// Offline demo timeline (no networking): walk the overworld, then fight and win.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn demo_driver(
+    time: Res<Time>,
+    mut demo: ResMut<Demo>,
+    mut world: ResMut<Overworld>,
+    mut battle: ResMut<BattleData>,
+    mut end: ResMut<EndInfo>,
+    mut session: ResMut<Session>,
+    state: Res<State<Screen>>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    if !demo.on {
+        return;
+    }
+    demo.t += time.delta_secs();
+    let t = demo.t;
+    session.player_id = "me".to_string();
+
+    // 0–3s: overworld, hero walking east toward Grendel.
+    if t < 3.0 {
+        if !demo.started {
+            demo.started = true;
+            next.set(Screen::Overworld);
+        }
+        let x = t / 3.0 * 9.0;
+        world.entities.clear();
+        world.entities.insert("me".to_string(), OwEntity::player(x, 0.0));
+        world.entities.insert("grendel".to_string(), OwEntity::monster(10.0, 0.0, "forest_bloom_stalker", "beast"));
+        world.entities.insert("portal".to_string(), OwEntity::portal(14.0, 0.0));
+        return;
+    }
+
+    // 3s+: battle. Grendel's HP falls to 0 over ~5s; gauges animate.
+    if *state.get() == Screen::Overworld {
+        battle.your_ids = vec!["me".to_string()];
+        battle.active = Some("me".to_string());
+        battle.monster_combatant = Some("g".to_string());
+        battle.combatants = vec![
+            CombatantView { id: "me".into(), name: "Hero".into(), hp: 40, max_hp: 40, gauge: 0.0, is_player: true, player_id: Some("me".into()), level: 1, statuses: vec![] },
+            CombatantView { id: "g".into(), name: "forest bloom stalker".into(), hp: 60, max_hp: 60, gauge: 0.0, is_player: false, player_id: None, level: 1, statuses: vec![] },
+        ];
+        next.set(Screen::Battle);
+    }
+    let phase = t - 3.0;
+    let hp = (60.0 * (1.0 - phase / 5.0)).max(0.0) as i32;
+    for c in battle.combatants.iter_mut() {
+        let p = phase as f64;
+        c.gauge = if c.is_player { (p * 0.9) % 1.0 } else { (p * 0.6) % 1.0 };
+        if c.id == "g" {
+            c.hp = hp;
+        }
+    }
+    if hp <= 0 && *state.get() == Screen::Battle {
+        end.outcome = "victory".to_string();
+        next.set(Screen::Ended);
+    }
+}

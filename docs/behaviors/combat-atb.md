@@ -76,7 +76,8 @@ flee_chance = clamp(0.60 − 0.10 × max(0, encounter_tier − party_tier), 0.05
 - `encounter_tier` = `tier(d)` of the encounter's spawn distance. `party_tier` is the tier equivalent of the party's level: `floor(avg_run_level / 8)` (derived by inverting `mlevel(d) = d/12.5` through `tier(d) = floor(d/100)`; spec-level derivation — flagged in Edge Cases).
 - **Gatekeepers: flee is disabled** — the `flee` action is not offered/accepted in a `GatekeeperBoss` battle.
 - A successful flee removes the fleeing player's side from the battle and returns their avatars to the overworld (see Outcomes). A failed flee consumes the actor's turn (gauge resets to 0).
-- The **forced flee** applied to a disconnected party in a standard encounter bypasses this formula and always succeeds (structural) — see [disconnect-handling.md](./disconnect-handling.md).
+- **Flee has a toll (economy.md S1).** The run **continues** — you are not dead — but fleeing spills part of your haul: on a successful flee each fleeing player forfeits `flee_chit_loss_fraction` of their un-banked chits **[TUNABLE]** (default **0.5**), and every non-permanent item they carry (backpack material + red-chest looted gear) is independently dropped with probability `flee_item_drop_chance` **[TUNABLE]** (default **0.25**). Insured (blue) equipped gear is owned, not in the backpack, and is never at risk. This is what makes fleeing a real decision rather than a free reset; the toll is applied server-side and mirrored to the client via `run.backpack_update` (removals + negative `chits_delta`) and a fresh `run.gear` snapshot, with the `battle.ended`/`fled` message reporting what was dropped.
+- The **forced flee** applied to a disconnected party in a standard encounter bypasses this formula and always succeeds (structural) — see [disconnect-handling.md](./disconnect-handling.md). The chit/item toll above is scoped to a **player-initiated** flee.
 
 ---
 
