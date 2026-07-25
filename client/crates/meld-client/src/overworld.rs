@@ -2254,6 +2254,27 @@ pub(crate) fn spawn_obstacle(
     // where the moving surface reads better than a flat sprite.
     let is_water = matches!(name, "pond" | "frozen_pond" | "bog_pool");
     if !is_water {
+        // Trees draw from a variety pool (oak/pine/birch/dead/willow/bushy) picked by
+        // id-hash, with an extra per-id size factor on top of the radius so a forest
+        // reads as a mix of shapes and heights rather than one stamped tree.
+        if name == "tree" {
+            const TREE_VARIANTS: [&str; 6] = [
+                "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
+                "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
+            ];
+            let pool: Vec<Handle<Image>> = TREE_VARIANTS
+                .iter()
+                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
+                .collect();
+            if !pool.is_empty() {
+                let tex = pool[hash_pick(id, pool.len())].clone();
+                // Per-id size factor 0.75..1.6 → a varied canopy line.
+                let vf = 0.75 + (hash_pick(id, 100) as f32 / 100.0) * 0.85;
+                let height = ((1.9 + r * 0.9) * vf).clamp(1.6, 6.0);
+                spawn_billboard_entity(commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28);
+                return;
+            }
+        }
         if let Some(tex) = wa.prop_sprites.get(&format!("obstacle_{name}")) {
             let height = (1.8 + r * 0.8).clamp(1.8, 4.5);
             spawn_billboard_entity(commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55);
