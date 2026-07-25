@@ -340,11 +340,11 @@ fn setup(
     .enumerate()
     {
         let x = (i as f32 - 2.0) * 3.0; // -6, -3, 0, 3, 6
-        // The "Scary_Walking" cycle for this facing: 8 frames, each a tinted material.
+        // The Psyker walk cycle for this facing: 8 frames, each a tinted material.
         let frames: Vec<Handle<StandardMaterial>> = (0..8)
             .map(|f| {
                 let tex = assets.load(format!(
-                    "characters/PSYKER_Male/Psyker/animations/Scary_Walking/{dir}/frame_{f:03}.png"
+                    "characters/psyker/animations/walk/{dir}/frame_{f:03}.png"
                 ));
                 mats.add(StandardMaterial {
                     base_color: c,

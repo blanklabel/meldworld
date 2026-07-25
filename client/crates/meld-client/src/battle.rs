@@ -116,10 +116,7 @@ pub(crate) fn spawn_hero_actor(
         .iter()
         .find_map(|s| s.strip_prefix("class:"))
         .unwrap_or("hunter");
-    let frames = match class {
-        "psyker" => &wa.psyker,
-        _ => &wa.hunter,
-    };
+    let frames = wa.class_frames(class);
     let base_tint = Color::srgb(1.2, 1.18, 1.08);
     let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
@@ -201,6 +198,14 @@ pub(crate) fn spawn_enemy_actor(
     // The diamond marker hovers just above the sprite's head (its tip reaches down
     // toward the head, so keep a small gap above `h`).
     let marker_y = h + 0.45;
+    // Bespoke HD-2D selection diamond (PixelLab) instead of the old 3D faceted mesh.
+    let marker_mat = mats.add(hd2d::sprite_material(
+        Color::WHITE,
+        wa.prop_sprites
+            .get("marker_target_marker")
+            .cloned()
+            .unwrap_or_default(),
+    ));
     commands
         .spawn((
             BattleActor { id: c.id.clone() },
@@ -228,12 +233,14 @@ pub(crate) fn spawn_enemy_actor(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
             ));
-            // Target diamond — hidden until this enemy is the picked target.
+            // Target marker — a camera-facing selection diamond sprite, hidden until
+            // this enemy is the picked target (bobbed by `highlight_target`).
             p.spawn((
                 TargetDiamond { id: c.id.clone(), base_y: marker_y },
-                Mesh3d(wa.target_diamond_mesh.clone()),
-                MeshMaterial3d(wa.target_diamond_mat.clone()),
-                Transform::from_xyz(0.0, marker_y, 0.0),
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(marker_mat),
+                Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
+                hd2d::Billboard,
                 Visibility::Hidden,
             ));
         });
@@ -388,6 +395,28 @@ pub(crate) fn highlight_target(
             tf.rotation = spin;
         }
     }
+}
+
+/// Hand any just-resolved action clip (queued on `HitFx::act_clip` from
+/// `battle.action_resolved`) to the striking hero's `CharSprite`, which plays it once
+/// over walk/idle (see `hd2d::animate_chars`). Consumes the queue so each clip fires a
+/// single time. The clip swaps the sprite's `base_color_texture`; the lunge/flash in
+/// [`animate_battle_actors`] touches `base_color`/`emissive`, so the two compose.
+pub(crate) fn drive_battle_action_clips(
+    mut hitfx: ResMut<HitFx>,
+    mut q: Query<(&BattleActor, &mut hd2d::CharSprite)>,
+) {
+    if hitfx.act_clip.is_empty() {
+        return;
+    }
+    for (ba, mut cs) in &mut q {
+        if let Some(clip) = hitfx.act_clip.get(&ba.id) {
+            if cs.frames.clips.contains_key(clip) {
+                cs.action = Some((clip.clone(), 0.0));
+            }
+        }
+    }
+    hitfx.act_clip.clear();
 }
 
 /// Give combat weight: struck sprites flash white + recoil (with a quick shake),
@@ -856,6 +885,11 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
             .target
             .filter(|t| battle.alive(t))
             .or_else(|| default_target(&battle, order.kind));
+        // Remember the exact skill so the sprite layer can play its clip when the
+        // server echoes back the (coarse) resolution.
+        if let QueuedKind::Skill(sk) = order.kind {
+            battle.last_skill.insert(hero.clone(), sk.to_string());
+        }
         fire_order(&net.0, &battle_id, &hero, order.kind, target.as_deref());
         battle.ready.remove(&hero);
         battle.queued.remove(&hero);

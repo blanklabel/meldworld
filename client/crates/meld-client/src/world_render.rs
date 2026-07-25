@@ -76,10 +76,16 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// overworld sync can spawn 3D entities without rebuilding assets each frame.
 #[derive(Resource)]
 pub(crate) struct WorldAssets {
-    pub(crate) psyker: CharacterFrames,
-    /// The martial sprite (used by the Hunter and any class without its own art).
-    /// The on-disk art folder is still named `Squire`.
-    pub(crate) hunter: CharacterFrames,
+    /// Per-class hero sprite sets (bespoke PixelLab art, one folder per class under
+    /// `characters/<class>/`), keyed by `CharacterClass` wire key ("hunter", "psyker",
+    /// "resonant", "shifter", "iron_hull"). Look up via [`Self::class_frames`], which
+    /// falls back to the Hunter for any unknown key.
+    pub(crate) class_chars: HashMap<String, CharacterFrames>,
+    /// Bespoke HD-2D pixel-art billboards (PixelLab) for world props, keyed by full
+    /// prop key: `obstacle_<kind>`, `resource_<kind>`, `connector_<kind>`,
+    /// `item_<name>`, `marker_<name>`. Preferred over the 3D `prop_scenes`/primitives
+    /// where present, so the world matches the hand-drawn sprite style.
+    pub(crate) prop_sprites: HashMap<String, Handle<Image>>,
     pub(crate) sprite_quad: Handle<Mesh>,
     /// Cropped billboard showing only head→torso — the back-row "bust" (see
     /// [`hd2d::bust_billboard_mesh`]).
@@ -112,6 +118,18 @@ pub(crate) struct WorldAssets {
     pub(crate) water_mesh: Handle<Mesh>,
     pub(crate) water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
     pub(crate) ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
+}
+
+impl WorldAssets {
+    /// The hero sprite set for a class wire key, falling back to the Hunter for any
+    /// key without bespoke art (keeps rendering robust if a new class ships before
+    /// its art does).
+    pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
+        self.class_chars
+            .get(class)
+            .or_else(|| self.class_chars.get("hunter"))
+            .expect("hunter class sprite always loaded")
+    }
 }
 
 /// Biome → index into `WorldAssets::ground_tex` (Forest/Desert/Ashfall/Tundra/Mire).
@@ -161,12 +179,15 @@ pub(crate) fn setup(
     // plane's 0..1 UVs up so each tile is ~3 world units (nearest-sampled → crisp).
     // Per-biome ground textures (green grass in the forest, sand in the desert, …);
     // `hd2d_follow` swaps the material's texture as you cross biomes.
+    // Detailed per-biome ground tiles extracted from the PixelLab Wang tilesets
+    // (seamless "full lower" terrain tile per biome); the `GroundBiome` shader still
+    // applies each biome's colour tint on top.
     let ground_tex: Vec<Handle<Image>> = [
-        "ground/grass0.png",     // Forest
-        "ground/sand.png",       // Desert
-        "ground/dirt_full.png",  // Ashfall
-        "ground/grass_dark0.png", // Tundra (tinted frost-blue)
-        "ground/moss.png",       // Mire
+        "ground/tile_forest.png",  // Forest
+        "ground/tile_desert.png",  // Desert
+        "ground/tile_ashfall.png", // Ashfall
+        "ground/tile_tundra.png",  // Tundra
+        "ground/tile_mire.png",    // Mire
     ]
     .iter()
     .map(|p| load_tiled(&assets, p))
@@ -375,19 +396,62 @@ pub(crate) fn setup(
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
+    // Per-class hero sprites (PixelLab v3, 8-directional): idle rotations + a `walk`
+    // clip plus battle `attack` and one clip per special ability, loaded into
+    // `CharacterFrames::clips` and played in battle via `CharSprite::action`.
+    fn class_clips(class: &str) -> &'static [(&'static str, usize)] {
+        match class {
+            "shifter" => &[
+                ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
+            ],
+            "hunter" => &[
+                ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
+                ("snare", 8), ("frenzy", 8),
+            ],
+            "psyker" => &[
+                ("walk", 8), ("attack", 8), ("gravity_well", 8), ("kinetic_aegis", 8),
+                ("mind_spike", 8), ("temporal_anchor", 8),
+            ],
+            "resonant" => &[
+                ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
+            ],
+            "iron_hull" => &[
+                ("walk", 8), ("attack", 8), ("swell_strike", 8), ("root", 8),
+                ("kinetic_shock", 8), ("toll_of_the_deep", 8),
+            ],
+            _ => &[("walk", 8)],
+        }
+    }
+    let class_chars: HashMap<String, CharacterFrames> = ["hunter", "psyker", "resonant", "shifter", "iron_hull"]
+        .iter()
+        .map(|&class| {
+            (
+                class.to_string(),
+                hd2d::load_character_clips(&assets, &format!("characters/{class}"), class_clips(class)),
+            )
+        })
+        .collect();
+
+    // Bespoke HD-2D prop billboards (PixelLab), one PNG per key under `assets/props/`.
+    let prop_sprites: HashMap<String, Handle<Image>> = [
+        "obstacle_tree", "obstacle_boulder", "obstacle_pond", "obstacle_dune",
+        "obstacle_rock_spire", "obstacle_cactus", "obstacle_cliff", "obstacle_lava",
+        "obstacle_cinder_rock", "obstacle_ice_spire", "obstacle_frozen_pond",
+        "obstacle_snow_drift", "obstacle_bog_pool", "obstacle_mire_root", "obstacle_fungal_wall",
+        "resource_bloom_herb", "resource_heartoak_bark", "resource_sun_salts",
+        "resource_dune_iron", "resource_ember_ash", "resource_cinder_ore",
+        "resource_frost_lichen", "resource_rime_ore", "resource_bog_myrrh", "resource_peat_iron",
+        "connector_ladder", "connector_rope", "connector_ramp",
+        "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
+        "marker_target_marker",
+    ]
+    .iter()
+    .map(|&k| (k.to_string(), assets.load(format!("props/{k}.png"))))
+    .collect();
+
     commands.insert_resource(WorldAssets {
-        psyker: hd2d::load_character(
-            &assets,
-            "characters/PSYKER_Male/Psyker",
-            "Scary_Walking",
-            8,
-        ),
-        hunter: hd2d::load_character(
-            &assets,
-            "characters/PSYKER_Male/Squire", // martial art folder (kept as-is)
-            "Walking",
-            8,
-        ),
+        class_chars,
+        prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
         // Head→torso crop (top 55%) for stacked back-row busts.

@@ -377,6 +377,7 @@ fn main() {
                     sync_battle_actors,
                     battle_click_target,
                     highlight_target,
+                    drive_battle_action_clips,
                     animate_battle_actors,
                     battle_zoom_input,
                     battle_camera,
@@ -607,11 +608,8 @@ const STEP_HEIGHT: f32 = 2.0;
 const CLIFF_EDGE_SCALE: f32 = 1.9;
 const CLIFF_YAW_OFFSET: f32 = 0.0;
 
-/// Ramp (slope connector) tuning: a Kenney Nature Kit `cliff_blockSlope_rock` model
-/// (the slope sibling of the terrace `cliff_block_rock`) sized so one level's rise
-/// meets the terrace lip, and yawed so it ramps up from the path side (−Z) to the top.
-const SLOPE_SCALE: f32 = 2.0;
-const SLOPE_YAW: f32 = 0.0;
+// (SLOPE_SCALE/SLOPE_YAW removed — slope connectors are now HD-2D billboards; see
+// overworld::spawn_connector.)
 
 /// Streamed terraced terrain: the elevation grid + connectors for every section the
 /// server has sent. `build_terrain_sections` turns each into a stepped ground+cliff
@@ -709,6 +707,10 @@ struct BattleData {
     queued: HashMap<String, Order>,
     /// The hero the command window is giving orders to.
     active: Option<String>,
+    /// The skill kind each hero most recently fired. `battle.action_resolved` only
+    /// carries the coarse Attack/Skill kind, so this lets the sprite layer pick the
+    /// exact special-ability clip (backstab vs frenzy, …) to play.
+    last_skill: HashMap<String, String>,
 }
 
 /// A queued order: what the hero will do and (for aimed actions) which combatant it
@@ -1211,6 +1213,10 @@ struct HitFx {
     /// Attacker id → seconds since it landed a damaging action (dropped past
     /// [`ATTACK_LUNGE_TTL`]); [`animate_battle_actors`] lunges that sprite.
     acts: HashMap<String, f32>,
+    /// Actor id → the animation clip to play once for a just-resolved action (its
+    /// `attack` or a specific special). Consumed by `drive_battle_action_clips`,
+    /// which hands it to the actor's `hd2d::CharSprite`.
+    act_clip: HashMap<String, String>,
 }
 struct Hit {
     target: String,

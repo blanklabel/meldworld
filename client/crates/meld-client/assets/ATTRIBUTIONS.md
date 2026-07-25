@@ -53,10 +53,29 @@ plane and tinted per biome.
 
 DCSS/RLTiles gateway tile (same license as above), billboarded as the exit portal.
 
-## `characters/`
+## `characters/` — per-class hero sprites  (AI-generated, PixelLab)
 
-AI-generated for MELDWORLD (prompts recorded in each character's `metadata.json`).
-Not third-party art.
+AI-generated for MELDWORLD with **PixelLab** (https://pixellab.ai). One folder per
+class (`hunter`, `psyker`, `resonant`, `shifter`, `iron_hull`); each has 8-directional
+`rotations/` plus animation clips (`walk`, `attack`, and one per special ability),
+generated in PixelLab "v3 custom" mode so weapons/appearance are preserved. The
+generation prompt is recorded in each folder's `metadata.json`. Not third-party art.
+(The older `PSYKER_Male/` set it replaces has been removed.)
+
+## `props/` — world prop & item billboards  (AI-generated, PixelLab)
+
+AI-generated for MELDWORLD with **PixelLab**: 8-directional pixel-art objects,
+billboarded in the HD-2D overworld. Covers per-biome obstacles (`obstacle_*`),
+harvestable nodes (`resource_*`), connectors (`connector_ladder/rope/ramp`),
+loot/chests (`item_*`), and the battle target-select marker (`marker_target_marker`).
+These replace the Kenney 3D props for these entities so the world matches the
+hand-drawn sprite style.
+
+## `ground/tile_*.png` — per-biome ground tiles  (AI-generated, PixelLab)
+
+Seamless per-biome ground tiles extracted from PixelLab top-down Wang tilesets
+(`tileset_*.png` kept alongside), tiled across the ground plane by the `GroundBiome`
+shader.
 
 ## `landscape/Tree01`, `landscape/Tree02`
 

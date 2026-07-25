@@ -1,0 +1,447 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "95dab3d6-85ed-475a-bdeb-a5fe444cc70d",
+        "name": "Shifter",
+        "prompt": "Lithe hooded rogue fortune-hunter in a weird HD-2D fantasy style. Lean and wiry, built for speed, not muscle. Close-fitting dark teal-and-charcoal leathers, a tattered hooded half-cloak, light wrapped boots, buckles and small loot pouches at the belt. Wields a pair of curved daggers in a reversed backstabber's grip. A faint cyan phase-shimmer traces the silhouette, as if half a step out of phase with reality. Sharp roguish look, low ready-to-bolt stance.",
+        "size": {
+          "width": 184,
+          "height": 184
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-25T13:33:51.676551+00:00"
+      },
+      "folder": "Shifter",
+      "frames": {
+        "rotations": {
+          "south": "Shifter/rotations/south.png",
+          "south-east": "Shifter/rotations/south-east.png",
+          "east": "Shifter/rotations/east.png",
+          "north-east": "Shifter/rotations/north-east.png",
+          "north": "Shifter/rotations/north.png",
+          "north-west": "Shifter/rotations/north-west.png",
+          "west": "Shifter/rotations/west.png",
+          "south-west": "Shifter/rotations/south-west.png"
+        },
+        "animations": {
+          "flicker": {
+            "south": [
+              "Shifter/animations/flicker/south/frame_000.png",
+              "Shifter/animations/flicker/south/frame_001.png",
+              "Shifter/animations/flicker/south/frame_002.png",
+              "Shifter/animations/flicker/south/frame_003.png",
+              "Shifter/animations/flicker/south/frame_004.png",
+              "Shifter/animations/flicker/south/frame_005.png",
+              "Shifter/animations/flicker/south/frame_006.png",
+              "Shifter/animations/flicker/south/frame_007.png"
+            ],
+            "south-west": [
+              "Shifter/animations/flicker/south-west/frame_000.png",
+              "Shifter/animations/flicker/south-west/frame_001.png",
+              "Shifter/animations/flicker/south-west/frame_002.png",
+              "Shifter/animations/flicker/south-west/frame_003.png",
+              "Shifter/animations/flicker/south-west/frame_004.png",
+              "Shifter/animations/flicker/south-west/frame_005.png",
+              "Shifter/animations/flicker/south-west/frame_006.png",
+              "Shifter/animations/flicker/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Shifter/animations/flicker/north-west/frame_000.png",
+              "Shifter/animations/flicker/north-west/frame_001.png",
+              "Shifter/animations/flicker/north-west/frame_002.png",
+              "Shifter/animations/flicker/north-west/frame_003.png",
+              "Shifter/animations/flicker/north-west/frame_004.png",
+              "Shifter/animations/flicker/north-west/frame_005.png",
+              "Shifter/animations/flicker/north-west/frame_006.png",
+              "Shifter/animations/flicker/north-west/frame_007.png"
+            ],
+            "north": [
+              "Shifter/animations/flicker/north/frame_000.png",
+              "Shifter/animations/flicker/north/frame_001.png",
+              "Shifter/animations/flicker/north/frame_002.png",
+              "Shifter/animations/flicker/north/frame_003.png",
+              "Shifter/animations/flicker/north/frame_004.png",
+              "Shifter/animations/flicker/north/frame_005.png",
+              "Shifter/animations/flicker/north/frame_006.png",
+              "Shifter/animations/flicker/north/frame_007.png"
+            ],
+            "east": [
+              "Shifter/animations/flicker/east/frame_000.png",
+              "Shifter/animations/flicker/east/frame_001.png",
+              "Shifter/animations/flicker/east/frame_002.png",
+              "Shifter/animations/flicker/east/frame_003.png",
+              "Shifter/animations/flicker/east/frame_004.png",
+              "Shifter/animations/flicker/east/frame_005.png",
+              "Shifter/animations/flicker/east/frame_006.png",
+              "Shifter/animations/flicker/east/frame_007.png"
+            ],
+            "west": [
+              "Shifter/animations/flicker/west/frame_000.png",
+              "Shifter/animations/flicker/west/frame_001.png",
+              "Shifter/animations/flicker/west/frame_002.png",
+              "Shifter/animations/flicker/west/frame_003.png",
+              "Shifter/animations/flicker/west/frame_004.png",
+              "Shifter/animations/flicker/west/frame_005.png",
+              "Shifter/animations/flicker/west/frame_006.png",
+              "Shifter/animations/flicker/west/frame_007.png"
+            ],
+            "north-east": [
+              "Shifter/animations/flicker/north-east/frame_000.png",
+              "Shifter/animations/flicker/north-east/frame_001.png",
+              "Shifter/animations/flicker/north-east/frame_002.png",
+              "Shifter/animations/flicker/north-east/frame_003.png",
+              "Shifter/animations/flicker/north-east/frame_004.png",
+              "Shifter/animations/flicker/north-east/frame_005.png",
+              "Shifter/animations/flicker/north-east/frame_006.png",
+              "Shifter/animations/flicker/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Shifter/animations/flicker/south-east/frame_000.png",
+              "Shifter/animations/flicker/south-east/frame_001.png",
+              "Shifter/animations/flicker/south-east/frame_002.png",
+              "Shifter/animations/flicker/south-east/frame_003.png",
+              "Shifter/animations/flicker/south-east/frame_004.png",
+              "Shifter/animations/flicker/south-east/frame_005.png",
+              "Shifter/animations/flicker/south-east/frame_006.png",
+              "Shifter/animations/flicker/south-east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "south-east": [
+              "Shifter/animations/walk/south-east/frame_000.png",
+              "Shifter/animations/walk/south-east/frame_001.png",
+              "Shifter/animations/walk/south-east/frame_002.png",
+              "Shifter/animations/walk/south-east/frame_003.png",
+              "Shifter/animations/walk/south-east/frame_004.png",
+              "Shifter/animations/walk/south-east/frame_005.png",
+              "Shifter/animations/walk/south-east/frame_006.png",
+              "Shifter/animations/walk/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Shifter/animations/walk/north-west/frame_000.png",
+              "Shifter/animations/walk/north-west/frame_001.png",
+              "Shifter/animations/walk/north-west/frame_002.png",
+              "Shifter/animations/walk/north-west/frame_003.png",
+              "Shifter/animations/walk/north-west/frame_004.png",
+              "Shifter/animations/walk/north-west/frame_005.png",
+              "Shifter/animations/walk/north-west/frame_006.png",
+              "Shifter/animations/walk/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Shifter/animations/walk/north-east/frame_000.png",
+              "Shifter/animations/walk/north-east/frame_001.png",
+              "Shifter/animations/walk/north-east/frame_002.png",
+              "Shifter/animations/walk/north-east/frame_003.png",
+              "Shifter/animations/walk/north-east/frame_004.png",
+              "Shifter/animations/walk/north-east/frame_005.png",
+              "Shifter/animations/walk/north-east/frame_006.png",
+              "Shifter/animations/walk/north-east/frame_007.png"
+            ],
+            "east": [
+              "Shifter/animations/walk/east/frame_000.png",
+              "Shifter/animations/walk/east/frame_001.png",
+              "Shifter/animations/walk/east/frame_002.png",
+              "Shifter/animations/walk/east/frame_003.png",
+              "Shifter/animations/walk/east/frame_004.png",
+              "Shifter/animations/walk/east/frame_005.png",
+              "Shifter/animations/walk/east/frame_006.png",
+              "Shifter/animations/walk/east/frame_007.png"
+            ],
+            "south": [
+              "Shifter/animations/walk/south/frame_000.png",
+              "Shifter/animations/walk/south/frame_001.png",
+              "Shifter/animations/walk/south/frame_002.png",
+              "Shifter/animations/walk/south/frame_003.png",
+              "Shifter/animations/walk/south/frame_004.png",
+              "Shifter/animations/walk/south/frame_005.png",
+              "Shifter/animations/walk/south/frame_006.png",
+              "Shifter/animations/walk/south/frame_007.png"
+            ],
+            "north": [
+              "Shifter/animations/walk/north/frame_000.png",
+              "Shifter/animations/walk/north/frame_001.png",
+              "Shifter/animations/walk/north/frame_002.png",
+              "Shifter/animations/walk/north/frame_003.png",
+              "Shifter/animations/walk/north/frame_004.png",
+              "Shifter/animations/walk/north/frame_005.png",
+              "Shifter/animations/walk/north/frame_006.png",
+              "Shifter/animations/walk/north/frame_007.png"
+            ],
+            "west": [
+              "Shifter/animations/walk/west/frame_000.png",
+              "Shifter/animations/walk/west/frame_001.png",
+              "Shifter/animations/walk/west/frame_002.png",
+              "Shifter/animations/walk/west/frame_003.png",
+              "Shifter/animations/walk/west/frame_004.png",
+              "Shifter/animations/walk/west/frame_005.png",
+              "Shifter/animations/walk/west/frame_006.png",
+              "Shifter/animations/walk/west/frame_007.png"
+            ],
+            "south-west": [
+              "Shifter/animations/walk/south-west/frame_000.png",
+              "Shifter/animations/walk/south-west/frame_001.png",
+              "Shifter/animations/walk/south-west/frame_002.png",
+              "Shifter/animations/walk/south-west/frame_003.png",
+              "Shifter/animations/walk/south-west/frame_004.png",
+              "Shifter/animations/walk/south-west/frame_005.png",
+              "Shifter/animations/walk/south-west/frame_006.png",
+              "Shifter/animations/walk/south-west/frame_007.png"
+            ]
+          },
+          "attack": {
+            "south-west": [
+              "Shifter/animations/attack/south-west/frame_000.png",
+              "Shifter/animations/attack/south-west/frame_001.png",
+              "Shifter/animations/attack/south-west/frame_002.png",
+              "Shifter/animations/attack/south-west/frame_003.png",
+              "Shifter/animations/attack/south-west/frame_004.png",
+              "Shifter/animations/attack/south-west/frame_005.png",
+              "Shifter/animations/attack/south-west/frame_006.png",
+              "Shifter/animations/attack/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Shifter/animations/attack/north-west/frame_000.png",
+              "Shifter/animations/attack/north-west/frame_001.png",
+              "Shifter/animations/attack/north-west/frame_002.png",
+              "Shifter/animations/attack/north-west/frame_003.png",
+              "Shifter/animations/attack/north-west/frame_004.png",
+              "Shifter/animations/attack/north-west/frame_005.png",
+              "Shifter/animations/attack/north-west/frame_006.png",
+              "Shifter/animations/attack/north-west/frame_007.png"
+            ],
+            "east": [
+              "Shifter/animations/attack/east/frame_000.png",
+              "Shifter/animations/attack/east/frame_001.png",
+              "Shifter/animations/attack/east/frame_002.png",
+              "Shifter/animations/attack/east/frame_003.png",
+              "Shifter/animations/attack/east/frame_004.png",
+              "Shifter/animations/attack/east/frame_005.png",
+              "Shifter/animations/attack/east/frame_006.png",
+              "Shifter/animations/attack/east/frame_007.png"
+            ],
+            "south-east": [
+              "Shifter/animations/attack/south-east/frame_000.png",
+              "Shifter/animations/attack/south-east/frame_001.png",
+              "Shifter/animations/attack/south-east/frame_002.png",
+              "Shifter/animations/attack/south-east/frame_003.png",
+              "Shifter/animations/attack/south-east/frame_004.png",
+              "Shifter/animations/attack/south-east/frame_005.png",
+              "Shifter/animations/attack/south-east/frame_006.png",
+              "Shifter/animations/attack/south-east/frame_007.png"
+            ],
+            "north": [
+              "Shifter/animations/attack/north/frame_000.png",
+              "Shifter/animations/attack/north/frame_001.png",
+              "Shifter/animations/attack/north/frame_002.png",
+              "Shifter/animations/attack/north/frame_003.png",
+              "Shifter/animations/attack/north/frame_004.png",
+              "Shifter/animations/attack/north/frame_005.png",
+              "Shifter/animations/attack/north/frame_006.png",
+              "Shifter/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "Shifter/animations/attack/south/frame_000.png",
+              "Shifter/animations/attack/south/frame_001.png",
+              "Shifter/animations/attack/south/frame_002.png",
+              "Shifter/animations/attack/south/frame_003.png",
+              "Shifter/animations/attack/south/frame_004.png",
+              "Shifter/animations/attack/south/frame_005.png",
+              "Shifter/animations/attack/south/frame_006.png",
+              "Shifter/animations/attack/south/frame_007.png"
+            ],
+            "west": [
+              "Shifter/animations/attack/west/frame_000.png",
+              "Shifter/animations/attack/west/frame_001.png",
+              "Shifter/animations/attack/west/frame_002.png",
+              "Shifter/animations/attack/west/frame_003.png",
+              "Shifter/animations/attack/west/frame_004.png",
+              "Shifter/animations/attack/west/frame_005.png",
+              "Shifter/animations/attack/west/frame_006.png",
+              "Shifter/animations/attack/west/frame_007.png"
+            ],
+            "north-east": [
+              "Shifter/animations/attack/north-east/frame_000.png",
+              "Shifter/animations/attack/north-east/frame_001.png",
+              "Shifter/animations/attack/north-east/frame_002.png",
+              "Shifter/animations/attack/north-east/frame_003.png",
+              "Shifter/animations/attack/north-east/frame_004.png",
+              "Shifter/animations/attack/north-east/frame_005.png",
+              "Shifter/animations/attack/north-east/frame_006.png",
+              "Shifter/animations/attack/north-east/frame_007.png"
+            ]
+          },
+          "backstab": {
+            "north-east": [
+              "Shifter/animations/backstab/north-east/frame_000.png",
+              "Shifter/animations/backstab/north-east/frame_001.png",
+              "Shifter/animations/backstab/north-east/frame_002.png",
+              "Shifter/animations/backstab/north-east/frame_003.png",
+              "Shifter/animations/backstab/north-east/frame_004.png",
+              "Shifter/animations/backstab/north-east/frame_005.png",
+              "Shifter/animations/backstab/north-east/frame_006.png",
+              "Shifter/animations/backstab/north-east/frame_007.png"
+            ],
+            "east": [
+              "Shifter/animations/backstab/east/frame_000.png",
+              "Shifter/animations/backstab/east/frame_001.png",
+              "Shifter/animations/backstab/east/frame_002.png",
+              "Shifter/animations/backstab/east/frame_003.png",
+              "Shifter/animations/backstab/east/frame_004.png",
+              "Shifter/animations/backstab/east/frame_005.png",
+              "Shifter/animations/backstab/east/frame_006.png",
+              "Shifter/animations/backstab/east/frame_007.png"
+            ],
+            "south-west": [
+              "Shifter/animations/backstab/south-west/frame_000.png",
+              "Shifter/animations/backstab/south-west/frame_001.png",
+              "Shifter/animations/backstab/south-west/frame_002.png",
+              "Shifter/animations/backstab/south-west/frame_003.png",
+              "Shifter/animations/backstab/south-west/frame_004.png",
+              "Shifter/animations/backstab/south-west/frame_005.png",
+              "Shifter/animations/backstab/south-west/frame_006.png",
+              "Shifter/animations/backstab/south-west/frame_007.png"
+            ],
+            "south": [
+              "Shifter/animations/backstab/south/frame_000.png",
+              "Shifter/animations/backstab/south/frame_001.png",
+              "Shifter/animations/backstab/south/frame_002.png",
+              "Shifter/animations/backstab/south/frame_003.png",
+              "Shifter/animations/backstab/south/frame_004.png",
+              "Shifter/animations/backstab/south/frame_005.png",
+              "Shifter/animations/backstab/south/frame_006.png",
+              "Shifter/animations/backstab/south/frame_007.png"
+            ],
+            "north": [
+              "Shifter/animations/backstab/north/frame_000.png",
+              "Shifter/animations/backstab/north/frame_001.png",
+              "Shifter/animations/backstab/north/frame_002.png",
+              "Shifter/animations/backstab/north/frame_003.png",
+              "Shifter/animations/backstab/north/frame_004.png",
+              "Shifter/animations/backstab/north/frame_005.png",
+              "Shifter/animations/backstab/north/frame_006.png",
+              "Shifter/animations/backstab/north/frame_007.png"
+            ],
+            "west": [
+              "Shifter/animations/backstab/west/frame_000.png",
+              "Shifter/animations/backstab/west/frame_001.png",
+              "Shifter/animations/backstab/west/frame_002.png",
+              "Shifter/animations/backstab/west/frame_003.png",
+              "Shifter/animations/backstab/west/frame_004.png",
+              "Shifter/animations/backstab/west/frame_005.png",
+              "Shifter/animations/backstab/west/frame_006.png",
+              "Shifter/animations/backstab/west/frame_007.png"
+            ],
+            "north-west": [
+              "Shifter/animations/backstab/north-west/frame_000.png",
+              "Shifter/animations/backstab/north-west/frame_001.png",
+              "Shifter/animations/backstab/north-west/frame_002.png",
+              "Shifter/animations/backstab/north-west/frame_003.png",
+              "Shifter/animations/backstab/north-west/frame_004.png",
+              "Shifter/animations/backstab/north-west/frame_005.png",
+              "Shifter/animations/backstab/north-west/frame_006.png",
+              "Shifter/animations/backstab/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Shifter/animations/backstab/south-east/frame_000.png",
+              "Shifter/animations/backstab/south-east/frame_001.png",
+              "Shifter/animations/backstab/south-east/frame_002.png",
+              "Shifter/animations/backstab/south-east/frame_003.png",
+              "Shifter/animations/backstab/south-east/frame_004.png",
+              "Shifter/animations/backstab/south-east/frame_005.png",
+              "Shifter/animations/backstab/south-east/frame_006.png",
+              "Shifter/animations/backstab/south-east/frame_007.png"
+            ]
+          },
+          "ransack": {
+            "south": [
+              "Shifter/animations/ransack/south/frame_000.png",
+              "Shifter/animations/ransack/south/frame_001.png",
+              "Shifter/animations/ransack/south/frame_002.png",
+              "Shifter/animations/ransack/south/frame_003.png",
+              "Shifter/animations/ransack/south/frame_004.png",
+              "Shifter/animations/ransack/south/frame_005.png",
+              "Shifter/animations/ransack/south/frame_006.png",
+              "Shifter/animations/ransack/south/frame_007.png"
+            ],
+            "north-east": [
+              "Shifter/animations/ransack/north-east/frame_000.png",
+              "Shifter/animations/ransack/north-east/frame_001.png",
+              "Shifter/animations/ransack/north-east/frame_002.png",
+              "Shifter/animations/ransack/north-east/frame_003.png",
+              "Shifter/animations/ransack/north-east/frame_004.png",
+              "Shifter/animations/ransack/north-east/frame_005.png",
+              "Shifter/animations/ransack/north-east/frame_006.png",
+              "Shifter/animations/ransack/north-east/frame_007.png"
+            ],
+            "north": [
+              "Shifter/animations/ransack/north/frame_000.png",
+              "Shifter/animations/ransack/north/frame_001.png",
+              "Shifter/animations/ransack/north/frame_002.png",
+              "Shifter/animations/ransack/north/frame_003.png",
+              "Shifter/animations/ransack/north/frame_004.png",
+              "Shifter/animations/ransack/north/frame_005.png",
+              "Shifter/animations/ransack/north/frame_006.png",
+              "Shifter/animations/ransack/north/frame_007.png"
+            ],
+            "east": [
+              "Shifter/animations/ransack/east/frame_000.png",
+              "Shifter/animations/ransack/east/frame_001.png",
+              "Shifter/animations/ransack/east/frame_002.png",
+              "Shifter/animations/ransack/east/frame_003.png",
+              "Shifter/animations/ransack/east/frame_004.png",
+              "Shifter/animations/ransack/east/frame_005.png",
+              "Shifter/animations/ransack/east/frame_006.png",
+              "Shifter/animations/ransack/east/frame_007.png"
+            ],
+            "south-east": [
+              "Shifter/animations/ransack/south-east/frame_000.png",
+              "Shifter/animations/ransack/south-east/frame_001.png",
+              "Shifter/animations/ransack/south-east/frame_002.png",
+              "Shifter/animations/ransack/south-east/frame_003.png",
+              "Shifter/animations/ransack/south-east/frame_004.png",
+              "Shifter/animations/ransack/south-east/frame_005.png",
+              "Shifter/animations/ransack/south-east/frame_006.png",
+              "Shifter/animations/ransack/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Shifter/animations/ransack/north-west/frame_000.png",
+              "Shifter/animations/ransack/north-west/frame_001.png",
+              "Shifter/animations/ransack/north-west/frame_002.png",
+              "Shifter/animations/ransack/north-west/frame_003.png",
+              "Shifter/animations/ransack/north-west/frame_004.png",
+              "Shifter/animations/ransack/north-west/frame_005.png",
+              "Shifter/animations/ransack/north-west/frame_006.png",
+              "Shifter/animations/ransack/north-west/frame_007.png"
+            ],
+            "west": [
+              "Shifter/animations/ransack/west/frame_000.png",
+              "Shifter/animations/ransack/west/frame_001.png",
+              "Shifter/animations/ransack/west/frame_002.png",
+              "Shifter/animations/ransack/west/frame_003.png",
+              "Shifter/animations/ransack/west/frame_004.png",
+              "Shifter/animations/ransack/west/frame_005.png",
+              "Shifter/animations/ransack/west/frame_006.png",
+              "Shifter/animations/ransack/west/frame_007.png"
+            ],
+            "south-west": [
+              "Shifter/animations/ransack/south-west/frame_000.png",
+              "Shifter/animations/ransack/south-west/frame_001.png",
+              "Shifter/animations/ransack/south-west/frame_002.png",
+              "Shifter/animations/ransack/south-west/frame_003.png",
+              "Shifter/animations/ransack/south-west/frame_004.png",
+              "Shifter/animations/ransack/south-west/frame_005.png",
+              "Shifter/animations/ransack/south-west/frame_006.png",
+              "Shifter/animations/ransack/south-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-25T19:18:04.838910"
+}

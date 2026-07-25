@@ -218,10 +218,7 @@ pub(crate) fn city_scene(
 
     // The walkable avatar: the lead hero's sprite, ground-anchored + walk-animated
     // (the same `CharSprite` the overworld uses — `animate_chars` drives it here too).
-    let frames = match session.party.first().map(String::as_str) {
-        Some("psyker") => &wa.psyker,
-        _ => &wa.hunter,
-    };
+    let frames = wa.class_frames(session.party.first().map(String::as_str).unwrap_or("hunter"));
     let mat = mats.add(hd2d::sprite_material(
         Color::srgb(1.25, 1.22, 1.12),
         frames.idle[0].clone(),

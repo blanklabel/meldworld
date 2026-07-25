@@ -1,0 +1,529 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "db0c8287-8aa3-4ad6-8601-515c2a275c29",
+        "name": "iron hull",
+        "prompt": "Immense armored monk of the Iron Hull in a weird HD-2D fantasy style, heavy dark iron plate armor, a great pauldroned helm, broad immovable stance, huge gauntleted fists. A slow tower of muscle and metal, blunt-force fighter.",
+        "size": {
+          "width": 184,
+          "height": 184
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-25T13:47:26.606532+00:00"
+      },
+      "folder": "iron_hull",
+      "frames": {
+        "rotations": {
+          "south": "iron_hull/rotations/south.png",
+          "south-east": "iron_hull/rotations/south-east.png",
+          "east": "iron_hull/rotations/east.png",
+          "north-east": "iron_hull/rotations/north-east.png",
+          "north": "iron_hull/rotations/north.png",
+          "north-west": "iron_hull/rotations/north-west.png",
+          "west": "iron_hull/rotations/west.png",
+          "south-west": "iron_hull/rotations/south-west.png"
+        },
+        "animations": {
+          "swell_strike": {
+            "north-east": [
+              "iron_hull/animations/swell_strike/north-east/frame_000.png",
+              "iron_hull/animations/swell_strike/north-east/frame_001.png",
+              "iron_hull/animations/swell_strike/north-east/frame_002.png",
+              "iron_hull/animations/swell_strike/north-east/frame_003.png",
+              "iron_hull/animations/swell_strike/north-east/frame_004.png",
+              "iron_hull/animations/swell_strike/north-east/frame_005.png",
+              "iron_hull/animations/swell_strike/north-east/frame_006.png",
+              "iron_hull/animations/swell_strike/north-east/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/swell_strike/south/frame_000.png",
+              "iron_hull/animations/swell_strike/south/frame_001.png",
+              "iron_hull/animations/swell_strike/south/frame_002.png",
+              "iron_hull/animations/swell_strike/south/frame_003.png",
+              "iron_hull/animations/swell_strike/south/frame_004.png",
+              "iron_hull/animations/swell_strike/south/frame_005.png",
+              "iron_hull/animations/swell_strike/south/frame_006.png",
+              "iron_hull/animations/swell_strike/south/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/swell_strike/south-east/frame_000.png",
+              "iron_hull/animations/swell_strike/south-east/frame_001.png",
+              "iron_hull/animations/swell_strike/south-east/frame_002.png",
+              "iron_hull/animations/swell_strike/south-east/frame_003.png",
+              "iron_hull/animations/swell_strike/south-east/frame_004.png",
+              "iron_hull/animations/swell_strike/south-east/frame_005.png",
+              "iron_hull/animations/swell_strike/south-east/frame_006.png",
+              "iron_hull/animations/swell_strike/south-east/frame_007.png"
+            ],
+            "east": [
+              "iron_hull/animations/swell_strike/east/frame_000.png",
+              "iron_hull/animations/swell_strike/east/frame_001.png",
+              "iron_hull/animations/swell_strike/east/frame_002.png",
+              "iron_hull/animations/swell_strike/east/frame_003.png",
+              "iron_hull/animations/swell_strike/east/frame_004.png",
+              "iron_hull/animations/swell_strike/east/frame_005.png",
+              "iron_hull/animations/swell_strike/east/frame_006.png",
+              "iron_hull/animations/swell_strike/east/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/swell_strike/west/frame_000.png",
+              "iron_hull/animations/swell_strike/west/frame_001.png",
+              "iron_hull/animations/swell_strike/west/frame_002.png",
+              "iron_hull/animations/swell_strike/west/frame_003.png",
+              "iron_hull/animations/swell_strike/west/frame_004.png",
+              "iron_hull/animations/swell_strike/west/frame_005.png",
+              "iron_hull/animations/swell_strike/west/frame_006.png",
+              "iron_hull/animations/swell_strike/west/frame_007.png"
+            ],
+            "north-west": [
+              "iron_hull/animations/swell_strike/north-west/frame_000.png",
+              "iron_hull/animations/swell_strike/north-west/frame_001.png",
+              "iron_hull/animations/swell_strike/north-west/frame_002.png",
+              "iron_hull/animations/swell_strike/north-west/frame_003.png",
+              "iron_hull/animations/swell_strike/north-west/frame_004.png",
+              "iron_hull/animations/swell_strike/north-west/frame_005.png",
+              "iron_hull/animations/swell_strike/north-west/frame_006.png",
+              "iron_hull/animations/swell_strike/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/swell_strike/south-west/frame_000.png",
+              "iron_hull/animations/swell_strike/south-west/frame_001.png",
+              "iron_hull/animations/swell_strike/south-west/frame_002.png",
+              "iron_hull/animations/swell_strike/south-west/frame_003.png",
+              "iron_hull/animations/swell_strike/south-west/frame_004.png",
+              "iron_hull/animations/swell_strike/south-west/frame_005.png",
+              "iron_hull/animations/swell_strike/south-west/frame_006.png",
+              "iron_hull/animations/swell_strike/south-west/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/swell_strike/north/frame_000.png",
+              "iron_hull/animations/swell_strike/north/frame_001.png",
+              "iron_hull/animations/swell_strike/north/frame_002.png",
+              "iron_hull/animations/swell_strike/north/frame_003.png",
+              "iron_hull/animations/swell_strike/north/frame_004.png",
+              "iron_hull/animations/swell_strike/north/frame_005.png",
+              "iron_hull/animations/swell_strike/north/frame_006.png",
+              "iron_hull/animations/swell_strike/north/frame_007.png"
+            ]
+          },
+          "kinetic_shock": {
+            "east": [
+              "iron_hull/animations/kinetic_shock/east/frame_000.png",
+              "iron_hull/animations/kinetic_shock/east/frame_001.png",
+              "iron_hull/animations/kinetic_shock/east/frame_002.png",
+              "iron_hull/animations/kinetic_shock/east/frame_003.png",
+              "iron_hull/animations/kinetic_shock/east/frame_004.png",
+              "iron_hull/animations/kinetic_shock/east/frame_005.png",
+              "iron_hull/animations/kinetic_shock/east/frame_006.png",
+              "iron_hull/animations/kinetic_shock/east/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/kinetic_shock/south-west/frame_000.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_001.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_002.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_003.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_004.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_005.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_006.png",
+              "iron_hull/animations/kinetic_shock/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "iron_hull/animations/kinetic_shock/north-east/frame_000.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_001.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_002.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_003.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_004.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_005.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_006.png",
+              "iron_hull/animations/kinetic_shock/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "iron_hull/animations/kinetic_shock/north-west/frame_000.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_001.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_002.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_003.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_004.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_005.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_006.png",
+              "iron_hull/animations/kinetic_shock/north-west/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/kinetic_shock/north/frame_000.png",
+              "iron_hull/animations/kinetic_shock/north/frame_001.png",
+              "iron_hull/animations/kinetic_shock/north/frame_002.png",
+              "iron_hull/animations/kinetic_shock/north/frame_003.png",
+              "iron_hull/animations/kinetic_shock/north/frame_004.png",
+              "iron_hull/animations/kinetic_shock/north/frame_005.png",
+              "iron_hull/animations/kinetic_shock/north/frame_006.png",
+              "iron_hull/animations/kinetic_shock/north/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/kinetic_shock/south/frame_000.png",
+              "iron_hull/animations/kinetic_shock/south/frame_001.png",
+              "iron_hull/animations/kinetic_shock/south/frame_002.png",
+              "iron_hull/animations/kinetic_shock/south/frame_003.png",
+              "iron_hull/animations/kinetic_shock/south/frame_004.png",
+              "iron_hull/animations/kinetic_shock/south/frame_005.png",
+              "iron_hull/animations/kinetic_shock/south/frame_006.png",
+              "iron_hull/animations/kinetic_shock/south/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/kinetic_shock/south-east/frame_000.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_001.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_002.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_003.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_004.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_005.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_006.png",
+              "iron_hull/animations/kinetic_shock/south-east/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/kinetic_shock/west/frame_000.png",
+              "iron_hull/animations/kinetic_shock/west/frame_001.png",
+              "iron_hull/animations/kinetic_shock/west/frame_002.png",
+              "iron_hull/animations/kinetic_shock/west/frame_003.png",
+              "iron_hull/animations/kinetic_shock/west/frame_004.png",
+              "iron_hull/animations/kinetic_shock/west/frame_005.png",
+              "iron_hull/animations/kinetic_shock/west/frame_006.png",
+              "iron_hull/animations/kinetic_shock/west/frame_007.png"
+            ]
+          },
+          "attack": {
+            "north-west": [
+              "iron_hull/animations/attack/north-west/frame_000.png",
+              "iron_hull/animations/attack/north-west/frame_001.png",
+              "iron_hull/animations/attack/north-west/frame_002.png",
+              "iron_hull/animations/attack/north-west/frame_003.png",
+              "iron_hull/animations/attack/north-west/frame_004.png",
+              "iron_hull/animations/attack/north-west/frame_005.png",
+              "iron_hull/animations/attack/north-west/frame_006.png",
+              "iron_hull/animations/attack/north-west/frame_007.png"
+            ],
+            "east": [
+              "iron_hull/animations/attack/east/frame_000.png",
+              "iron_hull/animations/attack/east/frame_001.png",
+              "iron_hull/animations/attack/east/frame_002.png",
+              "iron_hull/animations/attack/east/frame_003.png",
+              "iron_hull/animations/attack/east/frame_004.png",
+              "iron_hull/animations/attack/east/frame_005.png",
+              "iron_hull/animations/attack/east/frame_006.png",
+              "iron_hull/animations/attack/east/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/attack/north/frame_000.png",
+              "iron_hull/animations/attack/north/frame_001.png",
+              "iron_hull/animations/attack/north/frame_002.png",
+              "iron_hull/animations/attack/north/frame_003.png",
+              "iron_hull/animations/attack/north/frame_004.png",
+              "iron_hull/animations/attack/north/frame_005.png",
+              "iron_hull/animations/attack/north/frame_006.png",
+              "iron_hull/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/attack/south/frame_000.png",
+              "iron_hull/animations/attack/south/frame_001.png",
+              "iron_hull/animations/attack/south/frame_002.png",
+              "iron_hull/animations/attack/south/frame_003.png",
+              "iron_hull/animations/attack/south/frame_004.png",
+              "iron_hull/animations/attack/south/frame_005.png",
+              "iron_hull/animations/attack/south/frame_006.png",
+              "iron_hull/animations/attack/south/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/attack/west/frame_000.png",
+              "iron_hull/animations/attack/west/frame_001.png",
+              "iron_hull/animations/attack/west/frame_002.png",
+              "iron_hull/animations/attack/west/frame_003.png",
+              "iron_hull/animations/attack/west/frame_004.png",
+              "iron_hull/animations/attack/west/frame_005.png",
+              "iron_hull/animations/attack/west/frame_006.png",
+              "iron_hull/animations/attack/west/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/attack/south-east/frame_000.png",
+              "iron_hull/animations/attack/south-east/frame_001.png",
+              "iron_hull/animations/attack/south-east/frame_002.png",
+              "iron_hull/animations/attack/south-east/frame_003.png",
+              "iron_hull/animations/attack/south-east/frame_004.png",
+              "iron_hull/animations/attack/south-east/frame_005.png",
+              "iron_hull/animations/attack/south-east/frame_006.png",
+              "iron_hull/animations/attack/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/attack/south-west/frame_000.png",
+              "iron_hull/animations/attack/south-west/frame_001.png",
+              "iron_hull/animations/attack/south-west/frame_002.png",
+              "iron_hull/animations/attack/south-west/frame_003.png",
+              "iron_hull/animations/attack/south-west/frame_004.png",
+              "iron_hull/animations/attack/south-west/frame_005.png",
+              "iron_hull/animations/attack/south-west/frame_006.png",
+              "iron_hull/animations/attack/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "iron_hull/animations/attack/north-east/frame_000.png",
+              "iron_hull/animations/attack/north-east/frame_001.png",
+              "iron_hull/animations/attack/north-east/frame_002.png",
+              "iron_hull/animations/attack/north-east/frame_003.png",
+              "iron_hull/animations/attack/north-east/frame_004.png",
+              "iron_hull/animations/attack/north-east/frame_005.png",
+              "iron_hull/animations/attack/north-east/frame_006.png",
+              "iron_hull/animations/attack/north-east/frame_007.png"
+            ]
+          },
+          "root": {
+            "north-west": [
+              "iron_hull/animations/root/north-west/frame_000.png",
+              "iron_hull/animations/root/north-west/frame_001.png",
+              "iron_hull/animations/root/north-west/frame_002.png",
+              "iron_hull/animations/root/north-west/frame_003.png",
+              "iron_hull/animations/root/north-west/frame_004.png",
+              "iron_hull/animations/root/north-west/frame_005.png",
+              "iron_hull/animations/root/north-west/frame_006.png",
+              "iron_hull/animations/root/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/root/south-east/frame_000.png",
+              "iron_hull/animations/root/south-east/frame_001.png",
+              "iron_hull/animations/root/south-east/frame_002.png",
+              "iron_hull/animations/root/south-east/frame_003.png",
+              "iron_hull/animations/root/south-east/frame_004.png",
+              "iron_hull/animations/root/south-east/frame_005.png",
+              "iron_hull/animations/root/south-east/frame_006.png",
+              "iron_hull/animations/root/south-east/frame_007.png"
+            ],
+            "east": [
+              "iron_hull/animations/root/east/frame_000.png",
+              "iron_hull/animations/root/east/frame_001.png",
+              "iron_hull/animations/root/east/frame_002.png",
+              "iron_hull/animations/root/east/frame_003.png",
+              "iron_hull/animations/root/east/frame_004.png",
+              "iron_hull/animations/root/east/frame_005.png",
+              "iron_hull/animations/root/east/frame_006.png",
+              "iron_hull/animations/root/east/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/root/south/frame_000.png",
+              "iron_hull/animations/root/south/frame_001.png",
+              "iron_hull/animations/root/south/frame_002.png",
+              "iron_hull/animations/root/south/frame_003.png",
+              "iron_hull/animations/root/south/frame_004.png",
+              "iron_hull/animations/root/south/frame_005.png",
+              "iron_hull/animations/root/south/frame_006.png",
+              "iron_hull/animations/root/south/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/root/south-west/frame_000.png",
+              "iron_hull/animations/root/south-west/frame_001.png",
+              "iron_hull/animations/root/south-west/frame_002.png",
+              "iron_hull/animations/root/south-west/frame_003.png",
+              "iron_hull/animations/root/south-west/frame_004.png",
+              "iron_hull/animations/root/south-west/frame_005.png",
+              "iron_hull/animations/root/south-west/frame_006.png",
+              "iron_hull/animations/root/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "iron_hull/animations/root/north-east/frame_000.png",
+              "iron_hull/animations/root/north-east/frame_001.png",
+              "iron_hull/animations/root/north-east/frame_002.png",
+              "iron_hull/animations/root/north-east/frame_003.png",
+              "iron_hull/animations/root/north-east/frame_004.png",
+              "iron_hull/animations/root/north-east/frame_005.png",
+              "iron_hull/animations/root/north-east/frame_006.png",
+              "iron_hull/animations/root/north-east/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/root/north/frame_000.png",
+              "iron_hull/animations/root/north/frame_001.png",
+              "iron_hull/animations/root/north/frame_002.png",
+              "iron_hull/animations/root/north/frame_003.png",
+              "iron_hull/animations/root/north/frame_004.png",
+              "iron_hull/animations/root/north/frame_005.png",
+              "iron_hull/animations/root/north/frame_006.png",
+              "iron_hull/animations/root/north/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/root/west/frame_000.png",
+              "iron_hull/animations/root/west/frame_001.png",
+              "iron_hull/animations/root/west/frame_002.png",
+              "iron_hull/animations/root/west/frame_003.png",
+              "iron_hull/animations/root/west/frame_004.png",
+              "iron_hull/animations/root/west/frame_005.png",
+              "iron_hull/animations/root/west/frame_006.png",
+              "iron_hull/animations/root/west/frame_007.png"
+            ]
+          },
+          "toll_of_the_deep": {
+            "north-east": [
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/north-west/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/toll_of_the_deep/west/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/west/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/toll_of_the_deep/north/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/north/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/south-west/frame_007.png"
+            ],
+            "east": [
+              "iron_hull/animations/toll_of_the_deep/east/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/east/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/toll_of_the_deep/south/frame_000.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_001.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_002.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_003.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_004.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_005.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_006.png",
+              "iron_hull/animations/toll_of_the_deep/south/frame_007.png"
+            ]
+          },
+          "walk": {
+            "north-east": [
+              "iron_hull/animations/walk/north-east/frame_000.png",
+              "iron_hull/animations/walk/north-east/frame_001.png",
+              "iron_hull/animations/walk/north-east/frame_002.png",
+              "iron_hull/animations/walk/north-east/frame_003.png",
+              "iron_hull/animations/walk/north-east/frame_004.png",
+              "iron_hull/animations/walk/north-east/frame_005.png",
+              "iron_hull/animations/walk/north-east/frame_006.png",
+              "iron_hull/animations/walk/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "iron_hull/animations/walk/south-east/frame_000.png",
+              "iron_hull/animations/walk/south-east/frame_001.png",
+              "iron_hull/animations/walk/south-east/frame_002.png",
+              "iron_hull/animations/walk/south-east/frame_003.png",
+              "iron_hull/animations/walk/south-east/frame_004.png",
+              "iron_hull/animations/walk/south-east/frame_005.png",
+              "iron_hull/animations/walk/south-east/frame_006.png",
+              "iron_hull/animations/walk/south-east/frame_007.png"
+            ],
+            "west": [
+              "iron_hull/animations/walk/west/frame_000.png",
+              "iron_hull/animations/walk/west/frame_001.png",
+              "iron_hull/animations/walk/west/frame_002.png",
+              "iron_hull/animations/walk/west/frame_003.png",
+              "iron_hull/animations/walk/west/frame_004.png",
+              "iron_hull/animations/walk/west/frame_005.png",
+              "iron_hull/animations/walk/west/frame_006.png",
+              "iron_hull/animations/walk/west/frame_007.png"
+            ],
+            "south": [
+              "iron_hull/animations/walk/south/frame_000.png",
+              "iron_hull/animations/walk/south/frame_001.png",
+              "iron_hull/animations/walk/south/frame_002.png",
+              "iron_hull/animations/walk/south/frame_003.png",
+              "iron_hull/animations/walk/south/frame_004.png",
+              "iron_hull/animations/walk/south/frame_005.png",
+              "iron_hull/animations/walk/south/frame_006.png",
+              "iron_hull/animations/walk/south/frame_007.png"
+            ],
+            "north": [
+              "iron_hull/animations/walk/north/frame_000.png",
+              "iron_hull/animations/walk/north/frame_001.png",
+              "iron_hull/animations/walk/north/frame_002.png",
+              "iron_hull/animations/walk/north/frame_003.png",
+              "iron_hull/animations/walk/north/frame_004.png",
+              "iron_hull/animations/walk/north/frame_005.png",
+              "iron_hull/animations/walk/north/frame_006.png",
+              "iron_hull/animations/walk/north/frame_007.png"
+            ],
+            "east": [
+              "iron_hull/animations/walk/east/frame_000.png",
+              "iron_hull/animations/walk/east/frame_001.png",
+              "iron_hull/animations/walk/east/frame_002.png",
+              "iron_hull/animations/walk/east/frame_003.png",
+              "iron_hull/animations/walk/east/frame_004.png",
+              "iron_hull/animations/walk/east/frame_005.png",
+              "iron_hull/animations/walk/east/frame_006.png",
+              "iron_hull/animations/walk/east/frame_007.png"
+            ],
+            "north-west": [
+              "iron_hull/animations/walk/north-west/frame_000.png",
+              "iron_hull/animations/walk/north-west/frame_001.png",
+              "iron_hull/animations/walk/north-west/frame_002.png",
+              "iron_hull/animations/walk/north-west/frame_003.png",
+              "iron_hull/animations/walk/north-west/frame_004.png",
+              "iron_hull/animations/walk/north-west/frame_005.png",
+              "iron_hull/animations/walk/north-west/frame_006.png",
+              "iron_hull/animations/walk/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "iron_hull/animations/walk/south-west/frame_000.png",
+              "iron_hull/animations/walk/south-west/frame_001.png",
+              "iron_hull/animations/walk/south-west/frame_002.png",
+              "iron_hull/animations/walk/south-west/frame_003.png",
+              "iron_hull/animations/walk/south-west/frame_004.png",
+              "iron_hull/animations/walk/south-west/frame_005.png",
+              "iron_hull/animations/walk/south-west/frame_006.png",
+              "iron_hull/animations/walk/south-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-25T19:19:11.482665"
+}

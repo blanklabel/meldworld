@@ -382,10 +382,14 @@ pub fn dir_index(h: Vec2) -> usize {
 pub struct CharacterFrames {
     pub idle: [Handle<Image>; 8],
     pub walk: [Vec<Handle<Image>>; 8],
+    /// Extra named clips (a class's battle attack + special abilities), each indexed
+    /// `[dir]` → frames. Played once in battle via [`CharSprite::action`]; the
+    /// overworld only uses `idle`/`walk`, so this may be empty.
+    pub clips: std::collections::HashMap<String, [Vec<Handle<Image>>; 8]>,
 }
 
 /// Load a character's sprites from its asset folder. `base` is the character dir
-/// (e.g. `characters/PSYKER_Male/Psyker`), `anim` the walk clip, `frame_count` its
+/// (e.g. `characters/psyker`), `anim` the walk clip, `frame_count` its
 /// length.
 pub fn load_character(
     assets: &AssetServer,
@@ -404,7 +408,47 @@ pub fn load_character(
             })
             .collect()
     });
-    CharacterFrames { idle, walk }
+    CharacterFrames {
+        idle,
+        walk,
+        clips: std::collections::HashMap::new(),
+    }
+}
+
+/// Load a character with idle rotations + a set of named animation clips (each
+/// `<base>/animations/<name>/<dir>/frame_NNN.png`, `frames` long). The clip named
+/// `walk` also fills the locomotion `walk` field; the rest ride [`CharacterFrames::clips`]
+/// for battle attack/special playback. This is the PixelLab layout (one folder per
+/// class, one subfolder per v3 animation clip).
+pub fn load_character_clips(
+    assets: &AssetServer,
+    base: &str,
+    clips: &[(&str, usize)],
+) -> CharacterFrames {
+    let idle = std::array::from_fn(|i| assets.load(format!("{base}/rotations/{}.png", DIRS[i])));
+    let load_clip = |name: &str, frames: usize| -> [Vec<Handle<Image>>; 8] {
+        std::array::from_fn(|i| {
+            (0..frames)
+                .map(|f| {
+                    assets.load(format!("{base}/animations/{name}/{}/frame_{f:03}.png", DIRS[i]))
+                })
+                .collect()
+        })
+    };
+    let mut map = std::collections::HashMap::new();
+    let mut walk: [Vec<Handle<Image>>; 8] = std::array::from_fn(|_| Vec::new());
+    for (name, frames) in clips {
+        let c = load_clip(name, *frames);
+        if *name == "walk" {
+            walk = c.clone();
+        }
+        map.insert(name.to_string(), c);
+    }
+    CharacterFrames {
+        idle,
+        walk,
+        clips: map,
+    }
 }
 
 /// A movement-driven character billboard: it walks (cycles the clip) while its
@@ -429,6 +473,10 @@ pub struct CharSprite {
     /// lunges in and recoils back (otherwise the recoil would spin it around). The
     /// walk cycle still plays while it moves; only the direction is locked.
     pub locked: Option<Vec2>,
+    /// When set `(clip_name, elapsed_secs)`, play that one-shot clip (a battle attack
+    /// or special) instead of walk/idle until it finishes, then clear back to None.
+    /// Set by the battle layer when an actor strikes; ignored in the overworld.
+    pub action: Option<(String, f32)>,
 }
 
 impl CharSprite {
@@ -442,6 +490,7 @@ impl CharSprite {
             last: start,
             still: 1.0, // start idle
             locked: None,
+            action: None,
         }
     }
 }
@@ -505,8 +554,31 @@ pub fn animate_chars(
         if cs.timer.just_finished() {
             cs.frame = cs.frame.wrapping_add(1);
         }
+        // A one-shot action clip (battle attack / special) takes over the sprite until
+        // it plays out, then clears back to walk/idle. `take()` avoids borrowing `cs`
+        // twice (the clip lookup needs `&cs.frames`).
+        let mut action_tex = None;
+        if let Some((name, t)) = cs.action.take() {
+            let t2 = t + dt;
+            let mut done = true;
+            if let Some(clip) = cs.frames.clips.get(&name) {
+                let per = clip[dir].len();
+                if per > 0 {
+                    let idx = (t2 * fps) as usize;
+                    if idx < per {
+                        action_tex = Some(clip[dir][idx].clone());
+                        done = false;
+                    }
+                }
+            }
+            if !done {
+                cs.action = Some((name, t2));
+            }
+        }
         let walking = cs.still < 0.2;
-        let tex = if walking {
+        let tex = if let Some(t) = action_tex {
+            t
+        } else if walking {
             let clip = &cs.frames.walk[dir];
             if clip.is_empty() {
                 cs.frames.idle[dir].clone()
