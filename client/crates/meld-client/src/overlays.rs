@@ -102,12 +102,13 @@ pub(crate) fn overlay_input(
 }
 
 /// Arrow-key navigation + Space-to-activate for the inventory overlay.
-/// Left/Right switch tabs (and reset the cursor); Up/Down move the cursor
-/// through the active screen's navigable rows. Space activates whatever the
-/// cursor is on — mirrors what a click on that same row would do. The Equip
-/// tab has two screens (see `EquipPicker`): the main per-hero summary, and —
-/// once a category is activated — a picker of every candidate for it, so
-/// nothing ever equips just by being found or browsed past.
+/// Up/Down move the cursor through the active screen's navigable rows (down
+/// is down, up is up); Left/Right switch tabs (and reset the cursor). Space
+/// activates whatever the cursor is on — mirrors what a click on that same
+/// row would do. The Equip tab has two screens (see `EquipPicker`): the main
+/// per-hero summary, and — once a category is activated — a picker of every
+/// candidate for it, so nothing ever equips just by being found or browsed
+/// past.
 pub(crate) fn overlay_nav_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
@@ -125,16 +126,15 @@ pub(crate) fn overlay_nav_input(
     if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
         return;
     }
-    // Tabs are stacked vertically, so Up/Down cycles them; Left/Right moves
-    // the cursor through the active screen's (also vertically listed) rows.
-    // Blocked while the Equip picker is open — Up/Down shouldn't leave the
-    // tab mid-pick; Escape (handled in `overlay_input`) backs out instead.
+    // Left/Right cycles tabs. Blocked while the Equip picker is open —
+    // switching tabs mid-pick would be disorienting; Escape (handled in
+    // `overlay_input`) backs out of the picker instead.
     if picker.category.is_none()
-        && (keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown))
+        && (keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight))
     {
         let order = [OverlayTab::Items, OverlayTab::Equip, OverlayTab::Status];
         let i = order.iter().position(|t| *t == *tab).unwrap_or(0);
-        let next = if keys.just_pressed(KeyCode::ArrowDown) {
+        let next = if keys.just_pressed(KeyCode::ArrowRight) {
             (i + 1) % order.len()
         } else {
             (i + order.len() - 1) % order.len()
@@ -151,10 +151,11 @@ pub(crate) fn overlay_nav_input(
         },
         OverlayTab::Status => hero_count(&roster, &hero_names),
     };
+    // Up/Down moves the row cursor — down is down, up is up.
     if row_count > 0 {
-        if keys.just_pressed(KeyCode::ArrowLeft) {
+        if keys.just_pressed(KeyCode::ArrowUp) {
             cursor.index = (cursor.index + row_count - 1) % row_count;
-        } else if keys.just_pressed(KeyCode::ArrowRight) {
+        } else if keys.just_pressed(KeyCode::ArrowDown) {
             cursor.index = (cursor.index + 1) % row_count;
         }
     }
@@ -280,7 +281,7 @@ pub(crate) fn render_overlay(
                 Node {
                     width: Val::Px(660.0),
                     flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(8.0),
+                    row_gap: Val::Px(10.0),
                     padding: UiRect::all(Val::Px(18.0)),
                     border: UiRect::all(Val::Px(2.0)),
                     ..default()
@@ -301,7 +302,7 @@ pub(crate) fn render_overlay(
                         // --- vertical tab strip ---
                         row.spawn(Node {
                             flex_direction: FlexDirection::Column,
-                            row_gap: Val::Px(6.0),
+                            row_gap: Val::Px(9.0),
                             width: Val::Px(120.0),
                             flex_shrink: 0.0,
                             ..default()
@@ -340,7 +341,7 @@ pub(crate) fn render_overlay(
                         // --- tab content ---
                         row.spawn(Node {
                             flex_direction: FlexDirection::Column,
-                            row_gap: Val::Px(6.0),
+                            row_gap: Val::Px(9.0),
                             width: Val::Px(480.0),
                             ..default()
                         })
@@ -520,7 +521,7 @@ pub(crate) fn render_overlay(
                                 if !roster.heroes.is_empty() {
                                     label(
                                         content,
-                                        "[Left/Right] select | [Space]/[1-4] rename | [Enter] save | [Esc] cancel | click a row to swap formation".into(),
+                                        "[Up/Down] select | [Space]/[1-4] rename | [Enter] save | [Esc] cancel | click a row to swap formation".into(),
                                         12.0,
                                         dim,
                                     );
@@ -647,8 +648,8 @@ pub(crate) fn render_overlay(
                                         };
                                         let ins = if g.insurance == "red" { " red" } else { "" };
                                         let text = format!(
-                                            "  {}  [{}{} t{}]  +{}{}{}",
-                                            g.name, category, ins, g.tier, stat, arrow, tag
+                                            "  {} {}  [{}{} t{}]  +{}{}{}",
+                                            gear_slot_icon(category), g.name, category, ins, g.tier, stat, arrow, tag
                                         );
                                         let mut col = if worn_here {
                                             Color::srgb(0.6, 0.95, 0.7)
@@ -743,9 +744,10 @@ pub(crate) fn render_overlay(
                                         let focused = cursor.index == idx;
                                         idx += 1;
                                         let worn = effective_worn_item(&inv, &run_gear, category, selected);
+                                        let icon = gear_slot_icon(category);
                                         let text = match worn {
                                             Some(g) => format!(
-                                                "- {} -   {}   +{}",
+                                                "- {} -   {icon} {}   +{}",
                                                 class_display(category),
                                                 g.name,
                                                 gear_slot_stat(g)
@@ -782,9 +784,9 @@ pub(crate) fn render_overlay(
                         });
                     });
                     let hint = if *tab == OverlayTab::Equip && picker.category.is_some() {
-                        "[Left/Right] select | [Space] equip | [ESC] back"
+                        "[Up/Down] select | [Space] equip | [ESC] back"
                     } else {
-                        "[Up/Down] tabs | [Left/Right] select | [Space] act | [ESC] close"
+                        "[Left/Right] tabs | [Up/Down] select | [Space] act | [ESC] close"
                     };
                     label(p, hint.into(), 13.0, dim);
                 }
@@ -824,6 +826,18 @@ pub(crate) fn gear_slot_stat(g: &GearLine) -> i32 {
         "weapon" => g.atk_bonus,
         "armor" => g.def_bonus,
         _ => g.spd_bonus,
+    }
+}
+
+/// A small Nerd Font glyph for a gear slot (sword/armor/gem), prefixed onto
+/// item names so they're recognizable at a glance in the Equip screens.
+/// Shares the same `TextFont` as the surrounding label text (see
+/// `netglue::apply_ui_font`), so it always renders at the same size.
+fn gear_slot_icon(slot: &str) -> &'static str {
+    match slot {
+        "weapon" => "\u{f04e5}",   // nf-md-sword
+        "armor" => "\u{f132}",     // nf-fa-shield
+        _ => "\u{f3a5}",           // nf-fa-gem (accessory/jewelry)
     }
 }
 
@@ -1131,6 +1145,11 @@ pub(crate) fn render_loot_report(
     commands
         .spawn((
             LootReportRoot,
+            // Root UI nodes have no reliable stacking order otherwise (Bevy
+            // doesn't guarantee draw order between separate UI roots) — pin
+            // this above the level-up screen so a level-up right after a
+            // battle never covers the XP/loot you just got from it.
+            GlobalZIndex(100),
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
