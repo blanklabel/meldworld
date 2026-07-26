@@ -341,7 +341,19 @@ pub(crate) fn pump_net(
                 run_gear.gear = gear;
             }
             ServerMsg::Error { message } => {
-                session.status = format!("error: {message}");
+                // A login/auth error while still on the Join screen unlocks it for
+                // another attempt (e.g. wrong password) rather than dead-ending.
+                if session.connecting && !session.entered {
+                    session.connecting = false;
+                    let m = message.to_lowercase();
+                    session.status = if m.contains("401") || m.contains("unauthorized") {
+                        "That username is taken or the password is wrong.".to_string()
+                    } else {
+                        format!("Login failed: {message}")
+                    };
+                } else {
+                    session.status = format!("error: {message}");
+                }
             }
             ServerMsg::Disconnected => {
                 session.status = "disconnected".to_string();

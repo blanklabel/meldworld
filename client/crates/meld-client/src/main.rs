@@ -107,6 +107,7 @@ fn main() {
         .init_resource::<Ashfall>()
         .init_resource::<MoveClock>()
         .init_resource::<JoinFocus>()
+        .init_resource::<LoginFocus>()
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
         .init_resource::<PartyView>()
@@ -178,7 +179,8 @@ fn main() {
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
         .add_systems(
             Update,
-            (join_input, join_interact, join_refresh).run_if(in_state(Screen::Join)),
+            (join_input, join_interact, join_refresh, join_login_refresh)
+                .run_if(in_state(Screen::Join)),
         )
         // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
@@ -453,6 +455,10 @@ struct NetRes(Net);
 #[derive(Resource)]
 struct Session {
     player_id: String,
+    /// Account credentials typed on the Join screen (real, persistent accounts —
+    /// register-on-first-use then login). Empty until the player types them.
+    username: String,
+    password: String,
     connecting: bool,
     entered: bool,
     channeling: bool,
@@ -471,6 +477,8 @@ impl Default for Session {
     fn default() -> Self {
         Session {
             player_id: String::new(),
+            username: String::new(),
+            password: String::new(),
             connecting: false,
             entered: false,
             channeling: false,

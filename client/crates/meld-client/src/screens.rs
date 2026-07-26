@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use meld_client::net::ClientCmd;
+use meld_client::net::{self, ClientCmd};
 
 use super::*;
 
@@ -46,6 +46,84 @@ impl Default for JoinFocus {
     fn default() -> Self {
         JoinFocus("hunter".into())
     }
+}
+
+/// Which account-login field is being typed into: 0 = username, 1 = password, None =
+/// no field (so 1-4 / arrows still drive the class picker).
+#[derive(Resource, Default)]
+pub(crate) struct LoginFocus(pub Option<u8>);
+
+#[derive(Component)]
+pub(crate) struct JoinUserField; // clickable username box
+#[derive(Component)]
+pub(crate) struct JoinPassField; // clickable password box
+#[derive(Component)]
+pub(crate) struct JoinUserText;
+#[derive(Component)]
+pub(crate) struct JoinPassText;
+
+/// KeyCode → character for typing an account username/password: lowercase letters
+/// (uppercase with Shift), digits, and a couple of safe symbols.
+pub(crate) fn typed_char(key: KeyCode, shift: bool) -> Option<char> {
+    use KeyCode::*;
+    let base = match key {
+        KeyA => 'a', KeyB => 'b', KeyC => 'c', KeyD => 'd', KeyE => 'e', KeyF => 'f',
+        KeyG => 'g', KeyH => 'h', KeyI => 'i', KeyJ => 'j', KeyK => 'k', KeyL => 'l',
+        KeyM => 'm', KeyN => 'n', KeyO => 'o', KeyP => 'p', KeyQ => 'q', KeyR => 'r',
+        KeyS => 's', KeyT => 't', KeyU => 'u', KeyV => 'v', KeyW => 'w', KeyX => 'x',
+        KeyY => 'y', KeyZ => 'z',
+        Digit0 => '0', Digit1 => '1', Digit2 => '2', Digit3 => '3', Digit4 => '4',
+        Digit5 => '5', Digit6 => '6', Digit7 => '7', Digit8 => '8', Digit9 => '9',
+        Minus => '-', Period => '.',
+        _ => return None,
+    };
+    Some(if shift && base.is_ascii_alphabetic() { base.to_ascii_uppercase() } else { base })
+}
+
+/// One labelled, clickable text field (username / password).
+fn field_box(
+    parent: &mut ChildSpawnerCommands,
+    label: &str,
+    field_tag: impl Bundle,
+    text_tag: impl Bundle,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|r| {
+            r.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 14.0, ..default() },
+                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+            ));
+            r.spawn((
+                Button,
+                field_tag,
+                Node {
+                    width: Val::Px(170.0),
+                    height: Val::Px(28.0),
+                    align_items: AlignItems::Center,
+                    padding: UiRect::horizontal(Val::Px(8.0)),
+                    border: UiRect::all(Val::Px(1.5)),
+                    ..default()
+                },
+                BorderColor(glass(0.9)),
+                BackgroundColor(glass(0.5)),
+                BorderRadius::all(Val::Px(6.0)),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new(String::new()),
+                    text_tag,
+                    TextFont { font_size: 15.0, ..default() },
+                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                ));
+            });
+        });
 }
 
 // Join-screen element markers.
@@ -141,14 +219,14 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(9.0),
+                row_gap: Val::Px(7.0),
                 ..default()
             },
         ))
         .with_children(|p| {
             p.spawn((
                 Text::new("MELDWORLD"),
-                TextFont { font_size: 36.0, ..default() },
+                TextFont { font_size: 30.0, ..default() },
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
@@ -156,6 +234,19 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 TextFont { font_size: 16.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
+
+            // Account login (real, persistent accounts): click a field and type;
+            // TAB switches fields. New name → account is created on first login.
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(18.0),
+                ..default()
+            })
+            .with_children(|row| {
+                field_box(row, "Username", JoinUserField, JoinUserText);
+                field_box(row, "Password", JoinPassField, JoinPassText);
+            });
 
             // The party: 4 slot cards.
             p.spawn(Node {
@@ -288,59 +379,102 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
         });
 }
 
-/// Keyboard: 1-4 select the slot to edit, ←/→ cycle the selected slot's class,
-/// ENTER/C start. (Mouse: click a slot then a class; hover any class for details —
-/// see `join_interact`.)
+/// Join-screen keyboard. Autoplay auto-connects as a guest. Otherwise: when a login
+/// field is focused (click it), typing edits it and TAB switches fields; when no field
+/// is focused, 1-4 select a party slot and ←/→ cycle its class. ENTER logs in with the
+/// typed account (creating it on first use); C (when not typing) starts co-op.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn join_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     mut session: ResMut<Session>,
     mut focus: ResMut<JoinFocus>,
+    mut login: ResMut<LoginFocus>,
     mut status_q: Query<&mut Text, With<StatusText>>,
 ) {
-    if !session.connecting {
-        // 1-4 select which slot the palette / arrows edit.
-        for (slot, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
-            .iter()
-            .enumerate()
-        {
-            if keys.just_pressed(*key) && slot < session.party.len() {
-                session.party_cursor = slot;
-                focus.0 = session.party[slot].clone();
-            }
-        }
-        // ←/→ cycle the selected slot's class through the roster.
-        let dir = if keys.just_pressed(KeyCode::ArrowRight) {
-            1
-        } else if keys.just_pressed(KeyCode::ArrowLeft) {
-            -1
-        } else {
-            0
-        };
-        if dir != 0 {
-            let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
-            if let Some(cur) = session.party.get(slot).cloned() {
-                let n = PARTY_CLASSES.len() as i32;
-                let i = PARTY_CLASSES.iter().position(|c| *c == cur).unwrap_or(0) as i32;
-                let key = PARTY_CLASSES[(((i + dir) % n + n) % n) as usize].to_string();
-                session.party[slot] = key.clone();
-                focus.0 = key;
-            }
-        }
+    // Autoplay / headless: skip the login UI, connect as a throwaway guest.
+    if autoplay.0 && !session.connecting {
+        session.connecting = true;
+        session.username = std::env::var("MELD_NAME")
+            .unwrap_or_else(|_| format!("guest{}", &uuid::Uuid::new_v4().simple().to_string()[..8]));
+        session.password = net::GUEST_PASSWORD.to_string();
+        session.status = "connecting...".to_string();
+        net.0.send(ClientCmd::Connect {
+            username: session.username.clone(),
+            password: session.password.clone(),
+        });
     }
 
-    // ENTER (or autoplay) = solo dive. C = co-op → the lobby after connecting.
-    let solo = keys.just_pressed(KeyCode::Enter) || autoplay.0;
-    let coop = keys.just_pressed(KeyCode::KeyC);
-    if (solo || coop) && !session.connecting {
-        session.connecting = true;
-        session.coop = coop;
-        let name = std::env::var("MELD_NAME").unwrap_or_else(|_| {
-            format!("guest{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
-        });
-        session.status = "connecting...".to_string();
-        net.0.send(ClientCmd::Connect { username: name });
+    if !session.connecting {
+        if let Some(f) = login.0 {
+            // Typing into a login field.
+            let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+            if keys.just_pressed(KeyCode::Tab) {
+                login.0 = Some(1 - f);
+            } else if keys.just_pressed(KeyCode::Backspace) {
+                if f == 0 {
+                    session.username.pop();
+                } else {
+                    session.password.pop();
+                }
+            } else {
+                for key in keys.get_just_pressed() {
+                    if let Some(c) = typed_char(*key, shift) {
+                        let field = if f == 0 { &mut session.username } else { &mut session.password };
+                        if field.chars().count() < 24 {
+                            field.push(c);
+                        }
+                    }
+                }
+            }
+        } else {
+            // No field focused → the keyboard drives the class picker.
+            for (slot, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
+                .iter()
+                .enumerate()
+            {
+                if keys.just_pressed(*key) && slot < session.party.len() {
+                    session.party_cursor = slot;
+                    focus.0 = session.party[slot].clone();
+                }
+            }
+            let dir = if keys.just_pressed(KeyCode::ArrowRight) {
+                1
+            } else if keys.just_pressed(KeyCode::ArrowLeft) {
+                -1
+            } else {
+                0
+            };
+            if dir != 0 {
+                let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
+                if let Some(cur) = session.party.get(slot).cloned() {
+                    let n = PARTY_CLASSES.len() as i32;
+                    let i = PARTY_CLASSES.iter().position(|c| *c == cur).unwrap_or(0) as i32;
+                    let key = PARTY_CLASSES[(((i + dir) % n + n) % n) as usize].to_string();
+                    session.party[slot] = key.clone();
+                    focus.0 = key;
+                }
+            }
+        }
+
+        // ENTER = log in & play; C (only when not typing) = co-op.
+        let coop = login.0.is_none() && keys.just_pressed(KeyCode::KeyC);
+        if keys.just_pressed(KeyCode::Enter) || coop {
+            let user = session.username.trim().to_string();
+            if user.is_empty() {
+                session.status = "Enter a username to log in.".to_string();
+            } else if session.password.is_empty() {
+                session.status = "Enter a password.".to_string();
+                login.0 = Some(1);
+            } else {
+                session.connecting = true;
+                session.coop = coop;
+                session.status = "logging in...".to_string();
+                let password = session.password.clone();
+                net.0.send(ClientCmd::Connect { username: user, password });
+            }
+        }
     }
 
     if let Ok(mut t) = status_q.single_mut() {
@@ -355,15 +489,30 @@ pub(crate) fn join_input(
 pub(crate) fn join_interact(
     mut session: ResMut<Session>,
     mut focus: ResMut<JoinFocus>,
+    mut login: ResMut<LoginFocus>,
     slots: Query<(&Interaction, &JoinSlot), Changed<Interaction>>,
     cards: Query<(&Interaction, &JoinClassCard), Changed<Interaction>>,
+    user_field: Query<&Interaction, (Changed<Interaction>, With<JoinUserField>)>,
+    pass_field: Query<&Interaction, (Changed<Interaction>, With<JoinPassField>)>,
 ) {
     if session.connecting {
         return;
     }
+    // Click a login field to focus it (keyboard then types into it).
+    for i in &user_field {
+        if *i == Interaction::Pressed {
+            login.0 = Some(0);
+        }
+    }
+    for i in &pass_field {
+        if *i == Interaction::Pressed {
+            login.0 = Some(1);
+        }
+    }
     for (interaction, slot) in &slots {
         match interaction {
             Interaction::Pressed => {
+                login.0 = None; // clicking the picker leaves the text fields
                 session.party_cursor = slot.0;
                 if let Some(k) = session.party.get(slot.0) {
                     focus.0 = k.clone();
@@ -380,6 +529,7 @@ pub(crate) fn join_interact(
     for (interaction, card) in &cards {
         match interaction {
             Interaction::Pressed => {
+                login.0 = None; // clicking the picker leaves the text fields
                 let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
                 if slot < session.party.len() {
                     session.party[slot] = card.0.to_string();
@@ -460,6 +610,35 @@ pub(crate) fn join_refresh(
     for (f, mut bc) in &mut stat_fills {
         let on = f.seg < vals[f.stat as usize];
         *bc = BackgroundColor(if on { cols[f.stat as usize] } else { Color::srgb(0.2, 0.22, 0.3) });
+    }
+}
+
+/// Render the account login fields: username as typed, password masked, a caret on
+/// the focused field, and a gold border on it.
+#[allow(clippy::type_complexity)]
+pub(crate) fn join_login_refresh(
+    session: Res<Session>,
+    login: Res<LoginFocus>,
+    mut user_text: Query<&mut Text, (With<JoinUserText>, Without<JoinPassText>)>,
+    mut pass_text: Query<&mut Text, (With<JoinPassText>, Without<JoinUserText>)>,
+    mut user_border: Query<&mut BorderColor, (With<JoinUserField>, Without<JoinPassField>)>,
+    mut pass_border: Query<&mut BorderColor, (With<JoinPassField>, Without<JoinUserField>)>,
+) {
+    let gold = Color::srgb(1.0, 0.85, 0.45);
+    if let Ok(mut t) = user_text.single_mut() {
+        let caret = if login.0 == Some(0) { "_" } else { "" };
+        **t = format!("{}{caret}", session.username);
+    }
+    if let Ok(mut t) = pass_text.single_mut() {
+        let masked: String = "\u{2022}".repeat(session.password.chars().count());
+        let caret = if login.0 == Some(1) { "_" } else { "" };
+        **t = format!("{masked}{caret}");
+    }
+    if let Ok(mut b) = user_border.single_mut() {
+        *b = BorderColor(if login.0 == Some(0) { gold } else { glass(0.9) });
+    }
+    if let Ok(mut b) = pass_border.single_mut() {
+        *b = BorderColor(if login.0 == Some(1) { gold } else { glass(0.9) });
     }
 }
 
