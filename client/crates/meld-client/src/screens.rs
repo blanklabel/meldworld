@@ -255,6 +255,9 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 row_gap: Val::Px(7.0),
                 ..default()
             },
+            // A dark scrim over the (bright) 3D overworld behind the menu so the text
+            // and cards read clearly instead of washing out against the grass.
+            BackgroundColor(Color::srgba(0.03, 0.04, 0.08, 0.66)),
         ))
         .with_children(|p| {
             p.spawn((

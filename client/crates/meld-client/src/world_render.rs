@@ -633,16 +633,20 @@ pub(crate) fn setup(
     // Rain — thin streaks confined to a DISK under the rain cloud (radius
     // `RAIN_RADIUS`), so the shower tracks the cloud rather than filling the screen.
     // `off.xz` is the drop's position within that disk; `off.y` is its fall height.
-    let drop_mesh = meshes.add(Cuboid::new(0.035, 1.3, 0.035));
+    // Faint, translucent streaks — NOT glowing white slabs. The old drops were bright
+    // (high emissive) + numerous (900), so a shower read as sheets of white. Fewer,
+    // thinner, dimmer, and barely-emissive → a subtle drizzle you can see through.
+    let drop_mesh = meshes.add(Cuboid::new(0.028, 1.1, 0.028));
     let drop_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.78, 0.85, 0.97, 0.6),
-        emissive: LinearRgba::rgb(0.32, 0.38, 0.48),
+        base_color: Color::srgba(0.72, 0.80, 0.94, 0.32),
+        emissive: LinearRgba::rgb(0.04, 0.05, 0.07),
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         ..default()
     });
-    for _ in 0..900 {
-        // Uniform over the disk: sqrt(u) keeps it from clustering at the centre.
+    for _ in 0..460 {
+        // Uniform over the disk: sqrt(u) keeps it from clustering at the centre. A super
+        // storm scales these offsets up (see `drive_rain`) to soak the whole area.
         let ang = rnd() * std::f32::consts::TAU;
         let r = rnd().sqrt() * RAIN_RADIUS;
         let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
@@ -702,32 +706,48 @@ pub(crate) fn setup(
     let mote_tex = images.add(hd2d::soft_disc_texture(64));
     let mote_mesh = meshes.add(Rectangle::new(0.16, 0.16));
     let mote_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.95, 0.8, 0.5),
+        base_color: Color::srgba(1.0, 0.95, 0.8, 0.6),
         base_color_texture: Some(mote_tex),
-        emissive: LinearRgba::rgb(0.7, 0.62, 0.35),
+        emissive: LinearRgba::rgb(1.2, 1.0, 0.5), // a warm glow that reads clearly as a firefly
         unlit: true,
         alpha_mode: AlphaMode::Blend,
         double_sided: true,
         cull_mode: None,
         ..default()
     });
-    // A wide, deep spread centred on the player (see `drift_motes`), so fireflies
-    // surround you instead of bunching in one patch of the view.
-    for _ in 0..140 {
-        let off = Vec2::new((rnd() - 0.5) * 72.0, (rnd() - 0.5) * 60.0);
-        commands.spawn((
+    // Fireflies pinned to fixed world spots, scattered over a disk around the origin;
+    // `drift_motes` shimmers them in place and re-scatters any that fall far behind.
+    // Every 4th also carries a soft warm point light (kept few + short-range so the
+    // light clusters don't overflow → no flicker), so they cast a gentle glow.
+    for i in 0..88 {
+        let ang = rnd() * std::f32::consts::TAU;
+        let r = rnd().sqrt() * 52.0;
+        let pos = Vec2::new(ang.cos() * r, ang.sin() * r);
+        let mut ent = commands.spawn((
             Mote {
-                off,
-                base_y: 0.6 + rnd() * 4.2,
+                pos,
+                base_y: 0.6 + rnd() * 3.4,
                 phase: rnd() * std::f32::consts::TAU,
-                amp: 0.3 + rnd() * 0.9,
+                amp: 0.25 + rnd() * 0.5,
                 speed: 0.2 + rnd() * 0.5,
+                seed: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF17E,
             },
             Mesh3d(mote_mesh.clone()),
             MeshMaterial3d(mote_mat.clone()),
-            Transform::from_scale(Vec3::splat(0.5 + rnd() * 1.2)),
+            Transform::from_translation(Vec3::new(pos.x, 1.0, pos.y))
+                .with_scale(Vec3::splat(0.5 + rnd() * 1.1)),
             hd2d::Billboard,
         ));
+        if i % 4 == 0 {
+            ent.insert(PointLight {
+                color: Color::srgb(1.0, 0.85, 0.5),
+                intensity: 14_000.0,
+                range: 4.5,
+                radius: 0.1,
+                shadows_enabled: false,
+                ..default()
+            });
+        }
     }
 
     // ── Falling ash (Ashfall biome only) ────────────────────────────────────
@@ -867,15 +887,18 @@ pub(crate) struct GroundDetail {
     last: IVec2,
 }
 
-/// Drifting atmosphere mote: `off` is its xz offset from the camera (anchored so it
-/// travels with the player), plus a bob phase/amplitude/speed.
+/// A firefly: a soft glowing dot pinned to a FIXED world spot (`pos`) that shimmers in
+/// place — you walk past it, it does not follow. When it falls far behind the player it
+/// re-scatters to a fresh random spot around them (via `seed`), keeping a lively
+/// density nearby without any mote trailing you. Some fireflies also emit a soft light.
 #[derive(Component)]
 pub(crate) struct Mote {
-    off: Vec2,
+    pos: Vec2, // fixed world xz until recycled
     base_y: f32,
     phase: f32,
     amp: f32,
     speed: f32,
+    seed: u64,
 }
 
 /// Deterministic hash of a world cell → 64 bits of stable per-cell randomness.
@@ -933,9 +956,14 @@ pub(crate) fn sway_amp(kind: &str) -> Option<f32> {
 /// phase-offset per prop, and gustier while it's raining. Overworld only.
 pub(crate) fn animate_sway(time: Res<Time>, sky: Option<Res<Sky>>, mut q: Query<(&Sway, &mut Transform)>) {
     let t = time.elapsed_secs();
-    let gust = 1.0 + sky.map(|s| s.weather).unwrap_or(0.0) * 1.6;
+    // Trees toss ONLY with the wind: dead calm in fair weather, building as the gust
+    // rises before a storm and hardest in the downpour. A hair of idle sway keeps a
+    // calm forest from looking frozen.
+    let wind = sky.map(|s| s.wind).unwrap_or(0.0);
+    let gust = 0.06 + wind * 2.4;
     for (s, mut tf) in &mut q {
-        let a = (t * s.speed + s.phase).sin() * s.amp * gust;
+        // Faster, choppier motion the harder it blows.
+        let a = (t * s.speed * (1.0 + wind) + s.phase).sin() * s.amp * gust;
         tf.rotation = Quat::from_rotation_y(s.base_yaw)
             * Quat::from_rotation_z(a)
             * Quat::from_rotation_x(a * 0.35);
@@ -1130,21 +1158,34 @@ pub(crate) fn drift_motes(
     state: Res<State<Screen>>,
     world: Res<Overworld>,
     session: Res<Session>,
-    cam_q: Query<&Transform, With<Camera3d>>,
-    mut q: Query<(&Mote, &mut Transform), Without<Camera3d>>,
+    mut q: Query<(&mut Mote, &mut Transform)>,
 ) {
-    // Anchor on the player's snapshot position in the overworld (x,y → world x,z);
-    // otherwise the camera's ground-aim point.
-    let focus = (*state.get() == Screen::Overworld)
+    // Fireflies are pinned to the WORLD, not the player — you walk past them. Only when
+    // one falls far behind (so you'd never see it again) does it re-scatter to a fresh
+    // spot around you, keeping density nearby without any mote following you.
+    let player = (*state.get() == Screen::Overworld)
         .then(|| world.entities.get(&session.player_id))
         .flatten()
-        .map(|e| Vec3::new(e.x, 0.0, e.y))
-        .or_else(|| cam_q.single().ok().map(ground_focus))
-        .unwrap_or(Vec3::ZERO);
+        .map(|e| Vec2::new(e.x, e.y));
     let t = time.elapsed_secs();
-    for (m, mut tf) in &mut q {
-        tf.translation.x = focus.x + m.off.x + (t * m.speed + m.phase).sin() * m.amp;
-        tf.translation.z = focus.z + m.off.y + (t * m.speed * 0.7 + m.phase).cos() * m.amp;
+    for (mut m, mut tf) in &mut q {
+        if let Some(p) = player {
+            if m.pos.distance(p) > 62.0 {
+                // splitmix64 step → a fresh angle + radius on a ring around the player.
+                let mut z = m.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                m.seed = z;
+                let ang = (z % 62831) as f32 / 10_000.0;
+                let rad = 42.0 + ((z >> 20) % 18_000) as f32 / 1_000.0; // 42..60
+                m.pos = p + Vec2::new(ang.cos() * rad, ang.sin() * rad);
+                m.base_y = 0.6 + ((z >> 40) % 3400) as f32 / 1_000.0;
+            }
+        }
+        // A gentle in-place shimmer around the fixed spot.
+        tf.translation.x = m.pos.x + (t * m.speed + m.phase).sin() * m.amp * 0.4;
+        tf.translation.z = m.pos.y + (t * m.speed * 0.7 + m.phase).cos() * m.amp * 0.4;
         tf.translation.y = m.base_y + (t * 0.6 + m.phase).sin() * m.amp * 0.5;
     }
 }
@@ -1223,9 +1264,17 @@ pub(crate) const DAY_LEN: f32 = 210.0;
 #[derive(Resource)]
 pub(crate) struct Sky {
     pub(crate) t: f32,
+    /// Rain intensity, 0 clear .. 1 downpour (smoothed toward the phase target).
     pub(crate) weather: f32,
-    pub(crate) weather_target: f32,
-    pub(crate) weather_timer: f32,
+    /// Wind intensity, 0 calm .. 1 gale (smoothed). Drives tree sway and precedes rain.
+    pub(crate) wind: f32,
+    /// Weather phase: 0 Fair, 1 Gust (windy precursor), 2 Storm (rain), 3 Clearing.
+    pub(crate) phase: u8,
+    pub(crate) phase_timer: f32,
+    /// This storm covers the WHOLE area (rain everywhere, not just under the cloud).
+    pub(crate) super_storm: bool,
+    /// Counts storms, so the super-storm roll varies each time.
+    pub(crate) cycle: u32,
     /// Daylight factor (0 = night, 1 = day), recomputed each frame by [`apply_sky`]
     /// so other systems (e.g. the Hunter avatar lamp) can read the darkness without
     /// duplicating the sun-angle math.
@@ -1233,7 +1282,16 @@ pub(crate) struct Sky {
 }
 impl Default for Sky {
     fn default() -> Self {
-        Sky { t: 0.36, weather: 0.0, weather_target: 0.0, weather_timer: 55.0, day: 1.0 }
+        Sky {
+            t: 0.36,
+            weather: 0.0,
+            wind: 0.0,
+            phase: 0,
+            phase_timer: 90.0,
+            super_storm: false,
+            cycle: 0,
+            day: 1.0,
+        }
     }
 }
 
@@ -1279,13 +1337,42 @@ pub(crate) fn mix_col(a: Color, b: Color, t: f32) -> Color {
 pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
     let dt = time.delta_secs();
     sky.t = (sky.t + dt / DAY_LEN).fract();
-    sky.weather_timer -= dt;
-    if sky.weather_timer <= 0.0 {
-        sky.weather_target = if sky.weather_target > 0.5 { 0.0 } else { 1.0 };
-        sky.weather_timer = if sky.weather_target > 0.5 { 32.0 } else { 75.0 };
+    // Weather phase machine: Fair → Gust (wind rises, a storm is coming) → Storm (rain)
+    // → Clearing → Fair. Wind LEADS the rain, so the trees start tossing before the
+    // downpour arrives. Occasionally the storm is a "super storm" that soaks the whole
+    // area instead of just the patch under the cloud.
+    sky.phase_timer -= dt;
+    if sky.phase_timer <= 0.0 {
+        sky.phase = (sky.phase + 1) % 4;
+        sky.phase_timer = match sky.phase {
+            0 => 210.0, // Fair — long, calm dry spell
+            1 => 16.0,  // Gust — the windy warning before rain
+            2 => 22.0,  // Storm — rain falls
+            _ => 14.0,  // Clearing — rain stops, wind dies down
+        };
+        if sky.phase == 2 {
+            // Entering a storm: roll for a super storm (~1 in 5). splitmix64 of the
+            // cycle so it varies without a global RNG.
+            sky.cycle = sky.cycle.wrapping_add(1);
+            let mut z = (sky.cycle as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z ^= z >> 31;
+            sky.super_storm = z % 5 == 0;
+        } else if sky.phase == 0 {
+            sky.super_storm = false;
+        }
     }
-    let rate = 0.2 * dt;
-    sky.weather += (sky.weather_target - sky.weather).clamp(-rate, rate);
+    // Per-phase wind + rain targets (a super storm blows harder).
+    let (wind_target, rain_target) = match sky.phase {
+        1 => (0.7, 0.0),
+        2 => (if sky.super_storm { 1.0 } else { 0.65 }, 1.0),
+        3 => (0.3, 0.0),
+        _ => (0.0, 0.0), // Fair: calm + dry
+    };
+    let wr = 0.35 * dt;
+    sky.wind += (wind_target - sky.wind).clamp(-wr, wr);
+    let rr = 0.25 * dt;
+    sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
 }
 
 /// Drive the sun (angle/colour/brightness), ambient, sky + fog colour, star
@@ -1426,6 +1513,13 @@ pub(crate) fn drive_rain(
         ground = Vec2::new(t.translation.x, t.translation.z);
         *v = vis;
     }
+    // A super storm soaks the WHOLE area: anchor the drops on the player and spread
+    // them wide, instead of the tight patch under the drifting cloud.
+    let (anchor, spread) = if sky.super_storm {
+        (Vec2::new(cam.x, cam.z), 2.4)
+    } else {
+        (ground, 1.0)
+    };
     for (mut d, mut t, mut v) in &mut rain_q {
         *v = vis;
         if raining {
@@ -1433,8 +1527,8 @@ pub(crate) fn drive_rain(
             if d.off.y < 0.0 {
                 d.off.y += RAIN_FALL_TOP; // wrap to the top of the column
             }
-            // Fall straight down under the cloud's current ground footprint.
-            t.translation = Vec3::new(ground.x + d.off.x, d.off.y, ground.y + d.off.z);
+            t.translation =
+                Vec3::new(anchor.x + d.off.x * spread, d.off.y, anchor.y + d.off.z * spread);
         }
     }
 }
