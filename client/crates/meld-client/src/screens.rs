@@ -24,19 +24,52 @@ pub(crate) struct ClassInfo {
     pub spd: u8,
     pub mag: u8,
     pub def: u8,
-    pub kit: &'static str,
+    /// The class kit as `(skill name, what it does)` — shown in the detail panel.
+    pub kit: &'static [(&'static str, &'static str)],
 }
 
 pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
-    ClassInfo { key: "hunter", name: "Hunter", role: "Front-line bruiser. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: "Power Strike \u{b7} Second Wind \u{b7} Snare \u{b7} Frenzy" },
-    ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2, kit: "Gravity Well \u{b7} Kinetic Aegis \u{b7} Mind Spike \u{b7} Temporal Anchor" },
-    ClassInfo { key: "resonant", name: "Resonant", role: "Healer. Innate Regen keeps the party standing.", hp: 3, atk: 2, spd: 3, mag: 4, def: 2, kit: "Transfuse \u{b7} Regen Boon \u{b7} Ward" },
-    ClassInfo { key: "shifter", name: "Shifter", role: "Rogue skirmisher. Fast, fragile, the only innate dodge.", hp: 2, atk: 4, spd: 5, mag: 1, def: 1, kit: "Backstab \u{b7} Flicker \u{b7} Ransack" },
-    ClassInfo { key: "iron_hull", name: "Iron Hull", role: "Order of the Iron Hull monk \u{2014} the tankiest, slowest wall.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: "Swell Strike \u{b7} Root \u{b7} Kinetic Shock \u{b7} Toll of the Deep" },
+    ClassInfo { key: "hunter", name: "Hunter", role: "Front-line bruiser. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
+        ("Power Strike", "a heavy hit"),
+        ("Second Wind", "heal yourself (Lv2)"),
+        ("Snare", "hit + drain the foe's turn gauge (Lv2)"),
+        ("Frenzy", "biggest hit, biggest cost (Lv3)"),
+    ] },
+    ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2, kit: &[
+        ("Gravity Well", "armour-ignoring damage every turn"),
+        ("Kinetic Aegis", "shield an ally (Barrier)"),
+        ("Mind Spike", "a stronger damage Focus (Lv3)"),
+        ("Temporal Anchor", "drain the enemy's ATB gauge (Lv5)"),
+    ] },
+    ClassInfo { key: "resonant", name: "Resonant", role: "Healer. Innate Regen keeps the party standing.", hp: 3, atk: 2, spd: 3, mag: 4, def: 2, kit: &[
+        ("Transfuse", "heal an ally, paid from your own HP"),
+        ("Regen Boon", "grant an ally Regen (Lv2)"),
+        ("Ward", "shield an ally (Barrier) (Lv3)"),
+    ] },
+    ClassInfo { key: "shifter", name: "Shifter", role: "Rogue skirmisher. Fast, fragile, the only innate dodge.", hp: 2, atk: 4, spd: 5, mag: 1, def: 1, kit: &[
+        ("Backstab", "a heavy strike that pierces armour"),
+        ("Flicker", "blink for self Evasion (Lv2)"),
+        ("Ransack", "hit + drain the enemy's ATB (Lv3)"),
+    ] },
+    ClassInfo { key: "iron_hull", name: "Iron Hull", role: "Order of the Iron Hull monk \u{2014} the tankiest, slowest wall.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
+        ("Swell Strike", "a heavy blow that staggers (gauge drain)"),
+        ("Root", "a self Barrier stance (Lv2)"),
+        ("Kinetic Shock", "heavy blow, zeroes the foe's gauge (Lv3)"),
+        ("Toll of the Deep", "a shockwave hitting ALL enemies (Lv5)"),
+    ] },
 ];
 
 pub(crate) fn class_info(key: &str) -> &'static ClassInfo {
     CLASS_INFO.iter().find(|c| c.key == key).unwrap_or(&CLASS_INFO[0])
+}
+
+/// The kit as a multi-line "Skills\n  Name — what it does" block for the detail panel.
+fn kit_text(ci: &ClassInfo) -> String {
+    let mut s = String::from("Skills");
+    for (name, desc) in ci.kit {
+        s.push_str(&format!("\n  {name} \u{2014} {desc}"));
+    }
+    s
 }
 
 /// The class whose details fill the panel (last hovered/selected). Init to the lead.
@@ -247,6 +280,11 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 field_box(row, "Username", JoinUserField, JoinUserText);
                 field_box(row, "Password", JoinPassField, JoinPassText);
             });
+            p.spawn((
+                Text::new("Click a field and type, then ENTER \u{2014} first login creates your account.  (username 3\u{2013}20 \u{b7} password 8+ chars)"),
+                TextFont { font_size: 12.0, ..default() },
+                TextColor(Color::srgb(0.5, 0.55, 0.7)),
+            ));
 
             // The party: 4 slot cards.
             p.spawn(Node {
@@ -292,7 +330,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             let lead = class_info(&session.party.first().cloned().unwrap_or_else(|| "hunter".into()));
             p.spawn((
                 Node {
-                    width: Val::Px(560.0),
+                    width: Val::Px(680.0),
                     flex_direction: FlexDirection::Row,
                     column_gap: Val::Px(16.0),
                     padding: UiRect::all(Val::Px(12.0)),
@@ -329,38 +367,53 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                         TextFont { font_size: 14.0, ..default() },
                         TextColor(Color::srgb(0.78, 0.82, 0.95)),
                     ));
-                    // Stat bars.
-                    for (si, name) in ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate() {
-                        col.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            align_items: AlignItems::Center,
-                            column_gap: Val::Px(6.0),
+                    // Stats (left) and skills (right) side by side to keep it compact.
+                    col.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(28.0),
+                        margin: UiRect::top(Val::Px(4.0)),
+                        ..default()
+                    })
+                    .with_children(|body| {
+                        body.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(4.0),
                             ..default()
                         })
-                        .with_children(|r| {
-                            r.spawn((
-                                Text::new(name.to_string()),
-                                TextFont { font_size: 12.0, ..default() },
-                                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                                Node { width: Val::Px(34.0), ..default() },
-                            ));
-                            for seg in 0..5u8 {
-                                r.spawn((
-                                    JoinStatFill { stat: si as u8, seg },
-                                    Node { width: Val::Px(22.0), height: Val::Px(9.0), ..default() },
-                                    BackgroundColor(Color::srgb(0.2, 0.22, 0.3)),
-                                    BorderRadius::all(Val::Px(2.0)),
-                                ));
+                        .with_children(|stats| {
+                            for (si, name) in ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate() {
+                                stats
+                                    .spawn(Node {
+                                        flex_direction: FlexDirection::Row,
+                                        align_items: AlignItems::Center,
+                                        column_gap: Val::Px(6.0),
+                                        ..default()
+                                    })
+                                    .with_children(|r| {
+                                        r.spawn((
+                                            Text::new(name.to_string()),
+                                            TextFont { font_size: 12.0, ..default() },
+                                            TextColor(Color::srgb(0.6, 0.65, 0.8)),
+                                            Node { width: Val::Px(34.0), ..default() },
+                                        ));
+                                        for seg in 0..5u8 {
+                                            r.spawn((
+                                                JoinStatFill { stat: si as u8, seg },
+                                                Node { width: Val::Px(20.0), height: Val::Px(9.0), ..default() },
+                                                BackgroundColor(Color::srgb(0.2, 0.22, 0.3)),
+                                                BorderRadius::all(Val::Px(2.0)),
+                                            ));
+                                        }
+                                    });
                             }
                         });
-                    }
-                    col.spawn((
-                        Text::new(format!("Kit:  {}", lead.kit)),
-                        JoinDetailKit,
-                        TextFont { font_size: 13.0, ..default() },
-                        TextColor(Color::srgb(0.7, 0.85, 0.7)),
-                        Node { margin: UiRect::top(Val::Px(2.0)), ..default() },
-                    ));
+                        body.spawn((
+                            Text::new(kit_text(lead)),
+                            JoinDetailKit,
+                            TextFont { font_size: 13.0, ..default() },
+                            TextColor(Color::srgb(0.7, 0.85, 0.7)),
+                        ));
+                    });
                 });
             });
 
@@ -597,7 +650,7 @@ pub(crate) fn join_refresh(
         **t = ci.role.to_string();
     }
     if let Ok(mut t) = det_kit.single_mut() {
-        **t = format!("Kit:  {}", ci.kit);
+        **t = kit_text(ci);
     }
     let vals = [ci.hp, ci.atk, ci.spd, ci.mag, ci.def];
     let cols = [

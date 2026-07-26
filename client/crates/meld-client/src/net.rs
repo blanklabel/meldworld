@@ -1464,8 +1464,27 @@ fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<Log
     reg.headers.insert("Content-Type", "application/json");
 
     let login_url = format!("{base}/v1/auth/login");
-    ehttp::fetch(reg, move |_reg| {
-        // Conflict (already registered) is fine — proceed to login regardless.
+    ehttp::fetch(reg, move |reg_res| {
+        // Proceed to login only if the account exists now: 201 (just created) or 409
+        // (already existed). Any OTHER register failure — e.g. 400 "Password must be
+        // 8–128 chars." — means no account was created, so surface THAT reason
+        // directly instead of a misleading "wrong password" from the follow-up login.
+        match &reg_res {
+            Ok(resp) if resp.status == 201 || resp.status == 409 => {}
+            Ok(resp) => {
+                let msg = resp
+                    .text()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok())
+                    .and_then(|v| v["error"]["message"].as_str().map(String::from))
+                    .unwrap_or_else(|| format!("Sign-up failed (status {}).", resp.status));
+                let _ = tx.send(Err(msg));
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(Err(format!("Sign-up request failed: {e}")));
+                return;
+            }
+        }
         let mut login = ehttp::Request::post(&login_url, body);
         login.headers.insert("Content-Type", "application/json");
         ehttp::fetch(login, move |res| {
@@ -1484,6 +1503,9 @@ fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<Log
                     },
                     None => Err("login: empty body".into()),
                 },
+                // The account exists (register said 409/201) but login was rejected →
+                // the password is wrong. Anything else is an unexpected status.
+                Ok(resp) if resp.status == 401 => Err("wrong-password".into()),
                 Ok(resp) => Err(format!("login status {}", resp.status)),
                 Err(e) => Err(format!("login request: {e}")),
             };
