@@ -38,6 +38,7 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 | Instance | `MazeInstance` | The 1–4 player shared maze world for a run set. Has its own world seed. |
 | Party | `Party` | The 1–4 players inside one MazeInstance. |
 | Hub | `Hub` | Persistent safe zone. `hub_kind`: `center` or `outer`. Keyed by `distance` (0, 500, 1000, …). |
+| The Last City | `Hub` (`center`) | Canonical name of the Center Hub city — the post-auth home and extraction return target. Supersedes the "The Weld" working name. |
 | Vault | `Vault` | Per-player persistent storage: chits, materials, blue-chest gear, gems. |
 | Backpack | `Backpack` | Per-player ephemeral run inventory. Deleted on death, banked on extraction. |
 | Blue Chest gear | `GearItem` with `insurance: blue` | Permanent insured equipment. Survives death; loses max durability. |

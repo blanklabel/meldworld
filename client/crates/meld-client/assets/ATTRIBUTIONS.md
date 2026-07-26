@@ -18,7 +18,7 @@ billboards.
 ## `models/fantasy-town/`, `models/graveyard/`, `models/pirate/` — the hub city  (CC0)
 
 Low-poly 3D kits from **Kenney**, all licensed **CC0 (public domain)** — free for
-commercial use, attribution not required. They build **The Weld**, the walkable hub
+commercial use, attribution not required. They build **The Last City**, the walkable hub
 city (`Screen::City`; see `docs/proposals/last-city.md`): the New Weird "last city" is welded
 together from a fantasy-town core, graveyard/crypt uncanny, and pirate salvage.
 

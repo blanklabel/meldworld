@@ -1,4 +1,4 @@
-//! The Weld — the persistent hub city: walkable HD-2D plaza, districts, HUD.
+//! The Last City — the persistent hub city: walkable HD-2D plaza, districts, HUD.
 //! Extracted from `main.rs` during the module reorg.
 
 
@@ -11,7 +11,7 @@ use meld_client::net::ClientCmd;
 use super::*;
 
 // ----------------------------------------------------------------- city ----
-// The Weld — the persistent hub city: a walkable HD-2D plaza (CANON D16). You walk
+// The Last City — the persistent hub city: a walkable HD-2D plaza (CANON D16). You walk
 // your avatar between districts built from Kenney CC0 kits (fantasy-town / graveyard
 // / pirate — see assets/ATTRIBUTIONS.md) and interact with the one you're standing
 // in. M0 wires The Threshold (dive) + The Vault-Deep (live `GET /v1/vault`); the
@@ -168,7 +168,7 @@ pub(crate) fn city_hud(
             })
             .with_children(|t| {
                 t.spawn((
-                    Text::new("THE WELD"),
+                    Text::new("THE LAST CITY"),
                     TextFont { font_size: 34.0, ..default() },
                     TextColor(amber),
                 ));

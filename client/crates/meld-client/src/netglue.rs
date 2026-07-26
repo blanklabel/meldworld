@@ -114,10 +114,10 @@ pub(crate) fn pump_net(
             }
             ServerMsg::Connected { player_id } => {
                 session.player_id = player_id;
-                // Post-auth home is the hub city (The Weld). From there the player
+                // Post-auth home is the hub city (The Last City). From there the player
                 // steps through The Threshold to dive (solo or co-op). This is what
                 // makes the city the always-there base of the extract-or-die loop.
-                session.status = "arrived in The Weld".to_string();
+                session.status = "arrived in The Last City".to_string();
                 if *state.get() == Screen::Join {
                     next.set(Screen::City);
                 }

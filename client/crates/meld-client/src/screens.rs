@@ -879,7 +879,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                 TextColor(color),
             ));
             p.spawn((
-                Text::new("Press ENTER to return to The Weld    -    ESC to quit"),
+                Text::new("Press ENTER to return to The Last City    -    ESC to quit"),
                 TextFont {
                     font_size: 18.0,
                     ..default()
