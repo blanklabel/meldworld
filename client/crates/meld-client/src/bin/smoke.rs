@@ -17,7 +17,10 @@ fn main() {
     let net = net::start(base);
 
     let name = format!("smoke{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    net.send(ClientCmd::Connect { username: name });
+    net.send(ClientCmd::Connect {
+        username: name,
+        password: meld_client::net::GUEST_PASSWORD.to_string(),
+    });
 
     // Optional class (MELD_CLASS=psyker exercises the Psyker Focus system end to
     // end: focus slots + manifestations ticking + a win).

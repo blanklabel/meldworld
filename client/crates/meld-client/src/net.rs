@@ -22,11 +22,11 @@ use meld_proto::realtime::{
 use meld_proto::RawEnvelope;
 use serde_json::{json, Value};
 
-const GUEST_PASSWORD: &str = "meld-guest-password";
+pub const GUEST_PASSWORD: &str = "meld-guest-password";
 
 /// Commands sent from Bevy into the network layer.
 pub enum ClientCmd {
-    Connect { username: String },
+    Connect { username: String, password: String },
     /// Enter the maze with the built party (one class key per hero slot).
     EnterMaze { party: Vec<String> },
     Move { dx: f64, dy: f64 },
@@ -537,8 +537,8 @@ impl Inner {
         let cmds: Vec<ClientCmd> = self.cmds.drain(..).collect();
         for cmd in cmds {
             match cmd {
-                ClientCmd::Connect { username } if self.phase == Phase::Idle => {
-                    self.http_rx = Some(spawn_login(&self.base, &username));
+                ClientCmd::Connect { username, password } if self.phase == Phase::Idle => {
+                    self.http_rx = Some(spawn_login(&self.base, &username, &password));
                     self.phase = Phase::Http;
                 }
                 ClientCmd::Connect { .. } => {} // already connecting/connected
@@ -557,9 +557,11 @@ impl Inner {
                         self.open_socket(ticket, player_id);
                     }
                     Ok(Err(e)) => {
+                        // Auth failed (wrong password, network, etc.). Return to Idle so
+                        // the login screen can surface the error and let the user retry.
                         self.http_rx = None;
                         self.out.push_back(ServerMsg::Error { message: e });
-                        self.phase = Phase::Dead;
+                        self.phase = Phase::Idle;
                     }
                     Err(mpsc::TryRecvError::Empty) => {}
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -1453,9 +1455,9 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
 
 /// Kick off register (idempotent) + login via `ehttp`; the result arrives on the
 /// returned channel. Works on native (background thread) and wasm (fetch).
-fn spawn_login(base: &str, username: &str) -> mpsc::Receiver<LoginResult> {
+fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<LoginResult> {
     let (tx, rx) = mpsc::channel();
-    let body = serde_json::to_vec(&json!({ "username": username, "password": GUEST_PASSWORD }))
+    let body = serde_json::to_vec(&json!({ "username": username, "password": password }))
         .unwrap_or_default();
 
     let mut reg = ehttp::Request::post(format!("{base}/v1/auth/register"), body.clone());
