@@ -434,7 +434,9 @@ pub(crate) fn setup(
 
     // Bespoke HD-2D prop billboards (PixelLab), one PNG per key under `assets/props/`.
     let prop_sprites: HashMap<String, Handle<Image>> = [
-        "obstacle_tree", "obstacle_boulder", "obstacle_pond", "obstacle_dune",
+        "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
+        "obstacle_tree_willow", "obstacle_tree_bushy",
+        "obstacle_boulder", "obstacle_pond", "obstacle_dune",
         "obstacle_rock_spire", "obstacle_cactus", "obstacle_cliff", "obstacle_lava",
         "obstacle_cinder_rock", "obstacle_ice_spire", "obstacle_frozen_pond",
         "obstacle_snow_drift", "obstacle_bog_pool", "obstacle_mire_root", "obstacle_fungal_wall",

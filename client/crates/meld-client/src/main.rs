@@ -25,6 +25,7 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 // can reach it), and a handful of cross-cutting helpers; each module below owns
 // one slice of behavior. They re-export into the crate root so a system in one
 // module can call a sibling's via `use super::*`.
+mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Weld hub: districts, plaza, HUD
 mod flags; // launch-time `MELD_*` / `?query` toggles
@@ -141,7 +142,7 @@ fn main() {
         .init_resource::<LootReport>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -272,6 +273,7 @@ fn main() {
                 hd2d::place_billboards,
                 hd2d::billboard,
                 animate_sway,
+                ambient::update_ambient_scatter,
                 update_overworld_hud,
                 render_overlay,
             )
