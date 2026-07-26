@@ -30,6 +30,7 @@ mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Last City hub: districts, plaza, HUD
 mod flags; // launch-time `MELD_*` / `?query` toggles
 mod mocks; // offline screenshot/demo seeds
+mod music; // one looping background track per screen (assets/music/*.mp3)
 mod netglue; // server messages → state, demo driver, despawn + font install
 mod overlays; // inventory/equip/status, gear tooltip, loot report, level-up
 mod overworld; // movement/camera, sprite reconciler, terrain, followers, minimap
@@ -144,7 +145,7 @@ fn main() {
         .init_resource::<LootReport>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -168,6 +169,8 @@ fn main() {
                 anchor_sky_fx,
                 drive_rain,
                 animate_water,
+                // Background music: swap the looping track when the screen changes.
+                music::update_music,
                 // Player characters carry their own light at night (overworld +
                 // battle) so the game stays readable in the dark.
                 illuminate_players,
