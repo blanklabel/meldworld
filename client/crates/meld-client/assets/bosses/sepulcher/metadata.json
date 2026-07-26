@@ -1,0 +1,365 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "3b6d82f0-7948-404f-a11a-573ade4589c9",
+        "name": "Sepulcher",
+        "prompt": "nightmarish grave-panther, sleek body sheathed in cracked marble bone-armor, six glowing pale eyes, a long spectral blade-tipped tail, wisps of pale grave-light, low top-down pixel art, gothic",
+        "size": {
+          "width": 180,
+          "height": 180
+        },
+        "template_id": "cat",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:43.418277+00:00"
+      },
+      "folder": "Sepulcher",
+      "frames": {
+        "rotations": {
+          "south": "Sepulcher/rotations/south.png",
+          "south-east": "Sepulcher/rotations/south-east.png",
+          "east": "Sepulcher/rotations/east.png",
+          "north-east": "Sepulcher/rotations/north-east.png",
+          "north": "Sepulcher/rotations/north.png",
+          "north-west": "Sepulcher/rotations/north-west.png",
+          "west": "Sepulcher/rotations/west.png",
+          "south-west": "Sepulcher/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "north": [
+              "Sepulcher/animations/walk/north/frame_000.png",
+              "Sepulcher/animations/walk/north/frame_001.png",
+              "Sepulcher/animations/walk/north/frame_002.png",
+              "Sepulcher/animations/walk/north/frame_003.png",
+              "Sepulcher/animations/walk/north/frame_004.png",
+              "Sepulcher/animations/walk/north/frame_005.png",
+              "Sepulcher/animations/walk/north/frame_006.png",
+              "Sepulcher/animations/walk/north/frame_007.png"
+            ],
+            "north-east": [
+              "Sepulcher/animations/walk/north-east/frame_000.png",
+              "Sepulcher/animations/walk/north-east/frame_001.png",
+              "Sepulcher/animations/walk/north-east/frame_002.png",
+              "Sepulcher/animations/walk/north-east/frame_003.png",
+              "Sepulcher/animations/walk/north-east/frame_004.png",
+              "Sepulcher/animations/walk/north-east/frame_005.png",
+              "Sepulcher/animations/walk/north-east/frame_006.png",
+              "Sepulcher/animations/walk/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Sepulcher/animations/walk/south-east/frame_000.png",
+              "Sepulcher/animations/walk/south-east/frame_001.png",
+              "Sepulcher/animations/walk/south-east/frame_002.png",
+              "Sepulcher/animations/walk/south-east/frame_003.png",
+              "Sepulcher/animations/walk/south-east/frame_004.png",
+              "Sepulcher/animations/walk/south-east/frame_005.png",
+              "Sepulcher/animations/walk/south-east/frame_006.png",
+              "Sepulcher/animations/walk/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "Sepulcher/animations/walk/south-west/frame_000.png",
+              "Sepulcher/animations/walk/south-west/frame_001.png",
+              "Sepulcher/animations/walk/south-west/frame_002.png",
+              "Sepulcher/animations/walk/south-west/frame_003.png",
+              "Sepulcher/animations/walk/south-west/frame_004.png",
+              "Sepulcher/animations/walk/south-west/frame_005.png",
+              "Sepulcher/animations/walk/south-west/frame_006.png",
+              "Sepulcher/animations/walk/south-west/frame_007.png"
+            ],
+            "west": [
+              "Sepulcher/animations/walk/west/frame_000.png",
+              "Sepulcher/animations/walk/west/frame_001.png",
+              "Sepulcher/animations/walk/west/frame_002.png",
+              "Sepulcher/animations/walk/west/frame_003.png",
+              "Sepulcher/animations/walk/west/frame_004.png",
+              "Sepulcher/animations/walk/west/frame_005.png",
+              "Sepulcher/animations/walk/west/frame_006.png",
+              "Sepulcher/animations/walk/west/frame_007.png"
+            ],
+            "north-west": [
+              "Sepulcher/animations/walk/north-west/frame_000.png",
+              "Sepulcher/animations/walk/north-west/frame_001.png",
+              "Sepulcher/animations/walk/north-west/frame_002.png",
+              "Sepulcher/animations/walk/north-west/frame_003.png",
+              "Sepulcher/animations/walk/north-west/frame_004.png",
+              "Sepulcher/animations/walk/north-west/frame_005.png",
+              "Sepulcher/animations/walk/north-west/frame_006.png",
+              "Sepulcher/animations/walk/north-west/frame_007.png"
+            ],
+            "east": [
+              "Sepulcher/animations/walk/east/frame_000.png",
+              "Sepulcher/animations/walk/east/frame_001.png",
+              "Sepulcher/animations/walk/east/frame_002.png",
+              "Sepulcher/animations/walk/east/frame_003.png",
+              "Sepulcher/animations/walk/east/frame_004.png",
+              "Sepulcher/animations/walk/east/frame_005.png",
+              "Sepulcher/animations/walk/east/frame_006.png",
+              "Sepulcher/animations/walk/east/frame_007.png"
+            ],
+            "south": [
+              "Sepulcher/animations/walk/south/frame_000.png",
+              "Sepulcher/animations/walk/south/frame_001.png",
+              "Sepulcher/animations/walk/south/frame_002.png",
+              "Sepulcher/animations/walk/south/frame_003.png",
+              "Sepulcher/animations/walk/south/frame_004.png",
+              "Sepulcher/animations/walk/south/frame_005.png",
+              "Sepulcher/animations/walk/south/frame_006.png",
+              "Sepulcher/animations/walk/south/frame_007.png"
+            ]
+          },
+          "rend": {
+            "north": [
+              "Sepulcher/animations/rend/north/frame_000.png",
+              "Sepulcher/animations/rend/north/frame_001.png",
+              "Sepulcher/animations/rend/north/frame_002.png",
+              "Sepulcher/animations/rend/north/frame_003.png",
+              "Sepulcher/animations/rend/north/frame_004.png",
+              "Sepulcher/animations/rend/north/frame_005.png",
+              "Sepulcher/animations/rend/north/frame_006.png",
+              "Sepulcher/animations/rend/north/frame_007.png"
+            ],
+            "west": [
+              "Sepulcher/animations/rend/west/frame_000.png",
+              "Sepulcher/animations/rend/west/frame_001.png",
+              "Sepulcher/animations/rend/west/frame_002.png",
+              "Sepulcher/animations/rend/west/frame_003.png",
+              "Sepulcher/animations/rend/west/frame_004.png",
+              "Sepulcher/animations/rend/west/frame_005.png",
+              "Sepulcher/animations/rend/west/frame_006.png",
+              "Sepulcher/animations/rend/west/frame_007.png"
+            ],
+            "south-west": [
+              "Sepulcher/animations/rend/south-west/frame_000.png",
+              "Sepulcher/animations/rend/south-west/frame_001.png",
+              "Sepulcher/animations/rend/south-west/frame_002.png",
+              "Sepulcher/animations/rend/south-west/frame_003.png",
+              "Sepulcher/animations/rend/south-west/frame_004.png",
+              "Sepulcher/animations/rend/south-west/frame_005.png",
+              "Sepulcher/animations/rend/south-west/frame_006.png",
+              "Sepulcher/animations/rend/south-west/frame_007.png"
+            ],
+            "south": [
+              "Sepulcher/animations/rend/south/frame_000.png",
+              "Sepulcher/animations/rend/south/frame_001.png",
+              "Sepulcher/animations/rend/south/frame_002.png",
+              "Sepulcher/animations/rend/south/frame_003.png",
+              "Sepulcher/animations/rend/south/frame_004.png",
+              "Sepulcher/animations/rend/south/frame_005.png",
+              "Sepulcher/animations/rend/south/frame_006.png",
+              "Sepulcher/animations/rend/south/frame_007.png"
+            ],
+            "north-east": [
+              "Sepulcher/animations/rend/north-east/frame_000.png",
+              "Sepulcher/animations/rend/north-east/frame_001.png",
+              "Sepulcher/animations/rend/north-east/frame_002.png",
+              "Sepulcher/animations/rend/north-east/frame_003.png",
+              "Sepulcher/animations/rend/north-east/frame_004.png",
+              "Sepulcher/animations/rend/north-east/frame_005.png",
+              "Sepulcher/animations/rend/north-east/frame_006.png",
+              "Sepulcher/animations/rend/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Sepulcher/animations/rend/south-east/frame_000.png",
+              "Sepulcher/animations/rend/south-east/frame_001.png",
+              "Sepulcher/animations/rend/south-east/frame_002.png",
+              "Sepulcher/animations/rend/south-east/frame_003.png",
+              "Sepulcher/animations/rend/south-east/frame_004.png",
+              "Sepulcher/animations/rend/south-east/frame_005.png",
+              "Sepulcher/animations/rend/south-east/frame_006.png",
+              "Sepulcher/animations/rend/south-east/frame_007.png"
+            ],
+            "east": [
+              "Sepulcher/animations/rend/east/frame_000.png",
+              "Sepulcher/animations/rend/east/frame_001.png",
+              "Sepulcher/animations/rend/east/frame_002.png",
+              "Sepulcher/animations/rend/east/frame_003.png",
+              "Sepulcher/animations/rend/east/frame_004.png",
+              "Sepulcher/animations/rend/east/frame_005.png",
+              "Sepulcher/animations/rend/east/frame_006.png",
+              "Sepulcher/animations/rend/east/frame_007.png"
+            ],
+            "north-west": [
+              "Sepulcher/animations/rend/north-west/frame_000.png",
+              "Sepulcher/animations/rend/north-west/frame_001.png",
+              "Sepulcher/animations/rend/north-west/frame_002.png",
+              "Sepulcher/animations/rend/north-west/frame_003.png",
+              "Sepulcher/animations/rend/north-west/frame_004.png",
+              "Sepulcher/animations/rend/north-west/frame_005.png",
+              "Sepulcher/animations/rend/north-west/frame_006.png",
+              "Sepulcher/animations/rend/north-west/frame_007.png"
+            ]
+          },
+          "attack": {
+            "south-east": [
+              "Sepulcher/animations/attack/south-east/frame_000.png",
+              "Sepulcher/animations/attack/south-east/frame_001.png",
+              "Sepulcher/animations/attack/south-east/frame_002.png",
+              "Sepulcher/animations/attack/south-east/frame_003.png",
+              "Sepulcher/animations/attack/south-east/frame_004.png",
+              "Sepulcher/animations/attack/south-east/frame_005.png",
+              "Sepulcher/animations/attack/south-east/frame_006.png",
+              "Sepulcher/animations/attack/south-east/frame_007.png"
+            ],
+            "east": [
+              "Sepulcher/animations/attack/east/frame_000.png",
+              "Sepulcher/animations/attack/east/frame_001.png",
+              "Sepulcher/animations/attack/east/frame_002.png",
+              "Sepulcher/animations/attack/east/frame_003.png",
+              "Sepulcher/animations/attack/east/frame_004.png",
+              "Sepulcher/animations/attack/east/frame_005.png",
+              "Sepulcher/animations/attack/east/frame_006.png",
+              "Sepulcher/animations/attack/east/frame_007.png"
+            ],
+            "north": [
+              "Sepulcher/animations/attack/north/frame_000.png",
+              "Sepulcher/animations/attack/north/frame_001.png",
+              "Sepulcher/animations/attack/north/frame_002.png",
+              "Sepulcher/animations/attack/north/frame_003.png",
+              "Sepulcher/animations/attack/north/frame_004.png",
+              "Sepulcher/animations/attack/north/frame_005.png",
+              "Sepulcher/animations/attack/north/frame_006.png",
+              "Sepulcher/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "Sepulcher/animations/attack/south/frame_000.png",
+              "Sepulcher/animations/attack/south/frame_001.png",
+              "Sepulcher/animations/attack/south/frame_002.png",
+              "Sepulcher/animations/attack/south/frame_003.png",
+              "Sepulcher/animations/attack/south/frame_004.png",
+              "Sepulcher/animations/attack/south/frame_005.png",
+              "Sepulcher/animations/attack/south/frame_006.png",
+              "Sepulcher/animations/attack/south/frame_007.png"
+            ],
+            "south-west": [
+              "Sepulcher/animations/attack/south-west/frame_000.png",
+              "Sepulcher/animations/attack/south-west/frame_001.png",
+              "Sepulcher/animations/attack/south-west/frame_002.png",
+              "Sepulcher/animations/attack/south-west/frame_003.png",
+              "Sepulcher/animations/attack/south-west/frame_004.png",
+              "Sepulcher/animations/attack/south-west/frame_005.png",
+              "Sepulcher/animations/attack/south-west/frame_006.png",
+              "Sepulcher/animations/attack/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Sepulcher/animations/attack/north-west/frame_000.png",
+              "Sepulcher/animations/attack/north-west/frame_001.png",
+              "Sepulcher/animations/attack/north-west/frame_002.png",
+              "Sepulcher/animations/attack/north-west/frame_003.png",
+              "Sepulcher/animations/attack/north-west/frame_004.png",
+              "Sepulcher/animations/attack/north-west/frame_005.png",
+              "Sepulcher/animations/attack/north-west/frame_006.png",
+              "Sepulcher/animations/attack/north-west/frame_007.png"
+            ],
+            "west": [
+              "Sepulcher/animations/attack/west/frame_000.png",
+              "Sepulcher/animations/attack/west/frame_001.png",
+              "Sepulcher/animations/attack/west/frame_002.png",
+              "Sepulcher/animations/attack/west/frame_003.png",
+              "Sepulcher/animations/attack/west/frame_004.png",
+              "Sepulcher/animations/attack/west/frame_005.png",
+              "Sepulcher/animations/attack/west/frame_006.png",
+              "Sepulcher/animations/attack/west/frame_007.png"
+            ],
+            "north-east": [
+              "Sepulcher/animations/attack/north-east/frame_000.png",
+              "Sepulcher/animations/attack/north-east/frame_001.png",
+              "Sepulcher/animations/attack/north-east/frame_002.png",
+              "Sepulcher/animations/attack/north-east/frame_003.png",
+              "Sepulcher/animations/attack/north-east/frame_004.png",
+              "Sepulcher/animations/attack/north-east/frame_005.png",
+              "Sepulcher/animations/attack/north-east/frame_006.png",
+              "Sepulcher/animations/attack/north-east/frame_007.png"
+            ]
+          },
+          "phantom": {
+            "north-east": [
+              "Sepulcher/animations/phantom/north-east/frame_000.png",
+              "Sepulcher/animations/phantom/north-east/frame_001.png",
+              "Sepulcher/animations/phantom/north-east/frame_002.png",
+              "Sepulcher/animations/phantom/north-east/frame_003.png",
+              "Sepulcher/animations/phantom/north-east/frame_004.png",
+              "Sepulcher/animations/phantom/north-east/frame_005.png",
+              "Sepulcher/animations/phantom/north-east/frame_006.png",
+              "Sepulcher/animations/phantom/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Sepulcher/animations/phantom/north-west/frame_000.png",
+              "Sepulcher/animations/phantom/north-west/frame_001.png",
+              "Sepulcher/animations/phantom/north-west/frame_002.png",
+              "Sepulcher/animations/phantom/north-west/frame_003.png",
+              "Sepulcher/animations/phantom/north-west/frame_004.png",
+              "Sepulcher/animations/phantom/north-west/frame_005.png",
+              "Sepulcher/animations/phantom/north-west/frame_006.png",
+              "Sepulcher/animations/phantom/north-west/frame_007.png"
+            ],
+            "west": [
+              "Sepulcher/animations/phantom/west/frame_000.png",
+              "Sepulcher/animations/phantom/west/frame_001.png",
+              "Sepulcher/animations/phantom/west/frame_002.png",
+              "Sepulcher/animations/phantom/west/frame_003.png",
+              "Sepulcher/animations/phantom/west/frame_004.png",
+              "Sepulcher/animations/phantom/west/frame_005.png",
+              "Sepulcher/animations/phantom/west/frame_006.png",
+              "Sepulcher/animations/phantom/west/frame_007.png"
+            ],
+            "east": [
+              "Sepulcher/animations/phantom/east/frame_000.png",
+              "Sepulcher/animations/phantom/east/frame_001.png",
+              "Sepulcher/animations/phantom/east/frame_002.png",
+              "Sepulcher/animations/phantom/east/frame_003.png",
+              "Sepulcher/animations/phantom/east/frame_004.png",
+              "Sepulcher/animations/phantom/east/frame_005.png",
+              "Sepulcher/animations/phantom/east/frame_006.png",
+              "Sepulcher/animations/phantom/east/frame_007.png"
+            ],
+            "south-east": [
+              "Sepulcher/animations/phantom/south-east/frame_000.png",
+              "Sepulcher/animations/phantom/south-east/frame_001.png",
+              "Sepulcher/animations/phantom/south-east/frame_002.png",
+              "Sepulcher/animations/phantom/south-east/frame_003.png",
+              "Sepulcher/animations/phantom/south-east/frame_004.png",
+              "Sepulcher/animations/phantom/south-east/frame_005.png",
+              "Sepulcher/animations/phantom/south-east/frame_006.png",
+              "Sepulcher/animations/phantom/south-east/frame_007.png"
+            ],
+            "north": [
+              "Sepulcher/animations/phantom/north/frame_000.png",
+              "Sepulcher/animations/phantom/north/frame_001.png",
+              "Sepulcher/animations/phantom/north/frame_002.png",
+              "Sepulcher/animations/phantom/north/frame_003.png",
+              "Sepulcher/animations/phantom/north/frame_004.png",
+              "Sepulcher/animations/phantom/north/frame_005.png",
+              "Sepulcher/animations/phantom/north/frame_006.png",
+              "Sepulcher/animations/phantom/north/frame_007.png"
+            ],
+            "south": [
+              "Sepulcher/animations/phantom/south/frame_000.png",
+              "Sepulcher/animations/phantom/south/frame_001.png",
+              "Sepulcher/animations/phantom/south/frame_002.png",
+              "Sepulcher/animations/phantom/south/frame_003.png",
+              "Sepulcher/animations/phantom/south/frame_004.png",
+              "Sepulcher/animations/phantom/south/frame_005.png",
+              "Sepulcher/animations/phantom/south/frame_006.png",
+              "Sepulcher/animations/phantom/south/frame_007.png"
+            ],
+            "south-west": [
+              "Sepulcher/animations/phantom/south-west/frame_000.png",
+              "Sepulcher/animations/phantom/south-west/frame_001.png",
+              "Sepulcher/animations/phantom/south-west/frame_002.png",
+              "Sepulcher/animations/phantom/south-west/frame_003.png",
+              "Sepulcher/animations/phantom/south-west/frame_004.png",
+              "Sepulcher/animations/phantom/south-west/frame_005.png",
+              "Sepulcher/animations/phantom/south-west/frame_006.png",
+              "Sepulcher/animations/phantom/south-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:28.333999"
+}

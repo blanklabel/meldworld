@@ -1,0 +1,185 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "20564e84-c057-483f-9fbd-228f8a40a366",
+        "name": "Miredrowned",
+        "prompt": "great drowned bog-horror, bloated waterlogged flesh, a massive antlered leviathan skull for a head, hollow glowing green eyes, a dangling anglerfish lantern-lure hanging before it, dripping tendrils and hanging weeds, low top-down pixel art, terrifying",
+        "size": {
+          "width": 248,
+          "height": 248
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:35:43.071070+00:00"
+      },
+      "folder": "Miredrowned",
+      "frames": {
+        "rotations": {
+          "south": "Miredrowned/rotations/south.png",
+          "south-east": "Miredrowned/rotations/south-east.png",
+          "east": "Miredrowned/rotations/east.png",
+          "north-east": "Miredrowned/rotations/north-east.png",
+          "north": "Miredrowned/rotations/north.png",
+          "north-west": "Miredrowned/rotations/north-west.png",
+          "west": "Miredrowned/rotations/west.png",
+          "south-west": "Miredrowned/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "south": [
+              "Miredrowned/animations/walk/south/frame_000.png",
+              "Miredrowned/animations/walk/south/frame_001.png",
+              "Miredrowned/animations/walk/south/frame_002.png",
+              "Miredrowned/animations/walk/south/frame_003.png",
+              "Miredrowned/animations/walk/south/frame_004.png",
+              "Miredrowned/animations/walk/south/frame_005.png"
+            ],
+            "west": [
+              "Miredrowned/animations/walk/west/frame_000.png",
+              "Miredrowned/animations/walk/west/frame_001.png",
+              "Miredrowned/animations/walk/west/frame_002.png",
+              "Miredrowned/animations/walk/west/frame_003.png",
+              "Miredrowned/animations/walk/west/frame_004.png",
+              "Miredrowned/animations/walk/west/frame_005.png"
+            ],
+            "south-east": [
+              "Miredrowned/animations/walk/south-east/frame_000.png",
+              "Miredrowned/animations/walk/south-east/frame_001.png",
+              "Miredrowned/animations/walk/south-east/frame_002.png",
+              "Miredrowned/animations/walk/south-east/frame_003.png",
+              "Miredrowned/animations/walk/south-east/frame_004.png",
+              "Miredrowned/animations/walk/south-east/frame_005.png"
+            ],
+            "south-west": [
+              "Miredrowned/animations/walk/south-west/frame_000.png",
+              "Miredrowned/animations/walk/south-west/frame_001.png",
+              "Miredrowned/animations/walk/south-west/frame_002.png",
+              "Miredrowned/animations/walk/south-west/frame_003.png",
+              "Miredrowned/animations/walk/south-west/frame_004.png",
+              "Miredrowned/animations/walk/south-west/frame_005.png"
+            ],
+            "east": [
+              "Miredrowned/animations/walk/east/frame_000.png",
+              "Miredrowned/animations/walk/east/frame_001.png",
+              "Miredrowned/animations/walk/east/frame_002.png",
+              "Miredrowned/animations/walk/east/frame_003.png",
+              "Miredrowned/animations/walk/east/frame_004.png",
+              "Miredrowned/animations/walk/east/frame_005.png"
+            ],
+            "north-east": [
+              "Miredrowned/animations/walk/north-east/frame_000.png",
+              "Miredrowned/animations/walk/north-east/frame_001.png",
+              "Miredrowned/animations/walk/north-east/frame_002.png",
+              "Miredrowned/animations/walk/north-east/frame_003.png",
+              "Miredrowned/animations/walk/north-east/frame_004.png",
+              "Miredrowned/animations/walk/north-east/frame_005.png"
+            ],
+            "north": [
+              "Miredrowned/animations/walk/north/frame_000.png",
+              "Miredrowned/animations/walk/north/frame_001.png",
+              "Miredrowned/animations/walk/north/frame_002.png",
+              "Miredrowned/animations/walk/north/frame_003.png",
+              "Miredrowned/animations/walk/north/frame_004.png",
+              "Miredrowned/animations/walk/north/frame_005.png"
+            ],
+            "north-west": [
+              "Miredrowned/animations/walk/north-west/frame_000.png",
+              "Miredrowned/animations/walk/north-west/frame_001.png",
+              "Miredrowned/animations/walk/north-west/frame_002.png",
+              "Miredrowned/animations/walk/north-west/frame_003.png",
+              "Miredrowned/animations/walk/north-west/frame_004.png",
+              "Miredrowned/animations/walk/north-west/frame_005.png"
+            ]
+          },
+          "attack": {
+            "north": [
+              "Miredrowned/animations/attack/north/frame_000.png",
+              "Miredrowned/animations/attack/north/frame_001.png",
+              "Miredrowned/animations/attack/north/frame_002.png",
+              "Miredrowned/animations/attack/north/frame_003.png",
+              "Miredrowned/animations/attack/north/frame_004.png",
+              "Miredrowned/animations/attack/north/frame_005.png",
+              "Miredrowned/animations/attack/north/frame_006.png",
+              "Miredrowned/animations/attack/north/frame_007.png"
+            ],
+            "north-west": [
+              "Miredrowned/animations/attack/north-west/frame_000.png",
+              "Miredrowned/animations/attack/north-west/frame_001.png",
+              "Miredrowned/animations/attack/north-west/frame_002.png",
+              "Miredrowned/animations/attack/north-west/frame_003.png",
+              "Miredrowned/animations/attack/north-west/frame_004.png",
+              "Miredrowned/animations/attack/north-west/frame_005.png",
+              "Miredrowned/animations/attack/north-west/frame_006.png",
+              "Miredrowned/animations/attack/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Miredrowned/animations/attack/north-east/frame_000.png",
+              "Miredrowned/animations/attack/north-east/frame_001.png",
+              "Miredrowned/animations/attack/north-east/frame_002.png",
+              "Miredrowned/animations/attack/north-east/frame_003.png",
+              "Miredrowned/animations/attack/north-east/frame_004.png",
+              "Miredrowned/animations/attack/north-east/frame_005.png",
+              "Miredrowned/animations/attack/north-east/frame_006.png",
+              "Miredrowned/animations/attack/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Miredrowned/animations/attack/south-east/frame_000.png",
+              "Miredrowned/animations/attack/south-east/frame_001.png",
+              "Miredrowned/animations/attack/south-east/frame_002.png",
+              "Miredrowned/animations/attack/south-east/frame_003.png",
+              "Miredrowned/animations/attack/south-east/frame_004.png",
+              "Miredrowned/animations/attack/south-east/frame_005.png",
+              "Miredrowned/animations/attack/south-east/frame_006.png",
+              "Miredrowned/animations/attack/south-east/frame_007.png"
+            ],
+            "south": [
+              "Miredrowned/animations/attack/south/frame_000.png",
+              "Miredrowned/animations/attack/south/frame_001.png",
+              "Miredrowned/animations/attack/south/frame_002.png",
+              "Miredrowned/animations/attack/south/frame_003.png",
+              "Miredrowned/animations/attack/south/frame_004.png",
+              "Miredrowned/animations/attack/south/frame_005.png",
+              "Miredrowned/animations/attack/south/frame_006.png",
+              "Miredrowned/animations/attack/south/frame_007.png"
+            ],
+            "east": [
+              "Miredrowned/animations/attack/east/frame_000.png",
+              "Miredrowned/animations/attack/east/frame_001.png",
+              "Miredrowned/animations/attack/east/frame_002.png",
+              "Miredrowned/animations/attack/east/frame_003.png",
+              "Miredrowned/animations/attack/east/frame_004.png",
+              "Miredrowned/animations/attack/east/frame_005.png",
+              "Miredrowned/animations/attack/east/frame_006.png",
+              "Miredrowned/animations/attack/east/frame_007.png"
+            ],
+            "west": [
+              "Miredrowned/animations/attack/west/frame_000.png",
+              "Miredrowned/animations/attack/west/frame_001.png",
+              "Miredrowned/animations/attack/west/frame_002.png",
+              "Miredrowned/animations/attack/west/frame_003.png",
+              "Miredrowned/animations/attack/west/frame_004.png",
+              "Miredrowned/animations/attack/west/frame_005.png",
+              "Miredrowned/animations/attack/west/frame_006.png",
+              "Miredrowned/animations/attack/west/frame_007.png"
+            ],
+            "south-west": [
+              "Miredrowned/animations/attack/south-west/frame_000.png",
+              "Miredrowned/animations/attack/south-west/frame_001.png",
+              "Miredrowned/animations/attack/south-west/frame_002.png",
+              "Miredrowned/animations/attack/south-west/frame_003.png",
+              "Miredrowned/animations/attack/south-west/frame_004.png",
+              "Miredrowned/animations/attack/south-west/frame_005.png",
+              "Miredrowned/animations/attack/south-west/frame_006.png",
+              "Miredrowned/animations/attack/south-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:42.050392"
+}

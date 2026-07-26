@@ -1,0 +1,365 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "07e18f86-4744-4667-bf26-4d82232b9d5f",
+        "name": "Ironmaw",
+        "prompt": "colossal magitech chimera-lion, a jaw of grinding gears and iron teeth, a glowing cyan reactor mane, heavy plated haunches, sparking cable tendrils lashing from its back, low top-down pixel art, monstrous",
+        "size": {
+          "width": 180,
+          "height": 180
+        },
+        "template_id": "lion",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:44.729038+00:00"
+      },
+      "folder": "Ironmaw",
+      "frames": {
+        "rotations": {
+          "south": "Ironmaw/rotations/south.png",
+          "south-east": "Ironmaw/rotations/south-east.png",
+          "east": "Ironmaw/rotations/east.png",
+          "north-east": "Ironmaw/rotations/north-east.png",
+          "north": "Ironmaw/rotations/north.png",
+          "north-west": "Ironmaw/rotations/north-west.png",
+          "west": "Ironmaw/rotations/west.png",
+          "south-west": "Ironmaw/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "east": [
+              "Ironmaw/animations/walk/east/frame_000.png",
+              "Ironmaw/animations/walk/east/frame_001.png",
+              "Ironmaw/animations/walk/east/frame_002.png",
+              "Ironmaw/animations/walk/east/frame_003.png",
+              "Ironmaw/animations/walk/east/frame_004.png",
+              "Ironmaw/animations/walk/east/frame_005.png",
+              "Ironmaw/animations/walk/east/frame_006.png",
+              "Ironmaw/animations/walk/east/frame_007.png"
+            ],
+            "west": [
+              "Ironmaw/animations/walk/west/frame_000.png",
+              "Ironmaw/animations/walk/west/frame_001.png",
+              "Ironmaw/animations/walk/west/frame_002.png",
+              "Ironmaw/animations/walk/west/frame_003.png",
+              "Ironmaw/animations/walk/west/frame_004.png",
+              "Ironmaw/animations/walk/west/frame_005.png",
+              "Ironmaw/animations/walk/west/frame_006.png",
+              "Ironmaw/animations/walk/west/frame_007.png"
+            ],
+            "south": [
+              "Ironmaw/animations/walk/south/frame_000.png",
+              "Ironmaw/animations/walk/south/frame_001.png",
+              "Ironmaw/animations/walk/south/frame_002.png",
+              "Ironmaw/animations/walk/south/frame_003.png",
+              "Ironmaw/animations/walk/south/frame_004.png",
+              "Ironmaw/animations/walk/south/frame_005.png",
+              "Ironmaw/animations/walk/south/frame_006.png",
+              "Ironmaw/animations/walk/south/frame_007.png"
+            ],
+            "north-west": [
+              "Ironmaw/animations/walk/north-west/frame_000.png",
+              "Ironmaw/animations/walk/north-west/frame_001.png",
+              "Ironmaw/animations/walk/north-west/frame_002.png",
+              "Ironmaw/animations/walk/north-west/frame_003.png",
+              "Ironmaw/animations/walk/north-west/frame_004.png",
+              "Ironmaw/animations/walk/north-west/frame_005.png",
+              "Ironmaw/animations/walk/north-west/frame_006.png",
+              "Ironmaw/animations/walk/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Ironmaw/animations/walk/south-west/frame_000.png",
+              "Ironmaw/animations/walk/south-west/frame_001.png",
+              "Ironmaw/animations/walk/south-west/frame_002.png",
+              "Ironmaw/animations/walk/south-west/frame_003.png",
+              "Ironmaw/animations/walk/south-west/frame_004.png",
+              "Ironmaw/animations/walk/south-west/frame_005.png",
+              "Ironmaw/animations/walk/south-west/frame_006.png",
+              "Ironmaw/animations/walk/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "Ironmaw/animations/walk/south-east/frame_000.png",
+              "Ironmaw/animations/walk/south-east/frame_001.png",
+              "Ironmaw/animations/walk/south-east/frame_002.png",
+              "Ironmaw/animations/walk/south-east/frame_003.png",
+              "Ironmaw/animations/walk/south-east/frame_004.png",
+              "Ironmaw/animations/walk/south-east/frame_005.png",
+              "Ironmaw/animations/walk/south-east/frame_006.png",
+              "Ironmaw/animations/walk/south-east/frame_007.png"
+            ],
+            "north": [
+              "Ironmaw/animations/walk/north/frame_000.png",
+              "Ironmaw/animations/walk/north/frame_001.png",
+              "Ironmaw/animations/walk/north/frame_002.png",
+              "Ironmaw/animations/walk/north/frame_003.png",
+              "Ironmaw/animations/walk/north/frame_004.png",
+              "Ironmaw/animations/walk/north/frame_005.png",
+              "Ironmaw/animations/walk/north/frame_006.png",
+              "Ironmaw/animations/walk/north/frame_007.png"
+            ],
+            "north-east": [
+              "Ironmaw/animations/walk/north-east/frame_000.png",
+              "Ironmaw/animations/walk/north-east/frame_001.png",
+              "Ironmaw/animations/walk/north-east/frame_002.png",
+              "Ironmaw/animations/walk/north-east/frame_003.png",
+              "Ironmaw/animations/walk/north-east/frame_004.png",
+              "Ironmaw/animations/walk/north-east/frame_005.png",
+              "Ironmaw/animations/walk/north-east/frame_006.png",
+              "Ironmaw/animations/walk/north-east/frame_007.png"
+            ]
+          },
+          "reactor_roar": {
+            "east": [
+              "Ironmaw/animations/reactor_roar/east/frame_000.png",
+              "Ironmaw/animations/reactor_roar/east/frame_001.png",
+              "Ironmaw/animations/reactor_roar/east/frame_002.png",
+              "Ironmaw/animations/reactor_roar/east/frame_003.png",
+              "Ironmaw/animations/reactor_roar/east/frame_004.png",
+              "Ironmaw/animations/reactor_roar/east/frame_005.png",
+              "Ironmaw/animations/reactor_roar/east/frame_006.png",
+              "Ironmaw/animations/reactor_roar/east/frame_007.png"
+            ],
+            "south-west": [
+              "Ironmaw/animations/reactor_roar/south-west/frame_000.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_001.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_002.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_003.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_004.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_005.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_006.png",
+              "Ironmaw/animations/reactor_roar/south-west/frame_007.png"
+            ],
+            "north": [
+              "Ironmaw/animations/reactor_roar/north/frame_000.png",
+              "Ironmaw/animations/reactor_roar/north/frame_001.png",
+              "Ironmaw/animations/reactor_roar/north/frame_002.png",
+              "Ironmaw/animations/reactor_roar/north/frame_003.png",
+              "Ironmaw/animations/reactor_roar/north/frame_004.png",
+              "Ironmaw/animations/reactor_roar/north/frame_005.png",
+              "Ironmaw/animations/reactor_roar/north/frame_006.png",
+              "Ironmaw/animations/reactor_roar/north/frame_007.png"
+            ],
+            "north-east": [
+              "Ironmaw/animations/reactor_roar/north-east/frame_000.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_001.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_002.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_003.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_004.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_005.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_006.png",
+              "Ironmaw/animations/reactor_roar/north-east/frame_007.png"
+            ],
+            "west": [
+              "Ironmaw/animations/reactor_roar/west/frame_000.png",
+              "Ironmaw/animations/reactor_roar/west/frame_001.png",
+              "Ironmaw/animations/reactor_roar/west/frame_002.png",
+              "Ironmaw/animations/reactor_roar/west/frame_003.png",
+              "Ironmaw/animations/reactor_roar/west/frame_004.png",
+              "Ironmaw/animations/reactor_roar/west/frame_005.png",
+              "Ironmaw/animations/reactor_roar/west/frame_006.png",
+              "Ironmaw/animations/reactor_roar/west/frame_007.png"
+            ],
+            "south": [
+              "Ironmaw/animations/reactor_roar/south/frame_000.png",
+              "Ironmaw/animations/reactor_roar/south/frame_001.png",
+              "Ironmaw/animations/reactor_roar/south/frame_002.png",
+              "Ironmaw/animations/reactor_roar/south/frame_003.png",
+              "Ironmaw/animations/reactor_roar/south/frame_004.png",
+              "Ironmaw/animations/reactor_roar/south/frame_005.png",
+              "Ironmaw/animations/reactor_roar/south/frame_006.png",
+              "Ironmaw/animations/reactor_roar/south/frame_007.png"
+            ],
+            "north-west": [
+              "Ironmaw/animations/reactor_roar/north-west/frame_000.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_001.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_002.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_003.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_004.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_005.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_006.png",
+              "Ironmaw/animations/reactor_roar/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Ironmaw/animations/reactor_roar/south-east/frame_000.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_001.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_002.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_003.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_004.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_005.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_006.png",
+              "Ironmaw/animations/reactor_roar/south-east/frame_007.png"
+            ]
+          },
+          "attack": {
+            "north-east": [
+              "Ironmaw/animations/attack/north-east/frame_000.png",
+              "Ironmaw/animations/attack/north-east/frame_001.png",
+              "Ironmaw/animations/attack/north-east/frame_002.png",
+              "Ironmaw/animations/attack/north-east/frame_003.png",
+              "Ironmaw/animations/attack/north-east/frame_004.png",
+              "Ironmaw/animations/attack/north-east/frame_005.png",
+              "Ironmaw/animations/attack/north-east/frame_006.png",
+              "Ironmaw/animations/attack/north-east/frame_007.png"
+            ],
+            "south": [
+              "Ironmaw/animations/attack/south/frame_000.png",
+              "Ironmaw/animations/attack/south/frame_001.png",
+              "Ironmaw/animations/attack/south/frame_002.png",
+              "Ironmaw/animations/attack/south/frame_003.png",
+              "Ironmaw/animations/attack/south/frame_004.png",
+              "Ironmaw/animations/attack/south/frame_005.png",
+              "Ironmaw/animations/attack/south/frame_006.png",
+              "Ironmaw/animations/attack/south/frame_007.png"
+            ],
+            "south-west": [
+              "Ironmaw/animations/attack/south-west/frame_000.png",
+              "Ironmaw/animations/attack/south-west/frame_001.png",
+              "Ironmaw/animations/attack/south-west/frame_002.png",
+              "Ironmaw/animations/attack/south-west/frame_003.png",
+              "Ironmaw/animations/attack/south-west/frame_004.png",
+              "Ironmaw/animations/attack/south-west/frame_005.png",
+              "Ironmaw/animations/attack/south-west/frame_006.png",
+              "Ironmaw/animations/attack/south-west/frame_007.png"
+            ],
+            "west": [
+              "Ironmaw/animations/attack/west/frame_000.png",
+              "Ironmaw/animations/attack/west/frame_001.png",
+              "Ironmaw/animations/attack/west/frame_002.png",
+              "Ironmaw/animations/attack/west/frame_003.png",
+              "Ironmaw/animations/attack/west/frame_004.png",
+              "Ironmaw/animations/attack/west/frame_005.png",
+              "Ironmaw/animations/attack/west/frame_006.png",
+              "Ironmaw/animations/attack/west/frame_007.png"
+            ],
+            "east": [
+              "Ironmaw/animations/attack/east/frame_000.png",
+              "Ironmaw/animations/attack/east/frame_001.png",
+              "Ironmaw/animations/attack/east/frame_002.png",
+              "Ironmaw/animations/attack/east/frame_003.png",
+              "Ironmaw/animations/attack/east/frame_004.png",
+              "Ironmaw/animations/attack/east/frame_005.png",
+              "Ironmaw/animations/attack/east/frame_006.png",
+              "Ironmaw/animations/attack/east/frame_007.png"
+            ],
+            "north-west": [
+              "Ironmaw/animations/attack/north-west/frame_000.png",
+              "Ironmaw/animations/attack/north-west/frame_001.png",
+              "Ironmaw/animations/attack/north-west/frame_002.png",
+              "Ironmaw/animations/attack/north-west/frame_003.png",
+              "Ironmaw/animations/attack/north-west/frame_004.png",
+              "Ironmaw/animations/attack/north-west/frame_005.png",
+              "Ironmaw/animations/attack/north-west/frame_006.png",
+              "Ironmaw/animations/attack/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Ironmaw/animations/attack/south-east/frame_000.png",
+              "Ironmaw/animations/attack/south-east/frame_001.png",
+              "Ironmaw/animations/attack/south-east/frame_002.png",
+              "Ironmaw/animations/attack/south-east/frame_003.png",
+              "Ironmaw/animations/attack/south-east/frame_004.png",
+              "Ironmaw/animations/attack/south-east/frame_005.png",
+              "Ironmaw/animations/attack/south-east/frame_006.png",
+              "Ironmaw/animations/attack/south-east/frame_007.png"
+            ],
+            "north": [
+              "Ironmaw/animations/attack/north/frame_000.png",
+              "Ironmaw/animations/attack/north/frame_001.png",
+              "Ironmaw/animations/attack/north/frame_002.png",
+              "Ironmaw/animations/attack/north/frame_003.png",
+              "Ironmaw/animations/attack/north/frame_004.png",
+              "Ironmaw/animations/attack/north/frame_005.png",
+              "Ironmaw/animations/attack/north/frame_006.png",
+              "Ironmaw/animations/attack/north/frame_007.png"
+            ]
+          },
+          "devour": {
+            "north": [
+              "Ironmaw/animations/devour/north/frame_000.png",
+              "Ironmaw/animations/devour/north/frame_001.png",
+              "Ironmaw/animations/devour/north/frame_002.png",
+              "Ironmaw/animations/devour/north/frame_003.png",
+              "Ironmaw/animations/devour/north/frame_004.png",
+              "Ironmaw/animations/devour/north/frame_005.png",
+              "Ironmaw/animations/devour/north/frame_006.png",
+              "Ironmaw/animations/devour/north/frame_007.png"
+            ],
+            "north-east": [
+              "Ironmaw/animations/devour/north-east/frame_000.png",
+              "Ironmaw/animations/devour/north-east/frame_001.png",
+              "Ironmaw/animations/devour/north-east/frame_002.png",
+              "Ironmaw/animations/devour/north-east/frame_003.png",
+              "Ironmaw/animations/devour/north-east/frame_004.png",
+              "Ironmaw/animations/devour/north-east/frame_005.png",
+              "Ironmaw/animations/devour/north-east/frame_006.png",
+              "Ironmaw/animations/devour/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Ironmaw/animations/devour/north-west/frame_000.png",
+              "Ironmaw/animations/devour/north-west/frame_001.png",
+              "Ironmaw/animations/devour/north-west/frame_002.png",
+              "Ironmaw/animations/devour/north-west/frame_003.png",
+              "Ironmaw/animations/devour/north-west/frame_004.png",
+              "Ironmaw/animations/devour/north-west/frame_005.png",
+              "Ironmaw/animations/devour/north-west/frame_006.png",
+              "Ironmaw/animations/devour/north-west/frame_007.png"
+            ],
+            "south": [
+              "Ironmaw/animations/devour/south/frame_000.png",
+              "Ironmaw/animations/devour/south/frame_001.png",
+              "Ironmaw/animations/devour/south/frame_002.png",
+              "Ironmaw/animations/devour/south/frame_003.png",
+              "Ironmaw/animations/devour/south/frame_004.png",
+              "Ironmaw/animations/devour/south/frame_005.png",
+              "Ironmaw/animations/devour/south/frame_006.png",
+              "Ironmaw/animations/devour/south/frame_007.png"
+            ],
+            "east": [
+              "Ironmaw/animations/devour/east/frame_000.png",
+              "Ironmaw/animations/devour/east/frame_001.png",
+              "Ironmaw/animations/devour/east/frame_002.png",
+              "Ironmaw/animations/devour/east/frame_003.png",
+              "Ironmaw/animations/devour/east/frame_004.png",
+              "Ironmaw/animations/devour/east/frame_005.png",
+              "Ironmaw/animations/devour/east/frame_006.png",
+              "Ironmaw/animations/devour/east/frame_007.png"
+            ],
+            "south-west": [
+              "Ironmaw/animations/devour/south-west/frame_000.png",
+              "Ironmaw/animations/devour/south-west/frame_001.png",
+              "Ironmaw/animations/devour/south-west/frame_002.png",
+              "Ironmaw/animations/devour/south-west/frame_003.png",
+              "Ironmaw/animations/devour/south-west/frame_004.png",
+              "Ironmaw/animations/devour/south-west/frame_005.png",
+              "Ironmaw/animations/devour/south-west/frame_006.png",
+              "Ironmaw/animations/devour/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "Ironmaw/animations/devour/south-east/frame_000.png",
+              "Ironmaw/animations/devour/south-east/frame_001.png",
+              "Ironmaw/animations/devour/south-east/frame_002.png",
+              "Ironmaw/animations/devour/south-east/frame_003.png",
+              "Ironmaw/animations/devour/south-east/frame_004.png",
+              "Ironmaw/animations/devour/south-east/frame_005.png",
+              "Ironmaw/animations/devour/south-east/frame_006.png",
+              "Ironmaw/animations/devour/south-east/frame_007.png"
+            ],
+            "west": [
+              "Ironmaw/animations/devour/west/frame_000.png",
+              "Ironmaw/animations/devour/west/frame_001.png",
+              "Ironmaw/animations/devour/west/frame_002.png",
+              "Ironmaw/animations/devour/west/frame_003.png",
+              "Ironmaw/animations/devour/west/frame_004.png",
+              "Ironmaw/animations/devour/west/frame_005.png",
+              "Ironmaw/animations/devour/west/frame_006.png",
+              "Ironmaw/animations/devour/west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:33.995854"
+}

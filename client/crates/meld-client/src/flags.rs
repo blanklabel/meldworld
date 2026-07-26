@@ -60,6 +60,20 @@ pub(crate) fn city_idle_flag() -> bool {
     query_has("city")
 }
 
+/// Preview a boss/elite sprite in The Last City plaza (with `MELD_CITY`) — a stable
+/// frame for eyeballing the encounter art. Native: `MELD_BOSS=ironmaw`. Browser:
+/// `?boss=ironmaw`. See `world_render::BOSS_KEYS` for valid ids.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn boss_preview() -> Option<String> {
+    std::env::var("MELD_BOSS").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn boss_preview() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("boss").filter(|s| !s.is_empty())
+}
+
 /// Offline render demo: no networking; scripted canned data drives the real
 /// rendering so the Overworld/Battle screens can be shown without a server.
 /// Native: `MELD_DEMO` env. Browser: `?demo`.

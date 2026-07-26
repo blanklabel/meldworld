@@ -1,0 +1,365 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "e34f2339-1c58-43ed-984b-aa96bc0ded14",
+        "name": "Rustfang",
+        "prompt": "hulking magitech-golem bear, corroded iron plates bolted onto rotting flesh, glowing cyan energy seams, one foreleg a heavy piston hammer, steam exhaust vents, low top-down pixel art, menacing",
+        "size": {
+          "width": 180,
+          "height": 180
+        },
+        "template_id": "bear",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:41.331285+00:00"
+      },
+      "folder": "Rustfang",
+      "frames": {
+        "rotations": {
+          "south": "Rustfang/rotations/south.png",
+          "south-east": "Rustfang/rotations/south-east.png",
+          "east": "Rustfang/rotations/east.png",
+          "north-east": "Rustfang/rotations/north-east.png",
+          "north": "Rustfang/rotations/north.png",
+          "north-west": "Rustfang/rotations/north-west.png",
+          "west": "Rustfang/rotations/west.png",
+          "south-west": "Rustfang/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "north-west": [
+              "Rustfang/animations/walk/north-west/frame_000.png",
+              "Rustfang/animations/walk/north-west/frame_001.png",
+              "Rustfang/animations/walk/north-west/frame_002.png",
+              "Rustfang/animations/walk/north-west/frame_003.png",
+              "Rustfang/animations/walk/north-west/frame_004.png",
+              "Rustfang/animations/walk/north-west/frame_005.png",
+              "Rustfang/animations/walk/north-west/frame_006.png",
+              "Rustfang/animations/walk/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Rustfang/animations/walk/north-east/frame_000.png",
+              "Rustfang/animations/walk/north-east/frame_001.png",
+              "Rustfang/animations/walk/north-east/frame_002.png",
+              "Rustfang/animations/walk/north-east/frame_003.png",
+              "Rustfang/animations/walk/north-east/frame_004.png",
+              "Rustfang/animations/walk/north-east/frame_005.png",
+              "Rustfang/animations/walk/north-east/frame_006.png",
+              "Rustfang/animations/walk/north-east/frame_007.png"
+            ],
+            "north": [
+              "Rustfang/animations/walk/north/frame_000.png",
+              "Rustfang/animations/walk/north/frame_001.png",
+              "Rustfang/animations/walk/north/frame_002.png",
+              "Rustfang/animations/walk/north/frame_003.png",
+              "Rustfang/animations/walk/north/frame_004.png",
+              "Rustfang/animations/walk/north/frame_005.png",
+              "Rustfang/animations/walk/north/frame_006.png",
+              "Rustfang/animations/walk/north/frame_007.png"
+            ],
+            "west": [
+              "Rustfang/animations/walk/west/frame_000.png",
+              "Rustfang/animations/walk/west/frame_001.png",
+              "Rustfang/animations/walk/west/frame_002.png",
+              "Rustfang/animations/walk/west/frame_003.png",
+              "Rustfang/animations/walk/west/frame_004.png",
+              "Rustfang/animations/walk/west/frame_005.png",
+              "Rustfang/animations/walk/west/frame_006.png",
+              "Rustfang/animations/walk/west/frame_007.png"
+            ],
+            "south": [
+              "Rustfang/animations/walk/south/frame_000.png",
+              "Rustfang/animations/walk/south/frame_001.png",
+              "Rustfang/animations/walk/south/frame_002.png",
+              "Rustfang/animations/walk/south/frame_003.png",
+              "Rustfang/animations/walk/south/frame_004.png",
+              "Rustfang/animations/walk/south/frame_005.png",
+              "Rustfang/animations/walk/south/frame_006.png",
+              "Rustfang/animations/walk/south/frame_007.png"
+            ],
+            "south-west": [
+              "Rustfang/animations/walk/south-west/frame_000.png",
+              "Rustfang/animations/walk/south-west/frame_001.png",
+              "Rustfang/animations/walk/south-west/frame_002.png",
+              "Rustfang/animations/walk/south-west/frame_003.png",
+              "Rustfang/animations/walk/south-west/frame_004.png",
+              "Rustfang/animations/walk/south-west/frame_005.png",
+              "Rustfang/animations/walk/south-west/frame_006.png",
+              "Rustfang/animations/walk/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "Rustfang/animations/walk/south-east/frame_000.png",
+              "Rustfang/animations/walk/south-east/frame_001.png",
+              "Rustfang/animations/walk/south-east/frame_002.png",
+              "Rustfang/animations/walk/south-east/frame_003.png",
+              "Rustfang/animations/walk/south-east/frame_004.png",
+              "Rustfang/animations/walk/south-east/frame_005.png",
+              "Rustfang/animations/walk/south-east/frame_006.png",
+              "Rustfang/animations/walk/south-east/frame_007.png"
+            ],
+            "east": [
+              "Rustfang/animations/walk/east/frame_000.png",
+              "Rustfang/animations/walk/east/frame_001.png",
+              "Rustfang/animations/walk/east/frame_002.png",
+              "Rustfang/animations/walk/east/frame_003.png",
+              "Rustfang/animations/walk/east/frame_004.png",
+              "Rustfang/animations/walk/east/frame_005.png",
+              "Rustfang/animations/walk/east/frame_006.png",
+              "Rustfang/animations/walk/east/frame_007.png"
+            ]
+          },
+          "attack": {
+            "north": [
+              "Rustfang/animations/attack/north/frame_000.png",
+              "Rustfang/animations/attack/north/frame_001.png",
+              "Rustfang/animations/attack/north/frame_002.png",
+              "Rustfang/animations/attack/north/frame_003.png",
+              "Rustfang/animations/attack/north/frame_004.png",
+              "Rustfang/animations/attack/north/frame_005.png",
+              "Rustfang/animations/attack/north/frame_006.png",
+              "Rustfang/animations/attack/north/frame_007.png"
+            ],
+            "north-west": [
+              "Rustfang/animations/attack/north-west/frame_000.png",
+              "Rustfang/animations/attack/north-west/frame_001.png",
+              "Rustfang/animations/attack/north-west/frame_002.png",
+              "Rustfang/animations/attack/north-west/frame_003.png",
+              "Rustfang/animations/attack/north-west/frame_004.png",
+              "Rustfang/animations/attack/north-west/frame_005.png",
+              "Rustfang/animations/attack/north-west/frame_006.png",
+              "Rustfang/animations/attack/north-west/frame_007.png"
+            ],
+            "south": [
+              "Rustfang/animations/attack/south/frame_000.png",
+              "Rustfang/animations/attack/south/frame_001.png",
+              "Rustfang/animations/attack/south/frame_002.png",
+              "Rustfang/animations/attack/south/frame_003.png",
+              "Rustfang/animations/attack/south/frame_004.png",
+              "Rustfang/animations/attack/south/frame_005.png",
+              "Rustfang/animations/attack/south/frame_006.png",
+              "Rustfang/animations/attack/south/frame_007.png"
+            ],
+            "south-west": [
+              "Rustfang/animations/attack/south-west/frame_000.png",
+              "Rustfang/animations/attack/south-west/frame_001.png",
+              "Rustfang/animations/attack/south-west/frame_002.png",
+              "Rustfang/animations/attack/south-west/frame_003.png",
+              "Rustfang/animations/attack/south-west/frame_004.png",
+              "Rustfang/animations/attack/south-west/frame_005.png",
+              "Rustfang/animations/attack/south-west/frame_006.png",
+              "Rustfang/animations/attack/south-west/frame_007.png"
+            ],
+            "west": [
+              "Rustfang/animations/attack/west/frame_000.png",
+              "Rustfang/animations/attack/west/frame_001.png",
+              "Rustfang/animations/attack/west/frame_002.png",
+              "Rustfang/animations/attack/west/frame_003.png",
+              "Rustfang/animations/attack/west/frame_004.png",
+              "Rustfang/animations/attack/west/frame_005.png",
+              "Rustfang/animations/attack/west/frame_006.png",
+              "Rustfang/animations/attack/west/frame_007.png"
+            ],
+            "east": [
+              "Rustfang/animations/attack/east/frame_000.png",
+              "Rustfang/animations/attack/east/frame_001.png",
+              "Rustfang/animations/attack/east/frame_002.png",
+              "Rustfang/animations/attack/east/frame_003.png",
+              "Rustfang/animations/attack/east/frame_004.png",
+              "Rustfang/animations/attack/east/frame_005.png",
+              "Rustfang/animations/attack/east/frame_006.png",
+              "Rustfang/animations/attack/east/frame_007.png"
+            ],
+            "south-east": [
+              "Rustfang/animations/attack/south-east/frame_000.png",
+              "Rustfang/animations/attack/south-east/frame_001.png",
+              "Rustfang/animations/attack/south-east/frame_002.png",
+              "Rustfang/animations/attack/south-east/frame_003.png",
+              "Rustfang/animations/attack/south-east/frame_004.png",
+              "Rustfang/animations/attack/south-east/frame_005.png",
+              "Rustfang/animations/attack/south-east/frame_006.png",
+              "Rustfang/animations/attack/south-east/frame_007.png"
+            ],
+            "north-east": [
+              "Rustfang/animations/attack/north-east/frame_000.png",
+              "Rustfang/animations/attack/north-east/frame_001.png",
+              "Rustfang/animations/attack/north-east/frame_002.png",
+              "Rustfang/animations/attack/north-east/frame_003.png",
+              "Rustfang/animations/attack/north-east/frame_004.png",
+              "Rustfang/animations/attack/north-east/frame_005.png",
+              "Rustfang/animations/attack/north-east/frame_006.png",
+              "Rustfang/animations/attack/north-east/frame_007.png"
+            ]
+          },
+          "overcharge": {
+            "north": [
+              "Rustfang/animations/overcharge/north/frame_000.png",
+              "Rustfang/animations/overcharge/north/frame_001.png",
+              "Rustfang/animations/overcharge/north/frame_002.png",
+              "Rustfang/animations/overcharge/north/frame_003.png",
+              "Rustfang/animations/overcharge/north/frame_004.png",
+              "Rustfang/animations/overcharge/north/frame_005.png",
+              "Rustfang/animations/overcharge/north/frame_006.png",
+              "Rustfang/animations/overcharge/north/frame_007.png"
+            ],
+            "north-east": [
+              "Rustfang/animations/overcharge/north-east/frame_000.png",
+              "Rustfang/animations/overcharge/north-east/frame_001.png",
+              "Rustfang/animations/overcharge/north-east/frame_002.png",
+              "Rustfang/animations/overcharge/north-east/frame_003.png",
+              "Rustfang/animations/overcharge/north-east/frame_004.png",
+              "Rustfang/animations/overcharge/north-east/frame_005.png",
+              "Rustfang/animations/overcharge/north-east/frame_006.png",
+              "Rustfang/animations/overcharge/north-east/frame_007.png"
+            ],
+            "south": [
+              "Rustfang/animations/overcharge/south/frame_000.png",
+              "Rustfang/animations/overcharge/south/frame_001.png",
+              "Rustfang/animations/overcharge/south/frame_002.png",
+              "Rustfang/animations/overcharge/south/frame_003.png",
+              "Rustfang/animations/overcharge/south/frame_004.png",
+              "Rustfang/animations/overcharge/south/frame_005.png",
+              "Rustfang/animations/overcharge/south/frame_006.png",
+              "Rustfang/animations/overcharge/south/frame_007.png"
+            ],
+            "south-east": [
+              "Rustfang/animations/overcharge/south-east/frame_000.png",
+              "Rustfang/animations/overcharge/south-east/frame_001.png",
+              "Rustfang/animations/overcharge/south-east/frame_002.png",
+              "Rustfang/animations/overcharge/south-east/frame_003.png",
+              "Rustfang/animations/overcharge/south-east/frame_004.png",
+              "Rustfang/animations/overcharge/south-east/frame_005.png",
+              "Rustfang/animations/overcharge/south-east/frame_006.png",
+              "Rustfang/animations/overcharge/south-east/frame_007.png"
+            ],
+            "west": [
+              "Rustfang/animations/overcharge/west/frame_000.png",
+              "Rustfang/animations/overcharge/west/frame_001.png",
+              "Rustfang/animations/overcharge/west/frame_002.png",
+              "Rustfang/animations/overcharge/west/frame_003.png",
+              "Rustfang/animations/overcharge/west/frame_004.png",
+              "Rustfang/animations/overcharge/west/frame_005.png",
+              "Rustfang/animations/overcharge/west/frame_006.png",
+              "Rustfang/animations/overcharge/west/frame_007.png"
+            ],
+            "south-west": [
+              "Rustfang/animations/overcharge/south-west/frame_000.png",
+              "Rustfang/animations/overcharge/south-west/frame_001.png",
+              "Rustfang/animations/overcharge/south-west/frame_002.png",
+              "Rustfang/animations/overcharge/south-west/frame_003.png",
+              "Rustfang/animations/overcharge/south-west/frame_004.png",
+              "Rustfang/animations/overcharge/south-west/frame_005.png",
+              "Rustfang/animations/overcharge/south-west/frame_006.png",
+              "Rustfang/animations/overcharge/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Rustfang/animations/overcharge/north-west/frame_000.png",
+              "Rustfang/animations/overcharge/north-west/frame_001.png",
+              "Rustfang/animations/overcharge/north-west/frame_002.png",
+              "Rustfang/animations/overcharge/north-west/frame_003.png",
+              "Rustfang/animations/overcharge/north-west/frame_004.png",
+              "Rustfang/animations/overcharge/north-west/frame_005.png",
+              "Rustfang/animations/overcharge/north-west/frame_006.png",
+              "Rustfang/animations/overcharge/north-west/frame_007.png"
+            ],
+            "east": [
+              "Rustfang/animations/overcharge/east/frame_000.png",
+              "Rustfang/animations/overcharge/east/frame_001.png",
+              "Rustfang/animations/overcharge/east/frame_002.png",
+              "Rustfang/animations/overcharge/east/frame_003.png",
+              "Rustfang/animations/overcharge/east/frame_004.png",
+              "Rustfang/animations/overcharge/east/frame_005.png",
+              "Rustfang/animations/overcharge/east/frame_006.png",
+              "Rustfang/animations/overcharge/east/frame_007.png"
+            ]
+          },
+          "slam": {
+            "east": [
+              "Rustfang/animations/slam/east/frame_000.png",
+              "Rustfang/animations/slam/east/frame_001.png",
+              "Rustfang/animations/slam/east/frame_002.png",
+              "Rustfang/animations/slam/east/frame_003.png",
+              "Rustfang/animations/slam/east/frame_004.png",
+              "Rustfang/animations/slam/east/frame_005.png",
+              "Rustfang/animations/slam/east/frame_006.png",
+              "Rustfang/animations/slam/east/frame_007.png"
+            ],
+            "south": [
+              "Rustfang/animations/slam/south/frame_000.png",
+              "Rustfang/animations/slam/south/frame_001.png",
+              "Rustfang/animations/slam/south/frame_002.png",
+              "Rustfang/animations/slam/south/frame_003.png",
+              "Rustfang/animations/slam/south/frame_004.png",
+              "Rustfang/animations/slam/south/frame_005.png",
+              "Rustfang/animations/slam/south/frame_006.png",
+              "Rustfang/animations/slam/south/frame_007.png"
+            ],
+            "west": [
+              "Rustfang/animations/slam/west/frame_000.png",
+              "Rustfang/animations/slam/west/frame_001.png",
+              "Rustfang/animations/slam/west/frame_002.png",
+              "Rustfang/animations/slam/west/frame_003.png",
+              "Rustfang/animations/slam/west/frame_004.png",
+              "Rustfang/animations/slam/west/frame_005.png",
+              "Rustfang/animations/slam/west/frame_006.png",
+              "Rustfang/animations/slam/west/frame_007.png"
+            ],
+            "south-west": [
+              "Rustfang/animations/slam/south-west/frame_000.png",
+              "Rustfang/animations/slam/south-west/frame_001.png",
+              "Rustfang/animations/slam/south-west/frame_002.png",
+              "Rustfang/animations/slam/south-west/frame_003.png",
+              "Rustfang/animations/slam/south-west/frame_004.png",
+              "Rustfang/animations/slam/south-west/frame_005.png",
+              "Rustfang/animations/slam/south-west/frame_006.png",
+              "Rustfang/animations/slam/south-west/frame_007.png"
+            ],
+            "north": [
+              "Rustfang/animations/slam/north/frame_000.png",
+              "Rustfang/animations/slam/north/frame_001.png",
+              "Rustfang/animations/slam/north/frame_002.png",
+              "Rustfang/animations/slam/north/frame_003.png",
+              "Rustfang/animations/slam/north/frame_004.png",
+              "Rustfang/animations/slam/north/frame_005.png",
+              "Rustfang/animations/slam/north/frame_006.png",
+              "Rustfang/animations/slam/north/frame_007.png"
+            ],
+            "north-east": [
+              "Rustfang/animations/slam/north-east/frame_000.png",
+              "Rustfang/animations/slam/north-east/frame_001.png",
+              "Rustfang/animations/slam/north-east/frame_002.png",
+              "Rustfang/animations/slam/north-east/frame_003.png",
+              "Rustfang/animations/slam/north-east/frame_004.png",
+              "Rustfang/animations/slam/north-east/frame_005.png",
+              "Rustfang/animations/slam/north-east/frame_006.png",
+              "Rustfang/animations/slam/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Rustfang/animations/slam/north-west/frame_000.png",
+              "Rustfang/animations/slam/north-west/frame_001.png",
+              "Rustfang/animations/slam/north-west/frame_002.png",
+              "Rustfang/animations/slam/north-west/frame_003.png",
+              "Rustfang/animations/slam/north-west/frame_004.png",
+              "Rustfang/animations/slam/north-west/frame_005.png",
+              "Rustfang/animations/slam/north-west/frame_006.png",
+              "Rustfang/animations/slam/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Rustfang/animations/slam/south-east/frame_000.png",
+              "Rustfang/animations/slam/south-east/frame_001.png",
+              "Rustfang/animations/slam/south-east/frame_002.png",
+              "Rustfang/animations/slam/south-east/frame_003.png",
+              "Rustfang/animations/slam/south-east/frame_004.png",
+              "Rustfang/animations/slam/south-east/frame_005.png",
+              "Rustfang/animations/slam/south-east/frame_006.png",
+              "Rustfang/animations/slam/south-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:54:30.014207"
+}

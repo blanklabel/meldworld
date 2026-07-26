@@ -1,0 +1,365 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "1e121952-3fff-41be-b45e-5d03afbe3ea4",
+        "name": "Gloamhound",
+        "prompt": "eyeless gothic dread-hound, gaunt exposed ribs, matted black fur dissolving into shadow-mist, empty eye sockets glowing dim ember-red, nightmarish",
+        "size": {
+          "width": 180,
+          "height": 180
+        },
+        "template_id": "dog",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:24.463630+00:00"
+      },
+      "folder": "Gloamhound",
+      "frames": {
+        "rotations": {
+          "south": "Gloamhound/rotations/south.png",
+          "south-east": "Gloamhound/rotations/south-east.png",
+          "east": "Gloamhound/rotations/east.png",
+          "north-east": "Gloamhound/rotations/north-east.png",
+          "north": "Gloamhound/rotations/north.png",
+          "north-west": "Gloamhound/rotations/north-west.png",
+          "west": "Gloamhound/rotations/west.png",
+          "south-west": "Gloamhound/rotations/south-west.png"
+        },
+        "animations": {
+          "pounce": {
+            "north-west": [
+              "Gloamhound/animations/pounce/north-west/frame_000.png",
+              "Gloamhound/animations/pounce/north-west/frame_001.png",
+              "Gloamhound/animations/pounce/north-west/frame_002.png",
+              "Gloamhound/animations/pounce/north-west/frame_003.png",
+              "Gloamhound/animations/pounce/north-west/frame_004.png",
+              "Gloamhound/animations/pounce/north-west/frame_005.png",
+              "Gloamhound/animations/pounce/north-west/frame_006.png",
+              "Gloamhound/animations/pounce/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Gloamhound/animations/pounce/south-east/frame_000.png",
+              "Gloamhound/animations/pounce/south-east/frame_001.png",
+              "Gloamhound/animations/pounce/south-east/frame_002.png",
+              "Gloamhound/animations/pounce/south-east/frame_003.png",
+              "Gloamhound/animations/pounce/south-east/frame_004.png",
+              "Gloamhound/animations/pounce/south-east/frame_005.png",
+              "Gloamhound/animations/pounce/south-east/frame_006.png",
+              "Gloamhound/animations/pounce/south-east/frame_007.png"
+            ],
+            "north-east": [
+              "Gloamhound/animations/pounce/north-east/frame_000.png",
+              "Gloamhound/animations/pounce/north-east/frame_001.png",
+              "Gloamhound/animations/pounce/north-east/frame_002.png",
+              "Gloamhound/animations/pounce/north-east/frame_003.png",
+              "Gloamhound/animations/pounce/north-east/frame_004.png",
+              "Gloamhound/animations/pounce/north-east/frame_005.png",
+              "Gloamhound/animations/pounce/north-east/frame_006.png",
+              "Gloamhound/animations/pounce/north-east/frame_007.png"
+            ],
+            "south-west": [
+              "Gloamhound/animations/pounce/south-west/frame_000.png",
+              "Gloamhound/animations/pounce/south-west/frame_001.png",
+              "Gloamhound/animations/pounce/south-west/frame_002.png",
+              "Gloamhound/animations/pounce/south-west/frame_003.png",
+              "Gloamhound/animations/pounce/south-west/frame_004.png",
+              "Gloamhound/animations/pounce/south-west/frame_005.png",
+              "Gloamhound/animations/pounce/south-west/frame_006.png",
+              "Gloamhound/animations/pounce/south-west/frame_007.png"
+            ],
+            "north": [
+              "Gloamhound/animations/pounce/north/frame_000.png",
+              "Gloamhound/animations/pounce/north/frame_001.png",
+              "Gloamhound/animations/pounce/north/frame_002.png",
+              "Gloamhound/animations/pounce/north/frame_003.png",
+              "Gloamhound/animations/pounce/north/frame_004.png",
+              "Gloamhound/animations/pounce/north/frame_005.png",
+              "Gloamhound/animations/pounce/north/frame_006.png",
+              "Gloamhound/animations/pounce/north/frame_007.png"
+            ],
+            "east": [
+              "Gloamhound/animations/pounce/east/frame_000.png",
+              "Gloamhound/animations/pounce/east/frame_001.png",
+              "Gloamhound/animations/pounce/east/frame_002.png",
+              "Gloamhound/animations/pounce/east/frame_003.png",
+              "Gloamhound/animations/pounce/east/frame_004.png",
+              "Gloamhound/animations/pounce/east/frame_005.png",
+              "Gloamhound/animations/pounce/east/frame_006.png",
+              "Gloamhound/animations/pounce/east/frame_007.png"
+            ],
+            "west": [
+              "Gloamhound/animations/pounce/west/frame_000.png",
+              "Gloamhound/animations/pounce/west/frame_001.png",
+              "Gloamhound/animations/pounce/west/frame_002.png",
+              "Gloamhound/animations/pounce/west/frame_003.png",
+              "Gloamhound/animations/pounce/west/frame_004.png",
+              "Gloamhound/animations/pounce/west/frame_005.png",
+              "Gloamhound/animations/pounce/west/frame_006.png",
+              "Gloamhound/animations/pounce/west/frame_007.png"
+            ],
+            "south": [
+              "Gloamhound/animations/pounce/south/frame_000.png",
+              "Gloamhound/animations/pounce/south/frame_001.png",
+              "Gloamhound/animations/pounce/south/frame_002.png",
+              "Gloamhound/animations/pounce/south/frame_003.png",
+              "Gloamhound/animations/pounce/south/frame_004.png",
+              "Gloamhound/animations/pounce/south/frame_005.png",
+              "Gloamhound/animations/pounce/south/frame_006.png",
+              "Gloamhound/animations/pounce/south/frame_007.png"
+            ]
+          },
+          "howl": {
+            "south-west": [
+              "Gloamhound/animations/howl/south-west/frame_000.png",
+              "Gloamhound/animations/howl/south-west/frame_001.png",
+              "Gloamhound/animations/howl/south-west/frame_002.png",
+              "Gloamhound/animations/howl/south-west/frame_003.png",
+              "Gloamhound/animations/howl/south-west/frame_004.png",
+              "Gloamhound/animations/howl/south-west/frame_005.png",
+              "Gloamhound/animations/howl/south-west/frame_006.png",
+              "Gloamhound/animations/howl/south-west/frame_007.png"
+            ],
+            "west": [
+              "Gloamhound/animations/howl/west/frame_000.png",
+              "Gloamhound/animations/howl/west/frame_001.png",
+              "Gloamhound/animations/howl/west/frame_002.png",
+              "Gloamhound/animations/howl/west/frame_003.png",
+              "Gloamhound/animations/howl/west/frame_004.png",
+              "Gloamhound/animations/howl/west/frame_005.png",
+              "Gloamhound/animations/howl/west/frame_006.png",
+              "Gloamhound/animations/howl/west/frame_007.png"
+            ],
+            "north": [
+              "Gloamhound/animations/howl/north/frame_000.png",
+              "Gloamhound/animations/howl/north/frame_001.png",
+              "Gloamhound/animations/howl/north/frame_002.png",
+              "Gloamhound/animations/howl/north/frame_003.png",
+              "Gloamhound/animations/howl/north/frame_004.png",
+              "Gloamhound/animations/howl/north/frame_005.png",
+              "Gloamhound/animations/howl/north/frame_006.png",
+              "Gloamhound/animations/howl/north/frame_007.png"
+            ],
+            "south": [
+              "Gloamhound/animations/howl/south/frame_000.png",
+              "Gloamhound/animations/howl/south/frame_001.png",
+              "Gloamhound/animations/howl/south/frame_002.png",
+              "Gloamhound/animations/howl/south/frame_003.png",
+              "Gloamhound/animations/howl/south/frame_004.png",
+              "Gloamhound/animations/howl/south/frame_005.png",
+              "Gloamhound/animations/howl/south/frame_006.png",
+              "Gloamhound/animations/howl/south/frame_007.png"
+            ],
+            "north-east": [
+              "Gloamhound/animations/howl/north-east/frame_000.png",
+              "Gloamhound/animations/howl/north-east/frame_001.png",
+              "Gloamhound/animations/howl/north-east/frame_002.png",
+              "Gloamhound/animations/howl/north-east/frame_003.png",
+              "Gloamhound/animations/howl/north-east/frame_004.png",
+              "Gloamhound/animations/howl/north-east/frame_005.png",
+              "Gloamhound/animations/howl/north-east/frame_006.png",
+              "Gloamhound/animations/howl/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Gloamhound/animations/howl/north-west/frame_000.png",
+              "Gloamhound/animations/howl/north-west/frame_001.png",
+              "Gloamhound/animations/howl/north-west/frame_002.png",
+              "Gloamhound/animations/howl/north-west/frame_003.png",
+              "Gloamhound/animations/howl/north-west/frame_004.png",
+              "Gloamhound/animations/howl/north-west/frame_005.png",
+              "Gloamhound/animations/howl/north-west/frame_006.png",
+              "Gloamhound/animations/howl/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Gloamhound/animations/howl/south-east/frame_000.png",
+              "Gloamhound/animations/howl/south-east/frame_001.png",
+              "Gloamhound/animations/howl/south-east/frame_002.png",
+              "Gloamhound/animations/howl/south-east/frame_003.png",
+              "Gloamhound/animations/howl/south-east/frame_004.png",
+              "Gloamhound/animations/howl/south-east/frame_005.png",
+              "Gloamhound/animations/howl/south-east/frame_006.png",
+              "Gloamhound/animations/howl/south-east/frame_007.png"
+            ],
+            "east": [
+              "Gloamhound/animations/howl/east/frame_000.png",
+              "Gloamhound/animations/howl/east/frame_001.png",
+              "Gloamhound/animations/howl/east/frame_002.png",
+              "Gloamhound/animations/howl/east/frame_003.png",
+              "Gloamhound/animations/howl/east/frame_004.png",
+              "Gloamhound/animations/howl/east/frame_005.png",
+              "Gloamhound/animations/howl/east/frame_006.png",
+              "Gloamhound/animations/howl/east/frame_007.png"
+            ]
+          },
+          "attack": {
+            "west": [
+              "Gloamhound/animations/attack/west/frame_000.png",
+              "Gloamhound/animations/attack/west/frame_001.png",
+              "Gloamhound/animations/attack/west/frame_002.png",
+              "Gloamhound/animations/attack/west/frame_003.png",
+              "Gloamhound/animations/attack/west/frame_004.png",
+              "Gloamhound/animations/attack/west/frame_005.png",
+              "Gloamhound/animations/attack/west/frame_006.png",
+              "Gloamhound/animations/attack/west/frame_007.png"
+            ],
+            "south-east": [
+              "Gloamhound/animations/attack/south-east/frame_000.png",
+              "Gloamhound/animations/attack/south-east/frame_001.png",
+              "Gloamhound/animations/attack/south-east/frame_002.png",
+              "Gloamhound/animations/attack/south-east/frame_003.png",
+              "Gloamhound/animations/attack/south-east/frame_004.png",
+              "Gloamhound/animations/attack/south-east/frame_005.png",
+              "Gloamhound/animations/attack/south-east/frame_006.png",
+              "Gloamhound/animations/attack/south-east/frame_007.png"
+            ],
+            "north": [
+              "Gloamhound/animations/attack/north/frame_000.png",
+              "Gloamhound/animations/attack/north/frame_001.png",
+              "Gloamhound/animations/attack/north/frame_002.png",
+              "Gloamhound/animations/attack/north/frame_003.png",
+              "Gloamhound/animations/attack/north/frame_004.png",
+              "Gloamhound/animations/attack/north/frame_005.png",
+              "Gloamhound/animations/attack/north/frame_006.png",
+              "Gloamhound/animations/attack/north/frame_007.png"
+            ],
+            "north-east": [
+              "Gloamhound/animations/attack/north-east/frame_000.png",
+              "Gloamhound/animations/attack/north-east/frame_001.png",
+              "Gloamhound/animations/attack/north-east/frame_002.png",
+              "Gloamhound/animations/attack/north-east/frame_003.png",
+              "Gloamhound/animations/attack/north-east/frame_004.png",
+              "Gloamhound/animations/attack/north-east/frame_005.png",
+              "Gloamhound/animations/attack/north-east/frame_006.png",
+              "Gloamhound/animations/attack/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Gloamhound/animations/attack/north-west/frame_000.png",
+              "Gloamhound/animations/attack/north-west/frame_001.png",
+              "Gloamhound/animations/attack/north-west/frame_002.png",
+              "Gloamhound/animations/attack/north-west/frame_003.png",
+              "Gloamhound/animations/attack/north-west/frame_004.png",
+              "Gloamhound/animations/attack/north-west/frame_005.png",
+              "Gloamhound/animations/attack/north-west/frame_006.png",
+              "Gloamhound/animations/attack/north-west/frame_007.png"
+            ],
+            "south": [
+              "Gloamhound/animations/attack/south/frame_000.png",
+              "Gloamhound/animations/attack/south/frame_001.png",
+              "Gloamhound/animations/attack/south/frame_002.png",
+              "Gloamhound/animations/attack/south/frame_003.png",
+              "Gloamhound/animations/attack/south/frame_004.png",
+              "Gloamhound/animations/attack/south/frame_005.png",
+              "Gloamhound/animations/attack/south/frame_006.png",
+              "Gloamhound/animations/attack/south/frame_007.png"
+            ],
+            "south-west": [
+              "Gloamhound/animations/attack/south-west/frame_000.png",
+              "Gloamhound/animations/attack/south-west/frame_001.png",
+              "Gloamhound/animations/attack/south-west/frame_002.png",
+              "Gloamhound/animations/attack/south-west/frame_003.png",
+              "Gloamhound/animations/attack/south-west/frame_004.png",
+              "Gloamhound/animations/attack/south-west/frame_005.png",
+              "Gloamhound/animations/attack/south-west/frame_006.png",
+              "Gloamhound/animations/attack/south-west/frame_007.png"
+            ],
+            "east": [
+              "Gloamhound/animations/attack/east/frame_000.png",
+              "Gloamhound/animations/attack/east/frame_001.png",
+              "Gloamhound/animations/attack/east/frame_002.png",
+              "Gloamhound/animations/attack/east/frame_003.png",
+              "Gloamhound/animations/attack/east/frame_004.png",
+              "Gloamhound/animations/attack/east/frame_005.png",
+              "Gloamhound/animations/attack/east/frame_006.png",
+              "Gloamhound/animations/attack/east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "south-east": [
+              "Gloamhound/animations/walk/south-east/frame_000.png",
+              "Gloamhound/animations/walk/south-east/frame_001.png",
+              "Gloamhound/animations/walk/south-east/frame_002.png",
+              "Gloamhound/animations/walk/south-east/frame_003.png",
+              "Gloamhound/animations/walk/south-east/frame_004.png",
+              "Gloamhound/animations/walk/south-east/frame_005.png",
+              "Gloamhound/animations/walk/south-east/frame_006.png",
+              "Gloamhound/animations/walk/south-east/frame_007.png"
+            ],
+            "south-west": [
+              "Gloamhound/animations/walk/south-west/frame_000.png",
+              "Gloamhound/animations/walk/south-west/frame_001.png",
+              "Gloamhound/animations/walk/south-west/frame_002.png",
+              "Gloamhound/animations/walk/south-west/frame_003.png",
+              "Gloamhound/animations/walk/south-west/frame_004.png",
+              "Gloamhound/animations/walk/south-west/frame_005.png",
+              "Gloamhound/animations/walk/south-west/frame_006.png",
+              "Gloamhound/animations/walk/south-west/frame_007.png"
+            ],
+            "south": [
+              "Gloamhound/animations/walk/south/frame_000.png",
+              "Gloamhound/animations/walk/south/frame_001.png",
+              "Gloamhound/animations/walk/south/frame_002.png",
+              "Gloamhound/animations/walk/south/frame_003.png",
+              "Gloamhound/animations/walk/south/frame_004.png",
+              "Gloamhound/animations/walk/south/frame_005.png",
+              "Gloamhound/animations/walk/south/frame_006.png",
+              "Gloamhound/animations/walk/south/frame_007.png"
+            ],
+            "north": [
+              "Gloamhound/animations/walk/north/frame_000.png",
+              "Gloamhound/animations/walk/north/frame_001.png",
+              "Gloamhound/animations/walk/north/frame_002.png",
+              "Gloamhound/animations/walk/north/frame_003.png",
+              "Gloamhound/animations/walk/north/frame_004.png",
+              "Gloamhound/animations/walk/north/frame_005.png",
+              "Gloamhound/animations/walk/north/frame_006.png",
+              "Gloamhound/animations/walk/north/frame_007.png"
+            ],
+            "west": [
+              "Gloamhound/animations/walk/west/frame_000.png",
+              "Gloamhound/animations/walk/west/frame_001.png",
+              "Gloamhound/animations/walk/west/frame_002.png",
+              "Gloamhound/animations/walk/west/frame_003.png",
+              "Gloamhound/animations/walk/west/frame_004.png",
+              "Gloamhound/animations/walk/west/frame_005.png",
+              "Gloamhound/animations/walk/west/frame_006.png",
+              "Gloamhound/animations/walk/west/frame_007.png"
+            ],
+            "north-east": [
+              "Gloamhound/animations/walk/north-east/frame_000.png",
+              "Gloamhound/animations/walk/north-east/frame_001.png",
+              "Gloamhound/animations/walk/north-east/frame_002.png",
+              "Gloamhound/animations/walk/north-east/frame_003.png",
+              "Gloamhound/animations/walk/north-east/frame_004.png",
+              "Gloamhound/animations/walk/north-east/frame_005.png",
+              "Gloamhound/animations/walk/north-east/frame_006.png",
+              "Gloamhound/animations/walk/north-east/frame_007.png"
+            ],
+            "east": [
+              "Gloamhound/animations/walk/east/frame_000.png",
+              "Gloamhound/animations/walk/east/frame_001.png",
+              "Gloamhound/animations/walk/east/frame_002.png",
+              "Gloamhound/animations/walk/east/frame_003.png",
+              "Gloamhound/animations/walk/east/frame_004.png",
+              "Gloamhound/animations/walk/east/frame_005.png",
+              "Gloamhound/animations/walk/east/frame_006.png",
+              "Gloamhound/animations/walk/east/frame_007.png"
+            ],
+            "north-west": [
+              "Gloamhound/animations/walk/north-west/frame_000.png",
+              "Gloamhound/animations/walk/north-west/frame_001.png",
+              "Gloamhound/animations/walk/north-west/frame_002.png",
+              "Gloamhound/animations/walk/north-west/frame_003.png",
+              "Gloamhound/animations/walk/north-west/frame_004.png",
+              "Gloamhound/animations/walk/north-west/frame_005.png",
+              "Gloamhound/animations/walk/north-west/frame_006.png",
+              "Gloamhound/animations/walk/north-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:01.267438"
+}

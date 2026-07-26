@@ -1,0 +1,349 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "8d09c8ce-e77c-47f4-b371-c75c7dd91dc4",
+        "name": "Weepingcolossus",
+        "prompt": "immense stone cathedral-golem, a weeping angelic statue face, cracked feathered stone wings folded on its back, wrapped in heavy iron chains, glowing grief-light bleeding from every crack, low top-down pixel art, awe-inspiring gothic",
+        "size": {
+          "width": 248,
+          "height": 248
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:35:39.677011+00:00"
+      },
+      "folder": "Weepingcolossus",
+      "frames": {
+        "rotations": {
+          "south": "Weepingcolossus/rotations/south.png",
+          "south-east": "Weepingcolossus/rotations/south-east.png",
+          "east": "Weepingcolossus/rotations/east.png",
+          "north-east": "Weepingcolossus/rotations/north-east.png",
+          "north": "Weepingcolossus/rotations/north.png",
+          "north-west": "Weepingcolossus/rotations/north-west.png",
+          "west": "Weepingcolossus/rotations/west.png",
+          "south-west": "Weepingcolossus/rotations/south-west.png"
+        },
+        "animations": {
+          "chain_sweep": {
+            "north-east": [
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/north-east/frame_007.png"
+            ],
+            "south": [
+              "Weepingcolossus/animations/chain_sweep/south/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/south/frame_007.png"
+            ],
+            "west": [
+              "Weepingcolossus/animations/chain_sweep/west/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/west/frame_007.png"
+            ],
+            "north": [
+              "Weepingcolossus/animations/chain_sweep/north/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/north/frame_007.png"
+            ],
+            "south-east": [
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/south-west/frame_007.png"
+            ],
+            "east": [
+              "Weepingcolossus/animations/chain_sweep/east/frame_000.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_001.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_002.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_003.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_004.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_005.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_006.png",
+              "Weepingcolossus/animations/chain_sweep/east/frame_007.png"
+            ]
+          },
+          "sorrow_quake": {
+            "north": [
+              "Weepingcolossus/animations/sorrow_quake/north/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/north/frame_007.png"
+            ],
+            "south-west": [
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/north-west/frame_007.png"
+            ],
+            "south": [
+              "Weepingcolossus/animations/sorrow_quake/south/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/south/frame_007.png"
+            ],
+            "east": [
+              "Weepingcolossus/animations/sorrow_quake/east/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/east/frame_007.png"
+            ],
+            "south-east": [
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/south-east/frame_007.png"
+            ],
+            "west": [
+              "Weepingcolossus/animations/sorrow_quake/west/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/west/frame_007.png"
+            ],
+            "north-east": [
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_000.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_001.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_002.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_003.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_004.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_005.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_006.png",
+              "Weepingcolossus/animations/sorrow_quake/north-east/frame_007.png"
+            ]
+          },
+          "attack": {
+            "east": [
+              "Weepingcolossus/animations/attack/east/frame_000.png",
+              "Weepingcolossus/animations/attack/east/frame_001.png",
+              "Weepingcolossus/animations/attack/east/frame_002.png",
+              "Weepingcolossus/animations/attack/east/frame_003.png",
+              "Weepingcolossus/animations/attack/east/frame_004.png",
+              "Weepingcolossus/animations/attack/east/frame_005.png",
+              "Weepingcolossus/animations/attack/east/frame_006.png",
+              "Weepingcolossus/animations/attack/east/frame_007.png"
+            ],
+            "north-west": [
+              "Weepingcolossus/animations/attack/north-west/frame_000.png",
+              "Weepingcolossus/animations/attack/north-west/frame_001.png",
+              "Weepingcolossus/animations/attack/north-west/frame_002.png",
+              "Weepingcolossus/animations/attack/north-west/frame_003.png",
+              "Weepingcolossus/animations/attack/north-west/frame_004.png",
+              "Weepingcolossus/animations/attack/north-west/frame_005.png",
+              "Weepingcolossus/animations/attack/north-west/frame_006.png",
+              "Weepingcolossus/animations/attack/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Weepingcolossus/animations/attack/south-west/frame_000.png",
+              "Weepingcolossus/animations/attack/south-west/frame_001.png",
+              "Weepingcolossus/animations/attack/south-west/frame_002.png",
+              "Weepingcolossus/animations/attack/south-west/frame_003.png",
+              "Weepingcolossus/animations/attack/south-west/frame_004.png",
+              "Weepingcolossus/animations/attack/south-west/frame_005.png",
+              "Weepingcolossus/animations/attack/south-west/frame_006.png",
+              "Weepingcolossus/animations/attack/south-west/frame_007.png"
+            ],
+            "north": [
+              "Weepingcolossus/animations/attack/north/frame_000.png",
+              "Weepingcolossus/animations/attack/north/frame_001.png",
+              "Weepingcolossus/animations/attack/north/frame_002.png",
+              "Weepingcolossus/animations/attack/north/frame_003.png",
+              "Weepingcolossus/animations/attack/north/frame_004.png",
+              "Weepingcolossus/animations/attack/north/frame_005.png",
+              "Weepingcolossus/animations/attack/north/frame_006.png",
+              "Weepingcolossus/animations/attack/north/frame_007.png"
+            ],
+            "north-east": [
+              "Weepingcolossus/animations/attack/north-east/frame_000.png",
+              "Weepingcolossus/animations/attack/north-east/frame_001.png",
+              "Weepingcolossus/animations/attack/north-east/frame_002.png",
+              "Weepingcolossus/animations/attack/north-east/frame_003.png",
+              "Weepingcolossus/animations/attack/north-east/frame_004.png",
+              "Weepingcolossus/animations/attack/north-east/frame_005.png",
+              "Weepingcolossus/animations/attack/north-east/frame_006.png",
+              "Weepingcolossus/animations/attack/north-east/frame_007.png"
+            ],
+            "south": [
+              "Weepingcolossus/animations/attack/south/frame_000.png",
+              "Weepingcolossus/animations/attack/south/frame_001.png",
+              "Weepingcolossus/animations/attack/south/frame_002.png",
+              "Weepingcolossus/animations/attack/south/frame_003.png",
+              "Weepingcolossus/animations/attack/south/frame_004.png",
+              "Weepingcolossus/animations/attack/south/frame_005.png",
+              "Weepingcolossus/animations/attack/south/frame_006.png",
+              "Weepingcolossus/animations/attack/south/frame_007.png"
+            ],
+            "south-east": [
+              "Weepingcolossus/animations/attack/south-east/frame_000.png",
+              "Weepingcolossus/animations/attack/south-east/frame_001.png",
+              "Weepingcolossus/animations/attack/south-east/frame_002.png",
+              "Weepingcolossus/animations/attack/south-east/frame_003.png",
+              "Weepingcolossus/animations/attack/south-east/frame_004.png",
+              "Weepingcolossus/animations/attack/south-east/frame_005.png",
+              "Weepingcolossus/animations/attack/south-east/frame_006.png",
+              "Weepingcolossus/animations/attack/south-east/frame_007.png"
+            ],
+            "west": [
+              "Weepingcolossus/animations/attack/west/frame_000.png",
+              "Weepingcolossus/animations/attack/west/frame_001.png",
+              "Weepingcolossus/animations/attack/west/frame_002.png",
+              "Weepingcolossus/animations/attack/west/frame_003.png",
+              "Weepingcolossus/animations/attack/west/frame_004.png",
+              "Weepingcolossus/animations/attack/west/frame_005.png",
+              "Weepingcolossus/animations/attack/west/frame_006.png",
+              "Weepingcolossus/animations/attack/west/frame_007.png"
+            ]
+          },
+          "walk": {
+            "south-east": [
+              "Weepingcolossus/animations/walk/south-east/frame_000.png",
+              "Weepingcolossus/animations/walk/south-east/frame_001.png",
+              "Weepingcolossus/animations/walk/south-east/frame_002.png",
+              "Weepingcolossus/animations/walk/south-east/frame_003.png",
+              "Weepingcolossus/animations/walk/south-east/frame_004.png",
+              "Weepingcolossus/animations/walk/south-east/frame_005.png"
+            ],
+            "north-west": [
+              "Weepingcolossus/animations/walk/north-west/frame_000.png",
+              "Weepingcolossus/animations/walk/north-west/frame_001.png",
+              "Weepingcolossus/animations/walk/north-west/frame_002.png",
+              "Weepingcolossus/animations/walk/north-west/frame_003.png",
+              "Weepingcolossus/animations/walk/north-west/frame_004.png",
+              "Weepingcolossus/animations/walk/north-west/frame_005.png"
+            ],
+            "north-east": [
+              "Weepingcolossus/animations/walk/north-east/frame_000.png",
+              "Weepingcolossus/animations/walk/north-east/frame_001.png",
+              "Weepingcolossus/animations/walk/north-east/frame_002.png",
+              "Weepingcolossus/animations/walk/north-east/frame_003.png",
+              "Weepingcolossus/animations/walk/north-east/frame_004.png",
+              "Weepingcolossus/animations/walk/north-east/frame_005.png"
+            ],
+            "west": [
+              "Weepingcolossus/animations/walk/west/frame_000.png",
+              "Weepingcolossus/animations/walk/west/frame_001.png",
+              "Weepingcolossus/animations/walk/west/frame_002.png",
+              "Weepingcolossus/animations/walk/west/frame_003.png",
+              "Weepingcolossus/animations/walk/west/frame_004.png",
+              "Weepingcolossus/animations/walk/west/frame_005.png"
+            ],
+            "south-west": [
+              "Weepingcolossus/animations/walk/south-west/frame_000.png",
+              "Weepingcolossus/animations/walk/south-west/frame_001.png",
+              "Weepingcolossus/animations/walk/south-west/frame_002.png",
+              "Weepingcolossus/animations/walk/south-west/frame_003.png",
+              "Weepingcolossus/animations/walk/south-west/frame_004.png",
+              "Weepingcolossus/animations/walk/south-west/frame_005.png"
+            ],
+            "east": [
+              "Weepingcolossus/animations/walk/east/frame_000.png",
+              "Weepingcolossus/animations/walk/east/frame_001.png",
+              "Weepingcolossus/animations/walk/east/frame_002.png",
+              "Weepingcolossus/animations/walk/east/frame_003.png",
+              "Weepingcolossus/animations/walk/east/frame_004.png",
+              "Weepingcolossus/animations/walk/east/frame_005.png"
+            ],
+            "south": [
+              "Weepingcolossus/animations/walk/south/frame_000.png",
+              "Weepingcolossus/animations/walk/south/frame_001.png",
+              "Weepingcolossus/animations/walk/south/frame_002.png",
+              "Weepingcolossus/animations/walk/south/frame_003.png",
+              "Weepingcolossus/animations/walk/south/frame_004.png",
+              "Weepingcolossus/animations/walk/south/frame_005.png"
+            ],
+            "north": [
+              "Weepingcolossus/animations/walk/north/frame_000.png",
+              "Weepingcolossus/animations/walk/north/frame_001.png",
+              "Weepingcolossus/animations/walk/north/frame_002.png",
+              "Weepingcolossus/animations/walk/north/frame_003.png",
+              "Weepingcolossus/animations/walk/north/frame_004.png",
+              "Weepingcolossus/animations/walk/north/frame_005.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:37.427744"
+}

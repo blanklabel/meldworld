@@ -1,0 +1,283 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "10a7e44a-ac08-4d71-a213-d95cc555c7c9",
+        "name": "Ashenleviathan",
+        "prompt": "molten-obsidian dread-stag steed, cracked volcanic hide glowing with rivers of magma, a burning skull head crowned with blazing antlers, hooves wreathed in cinders, an empty saddle of black chains, low top-down pixel art, nightmarish",
+        "size": {
+          "width": 180,
+          "height": 180
+        },
+        "template_id": "horse",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:35:45.705503+00:00"
+      },
+      "folder": "Ashenleviathan",
+      "frames": {
+        "rotations": {
+          "south": "Ashenleviathan/rotations/south.png",
+          "south-east": "Ashenleviathan/rotations/south-east.png",
+          "east": "Ashenleviathan/rotations/east.png",
+          "north-east": "Ashenleviathan/rotations/north-east.png",
+          "north": "Ashenleviathan/rotations/north.png",
+          "north-west": "Ashenleviathan/rotations/north-west.png",
+          "west": "Ashenleviathan/rotations/west.png",
+          "south-west": "Ashenleviathan/rotations/south-west.png"
+        },
+        "animations": {
+          "attack": {
+            "west": [
+              "Ashenleviathan/animations/attack/west/frame_000.png",
+              "Ashenleviathan/animations/attack/west/frame_001.png",
+              "Ashenleviathan/animations/attack/west/frame_002.png",
+              "Ashenleviathan/animations/attack/west/frame_003.png",
+              "Ashenleviathan/animations/attack/west/frame_004.png",
+              "Ashenleviathan/animations/attack/west/frame_005.png",
+              "Ashenleviathan/animations/attack/west/frame_006.png",
+              "Ashenleviathan/animations/attack/west/frame_007.png"
+            ],
+            "south-west": [
+              "Ashenleviathan/animations/attack/south-west/frame_000.png",
+              "Ashenleviathan/animations/attack/south-west/frame_001.png",
+              "Ashenleviathan/animations/attack/south-west/frame_002.png",
+              "Ashenleviathan/animations/attack/south-west/frame_003.png",
+              "Ashenleviathan/animations/attack/south-west/frame_004.png",
+              "Ashenleviathan/animations/attack/south-west/frame_005.png",
+              "Ashenleviathan/animations/attack/south-west/frame_006.png",
+              "Ashenleviathan/animations/attack/south-west/frame_007.png"
+            ],
+            "south": [
+              "Ashenleviathan/animations/attack/south/frame_000.png",
+              "Ashenleviathan/animations/attack/south/frame_001.png",
+              "Ashenleviathan/animations/attack/south/frame_002.png",
+              "Ashenleviathan/animations/attack/south/frame_003.png",
+              "Ashenleviathan/animations/attack/south/frame_004.png",
+              "Ashenleviathan/animations/attack/south/frame_005.png",
+              "Ashenleviathan/animations/attack/south/frame_006.png",
+              "Ashenleviathan/animations/attack/south/frame_007.png"
+            ],
+            "north-east": [
+              "Ashenleviathan/animations/attack/north-east/frame_000.png",
+              "Ashenleviathan/animations/attack/north-east/frame_001.png",
+              "Ashenleviathan/animations/attack/north-east/frame_002.png",
+              "Ashenleviathan/animations/attack/north-east/frame_003.png",
+              "Ashenleviathan/animations/attack/north-east/frame_004.png",
+              "Ashenleviathan/animations/attack/north-east/frame_005.png",
+              "Ashenleviathan/animations/attack/north-east/frame_006.png",
+              "Ashenleviathan/animations/attack/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Ashenleviathan/animations/attack/north-west/frame_000.png",
+              "Ashenleviathan/animations/attack/north-west/frame_001.png",
+              "Ashenleviathan/animations/attack/north-west/frame_002.png",
+              "Ashenleviathan/animations/attack/north-west/frame_003.png",
+              "Ashenleviathan/animations/attack/north-west/frame_004.png",
+              "Ashenleviathan/animations/attack/north-west/frame_005.png",
+              "Ashenleviathan/animations/attack/north-west/frame_006.png",
+              "Ashenleviathan/animations/attack/north-west/frame_007.png"
+            ],
+            "north": [
+              "Ashenleviathan/animations/attack/north/frame_000.png",
+              "Ashenleviathan/animations/attack/north/frame_001.png",
+              "Ashenleviathan/animations/attack/north/frame_002.png",
+              "Ashenleviathan/animations/attack/north/frame_003.png",
+              "Ashenleviathan/animations/attack/north/frame_004.png",
+              "Ashenleviathan/animations/attack/north/frame_005.png",
+              "Ashenleviathan/animations/attack/north/frame_006.png",
+              "Ashenleviathan/animations/attack/north/frame_007.png"
+            ],
+            "east": [
+              "Ashenleviathan/animations/attack/east/frame_000.png",
+              "Ashenleviathan/animations/attack/east/frame_001.png",
+              "Ashenleviathan/animations/attack/east/frame_002.png",
+              "Ashenleviathan/animations/attack/east/frame_003.png",
+              "Ashenleviathan/animations/attack/east/frame_004.png",
+              "Ashenleviathan/animations/attack/east/frame_005.png",
+              "Ashenleviathan/animations/attack/east/frame_006.png",
+              "Ashenleviathan/animations/attack/east/frame_007.png"
+            ],
+            "south-east": [
+              "Ashenleviathan/animations/attack/south-east/frame_000.png",
+              "Ashenleviathan/animations/attack/south-east/frame_001.png",
+              "Ashenleviathan/animations/attack/south-east/frame_002.png",
+              "Ashenleviathan/animations/attack/south-east/frame_003.png",
+              "Ashenleviathan/animations/attack/south-east/frame_004.png",
+              "Ashenleviathan/animations/attack/south-east/frame_005.png",
+              "Ashenleviathan/animations/attack/south-east/frame_006.png",
+              "Ashenleviathan/animations/attack/south-east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "north-east": [
+              "Ashenleviathan/animations/walk/north-east/frame_000.png",
+              "Ashenleviathan/animations/walk/north-east/frame_001.png",
+              "Ashenleviathan/animations/walk/north-east/frame_002.png",
+              "Ashenleviathan/animations/walk/north-east/frame_003.png",
+              "Ashenleviathan/animations/walk/north-east/frame_004.png",
+              "Ashenleviathan/animations/walk/north-east/frame_005.png",
+              "Ashenleviathan/animations/walk/north-east/frame_006.png",
+              "Ashenleviathan/animations/walk/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Ashenleviathan/animations/walk/north-west/frame_000.png",
+              "Ashenleviathan/animations/walk/north-west/frame_001.png",
+              "Ashenleviathan/animations/walk/north-west/frame_002.png",
+              "Ashenleviathan/animations/walk/north-west/frame_003.png",
+              "Ashenleviathan/animations/walk/north-west/frame_004.png",
+              "Ashenleviathan/animations/walk/north-west/frame_005.png",
+              "Ashenleviathan/animations/walk/north-west/frame_006.png",
+              "Ashenleviathan/animations/walk/north-west/frame_007.png"
+            ],
+            "west": [
+              "Ashenleviathan/animations/walk/west/frame_000.png",
+              "Ashenleviathan/animations/walk/west/frame_001.png",
+              "Ashenleviathan/animations/walk/west/frame_002.png",
+              "Ashenleviathan/animations/walk/west/frame_003.png",
+              "Ashenleviathan/animations/walk/west/frame_004.png",
+              "Ashenleviathan/animations/walk/west/frame_005.png",
+              "Ashenleviathan/animations/walk/west/frame_006.png",
+              "Ashenleviathan/animations/walk/west/frame_007.png"
+            ],
+            "east": [
+              "Ashenleviathan/animations/walk/east/frame_000.png",
+              "Ashenleviathan/animations/walk/east/frame_001.png",
+              "Ashenleviathan/animations/walk/east/frame_002.png",
+              "Ashenleviathan/animations/walk/east/frame_003.png",
+              "Ashenleviathan/animations/walk/east/frame_004.png",
+              "Ashenleviathan/animations/walk/east/frame_005.png",
+              "Ashenleviathan/animations/walk/east/frame_006.png",
+              "Ashenleviathan/animations/walk/east/frame_007.png"
+            ],
+            "south-east": [
+              "Ashenleviathan/animations/walk/south-east/frame_000.png",
+              "Ashenleviathan/animations/walk/south-east/frame_001.png",
+              "Ashenleviathan/animations/walk/south-east/frame_002.png",
+              "Ashenleviathan/animations/walk/south-east/frame_003.png",
+              "Ashenleviathan/animations/walk/south-east/frame_004.png",
+              "Ashenleviathan/animations/walk/south-east/frame_005.png",
+              "Ashenleviathan/animations/walk/south-east/frame_006.png",
+              "Ashenleviathan/animations/walk/south-east/frame_007.png"
+            ],
+            "south": [
+              "Ashenleviathan/animations/walk/south/frame_000.png",
+              "Ashenleviathan/animations/walk/south/frame_001.png",
+              "Ashenleviathan/animations/walk/south/frame_002.png",
+              "Ashenleviathan/animations/walk/south/frame_003.png",
+              "Ashenleviathan/animations/walk/south/frame_004.png",
+              "Ashenleviathan/animations/walk/south/frame_005.png",
+              "Ashenleviathan/animations/walk/south/frame_006.png",
+              "Ashenleviathan/animations/walk/south/frame_007.png"
+            ],
+            "south-west": [
+              "Ashenleviathan/animations/walk/south-west/frame_000.png",
+              "Ashenleviathan/animations/walk/south-west/frame_001.png",
+              "Ashenleviathan/animations/walk/south-west/frame_002.png",
+              "Ashenleviathan/animations/walk/south-west/frame_003.png",
+              "Ashenleviathan/animations/walk/south-west/frame_004.png",
+              "Ashenleviathan/animations/walk/south-west/frame_005.png",
+              "Ashenleviathan/animations/walk/south-west/frame_006.png",
+              "Ashenleviathan/animations/walk/south-west/frame_007.png"
+            ],
+            "north": [
+              "Ashenleviathan/animations/walk/north/frame_000.png",
+              "Ashenleviathan/animations/walk/north/frame_001.png",
+              "Ashenleviathan/animations/walk/north/frame_002.png",
+              "Ashenleviathan/animations/walk/north/frame_003.png",
+              "Ashenleviathan/animations/walk/north/frame_004.png",
+              "Ashenleviathan/animations/walk/north/frame_005.png",
+              "Ashenleviathan/animations/walk/north/frame_006.png",
+              "Ashenleviathan/animations/walk/north/frame_007.png"
+            ]
+          },
+          "cinder_charge": {
+            "south-east": [
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/south-west/frame_007.png"
+            ],
+            "north": [
+              "Ashenleviathan/animations/cinder_charge/north/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/north/frame_007.png"
+            ],
+            "west": [
+              "Ashenleviathan/animations/cinder_charge/west/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/west/frame_007.png"
+            ],
+            "south": [
+              "Ashenleviathan/animations/cinder_charge/south/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/south/frame_007.png"
+            ],
+            "east": [
+              "Ashenleviathan/animations/cinder_charge/east/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/east/frame_007.png"
+            ],
+            "north-east": [
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_000.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_001.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_002.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_003.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_004.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_005.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_006.png",
+              "Ashenleviathan/animations/cinder_charge/north-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:44.839243"
+}
