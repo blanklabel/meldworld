@@ -1,8 +1,8 @@
-# The Central Hub — **Last City** — design + server plan
+# The Central Hub — **The Last City** — design + server plan
 
-> **Name decided: the hub is "Last City."** This supersedes the "The Weld" working
+> **Name decided: the hub is "The Last City."** This supersedes the "The Weld" working
 > name used throughout the rest of this doc; wherever it says "The Weld," read
-> "Last City." The district names and the whole design below stand. Tracked as
+> "The Last City." The district names and the whole design below stand. Tracked as
 > epic **LC** in [`../ROADMAP.md`](../ROADMAP.md).
 >
 > Status: **M0 SHIPPED (spike); M1–M3 proposed.** Grounds the persistent social +

@@ -48,7 +48,7 @@ pub(crate) fn world_idle_flag() -> bool {
     query_has("idle")
 }
 
-/// Connect, then **park in The Weld** (the hub city) instead of diving — a stable
+/// Connect, then **park in The Last City** (the hub city) instead of diving — a stable
 /// City frame for screenshotting / iterating on the hub. Reuses the autoplay
 /// connect path but gates the auto-dive. Native: `MELD_CITY`. Browser: `?city`.
 #[cfg(not(target_arch = "wasm32"))]

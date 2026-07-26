@@ -37,7 +37,7 @@ loop real stakes).
 
 ## Epic LC — Last City (the persistent hub)
 
-The hub is named **Last City**. This supersedes the "The Weld" working name in
+The hub is named **The Last City**. This supersedes the "The Weld" working name in
 [`proposals/last-city.md`](proposals/last-city.md); that proposal is otherwise the
 design of record (fiction, districts, the presence/ward-sharding plan, the
 additive `town.*` wire surface). M0 shipped: a walkable HD-2D plaza that closes
@@ -55,9 +55,9 @@ the dive→extract→dive loop. This epic finishes M1–M3.
   relative movement sign/axis bug in the city controller (client
   [`main.rs`](../client/crates/meld-client/src/main.rs) `Screen::City` movement).
   Screenshot/verify the four directions.
-- [ ] **LC-3 — Adopt "Last City" as the canonical name.** Rename "The Weld" in
-  fiction, all in-game UI/labels, and the proposal's name line; keep the district
-  names. Add a CANON glossary entry (§G) for **Last City**.
+- [x] **LC-3 — Adopt "The Last City" as the canonical name.** Renamed "The Weld" in
+  all in-game UI/labels + client code, the proposal's name line, and added a CANON
+  glossary entry (§G) for **The Last City**. District names kept.
 - [ ] **LC-4 — Interact with your inventory inside town.** Open and manage the
   Vault + equipped gear + (pre-dive) loadout from within Last City — the Vault-Deep
   district UI reading the live `GET /v1/vault` / `/vault/gear`, plus equip/unequip.

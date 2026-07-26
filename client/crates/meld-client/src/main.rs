@@ -2,7 +2,7 @@
 //! (BUILD-PLAN T4 overworld + T5 UI; CANON D16 all-Bevy). Server-authoritative:
 //! the client sends intents and renders whatever the server reports (CANON §S).
 //!
-//! Loop: Join → City (The Weld hub) → Overworld (walk into the monster) →
+//! Loop: Join → City (The Last City hub) → Overworld (walk into the monster) →
 //! Battle (ATB) → Ended → back to City. The city is the persistent home the
 //! extract-or-die loop returns to (see docs/proposals/last-city.md).
 //!
@@ -27,7 +27,7 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 // module can call a sibling's via `use super::*`.
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
-mod city; // The Weld hub: districts, plaza, HUD
+mod city; // The Last City hub: districts, plaza, HUD
 mod flags; // launch-time `MELD_*` / `?query` toggles
 mod mocks; // offline screenshot/demo seeds
 mod netglue; // server messages → state, demo driver, despawn + font install
@@ -183,7 +183,7 @@ fn main() {
             (join_input, join_interact, join_refresh, join_login_refresh)
                 .run_if(in_state(Screen::Join)),
         )
-        // City — The Weld (persistent hub): a walkable HD-2D plaza built from Kenney
+        // City — The Last City (persistent hub): a walkable HD-2D plaza built from Kenney
         // CC0 kits, reusing the overworld camera/avatar/animation machinery.
         // Each state ENTRY purges the actor kinds that don't belong to it, so a sprite
         // can never stick across a transition: `WorldEntity` lives only in Overworld,
@@ -402,7 +402,7 @@ fn main() {
         // Ended — the extract/death summary. Clean any lingering world/battle actors
         // off it on entry, and (crucially) despawn the summary UI on EXIT: without
         // this the `EndedRoot` text was never removed, so it stayed on screen after
-        // returning to The Weld and a second extraction stacked a duplicate on top.
+        // returning to The Last City and a second extraction stacked a duplicate on top.
         .add_systems(
             OnEnter(Screen::Ended),
             (
@@ -424,7 +424,7 @@ fn main() {
 enum Screen {
     #[default]
     Join,
-    /// The Weld — the persistent hub city. Post-auth home and the return target
+    /// The Last City — the persistent hub city. Post-auth home and the return target
     /// after every run: spend chits, read the Vault, and step through The
     /// Threshold to dive again. Closes the extract-or-die loop (see docs/proposals/last-city.md).
     City,
@@ -1262,7 +1262,7 @@ struct AtbFlash {
     age: HashMap<String, f32>,
 }
 
-/// UI state for the City (The Weld) hub screen.
+/// UI state for the City (The Last City) hub screen.
 #[derive(Resource, Default)]
 struct CityUi {
     /// A transient district notice (e.g. a not-yet-built district's status).
@@ -1307,7 +1307,7 @@ struct MoveClock {
 #[derive(Resource)]
 struct Autoplay(bool);
 
-/// When true (`?city` / `MELD_CITY`), the client connects but parks in The Weld
+/// When true (`?city` / `MELD_CITY`), the client connects but parks in The Last City
 /// (the hub) instead of auto-diving — for screenshotting / iterating on the city.
 #[derive(Resource)]
 struct CityIdle(bool);
@@ -1589,7 +1589,7 @@ struct WithdrawButton {
 }
 #[derive(Component)]
 struct EndedRoot;
-/// Root of the City (The Weld) HUD (2D overlay).
+/// Root of the City (The Last City) HUD (2D overlay).
 #[derive(Component)]
 struct CityRoot;
 /// Any 3D entity of the walkable city scene (ground, buildings, props, avatar).
