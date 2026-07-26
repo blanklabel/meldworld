@@ -354,7 +354,10 @@ pub fn no_billboard_shadows(
     q: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
 ) {
     for e in &q {
-        commands.entity(e).insert(NotShadowCaster);
+        // `try_insert`, not `insert`: a billboard can be despawned (screen swap,
+        // actor cleanup) between this query and command application — a plain
+        // `insert` panics on the now-missing entity.
+        commands.entity(e).try_insert(NotShadowCaster);
     }
 }
 
