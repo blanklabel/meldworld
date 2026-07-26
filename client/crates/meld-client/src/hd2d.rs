@@ -856,36 +856,9 @@ pub fn grass_texture(size: u32) -> Image {
     make_tex(s, data, true)
 }
 
-/// A tiling water ripple (soft interfering waves), scrolled + tinted by the water
-/// material. Repeat-sampled.
-pub fn water_ripple_texture(size: u32) -> Image {
-    use std::f32::consts::TAU;
-    let s = size.max(8);
-    let mut data = vec![0u8; (s * s * 4) as usize];
-    for y in 0..s {
-        for x in 0..s {
-            let u = x as f32 / s as f32;
-            let v = y as f32 / s as f32;
-            // Sum of a few sine waves → seamless because frequencies are integers.
-            let w = (((u * 3.0 + v * 2.0) * TAU).sin()
-                + ((u * 2.0 - v * 4.0) * TAU).sin()
-                + ((u * 5.0 + v * 5.0) * TAU).sin() * 0.5)
-                / 2.5;
-            let l = (0.6 + w * 0.4).clamp(0.2, 1.0);
-            let hi = ((w * 0.5 + 0.5).powf(6.0) * 255.0) as u8; // sparkle in alpha-ish
-            let i = ((y * s + x) * 4) as usize;
-            data[i] = (l * 0.7 * 255.0) as u8;
-            data[i + 1] = (l * 0.88 * 255.0) as u8;
-            data[i + 2] = (l * 255.0) as u8;
-            // Near-opaque: a pool should read as (glassy) water, not a translucent
-            // film that lets the green grass beneath show through in the ripple
-            // troughs. Keep a sliver of translucency for depth; the low roughness +
-            // sky-sheen emissive carry the "water" read via specular, not see-through.
-            data[i + 3] = (243u16 + hi as u16 / 8).min(255) as u8;
-        }
-    }
-    make_tex(s, data, true)
-}
+// (Deprecated) The old procedural `water_ripple_texture` was replaced by bespoke
+// pixel-art water tiles (`assets/ground/water_*.png`) worn by the per-kind water
+// materials in `world_render` — see `WorldAssets::water_mats` + `animate_water`.
 
 /// A flat **irregular blob** (triangle fan whose radius wobbles with angle) so pools
 /// don't read as perfect circles. Lies in the XY plane — rotate it flat like a

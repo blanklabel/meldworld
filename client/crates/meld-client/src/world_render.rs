@@ -116,7 +116,10 @@ pub(crate) struct WorldAssets {
     pub(crate) monster_mesh: Handle<Mesh>,
     pub(crate) rock_mesh: Handle<Mesh>,
     pub(crate) water_mesh: Handle<Mesh>,
-    pub(crate) water_mat: Handle<StandardMaterial>, // shared, animated (see animate_water)
+    /// Per-water-kind materials (`pond`/`bog_pool`/`frozen_pond`), each wearing a
+    /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
+    /// `SnapshotEntity` obstacle name; fall back to `pond` via [`Self::water_mat`].
+    pub(crate) water_mats: HashMap<String, Handle<StandardMaterial>>,
     pub(crate) ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
 }
 
@@ -124,6 +127,16 @@ impl WorldAssets {
     /// The hero sprite set for a class wire key, falling back to the Hunter for any
     /// key without bespoke art (keeps rendering robust if a new class ships before
     /// its art does).
+    /// The water material for an obstacle kind (`pond`/`bog_pool`/`frozen_pond`),
+    /// falling back to the clear `pond` water for any unmapped kind.
+    pub(crate) fn water_mat(&self, kind: &str) -> Handle<StandardMaterial> {
+        self.water_mats
+            .get(kind)
+            .or_else(|| self.water_mats.get("pond"))
+            .expect("pond water material always loaded")
+            .clone()
+    }
+
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
         self.class_chars
             .get(class)
@@ -487,15 +500,29 @@ pub(crate) fn setup(
         monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
-        water_mat: mats.add(StandardMaterial {
-            base_color: Color::srgb(0.22, 0.45, 0.62),
-            base_color_texture: Some(images.add(hd2d::water_ripple_texture(96))),
-            emissive: LinearRgba::rgb(0.02, 0.06, 0.1), // faint sky sheen
-            perceptual_roughness: 0.12,                 // reflective
-            metallic: 0.1,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
+        // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
+        // by `animate_water`. Replaces the old procedural `water_ripple_texture`.
+        water_mats: [
+            ("pond", "ground/water_clear.png", LinearRgba::rgb(0.02, 0.06, 0.1)),
+            ("bog_pool", "ground/water_bog.png", LinearRgba::rgb(0.03, 0.06, 0.03)),
+            ("frozen_pond", "ground/water_ice.png", LinearRgba::rgb(0.05, 0.08, 0.12)),
+        ]
+        .iter()
+        .map(|(kind, tex, emissive)| {
+            (
+                kind.to_string(),
+                mats.add(StandardMaterial {
+                    base_color: Color::srgb(0.9, 0.94, 1.0),
+                    base_color_texture: Some(load_tiled(&assets, tex)),
+                    emissive: *emissive, // faint sky sheen
+                    perceptual_roughness: 0.12, // reflective
+                    metallic: 0.1,
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                }),
+            )
+        })
+        .collect(),
         ground_tex,
     });
 
@@ -1540,12 +1567,15 @@ pub(crate) fn animate_water(
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(wa) = wa else { return };
-    if let Some(m) = mats.get_mut(&wa.water_mat) {
-        let t = time.elapsed_secs();
-        m.uv_transform = bevy::math::Affine2::from_scale_angle_translation(
-            Vec2::splat(2.2),
-            0.0,
-            Vec2::new(t * 0.035, t * 0.055),
-        );
+    let t = time.elapsed_secs();
+    let xf = bevy::math::Affine2::from_scale_angle_translation(
+        Vec2::splat(2.2),
+        0.0,
+        Vec2::new(t * 0.035, t * 0.055),
+    );
+    for handle in wa.water_mats.values() {
+        if let Some(m) = mats.get_mut(handle) {
+            m.uv_transform = xf;
+        }
     }
 }
