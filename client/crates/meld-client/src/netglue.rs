@@ -345,11 +345,12 @@ pub(crate) fn pump_net(
                 // another attempt (e.g. wrong password) rather than dead-ending.
                 if session.connecting && !session.entered {
                     session.connecting = false;
-                    let m = message.to_lowercase();
-                    session.status = if m.contains("401") || m.contains("unauthorized") {
-                        "That username is taken or the password is wrong.".to_string()
+                    session.status = if message == "wrong-password" {
+                        "Wrong password for that account (or choose a new username).".to_string()
                     } else {
-                        format!("Login failed: {message}")
+                        // Already a clear reason from the API, e.g. "Password must be
+                        // 8–128 chars." or "Username must be 3–20 chars of [a-zA-Z0-9_]."
+                        message.clone()
                     };
                 } else {
                     session.status = format!("error: {message}");
