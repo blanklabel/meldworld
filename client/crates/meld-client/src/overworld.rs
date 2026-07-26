@@ -1101,12 +1101,12 @@ pub(crate) fn spawn_wall_prop(
             }
         }
         4 => {
-            // Mire → a border of the shared animated water blobs.
+            // Mire → a border of animated bog water blobs.
             let spin = (hash_pick(&id, 360) as f32).to_radians();
             commands.spawn((
                 WorldWall,
                 Mesh3d(wa.water_mesh.clone()),
-                MeshMaterial3d(wa.water_mat.clone()),
+                MeshMaterial3d(wa.water_mat("bog_pool")),
                 Transform::from_translation(world_pos(x, y, 0.2))
                     .with_rotation(
                         Quat::from_rotation_y(spin)
@@ -2331,13 +2331,13 @@ pub(crate) fn spawn_obstacle(
     }
     match name {
         "pond" | "frozen_pond" | "bog_pool" => {
-            // Shared animated water material (scrolled by `animate_water`); spin each
-            // organic blob a different way so pools don't look stamped from one shape.
+            // Bespoke pixel-art water tile per kind (drifted by `animate_water`); spin
+            // each organic blob a different way so pools don't look stamped from one shape.
             let spin = (hash_pick(id, 360) as f32).to_radians();
             commands.spawn((
                 WorldEntity(id.to_string()),
                 Mesh3d(wa.water_mesh.clone()),
-                MeshMaterial3d(wa.water_mat.clone()),
+                MeshMaterial3d(wa.water_mat(name)),
                 Transform::from_translation(world_pos(e.x, e.y, 0.2))
                     .with_rotation(
                         Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
