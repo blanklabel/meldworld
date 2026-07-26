@@ -849,12 +849,18 @@ pub(crate) fn sync_overworld_sprites(
             commands.entity(entity).despawn();
             continue;
         }
+        // Horizontal (xz) is smoothed/interpolated for fluid motion; the VERTICAL
+        // (elevation) is always SNAPPED to the discrete terrace level. You only ever
+        // change level by stepping onto a connector, so there is no in-between height
+        // to smooth toward — and smoothing it (STEP_HEIGHT = 2.0 per level, ramped
+        // over ~10 frames) briefly left the avatar root *below* a terrace it had just
+        // stepped onto, so the raised ground clipped the billboard's lower half and
+        // the hero looked buried to the thigh until y caught up.
+        tf.translation.y = e.level as f32 * STEP_HEIGHT;
         if we.0 == session.player_id {
             // Responsive: chase the latest snapshot directly.
             tf.translation.x += (e.x - tf.translation.x) * k;
             tf.translation.z += (e.y - tf.translation.z) * k;
-            let target_y = e.level as f32 * STEP_HEIGHT;
-            tf.translation.y += (target_y - tf.translation.y) * k;
         } else if let Some((prev, cur)) = interp.states.get(&we.0) {
             // Interpolate between the two most recent samples at the delayed clock.
             let denom = cur.t - prev.t;
@@ -865,12 +871,10 @@ pub(crate) fn sync_overworld_sprites(
             };
             tf.translation.x = prev.x + (cur.x - prev.x) * f;
             tf.translation.z = prev.y + (cur.y - prev.y) * f;
-            tf.translation.y = (prev.level + (cur.level - prev.level) * f) * STEP_HEIGHT;
         } else {
             // Just appeared (no buffer yet): snap to its latest position.
             tf.translation.x = e.x;
             tf.translation.z = e.y;
-            tf.translation.y = e.level as f32 * STEP_HEIGHT;
         }
     }
     for (id, e) in &world.entities {
