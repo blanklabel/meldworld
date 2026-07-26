@@ -1878,11 +1878,20 @@ pub(crate) fn hash_pick(id: &str, n: usize) -> usize {
 /// kind is a single underscored token with no spaces, so the kind is the last
 /// whitespace-delimited word; lowercased for good measure.
 pub(crate) fn creature_kind(name: &str) -> String {
-    name.trim()
-        .rsplit(char::is_whitespace)
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase()
+    // Canonicalize any form of a creature's name to its underscored content id so the
+    // SAME creature resolves to the SAME sprite everywhere. The overworld sends the
+    // underscored kind ("forest_bloom_stalker"); the battle sends a spaced DISPLAY name
+    // ("Forest Bloom Stalker"), optionally with a champion affix prefix ("Swift
+    // dune_wyrm"). So: lowercase, drop a leading known affix, then join the remaining
+    // words with '_' (which turns "forest bloom stalker" back into
+    // "forest_bloom_stalker" and leaves an already-underscored kind untouched).
+    const AFFIXES: [&str; 5] = ["swift", "brutal", "armored", "giant", "vicious"];
+    let lower = name.trim().to_ascii_lowercase();
+    let mut words: Vec<&str> = lower.split_whitespace().collect();
+    if words.len() > 1 && AFFIXES.contains(&words[0]) {
+        words.remove(0);
+    }
+    words.join("_")
 }
 
 /// Resolve the billboard sprite for a creature by its normalized [`creature_kind`],
@@ -2468,5 +2477,23 @@ pub(crate) fn overworld_camera_control(
     } else {
         *pinch = None;
         *two_mid = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::creature_kind;
+
+    // A creature must resolve to the SAME kind (hence the same sprite) whether it
+    // arrives as the overworld's underscored id, the battle's spaced display name, or
+    // a champion with an affix prefix — otherwise the field/battle sprites diverge.
+    #[test]
+    fn creature_kind_canonicalizes_every_form() {
+        assert_eq!(creature_kind("forest_bloom_stalker"), "forest_bloom_stalker");
+        assert_eq!(creature_kind("Forest Bloom Stalker"), "forest_bloom_stalker");
+        assert_eq!(creature_kind("Swift dune_wyrm"), "dune_wyrm");
+        assert_eq!(creature_kind("Giant Forest Bloom Stalker"), "forest_bloom_stalker");
+        assert_eq!(creature_kind("dune_wyrm"), "dune_wyrm");
+        assert_eq!(creature_kind("Sporeling"), "sporeling");
     }
 }
