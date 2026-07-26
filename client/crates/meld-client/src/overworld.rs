@@ -1964,8 +1964,8 @@ pub(crate) fn build_terrain_sections(
                 MeshMaterial3d(cliff_mat),
                 Transform::default(),
             ));
-            // Dress the terrace edges with real Kenney cliff_rock models.
-            spawn_terrace_cliffs(&mut commands, &assets, sec, *idx);
+            // Dress the terrace edges with our HD-2D cliff sprite billboards.
+            spawn_terrace_cliffs(&mut commands, &mut meshes, &mut mats, &assets, sec, *idx);
         } else {
             // Flat section (e.g. the tutorial): record it as built so we don't
             // rescan it every frame, but draw nothing.
@@ -1978,24 +1978,24 @@ pub(crate) fn build_terrain_sections(
     }
 }
 
-/// Dress a section's terrace edges with real Kenney **cliff_rock** models: one per
-/// boundary cell (a raised cell with a lower neighbour), facing outward, so the
-/// terraces read as rocky cliffs rather than flat brown walls. The grass-top mesh
-/// covers the surface; these give the rocky face; the backing cliff mesh fills any
-/// gaps behind them.
+/// Dress a section's terrace edges with our HD-2D **cliff rock** sprite billboards:
+/// one per boundary cell (a raised cell with a lower neighbour), spanning the rise, so
+/// the terraces read as rocky cliffs rather than flat brown walls — no Kenney models.
+/// The grass-top mesh covers the surface; the backing cliff mesh fills any gaps.
 pub(crate) fn spawn_terrace_cliffs(
     commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
     assets: &AssetServer,
     sec: &meld_client::net::TerrainSectionView,
     idx: u32,
 ) {
-    // Blockier cliff pieces (flat rock faces) read as a clean terrace wall; the
-    // rounded cliff_rock is kept as an occasional accent.
-    let cliffs: [Handle<Scene>; 3] = [
-        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
-        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_block_rock.glb")),
-        assets.load(GltfAssetLabel::Scene(0).from_asset("models/nature/cliff_rock.glb")),
-    ];
+    // One shared sprite billboard (rocky outcrop) reused for every edge cell.
+    let cliff_mat = mats.add(hd2d::sprite_material(
+        Color::srgb(0.9, 0.9, 0.92),
+        assets.load("props/obstacle_cliff.png"),
+    ));
+    let cliff_quad = meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 10, 55.0));
     let cols = sec.cols as usize;
     let rows = sec.rows as usize;
     let cell = sec.cell as f32;
@@ -2029,19 +2029,28 @@ pub(crate) fn spawn_terrace_cliffs(
             if dir == Vec2::ZERO {
                 continue; // interior cell — the grass top mesh covers it
             }
-            let dir = dir.normalize_or_zero();
+            let _ = dir; // billboards face the camera, so no outward yaw needed
             let cx = sx + (gx as f32 + 0.5) * cell;
             let cz = zmin + (gy as f32 + 0.5) * cell;
             let by = lowest as f32 * STEP_HEIGHT;
-            let yaw = dir.x.atan2(dir.y) + CLIFF_YAW_OFFSET;
-            let scene = cliffs[(gx + gy) % cliffs.len()].clone();
-            commands.spawn((
-                TerrainMesh(idx),
-                SceneRoot(scene),
-                Transform::from_xyz(cx, by, cz)
-                    .with_scale(Vec3::splat(CLIFF_EDGE_SCALE))
-                    .with_rotation(Quat::from_rotation_y(yaw)),
-            ));
+            // Span the rise from the lower neighbour up to this cell's top, a touch
+            // taller so the rocky face overlaps the lip.
+            let face = ((l - lowest) as f32).max(1.0) * STEP_HEIGHT * 1.15 + 0.6;
+            commands
+                .spawn((
+                    TerrainMesh(idx),
+                    Transform::from_xyz(cx, by, cz),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Mesh3d(cliff_quad.clone()),
+                        MeshMaterial3d(cliff_mat.clone()),
+                        Transform::from_xyz(0.0, face * 0.5, 0.0)
+                            .with_scale(Vec3::splat(face / 2.2)),
+                        hd2d::Billboard,
+                    ));
+                });
             placed += 1;
             if placed > 400 {
                 return; // safety cap on a pathological section
@@ -2269,8 +2278,10 @@ pub(crate) fn spawn_obstacle(
             if !pool.is_empty() {
                 let tex = pool[hash_pick(id, pool.len())].clone();
                 // Per-id size factor 0.75..1.6 → a varied canopy line.
-                let vf = 0.75 + (hash_pick(id, 100) as f32 / 100.0) * 0.85;
-                let height = ((1.9 + r * 0.9) * vf).clamp(1.6, 6.0);
+                // Trees tower over the ~2.2-unit heroes; wide per-id spread so the
+                // canopy line varies. (Bumped up — they read too small/low before.)
+                let vf = 0.85 + (hash_pick(id, 100) as f32 / 100.0) * 0.9; // 0.85..1.75
+                let height = ((3.6 + r * 1.4) * vf).clamp(3.4, 9.5);
                 spawn_billboard_entity(commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28);
                 return;
             }

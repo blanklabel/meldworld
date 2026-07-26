@@ -212,6 +212,7 @@ fn main() {
                 city_camera,
                 city_input,
                 render_city,
+                pulse_magitech,
                 hd2d::animate_chars,
                 hd2d::place_billboards,
                 hd2d::billboard,
@@ -619,11 +620,8 @@ struct WorldPath {
 /// edge is dressed with a single row of `cliff_rock` models (see `spawn_terrace_cliffs`).
 const STEP_HEIGHT: f32 = 2.0;
 
-/// Uniform scale + facing tuning for the cliff models lining terrace edges (sized so
-/// a one-level block rises ~STEP_HEIGHT to meet the grass top).
-const CLIFF_EDGE_SCALE: f32 = 1.9;
-const CLIFF_YAW_OFFSET: f32 = 0.0;
-
+// (CLIFF_EDGE_SCALE/CLIFF_YAW_OFFSET removed — terrace edges are now HD-2D cliff
+// sprite billboards; see overworld::spawn_terrace_cliffs.)
 // (SLOPE_SCALE/SLOPE_YAW removed — slope connectors are now HD-2D billboards; see
 // overworld::spawn_connector.)
 

@@ -191,20 +191,97 @@ pub(crate) fn city_hud(
 /// Spawn the walkable 3D city: a plaza floor, the Kenney-kit buildings/props from
 /// [`CITY_PROPS`], and the player avatar (reusing the overworld HD-2D avatar).
 #[allow(clippy::too_many_arguments)]
+/// A flat road quad (XZ plane, centred at origin) of `len`×`width`, UV-tiled so the
+/// cobblestone texture repeats (~2.5 world units per tile) instead of stretching.
+fn road_mesh(len: f32, width: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    let (hl, hw) = (len * 0.5, width * 0.5);
+    let tile = 2.5;
+    let (u, v) = (len / tile, width / tile);
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        vec![[-hl, 0.0, -hw], [hl, 0.0, -hw], [hl, 0.0, hw], [-hl, 0.0, hw]],
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 1.0, 0.0]; 4]);
+    m.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        vec![[0.0, 0.0], [u, 0.0], [u, v], [0.0, v]],
+    );
+    // Wind so the +Y (up) face is front-facing — the reverse order would put the
+    // visible face downward and get it back-face-culled from the overhead camera.
+    m.insert_indices(Indices::U32(vec![0, 2, 1, 0, 3, 2]));
+    m
+}
+
+/// A magitech street light: its point light breathes over time (see [`pulse_magitech`]).
+#[derive(Component)]
+pub(crate) struct MagitechLight {
+    phase: f32,
+    base: f32,
+}
+
+/// Gently pulse the magitech lamps so the hub feels alive (a slow energy breathing).
+pub(crate) fn pulse_magitech(time: Res<Time>, mut q: Query<(&MagitechLight, &mut PointLight)>) {
+    let t = time.elapsed_secs();
+    for (m, mut light) in &mut q {
+        light.intensity = m.base * (0.82 + 0.18 * (t * 2.0 + m.phase).sin());
+    }
+}
+
 pub(crate) fn city_scene(
     mut commands: Commands,
     assets: Res<AssetServer>,
     wa: Option<Res<WorldAssets>>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some(wa) = wa else { return };
 
-    // The hub sits on the existing grass ground plane (a "spore-green commons"); no
-    // separate plaza floor. Buildings + props (Kenney CC0 kits; scales eyeballed to
-    // a ~1-unit grid).
+    // --- STREETS: a cobblestone plaza around the fountain + radial spokes out to
+    // each district, laid flat on the grass (y just above 0 to avoid z-fighting). ---
+    let street_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.8, 0.84),
+        base_color_texture: Some(crate::world_render::load_tiled(&assets, "ground/tile_street.png")),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    // Central plaza (a paved square around the fountain).
+    commands.spawn((
+        CityScene,
+        Mesh3d(meshes.add(road_mesh(13.0, 13.0))),
+        MeshMaterial3d(street_mat.clone()),
+        Transform::from_xyz(0.0, 0.02, 0.0),
+    ));
+    // A spoke from the plaza edge out to each district anchor.
+    for d in CITY_DISTRICTS {
+        let dir = Vec2::new(d.x, d.z);
+        let len = dir.length();
+        if len < 6.0 {
+            continue;
+        }
+        let n = dir / len;
+        let start = 4.5; // leave the plaza; stop a bit short of the building
+        let seg_len = (len - start - 2.0).max(1.0);
+        let mid = n * (start + seg_len * 0.5);
+        let angle = f32::atan2(-n.y, n.x); // align the quad's local +X with the spoke
+        commands.spawn((
+            CityScene,
+            Mesh3d(meshes.add(road_mesh(seg_len, 3.4))),
+            MeshMaterial3d(street_mat.clone()),
+            Transform::from_xyz(mid.x, 0.02, mid.y).with_rotation(Quat::from_rotation_y(angle)),
+        ));
+    }
+
+    // Buildings + district props (Kenney CC0 kits). The old fountain-ring lanterns are
+    // skipped here — replaced by the glowing magitech lamps spawned below.
     for (path, x, z, yaw, scale) in CITY_PROPS {
+        if *path == "fantasy-town/lantern" {
+            continue;
+        }
         commands.spawn((
             CityScene,
             SceneRoot(
@@ -214,6 +291,72 @@ pub(crate) fn city_scene(
                 .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
                 .with_scale(Vec3::splat(*scale)),
         ));
+    }
+
+    // --- MAGITECH LIGHTS: glowing cyan energy lamps (a bespoke sprite that blooms via
+    // an HDR emissive), each with a real point light so they illuminate day or night.
+    // Four ring the fountain (where the old lanterns were) + a pair down each spoke. ---
+    let lamp_tex = assets.load("props/decor_magitech_pylon.png");
+    let mut lamp_spots: Vec<Vec2> = vec![
+        Vec2::new(4.5, 3.5),
+        Vec2::new(-4.5, 3.5),
+        Vec2::new(4.5, -3.5),
+        Vec2::new(-4.5, -3.5),
+    ];
+    for d in CITY_DISTRICTS {
+        let dir = Vec2::new(d.x, d.z);
+        let len = dir.length();
+        // Only line the longest streets, so the plaza doesn't fill with lamps.
+        if len < 15.0 {
+            continue;
+        }
+        let n = dir / len;
+        // A lamp partway along the spoke, offset to the side so it lines the street.
+        let side = Vec2::new(-n.y, n.x) * 2.2;
+        lamp_spots.push(n * (len * 0.55) + side);
+    }
+    for (i, s) in lamp_spots.iter().enumerate() {
+        let h = 2.4;
+        let lmat = mats.add(StandardMaterial {
+            base_color: Color::srgb(0.7, 0.72, 0.78),
+            base_color_texture: Some(lamp_tex.clone()),
+            // Emissive is TEXTURED by the same sprite, so only its bright cyan crystal
+            // core glows/blooms — the dark metal body stays dark and keeps its detail
+            // (a flat emissive washed the whole pylon into a featureless cyan blob).
+            emissive_texture: Some(lamp_tex.clone()),
+            emissive: LinearRgba::rgb(0.8, 1.2, 1.5),
+            perceptual_roughness: 0.9,
+            double_sided: true,
+            cull_mode: None,
+            alpha_mode: AlphaMode::Mask(0.5),
+            ..default()
+        });
+        commands
+            .spawn((
+                CityScene,
+                Transform::from_xyz(s.x, 0.0, s.y),
+                Visibility::default(),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(lmat),
+                    Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    MagitechLight { phase: i as f32 * 1.7, base: 32_000.0 },
+                    PointLight {
+                        color: Color::srgb(0.35, 0.85, 1.15),
+                        intensity: 32_000.0,
+                        range: 15.0,
+                        radius: 0.5,
+                        shadows_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, h * 0.78, 0.0),
+                ));
+            });
     }
 
     // The walkable avatar: the lead hero's sprite, ground-anchored + walk-animated
