@@ -155,6 +155,7 @@ fn main() {
                 pump_net,
                 demo_driver,
                 hd2d_remote,
+                hd2d::no_billboard_shadows,
                 drift_clouds,
                 tile_ground_detail,
                 follow_world_ground,

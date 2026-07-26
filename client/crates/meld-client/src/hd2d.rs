@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 use bevy::core_pipeline::bloom::Bloom;
 use bevy::core_pipeline::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::{DistanceFog, FogFalloff};
+use bevy::pbr::{DistanceFog, FogFalloff, NotShadowCaster};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use serde::{Deserialize, Serialize};
@@ -341,6 +341,20 @@ pub fn billboard(
     let cam_world = cam.translation();
     for (mut t, gt) in &mut q {
         t.rotation = billboard_yaw(gt.translation(), cam_world);
+    }
+}
+
+/// Exclude sprite billboards from casting real (sun) shadows. A flat billboard yaws
+/// to face the camera every frame, so its cast shadow swings around the ground as it
+/// re-orients (and as the sun moves) — reading as a "shadow sweeping behind the
+/// character." Billboards carry their own soft contact-shadow disc for grounding, so
+/// their real cast shadow is both redundant and glitchy. Tags each billboard once.
+pub fn no_billboard_shadows(
+    mut commands: Commands,
+    q: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
+) {
+    for e in &q {
+        commands.entity(e).insert(NotShadowCaster);
     }
 }
 
