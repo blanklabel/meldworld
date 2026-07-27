@@ -72,6 +72,15 @@ impl MaterialExtension for GroundBiome {
 /// The blended-biome ground material type (StandardMaterial lighting + our extension).
 pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 
+/// The ten boss/elite encounters (gothic / magitech-golem / nightmare), each with a
+/// PixelLab sprite set under `assets/bosses/<key>/`. Tiers: elite (gloamhound,
+/// rustfang), miniboss (choirmother, pyrewarden), dungeon (sepulcher, hollowbishop),
+/// region (ironmaw, weepingcolossus), biome (miredrowned, ashenleviathan).
+pub(crate) const BOSS_KEYS: [&str; 10] = [
+    "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
+    "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
+];
+
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
 /// overworld sync can spawn 3D entities without rebuilding assets each frame.
 #[derive(Resource)]
@@ -81,6 +90,11 @@ pub(crate) struct WorldAssets {
     /// "resonant", "shifter", "iron_hull"). Look up via [`Self::class_frames`], which
     /// falls back to the Hunter for any unknown key.
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
+    /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
+    /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
+    /// (see [`BOSS_KEYS`]). Look up via [`Self::boss_frames`]. Used by scripted
+    /// encounters (gameplay wiring lands separately) + the `MELD_BOSS` preview.
+    pub(crate) boss_chars: HashMap<String, CharacterFrames>,
     /// Bespoke HD-2D pixel-art billboards (PixelLab) for world props, keyed by full
     /// prop key: `obstacle_<kind>`, `resource_<kind>`, `connector_<kind>`,
     /// `item_<name>`, `marker_<name>`. Preferred over the 3D `prop_scenes`/primitives
@@ -135,6 +149,11 @@ impl WorldAssets {
             .or_else(|| self.water_mats.get("pond"))
             .expect("pond water material always loaded")
             .clone()
+    }
+
+    /// The sprite set for a boss id (see [`BOSS_KEYS`]), or `None` if unknown.
+    pub(crate) fn boss_frames(&self, key: &str) -> Option<&CharacterFrames> {
+        self.boss_chars.get(key)
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -445,6 +464,35 @@ pub(crate) fn setup(
         })
         .collect();
 
+    // Boss/elite encounter clip sets (PixelLab, `bosses/<key>/`). Frame counts are
+    // per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
+    // v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
+    // `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
+    fn boss_clips(key: &str) -> &'static [(&'static str, usize)] {
+        match key {
+            "gloamhound" => &[("walk", 8), ("attack", 8), ("howl", 8), ("pounce", 8)],
+            "rustfang" => &[("walk", 8), ("attack", 8), ("slam", 8), ("overcharge", 8)],
+            "choirmother" => &[("walk", 6), ("attack", 8), ("wail", 8), ("grasp", 8)],
+            "pyrewarden" => &[("walk", 6), ("attack", 8), ("furnace_slam", 8), ("ember_burst", 8)],
+            "sepulcher" => &[("walk", 8), ("attack", 8), ("rend", 8), ("phantom", 8)],
+            "hollowbishop" => &[("walk", 6), ("attack", 8), ("soulfire", 8), ("bone_nova", 8)],
+            "ironmaw" => &[("walk", 8), ("attack", 8), ("devour", 8), ("reactor_roar", 8)],
+            "weepingcolossus" => &[("walk", 6), ("attack", 8), ("chain_sweep", 8), ("sorrow_quake", 8)],
+            "miredrowned" => &[("walk", 6), ("attack", 8)],
+            "ashenleviathan" => &[("walk", 8), ("attack", 8), ("cinder_charge", 8)],
+            _ => &[("walk", 8), ("attack", 8)],
+        }
+    }
+    let boss_chars: HashMap<String, CharacterFrames> = BOSS_KEYS
+        .iter()
+        .map(|&key| {
+            (
+                key.to_string(),
+                hd2d::load_character_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
+            )
+        })
+        .collect();
+
     // Bespoke HD-2D prop billboards (PixelLab), one PNG per key under `assets/props/`.
     let prop_sprites: HashMap<String, Handle<Image>> = [
         "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
@@ -466,6 +514,7 @@ pub(crate) fn setup(
 
     commands.insert_resource(WorldAssets {
         class_chars,
+        boss_chars,
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),

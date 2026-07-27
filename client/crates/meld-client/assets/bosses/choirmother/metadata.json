@@ -1,0 +1,349 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "faac6774-0ef7-45c2-b2cc-053239615428",
+        "name": "Choirmother",
+        "prompt": "towering gothic horror nun, faceless veiled head that splits into many screaming mouths, six thin pale grasping arms, tattered black funeral-lace robe trailing to the floor, dripping wax, low top-down pixel art, nightmarish",
+        "size": {
+          "width": 244,
+          "height": 244
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:42.088769+00:00"
+      },
+      "folder": "Choirmother",
+      "frames": {
+        "rotations": {
+          "south": "Choirmother/rotations/south.png",
+          "south-east": "Choirmother/rotations/south-east.png",
+          "east": "Choirmother/rotations/east.png",
+          "north-east": "Choirmother/rotations/north-east.png",
+          "north": "Choirmother/rotations/north.png",
+          "north-west": "Choirmother/rotations/north-west.png",
+          "west": "Choirmother/rotations/west.png",
+          "south-west": "Choirmother/rotations/south-west.png"
+        },
+        "animations": {
+          "grasp": {
+            "south-west": [
+              "Choirmother/animations/grasp/south-west/frame_000.png",
+              "Choirmother/animations/grasp/south-west/frame_001.png",
+              "Choirmother/animations/grasp/south-west/frame_002.png",
+              "Choirmother/animations/grasp/south-west/frame_003.png",
+              "Choirmother/animations/grasp/south-west/frame_004.png",
+              "Choirmother/animations/grasp/south-west/frame_005.png",
+              "Choirmother/animations/grasp/south-west/frame_006.png",
+              "Choirmother/animations/grasp/south-west/frame_007.png"
+            ],
+            "south": [
+              "Choirmother/animations/grasp/south/frame_000.png",
+              "Choirmother/animations/grasp/south/frame_001.png",
+              "Choirmother/animations/grasp/south/frame_002.png",
+              "Choirmother/animations/grasp/south/frame_003.png",
+              "Choirmother/animations/grasp/south/frame_004.png",
+              "Choirmother/animations/grasp/south/frame_005.png",
+              "Choirmother/animations/grasp/south/frame_006.png",
+              "Choirmother/animations/grasp/south/frame_007.png"
+            ],
+            "north-west": [
+              "Choirmother/animations/grasp/north-west/frame_000.png",
+              "Choirmother/animations/grasp/north-west/frame_001.png",
+              "Choirmother/animations/grasp/north-west/frame_002.png",
+              "Choirmother/animations/grasp/north-west/frame_003.png",
+              "Choirmother/animations/grasp/north-west/frame_004.png",
+              "Choirmother/animations/grasp/north-west/frame_005.png",
+              "Choirmother/animations/grasp/north-west/frame_006.png",
+              "Choirmother/animations/grasp/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Choirmother/animations/grasp/south-east/frame_000.png",
+              "Choirmother/animations/grasp/south-east/frame_001.png",
+              "Choirmother/animations/grasp/south-east/frame_002.png",
+              "Choirmother/animations/grasp/south-east/frame_003.png",
+              "Choirmother/animations/grasp/south-east/frame_004.png",
+              "Choirmother/animations/grasp/south-east/frame_005.png",
+              "Choirmother/animations/grasp/south-east/frame_006.png",
+              "Choirmother/animations/grasp/south-east/frame_007.png"
+            ],
+            "west": [
+              "Choirmother/animations/grasp/west/frame_000.png",
+              "Choirmother/animations/grasp/west/frame_001.png",
+              "Choirmother/animations/grasp/west/frame_002.png",
+              "Choirmother/animations/grasp/west/frame_003.png",
+              "Choirmother/animations/grasp/west/frame_004.png",
+              "Choirmother/animations/grasp/west/frame_005.png",
+              "Choirmother/animations/grasp/west/frame_006.png",
+              "Choirmother/animations/grasp/west/frame_007.png"
+            ],
+            "east": [
+              "Choirmother/animations/grasp/east/frame_000.png",
+              "Choirmother/animations/grasp/east/frame_001.png",
+              "Choirmother/animations/grasp/east/frame_002.png",
+              "Choirmother/animations/grasp/east/frame_003.png",
+              "Choirmother/animations/grasp/east/frame_004.png",
+              "Choirmother/animations/grasp/east/frame_005.png",
+              "Choirmother/animations/grasp/east/frame_006.png",
+              "Choirmother/animations/grasp/east/frame_007.png"
+            ],
+            "north": [
+              "Choirmother/animations/grasp/north/frame_000.png",
+              "Choirmother/animations/grasp/north/frame_001.png",
+              "Choirmother/animations/grasp/north/frame_002.png",
+              "Choirmother/animations/grasp/north/frame_003.png",
+              "Choirmother/animations/grasp/north/frame_004.png",
+              "Choirmother/animations/grasp/north/frame_005.png",
+              "Choirmother/animations/grasp/north/frame_006.png",
+              "Choirmother/animations/grasp/north/frame_007.png"
+            ],
+            "north-east": [
+              "Choirmother/animations/grasp/north-east/frame_000.png",
+              "Choirmother/animations/grasp/north-east/frame_001.png",
+              "Choirmother/animations/grasp/north-east/frame_002.png",
+              "Choirmother/animations/grasp/north-east/frame_003.png",
+              "Choirmother/animations/grasp/north-east/frame_004.png",
+              "Choirmother/animations/grasp/north-east/frame_005.png",
+              "Choirmother/animations/grasp/north-east/frame_006.png",
+              "Choirmother/animations/grasp/north-east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "south": [
+              "Choirmother/animations/walk/south/frame_000.png",
+              "Choirmother/animations/walk/south/frame_001.png",
+              "Choirmother/animations/walk/south/frame_002.png",
+              "Choirmother/animations/walk/south/frame_003.png",
+              "Choirmother/animations/walk/south/frame_004.png",
+              "Choirmother/animations/walk/south/frame_005.png"
+            ],
+            "north-west": [
+              "Choirmother/animations/walk/north-west/frame_000.png",
+              "Choirmother/animations/walk/north-west/frame_001.png",
+              "Choirmother/animations/walk/north-west/frame_002.png",
+              "Choirmother/animations/walk/north-west/frame_003.png",
+              "Choirmother/animations/walk/north-west/frame_004.png",
+              "Choirmother/animations/walk/north-west/frame_005.png"
+            ],
+            "east": [
+              "Choirmother/animations/walk/east/frame_000.png",
+              "Choirmother/animations/walk/east/frame_001.png",
+              "Choirmother/animations/walk/east/frame_002.png",
+              "Choirmother/animations/walk/east/frame_003.png",
+              "Choirmother/animations/walk/east/frame_004.png",
+              "Choirmother/animations/walk/east/frame_005.png"
+            ],
+            "south-east": [
+              "Choirmother/animations/walk/south-east/frame_000.png",
+              "Choirmother/animations/walk/south-east/frame_001.png",
+              "Choirmother/animations/walk/south-east/frame_002.png",
+              "Choirmother/animations/walk/south-east/frame_003.png",
+              "Choirmother/animations/walk/south-east/frame_004.png",
+              "Choirmother/animations/walk/south-east/frame_005.png"
+            ],
+            "north-east": [
+              "Choirmother/animations/walk/north-east/frame_000.png",
+              "Choirmother/animations/walk/north-east/frame_001.png",
+              "Choirmother/animations/walk/north-east/frame_002.png",
+              "Choirmother/animations/walk/north-east/frame_003.png",
+              "Choirmother/animations/walk/north-east/frame_004.png",
+              "Choirmother/animations/walk/north-east/frame_005.png"
+            ],
+            "north": [
+              "Choirmother/animations/walk/north/frame_000.png",
+              "Choirmother/animations/walk/north/frame_001.png",
+              "Choirmother/animations/walk/north/frame_002.png",
+              "Choirmother/animations/walk/north/frame_003.png",
+              "Choirmother/animations/walk/north/frame_004.png",
+              "Choirmother/animations/walk/north/frame_005.png"
+            ],
+            "south-west": [
+              "Choirmother/animations/walk/south-west/frame_000.png",
+              "Choirmother/animations/walk/south-west/frame_001.png",
+              "Choirmother/animations/walk/south-west/frame_002.png",
+              "Choirmother/animations/walk/south-west/frame_003.png",
+              "Choirmother/animations/walk/south-west/frame_004.png",
+              "Choirmother/animations/walk/south-west/frame_005.png"
+            ],
+            "west": [
+              "Choirmother/animations/walk/west/frame_000.png",
+              "Choirmother/animations/walk/west/frame_001.png",
+              "Choirmother/animations/walk/west/frame_002.png",
+              "Choirmother/animations/walk/west/frame_003.png",
+              "Choirmother/animations/walk/west/frame_004.png",
+              "Choirmother/animations/walk/west/frame_005.png"
+            ]
+          },
+          "wail": {
+            "north-east": [
+              "Choirmother/animations/wail/north-east/frame_000.png",
+              "Choirmother/animations/wail/north-east/frame_001.png",
+              "Choirmother/animations/wail/north-east/frame_002.png",
+              "Choirmother/animations/wail/north-east/frame_003.png",
+              "Choirmother/animations/wail/north-east/frame_004.png",
+              "Choirmother/animations/wail/north-east/frame_005.png",
+              "Choirmother/animations/wail/north-east/frame_006.png",
+              "Choirmother/animations/wail/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Choirmother/animations/wail/south-east/frame_000.png",
+              "Choirmother/animations/wail/south-east/frame_001.png",
+              "Choirmother/animations/wail/south-east/frame_002.png",
+              "Choirmother/animations/wail/south-east/frame_003.png",
+              "Choirmother/animations/wail/south-east/frame_004.png",
+              "Choirmother/animations/wail/south-east/frame_005.png",
+              "Choirmother/animations/wail/south-east/frame_006.png",
+              "Choirmother/animations/wail/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Choirmother/animations/wail/north-west/frame_000.png",
+              "Choirmother/animations/wail/north-west/frame_001.png",
+              "Choirmother/animations/wail/north-west/frame_002.png",
+              "Choirmother/animations/wail/north-west/frame_003.png",
+              "Choirmother/animations/wail/north-west/frame_004.png",
+              "Choirmother/animations/wail/north-west/frame_005.png",
+              "Choirmother/animations/wail/north-west/frame_006.png",
+              "Choirmother/animations/wail/north-west/frame_007.png"
+            ],
+            "south": [
+              "Choirmother/animations/wail/south/frame_000.png",
+              "Choirmother/animations/wail/south/frame_001.png",
+              "Choirmother/animations/wail/south/frame_002.png",
+              "Choirmother/animations/wail/south/frame_003.png",
+              "Choirmother/animations/wail/south/frame_004.png",
+              "Choirmother/animations/wail/south/frame_005.png",
+              "Choirmother/animations/wail/south/frame_006.png",
+              "Choirmother/animations/wail/south/frame_007.png"
+            ],
+            "south-west": [
+              "Choirmother/animations/wail/south-west/frame_000.png",
+              "Choirmother/animations/wail/south-west/frame_001.png",
+              "Choirmother/animations/wail/south-west/frame_002.png",
+              "Choirmother/animations/wail/south-west/frame_003.png",
+              "Choirmother/animations/wail/south-west/frame_004.png",
+              "Choirmother/animations/wail/south-west/frame_005.png",
+              "Choirmother/animations/wail/south-west/frame_006.png",
+              "Choirmother/animations/wail/south-west/frame_007.png"
+            ],
+            "north": [
+              "Choirmother/animations/wail/north/frame_000.png",
+              "Choirmother/animations/wail/north/frame_001.png",
+              "Choirmother/animations/wail/north/frame_002.png",
+              "Choirmother/animations/wail/north/frame_003.png",
+              "Choirmother/animations/wail/north/frame_004.png",
+              "Choirmother/animations/wail/north/frame_005.png",
+              "Choirmother/animations/wail/north/frame_006.png",
+              "Choirmother/animations/wail/north/frame_007.png"
+            ],
+            "east": [
+              "Choirmother/animations/wail/east/frame_000.png",
+              "Choirmother/animations/wail/east/frame_001.png",
+              "Choirmother/animations/wail/east/frame_002.png",
+              "Choirmother/animations/wail/east/frame_003.png",
+              "Choirmother/animations/wail/east/frame_004.png",
+              "Choirmother/animations/wail/east/frame_005.png",
+              "Choirmother/animations/wail/east/frame_006.png",
+              "Choirmother/animations/wail/east/frame_007.png"
+            ],
+            "west": [
+              "Choirmother/animations/wail/west/frame_000.png",
+              "Choirmother/animations/wail/west/frame_001.png",
+              "Choirmother/animations/wail/west/frame_002.png",
+              "Choirmother/animations/wail/west/frame_003.png",
+              "Choirmother/animations/wail/west/frame_004.png",
+              "Choirmother/animations/wail/west/frame_005.png",
+              "Choirmother/animations/wail/west/frame_006.png",
+              "Choirmother/animations/wail/west/frame_007.png"
+            ]
+          },
+          "attack": {
+            "east": [
+              "Choirmother/animations/attack/east/frame_000.png",
+              "Choirmother/animations/attack/east/frame_001.png",
+              "Choirmother/animations/attack/east/frame_002.png",
+              "Choirmother/animations/attack/east/frame_003.png",
+              "Choirmother/animations/attack/east/frame_004.png",
+              "Choirmother/animations/attack/east/frame_005.png",
+              "Choirmother/animations/attack/east/frame_006.png",
+              "Choirmother/animations/attack/east/frame_007.png"
+            ],
+            "south": [
+              "Choirmother/animations/attack/south/frame_000.png",
+              "Choirmother/animations/attack/south/frame_001.png",
+              "Choirmother/animations/attack/south/frame_002.png",
+              "Choirmother/animations/attack/south/frame_003.png",
+              "Choirmother/animations/attack/south/frame_004.png",
+              "Choirmother/animations/attack/south/frame_005.png",
+              "Choirmother/animations/attack/south/frame_006.png",
+              "Choirmother/animations/attack/south/frame_007.png"
+            ],
+            "south-east": [
+              "Choirmother/animations/attack/south-east/frame_000.png",
+              "Choirmother/animations/attack/south-east/frame_001.png",
+              "Choirmother/animations/attack/south-east/frame_002.png",
+              "Choirmother/animations/attack/south-east/frame_003.png",
+              "Choirmother/animations/attack/south-east/frame_004.png",
+              "Choirmother/animations/attack/south-east/frame_005.png",
+              "Choirmother/animations/attack/south-east/frame_006.png",
+              "Choirmother/animations/attack/south-east/frame_007.png"
+            ],
+            "north": [
+              "Choirmother/animations/attack/north/frame_000.png",
+              "Choirmother/animations/attack/north/frame_001.png",
+              "Choirmother/animations/attack/north/frame_002.png",
+              "Choirmother/animations/attack/north/frame_003.png",
+              "Choirmother/animations/attack/north/frame_004.png",
+              "Choirmother/animations/attack/north/frame_005.png",
+              "Choirmother/animations/attack/north/frame_006.png",
+              "Choirmother/animations/attack/north/frame_007.png"
+            ],
+            "north-west": [
+              "Choirmother/animations/attack/north-west/frame_000.png",
+              "Choirmother/animations/attack/north-west/frame_001.png",
+              "Choirmother/animations/attack/north-west/frame_002.png",
+              "Choirmother/animations/attack/north-west/frame_003.png",
+              "Choirmother/animations/attack/north-west/frame_004.png",
+              "Choirmother/animations/attack/north-west/frame_005.png",
+              "Choirmother/animations/attack/north-west/frame_006.png",
+              "Choirmother/animations/attack/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Choirmother/animations/attack/north-east/frame_000.png",
+              "Choirmother/animations/attack/north-east/frame_001.png",
+              "Choirmother/animations/attack/north-east/frame_002.png",
+              "Choirmother/animations/attack/north-east/frame_003.png",
+              "Choirmother/animations/attack/north-east/frame_004.png",
+              "Choirmother/animations/attack/north-east/frame_005.png",
+              "Choirmother/animations/attack/north-east/frame_006.png",
+              "Choirmother/animations/attack/north-east/frame_007.png"
+            ],
+            "west": [
+              "Choirmother/animations/attack/west/frame_000.png",
+              "Choirmother/animations/attack/west/frame_001.png",
+              "Choirmother/animations/attack/west/frame_002.png",
+              "Choirmother/animations/attack/west/frame_003.png",
+              "Choirmother/animations/attack/west/frame_004.png",
+              "Choirmother/animations/attack/west/frame_005.png",
+              "Choirmother/animations/attack/west/frame_006.png",
+              "Choirmother/animations/attack/west/frame_007.png"
+            ],
+            "south-west": [
+              "Choirmother/animations/attack/south-west/frame_000.png",
+              "Choirmother/animations/attack/south-west/frame_001.png",
+              "Choirmother/animations/attack/south-west/frame_002.png",
+              "Choirmother/animations/attack/south-west/frame_003.png",
+              "Choirmother/animations/attack/south-west/frame_004.png",
+              "Choirmother/animations/attack/south-west/frame_005.png",
+              "Choirmother/animations/attack/south-west/frame_006.png",
+              "Choirmother/animations/attack/south-west/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:13.035661"
+}

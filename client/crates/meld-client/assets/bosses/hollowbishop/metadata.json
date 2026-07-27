@@ -1,0 +1,349 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "e3d4950e-d6f8-4f9a-8d55-e0bed15f742c",
+        "name": "Hollowbishop",
+        "prompt": "gaunt floating clergy-lich bishop, rotted mitre and torn ecclesiastical robes, a hollow ribcage cradling a green soul-fire lantern, skeletal hands gripping a smoking chained censer, low top-down pixel art, gothic horror",
+        "size": {
+          "width": 240,
+          "height": 240
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:44.149277+00:00"
+      },
+      "folder": "Hollowbishop",
+      "frames": {
+        "rotations": {
+          "south": "Hollowbishop/rotations/south.png",
+          "south-east": "Hollowbishop/rotations/south-east.png",
+          "east": "Hollowbishop/rotations/east.png",
+          "north-east": "Hollowbishop/rotations/north-east.png",
+          "north": "Hollowbishop/rotations/north.png",
+          "north-west": "Hollowbishop/rotations/north-west.png",
+          "west": "Hollowbishop/rotations/west.png",
+          "south-west": "Hollowbishop/rotations/south-west.png"
+        },
+        "animations": {
+          "attack": {
+            "south-west": [
+              "Hollowbishop/animations/attack/south-west/frame_000.png",
+              "Hollowbishop/animations/attack/south-west/frame_001.png",
+              "Hollowbishop/animations/attack/south-west/frame_002.png",
+              "Hollowbishop/animations/attack/south-west/frame_003.png",
+              "Hollowbishop/animations/attack/south-west/frame_004.png",
+              "Hollowbishop/animations/attack/south-west/frame_005.png",
+              "Hollowbishop/animations/attack/south-west/frame_006.png",
+              "Hollowbishop/animations/attack/south-west/frame_007.png"
+            ],
+            "north-east": [
+              "Hollowbishop/animations/attack/north-east/frame_000.png",
+              "Hollowbishop/animations/attack/north-east/frame_001.png",
+              "Hollowbishop/animations/attack/north-east/frame_002.png",
+              "Hollowbishop/animations/attack/north-east/frame_003.png",
+              "Hollowbishop/animations/attack/north-east/frame_004.png",
+              "Hollowbishop/animations/attack/north-east/frame_005.png",
+              "Hollowbishop/animations/attack/north-east/frame_006.png",
+              "Hollowbishop/animations/attack/north-east/frame_007.png"
+            ],
+            "south": [
+              "Hollowbishop/animations/attack/south/frame_000.png",
+              "Hollowbishop/animations/attack/south/frame_001.png",
+              "Hollowbishop/animations/attack/south/frame_002.png",
+              "Hollowbishop/animations/attack/south/frame_003.png",
+              "Hollowbishop/animations/attack/south/frame_004.png",
+              "Hollowbishop/animations/attack/south/frame_005.png",
+              "Hollowbishop/animations/attack/south/frame_006.png",
+              "Hollowbishop/animations/attack/south/frame_007.png"
+            ],
+            "east": [
+              "Hollowbishop/animations/attack/east/frame_000.png",
+              "Hollowbishop/animations/attack/east/frame_001.png",
+              "Hollowbishop/animations/attack/east/frame_002.png",
+              "Hollowbishop/animations/attack/east/frame_003.png",
+              "Hollowbishop/animations/attack/east/frame_004.png",
+              "Hollowbishop/animations/attack/east/frame_005.png",
+              "Hollowbishop/animations/attack/east/frame_006.png",
+              "Hollowbishop/animations/attack/east/frame_007.png"
+            ],
+            "west": [
+              "Hollowbishop/animations/attack/west/frame_000.png",
+              "Hollowbishop/animations/attack/west/frame_001.png",
+              "Hollowbishop/animations/attack/west/frame_002.png",
+              "Hollowbishop/animations/attack/west/frame_003.png",
+              "Hollowbishop/animations/attack/west/frame_004.png",
+              "Hollowbishop/animations/attack/west/frame_005.png",
+              "Hollowbishop/animations/attack/west/frame_006.png",
+              "Hollowbishop/animations/attack/west/frame_007.png"
+            ],
+            "south-east": [
+              "Hollowbishop/animations/attack/south-east/frame_000.png",
+              "Hollowbishop/animations/attack/south-east/frame_001.png",
+              "Hollowbishop/animations/attack/south-east/frame_002.png",
+              "Hollowbishop/animations/attack/south-east/frame_003.png",
+              "Hollowbishop/animations/attack/south-east/frame_004.png",
+              "Hollowbishop/animations/attack/south-east/frame_005.png",
+              "Hollowbishop/animations/attack/south-east/frame_006.png",
+              "Hollowbishop/animations/attack/south-east/frame_007.png"
+            ],
+            "north": [
+              "Hollowbishop/animations/attack/north/frame_000.png",
+              "Hollowbishop/animations/attack/north/frame_001.png",
+              "Hollowbishop/animations/attack/north/frame_002.png",
+              "Hollowbishop/animations/attack/north/frame_003.png",
+              "Hollowbishop/animations/attack/north/frame_004.png",
+              "Hollowbishop/animations/attack/north/frame_005.png",
+              "Hollowbishop/animations/attack/north/frame_006.png",
+              "Hollowbishop/animations/attack/north/frame_007.png"
+            ],
+            "north-west": [
+              "Hollowbishop/animations/attack/north-west/frame_000.png",
+              "Hollowbishop/animations/attack/north-west/frame_001.png",
+              "Hollowbishop/animations/attack/north-west/frame_002.png",
+              "Hollowbishop/animations/attack/north-west/frame_003.png",
+              "Hollowbishop/animations/attack/north-west/frame_004.png",
+              "Hollowbishop/animations/attack/north-west/frame_005.png",
+              "Hollowbishop/animations/attack/north-west/frame_006.png",
+              "Hollowbishop/animations/attack/north-west/frame_007.png"
+            ]
+          },
+          "soulfire": {
+            "south-west": [
+              "Hollowbishop/animations/soulfire/south-west/frame_000.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_001.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_002.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_003.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_004.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_005.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_006.png",
+              "Hollowbishop/animations/soulfire/south-west/frame_007.png"
+            ],
+            "west": [
+              "Hollowbishop/animations/soulfire/west/frame_000.png",
+              "Hollowbishop/animations/soulfire/west/frame_001.png",
+              "Hollowbishop/animations/soulfire/west/frame_002.png",
+              "Hollowbishop/animations/soulfire/west/frame_003.png",
+              "Hollowbishop/animations/soulfire/west/frame_004.png",
+              "Hollowbishop/animations/soulfire/west/frame_005.png",
+              "Hollowbishop/animations/soulfire/west/frame_006.png",
+              "Hollowbishop/animations/soulfire/west/frame_007.png"
+            ],
+            "south": [
+              "Hollowbishop/animations/soulfire/south/frame_000.png",
+              "Hollowbishop/animations/soulfire/south/frame_001.png",
+              "Hollowbishop/animations/soulfire/south/frame_002.png",
+              "Hollowbishop/animations/soulfire/south/frame_003.png",
+              "Hollowbishop/animations/soulfire/south/frame_004.png",
+              "Hollowbishop/animations/soulfire/south/frame_005.png",
+              "Hollowbishop/animations/soulfire/south/frame_006.png",
+              "Hollowbishop/animations/soulfire/south/frame_007.png"
+            ],
+            "north": [
+              "Hollowbishop/animations/soulfire/north/frame_000.png",
+              "Hollowbishop/animations/soulfire/north/frame_001.png",
+              "Hollowbishop/animations/soulfire/north/frame_002.png",
+              "Hollowbishop/animations/soulfire/north/frame_003.png",
+              "Hollowbishop/animations/soulfire/north/frame_004.png",
+              "Hollowbishop/animations/soulfire/north/frame_005.png",
+              "Hollowbishop/animations/soulfire/north/frame_006.png",
+              "Hollowbishop/animations/soulfire/north/frame_007.png"
+            ],
+            "east": [
+              "Hollowbishop/animations/soulfire/east/frame_000.png",
+              "Hollowbishop/animations/soulfire/east/frame_001.png",
+              "Hollowbishop/animations/soulfire/east/frame_002.png",
+              "Hollowbishop/animations/soulfire/east/frame_003.png",
+              "Hollowbishop/animations/soulfire/east/frame_004.png",
+              "Hollowbishop/animations/soulfire/east/frame_005.png",
+              "Hollowbishop/animations/soulfire/east/frame_006.png",
+              "Hollowbishop/animations/soulfire/east/frame_007.png"
+            ],
+            "south-east": [
+              "Hollowbishop/animations/soulfire/south-east/frame_000.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_001.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_002.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_003.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_004.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_005.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_006.png",
+              "Hollowbishop/animations/soulfire/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Hollowbishop/animations/soulfire/north-west/frame_000.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_001.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_002.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_003.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_004.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_005.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_006.png",
+              "Hollowbishop/animations/soulfire/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Hollowbishop/animations/soulfire/north-east/frame_000.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_001.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_002.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_003.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_004.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_005.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_006.png",
+              "Hollowbishop/animations/soulfire/north-east/frame_007.png"
+            ]
+          },
+          "bone_nova": {
+            "east": [
+              "Hollowbishop/animations/bone_nova/east/frame_000.png",
+              "Hollowbishop/animations/bone_nova/east/frame_001.png",
+              "Hollowbishop/animations/bone_nova/east/frame_002.png",
+              "Hollowbishop/animations/bone_nova/east/frame_003.png",
+              "Hollowbishop/animations/bone_nova/east/frame_004.png",
+              "Hollowbishop/animations/bone_nova/east/frame_005.png",
+              "Hollowbishop/animations/bone_nova/east/frame_006.png",
+              "Hollowbishop/animations/bone_nova/east/frame_007.png"
+            ],
+            "west": [
+              "Hollowbishop/animations/bone_nova/west/frame_000.png",
+              "Hollowbishop/animations/bone_nova/west/frame_001.png",
+              "Hollowbishop/animations/bone_nova/west/frame_002.png",
+              "Hollowbishop/animations/bone_nova/west/frame_003.png",
+              "Hollowbishop/animations/bone_nova/west/frame_004.png",
+              "Hollowbishop/animations/bone_nova/west/frame_005.png",
+              "Hollowbishop/animations/bone_nova/west/frame_006.png",
+              "Hollowbishop/animations/bone_nova/west/frame_007.png"
+            ],
+            "north-east": [
+              "Hollowbishop/animations/bone_nova/north-east/frame_000.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_001.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_002.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_003.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_004.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_005.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_006.png",
+              "Hollowbishop/animations/bone_nova/north-east/frame_007.png"
+            ],
+            "south": [
+              "Hollowbishop/animations/bone_nova/south/frame_000.png",
+              "Hollowbishop/animations/bone_nova/south/frame_001.png",
+              "Hollowbishop/animations/bone_nova/south/frame_002.png",
+              "Hollowbishop/animations/bone_nova/south/frame_003.png",
+              "Hollowbishop/animations/bone_nova/south/frame_004.png",
+              "Hollowbishop/animations/bone_nova/south/frame_005.png",
+              "Hollowbishop/animations/bone_nova/south/frame_006.png",
+              "Hollowbishop/animations/bone_nova/south/frame_007.png"
+            ],
+            "south-west": [
+              "Hollowbishop/animations/bone_nova/south-west/frame_000.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_001.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_002.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_003.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_004.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_005.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_006.png",
+              "Hollowbishop/animations/bone_nova/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Hollowbishop/animations/bone_nova/north-west/frame_000.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_001.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_002.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_003.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_004.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_005.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_006.png",
+              "Hollowbishop/animations/bone_nova/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Hollowbishop/animations/bone_nova/south-east/frame_000.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_001.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_002.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_003.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_004.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_005.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_006.png",
+              "Hollowbishop/animations/bone_nova/south-east/frame_007.png"
+            ],
+            "north": [
+              "Hollowbishop/animations/bone_nova/north/frame_000.png",
+              "Hollowbishop/animations/bone_nova/north/frame_001.png",
+              "Hollowbishop/animations/bone_nova/north/frame_002.png",
+              "Hollowbishop/animations/bone_nova/north/frame_003.png",
+              "Hollowbishop/animations/bone_nova/north/frame_004.png",
+              "Hollowbishop/animations/bone_nova/north/frame_005.png",
+              "Hollowbishop/animations/bone_nova/north/frame_006.png",
+              "Hollowbishop/animations/bone_nova/north/frame_007.png"
+            ]
+          },
+          "walk": {
+            "north": [
+              "Hollowbishop/animations/walk/north/frame_000.png",
+              "Hollowbishop/animations/walk/north/frame_001.png",
+              "Hollowbishop/animations/walk/north/frame_002.png",
+              "Hollowbishop/animations/walk/north/frame_003.png",
+              "Hollowbishop/animations/walk/north/frame_004.png",
+              "Hollowbishop/animations/walk/north/frame_005.png"
+            ],
+            "south": [
+              "Hollowbishop/animations/walk/south/frame_000.png",
+              "Hollowbishop/animations/walk/south/frame_001.png",
+              "Hollowbishop/animations/walk/south/frame_002.png",
+              "Hollowbishop/animations/walk/south/frame_003.png",
+              "Hollowbishop/animations/walk/south/frame_004.png",
+              "Hollowbishop/animations/walk/south/frame_005.png"
+            ],
+            "north-east": [
+              "Hollowbishop/animations/walk/north-east/frame_000.png",
+              "Hollowbishop/animations/walk/north-east/frame_001.png",
+              "Hollowbishop/animations/walk/north-east/frame_002.png",
+              "Hollowbishop/animations/walk/north-east/frame_003.png",
+              "Hollowbishop/animations/walk/north-east/frame_004.png",
+              "Hollowbishop/animations/walk/north-east/frame_005.png"
+            ],
+            "south-west": [
+              "Hollowbishop/animations/walk/south-west/frame_000.png",
+              "Hollowbishop/animations/walk/south-west/frame_001.png",
+              "Hollowbishop/animations/walk/south-west/frame_002.png",
+              "Hollowbishop/animations/walk/south-west/frame_003.png",
+              "Hollowbishop/animations/walk/south-west/frame_004.png",
+              "Hollowbishop/animations/walk/south-west/frame_005.png"
+            ],
+            "east": [
+              "Hollowbishop/animations/walk/east/frame_000.png",
+              "Hollowbishop/animations/walk/east/frame_001.png",
+              "Hollowbishop/animations/walk/east/frame_002.png",
+              "Hollowbishop/animations/walk/east/frame_003.png",
+              "Hollowbishop/animations/walk/east/frame_004.png",
+              "Hollowbishop/animations/walk/east/frame_005.png"
+            ],
+            "west": [
+              "Hollowbishop/animations/walk/west/frame_000.png",
+              "Hollowbishop/animations/walk/west/frame_001.png",
+              "Hollowbishop/animations/walk/west/frame_002.png",
+              "Hollowbishop/animations/walk/west/frame_003.png",
+              "Hollowbishop/animations/walk/west/frame_004.png",
+              "Hollowbishop/animations/walk/west/frame_005.png"
+            ],
+            "south-east": [
+              "Hollowbishop/animations/walk/south-east/frame_000.png",
+              "Hollowbishop/animations/walk/south-east/frame_001.png",
+              "Hollowbishop/animations/walk/south-east/frame_002.png",
+              "Hollowbishop/animations/walk/south-east/frame_003.png",
+              "Hollowbishop/animations/walk/south-east/frame_004.png",
+              "Hollowbishop/animations/walk/south-east/frame_005.png"
+            ],
+            "north-west": [
+              "Hollowbishop/animations/walk/north-west/frame_000.png",
+              "Hollowbishop/animations/walk/north-west/frame_001.png",
+              "Hollowbishop/animations/walk/north-west/frame_002.png",
+              "Hollowbishop/animations/walk/north-west/frame_003.png",
+              "Hollowbishop/animations/walk/north-west/frame_004.png",
+              "Hollowbishop/animations/walk/north-west/frame_005.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:30.552915"
+}

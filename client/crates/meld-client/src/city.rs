@@ -391,6 +391,40 @@ pub(crate) fn city_scene(
                     .with_scale(Vec3::new(1.0, 0.55, 1.0)),
             ));
         });
+
+    // Boss preview (`MELD_BOSS=<key>` / `?boss=<key>`): a towering, ground-anchored
+    // boss billboard in the plaza for eyeballing the encounter art. Static south
+    // facing; grounded like the pylons (scale = h/2.2, centre at h/2).
+    if let Some(key) = crate::flags::boss_preview() {
+        if let Some(bf) = wa.boss_frames(&key) {
+            let h = 5.0;
+            let bmat = mats.add(hd2d::sprite_material(
+                Color::srgb(1.1, 1.05, 1.0),
+                bf.idle[0].clone(),
+            ));
+            commands
+                .spawn((
+                    CityScene,
+                    Transform::from_xyz(0.0, 0.0, 3.5),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Mesh3d(wa.sprite_quad.clone()),
+                        MeshMaterial3d(bmat),
+                        Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                        hd2d::Billboard,
+                    ));
+                    p.spawn((
+                        Mesh3d(wa.shadow_mesh.clone()),
+                        MeshMaterial3d(wa.shadow_mat.clone()),
+                        Transform::from_xyz(0.0, 0.02, 0.0)
+                            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                            .with_scale(Vec3::splat(h * 0.45)),
+                    ));
+                });
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

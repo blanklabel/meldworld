@@ -1,0 +1,349 @@
+{
+  "group_id": null,
+  "states": [
+    {
+      "character": {
+        "id": "5694381a-d861-4452-83b8-ab7ea647e8e6",
+        "name": "Pyrewarden",
+        "prompt": "massive brass-and-obsidian magitech golem warden, a glowing furnace core set in its chest, molten cyan runes across heavy armored plates, huge blunt hammer fists, vents leaking blue flame, low top-down pixel art, imposing",
+        "size": {
+          "width": 240,
+          "height": 240
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T15:30:42.827203+00:00"
+      },
+      "folder": "Pyrewarden",
+      "frames": {
+        "rotations": {
+          "south": "Pyrewarden/rotations/south.png",
+          "south-east": "Pyrewarden/rotations/south-east.png",
+          "east": "Pyrewarden/rotations/east.png",
+          "north-east": "Pyrewarden/rotations/north-east.png",
+          "north": "Pyrewarden/rotations/north.png",
+          "north-west": "Pyrewarden/rotations/north-west.png",
+          "west": "Pyrewarden/rotations/west.png",
+          "south-west": "Pyrewarden/rotations/south-west.png"
+        },
+        "animations": {
+          "ember_burst": {
+            "south": [
+              "Pyrewarden/animations/ember_burst/south/frame_000.png",
+              "Pyrewarden/animations/ember_burst/south/frame_001.png",
+              "Pyrewarden/animations/ember_burst/south/frame_002.png",
+              "Pyrewarden/animations/ember_burst/south/frame_003.png",
+              "Pyrewarden/animations/ember_burst/south/frame_004.png",
+              "Pyrewarden/animations/ember_burst/south/frame_005.png",
+              "Pyrewarden/animations/ember_burst/south/frame_006.png",
+              "Pyrewarden/animations/ember_burst/south/frame_007.png"
+            ],
+            "north-east": [
+              "Pyrewarden/animations/ember_burst/north-east/frame_000.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_001.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_002.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_003.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_004.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_005.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_006.png",
+              "Pyrewarden/animations/ember_burst/north-east/frame_007.png"
+            ],
+            "north": [
+              "Pyrewarden/animations/ember_burst/north/frame_000.png",
+              "Pyrewarden/animations/ember_burst/north/frame_001.png",
+              "Pyrewarden/animations/ember_burst/north/frame_002.png",
+              "Pyrewarden/animations/ember_burst/north/frame_003.png",
+              "Pyrewarden/animations/ember_burst/north/frame_004.png",
+              "Pyrewarden/animations/ember_burst/north/frame_005.png",
+              "Pyrewarden/animations/ember_burst/north/frame_006.png",
+              "Pyrewarden/animations/ember_burst/north/frame_007.png"
+            ],
+            "south-east": [
+              "Pyrewarden/animations/ember_burst/south-east/frame_000.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_001.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_002.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_003.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_004.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_005.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_006.png",
+              "Pyrewarden/animations/ember_burst/south-east/frame_007.png"
+            ],
+            "north-west": [
+              "Pyrewarden/animations/ember_burst/north-west/frame_000.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_001.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_002.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_003.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_004.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_005.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_006.png",
+              "Pyrewarden/animations/ember_burst/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Pyrewarden/animations/ember_burst/south-west/frame_000.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_001.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_002.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_003.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_004.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_005.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_006.png",
+              "Pyrewarden/animations/ember_burst/south-west/frame_007.png"
+            ],
+            "west": [
+              "Pyrewarden/animations/ember_burst/west/frame_000.png",
+              "Pyrewarden/animations/ember_burst/west/frame_001.png",
+              "Pyrewarden/animations/ember_burst/west/frame_002.png",
+              "Pyrewarden/animations/ember_burst/west/frame_003.png",
+              "Pyrewarden/animations/ember_burst/west/frame_004.png",
+              "Pyrewarden/animations/ember_burst/west/frame_005.png",
+              "Pyrewarden/animations/ember_burst/west/frame_006.png",
+              "Pyrewarden/animations/ember_burst/west/frame_007.png"
+            ],
+            "east": [
+              "Pyrewarden/animations/ember_burst/east/frame_000.png",
+              "Pyrewarden/animations/ember_burst/east/frame_001.png",
+              "Pyrewarden/animations/ember_burst/east/frame_002.png",
+              "Pyrewarden/animations/ember_burst/east/frame_003.png",
+              "Pyrewarden/animations/ember_burst/east/frame_004.png",
+              "Pyrewarden/animations/ember_burst/east/frame_005.png",
+              "Pyrewarden/animations/ember_burst/east/frame_006.png",
+              "Pyrewarden/animations/ember_burst/east/frame_007.png"
+            ]
+          },
+          "furnace_slam": {
+            "east": [
+              "Pyrewarden/animations/furnace_slam/east/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/east/frame_007.png"
+            ],
+            "south-west": [
+              "Pyrewarden/animations/furnace_slam/south-west/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Pyrewarden/animations/furnace_slam/north-west/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/north-west/frame_007.png"
+            ],
+            "north-east": [
+              "Pyrewarden/animations/furnace_slam/north-east/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/north-east/frame_007.png"
+            ],
+            "north": [
+              "Pyrewarden/animations/furnace_slam/north/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/north/frame_007.png"
+            ],
+            "west": [
+              "Pyrewarden/animations/furnace_slam/west/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/west/frame_007.png"
+            ],
+            "south-east": [
+              "Pyrewarden/animations/furnace_slam/south-east/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/south-east/frame_007.png"
+            ],
+            "south": [
+              "Pyrewarden/animations/furnace_slam/south/frame_000.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_001.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_002.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_003.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_004.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_005.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_006.png",
+              "Pyrewarden/animations/furnace_slam/south/frame_007.png"
+            ]
+          },
+          "attack": {
+            "north-east": [
+              "Pyrewarden/animations/attack/north-east/frame_000.png",
+              "Pyrewarden/animations/attack/north-east/frame_001.png",
+              "Pyrewarden/animations/attack/north-east/frame_002.png",
+              "Pyrewarden/animations/attack/north-east/frame_003.png",
+              "Pyrewarden/animations/attack/north-east/frame_004.png",
+              "Pyrewarden/animations/attack/north-east/frame_005.png",
+              "Pyrewarden/animations/attack/north-east/frame_006.png",
+              "Pyrewarden/animations/attack/north-east/frame_007.png"
+            ],
+            "south-east": [
+              "Pyrewarden/animations/attack/south-east/frame_000.png",
+              "Pyrewarden/animations/attack/south-east/frame_001.png",
+              "Pyrewarden/animations/attack/south-east/frame_002.png",
+              "Pyrewarden/animations/attack/south-east/frame_003.png",
+              "Pyrewarden/animations/attack/south-east/frame_004.png",
+              "Pyrewarden/animations/attack/south-east/frame_005.png",
+              "Pyrewarden/animations/attack/south-east/frame_006.png",
+              "Pyrewarden/animations/attack/south-east/frame_007.png"
+            ],
+            "west": [
+              "Pyrewarden/animations/attack/west/frame_000.png",
+              "Pyrewarden/animations/attack/west/frame_001.png",
+              "Pyrewarden/animations/attack/west/frame_002.png",
+              "Pyrewarden/animations/attack/west/frame_003.png",
+              "Pyrewarden/animations/attack/west/frame_004.png",
+              "Pyrewarden/animations/attack/west/frame_005.png",
+              "Pyrewarden/animations/attack/west/frame_006.png",
+              "Pyrewarden/animations/attack/west/frame_007.png"
+            ],
+            "north": [
+              "Pyrewarden/animations/attack/north/frame_000.png",
+              "Pyrewarden/animations/attack/north/frame_001.png",
+              "Pyrewarden/animations/attack/north/frame_002.png",
+              "Pyrewarden/animations/attack/north/frame_003.png",
+              "Pyrewarden/animations/attack/north/frame_004.png",
+              "Pyrewarden/animations/attack/north/frame_005.png",
+              "Pyrewarden/animations/attack/north/frame_006.png",
+              "Pyrewarden/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "Pyrewarden/animations/attack/south/frame_000.png",
+              "Pyrewarden/animations/attack/south/frame_001.png",
+              "Pyrewarden/animations/attack/south/frame_002.png",
+              "Pyrewarden/animations/attack/south/frame_003.png",
+              "Pyrewarden/animations/attack/south/frame_004.png",
+              "Pyrewarden/animations/attack/south/frame_005.png",
+              "Pyrewarden/animations/attack/south/frame_006.png",
+              "Pyrewarden/animations/attack/south/frame_007.png"
+            ],
+            "south-west": [
+              "Pyrewarden/animations/attack/south-west/frame_000.png",
+              "Pyrewarden/animations/attack/south-west/frame_001.png",
+              "Pyrewarden/animations/attack/south-west/frame_002.png",
+              "Pyrewarden/animations/attack/south-west/frame_003.png",
+              "Pyrewarden/animations/attack/south-west/frame_004.png",
+              "Pyrewarden/animations/attack/south-west/frame_005.png",
+              "Pyrewarden/animations/attack/south-west/frame_006.png",
+              "Pyrewarden/animations/attack/south-west/frame_007.png"
+            ],
+            "north-west": [
+              "Pyrewarden/animations/attack/north-west/frame_000.png",
+              "Pyrewarden/animations/attack/north-west/frame_001.png",
+              "Pyrewarden/animations/attack/north-west/frame_002.png",
+              "Pyrewarden/animations/attack/north-west/frame_003.png",
+              "Pyrewarden/animations/attack/north-west/frame_004.png",
+              "Pyrewarden/animations/attack/north-west/frame_005.png",
+              "Pyrewarden/animations/attack/north-west/frame_006.png",
+              "Pyrewarden/animations/attack/north-west/frame_007.png"
+            ],
+            "east": [
+              "Pyrewarden/animations/attack/east/frame_000.png",
+              "Pyrewarden/animations/attack/east/frame_001.png",
+              "Pyrewarden/animations/attack/east/frame_002.png",
+              "Pyrewarden/animations/attack/east/frame_003.png",
+              "Pyrewarden/animations/attack/east/frame_004.png",
+              "Pyrewarden/animations/attack/east/frame_005.png",
+              "Pyrewarden/animations/attack/east/frame_006.png",
+              "Pyrewarden/animations/attack/east/frame_007.png"
+            ]
+          },
+          "walk": {
+            "north-west": [
+              "Pyrewarden/animations/walk/north-west/frame_000.png",
+              "Pyrewarden/animations/walk/north-west/frame_001.png",
+              "Pyrewarden/animations/walk/north-west/frame_002.png",
+              "Pyrewarden/animations/walk/north-west/frame_003.png",
+              "Pyrewarden/animations/walk/north-west/frame_004.png",
+              "Pyrewarden/animations/walk/north-west/frame_005.png"
+            ],
+            "north": [
+              "Pyrewarden/animations/walk/north/frame_000.png",
+              "Pyrewarden/animations/walk/north/frame_001.png",
+              "Pyrewarden/animations/walk/north/frame_002.png",
+              "Pyrewarden/animations/walk/north/frame_003.png",
+              "Pyrewarden/animations/walk/north/frame_004.png",
+              "Pyrewarden/animations/walk/north/frame_005.png"
+            ],
+            "east": [
+              "Pyrewarden/animations/walk/east/frame_000.png",
+              "Pyrewarden/animations/walk/east/frame_001.png",
+              "Pyrewarden/animations/walk/east/frame_002.png",
+              "Pyrewarden/animations/walk/east/frame_003.png",
+              "Pyrewarden/animations/walk/east/frame_004.png",
+              "Pyrewarden/animations/walk/east/frame_005.png"
+            ],
+            "west": [
+              "Pyrewarden/animations/walk/west/frame_000.png",
+              "Pyrewarden/animations/walk/west/frame_001.png",
+              "Pyrewarden/animations/walk/west/frame_002.png",
+              "Pyrewarden/animations/walk/west/frame_003.png",
+              "Pyrewarden/animations/walk/west/frame_004.png",
+              "Pyrewarden/animations/walk/west/frame_005.png"
+            ],
+            "south-east": [
+              "Pyrewarden/animations/walk/south-east/frame_000.png",
+              "Pyrewarden/animations/walk/south-east/frame_001.png",
+              "Pyrewarden/animations/walk/south-east/frame_002.png",
+              "Pyrewarden/animations/walk/south-east/frame_003.png",
+              "Pyrewarden/animations/walk/south-east/frame_004.png",
+              "Pyrewarden/animations/walk/south-east/frame_005.png"
+            ],
+            "south": [
+              "Pyrewarden/animations/walk/south/frame_000.png",
+              "Pyrewarden/animations/walk/south/frame_001.png",
+              "Pyrewarden/animations/walk/south/frame_002.png",
+              "Pyrewarden/animations/walk/south/frame_003.png",
+              "Pyrewarden/animations/walk/south/frame_004.png",
+              "Pyrewarden/animations/walk/south/frame_005.png"
+            ],
+            "north-east": [
+              "Pyrewarden/animations/walk/north-east/frame_000.png",
+              "Pyrewarden/animations/walk/north-east/frame_001.png",
+              "Pyrewarden/animations/walk/north-east/frame_002.png",
+              "Pyrewarden/animations/walk/north-east/frame_003.png",
+              "Pyrewarden/animations/walk/north-east/frame_004.png",
+              "Pyrewarden/animations/walk/north-east/frame_005.png"
+            ],
+            "south-west": [
+              "Pyrewarden/animations/walk/south-west/frame_000.png",
+              "Pyrewarden/animations/walk/south-west/frame_001.png",
+              "Pyrewarden/animations/walk/south-west/frame_002.png",
+              "Pyrewarden/animations/walk/south-west/frame_003.png",
+              "Pyrewarden/animations/walk/south-west/frame_004.png",
+              "Pyrewarden/animations/walk/south-west/frame_005.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-07-26T23:15:17.828198"
+}
