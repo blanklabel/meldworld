@@ -1250,6 +1250,52 @@ impl GameState {
             while rows.len() < party_size {
                 rows.push(false);
             }
+            // Every hero starts each dive with a piece of gear in any slot
+            // they don't already have real (class-matching) Vault gear
+            // equipped for — `session.gear_bonuses` is already class-filtered
+            // (see `Db::equipped_gear_bonuses`), so a nonzero stat there means
+            // a real item is equipped and this hero's own class benefits from
+            // it; only an empty slot gets a starter piece, so real progression
+            // is never clobbered. A flat +1, distinct per class, run-scoped
+            // loot like anything else found this dive (lost on death, banked
+            // on extraction).
+            let existing = self
+                .sessions
+                .get(pid)
+                .map(|s| s.gear_bonuses.clone())
+                .unwrap_or_default();
+            let mut starter_gear = Vec::new();
+            for (slot_idx, cls) in comp.iter().enumerate() {
+                let class_key = meld_run::class_key(*cls);
+                let bonus = existing.get(slot_idx).copied().unwrap_or_default();
+                for (category, already_has, atk, def, spd) in [
+                    ("weapon", bonus.atk != 0, 1, 0, 0),
+                    ("armor", bonus.def != 0, 0, 1, 0),
+                    ("accessory", bonus.spd != 0, 0, 0, 1),
+                ] {
+                    if already_has {
+                        continue;
+                    }
+                    starter_gear.push(LootGear {
+                        gear_id: Uuid::now_v7().to_string(),
+                        name: format!("Novice {}", meld_world::class_slot_noun(class_key, category)),
+                        rarity: "common".to_string(),
+                        slot: category.to_string(),
+                        class_key: class_key.to_string(),
+                        insurance: Insurance::Red,
+                        tier: 0,
+                        atk_bonus: atk,
+                        def_bonus: def,
+                        spd_bonus: spd,
+                        base_max_durability: self.balance.loot.gear_base_durability,
+                        max_durability: self.balance.loot.gear_base_durability,
+                        equipped_hero_slot: Some(slot_idx as i32),
+                    });
+                }
+            }
+            if let Some(r) = inst.run.run_mut(pid) {
+                r.looted_gear.extend(starter_gear);
+            }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
             inst.hero_names.insert(pid.clone(), names);
@@ -1314,13 +1360,12 @@ impl GameState {
                 .find(|r| &r.player_id == pid)
                 .map(|r| r.run_id.clone())
                 .unwrap_or_default();
-            let backpack = inst
-                .run
-                .runs
-                .iter()
-                .find(|r| &r.player_id == pid)
-                .map(|r| r.backpack.clone())
-                .unwrap_or_default();
+            let this_run = inst.run.runs.iter().find(|r| &r.player_id == pid);
+            let backpack = this_run.map(|r| r.backpack.clone()).unwrap_or_default();
+            // Starter gear (see above) already lives in `looted_gear` by this
+            // point — everything else found this dive is chits/red-loot, which
+            // starts empty (economy.md S1).
+            let backpack_gear = this_run.map(|r| r.looted_gear.clone()).unwrap_or_default();
             out.push(out_msg(
                 pid,
                 &wr::Started {
@@ -1331,15 +1376,16 @@ impl GameState {
                     base_run_level,
                     members: member_views.clone(),
                     backpack,
-                    // A dive begins with no chits and no red loot — both are found
-                    // in the maze and banked on extraction (economy.md S1).
                     chits: 0,
-                    backpack_gear: Vec::new(),
+                    backpack_gear: backpack_gear.clone(),
                     path: inst.arena.path.clone(),
                     bounds: Some(world_bounds.clone()),
                     seams: seam_views.clone(),
                 },
             ));
+            if !backpack_gear.is_empty() {
+                out.push(out_msg(pid, &wr::RunGear { gear: backpack_gear }));
+            }
             out.push(out_msg(
                 pid,
                 &wr::Party {
@@ -1993,6 +2039,15 @@ impl GameState {
         let Some(inst) = self.instance.as_mut() else {
             return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
         };
+        // This dive's class for the target slot (if equipping) — class isn't
+        // persisted per hero, only chosen per dive, so `party_classes` (set at
+        // `enter_maze`) is the only place this run's actual class lives.
+        let hero_class: Option<String> = req.hero_slot.and_then(|slot| {
+            inst.party_classes
+                .get(player_id)
+                .and_then(|v| v.get(slot as usize))
+                .map(|c| meld_run::class_key(*c).to_string())
+        });
         let Some(r) = inst.run.run_mut(player_id) else {
             return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
         };
@@ -2000,6 +2055,15 @@ impl GameState {
             return vec![error(player_id, ErrorCode::NotFound, "No such loot gear.", Some(raw.seq))];
         };
         if let Some(slot) = req.hero_slot {
+            let item_class = &r.looted_gear[idx].class_key;
+            if !item_class.is_empty() && hero_class.as_deref() != Some(item_class.as_str()) {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "Wrong class for this item.",
+                    Some(raw.seq),
+                )];
+            }
             // One item per hero+category: unequip anything else this hero has
             // worn this run in the same category before wearing the new one.
             let category = r.looted_gear[idx].slot.clone();
@@ -2344,12 +2408,21 @@ impl GameState {
     }
 
     /// Load equipped-gear bonuses (per hero slot) for freshly-connected players.
+    /// Passes each slot's class *for this dive* (empty before any `enter_maze`)
+    /// so class-restricted gear only contributes when it actually matches —
+    /// see `Db::equipped_gear_bonuses`.
     async fn flush_gear_loads(&mut self) {
         let loads: Vec<String> = std::mem::take(&mut self.pending_gear_load);
         let party_size = self.balance.battle.party_size_per_player as i32;
         for pid in loads {
             if let Ok(uid) = Uuid::parse_str(&pid) {
-                if let Ok(bonuses) = self.db.equipped_gear_bonuses(uid, party_size).await {
+                let hero_classes: Vec<String> = self
+                    .instance
+                    .as_ref()
+                    .and_then(|inst| inst.party_classes.get(&pid))
+                    .map(|classes| classes.iter().map(|c| meld_run::class_key(*c).to_string()).collect())
+                    .unwrap_or_default();
+                if let Ok(bonuses) = self.db.equipped_gear_bonuses(uid, party_size, &hero_classes).await {
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.gear_bonuses = bonuses;
                     }
@@ -2509,6 +2582,7 @@ impl GameState {
                 name: g.name.clone(),
                 rarity: g.rarity.clone(),
                 slot: g.slot.clone(),
+                class_key: g.class_key.clone(),
                 insurance: Insurance::Red,
                 tier: g.tier,
                 atk_bonus: g.atk_bonus,
@@ -2634,6 +2708,7 @@ impl GameState {
                             gear_id: Uuid::parse_str(&g.gear_id).ok()?,
                             name: g.name.clone(),
                             slot: g.slot.clone(),
+                            class_key: g.class_key.clone(),
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
                             def_bonus: g.def_bonus,
@@ -3271,6 +3346,7 @@ impl GameState {
                             name: g.name.clone(),
                             rarity: g.rarity.clone(),
                             slot: g.slot.clone(),
+                            class_key: g.class_key.clone(),
                             insurance: Insurance::Red,
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,

@@ -195,6 +195,9 @@ pub struct GearDrop {
     /// Rarity tier: common/rare/epic/legendary (scales the stat + flavours the name).
     pub rarity: String,
     pub slot: String,
+    /// Which class this item belongs to (`CLASS_KEYS`) — every drop is
+    /// class-specific; there is no class-agnostic gear.
+    pub class_key: String,
     pub tier: i32,
     pub atk_bonus: i32,
     pub def_bonus: i32,
@@ -213,93 +216,139 @@ pub struct CreatureLoot {
     pub gear: Option<GearDrop>,
 }
 
-/// Named gear catalog — 20 curated items per slot, ordered weakest → strongest
-/// (economy.md S1 content pass). A drop's name is picked by its tier, indexed
-/// from the red-chest floor tier and clamped into the catalog range, so the
-/// *name* rides the same distance-driven power curve `roll_creature_loot`
-/// already uses for the numeric stat — a shallow kill can't hand out a name
-/// that reads as endgame gear, and a deep one won't hand out a name that reads
-/// as starter junk.
-const WEAPON_NAMES: [&str; 20] = [
-    "Ashfall Shortsword",
-    "Cinderforged Cleaver",
-    "Emberwrought Warpick",
-    "Scarab Fang Blade",
-    "Duneglass Broadsword",
-    "Sunbaked Warhammer",
-    "Rimebound Longsword",
-    "Frostforged Battleaxe",
-    "Glacial Warpick",
-    "Verdant Greatblade",
-    "Bloomforged Cleaver",
-    "Thornwood Reaver",
-    "Miremere Scythe",
-    "Fungal Ripper",
-    "Peatbound Warblade",
-    "Ashen Doomblade",
-    "Stormcaller's Edge",
-    "Voidforged Greatblade",
-    "Ancient Worldbreaker",
-    "Eternal Starfall Edge",
+/// The ten playable classes' content keys, matching `meld_run::class_key`'s
+/// exact spelling. Kept as a plain literal list here (rather than depending on
+/// meld-run's `CharacterClass` enum) since this crate only ever needs the
+/// strings, to pick which class a gear drop belongs to.
+pub const CLASS_KEYS: [&str; 10] = [
+    "hunter",
+    "dragoon",
+    "sage",
+    "ranger",
+    "alchemist_knight",
+    "bard",
+    "psyker",
+    "resonant",
+    "shifter",
+    "iron_hull",
 ];
 
-const ARMOR_NAMES: [&str; 20] = [
-    "Ashfall Cuirass",
-    "Cinderforged Plate",
-    "Emberwrought Carapace",
-    "Scarab Shell Armor",
-    "Duneglass Aegis",
-    "Sunbaked Bulwark",
-    "Rimebound Plate",
-    "Frostforged Aegis",
-    "Glacial Carapace",
-    "Verdant Aegis",
-    "Bloomforged Plate",
-    "Thornwood Carapace",
-    "Miremere Plate",
-    "Fungal Husk Armor",
-    "Peatbound Aegis",
-    "Ashen Bulwark",
-    "Stormguard Mantle",
-    "Voidforged Plate",
-    "Ancient Warplate",
-    "Eternal Aegis of the Deep",
+/// The universal 20-step power ladder (weakest → strongest), shared by every
+/// class's catalog so a name's *rank* always reads the same way regardless of
+/// class — only the noun (`class_slot_noun`) carries the class's flavor. A
+/// drop's adjective is picked by its tier, indexed from the red-chest floor
+/// tier and clamped into this range, so the *name* rides the same
+/// distance-driven power curve `roll_creature_loot` already uses for the
+/// numeric stat — a shallow kill can't hand out a name that reads as endgame
+/// gear, and a deep one won't hand out a name that reads as starter junk.
+const POWER_ADJECTIVES: [&str; 20] = [
+    "Ashfall",
+    "Cinderforged",
+    "Emberwrought",
+    "Scarab",
+    "Duneglass",
+    "Sunbaked",
+    "Rimebound",
+    "Frostforged",
+    "Glacial",
+    "Verdant",
+    "Bloomforged",
+    "Thornwood",
+    "Miremere",
+    "Fungal",
+    "Peatbound",
+    "Ashen",
+    "Stormcaller's",
+    "Voidforged",
+    "Ancient",
+    "Eternal",
 ];
 
-const ACCESSORY_NAMES: [&str; 20] = [
-    "Ashfall Charm",
-    "Cinderforged Sigil",
-    "Emberwrought Band",
-    "Scarab Talisman",
-    "Duneglass Amulet",
-    "Sunbaked Ring",
-    "Rimebound Sigil",
-    "Frostforged Band",
-    "Glacial Talisman",
-    "Verdant Charm",
-    "Bloomforged Sigil",
-    "Thornwood Band",
-    "Miremere Talisman",
-    "Fungal Charm",
-    "Peatbound Sigil",
-    "Ashen Relic",
-    "Stormcaller's Pendant",
-    "Voidforged Sigil",
-    "Ancient Relic",
-    "Eternal Starfall Amulet",
-];
+/// Every class's signature noun per slot — every gear drop is class-specific
+/// (economy.md S1 content pass): this is the word a `POWER_ADJECTIVES` entry
+/// prefixes to build that class's 20-item catalog name for one slot.
+pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
+    match (class_key, slot) {
+        ("hunter", "weapon") => "Warblade",
+        ("hunter", "armor") => "Battleplate",
+        ("hunter", "accessory") => "Bloodcuff",
+        ("dragoon", "weapon") => "Lance",
+        ("dragoon", "armor") => "Greaves",
+        ("dragoon", "accessory") => "Windclasp",
+        ("sage", "weapon") => "Tome",
+        ("sage", "armor") => "Vestments",
+        ("sage", "accessory") => "Runestone",
+        ("ranger", "weapon") => "Longbow",
+        ("ranger", "armor") => "Cloak",
+        ("ranger", "accessory") => "Quiver Charm",
+        ("alchemist_knight", "weapon") => "Vialblade",
+        ("alchemist_knight", "armor") => "Alchemal Plate",
+        ("alchemist_knight", "accessory") => "Elixir Charm",
+        ("bard", "weapon") => "Songblade",
+        ("bard", "armor") => "Minstrel's Coat",
+        ("bard", "accessory") => "Lyre Pendant",
+        ("psyker", "weapon") => "Focus Rod",
+        ("psyker", "armor") => "Psi-Ward",
+        ("psyker", "accessory") => "Mindshard",
+        ("resonant", "weapon") => "Ward Scepter",
+        ("resonant", "armor") => "Resonant Vestments",
+        ("resonant", "accessory") => "Harmony Bell",
+        ("shifter", "weapon") => "Glitchblade",
+        ("shifter", "armor") => "Runner's Wrap",
+        ("shifter", "accessory") => "Flicker Charm",
+        ("iron_hull", "weapon") => "Warhammer",
+        ("iron_hull", "armor") => "Bulwark Plate",
+        ("iron_hull", "accessory") => "Aggro Band",
+        _ => "Trinket",
+    }
+}
 
-/// Look up a drop's flavor name: index into the slot's 20-item catalog by how
-/// many tiers past `floor_tier` (the red-chest floor's tier — the earliest a
-/// drop can ever roll) this drop's tier is, clamped to the catalog's range.
-fn gear_catalog_name(slot: &str, tier: i32, floor_tier: i32) -> &'static str {
-    let names: &[&str; 20] = match slot {
-        "weapon" => &WEAPON_NAMES,
-        "armor" => &ARMOR_NAMES,
-        _ => &ACCESSORY_NAMES,
-    };
-    let idx = (tier - floor_tier).clamp(0, names.len() as i32 - 1) as usize;
-    names[idx]
+/// One bespoke, unique flagship item per class+slot (30 total) — much
+/// stronger and much rarer than the 20-item tiered catalog (see
+/// `roll_creature_loot`'s `class_signature_*` roll).
+fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
+    match (class_key, slot) {
+        ("hunter", "weapon") => "Bloodfang, the Frenzied Cleaver",
+        ("hunter", "armor") => "Aegis of the Unbroken Line",
+        ("hunter", "accessory") => "The Last Adrenaline",
+        ("dragoon", "weapon") => "Skyreaver, Lance of the Falling Star",
+        ("dragoon", "armor") => "Stormstep Greaves",
+        ("dragoon", "accessory") => "The Windbound Clasp",
+        ("sage", "weapon") => "The Unbound Codex",
+        ("sage", "armor") => "Robes of the Still Mind",
+        ("sage", "accessory") => "Runestone of First Light",
+        ("ranger", "weapon") => "Farsight, the Wind-Bent Bow",
+        ("ranger", "armor") => "Cloak of the Silent Trail",
+        ("ranger", "accessory") => "The Hunter's Mark",
+        ("alchemist_knight", "weapon") => "Mercurial Edge",
+        ("alchemist_knight", "armor") => "Platemail of the Transmuted Heart",
+        ("alchemist_knight", "accessory") => "The Philosopher's Vial",
+        ("bard", "weapon") => "The Last Refrain",
+        ("bard", "armor") => "Coat of a Thousand Verses",
+        ("bard", "accessory") => "The Siren's Pendant",
+        ("psyker", "weapon") => "The Fractured Lens",
+        ("psyker", "armor") => "Ward of the Silent Mind",
+        ("psyker", "accessory") => "Shard of the Second Sight",
+        ("resonant", "weapon") => "Scepter of the Unbroken Chord",
+        ("resonant", "armor") => "Vestments of Everlasting Grace",
+        ("resonant", "accessory") => "The Undying Bell",
+        ("shifter", "weapon") => "Paradox, the Glitched Kris",
+        ("shifter", "armor") => "Wrap of a Thousand Steps",
+        ("shifter", "accessory") => "The Flicker Between Moments",
+        ("iron_hull", "weapon") => "Worldender",
+        ("iron_hull", "armor") => "The Immovable Bulwark",
+        ("iron_hull", "accessory") => "Band of the Undying Wall",
+        _ => "Unnamed Relic",
+    }
+}
+
+/// Look up a drop's flavor name: the `POWER_ADJECTIVES` entry for how many
+/// tiers past `floor_tier` (the red-chest floor's tier — the earliest a drop
+/// can ever roll) this drop's tier is, clamped to the ladder's range, prefixed
+/// onto the class+slot's noun (`class_slot_noun`).
+fn gear_catalog_name(class_key: &str, slot: &str, tier: i32, floor_tier: i32) -> String {
+    let idx = (tier - floor_tier).clamp(0, POWER_ADJECTIVES.len() as i32 - 1) as usize;
+    format!("{} {}", POWER_ADJECTIVES[idx], class_slot_noun(class_key, slot))
 }
 
 /// Roll the loot a felled encounter yields to one participant, deterministically
@@ -339,6 +388,11 @@ pub fn roll_creature_loot(
         let tier = sc.tier(distance) as i32;
         let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
         let slot = ["weapon", "armor", "accessory"][rng.below(3)];
+        // Every drop belongs to one of the ten classes (no class-agnostic
+        // gear) — picked independent of the party's actual composition, like
+        // any other loot roll; a hero can only wear/benefit from gear that
+        // matches their own class (enforced server-side at equip/battle time).
+        let class_key = CLASS_KEYS[rng.below(CLASS_KEYS.len())];
         let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
         // Rarity: the encounter's loot spike multiplies the rare/epic/legendary
         // odds (so elites/gatekeepers drop the shiny stuff), capped so Common is
@@ -364,20 +418,31 @@ pub fn roll_creature_loot(
         } else {
             ("common", 1.0)
         };
+        // Class-signature: a much rarer, much stronger unique named piece for
+        // this class+slot (`class_signature_name`) — independent of rarity (a
+        // signature item can itself still separately roll Legendary), gated
+        // behind a minimum tier so it can't show up on a shallow kill.
+        let is_signature = tier >= gr.class_signature_min_tier && rng.unit() < gr.class_signature_chance;
+        let signature_mult = if is_signature { gr.class_signature_mult } else { 1.0 };
         // One roll, routed into whichever stat this slot cares about: weapon
         // hits harder, armor shrugs off more, an accessory moves faster.
-        let stat =
-            (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult).round().max(1.0) as i32;
+        let stat = (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult * signature_mult)
+            .round()
+            .max(1.0) as i32;
         let (atk_bonus, def_bonus, spd_bonus) = match slot {
             "weapon" => (stat, 0, 0),
             "armor" => (0, stat, 0),
             _ => (0, 0, stat),
         };
         // The catalog name already rides the depth curve (see `gear_catalog_name`);
-        // rarity prefixes it on top ("Legendary Ashfall Shortsword") rather than
+        // rarity prefixes it on top ("Legendary Ashfall Warblade") rather than
         // picking a separate biome-adjective name, so depth and rarity both read
         // in the same name instead of fighting each other.
-        let base_name = gear_catalog_name(slot, tier, floor_tier).to_string();
+        let base_name = if is_signature {
+            class_signature_name(class_key, slot).to_string()
+        } else {
+            gear_catalog_name(class_key, slot, tier, floor_tier)
+        };
         let name = if rarity == "common" {
             base_name
         } else {
@@ -390,6 +455,7 @@ pub fn roll_creature_loot(
             name,
             rarity: rarity.to_string(),
             slot: slot.to_string(),
+            class_key: class_key.to_string(),
             tier,
             atk_bonus,
             def_bonus,

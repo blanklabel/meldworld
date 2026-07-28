@@ -218,6 +218,9 @@ pub struct GearLine {
     pub gear_id: String,
     pub name: String,
     pub slot: String,
+    /// Which class this item is for (`meld_world::CLASS_KEYS`); empty means
+    /// unrestricted (e.g. the starter weapon).
+    pub class_key: String,
     /// `"blue"` (insured) or `"red"` (extracted run loot).
     pub insurance: String,
     pub tier: i32,
@@ -1059,6 +1062,7 @@ impl Inner {
                         gear_id: g["gear_id"].as_str().unwrap_or("").to_string(),
                         name: g["name"].as_str().unwrap_or("?").to_string(),
                         slot: g["slot"].as_str().unwrap_or("").to_string(),
+                        class_key: g["class_key"].as_str().unwrap_or("").to_string(),
                         insurance: g["insurance"].as_str().unwrap_or("red").to_string(),
                         tier: g["tier"].as_i64().unwrap_or(0) as i32,
                         equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),
@@ -1434,6 +1438,7 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
                                 gear_id: g["gear_id"].as_str().unwrap_or("").to_string(),
                                 name: g["name"].as_str().unwrap_or("?").to_string(),
                                 slot: g["slot"].as_str().unwrap_or("").to_string(),
+                                class_key: g["class_key"].as_str().unwrap_or("").to_string(),
                                 insurance: g["insurance"].as_str().unwrap_or("blue").to_string(),
                                 tier: g["tier"].as_i64().unwrap_or(0) as i32,
                                 equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),

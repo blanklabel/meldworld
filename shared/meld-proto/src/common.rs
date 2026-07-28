@@ -56,6 +56,11 @@ pub struct LootGear {
     pub rarity: String,
     /// Equipment slot key (content-defined opaque string, e.g. `weapon`).
     pub slot: String,
+    /// Which class this item is for (`meld_world::CLASS_KEYS`, e.g. `hunter`).
+    /// Only that class's heroes gain its equipped bonus. Additive; old
+    /// wire/clients default to empty (treated as unrestricted).
+    #[serde(default)]
+    pub class_key: String,
     pub insurance: Insurance,
     /// Loot tier band at generation: `tier(d) = floor(d / 100)`.
     pub tier: i32,
