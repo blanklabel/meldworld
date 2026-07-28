@@ -769,7 +769,7 @@ pub(crate) fn render_overlay(
                                                 });
                                             }
                                         });
-                                    for category in ["weapon", "armor", "accessory"] {
+                                    for category in crate::GEAR_CATEGORIES {
                                         let focused = cursor.index == idx;
                                         idx += 1;
                                         let worn = effective_worn_item(&inv, &run_gear, category, selected);
@@ -856,13 +856,14 @@ pub(crate) fn render_overlay(
         });
 }
 
-/// The single combat stat a gear item's own slot cares about (weapon → atk,
-/// armor → def, accessory → spd — see `meld_world::roll_creature_loot`).
+/// The single combat stat a gear item's own category cares about (main hand →
+/// atk, accessory → spd, every protective piece → def — see
+/// `meld_world::roll_creature_loot`).
 pub(crate) fn gear_slot_stat(g: &GearLine) -> i32 {
     match g.slot.as_str() {
-        "weapon" => g.atk_bonus,
-        "armor" => g.def_bonus,
-        _ => g.spd_bonus,
+        "main_hand" => g.atk_bonus,
+        "accessory" => g.spd_bonus,
+        _ => g.def_bonus,
     }
 }
 
@@ -872,9 +873,11 @@ pub(crate) fn gear_slot_stat(g: &GearLine) -> i32 {
 /// `netglue::apply_ui_font`), so it always renders at the same size.
 fn gear_slot_icon(slot: &str) -> &'static str {
     match slot {
-        "weapon" => "\u{f04e5}",   // nf-md-sword
-        "armor" => "\u{f132}",     // nf-fa-shield
-        _ => "\u{f3a5}",           // nf-fa-gem (accessory/jewelry)
+        "main_hand" => "\u{f04e5}",              // nf-md-sword
+        "off_hand" | "chest" => "\u{f132}",      // nf-fa-shield
+        "head" => "\u{f02fc}",                   // nf-md-hard_hat
+        "legs" => "\u{f0552}",                   // nf-md-shoe_print
+        _ => "\u{f3a5}",                         // nf-fa-gem (accessory/jewelry)
     }
 }
 
@@ -917,9 +920,9 @@ pub(crate) fn render_gear_tooltip(
     let dim = Color::srgb(0.72, 0.78, 0.9);
     let good = Color::srgb(0.6, 0.95, 0.7);
     let stat_label = match item.slot.as_str() {
-        "weapon" => "Attack",
-        "armor" => "Defense",
-        _ => "Speed",
+        "main_hand" => "Attack",
+        "accessory" => "Speed",
+        _ => "Defense",
     };
     let ins_label = if item.insurance == "red" {
         "red - run loot, lost on death"

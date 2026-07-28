@@ -200,6 +200,9 @@ pub struct HitEffect {
     pub hp_after: i32,
     /// A critical hit — the client pops it bigger + gold ("CRIT!").
     pub crit: bool,
+    /// Elemental modifier flag ("weak"/"resist"/"immune"/"absorb"/"normal") —
+    /// drives the WEAK!/RESIST!/IMMUNE!/ABSORB! feedback (Psyker-gated).
+    pub modifier: Option<String>,
 }
 
 /// A biome seam (chokepoint) for the client to wall + gate.
@@ -358,7 +361,16 @@ pub enum ServerMsg {
     ActionResolved {
         actor: String,
         action: String,
+        /// A monster's *instant*-ability shout ("Venom Fang!") riding the
+        /// resolution (telegraphed ones already shouted via `Telegraph`).
+        callout: Option<String>,
         effects: Vec<HitEffect>,
+    },
+    /// A monster shouted a telegraphed ability and is channeling it — show a
+    /// flashing shout bubble + charging pose until the cast lands.
+    Telegraph {
+        combatant_id: String,
+        text: String,
     },
     /// A second party merged into the battle (raid merge) — add their combatants.
     CombatantsJoined { combatants: Vec<CombatantView> },
@@ -1305,19 +1317,34 @@ impl Inner {
                                 .ok()
                                 .and_then(|v| v.as_str().map(String::from))
                                 .unwrap_or_default();
+                            let modifier = e.modifier_flag.and_then(|m| {
+                                serde_json::to_value(m)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(String::from))
+                            });
                             HitEffect {
                                 target: e.target_id,
                                 kind,
                                 crit: e.status.as_deref() == Some("crit"),
                                 amount: e.amount,
                                 hp_after: e.hp_after,
+                                modifier,
                             }
                         })
                         .collect();
                     self.out.push_back(ServerMsg::ActionResolved {
                         actor: r.actor_id,
                         action,
+                        callout: r.callout_text,
                         effects,
+                    });
+                }
+            }
+            "battle.telegraph_started" => {
+                if let Ok(t) = serde_json::from_value::<wb::TelegraphStarted>(raw.payload) {
+                    self.out.push_back(ServerMsg::Telegraph {
+                        combatant_id: t.combatant_id,
+                        text: t.callout_text,
                     });
                 }
             }

@@ -306,6 +306,20 @@ pub mod battle {
         const TYPE: &'static str = "battle.submit_action";
     }
 
+    /// S2C — a monster shouted a telegraphed ability and entered channeling;
+    /// the client shows a flashing shout bubble and a charging sprite until
+    /// `executes_at_tick` (Creature AI spec §3).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct TelegraphStarted {
+        pub battle_id: Id,
+        pub combatant_id: Id,
+        pub callout_text: String,
+        pub executes_at_tick: i64,
+    }
+    impl Message for TelegraphStarted {
+        const TYPE: &'static str = "battle.telegraph_started";
+    }
+
     /// S2C — authoritative outcome of one resolved action.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ActionResolved {
@@ -315,6 +329,10 @@ pub mod battle {
         pub action: BattleActionKind,
         pub auto: bool,
         pub flee_success: Option<bool>,
+        /// Shout text for *instant* monster abilities (telegraphed ones already
+        /// shouted via `battle.telegraph_started`). `None` for plain actions.
+        #[serde(default)]
+        pub callout_text: Option<String>,
         pub effects: Vec<Effect>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -324,6 +342,10 @@ pub mod battle {
         pub amount: Option<i32>,
         pub status: Option<String>,
         pub hp_after: i32,
+        /// How the target's damage_modifiers bent this effect
+        /// (weak/resist/immune/absorb/normal). `None` when untyped.
+        #[serde(default)]
+        pub modifier_flag: Option<ModifierFlag>,
     }
     impl Message for ActionResolved {
         const TYPE: &'static str = "battle.action_resolved";

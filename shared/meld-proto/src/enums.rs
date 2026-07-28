@@ -30,6 +30,72 @@ pub enum CharacterClass {
     IronHull,
 }
 
+/// Damage typing (Creature AI/Combat/Gear spec §1). Every damaging effect
+/// carries one of these, or [`DamageType::None`] for pure/true damage that no
+/// weakness, resistance, immunity, or absorption touches. Wire form is
+/// UPPERCASE (the spec's `damage_modifiers` maps are keyed `"FIRE"`, `"ICE"`, …).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DamageType {
+    // Physical.
+    Blunt,
+    Slash,
+    Pierce,
+    // Elemental / magical.
+    Water,
+    Ice,
+    Fire,
+    Lightning,
+    Wind,
+    Earth,
+    Poison,
+    Infernal,
+    Celestial,
+    Shadow,
+    Mind,
+    Ethereal,
+    /// Pure/true damage — bypasses the modifier map entirely.
+    None,
+}
+
+impl DamageType {
+    /// Parse the UPPERCASE wire key ("FIRE") used in `damage_modifiers` maps.
+    pub fn from_wire(key: &str) -> Option<DamageType> {
+        Some(match key {
+            "BLUNT" => DamageType::Blunt,
+            "SLASH" => DamageType::Slash,
+            "PIERCE" => DamageType::Pierce,
+            "WATER" => DamageType::Water,
+            "ICE" => DamageType::Ice,
+            "FIRE" => DamageType::Fire,
+            "LIGHTNING" => DamageType::Lightning,
+            "WIND" => DamageType::Wind,
+            "EARTH" => DamageType::Earth,
+            "POISON" => DamageType::Poison,
+            "INFERNAL" => DamageType::Infernal,
+            "CELESTIAL" => DamageType::Celestial,
+            "SHADOW" => DamageType::Shadow,
+            "MIND" => DamageType::Mind,
+            "ETHEREAL" => DamageType::Ethereal,
+            "NONE" => DamageType::None,
+            _ => return None,
+        })
+    }
+}
+
+/// How the target's `damage_modifiers` bent a resolved damage effect
+/// (spec §2 step 5) — appended per effect on `battle.action_resolved` so the
+/// client can render WEAK!/RESIST!/IMMUNE!/ABSORB! feedback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModifierFlag {
+    Weak,
+    Resist,
+    Immune,
+    Absorb,
+    Normal,
+}
+
 /// A combatant's category, deciding friend-vs-foe and disconnect rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

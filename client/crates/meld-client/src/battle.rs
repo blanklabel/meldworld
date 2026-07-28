@@ -1022,13 +1022,17 @@ pub(crate) fn page_len(menu: &BattleMenu, class: &str, hero_level: i32) -> usize
 pub(crate) fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     autoplay: Res<Autoplay>,
+    tactics: Res<Tactics>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
     // The command menu keys off the *active hero's* class — a mixed party is
     // commanded hero by hero.
     let class = battle.active_class();
-    if autoplay.0 {
+    // Tactics (spec §6): available while an Iron Hull anchors the battle line;
+    // when toggled on it drives the same per-class defaults as `?autoplay`,
+    // submitting intents with no human reaction delay.
+    if autoplay.0 || (tactics.0 && battle_has_iron_hull(&battle)) {
         let idle: Vec<String> = battle
             .your_ids
             .iter()
@@ -2133,6 +2137,27 @@ pub(crate) fn advance_atb_flash(time: Res<Time>, battle: Res<BattleData>, mut fl
     flash.prev = battle.ready.iter().cloned().collect();
 }
 
+/// Whether any allied hero in this battle is an Iron Hull (their wire statuses
+/// carry `class:iron_hull`) — the gate for the Tactics auto-battle toggle.
+pub(crate) fn battle_has_iron_hull(battle: &BattleData) -> bool {
+    battle
+        .combatants
+        .iter()
+        .any(|c| c.is_player && c.statuses.iter().any(|s| s == "class:iron_hull"))
+}
+
+/// Toggle Tactics with T on the battle screen (only while an Iron Hull is in
+/// the battle — without one the toggle is inert and the hint hidden).
+pub(crate) fn tactics_toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    battle: Res<BattleData>,
+    mut tactics: ResMut<Tactics>,
+) {
+    if keys.just_pressed(KeyCode::KeyT) && battle_has_iron_hull(&battle) {
+        tactics.0 = !tactics.0;
+    }
+}
+
 /// Age floating hit numbers; drop the expired. Frozen in the static mockup so
 /// the seeded feedback stays on screen.
 pub(crate) fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
@@ -2144,6 +2169,10 @@ pub(crate) fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
         h.age += dt;
     }
     hitfx.items.retain(|h| h.age < HIT_TTL);
+    for c in &mut hitfx.callouts {
+        c.age += dt;
+    }
+    hitfx.callouts.retain(|c| c.age < c.ttl);
     hitfx.acts.retain(|_, a| {
         *a += dt;
         *a < ATTACK_LUNGE_TTL
@@ -2156,6 +2185,7 @@ pub(crate) fn render_hit_fx(
     mut commands: Commands,
     hitfx: Res<HitFx>,
     battle: Res<BattleData>,
+    tactics: Res<Tactics>,
     windows: Query<&Window>,
     existing: Query<Entity, With<HitFxRoot>>,
 ) {
@@ -2192,37 +2222,111 @@ pub(crate) fn render_hit_fx(
                 };
                 let rise = hit.age * 46.0;
                 let alpha = (1.0 - hit.age / HIT_TTL).clamp(0.0, 1.0);
+                // WEAK! hits pop bigger and judder side-to-side (the spec's
+                // screen-shaking flourish, scoped to the number itself).
+                let shake = if hit.scale > 1.0 {
+                    (hit.age * 60.0).sin() * 4.0 * alpha
+                } else {
+                    0.0
+                };
                 p.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(x),
+                        left: Val::Px(x + shake),
                         top: Val::Px(y0 - rise),
                         ..default()
                     },
                     Text::new(hit.text.clone()),
                     TextFont {
-                        font_size: 26.0,
+                        font_size: 26.0 * hit.scale,
                         ..default()
                     },
                     TextColor(hit.color.with_alpha(alpha)),
+                ));
+            }
+
+            // Monster ability shout bubbles (spec §3/§6): a channeling
+            // telegraph flashes for its whole window; an instant callout fades.
+            for c in &hitfx.callouts {
+                let alpha = if c.flashing {
+                    // Flash between bright and dim while channeling.
+                    0.55 + 0.45 * (c.age * 9.0).sin().abs()
+                } else {
+                    (1.0 - c.age / c.ttl).clamp(0.0, 1.0)
+                };
+                p.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(w * 0.5 - 90.0),
+                        top: Val::Px(h * 0.12),
+                        padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.05, 0.04, 0.1, 0.85 * alpha)),
+                    BorderColor(Color::srgba(1.0, 0.9, 0.4, alpha)),
+                    BorderRadius::all(Val::Px(6.0)),
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(c.text.clone()),
+                        TextFont { font_size: 22.0, ..default() },
+                        TextColor(Color::srgba(1.0, 0.92, 0.55, alpha)),
+                    ));
+                });
+            }
+
+            // Tactics hint (spec §6): shown while an Iron Hull anchors the line.
+            if battle_has_iron_hull(&battle) {
+                let (label, col) = if tactics.0 {
+                    ("TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
+                } else {
+                    ("TACTICS: OFF  [T]", Color::srgb(0.6, 0.65, 0.8))
+                };
+                p.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: Val::Px(14.0),
+                        top: Val::Px(64.0),
+                        ..default()
+                    },
+                    Text::new(label),
+                    TextFont { font_size: 14.0, ..default() },
+                    TextColor(col),
                 ));
             }
         });
 }
 
 /// Turn a resolved effect into a floating number (skips zero/no-op effects).
-pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
+/// `show_elements` is the Psyker perk gate (spec §6): only a party whose
+/// Psyker has unlocked threat-sight reads WEAK!/RESIST!/IMMUNE!/ABSORB! —
+/// everyone else sees plain numbers (an immune hit still shows its 0).
+pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool) {
+    let modifier = if show_elements { e.modifier.as_deref() } else { None };
+    let mut scale = 1.0;
     let (text, color) = match e.kind.to_lowercase().as_str() {
         "damage" => {
             let n = e.amount.unwrap_or(0);
-            if n == 0 {
-                return;
-            }
-            if e.crit {
-                // Crits pop in gold with a "CRIT!" flourish.
-                (format!("-{n}  CRIT!"), Color::srgb(1.0, 0.85, 0.3))
-            } else {
-                (format!("-{n}"), Color::srgb(1.0, 0.5, 0.4))
+            match modifier {
+                // Immunity shows the word instead of a number (spec §6).
+                Some("immune") => ("IMMUNE!".to_string(), Color::srgb(0.75, 0.75, 0.8)),
+                Some("weak") => {
+                    scale = 1.45; // big, screen-shaking hit text
+                    (format!("-{n}  WEAK!"), Color::srgb(1.0, 0.55, 0.15))
+                }
+                Some("resist") => (format!("-{n}  RESIST!"), Color::srgb(0.62, 0.62, 0.68)),
+                _ => {
+                    if n == 0 {
+                        return;
+                    }
+                    if e.crit {
+                        // Crits pop in gold with a "CRIT!" flourish.
+                        (format!("-{n}  CRIT!"), Color::srgb(1.0, 0.85, 0.3))
+                    } else {
+                        (format!("-{n}"), Color::srgb(1.0, 0.5, 0.4))
+                    }
+                }
             }
         }
         "heal" => {
@@ -2230,7 +2334,11 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
             if n == 0 {
                 return;
             }
-            (format!("+{n}"), Color::srgb(0.5, 1.0, 0.6))
+            match modifier {
+                // Absorption heals pop green with the flourish (spec §6).
+                Some("absorb") => (format!("+{n}  ABSORB!"), Color::srgb(0.4, 1.0, 0.55)),
+                _ => (format!("+{n}"), Color::srgb(0.5, 1.0, 0.6)),
+            }
         }
         "ko" => ("KO!".to_string(), Color::srgb(1.0, 0.35, 0.35)),
         _ => return,
@@ -2240,5 +2348,6 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect) {
         text,
         color,
         age: 0.0,
+        scale,
     });
 }

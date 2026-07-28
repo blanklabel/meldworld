@@ -197,6 +197,23 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS class_key TEXT NOT NULL DEFAULT ''")
             .execute(pool)
             .await?;
+        // Elemental profile a piece grants its wearer (Epic GR spec §5): a JSON
+        // object of DamageType wire key → multiplier (e.g. {"FIRE":0.75}).
+        sqlx::query(
+            "ALTER TABLE gear ADD COLUMN IF NOT EXISTS damage_modifiers TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(pool)
+        .await?;
+        // 7-slot loadout migration (Epic GR spec §5): the old 3-category model
+        // maps onto the new six categories — weapon→main_hand, armor→chest;
+        // accessory keeps its name (two equip slots share the one category).
+        // Idempotent: once renamed, the WHERE matches nothing.
+        sqlx::query("UPDATE gear SET slot = 'main_hand' WHERE slot = 'weapon'")
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE gear SET slot = 'chest' WHERE slot = 'armor'")
+            .execute(pool)
+            .await?;
         // Every hot gear query filters by `owner_player_id` (get_gear,
         // equipped_gear_bonuses on connect, death durability, equip checks), but a FK
         // is NOT auto-indexed in Postgres — so each was a full-table Seq Scan, and
@@ -502,7 +519,7 @@ impl Db {
                 // A humble starting weapon (blue-chest, equipped to hero 0, tier 0).
                 sqlx::query(
                     "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, base_max_durability, max_durability, equipped_hero_slot)
-                     VALUES ($1, $2, 'Chipped Blade', 'weapon', 'blue', 0, 3, 100, 100, 0)",
+                     VALUES ($1, $2, 'Chipped Blade', 'main_hand', 'blue', 0, 3, 100, 100, 0)",
                 )
                 .bind(Uuid::now_v7())
                 .bind(player_id)
@@ -551,7 +568,7 @@ impl Db {
                         gear_id,
                         owner_player_id: player_id,
                         name: "Chipped Blade".into(),
-                        slot: "weapon".into(),
+                        slot: "main_hand".into(),
                         class_key: String::new(),
                         insurance: "blue".into(),
                         tier: 0,
@@ -561,6 +578,7 @@ impl Db {
                         base_max_durability: 100,
                         max_durability: 100,
                         equipped_hero_slot: Some(0),
+                        damage_modifiers: "{}".into(),
                     },
                 );
                 for kind in ["forging", "mercantile", "alchemy"] {
@@ -904,7 +922,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot
+                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers
                      FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
@@ -930,9 +948,10 @@ impl Db {
     }
 
     /// Backfill any of a player's hero slots (`0..party_size`) missing a
-    /// piece of gear in some category (weapon/armor/accessory) with a
-    /// permanent, class-unrestricted +1 starter piece — so nobody is ever
-    /// looking at a genuinely empty slot, in town or mid-run. Idempotent
+    /// piece of gear in some category (the six of the 7-slot loadout —
+    /// accessory counts once; the second accessory equip slot starts empty)
+    /// with a permanent, class-unrestricted +1 starter piece — so nobody is
+    /// ever looking at a genuinely empty slot, in town or mid-run. Idempotent
     /// (checks what's already equipped first, in that category, regardless
     /// of source); safe to call on every Vault touch. `blue`-chest like the
     /// starter weapon it complements, so it survives death like the rest of
@@ -945,9 +964,15 @@ impl Db {
                 have.insert((slot, g.slot.clone()));
             }
         }
+        // The kit's TOTAL stays +1 atk / +1 def / +1 spd (same budget as the
+        // old 3-piece kit): the extra pieces are slot-fillers, so a fresh
+        // account's defense doesn't quietly double with the 7-slot loadout.
         let kit = [
-            ("weapon", "Novice Blade", 1, 0, 0),
-            ("armor", "Novice Vest", 0, 1, 0),
+            ("main_hand", "Novice Blade", 1, 0, 0),
+            ("off_hand", "Novice Buckler", 0, 0, 0),
+            ("head", "Novice Cap", 0, 0, 0),
+            ("chest", "Novice Vest", 0, 1, 0),
+            ("legs", "Novice Greaves", 0, 0, 0),
             ("accessory", "Novice Charm", 0, 0, 1),
         ];
         let mut to_insert = Vec::new();
@@ -966,8 +991,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for (slot, category, name, atk, def, spd) in &to_insert {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
-                         VALUES ($1, $2, $3, $4, '', 'blue', 0, $5, $6, $7, 100, 100, $8)",
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers)
+                         VALUES ($1, $2, $3, $4, '', 'blue', 0, $5, $6, $7, 100, 100, $8, '{}')",
                     )
                     .bind(Uuid::now_v7())
                     .bind(player_id)
@@ -1002,6 +1027,7 @@ impl Db {
                             base_max_durability: 100,
                             max_durability: 100,
                             equipped_hero_slot: Some(*slot),
+                            damage_modifiers: "{}".into(),
                         },
                     );
                 }
@@ -1028,8 +1054,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
-                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers)
+                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -1043,6 +1069,7 @@ impl Db {
                     .bind(g.spd_bonus)
                     .bind(g.base_max_durability)
                     .bind(g.max_durability)
+                    .bind(&g.damage_modifiers)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -1066,6 +1093,7 @@ impl Db {
                         base_max_durability: g.base_max_durability,
                         max_durability: g.max_durability,
                         equipped_hero_slot: None,
+                        damage_modifiers: g.damage_modifiers.clone(),
                     });
                 }
             }
@@ -1095,7 +1123,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key FROM gear
+                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key, max_durability, damage_modifiers FROM gear
                      WHERE owner_player_id = $1 AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
@@ -1104,11 +1132,20 @@ impl Db {
                 for row in rows {
                     let slot: i32 = row.get("equipped_hero_slot");
                     let class_key: String = row.get("class_key");
+                    // Crucial guardrail (spec §5): broken gear (max durability
+                    // 0) contributes NOTHING until repaired.
+                    if row.get::<i32, _>("max_durability") == 0 {
+                        continue;
+                    }
                     if class_ok(slot as usize, &class_key) {
                         if let Some(b) = bonuses.get_mut(slot as usize) {
                             b.atk += row.get::<i32, _>("atk_bonus");
                             b.def += row.get::<i32, _>("def_bonus");
                             b.spd += row.get::<i32, _>("spd_bonus");
+                            append_modifier_entries(
+                                &mut b.modifiers,
+                                &row.get::<String, _>("damage_modifiers"),
+                            );
                         }
                     }
                 }
@@ -1117,11 +1154,16 @@ impl Db {
                 let m = m.lock().unwrap();
                 for g in m.gear.values().filter(|g| g.owner_player_id == player_id) {
                     if let Some(slot) = g.equipped_hero_slot {
+                        // Broken gear contributes nothing (spec §5 guardrail).
+                        if g.max_durability == 0 {
+                            continue;
+                        }
                         if class_ok(slot as usize, &g.class_key) {
                             if let Some(b) = bonuses.get_mut(slot as usize) {
                                 b.atk += g.atk_bonus;
                                 b.def += g.def_bonus;
                                 b.spd += g.spd_bonus;
+                                append_modifier_entries(&mut b.modifiers, &g.damage_modifiers);
                             }
                         }
                     }
@@ -1129,6 +1171,34 @@ impl Db {
             }
         }
         Ok(bonuses)
+    }
+
+    /// Delete every Vault-owned `red` gear item this player has EQUIPPED —
+    /// the spec §5 canon-gap resolution: red gear brought back into a run is
+    /// at absolute risk, permanently deleted when the run ends `died` OR
+    /// `abandoned`. (Blue gear only decays; unequipped red gear sat safe in
+    /// the Vault and is untouched.)
+    pub async fn delete_equipped_red_gear(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "DELETE FROM gear
+                     WHERE owner_player_id = $1 AND insurance = 'red' AND equipped_hero_slot IS NOT NULL",
+                )
+                .bind(player_id)
+                .execute(pool)
+                .await?;
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                m.gear.retain(|_, g| {
+                    !(g.owner_player_id == player_id
+                        && g.insurance == "red"
+                        && g.equipped_hero_slot.is_some())
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Apply the death durability sink to equipped blue-chest gear:
@@ -1217,8 +1287,9 @@ impl Db {
                     tx.rollback().await?;
                     return Ok(EquipResult::Broken);
                 }
-                // One item per (hero, slot category): a different item already
-                // worn by this hero in the same category conflicts.
+                // Per-(hero, category) capacity: one item everywhere except
+                // accessories, which get TWO equip slots (ACCESSORY_1/2 of the
+                // 7-slot loadout, spec §5).
                 let occupied: i64 = sqlx::query_scalar(
                     "SELECT COUNT(*) FROM gear
                      WHERE owner_player_id = $1 AND slot = $2 AND equipped_hero_slot = $3 AND gear_id <> $4",
@@ -1229,7 +1300,7 @@ impl Db {
                 .bind(gear_id)
                 .fetch_one(&mut *tx)
                 .await?;
-                if occupied > 0 {
+                if occupied >= category_capacity(&slot) {
                     tx.rollback().await?;
                     return Ok(EquipResult::SlotOccupied);
                 }
@@ -1263,13 +1334,17 @@ impl Db {
                 if max_durability == 0 {
                     return Ok(EquipResult::Broken);
                 }
-                let occupied = m.gear.values().any(|g| {
-                    g.owner_player_id == player_id
-                        && g.slot == slot
-                        && g.equipped_hero_slot == Some(hero_slot)
-                        && g.gear_id != gear_id
-                });
-                if occupied {
+                let occupied = m
+                    .gear
+                    .values()
+                    .filter(|g| {
+                        g.owner_player_id == player_id
+                            && g.slot == slot
+                            && g.equipped_hero_slot == Some(hero_slot)
+                            && g.gear_id != gear_id
+                    })
+                    .count() as i64;
+                if occupied >= category_capacity(&slot) {
                     return Ok(EquipResult::SlotOccupied);
                 }
                 m.gear.get_mut(&gear_id).unwrap().equipped_hero_slot = Some(hero_slot);
@@ -1302,11 +1377,15 @@ pub enum WithdrawResult {
 }
 
 /// One hero's summed combat bonuses from their equipped gear.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct GearBonus {
     pub atk: i32,
     pub def: i32,
     pub spd: i32,
+    /// Raw per-item elemental entries (DamageType wire key → multiplier) from
+    /// every equipped piece — folded (`1 + Σ(mᵢ−1)`) and clamped to 0.0–2.0 at
+    /// battle assembly (spec §5 stat aggregation).
+    pub modifiers: Vec<(String, f64)>,
 }
 
 /// A red-chest gear item to bank into the Vault on extraction.
@@ -1323,6 +1402,8 @@ pub struct LootedGear {
     pub spd_bonus: i32,
     pub base_max_durability: i32,
     pub max_durability: i32,
+    /// JSON elemental profile ({"FIRE":0.75}); "{}"/empty for none.
+    pub damage_modifiers: String,
 }
 
 /// A gear row (blue-chest only, this slice).
@@ -1342,6 +1423,35 @@ pub struct GearRow {
     pub max_durability: i32,
     /// Which of the owner's heroes has this equipped, if any.
     pub equipped_hero_slot: Option<i32>,
+    /// JSON elemental profile ({"FIRE":0.75}); "{}" for none.
+    pub damage_modifiers: String,
+}
+
+/// How many items of one category a single hero can wear at once: two
+/// accessories (ACCESSORY_1/2 of the 7-slot loadout, spec §5), one everywhere
+/// else.
+fn category_capacity(category: &str) -> i64 {
+    if category == "accessory" {
+        2
+    } else {
+        1
+    }
+}
+
+/// Parse a gear row's `damage_modifiers` JSON object ({"FIRE":0.75}) and
+/// append its entries to a hero's raw modifier list. Malformed/empty JSON
+/// contributes nothing (defensive: the column is content-written).
+fn append_modifier_entries(out: &mut Vec<(String, f64)>, json: &str) {
+    if json.is_empty() || json == "{}" {
+        return;
+    }
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) {
+        for (k, v) in map {
+            if let Some(m) = v.as_f64() {
+                out.push((k, m));
+            }
+        }
+    }
 }
 
 fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
@@ -1358,6 +1468,7 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         base_max_durability: row.get("base_max_durability"),
         max_durability: row.get("max_durability"),
         equipped_hero_slot: row.get("equipped_hero_slot"),
+        damage_modifiers: row.get("damage_modifiers"),
     }
 }
 
@@ -1429,6 +1540,8 @@ struct MemGear {
     base_max_durability: i32,
     max_durability: i32,
     equipped_hero_slot: Option<i32>,
+    /// JSON elemental profile ({"FIRE":0.75}); "{}" for none.
+    damage_modifiers: String,
 }
 
 impl MemGear {
@@ -1446,6 +1559,7 @@ impl MemGear {
             base_max_durability: self.base_max_durability,
             max_durability: self.max_durability,
             equipped_hero_slot: self.equipped_hero_slot,
+            damage_modifiers: self.damage_modifiers.clone(),
         }
     }
 }
@@ -1478,13 +1592,13 @@ mod tests {
         assert!(db.verify_login("ghost", "pw").await.unwrap().is_none());
 
         // Seeded: 4 hero names, 3 skills, a starter weapon equipped to hero 0
-        // plus the rest of the starter kit backfilled for all 4 heroes (12
-        // pieces total: the one named "Chipped Blade" + 11 "Novice ..."),
-        // empty vault.
+        // plus the rest of the 6-category starter kit backfilled for all 4
+        // heroes (24 pieces total: the one named "Chipped Blade" + 23
+        // "Novice ..."), empty vault.
         assert_eq!(db.get_hero_names(p.player_id).await.unwrap().len(), 4);
         assert_eq!(db.get_skills(p.player_id).await.unwrap().len(), 3);
         let gear = db.get_gear(p.player_id).await.unwrap();
-        assert_eq!(gear.len(), 12);
+        assert_eq!(gear.len(), 24);
         assert!(gear.iter().all(|g| g.equipped_hero_slot.is_some()));
         assert_eq!(gear[0].name, "Chipped Blade");
         assert_eq!(gear[0].equipped_hero_slot, Some(0));
@@ -1577,14 +1691,14 @@ mod tests {
         let p = db.register("carol", "pw").await.unwrap().player_id;
         let starter = db.get_gear(p).await.unwrap()[0].gear_id;
 
-        // A second weapon; equipping it to the same hero (0) conflicts with the
-        // equipped starter (one weapon per hero).
+        // A second main-hand; equipping it to the same hero (0) conflicts with
+        // the equipped starter (one main-hand per hero).
         db.insert_looted_gear(
             p,
             &[LootedGear {
                 gear_id: Uuid::now_v7(),
                 name: "Looted Sword".into(),
-                slot: "weapon".into(),
+                slot: "main_hand".into(),
                 class_key: String::new(),
                 tier: 1,
                 atk_bonus: 7,
@@ -1592,6 +1706,7 @@ mod tests {
                 spd_bonus: 0,
                 base_max_durability: 80,
                 max_durability: 80,
+                damage_modifiers: "{}".into(),
             }],
         )
         .await
@@ -1614,7 +1729,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .find(|g| g.equipped_hero_slot == Some(1) && g.slot == "weapon")
+            .find(|g| g.equipped_hero_slot == Some(1) && g.slot == "main_hand")
             .unwrap()
             .gear_id;
         assert_eq!(db.set_equipped(p, hero1_starter_weapon, None).await.unwrap(), EquipResult::Ok);
@@ -1631,6 +1746,50 @@ mod tests {
         db.apply_death_durability(p).await.unwrap();
         let starter_row = db.get_gear(p).await.unwrap().into_iter().find(|g| g.gear_id == starter).unwrap();
         assert_eq!(starter_row.max_durability, 90); // floor(100 * 0.9)
+
+        // Spec §5 red-gear canon gap: equipped red gear is DELETED on a run
+        // that ends died/abandoned (the looted sword is equipped on hero 1),
+        // while blue gear survives (decayed above, never deleted).
+        db.delete_equipped_red_gear(p).await.unwrap();
+        let after = db.get_gear(p).await.unwrap();
+        assert!(after.iter().all(|g| g.name != "Looted Sword"), "equipped red gear burned");
+        assert!(after.iter().any(|g| g.gear_id == starter), "blue starter survives");
+    }
+
+    #[tokio::test]
+    async fn two_accessories_but_only_one_of_everything_else() {
+        let db = mem().await;
+        let p = db.register("erin", "pw").await.unwrap().player_id;
+        let ring = |name: &str| LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: name.into(),
+            slot: "accessory".into(),
+            class_key: String::new(),
+            tier: 1,
+            atk_bonus: 0,
+            def_bonus: 0,
+            spd_bonus: 2,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: "{\"FIRE\":0.75}".into(),
+        };
+        db.insert_looted_gear(p, &[ring("Ring A"), ring("Ring B")]).await.unwrap();
+        let ids: Vec<Uuid> = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|g| g.name.starts_with("Ring"))
+            .map(|g| g.gear_id)
+            .collect();
+        // Hero 0 already wears the Novice Charm (starter kit) — the loadout
+        // has TWO accessory equip slots, so one more ring fits, the third
+        // accessory conflicts.
+        assert_eq!(db.set_equipped(p, ids[0], Some(0)).await.unwrap(), EquipResult::Ok);
+        assert_eq!(db.set_equipped(p, ids[1], Some(0)).await.unwrap(), EquipResult::SlotOccupied);
+        // The hero's aggregated bonuses carry the ring's elemental profile.
+        let bonuses = db.equipped_gear_bonuses(p, 4, &[]).await.unwrap();
+        assert!(bonuses[0].modifiers.iter().any(|(k, m)| k == "FIRE" && *m == 0.75));
     }
 
     #[tokio::test]

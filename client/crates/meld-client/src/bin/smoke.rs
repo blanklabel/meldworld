@@ -109,6 +109,7 @@ fn main() {
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
                 | ServerMsg::ActionResolved { .. }
+                | ServerMsg::Telegraph { .. }
                 | ServerMsg::ChannelStarted { .. }
                 | ServerMsg::ChannelInterrupted
                 | ServerMsg::InventoryData { .. }
