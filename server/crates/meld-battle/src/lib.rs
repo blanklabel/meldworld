@@ -6,12 +6,16 @@
 //! maps onto `battle.*` wire messages. No wall-clock, no RNG globals, no I/O —
 //! so it is fully deterministic and unit-testable (BUILD-PLAN M2.3/M2.4).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use meld_balance::Balance;
+use meld_proto::abilities::{
+    AbilityEffectKind, AbilityTarget, MonsterAbility, ScalingBase, StealTargetKind,
+};
 use meld_proto::common::Combatant as WireCombatant;
 use meld_proto::enums::{
-    BattleActionKind, BattleOutcome, CombatantKind, EffectKind, EncounterClass,
+    BattleActionKind, BattleOutcome, CombatantKind, DamageType, EffectKind, EncounterClass,
+    ModifierFlag,
 };
 use meld_proto::Id;
 
@@ -92,6 +96,27 @@ pub struct Fighter {
     pub foci: Vec<Focus>,
     /// True while a `defend` stance is active (until this fighter next acts).
     pub defending: bool,
+    /// The (level-unfiltered) monster ability pool — content from
+    /// `meld_world::abilities`. Empty for players and unknown creature kinds
+    /// (they fight with basic attacks only).
+    pub abilities: Vec<MonsterAbility>,
+    /// Elemental profile: `DamageType → multiplier` (spec §1). `>1` weak,
+    /// `<1` resist, `0` immune, `<0` absorb; missing types default to 1.0.
+    /// Monsters get theirs from content; heroes aggregate theirs from gear.
+    pub damage_modifiers: HashMap<DamageType, f64>,
+    /// The [`DamageType`] this fighter's basic attack carries. Creature kinds
+    /// and hero classes each have a typed basic swing; defaults untyped.
+    pub basic_attack_type: DamageType,
+    /// Per-ability (pool index) tick at which it may be used again.
+    ability_ready_at: HashMap<usize, u64>,
+    /// An in-flight telegraphed ability: (pool index, executes_at tick). While
+    /// set the monster is channeling — its gauge is frozen and it takes no
+    /// other turns until the cast lands.
+    channel: Option<(usize, u64)>,
+    /// Timed statuses (`(name, expires_at_tick)`) applied by monster abilities.
+    /// `poison`/`burn` tick damage at the victim's turn start; anything else
+    /// slows the victim's ATB fill while active.
+    timed_statuses: Vec<(String, u64)>,
     /// True once the gauge is full and we are waiting on this player's input.
     awaiting: bool,
     /// Engine tick at which the turn became ready (for the 15 s timeout).
@@ -156,6 +181,12 @@ impl Fighter {
             focus_max: 0,
             foci: Vec::new(),
             defending: false,
+            abilities: Vec::new(),
+            damage_modifiers: HashMap::new(),
+            basic_attack_type: DamageType::None,
+            ability_ready_at: HashMap::new(),
+            channel: None,
+            timed_statuses: Vec::new(),
             awaiting: false,
             ready_tick: 0,
             alive: hp > 0,
@@ -207,6 +238,10 @@ impl Fighter {
             v.push(format!("dex:{}", self.dex));
             v.push(format!("wll:{}", self.wll));
         }
+        // Active timed statuses from monster abilities (poison/web/chill/…).
+        for (name, _) in &self.timed_statuses {
+            v.push(name.clone());
+        }
         v.extend(self.statuses.iter().cloned());
         v
     }
@@ -225,6 +260,10 @@ impl Fighter {
         for f in &self.foci {
             f.kind.hash(&mut h);
             f.stacks.hash(&mut h);
+        }
+        for (name, until) in &self.timed_statuses {
+            name.hash(&mut h);
+            until.hash(&mut h);
         }
         self.statuses.hash(&mut h);
         h.finish()
@@ -253,6 +292,25 @@ impl Fighter {
             gauge: self.gauge,
             statuses: self.build_wire_statuses(),
         }
+    }
+}
+
+/// Whether a timed ability status is a damage-over-time (poison/burn) rather
+/// than an ATB-slowing bind (web/chill/…).
+fn is_dot_status(name: &str) -> bool {
+    name == "poison" || name == "burn"
+}
+
+/// The [`DamageType`] a hero class's basic attack carries (weapon flavour —
+/// structural content). Class skills stay pure/untyped (their identity is the
+/// class kit, not the element system).
+pub fn hero_attack_type(class_key: &str) -> DamageType {
+    match class_key {
+        "hunter" | "ranger" | "dragoon" => DamageType::Pierce,
+        "shifter" | "alchemist_knight" | "bard" => DamageType::Slash,
+        "iron_hull" | "sage" | "resonant" => DamageType::Blunt,
+        "psyker" => DamageType::Mind,
+        _ => DamageType::None,
     }
 }
 
@@ -288,6 +346,9 @@ pub struct ResolvedEffect {
     pub amount: Option<i32>,
     pub status: Option<String>,
     pub hp_after: i32,
+    /// How the target's `damage_modifiers` bent a typed damage effect
+    /// (weak/resist/immune/absorb/normal); `None` for untyped effects.
+    pub modifier_flag: Option<ModifierFlag>,
 }
 
 /// The outcome of resolving a single action (maps to `battle.action_resolved`).
@@ -298,6 +359,9 @@ pub struct Resolution {
     pub action: BattleActionKind,
     pub auto: bool,
     pub flee_success: Option<bool>,
+    /// Shout text for an *instant* monster ability (telegraphed ones already
+    /// shouted via [`Event::TelegraphStarted`]). `None` for plain actions.
+    pub callout_text: Option<String>,
     pub effects: Vec<ResolvedEffect>,
 }
 
@@ -306,6 +370,20 @@ pub struct Resolution {
 pub enum Event {
     /// A player combatant's gauge filled; their action window opens.
     TurnReady { combatant_id: Id },
+    /// A monster shouted a telegraphed ability and entered channeling; the
+    /// cast lands at `executes_at_tick` (maps to `battle.telegraph_started`).
+    TelegraphStarted {
+        combatant_id: Id,
+        callout_text: String,
+        executes_at_tick: u64,
+    },
+    /// A monster's `steal` effect connected with a player hero — the server
+    /// deducts the stolen goods from that player's run (the engine itself
+    /// never touches run inventory).
+    Stolen {
+        victim_player_id: Id,
+        kind: StealTargetKind,
+    },
     /// An action resolved (player, monster AI, or auto-defend).
     Resolved(Resolution),
     /// The battle reached a terminal state (spike: single party vs enemies).
@@ -370,6 +448,10 @@ pub struct Battle {
     ironhull_root_barrier_fraction: f64,
     ironhull_shock_mult: f64,
     ironhull_toll_mult: f64,
+    status_slow_mult: f64,
+    poison_dot_fraction: f64,
+    burn_dot_fraction: f64,
+    basic_attack_weight: i32,
     min_damage: i32,
     creature_flee_hp_fraction: f64,
     flee_base: f64,
@@ -397,6 +479,11 @@ impl Battle {
         fighters.extend(enemies);
         for f in &mut fighters {
             f.alive = f.hp > 0;
+            // Heroes' basic attacks are typed by class (unless the builder
+            // already set one); monsters get theirs from creature content.
+            if f.kind == CombatantKind::Player && f.basic_attack_type == DamageType::None {
+                f.basic_attack_type = hero_attack_type(&f.class_key);
+            }
         }
         Battle {
             battle_id,
@@ -444,6 +531,10 @@ impl Battle {
             ironhull_root_barrier_fraction: balance.battle.ironhull_root_barrier_fraction,
             ironhull_shock_mult: balance.battle.ironhull_shock_mult,
             ironhull_toll_mult: balance.battle.ironhull_toll_mult,
+            status_slow_mult: balance.battle.status_slow_mult,
+            poison_dot_fraction: balance.battle.poison_dot_fraction,
+            burn_dot_fraction: balance.battle.burn_dot_fraction,
+            basic_attack_weight: balance.battle.basic_attack_weight,
             min_damage: balance.combat_math.min_damage,
             creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
@@ -465,6 +556,9 @@ impl Battle {
             f.gauge = 0.0;
             f.awaiting = false;
             f.alive = f.hp > 0;
+            if f.kind == CombatantKind::Player && f.basic_attack_type == DamageType::None {
+                f.basic_attack_type = hero_attack_type(&f.class_key);
+            }
         }
         let views = new.iter().map(Fighter::to_wire).collect();
         self.fighters.extend(new);
@@ -576,13 +670,50 @@ impl Battle {
         self.tick_count += 1;
 
         // 1. Fill gauges for living fighters not already awaiting input.
+        // A channeling monster's gauge is frozen (the cast IS its turn), and a
+        // slowing status (web/chill/bind/…) halves the fill rate.
         let n = self.fighters.len();
+        let slow_mult = self.status_slow_mult;
+        let now = self.tick_count;
         for i in 0..n {
             let f = &mut self.fighters[i];
-            if !f.alive || f.awaiting || f.gauge >= 1.0 {
+            if !f.alive || f.awaiting || f.gauge >= 1.0 || f.channel.is_some() {
                 continue;
             }
-            f.gauge = (f.gauge + f.speed_stat as f64 / self.gauge_divisor).min(1.0);
+            let slowed = f
+                .timed_statuses
+                .iter()
+                .any(|(name, until)| *until > now && !is_dot_status(name));
+            let rate_mult = if slowed { slow_mult } else { 1.0 };
+            f.gauge =
+                (f.gauge + f.speed_stat as f64 * rate_mult / self.gauge_divisor).min(1.0);
+        }
+
+        // 1b. Land any channeled casts that are due (independent of gauge).
+        for i in 0..n {
+            if self.ended {
+                break;
+            }
+            let due = match self.fighters[i].channel {
+                Some((_, executes_at)) if self.fighters[i].alive => {
+                    self.tick_count >= executes_at
+                }
+                _ => false,
+            };
+            if due {
+                let (ability_idx, _) = self.fighters[i].channel.take().unwrap();
+                let upkeep = self.start_of_turn(i);
+                if self.fighters[i].alive {
+                    let mut res = self.resolve_ability(i, ability_idx, &mut events);
+                    prepend_effects(&mut res, upkeep);
+                    events.push(Event::Resolved(res));
+                } else if !upkeep.is_empty() {
+                    // The channeler died to its own DoT at cast time — report
+                    // the upkeep as an auto action so the client sees the KO.
+                    events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                }
+                self.check_terminal(&mut events);
+            }
         }
 
         // 2. Resolve full gauges. Monsters act immediately; players get a window.
@@ -615,6 +746,12 @@ impl Battle {
                     // 15 s elapsed with no action. A Psyker keeps channeling (its
                     // Foci tick, no new op); everyone else auto-defends.
                     let upkeep = self.start_of_turn(i);
+                    if !self.fighters[i].alive {
+                        // The DoT upkeep killed them before the auto action.
+                        events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                        self.check_terminal(&mut events);
+                        continue;
+                    }
                     let mut res = if self.fighters[i].focus_max > 0 {
                         // Auto-channel keeps each Focus firing at its own stored target.
                         self.resolve_psyker(i, None, None, None, true)
@@ -626,13 +763,26 @@ impl Battle {
                     self.check_terminal(&mut events);
                 }
             } else {
-                // Monster AI: attack the first living player.
+                // A channeling monster holds its cast; 1b lands it when due.
+                if self.fighters[i].channel.is_some() {
+                    continue;
+                }
+                // Monster AI (spec §2): upkeep, then filter the ability pool
+                // and roll a weighted choice (or start a telegraphed channel).
                 let upkeep = self.start_of_turn(i);
-                if let Some(mut res) = self.resolve_monster_turn(i) {
+                if !self.fighters[i].alive {
+                    // Died to its own DoT at turn start.
+                    if !upkeep.is_empty() {
+                        events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                    }
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                if let Some(mut res) = self.take_monster_turn(i, &mut events) {
                     prepend_effects(&mut res, upkeep);
                     events.push(Event::Resolved(res));
-                    self.check_terminal(&mut events);
                 }
+                self.check_terminal(&mut events);
             }
         }
         // Refresh each fighter's cached wire-status list so this tick's gauge_update
@@ -675,8 +825,14 @@ impl Battle {
         self.seen_actions.insert(action_id.clone());
 
         let mut events = Vec::new();
-        // Start-of-turn upkeep (Regen heal, Barrier decay) fires before the action.
+        // Start-of-turn upkeep (DoT tick, Regen heal, Barrier decay) fires
+        // before the action — and can kill the actor outright (poison).
         let upkeep = self.start_of_turn(i);
+        if !self.fighters[i].alive {
+            events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+            self.check_terminal(&mut events);
+            return Ok(events);
+        }
         // A Psyker channels: every turn its active Foci fire, then it casts/
         // reinforces/revokes one (encoded in skill_kind). Flee still works normally.
         let target = target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str());
@@ -757,6 +913,7 @@ impl Battle {
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
+        let attack_type = self.fighters[actor_i].basic_attack_type;
         let mut effects = match self.roll_dodge(target_i) {
             Some(dodge) => dodge,
             None => {
@@ -769,7 +926,9 @@ impl Battle {
                 } else {
                     base
                 };
-                let mut fx = self.apply_damage(target_i, dmg);
+                // Basic attacks are typed (class weapon flavour), so a monster's
+                // elemental profile bends them — weak/resist/immune/absorb.
+                let mut fx = self.apply_typed_damage(target_i, dmg, attack_type);
                 if crit {
                     if let Some(e) = fx.iter_mut().find(|e| matches!(e.kind, EffectKind::Damage)) {
                         e.status = Some("crit".to_string());
@@ -782,7 +941,7 @@ impl Battle {
         effects.extend(self.gain_adrenaline(actor_i));
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
-        Ok(Resolution {
+        Ok(Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Attack,
@@ -805,7 +964,7 @@ impl Battle {
         if f.adrenaline == before {
             return Vec::new(); // already capped
         }
-        vec![ResolvedEffect {
+        vec![ResolvedEffect { modifier_flag: None,
             target_id: f.combatant_id.clone(),
             kind: EffectKind::StatusApplied,
             amount: Some(f.adrenaline),
@@ -872,7 +1031,7 @@ impl Battle {
         };
         if drain > 0.0 && self.fighters[target_i].alive {
             self.fighters[target_i].gauge = (self.fighters[target_i].gauge - drain).max(0.0);
-            effects.push(ResolvedEffect {
+            effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
                 kind: EffectKind::StatusApplied,
                 amount: None,
@@ -959,7 +1118,7 @@ impl Battle {
                 self.fighters[target_i].gauge =
                     (self.fighters[target_i].gauge - self.ironhull_swell_drain).max(0.0);
             }
-            effects.push(ResolvedEffect {
+            effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
                 kind: EffectKind::StatusApplied,
                 amount: None,
@@ -1022,7 +1181,7 @@ impl Battle {
         if skill_kind == Some("flicker") {
             self.fighters[actor_i].evasion += self.shifter_flicker_evasion;
             let pct = (self.fighters[actor_i].evasion * 100.0).round() as i32;
-            let effects = vec![ResolvedEffect {
+            let effects = vec![ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[actor_i].combatant_id.clone(),
                 kind: EffectKind::StatusApplied,
                 amount: Some(pct),
@@ -1067,7 +1226,7 @@ impl Battle {
             if skill_kind == Some("ransack") && self.fighters[target_i].alive {
                 self.fighters[target_i].gauge =
                     (self.fighters[target_i].gauge - self.shifter_ransack_drain).max(0.0);
-                effects.push(ResolvedEffect {
+                effects.push(ResolvedEffect { modifier_flag: None,
                     target_id: self.fighters[target_i].combatant_id.clone(),
                     kind: EffectKind::StatusApplied,
                     amount: None,
@@ -1160,7 +1319,7 @@ impl Battle {
 
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
-        Resolution {
+        Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Skill,
@@ -1231,7 +1390,7 @@ impl Battle {
             return Vec::new();
         }
         self.fighters[i].barrier += amount;
-        vec![ResolvedEffect {
+        vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[i].combatant_id.clone(),
             kind: EffectKind::StatusApplied,
             amount: Some(amount),
@@ -1283,7 +1442,7 @@ impl Battle {
                 let before = self.fighters[caster_i].hp;
                 let after = (before - cost).max(1);
                 self.fighters[caster_i].hp = after;
-                effects.push(ResolvedEffect {
+                effects.push(ResolvedEffect { modifier_flag: None,
                     target_id: self.fighters[caster_i].combatant_id.clone(),
                     kind: EffectKind::Damage,
                     amount: Some(before - after),
@@ -1294,7 +1453,7 @@ impl Battle {
             }
             "regen_boon" => {
                 self.fighters[target_i].regen += self.resonant_boon_regen;
-                vec![ResolvedEffect {
+                vec![ResolvedEffect { modifier_flag: None,
                     target_id: self.fighters[target_i].combatant_id.clone(),
                     kind: EffectKind::StatusApplied,
                     amount: Some(self.fighters[target_i].regen),
@@ -1316,6 +1475,37 @@ impl Battle {
     /// Returned effects are prepended to the turn's resolution.
     fn start_of_turn(&mut self, i: usize) -> Vec<ResolvedEffect> {
         let mut effects = Vec::new();
+        // Timed ability statuses: expire the stale, then tick the DoTs
+        // (poison/burn burn a max-HP fraction each of the victim's turns,
+        // typed — so an immunity/absorption profile applies to the DoT too).
+        let now = self.tick_count;
+        self.fighters[i].timed_statuses.retain(|(_, until)| *until > now);
+        let dots: Vec<String> = self.fighters[i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| is_dot_status(n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in dots {
+            if !self.fighters[i].alive {
+                break;
+            }
+            let (frac, ty) = if name == "burn" {
+                (self.burn_dot_fraction, DamageType::Fire)
+            } else {
+                (self.poison_dot_fraction, DamageType::Poison)
+            };
+            let raw = ((self.fighters[i].max_hp as f64) * frac).round() as i32;
+            if raw > 0 {
+                let mut fx = self.apply_typed_damage(i, raw, ty);
+                for e in &mut fx {
+                    if matches!(e.kind, EffectKind::Damage) && e.status.is_none() {
+                        e.status = Some(name.clone());
+                    }
+                }
+                effects.extend(fx);
+            }
+        }
         if self.fighters[i].alive && self.fighters[i].regen > 0 {
             let raw = self.fighters[i].regen;
             effects.extend(self.apply_heal(i, raw));
@@ -1348,7 +1538,8 @@ impl Battle {
         };
         let power = self.fighters[psyker_i].spell_power;
         let dmg = ((power as f64) * mult * stacks as f64).round() as i32;
-        self.apply_damage(t, dmg.max(self.min_damage))
+        // Manifestations are psychic — MIND-typed, so elemental profiles apply.
+        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind)
     }
 
     /// Control Manifestation tick: drain the aimed enemy's ATB gauge, delaying its turns.
@@ -1364,7 +1555,7 @@ impl Battle {
         };
         let drain = self.psyker_anchor_gauge_drain * stacks as f64;
         self.fighters[t].gauge = (self.fighters[t].gauge - drain).max(0.0);
-        vec![ResolvedEffect {
+        vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[t].combatant_id.clone(),
             kind: EffectKind::StatusApplied,
             amount: None,
@@ -1404,7 +1595,7 @@ impl Battle {
         let max_hp = self.fighters[actor_i].max_hp;
         let after = (before + raw.max(1)).min(max_hp);
         self.fighters[actor_i].hp = after;
-        vec![ResolvedEffect {
+        vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[actor_i].combatant_id.clone(),
             kind: EffectKind::Heal,
             amount: Some(after - before),
@@ -1421,7 +1612,7 @@ impl Battle {
         action_id: Option<Id>,
         effects: Vec<ResolvedEffect>,
     ) -> Resolution {
-        Resolution {
+        Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action,
@@ -1434,7 +1625,7 @@ impl Battle {
     fn resolve_defend(&mut self, actor_i: usize, action_id: Option<Id>, auto: bool) -> Resolution {
         self.fighters[actor_i].defending = true;
         self.reset_gauge(actor_i);
-        Resolution {
+        Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Defend,
@@ -1460,7 +1651,7 @@ impl Battle {
                 }
             }
         }
-        Resolution {
+        Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Flee,
@@ -1484,13 +1675,13 @@ impl Battle {
             if low && f.max_hp > 0 {
                 self.fighters[actor_i].alive = false; // leaves the field
                 self.reset_gauge(actor_i);
-                return Some(Resolution {
+                return Some(Resolution { callout_text: None,
                     action_id: None,
                     actor_id: self.fighters[actor_i].combatant_id.clone(),
                     action: BattleActionKind::Flee,
                     auto: true,
                     flee_success: Some(true),
-                    effects: vec![ResolvedEffect {
+                    effects: vec![ResolvedEffect { modifier_flag: None,
                         target_id: self.fighters[actor_i].combatant_id.clone(),
                         kind: EffectKind::StatusApplied,
                         amount: None,
@@ -1538,12 +1729,16 @@ impl Battle {
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
+        let basic_type = self.fighters[actor_i].basic_attack_type;
         let effects = match self.roll_dodge(target_i) {
             Some(dodge) => dodge,
-            None => self.apply_damage(target_i, self.damage(atk, def, defending)),
+            None => {
+                let raw = self.damage(atk, def, defending);
+                self.apply_typed_damage(target_i, raw, basic_type)
+            }
         };
         self.reset_gauge(actor_i);
-        Some(Resolution {
+        Some(Resolution { callout_text: None,
             action_id: None,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Attack,
@@ -1551,6 +1746,312 @@ impl Battle {
             flee_success: None,
             effects,
         })
+    }
+
+    /// One monster turn under the ability AI (spec §2): flee check first, then
+    /// filter the pool (level gate, cooldown, HP threshold), mix in the basic
+    /// attack, and roll a weighted choice. A telegraphed pick starts a channel
+    /// (emitting [`Event::TelegraphStarted`]) and returns `None` — the cast
+    /// lands via `tick` step 1b at `executes_at`.
+    fn take_monster_turn(&mut self, actor_i: usize, events: &mut Vec<Event>) -> Option<Resolution> {
+        let now = self.tick_count;
+        let (hp_pct, level, has_pool) = {
+            let f = &self.fighters[actor_i];
+            let pct = if f.max_hp > 0 {
+                f.hp as f64 / f.max_hp as f64
+            } else {
+                1.0
+            };
+            (pct, f.level, !f.abilities.is_empty())
+        };
+        if !has_pool {
+            // No authored pool (unknown kind): the classic basic-attack turn.
+            return self.resolve_monster_turn(actor_i);
+        }
+        let eligible: Vec<(usize, i64)> = self.fighters[actor_i]
+            .abilities
+            .iter()
+            .enumerate()
+            .filter(|(idx, a)| {
+                a.min_level <= level
+                    && self.fighters[actor_i]
+                        .ability_ready_at
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(0)
+                        <= now
+                    && a.hp_threshold_pct.is_none_or(|t| hp_pct <= t)
+            })
+            .map(|(idx, a)| (idx, a.weight.max(1) as i64))
+            .collect();
+        let total: i64 =
+            eligible.iter().map(|(_, w)| w).sum::<i64>() + self.basic_attack_weight.max(1) as i64;
+        let mut roll = (self.next_rand_unit() * total as f64) as i64;
+        for (idx, w) in eligible {
+            if roll < w {
+                return self.begin_ability(actor_i, idx, events);
+            }
+            roll -= w;
+        }
+        // The remaining weight band is the basic attack (also the flee check).
+        self.resolve_monster_turn(actor_i)
+    }
+
+    /// Commit to ability `idx`: cooldown starts now; a telegraphed ability
+    /// enters channeling (shout now, land later), an instant one resolves here.
+    fn begin_ability(
+        &mut self,
+        actor_i: usize,
+        idx: usize,
+        events: &mut Vec<Event>,
+    ) -> Option<Resolution> {
+        let (cooldown, telegraph, callout) = {
+            let a = &self.fighters[actor_i].abilities[idx];
+            (a.cooldown_ticks, a.telegraph_ticks, a.callout_text.clone())
+        };
+        self.fighters[actor_i]
+            .ability_ready_at
+            .insert(idx, self.tick_count + cooldown.max(0) as u64);
+        if telegraph > 0 {
+            let executes_at = self.tick_count + telegraph as u64;
+            self.fighters[actor_i].channel = Some((idx, executes_at));
+            self.reset_gauge(actor_i);
+            events.push(Event::TelegraphStarted {
+                combatant_id: self.fighters[actor_i].combatant_id.clone(),
+                callout_text: callout,
+                executes_at_tick: executes_at,
+            });
+            None
+        } else {
+            Some(self.resolve_ability(actor_i, idx, events))
+        }
+    }
+
+    /// Resolve every effect of ability `idx` in order (spec §2 math). Reported
+    /// as an auto `Skill` action; the callout rides along only for *instant*
+    /// abilities (a channeled one already shouted via `telegraph_started`).
+    fn resolve_ability(
+        &mut self,
+        actor_i: usize,
+        idx: usize,
+        events: &mut Vec<Event>,
+    ) -> Resolution {
+        let ability = self.fighters[actor_i].abilities[idx].clone();
+        let mut effects = Vec::new();
+        for eff in &ability.effects {
+            let targets = self.ability_targets(actor_i, eff.target);
+            match eff.effect_kind {
+                AbilityEffectKind::Damage => {
+                    let raw = self.scaled_amount(actor_i, eff.scaling_base, eff.coefficient);
+                    let ty = eff.damage_type.unwrap_or(DamageType::None);
+                    for t in targets {
+                        if self.fighters[t].alive {
+                            effects.extend(self.apply_typed_damage(t, raw, ty));
+                        }
+                    }
+                }
+                AbilityEffectKind::Heal => {
+                    let raw = self.scaled_amount(actor_i, eff.scaling_base, eff.coefficient);
+                    for t in targets {
+                        if self.fighters[t].alive {
+                            effects.extend(self.apply_heal(t, raw));
+                        }
+                    }
+                }
+                AbilityEffectKind::AtbManipulation => {
+                    // `coefficient` is the gauge fraction added (+) or drained (−).
+                    let delta = eff.coefficient.unwrap_or(0.0);
+                    for t in targets {
+                        if !self.fighters[t].alive {
+                            continue;
+                        }
+                        let f = &mut self.fighters[t];
+                        f.gauge = (f.gauge + delta).clamp(0.0, 1.0);
+                        effects.push(ResolvedEffect {
+                            target_id: f.combatant_id.clone(),
+                            kind: EffectKind::StatusApplied,
+                            amount: None,
+                            status: Some(
+                                if delta >= 0.0 { "hastened" } else { "slowed" }.to_string(),
+                            ),
+                            hp_after: f.hp,
+                            modifier_flag: None,
+                        });
+                    }
+                }
+                AbilityEffectKind::Status => {
+                    let name = eff.status_name.clone().unwrap_or_default();
+                    let dur = eff.duration_ticks.unwrap_or(0).max(0) as u64;
+                    if name.is_empty() || dur == 0 {
+                        continue;
+                    }
+                    let until = self.tick_count + dur;
+                    for t in targets {
+                        if !self.fighters[t].alive {
+                            continue;
+                        }
+                        let f = &mut self.fighters[t];
+                        // Re-application refreshes the timer (no stacking).
+                        if let Some(s) =
+                            f.timed_statuses.iter_mut().find(|(n, _)| *n == name)
+                        {
+                            s.1 = s.1.max(until);
+                        } else {
+                            f.timed_statuses.push((name.clone(), until));
+                        }
+                        effects.push(ResolvedEffect {
+                            target_id: f.combatant_id.clone(),
+                            kind: EffectKind::StatusApplied,
+                            amount: None,
+                            status: Some(name.clone()),
+                            hp_after: f.hp,
+                            modifier_flag: None,
+                        });
+                    }
+                }
+                AbilityEffectKind::Steal => {
+                    let Some(kind) = eff.steal_target_kind else {
+                        continue;
+                    };
+                    for t in targets {
+                        if !self.fighters[t].alive {
+                            continue;
+                        }
+                        // Only players carry stealable goods; the server applies
+                        // the actual deduction from the victim's run.
+                        if let Some(pid) = self.fighters[t].player_id.clone() {
+                            events.push(Event::Stolen {
+                                victim_player_id: pid,
+                                kind,
+                            });
+                            let label = match kind {
+                                StealTargetKind::Chits => "stolen:chits",
+                                StealTargetKind::Consumable => "stolen:consumable",
+                                StealTargetKind::Material => "stolen:material",
+                            };
+                            effects.push(ResolvedEffect {
+                                target_id: self.fighters[t].combatant_id.clone(),
+                                kind: EffectKind::StatusApplied,
+                                amount: None,
+                                status: Some(label.to_string()),
+                                hp_after: self.fighters[t].hp,
+                                modifier_flag: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.reset_gauge(actor_i);
+        Resolution {
+            action_id: None,
+            actor_id: self.fighters[actor_i].combatant_id.clone(),
+            action: BattleActionKind::Skill,
+            auto: true,
+            flee_success: None,
+            callout_text: if ability.telegraph_ticks == 0 {
+                Some(ability.callout_text.clone())
+            } else {
+                None
+            },
+            effects,
+        }
+    }
+
+    /// Targets for one ability effect. Enemy selection reuses the weakest-
+    /// hostile heuristic (with back-row protection) of the basic AI.
+    fn ability_targets(&mut self, actor_i: usize, target: AbilityTarget) -> Vec<usize> {
+        let actor_faction = self.fighters[actor_i].faction.clone();
+        let actor_id = self.fighters[actor_i].combatant_id.clone();
+        match target {
+            AbilityTarget::SelfCast => vec![actor_i],
+            AbilityTarget::SingleEnemy => self
+                .pick_weakest_hostile(actor_i)
+                .map(|t| vec![t])
+                .unwrap_or_default(),
+            AbilityTarget::AllEnemies => self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| {
+                    f.alive
+                        && f.combatant_id != actor_id
+                        && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            // The caster's own side (its monster group / allies), self included.
+            AbilityTarget::MonsterGroup | AbilityTarget::AllAllies => self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.faction == actor_faction)
+                .map(|(i, _)| i)
+                .collect(),
+        }
+    }
+
+    /// The weakest living hostile, honouring back-row protection — the same
+    /// heuristic (and RNG discipline) as the basic monster attack.
+    fn pick_weakest_hostile(&mut self, actor_i: usize) -> Option<usize> {
+        let actor_faction = self.fighters[actor_i].faction.clone();
+        let actor_id = self.fighters[actor_i].combatant_id.clone();
+        let hostile: Vec<usize> = self
+            .fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.alive
+                    && f.combatant_id != actor_id
+                    && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp)?;
+        if self.fighters[weakest].back_row {
+            let front = hostile
+                .iter()
+                .copied()
+                .filter(|&i| !self.fighters[i].back_row)
+                .min_by_key(|&i| self.fighters[i].hp);
+            match front {
+                Some(f) if self.next_rand_unit() >= self.back_row_target_weight => Some(f),
+                _ => Some(weakest),
+            }
+        } else {
+            Some(weakest)
+        }
+    }
+
+    /// `stats[scaling_base] × coefficient`, rounded — the spec's base formula.
+    fn scaled_amount(
+        &self,
+        actor_i: usize,
+        base: Option<ScalingBase>,
+        coefficient: Option<f64>,
+    ) -> i32 {
+        let f = &self.fighters[actor_i];
+        let stat = match base {
+            Some(ScalingBase::Attack) => f.atk as f64,
+            Some(ScalingBase::Magic) => f.spell_power as f64,
+            Some(ScalingBase::Level) => f.level as f64,
+            Some(ScalingBase::MaxHp) => f.max_hp as f64,
+            None => f.atk as f64,
+        };
+        (stat * coefficient.unwrap_or(1.0)).round() as i32
+    }
+
+    /// A pure-upkeep resolution (DoT killed the actor before it could act).
+    fn upkeep_only(&self, actor_i: usize, effects: Vec<ResolvedEffect>) -> Resolution {
+        Resolution {
+            action_id: None,
+            actor_id: self.fighters[actor_i].combatant_id.clone(),
+            action: BattleActionKind::Defend,
+            auto: true,
+            flee_success: None,
+            callout_text: None,
+            effects,
+        }
     }
 
     /// Roll the target's Dex-derived dodge against a *physical* attack. On a
@@ -1564,7 +2065,7 @@ impl Battle {
         let chance = (self.fighters[target_i].dodge + self.fighters[target_i].evasion).min(0.95);
         if chance > 0.0 && self.next_rand_unit() < chance {
             let t = &self.fighters[target_i];
-            Some(vec![ResolvedEffect {
+            Some(vec![ResolvedEffect { modifier_flag: None,
                 target_id: t.combatant_id.clone(),
                 kind: EffectKind::StatusApplied,
                 amount: None,
@@ -1573,6 +2074,72 @@ impl Battle {
             }])
         } else {
             None
+        }
+    }
+
+    /// The target's modifier for a damage type, plus its wire flag.
+    /// `DamageType::None` is pure damage: multiplier 1.0, no flag.
+    fn modifier_for(&self, target_i: usize, ty: DamageType) -> (f64, Option<ModifierFlag>) {
+        if ty == DamageType::None {
+            return (1.0, None);
+        }
+        let m = self.fighters[target_i]
+            .damage_modifiers
+            .get(&ty)
+            .copied()
+            .unwrap_or(1.0);
+        let flag = if m > 1.0 {
+            ModifierFlag::Weak
+        } else if m < 0.0 {
+            ModifierFlag::Absorb
+        } else if m == 0.0 {
+            ModifierFlag::Immune
+        } else if m < 1.0 {
+            ModifierFlag::Resist
+        } else {
+            ModifierFlag::Normal
+        };
+        (m, Some(flag))
+    }
+
+    /// Typed damage (spec §2): `Final = Floor(raw × target_modifier)`.
+    /// Immunity lands a 0; absorption heals `|Final|` instead; everything else
+    /// flows through [`Self::apply_damage`] (barrier, back-row, KO) with the
+    /// modifier flag stamped on the Damage effect.
+    fn apply_typed_damage(
+        &mut self,
+        target_i: usize,
+        raw: i32,
+        ty: DamageType,
+    ) -> Vec<ResolvedEffect> {
+        let (mult, flag) = self.modifier_for(target_i, ty);
+        match flag {
+            Some(ModifierFlag::Immune) => vec![ResolvedEffect {
+                target_id: self.fighters[target_i].combatant_id.clone(),
+                kind: EffectKind::Damage,
+                amount: Some(0),
+                status: None,
+                hp_after: self.fighters[target_i].hp,
+                modifier_flag: flag,
+            }],
+            Some(ModifierFlag::Absorb) => {
+                let healed = ((raw as f64) * mult).floor().abs() as i32;
+                let mut fx = self.apply_heal(target_i, healed.max(1));
+                for e in &mut fx {
+                    e.modifier_flag = flag;
+                }
+                fx
+            }
+            _ => {
+                let dmg = (((raw as f64) * mult).floor() as i32).max(self.min_damage);
+                let mut fx = self.apply_damage(target_i, dmg);
+                for e in &mut fx {
+                    if matches!(e.kind, EffectKind::Damage) {
+                        e.modifier_flag = flag;
+                    }
+                }
+                fx
+            }
         }
     }
 
@@ -1594,7 +2161,7 @@ impl Battle {
             t.alive = false;
         }
         // Report the HP actually lost (barrier absorption shows via the barrier bar).
-        let mut effects = vec![ResolvedEffect {
+        let mut effects = vec![ResolvedEffect { modifier_flag: None,
             target_id: t.combatant_id.clone(),
             kind: EffectKind::Damage,
             amount: Some(hp_loss),
@@ -1602,7 +2169,7 @@ impl Battle {
             hp_after: t.hp,
         }];
         if dead {
-            effects.push(ResolvedEffect {
+            effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
                 kind: EffectKind::Ko,
                 amount: None,
@@ -2838,5 +3405,339 @@ mod tests {
             .unwrap();
         assert!(player_hp(&battle, "m1") < 500, "Toll hit the first enemy");
         assert!(player_hp(&battle, "m2") < 500, "Toll hit the second enemy too");
+    }
+
+    // ------------------------------------------------ Creature AI spec §2 ---
+
+    /// An instant ability (weight ≫ basic) with all effect kinds observable:
+    /// the monster's turn resolves as an auto Skill carrying the callout.
+    fn spec_ability(telegraph: i32, effects: Vec<meld_proto::abilities::AbilityEffect>) -> MonsterAbility {
+        MonsterAbility {
+            ability_kind: "test_blast".into(),
+            callout_text: "Test Blast!".into(),
+            weight: 100_000, // overwhelms basic_attack_weight in the roll
+            cooldown_ticks: 0,
+            telegraph_ticks: telegraph,
+            hp_threshold_pct: None,
+            min_level: 1,
+            effects: vec![],
+        }
+        .tap_effects(effects)
+    }
+    trait Tap {
+        fn tap_effects(self, e: Vec<meld_proto::abilities::AbilityEffect>) -> Self;
+    }
+    impl Tap for MonsterAbility {
+        fn tap_effects(mut self, e: Vec<meld_proto::abilities::AbilityEffect>) -> Self {
+            self.effects = e;
+            self
+        }
+    }
+    fn dmg_effect(coeff: f64, ty: DamageType) -> meld_proto::abilities::AbilityEffect {
+        meld_proto::abilities::AbilityEffect {
+            effect_kind: AbilityEffectKind::Damage,
+            scaling_base: Some(ScalingBase::Attack),
+            coefficient: Some(coeff),
+            damage_type: Some(ty),
+            target: AbilityTarget::SingleEnemy,
+            status_name: None,
+            duration_ticks: None,
+            steal_target_kind: None,
+        }
+    }
+
+    /// Run ticks until the monster acts; return (callouts, resolutions).
+    fn run_until_monster_acts(battle: &mut Battle, max_ticks: usize) -> (Vec<Event>, Vec<Resolution>) {
+        let mut all = Vec::new();
+        let mut resolutions = Vec::new();
+        for _ in 0..max_ticks {
+            for ev in battle.tick() {
+                match &ev {
+                    Event::Resolved(r) if r.actor_id.starts_with('m') => {
+                        resolutions.push(r.clone());
+                    }
+                    _ => {}
+                }
+                all.push(ev);
+            }
+            if !resolutions.is_empty() {
+                return (all, resolutions);
+            }
+        }
+        (all, resolutions)
+    }
+
+    #[test]
+    fn weighted_ai_picks_the_heavy_ability_and_shouts_its_callout() {
+        let b = balance();
+        let mut m = monster("m1", 500, 300);
+        m.abilities = vec![spec_ability(0, vec![dmg_effect(1.0, DamageType::Slash)])];
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)], // slow player: never acts first
+            vec![m],
+            &b,
+            42,
+        );
+        let (_, resolutions) = run_until_monster_acts(&mut battle, 50);
+        let res = resolutions.first().expect("monster acted");
+        assert_eq!(res.action, BattleActionKind::Skill);
+        assert!(res.auto);
+        assert_eq!(res.callout_text.as_deref(), Some("Test Blast!"));
+        assert!(res
+            .effects
+            .iter()
+            .any(|e| matches!(e.kind, EffectKind::Damage) && e.amount.unwrap_or(0) > 0));
+    }
+
+    #[test]
+    fn telegraphed_ability_shouts_first_and_lands_at_executes_at_tick() {
+        let b = balance();
+        let mut m = monster("m1", 500, 300);
+        m.abilities = vec![spec_ability(10, vec![dmg_effect(2.0, DamageType::Blunt)])];
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![m],
+            &b,
+            42,
+        );
+        let mut telegraph_at = None;
+        let mut executes_at_tick = 0;
+        let mut landed_at = None;
+        for _ in 0..80 {
+            for ev in battle.tick() {
+                match ev {
+                    Event::TelegraphStarted {
+                        callout_text,
+                        executes_at_tick: at,
+                        ..
+                    } => {
+                        assert_eq!(callout_text, "Test Blast!");
+                        telegraph_at = Some(battle.tick_count());
+                        executes_at_tick = at;
+                    }
+                    Event::Resolved(r) if r.actor_id == "m1" => {
+                        // The channeled cast carries no callout (already shouted).
+                        assert_eq!(r.callout_text, None);
+                        landed_at = Some(battle.tick_count());
+                    }
+                    _ => {}
+                }
+            }
+            if landed_at.is_some() {
+                break;
+            }
+        }
+        let (t, l) = (telegraph_at.expect("telegraphed"), landed_at.expect("landed"));
+        assert_eq!(l, executes_at_tick, "cast lands exactly at executes_at_tick");
+        assert!(l >= t + 10, "channel took the full telegraph window");
+        assert!(player_hp(&battle, "a") < 40, "the channeled blow landed");
+    }
+
+    #[test]
+    fn elemental_modifiers_flag_weak_resist_immune_and_absorb() {
+        let b = balance();
+        // Four players with distinct FIRE profiles; one fire-slinging monster.
+        let mk = |id: &str, m: Option<f64>| {
+            let mut p = player(id, 1);
+            p.hp = 400;
+            p.max_hp = 400;
+            if let Some(v) = m {
+                p.damage_modifiers.insert(DamageType::Fire, v);
+            }
+            p
+        };
+        // Single-target picks the weakest; give distinct HP so targeting is fixed.
+        // Instead: test via apply_typed_damage directly for precision.
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![
+                mk("weak", Some(2.0)),
+                mk("resist", Some(0.5)),
+                mk("immune", Some(0.0)),
+                mk("absorb", Some(-1.0)),
+            ],
+            vec![monster("m1", 500, 1)],
+            &b,
+            42,
+        );
+        let raw = 100;
+        let idx = |bt: &Battle, id: &str| bt.idx(id).unwrap();
+
+        let i = idx(&battle, "weak");
+        let fx = battle.apply_typed_damage(i, raw, DamageType::Fire);
+        assert_eq!(fx[0].modifier_flag, Some(ModifierFlag::Weak));
+        assert_eq!(fx[0].amount, Some(200));
+
+        let i = idx(&battle, "resist");
+        let fx = battle.apply_typed_damage(i, raw, DamageType::Fire);
+        assert_eq!(fx[0].modifier_flag, Some(ModifierFlag::Resist));
+        assert_eq!(fx[0].amount, Some(50));
+
+        let i = idx(&battle, "immune");
+        let fx = battle.apply_typed_damage(i, raw, DamageType::Fire);
+        assert_eq!(fx[0].modifier_flag, Some(ModifierFlag::Immune));
+        assert_eq!(fx[0].amount, Some(0));
+        assert_eq!(player_hp(&battle, "immune"), 400, "immunity takes nothing");
+
+        let i = idx(&battle, "absorb");
+        let hp_before = player_hp(&battle, "absorb");
+        let fx = battle.apply_typed_damage(i, raw, DamageType::Fire);
+        assert_eq!(fx[0].modifier_flag, Some(ModifierFlag::Absorb));
+        assert!(matches!(fx[0].kind, EffectKind::Heal));
+        assert!(player_hp(&battle, "absorb") >= hp_before, "absorption heals");
+
+        // Untyped (pure) damage carries no flag and ignores the profile.
+        let i = idx(&battle, "weak");
+        let fx = battle.apply_typed_damage(i, raw, DamageType::None);
+        assert_eq!(fx[0].modifier_flag, None);
+        assert_eq!(fx[0].amount, Some(100));
+    }
+
+    #[test]
+    fn hp_threshold_gates_a_desperation_ability() {
+        let b = balance();
+        let mut m = monster("m1", 500, 300);
+        // Only ability: a self-heal gated to HP ≤ 50%. At full HP the pool is
+        // empty, so the monster basic-attacks instead.
+        m.abilities = vec![MonsterAbility {
+            ability_kind: "mend".into(),
+            callout_text: "Mend!".into(),
+            weight: 100_000,
+            cooldown_ticks: 0,
+            telegraph_ticks: 0,
+            hp_threshold_pct: Some(0.5),
+            min_level: 1,
+            effects: vec![meld_proto::abilities::AbilityEffect {
+                effect_kind: AbilityEffectKind::Heal,
+                scaling_base: Some(ScalingBase::MaxHp),
+                coefficient: Some(0.25),
+                damage_type: None,
+                target: AbilityTarget::SelfCast,
+                status_name: None,
+                duration_ticks: None,
+                steal_target_kind: None,
+            }],
+        }];
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![m],
+            &b,
+            42,
+        );
+        let (_, resolutions) = run_until_monster_acts(&mut battle, 50);
+        assert_eq!(
+            resolutions[0].action,
+            BattleActionKind::Attack,
+            "full-HP monster can't use its desperation heal"
+        );
+    }
+
+    #[test]
+    fn min_level_gates_the_pool_like_the_spec_spider() {
+        let b = balance();
+        let mut young = monster("m1", 500, 300);
+        young.level = 1;
+        // A high-level-only nuke: the L1 spawn can't roll it.
+        let mut nuke = spec_ability(0, vec![dmg_effect(5.0, DamageType::Poison)]);
+        nuke.min_level = 20;
+        young.abilities = vec![nuke];
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![young],
+            &b,
+            42,
+        );
+        let (_, resolutions) = run_until_monster_acts(&mut battle, 50);
+        assert_eq!(
+            resolutions[0].action,
+            BattleActionKind::Attack,
+            "a L1 creature only knows its basic attack"
+        );
+    }
+
+    #[test]
+    fn poison_status_ticks_damage_at_the_victims_turn() {
+        let b = balance();
+        let mut m = monster("m1", 500, 300);
+        m.abilities = vec![spec_ability(
+            0,
+            vec![meld_proto::abilities::AbilityEffect {
+                effect_kind: AbilityEffectKind::Status,
+                scaling_base: None,
+                coefficient: None,
+                damage_type: None,
+                target: AbilityTarget::SingleEnemy,
+                status_name: Some("poison".into()),
+                duration_ticks: Some(600),
+                steal_target_kind: None,
+            }],
+        )];
+        let mut p = player("a", 120);
+        p.hp = 400;
+        p.max_hp = 400;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![p],
+            vec![m],
+            &b,
+            42,
+        );
+        // Let the monster poison the player, then let the player's gauge fill
+        // and submit an action — the DoT fires in its start-of-turn upkeep.
+        let mut poisoned = false;
+        for _ in 0..200 {
+            for ev in battle.tick() {
+                if let Event::Resolved(r) = &ev {
+                    if r.effects.iter().any(|e| e.status.as_deref() == Some("poison")) {
+                        poisoned = true;
+                    }
+                }
+                if let Event::TurnReady { combatant_id } = &ev {
+                    if combatant_id == "a" && poisoned {
+                        let evs = battle
+                            .submit("a", uuid_str(), BattleActionKind::Defend, None, None, None)
+                            .unwrap();
+                        let dot: i32 = evs
+                            .iter()
+                            .filter_map(|e| match e {
+                                Event::Resolved(r) => Some(
+                                    r.effects
+                                        .iter()
+                                        .filter(|fx| {
+                                            fx.target_id == "a"
+                                                && matches!(fx.kind, EffectKind::Damage)
+                                        })
+                                        .filter_map(|fx| fx.amount)
+                                        .sum::<i32>(),
+                                ),
+                                _ => None,
+                            })
+                            .sum();
+                        // poison_dot_fraction of 400 max HP (5% → 20).
+                        let expected =
+                            ((400.0_f64) * b.battle.poison_dot_fraction).round() as i32;
+                        assert_eq!(dot, expected, "poison ticked at turn start");
+                        return;
+                    }
+                }
+            }
+        }
+        panic!("player never got a poisoned turn");
+    }
+
+    fn uuid_str() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!("act-{}", N.fetch_add(1, Ordering::Relaxed))
     }
 }

@@ -55,12 +55,14 @@ pub(crate) fn mock_battle_setup(
         text: "-17".into(),
         color: Color::srgb(1.0, 0.5, 0.4),
         age: 0.06,
+        scale: 1.0,
     });
     hitfx.items.push(Hit {
         target: "h3".into(),
         text: "+12".into(),
         color: Color::srgb(0.5, 1.0, 0.6),
         age: 0.0,
+        scale: 1.0,
     });
     let hero = |id: &str, hp, gauge, class: &str, back: bool| {
         let mut statuses = vec![format!("class:{class}")];
@@ -200,7 +202,7 @@ pub(crate) fn mock_overlay_setup(
             GearLine {
                 gear_id: "mock-weapon".into(),
                 name: "Chipped Blade".into(),
-                slot: "weapon".into(),
+                slot: "main_hand".into(),
                 class_key: String::new(),
                 insurance: "blue".into(),
                 tier: 0,

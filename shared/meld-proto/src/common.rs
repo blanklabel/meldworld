@@ -79,6 +79,10 @@ pub struct LootGear {
     /// in the run and is lost with the rest of the backpack on death.
     #[serde(default)]
     pub equipped_hero_slot: Option<i32>,
+    /// Elemental profile the piece grants its wearer (spec §5): DamageType wire
+    /// key ("FIRE") → multiplier. Additive; old wire/clients default to empty.
+    #[serde(default)]
+    pub damage_modifiers: Vec<(String, f64)>,
 }
 
 /// A battle actor's public state (realtime-protocol.md Combatant).

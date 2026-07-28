@@ -97,6 +97,7 @@ fn main() {
         // Demo and autoplay are mutually exclusive; demo skips networking.
         // `?city` connects via the autoplay path but parks in the hub (see CityIdle).
         .insert_resource(Autoplay((autoplay_flag() || city_idle_flag()) && !demo_flag()))
+        .init_resource::<Tactics>()
         .insert_resource(CityIdle(city_idle_flag()))
         .insert_resource(Demo {
             on: demo_flag(),
@@ -373,6 +374,7 @@ fn main() {
             (
                 validate_active,
                 auto_fire_queued,
+                tactics_toggle,
                 menu_keyboard,
                 menu_click,
                 party_select_click,
@@ -1138,13 +1140,19 @@ fn category_gear<'a>(
     items
 }
 
+/// The six item categories of the 7-slot loadout (Epic GR spec §5), in
+/// display order. Two accessory *equip* slots share the one accessory
+/// category (the server enforces the ×2 capacity).
+pub(crate) const GEAR_CATEGORIES: [&str; 6] =
+    ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
+
 /// The Equip tab main screen's navigable row list: hero switcher buttons,
-/// then the three equipment categories (each opens the picker screen).
+/// then the six equipment categories (each opens the picker screen).
 fn equip_main_rows(hero_count: usize) -> Vec<EquipRow> {
     let mut rows: Vec<EquipRow> = (0..hero_count).map(EquipRow::Hero).collect();
-    rows.push(EquipRow::Category("weapon"));
-    rows.push(EquipRow::Category("armor"));
-    rows.push(EquipRow::Category("accessory"));
+    for c in GEAR_CATEGORIES {
+        rows.push(EquipRow::Category(c));
+    }
     rows
 }
 
@@ -1248,12 +1256,26 @@ struct HitFx {
     /// `attack` or a specific special). Consumed by `drive_battle_action_clips`,
     /// which hands it to the actor's `hd2d::CharSprite`.
     act_clip: HashMap<String, String>,
+    /// Monster ability shout bubbles (spec §6): a telegraph flashes for its
+    /// channel window; an instant ability's callout pops briefly.
+    callouts: Vec<Callout>,
 }
 struct Hit {
     target: String,
     text: String,
     color: Color,
     age: f32,
+    /// Font-size multiplier — WEAK! hits pop bigger (screen-shaking flourish).
+    scale: f32,
+}
+/// A monster's ability shout bubble (see `HitFx::callouts`).
+struct Callout {
+    combatant_id: String,
+    text: String,
+    age: f32,
+    ttl: f32,
+    /// Telegraphs flash (channeling); instant callouts just fade.
+    flashing: bool,
 }
 /// Seconds a floating number lives.
 const HIT_TTL: f32 = 1.0;
@@ -1323,6 +1345,13 @@ struct MoveClock {
 /// When true, the client self-drives the loop against the real server.
 #[derive(Resource)]
 struct Autoplay(bool);
+
+/// The Tactics auto-battle toggle (spec §6): available while an Iron Hull is
+/// in the battle; when enabled, ready heroes auto-queue their class default
+/// (same per-class heuristics as `?autoplay`) with no human reaction delay.
+/// Toggled with T on the battle screen.
+#[derive(Resource, Default)]
+struct Tactics(bool);
 
 /// When true (`?city` / `MELD_CITY`), the client connects but parks in The Last City
 /// (the hub) instead of auto-diving — for screenshotting / iterating on the city.

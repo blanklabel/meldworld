@@ -181,6 +181,13 @@ ironhull_root_barrier_fraction = 0.25 # Root: Barrier granted = max_hp * fractio
 ironhull_shock_mult = 1.6           # Kinetic Shock: dmg = atk*mult - def (then gauge → 0)
 ironhull_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to EVERY enemy
 
+# Monster-ability system (Creature AI spec §2). All [TUNABLE].
+status_slow_mult = 0.5               # ATB fill mult while webbed/chilled/bound/…
+poison_dot_fraction = 0.05           # poison: max_hp fraction lost per victim turn
+burn_dot_fraction = 0.04             # burn: max_hp fraction lost per victim turn
+basic_attack_weight = 3              # weight of the basic attack in every AI roll
+steal_chits_fraction = 0.10          # chit-steal: fraction of carried chits taken
+
 # Creature loot (economy.md sources S1). A felled encounter yields, banked into
 # the run backpack and minted into the persistent economy only on extraction
 # (deleted on death — it never entered circulation, economy.md I1):
@@ -189,7 +196,7 @@ ironhull_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to 
 #   - One of the biome's combat materials per felled encounter (feeds crafting;
 #     biome→material map is structural, in meld-world::combat_material_for_biome).
 #   - Red-chest gear (insurance:red), at/after world_scaling.red_chest_floor_
-#     distance (0 — gear can drop from the very first kill), dropping with
+#     distance (300 — spec §4: no gear shallower than d=300), dropping with
 #     `gear_drop_chance`. Rolled atk bonus = `round(gear_atk_per_tier * tier(d) *
 #     jitter)`, jitter ∈ [1±gear_atk_jitter]; the catalog name (meld-world::
 #     gear_catalog_name) scales with the same tier, so early gear reads as early
@@ -216,7 +223,7 @@ elite_xp_mult = 3.0
 elite_loot_mult = 3.0            # chits ×, and boosts the gear-drop chance
 gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the party over a merge
 gatekeeper_atk_mult = 1.6
-gatekeeper_xp_mult = 9.0
+gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
 
 # Gear rarity (loot excitement). A dropped piece rolls Common → Rare → Epic →
@@ -228,6 +235,7 @@ gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pas
 rare_weight = 0.28               # base P(Rare) on a standard drop
 epic_weight = 0.09
 legendary_weight = 0.02
+rarity_shift_per_2_tiers = 0.10  # spec §4: every 2 tiers, non-common weights +10%, common -10% [TUNABLE]
 rare_mult = 1.5                  # stat-bonus multiplier vs a Common piece
 epic_mult = 2.3
 legendary_mult = 3.6
@@ -255,7 +263,8 @@ tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 stat_mult_exp = 1.25
-red_chest_floor_distance = 0
+xp_distance_exp = 1.5            # spec §4: xp = floor(base_xp * (1 + d/500)^1.5) [TUNABLE]
+red_chest_floor_distance = 300  # spec §4: no gear drops shallower than d=300 [TUNABLE]
 
 # Procedural area generation (world-generation.md subset). A MazeInstance is a
 # seeded chain of biome "areas" marching east from the Center Hub. Each area has

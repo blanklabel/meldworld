@@ -201,11 +201,40 @@ pub(crate) fn pump_net(
                 // A hero's gauge filled; it can now act (its queued order fires).
                 battle.ready.insert(combatant_id);
             }
+            ServerMsg::Telegraph { combatant_id, text } => {
+                // A monster shouted a channeled cast (spec §3/§6): flash the
+                // bubble for the channel window and put the caster in its
+                // charging pose. Bubble TTL ~ the longest telegraph (3 s).
+                hitfx.callouts.push(Callout {
+                    combatant_id: combatant_id.clone(),
+                    text,
+                    age: 0.0,
+                    ttl: 3.0,
+                    flashing: true,
+                });
+                hitfx.act_clip.insert(combatant_id, "attack".to_string());
+            }
             ServerMsg::ActionResolved {
                 actor,
                 action,
+                callout,
                 effects,
             } => {
+                // An instant monster ability's shout pops briefly over the
+                // arena (telegraphed ones already arrived via `Telegraph`).
+                if let Some(text) = callout {
+                    hitfx.callouts.push(Callout {
+                        combatant_id: actor.clone(),
+                        text,
+                        age: 0.0,
+                        ttl: 1.4,
+                        flashing: false,
+                    });
+                }
+                // Elemental WEAK!/RESIST!/IMMUNE!/ABSORB! feedback is Psyker
+                // threat-sight (spec §6): unlocked when the party's Psyker perk
+                // is live, plain numbers otherwise.
+                let show_elements = perks.0.psyker_threat > 0;
                 let mut did_damage = false;
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.
@@ -215,7 +244,7 @@ pub(crate) fn pump_net(
                     if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
                         did_damage = true;
                     }
-                    push_hit_fx(&mut hitfx, &e);
+                    push_hit_fx(&mut hitfx, &e, show_elements);
                 }
                 // A damaging action makes its actor lunge in to strike.
                 if did_damage {

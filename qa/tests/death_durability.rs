@@ -78,7 +78,7 @@ async fn death_degrades_equipped_gear_durability() {
     assert!(!g0.is_empty(), "starter kit seeded");
     let weapon0 = g0
         .iter()
-        .find(|g| g["slot"] == json!("weapon") && g["equipped_hero_slot"] == json!(0))
+        .find(|g| g["slot"] == json!("main_hand") && g["equipped_hero_slot"] == json!(0))
         .expect("hero 0 has a starting weapon");
     let weapon0_id = weapon0["gear_id"].as_str().unwrap().to_string();
     let base_max = weapon0["base_max_durability"].as_i64().unwrap();
@@ -98,7 +98,10 @@ async fn death_degrades_equipped_gear_durability() {
     let mut died = false;
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    // The ability AI (Creature AI spec §2) makes the stalker spend a chunk of
+    // its turns on web_bind (a status, no damage), so the passive bot takes
+    // meaningfully longer to fall than under the old always-attack AI.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
 
     while !died {
         assert!(tokio::time::Instant::now() < deadline, "did not die in time");

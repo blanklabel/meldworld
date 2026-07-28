@@ -149,6 +149,17 @@ pub struct Battle {
     pub ironhull_root_barrier_fraction: f64,
     pub ironhull_shock_mult: f64,
     pub ironhull_toll_mult: f64,
+    // Monster-ability system (Creature AI spec §2).
+    /// ATB fill multiplier while a slowing status (web/chill/bind/…) is active.
+    pub status_slow_mult: f64,
+    /// Poison DoT per victim turn, as a fraction of max HP.
+    pub poison_dot_fraction: f64,
+    /// Burn DoT per victim turn, as a fraction of max HP.
+    pub burn_dot_fraction: f64,
+    /// Weight of the implicit basic attack mixed into every ability roll.
+    pub basic_attack_weight: i32,
+    /// Fraction of a victim's carried chits a `steal chits` effect takes.
+    pub steal_chits_fraction: f64,
 }
 
 /// Creature loot tunables (economy.md sources S1). See the `[loot]` block in
@@ -184,6 +195,9 @@ pub struct GearRarity {
     pub rare_weight: f64,
     pub epic_weight: f64,
     pub legendary_weight: f64,
+    /// Distance shift (spec §4): every 2 tiers, the non-common weights grow by
+    /// this fraction (and Common, the remainder, shrinks to match).
+    pub rarity_shift_per_2_tiers: f64,
     pub rare_mult: f64,
     pub epic_mult: f64,
     pub legendary_mult: f64,
@@ -216,6 +230,9 @@ pub struct WorldScaling {
     pub mlevel_divisor: f64,
     pub stat_mult_base_divisor: f64,
     pub stat_mult_exp: f64,
+    /// XP curve exponent (spec §4): `xp = floor(base_xp × (1 + d/divisor)^exp)`
+    /// — steeper than the stat curve so deep kills out-reward the grind.
+    pub xp_distance_exp: f64,
     pub red_chest_floor_distance: i64,
 }
 

@@ -156,11 +156,37 @@ pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> 
 
 /// One hero's summed combat bonuses from their own equipped gear (per-hero
 /// equip slots — each hero in a party can wear different gear).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct GearBonus {
     pub atk: i32,
     pub def: i32,
     pub spd: i32,
+    /// Raw per-item elemental entries (DamageType wire key → multiplier) from
+    /// every equipped piece; folded and clamped by [`fold_damage_modifiers`]
+    /// at battle assembly (spec §5).
+    pub modifiers: Vec<(String, f64)>,
+}
+
+/// Fold a hero's raw per-item elemental entries into one profile (spec §5
+/// stat aggregation): per damage type, `1 + Σ(mᵢ − 1)` — so two quarter-
+/// resists (0.75) stack to a half-resist (0.5) instead of multiplying into a
+/// weakness — clamped to the spec's 0.0–2.0 bounds [TUNABLE bounds live in
+/// the spec; structural here].
+pub fn fold_damage_modifiers(
+    entries: &[(String, f64)],
+) -> std::collections::HashMap<meld_proto::enums::DamageType, f64> {
+    let mut acc: HashMap<meld_proto::enums::DamageType, f64> = HashMap::new();
+    for (key, m) in entries {
+        // Keys are the wire form ("FIRE"); unknown keys are skipped.
+        let Some(ty) = meld_proto::enums::DamageType::from_wire(key) else {
+            continue;
+        };
+        *acc.entry(ty).or_insert(1.0) += m - 1.0;
+    }
+    for v in acc.values_mut() {
+        *v = v.clamp(0.0, 2.0);
+    }
+    acc
 }
 
 /// Assemble a battle from a party and one arena monster. `party` gives, per
@@ -235,6 +261,8 @@ pub fn party_fighters(
             f.wll = wll;
             f.spell_power = spell_power;
             f.dodge = dodge;
+            // Elemental wards from gear (spec §5): folded + clamped 0.0–2.0.
+            f.damage_modifiers = fold_damage_modifiers(&bonus.modifiers);
             // Surface the class to the client (drives the per-hero command menu).
             f.class_key = class_key(*class).to_string();
             match *class {
@@ -325,6 +353,16 @@ pub fn build_battle(
             );
             f.faction = m.faction.clone();
             f.flees = m.flees;
+            // Creature AI content (spec §1/§2): the kind's permanent ability
+            // pool (level-gated at selection time), its elemental profile,
+            // and its typed basic swing. Keyed by the BASE kind — a champion
+            // ("Swift dune wyrm") shares its kind's pool.
+            f.abilities = meld_world::abilities::creature_abilities(&m.monster_kind);
+            f.damage_modifiers = meld_world::abilities::creature_damage_modifiers(&m.monster_kind)
+                .into_iter()
+                .collect();
+            f.basic_attack_type =
+                meld_world::abilities::creature_basic_attack_type(&m.monster_kind);
             f
         })
         .collect();
@@ -523,7 +561,7 @@ mod tests {
             "p".into(),
             "c".into(),
             CharacterClass::Hunter,
-            GearBonus { atk: 5, def: 3, spd: 2 },
+            GearBonus { atk: 5, def: 3, spd: 2, modifiers: Vec::new() },
         )];
         let f0 = party_fighters(&bare, &runs, &b, &[]).pop().unwrap();
         let f1 = party_fighters(&geared, &runs, &b, &[]).pop().unwrap();

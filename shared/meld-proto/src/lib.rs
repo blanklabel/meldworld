@@ -10,6 +10,7 @@
 //! - [`http`] — HTTP request/response DTOs.
 //! - [`limits`] — field bounds and validators (docs/edge-cases/limits.md).
 
+pub mod abilities;
 pub mod common;
 pub mod enums;
 pub mod envelope;

@@ -63,6 +63,10 @@ impl GameHandle {
 enum DbWrite {
     /// Apply the death durability sink for a player whose run just ended.
     Death(String),
+    /// Permanently delete a player's EQUIPPED red-insurance gear — the spec §5
+    /// canon-gap resolution: Vault-owned red gear brought back into a run is
+    /// at absolute risk, burned when the run ends `died` OR `abandoned`.
+    PurgeEquippedRed(String),
     /// Credit harvested Meld-skill XP: (player, skill, xp).
     SkillXp(String, String, i64),
     /// Persist a hero rename: (player, slot, name).
@@ -84,6 +88,17 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.apply_death_durability(uid).await {
                         tracing::error!("death durability failed for {pid}: {e}");
+                    }
+                    // Died is one of the two red-burning ends (spec §5).
+                    if let Err(e) = db.delete_equipped_red_gear(uid).await {
+                        tracing::error!("red-gear purge failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::PurgeEquippedRed(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.delete_equipped_red_gear(uid).await {
+                        tracing::error!("red-gear purge failed for {pid}: {e}");
                     }
                 }
             }
@@ -181,27 +196,45 @@ fn hash_str(s: &str) -> u64 {
 /// Combine a hero's Vault-equipped bonus (this run's baseline, loaded from the
 /// account's persistent loadout at dive time) with any run-loot gear they've
 /// equipped *this run* (`run.equip_loot`) — worn loot overrides the vault
-/// baseline for its own category (weapon→atk, armor→def, accessory→spd)
-/// rather than stacking, mirroring the one-item-per-category rule the Vault
-/// already enforces. `hero_slot` is the party slot index (0-based).
+/// baseline for its own stat lane (main_hand→atk, protective pieces→def,
+/// accessory→spd) rather than stacking, mirroring the per-category capacity
+/// the Vault already enforces. `hero_slot` is the party slot index (0-based).
 fn effective_gear_bonus(
     vault: meld_db::GearBonus,
     looted: &[LootGear],
     hero_slot: i32,
 ) -> meld_run::GearBonus {
-    let mut bonus = meld_run::GearBonus { atk: vault.atk, def: vault.def, spd: vault.spd };
+    let mut bonus = meld_run::GearBonus {
+        atk: vault.atk,
+        def: vault.def,
+        spd: vault.spd,
+        modifiers: vault.modifiers,
+    };
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {
             continue;
         }
         match g.slot.as_str() {
-            "weapon" => bonus.atk = g.atk_bonus,
-            "armor" => bonus.def = g.def_bonus,
+            "main_hand" => bonus.atk = g.atk_bonus,
+            "off_hand" | "head" | "chest" | "legs" => bonus.def = g.def_bonus,
             "accessory" => bonus.spd = g.spd_bonus,
             _ => {}
         }
     }
     bonus
+}
+
+/// Serialize a drop's elemental entries into the gear table's JSON column
+/// format ({"FIRE":0.75}); empty entries become "{}".
+fn modifiers_json(entries: &[(String, f64)]) -> String {
+    if entries.is_empty() {
+        return "{}".to_string();
+    }
+    let map: serde_json::Map<String, serde_json::Value> = entries
+        .iter()
+        .filter_map(|(k, v)| serde_json::Number::from_f64(*v).map(|n| (k.clone(), n.into())))
+        .collect();
+    serde_json::Value::Object(map).to_string()
 }
 
 /// The per-hero class composition of a player's party of `size`. The picked class
@@ -661,6 +694,18 @@ impl GameState {
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
                 self.pending_hero_load.retain(|p| p != &player_id);
+                // A disconnect that drops a still-unresolved run ends it
+                // `abandoned` — the other red-burning end (spec §5): any
+                // equipped Vault-owned red gear is permanently deleted.
+                let abandoned = self.instance.as_ref().is_some_and(|inst| {
+                    inst.run
+                        .runs
+                        .iter()
+                        .any(|r| r.player_id == player_id && r.result.is_none())
+                });
+                if abandoned {
+                    let _ = self.db_writes.send(DbWrite::PurgeEquippedRed(player_id.clone()));
+                }
                 self.remove_from_instance(&player_id);
                 out
             }
@@ -873,7 +918,7 @@ impl GameState {
             .iter()
             .enumerate()
             .map(|(slot, c)| {
-                let b = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let b = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
                 (pid.to_string(), String::new(), *c, effective_gear_bonus(b, looted, slot as i32))
             })
             .collect();
@@ -1764,7 +1809,7 @@ impl GameState {
                 let cid = Uuid::now_v7().to_string();
                 combatant_player.insert(cid.clone(), r.player_id.clone());
                 // Each hero wears their own gear (per-character equip slots).
-                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
                 let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
@@ -2045,10 +2090,24 @@ impl GameState {
             // One item per hero+category: unequip anything else this hero has
             // worn this run in the same category before wearing the new one.
             let category = r.looted_gear[idx].slot.clone();
-            for g in r.looted_gear.iter_mut() {
-                if g.slot == category && g.equipped_hero_slot == Some(slot) {
-                    g.equipped_hero_slot = None;
+            // Per-(hero, category) capacity mirrors the Vault rule: two
+            // accessory slots (ACCESSORY_1/2), one of everything else. When
+            // full, the oldest worn piece makes room for the new one.
+            let cap = if category == "accessory" { 2 } else { 1 };
+            loop {
+                let worn: Vec<usize> = r
+                    .looted_gear
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, g)| {
+                        *i != idx && g.slot == category && g.equipped_hero_slot == Some(slot)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if worn.len() < cap {
+                    break;
                 }
+                r.looted_gear[worn[0]].equipped_hero_slot = None;
             }
             r.looted_gear[idx].equipped_hero_slot = Some(slot);
         } else {
@@ -2108,7 +2167,7 @@ impl GameState {
                 let cid = Uuid::now_v7().to_string();
                 add_combatant_player.insert(cid.clone(), pid.clone());
                 // Each hero wears their own gear (per-character equip slots).
-                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).copied().unwrap_or_default();
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
                 let bonus = effective_gear_bonus(vault_bonus, looted, slot as i32);
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
@@ -2585,6 +2644,7 @@ impl GameState {
                 base_max_durability: g.max_durability,
                 max_durability: g.max_durability,
                 equipped_hero_slot: None,
+                damage_modifiers: g.damage_modifiers.clone(),
             })
             .collect();
         let mut run_gear_snapshot = None;
@@ -2709,6 +2769,7 @@ impl GameState {
                             spd_bonus: g.spd_bonus,
                             base_max_durability: g.base_max_durability,
                             max_durability: g.max_durability,
+                            damage_modifiers: modifiers_json(&g.damage_modifiers),
                         })
                     })
                     .collect();
@@ -3162,6 +3223,28 @@ impl GameState {
                         },
                     ));
                 }
+                BattleEvent::TelegraphStarted {
+                    combatant_id,
+                    callout_text,
+                    executes_at_tick,
+                } => {
+                    let members = self.members_of_battle(battle_id);
+                    out.extend(broadcast(
+                        members.iter().map(String::as_str),
+                        &wb::TelegraphStarted {
+                            battle_id: battle_id.to_string(),
+                            combatant_id,
+                            callout_text,
+                            executes_at_tick: executes_at_tick as i64,
+                        },
+                    ));
+                }
+                BattleEvent::Stolen {
+                    victim_player_id,
+                    kind,
+                } => {
+                    self.apply_steal(&victim_player_id, kind);
+                }
                 BattleEvent::Resolved(res) => {
                     let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
@@ -3171,6 +3254,7 @@ impl GameState {
                         action: res.action,
                         auto: res.auto,
                         flee_success: res.flee_success,
+                        callout_text: res.callout_text.clone(),
                         effects: res
                             .effects
                             .iter()
@@ -3180,6 +3264,7 @@ impl GameState {
                                 amount: e.amount,
                                 status: e.status.clone(),
                                 hp_after: e.hp_after,
+                                modifier_flag: e.modifier_flag,
                             })
                             .collect(),
                     };
@@ -3191,6 +3276,41 @@ impl GameState {
             }
         }
         out
+    }
+
+    /// Apply a monster's connected `steal` effect to the victim's run (spec §2):
+    /// chits lose `steal_chits_fraction`; a consumable/material steal takes one
+    /// unit of the first matching backpack stack. Silently a no-op when the
+    /// pockets are empty — the shout still happened.
+    fn apply_steal(&mut self, victim: &str, kind: meld_proto::abilities::StealTargetKind) {
+        use meld_proto::abilities::StealTargetKind as K;
+        let frac = self.balance.battle.steal_chits_fraction;
+        let Some(inst) = self.instance.as_mut() else {
+            return;
+        };
+        let Some(r) = inst.run.run_mut(victim) else {
+            return;
+        };
+        match kind {
+            K::Chits => {
+                let taken = (((r.chits as f64) * frac).ceil() as i64).clamp(0, r.chits);
+                r.chits -= taken;
+            }
+            K::Consumable | K::Material => {
+                let is_consumable = |k: &str| {
+                    matches!(k, "town_portal" | "salve" | "elixir" | "bloom_salve")
+                };
+                let want_consumable = matches!(kind, K::Consumable);
+                if let Some(stack) = r
+                    .backpack
+                    .iter_mut()
+                    .find(|s| s.quantity > 0 && is_consumable(&s.item_kind) == want_consumable)
+                {
+                    stack.quantity -= 1;
+                }
+                r.backpack.retain(|s| s.quantity > 0);
+            }
+        }
     }
 
     /// The players (across every merged party) currently in a given battle.
@@ -3349,6 +3469,7 @@ impl GameState {
                             base_max_durability: g.max_durability,
                             max_durability: g.max_durability,
                             equipped_hero_slot: None,
+                            damage_modifiers: g.damage_modifiers.clone(),
                         })
                         .collect();
                     // Record loot in the run so extraction can bank it.

@@ -27,6 +27,8 @@
 //! Still deferred (documented, not lost): true 2D radial chunk streaming,
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
 
+pub mod abilities;
+
 use std::collections::HashMap;
 
 use meld_balance::Balance;
@@ -61,6 +63,14 @@ impl<'a> Scaling<'a> {
     pub fn stat_mult(&self, d: i64) -> f64 {
         let base = 1.0 + d as f64 / self.b.world_scaling.stat_mult_base_divisor;
         base.powf(self.b.world_scaling.stat_mult_exp)
+    }
+
+    /// XP curve (spec §4): `(1 + d/500)^1.5` — steeper than `stat_mult`, so a
+    /// deep kill out-rewards a shallow one of the same creature by more than
+    /// the fight got harder. The final award is `floor(base_xp × this)`.
+    pub fn xp_mult(&self, d: i64) -> f64 {
+        let base = 1.0 + d as f64 / self.b.world_scaling.stat_mult_base_divisor;
+        base.powf(self.b.world_scaling.xp_distance_exp)
     }
 }
 
@@ -203,6 +213,10 @@ pub struct GearDrop {
     pub def_bonus: i32,
     pub spd_bonus: i32,
     pub max_durability: i32,
+    /// Elemental profile the piece grants its wearer (spec §5): DamageType wire
+    /// key → multiplier (`0.75` = resists a quarter of that element). Empty for
+    /// common/rare drops; epic+/signature pieces carry their biome's element.
+    pub damage_modifiers: Vec<(String, f64)>,
 }
 
 /// The loot a felled encounter yields to one participant.
@@ -269,36 +283,67 @@ const POWER_ADJECTIVES: [&str; 20] = [
 /// prefixes to build that class's 20-item catalog name for one slot.
 pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
     match (class_key, slot) {
-        ("hunter", "weapon") => "Warblade",
-        ("hunter", "armor") => "Battleplate",
+        ("hunter", "main_hand") => "Warblade",
+        ("hunter", "chest") => "Battleplate",
         ("hunter", "accessory") => "Bloodcuff",
-        ("dragoon", "weapon") => "Lance",
-        ("dragoon", "armor") => "Greaves",
+        ("dragoon", "main_hand") => "Lance",
+        ("dragoon", "chest") => "Greaves",
         ("dragoon", "accessory") => "Windclasp",
-        ("sage", "weapon") => "Tome",
-        ("sage", "armor") => "Vestments",
+        ("sage", "main_hand") => "Tome",
+        ("sage", "chest") => "Vestments",
         ("sage", "accessory") => "Runestone",
-        ("ranger", "weapon") => "Longbow",
-        ("ranger", "armor") => "Cloak",
+        ("ranger", "main_hand") => "Longbow",
+        ("ranger", "chest") => "Cloak",
         ("ranger", "accessory") => "Quiver Charm",
-        ("alchemist_knight", "weapon") => "Vialblade",
-        ("alchemist_knight", "armor") => "Alchemal Plate",
+        ("alchemist_knight", "main_hand") => "Vialblade",
+        ("alchemist_knight", "chest") => "Alchemal Plate",
         ("alchemist_knight", "accessory") => "Elixir Charm",
-        ("bard", "weapon") => "Songblade",
-        ("bard", "armor") => "Minstrel's Coat",
+        ("bard", "main_hand") => "Songblade",
+        ("bard", "chest") => "Minstrel's Coat",
         ("bard", "accessory") => "Lyre Pendant",
-        ("psyker", "weapon") => "Focus Rod",
-        ("psyker", "armor") => "Psi-Ward",
+        ("psyker", "main_hand") => "Focus Rod",
+        ("psyker", "chest") => "Psi-Ward",
         ("psyker", "accessory") => "Mindshard",
-        ("resonant", "weapon") => "Ward Scepter",
-        ("resonant", "armor") => "Resonant Vestments",
+        ("resonant", "main_hand") => "Ward Scepter",
+        ("resonant", "chest") => "Resonant Vestments",
         ("resonant", "accessory") => "Harmony Bell",
-        ("shifter", "weapon") => "Glitchblade",
-        ("shifter", "armor") => "Runner's Wrap",
+        ("shifter", "main_hand") => "Glitchblade",
+        ("shifter", "chest") => "Runner's Wrap",
         ("shifter", "accessory") => "Flicker Charm",
-        ("iron_hull", "weapon") => "Warhammer",
-        ("iron_hull", "armor") => "Bulwark Plate",
+        ("iron_hull", "main_hand") => "Warhammer",
+        ("iron_hull", "chest") => "Bulwark Plate",
         ("iron_hull", "accessory") => "Aggro Band",
+        // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
+        ("hunter", "off_hand") => "Targe",
+        ("hunter", "head") => "Warhelm",
+        ("hunter", "legs") => "Striders",
+        ("dragoon", "off_hand") => "Wing Shield",
+        ("dragoon", "head") => "Drakehelm",
+        ("dragoon", "legs") => "Skygreaves",
+        ("sage", "off_hand") => "Censer",
+        ("sage", "head") => "Circlet",
+        ("sage", "legs") => "Pilgrim Sandals",
+        ("ranger", "off_hand") => "Bracer",
+        ("ranger", "head") => "Hood",
+        ("ranger", "legs") => "Trailboots",
+        ("alchemist_knight", "off_hand") => "Alembic Shield",
+        ("alchemist_knight", "head") => "Visored Helm",
+        ("alchemist_knight", "legs") => "Plated Boots",
+        ("bard", "off_hand") => "Chorus Buckler",
+        ("bard", "head") => "Plumed Hat",
+        ("bard", "legs") => "Dancer's Boots",
+        ("psyker", "off_hand") => "Null Buckler",
+        ("psyker", "head") => "Psi-Crown",
+        ("psyker", "legs") => "Drift Boots",
+        ("resonant", "off_hand") => "Chime Shield",
+        ("resonant", "head") => "Halo Band",
+        ("resonant", "legs") => "Grace Boots",
+        ("shifter", "off_hand") => "Parry Dagger",
+        ("shifter", "head") => "Runner's Cowl",
+        ("shifter", "legs") => "Phase Boots",
+        ("iron_hull", "off_hand") => "Tower Shield",
+        ("iron_hull", "head") => "Great Helm",
+        ("iron_hull", "legs") => "Anchor Boots",
         _ => "Trinket",
     }
 }
@@ -308,35 +353,35 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
 /// `roll_creature_loot`'s `class_signature_*` roll).
 fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
     match (class_key, slot) {
-        ("hunter", "weapon") => "Bloodfang, the Frenzied Cleaver",
-        ("hunter", "armor") => "Aegis of the Unbroken Line",
+        ("hunter", "main_hand") => "Bloodfang, the Frenzied Cleaver",
+        ("hunter", "chest") => "Aegis of the Unbroken Line",
         ("hunter", "accessory") => "The Last Adrenaline",
-        ("dragoon", "weapon") => "Skyreaver, Lance of the Falling Star",
-        ("dragoon", "armor") => "Stormstep Greaves",
+        ("dragoon", "main_hand") => "Skyreaver, Lance of the Falling Star",
+        ("dragoon", "chest") => "Stormstep Greaves",
         ("dragoon", "accessory") => "The Windbound Clasp",
-        ("sage", "weapon") => "The Unbound Codex",
-        ("sage", "armor") => "Robes of the Still Mind",
+        ("sage", "main_hand") => "The Unbound Codex",
+        ("sage", "chest") => "Robes of the Still Mind",
         ("sage", "accessory") => "Runestone of First Light",
-        ("ranger", "weapon") => "Farsight, the Wind-Bent Bow",
-        ("ranger", "armor") => "Cloak of the Silent Trail",
+        ("ranger", "main_hand") => "Farsight, the Wind-Bent Bow",
+        ("ranger", "chest") => "Cloak of the Silent Trail",
         ("ranger", "accessory") => "The Hunter's Mark",
-        ("alchemist_knight", "weapon") => "Mercurial Edge",
-        ("alchemist_knight", "armor") => "Platemail of the Transmuted Heart",
+        ("alchemist_knight", "main_hand") => "Mercurial Edge",
+        ("alchemist_knight", "chest") => "Platemail of the Transmuted Heart",
         ("alchemist_knight", "accessory") => "The Philosopher's Vial",
-        ("bard", "weapon") => "The Last Refrain",
-        ("bard", "armor") => "Coat of a Thousand Verses",
+        ("bard", "main_hand") => "The Last Refrain",
+        ("bard", "chest") => "Coat of a Thousand Verses",
         ("bard", "accessory") => "The Siren's Pendant",
-        ("psyker", "weapon") => "The Fractured Lens",
-        ("psyker", "armor") => "Ward of the Silent Mind",
+        ("psyker", "main_hand") => "The Fractured Lens",
+        ("psyker", "chest") => "Ward of the Silent Mind",
         ("psyker", "accessory") => "Shard of the Second Sight",
-        ("resonant", "weapon") => "Scepter of the Unbroken Chord",
-        ("resonant", "armor") => "Vestments of Everlasting Grace",
+        ("resonant", "main_hand") => "Scepter of the Unbroken Chord",
+        ("resonant", "chest") => "Vestments of Everlasting Grace",
         ("resonant", "accessory") => "The Undying Bell",
-        ("shifter", "weapon") => "Paradox, the Glitched Kris",
-        ("shifter", "armor") => "Wrap of a Thousand Steps",
+        ("shifter", "main_hand") => "Paradox, the Glitched Kris",
+        ("shifter", "chest") => "Wrap of a Thousand Steps",
         ("shifter", "accessory") => "The Flicker Between Moments",
-        ("iron_hull", "weapon") => "Worldender",
-        ("iron_hull", "armor") => "The Immovable Bulwark",
+        ("iron_hull", "main_hand") => "Worldender",
+        ("iron_hull", "chest") => "The Immovable Bulwark",
         ("iron_hull", "accessory") => "Band of the Undying Wall",
         _ => "Unnamed Relic",
     }
@@ -379,15 +424,18 @@ pub fn roll_creature_loot(
         .max(0.0) as i64;
     let material = combat_material_for_biome(distance);
     // Red-chest gear only generates at/after the red-chest floor
-    // (`world_scaling.red_chest_floor_distance`; content-tunable, currently 0
-    // — gear can drop from the very first kill); a reward spike (loot_mult)
-    // boosts (and can guarantee) the drop.
+    // (`world_scaling.red_chest_floor_distance`; spec §4 sets it to 300 — a
+    // shallow kill never drops gear); a reward spike (loot_mult) boosts (and
+    // can guarantee) the drop.
     let gear = if distance >= balance.world_scaling.red_chest_floor_distance
         && rng.unit() < (l.gear_drop_chance * loot_mult.max(0.0)).min(1.0)
     {
         let tier = sc.tier(distance) as i32;
         let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
-        let slot = ["weapon", "armor", "accessory"][rng.below(3)];
+        // The six item categories of the 7-slot loadout (Epic GR spec §5):
+        // ACCESSORY_1/2 are two *equip* slots sharing the one accessory category.
+        let slot =
+            ["main_hand", "off_hand", "head", "chest", "legs", "accessory"][rng.below(6)];
         // Every drop belongs to one of the ten classes (no class-agnostic
         // gear) — picked independent of the party's actual composition, like
         // any other loot roll; a hero can only wear/benefit from gear that
@@ -399,8 +447,15 @@ pub fn roll_creature_loot(
         // always possible. Rarity then scales the stat bonus + flavours the name.
         let gr = &balance.gear_rarity;
         let boost = loot_mult.max(1.0);
-        let (mut w_rare, mut w_epic, mut w_leg) =
-            (gr.rare_weight * boost, gr.epic_weight * boost, gr.legendary_weight * boost);
+        // Distance-shifted weights (spec §4): every 2 tiers the non-common
+        // weights grow 10% (and Common, being the remainder, shrinks to match)
+        // — the deep world drops progressively shinier loot.
+        let depth_shift = 1.0 + gr.rarity_shift_per_2_tiers * (tier / 2).max(0) as f64;
+        let (mut w_rare, mut w_epic, mut w_leg) = (
+            gr.rare_weight * boost * depth_shift,
+            gr.epic_weight * boost * depth_shift,
+            gr.legendary_weight * boost * depth_shift,
+        );
         let noncommon = w_rare + w_epic + w_leg;
         if noncommon > 0.95 {
             let k = 0.95 / noncommon;
@@ -422,17 +477,24 @@ pub fn roll_creature_loot(
         // this class+slot (`class_signature_name`) — independent of rarity (a
         // signature item can itself still separately roll Legendary), gated
         // behind a minimum tier so it can't show up on a shallow kill.
-        let is_signature = tier >= gr.class_signature_min_tier && rng.unit() < gr.class_signature_chance;
+        // Signatures exist only for the original three categories (the 30-relic
+        // catalog); the RNG still advances uniformly so rolls stay reproducible.
+        let has_signature = matches!(slot, "main_hand" | "chest" | "accessory");
+        let is_signature = tier >= gr.class_signature_min_tier
+            && rng.unit() < gr.class_signature_chance
+            && has_signature;
         let signature_mult = if is_signature { gr.class_signature_mult } else { 1.0 };
         // One roll, routed into whichever stat this slot cares about: weapon
         // hits harder, armor shrugs off more, an accessory moves faster.
         let stat = (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult * signature_mult)
             .round()
             .max(1.0) as i32;
+        // Stat routing: the main hand hits harder, an accessory moves faster,
+        // and every protective piece (off-hand/head/chest/legs) shrugs off more.
         let (atk_bonus, def_bonus, spd_bonus) = match slot {
-            "weapon" => (stat, 0, 0),
-            "armor" => (0, stat, 0),
-            _ => (0, 0, stat),
+            "main_hand" => (stat, 0, 0),
+            "accessory" => (0, 0, stat),
+            _ => (0, stat, 0),
         };
         // The catalog name already rides the depth curve (see `gear_catalog_name`);
         // rarity prefixes it on top ("Legendary Ashfall Warblade") rather than
@@ -451,6 +513,22 @@ pub fn roll_creature_loot(
             let cap = c.next().unwrap().to_uppercase().collect::<String>() + c.as_str();
             format!("{cap} {base_name}")
         };
+        // Epic+/signature pieces carry an elemental ward themed to the biome
+        // they dropped in (spec §5 gear damage_modifiers) — a quarter-resist
+        // to the local element, aggregated (and clamped) server-side at battle
+        // assembly with every other equipped piece.
+        let damage_modifiers = if is_signature || rarity == "epic" || rarity == "legendary" {
+            let elem = match biome_for_distance(distance) {
+                "forest" => "POISON",
+                "desert" => "WIND",
+                "ashfall" => "FIRE",
+                "tundra" => "ICE",
+                _ => "POISON",
+            };
+            vec![(elem.to_string(), 0.75)]
+        } else {
+            Vec::new()
+        };
         Some(GearDrop {
             name,
             rarity: rarity.to_string(),
@@ -461,6 +539,7 @@ pub fn roll_creature_loot(
             def_bonus,
             spd_bonus,
             max_durability: l.gear_base_durability,
+            damage_modifiers,
         })
     } else {
         None
@@ -714,10 +793,11 @@ impl MonsterSpawn {
             atk: ((stats.base_atk as f64) * mult).round() as i32,
             def: stats.base_def,
             speed_stat: stats.speed_stat,
-            // XP scales with distance too, so a deep kill out-rewards a shallow one of
-            // the same creature — difficulty AND reward both ride `distance`, and the
-            // biome stays a difficulty-neutral skin (base stats are the d=0 budget).
-            xp_reward: ((stats.xp_reward as f64) * mult).round().max(0.0) as i64,
+            // XP rides its own curve (spec §4): floor(base_xp × (1 + d/500)^1.5) —
+            // steeper than the stat curve, so difficulty AND reward both ride
+            // `distance` and the deep kill out-earns the shallow grind. The biome
+            // stays a difficulty-neutral skin (base stats are the d=0 budget).
+            xp_reward: ((stats.xp_reward as f64) * scaling.xp_mult(d)).floor().max(0.0) as i64,
             loot_kind: stats.loot_kind.clone(),
             defeated: false,
             in_battle: false,
@@ -2403,10 +2483,12 @@ mod tests {
                 saw_gear = true;
                 assert_eq!(g.tier, Scaling::new(&b).tier(floor) as i32);
                 assert!(g.max_durability > 0);
-                // Exactly one stat is rolled, matching the drop's own slot.
+                // Exactly one stat is rolled, matching the drop's own category
+                // (7-slot loadout: main hand hits, accessory speeds, the four
+                // protective pieces all defend).
                 let stat = match g.slot.as_str() {
-                    "weapon" => g.atk_bonus,
-                    "armor" => g.def_bonus,
+                    "main_hand" => g.atk_bonus,
+                    "off_hand" | "head" | "chest" | "legs" => g.def_bonus,
                     "accessory" => g.spd_bonus,
                     other => panic!("unexpected gear slot {other}"),
                 };
@@ -2618,6 +2700,19 @@ mod tests {
         assert_eq!(s.mlevel(500), 40);
         assert_eq!(s.mlevel(0), 1);
         assert!((s.stat_mult(0) - 1.0).abs() < 1e-9);
+    }
+
+    /// Spec §4: `xp = floor(base_xp × (1 + d/500)^1.5)`, and the elite/boss
+    /// multiplier ×3 rides on top via `promote` (encounters.elite_xp_mult).
+    #[test]
+    fn xp_follows_the_spec_distance_curve() {
+        let b = Balance::load_default().unwrap();
+        let s = Scaling::new(&b);
+        assert!((s.xp_mult(0) - 1.0).abs() < 1e-9);
+        // d=500 → (1 + 1)^1.5 = 2.828…
+        assert!((s.xp_mult(500) - 2.0_f64.powf(1.5)).abs() < 1e-9);
+        assert_eq!(b.encounters.elite_xp_mult, 3.0);
+        assert_eq!(b.encounters.gatekeeper_xp_mult, 3.0);
     }
 
     #[test]
