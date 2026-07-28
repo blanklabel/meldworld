@@ -672,6 +672,7 @@ impl GameState {
                 // just be queued like the gear-bonus reload).
                 if raw.msg_type == wr::EnterMaze::TYPE {
                     self.flush_pending_materials(&player_id).await;
+                    self.ensure_starter_gear_for(&player_id).await;
                 }
                 self.handle_client(&player_id, raw)
             }
@@ -878,6 +879,20 @@ impl GameState {
             .collect();
         let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
         let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance, &row_overrides);
+        // Current (possibly wounded) HP persists across battles within a run —
+        // `hero_hp` is the live source; a missing slot (not yet in a battle
+        // this run) reads as full.
+        let hp_now = inst.hero_hp.get(pid).cloned().unwrap_or_default();
+        // XP/level are per-player (the whole party levels together), not
+        // per-hero — every hero view below carries the same two values.
+        let (run_xp, run_level) = inst
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| (r.xp, r.run_level))
+            .unwrap_or((0, 1));
+        let xp_to_next = meld_run::xp_to_next(run_level, &self.balance);
         fighters
             .iter()
             .enumerate()
@@ -894,6 +909,9 @@ impl GameState {
                 dex: f.dex,
                 wll: f.wll,
                 max_hp: f.max_hp,
+                xp: run_xp,
+                xp_to_next,
+                hp: hp_now.get(slot).copied().unwrap_or(f.max_hp).clamp(0, f.max_hp),
                 back_row: f.back_row,
             })
             .collect()
@@ -1250,52 +1268,12 @@ impl GameState {
             while rows.len() < party_size {
                 rows.push(false);
             }
-            // Every hero starts each dive with a piece of gear in any slot
-            // they don't already have real (class-matching) Vault gear
-            // equipped for — `session.gear_bonuses` is already class-filtered
-            // (see `Db::equipped_gear_bonuses`), so a nonzero stat there means
-            // a real item is equipped and this hero's own class benefits from
-            // it; only an empty slot gets a starter piece, so real progression
-            // is never clobbered. A flat +1, distinct per class, run-scoped
-            // loot like anything else found this dive (lost on death, banked
-            // on extraction).
-            let existing = self
-                .sessions
-                .get(pid)
-                .map(|s| s.gear_bonuses.clone())
-                .unwrap_or_default();
-            let mut starter_gear = Vec::new();
-            for (slot_idx, cls) in comp.iter().enumerate() {
-                let class_key = meld_run::class_key(*cls);
-                let bonus = existing.get(slot_idx).copied().unwrap_or_default();
-                for (category, already_has, atk, def, spd) in [
-                    ("weapon", bonus.atk != 0, 1, 0, 0),
-                    ("armor", bonus.def != 0, 0, 1, 0),
-                    ("accessory", bonus.spd != 0, 0, 0, 1),
-                ] {
-                    if already_has {
-                        continue;
-                    }
-                    starter_gear.push(LootGear {
-                        gear_id: Uuid::now_v7().to_string(),
-                        name: format!("Novice {}", meld_world::class_slot_noun(class_key, category)),
-                        rarity: "common".to_string(),
-                        slot: category.to_string(),
-                        class_key: class_key.to_string(),
-                        insurance: Insurance::Red,
-                        tier: 0,
-                        atk_bonus: atk,
-                        def_bonus: def,
-                        spd_bonus: spd,
-                        base_max_durability: self.balance.loot.gear_base_durability,
-                        max_durability: self.balance.loot.gear_base_durability,
-                        equipped_hero_slot: Some(slot_idx as i32),
-                    });
-                }
-            }
-            if let Some(r) = inst.run.run_mut(pid) {
-                r.looted_gear.extend(starter_gear);
-            }
+            // Starter gear for any empty slot is handled earlier, before this
+            // function runs, as a permanent Vault backfill (see
+            // `ensure_starter_gear_for` / `Db::ensure_starter_gear`) — it's
+            // class-unrestricted, so it already shows up in `comp`'s eventual
+            // gear_bonuses load like any other equipped Vault item, in town
+            // and on every dive alike, with no dive-time special-casing here.
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
             inst.hero_names.insert(pid.clone(), names);
@@ -2443,6 +2421,22 @@ impl GameState {
                 if let Some(s) = self.sessions.get_mut(pid) {
                     s.pending_materials = items;
                 }
+            }
+        }
+    }
+
+    /// Backfill any of a player's hero slots missing a piece of gear in some
+    /// category with a permanent, class-unrestricted starter piece
+    /// (`Db::ensure_starter_gear`) right before a dive forms. The write only
+    /// needs to land before `form_run` runs (moments later, in the same
+    /// call) — `gear_bonuses` itself is refreshed by the existing
+    /// queue-drained-next-tick reload `form_run` already triggers
+    /// (`pending_gear_load`), same as any other Vault equip change.
+    async fn ensure_starter_gear_for(&mut self, pid: &str) {
+        if let Ok(uid) = Uuid::parse_str(pid) {
+            let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+            if let Err(e) = self.db.ensure_starter_gear(uid, party_size).await {
+                tracing::error!("ensure_starter_gear failed for {pid}: {e}");
             }
         }
     }

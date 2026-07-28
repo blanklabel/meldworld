@@ -146,7 +146,14 @@ pub(crate) fn overlay_nav_input(
     let row_count = match *tab {
         OverlayTab::Items => 0,
         OverlayTab::Equip => match picker.category {
-            Some(cat) => equip_picker_rows(&inv, &run_gear, cat, equip_sel.hero_slot).len(),
+            Some(cat) => equip_picker_rows(
+                &inv,
+                &run_gear,
+                cat,
+                equip_sel.hero_slot,
+                hero_class_at(&roster, equip_sel.hero_slot),
+            )
+            .len(),
             None => equip_main_rows(hero_count(&roster, &hero_names)).len(),
         },
         OverlayTab::Status => hero_count(&roster, &hero_names),
@@ -163,7 +170,13 @@ pub(crate) fn overlay_nav_input(
         match *tab {
             OverlayTab::Equip => {
                 if let Some(cat) = picker.category {
-                    let rows = equip_picker_rows(&inv, &run_gear, cat, equip_sel.hero_slot);
+                    let rows = equip_picker_rows(
+                        &inv,
+                        &run_gear,
+                        cat,
+                        equip_sel.hero_slot,
+                        hero_class_at(&roster, equip_sel.hero_slot),
+                    );
                     match rows.get(cursor.index) {
                         Some(PickerRow::Unequip) => {
                             unequip_category(&net.0, &inv, &run_gear, cat, equip_sel.hero_slot);
@@ -486,8 +499,18 @@ pub(crate) fn render_overlay(
                                             label(
                                                 hero_box,
                                                 format!(
-                                                    "   STR {}  MND {}  DEX {}  WLL {}   HP {}",
-                                                    h.str_, h.mnd, h.dex, h.wll, h.max_hp
+                                                    "   HP {}/{}   STR {}  MND {}  DEX {}  WLL {}",
+                                                    h.hp, h.max_hp, h.str_, h.mnd, h.dex, h.wll
+                                                ),
+                                                13.0,
+                                                dim,
+                                            );
+                                            let to_next = (h.xp_to_next - h.xp).max(0);
+                                            label(
+                                                hero_box,
+                                                format!(
+                                                    "   EXP {} / {}   ({} to next level)",
+                                                    h.xp, h.xp_to_next, to_next
                                                 ),
                                                 13.0,
                                                 dim,
@@ -604,13 +627,14 @@ pub(crate) fn render_overlay(
                                                 );
                                             });
                                     }
+                                    let hero_class = hero_class_at(&roster, selected);
                                     let rows: Vec<(&GearLine, GearSource)> = category_gear(
-                                        &inv.gear, category, selected,
+                                        &inv.gear, category, selected, hero_class,
                                     )
                                     .into_iter()
                                     .map(|g| (g, GearSource::Vault))
                                     .chain(
-                                        category_gear(&run_gear.gear, category, selected)
+                                        category_gear(&run_gear.gear, category, selected, hero_class)
                                             .into_iter()
                                             .map(|g| (g, GearSource::RunLoot)),
                                     )

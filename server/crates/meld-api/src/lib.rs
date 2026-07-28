@@ -264,6 +264,11 @@ async fn withdraw_material(
 
 async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
+    // Self-heals accounts created before the starter kit existed (or that
+    // otherwise ended up with a gap) — idempotent, so this is cheap once caught up.
+    if let Err(e) = st.db.ensure_starter_gear(player_id, st.party_size_per_player).await {
+        tracing::warn!("ensure_starter_gear failed for {player_id}: {e}");
+    }
     match st.db.get_gear(player_id).await {
         Ok(rows) => {
             let data = rows

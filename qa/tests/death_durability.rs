@@ -71,11 +71,18 @@ async fn death_degrades_equipped_gear_durability() {
     let ticket = login["realtime_ticket"].as_str().unwrap().to_string();
     let token = login["session_token"].as_str().unwrap().to_string();
 
-    // Starting gear is at full durability.
+    // Starting gear (the starter kit now backfills every slot/category, not
+    // just hero 0's weapon) is at full durability — track hero 0's weapon
+    // specifically, since that's the one this test degrades on death.
     let g0 = gear(&http, &base, &token).await;
-    assert_eq!(g0.len(), 1, "one starting weapon");
-    let base_max = g0[0]["base_max_durability"].as_i64().unwrap();
-    assert_eq!(g0[0]["max_durability"], json!(base_max), "starts at full");
+    assert!(!g0.is_empty(), "starter kit seeded");
+    let weapon0 = g0
+        .iter()
+        .find(|g| g["slot"] == json!("weapon") && g["equipped_hero_slot"] == json!(0))
+        .expect("hero 0 has a starting weapon");
+    let weapon0_id = weapon0["gear_id"].as_str().unwrap().to_string();
+    let base_max = weapon0["base_max_durability"].as_i64().unwrap();
+    assert_eq!(weapon0["max_durability"], json!(base_max), "starts at full");
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;
@@ -122,7 +129,8 @@ async fn death_degrades_equipped_gear_durability() {
     let mut degraded = None;
     for _ in 0..40 {
         let g = gear(&http, &base, &token).await;
-        let md = g[0]["max_durability"].as_i64().unwrap();
+        let weapon0 = g.iter().find(|g| g["gear_id"] == json!(weapon0_id)).expect("weapon still exists");
+        let md = weapon0["max_durability"].as_i64().unwrap();
         if md < base_max {
             degraded = Some(md);
             break;
