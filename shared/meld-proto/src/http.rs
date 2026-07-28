@@ -82,6 +82,10 @@ pub struct GearView {
     pub gear_id: Id,
     pub name: String,
     pub slot: String,
+    /// Which class this item is for (`meld_world::CLASS_KEYS`); empty means
+    /// unrestricted (e.g. the starter weapon).
+    #[serde(default)]
+    pub class_key: String,
     pub insurance: String,
     /// Loot tier band at generation (`floor(d/100)`); 0 for the starter weapon.
     #[serde(default)]

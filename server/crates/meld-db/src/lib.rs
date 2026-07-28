@@ -189,6 +189,14 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS equipped_hero_slot INTEGER")
             .execute(pool)
             .await?;
+        // Class-specific gear: which class this item is for (`meld_world::
+        // CLASS_KEYS`), empty = unrestricted (the starter weapon). Only that
+        // class's heroes gain the equipped bonus — enforced in
+        // `equipped_gear_bonuses` below, not by rejecting the equip itself
+        // (a hero's class for the *next* dive isn't known at equip time).
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS class_key TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
         // Every hot gear query filters by `owner_player_id` (get_gear,
         // equipped_gear_bonuses on connect, death durability, equip checks), but a FK
         // is NOT auto-indexed in Postgres — so each was a full-table Seq Scan, and
@@ -544,6 +552,7 @@ impl Db {
                         owner_player_id: player_id,
                         name: "Chipped Blade".into(),
                         slot: "weapon".into(),
+                        class_key: String::new(),
                         insurance: "blue".into(),
                         tier: 0,
                         atk_bonus: 3,
@@ -888,7 +897,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot
+                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot
                      FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
@@ -931,14 +940,15 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
-                         VALUES ($1, $2, $3, $4, 'red', $5, $6, $7, $8, $9, $10, NULL)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
+                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
                     .bind(player_id)
                     .bind(&g.name)
                     .bind(&g.slot)
+                    .bind(&g.class_key)
                     .bind(g.tier)
                     .bind(g.atk_bonus)
                     .bind(g.def_bonus)
@@ -959,6 +969,7 @@ impl Db {
                         owner_player_id: player_id,
                         name: g.name.clone(),
                         slot: g.slot.clone(),
+                        class_key: g.class_key.clone(),
                         insurance: "red".into(),
                         tier: g.tier,
                         atk_bonus: g.atk_bonus,
@@ -976,16 +987,27 @@ impl Db {
 
     /// Per-hero-slot totals from a player's currently-equipped gear, indexed
     /// `0..party_size` (each hero's own weapon/armor/accessory summed).
+    /// `hero_classes[slot]` is that slot's class *for this dive* (content key,
+    /// e.g. `"hunter"`; out-of-range/unknown slots contribute nothing from
+    /// class-restricted gear) — a class-specific item's bonus only counts
+    /// when it matches, silently excluded otherwise. This is the enforcement
+    /// point for class-restricted gear: equipping it (HTTP, outside any run)
+    /// is never blocked, since a hero's class for the *next* dive isn't known
+    /// yet at equip time, but a mismatched item just contributes 0 here.
     pub async fn equipped_gear_bonuses(
         &self,
         player_id: Uuid,
         party_size: i32,
+        hero_classes: &[String],
     ) -> Result<Vec<GearBonus>, DbError> {
         let mut bonuses = vec![GearBonus::default(); party_size.max(0) as usize];
+        let class_ok = |slot: usize, class_key: &str| -> bool {
+            class_key.is_empty() || hero_classes.get(slot).map(|c| c.as_str()) == Some(class_key)
+        };
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus FROM gear
+                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key FROM gear
                      WHERE owner_player_id = $1 AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
@@ -993,10 +1015,13 @@ impl Db {
                 .await?;
                 for row in rows {
                     let slot: i32 = row.get("equipped_hero_slot");
-                    if let Some(b) = bonuses.get_mut(slot as usize) {
-                        b.atk += row.get::<i32, _>("atk_bonus");
-                        b.def += row.get::<i32, _>("def_bonus");
-                        b.spd += row.get::<i32, _>("spd_bonus");
+                    let class_key: String = row.get("class_key");
+                    if class_ok(slot as usize, &class_key) {
+                        if let Some(b) = bonuses.get_mut(slot as usize) {
+                            b.atk += row.get::<i32, _>("atk_bonus");
+                            b.def += row.get::<i32, _>("def_bonus");
+                            b.spd += row.get::<i32, _>("spd_bonus");
+                        }
                     }
                 }
             }
@@ -1004,10 +1029,12 @@ impl Db {
                 let m = m.lock().unwrap();
                 for g in m.gear.values().filter(|g| g.owner_player_id == player_id) {
                     if let Some(slot) = g.equipped_hero_slot {
-                        if let Some(b) = bonuses.get_mut(slot as usize) {
-                            b.atk += g.atk_bonus;
-                            b.def += g.def_bonus;
-                            b.spd += g.spd_bonus;
+                        if class_ok(slot as usize, &g.class_key) {
+                            if let Some(b) = bonuses.get_mut(slot as usize) {
+                                b.atk += g.atk_bonus;
+                                b.def += g.def_bonus;
+                                b.spd += g.spd_bonus;
+                            }
                         }
                     }
                 }
@@ -1200,6 +1227,8 @@ pub struct LootedGear {
     pub gear_id: Uuid,
     pub name: String,
     pub slot: String,
+    /// Which class this item is for (empty = unrestricted).
+    pub class_key: String,
     pub tier: i32,
     pub atk_bonus: i32,
     pub def_bonus: i32,
@@ -1214,6 +1243,8 @@ pub struct GearRow {
     pub gear_id: Uuid,
     pub name: String,
     pub slot: String,
+    /// Which class this item is for (empty = unrestricted).
+    pub class_key: String,
     pub insurance: String,
     pub tier: i32,
     pub atk_bonus: i32,
@@ -1230,6 +1261,7 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         gear_id: row.get("gear_id"),
         name: row.get("name"),
         slot: row.get("slot"),
+        class_key: row.get("class_key"),
         insurance: row.get("insurance"),
         tier: row.get("tier"),
         atk_bonus: row.get("atk_bonus"),
@@ -1300,6 +1332,7 @@ struct MemGear {
     owner_player_id: Uuid,
     name: String,
     slot: String,
+    class_key: String,
     insurance: String,
     tier: i32,
     atk_bonus: i32,
@@ -1316,6 +1349,7 @@ impl MemGear {
             gear_id: self.gear_id,
             name: self.name.clone(),
             slot: self.slot.clone(),
+            class_key: self.class_key.clone(),
             insurance: self.insurance.clone(),
             tier: self.tier,
             atk_bonus: self.atk_bonus,
@@ -1361,7 +1395,7 @@ mod tests {
         let gear = db.get_gear(p.player_id).await.unwrap();
         assert_eq!(gear.len(), 1);
         assert_eq!(gear[0].equipped_hero_slot, Some(0));
-        assert_eq!(db.equipped_gear_bonuses(p.player_id, 4).await.unwrap()[0].atk, 3);
+        assert_eq!(db.equipped_gear_bonuses(p.player_id, 4, &[]).await.unwrap()[0].atk, 3);
         assert_eq!(db.get_vault(p.player_id).await.unwrap(), (0, vec![]));
     }
 
@@ -1458,6 +1492,7 @@ mod tests {
                 gear_id: Uuid::now_v7(),
                 name: "Looted Sword".into(),
                 slot: "weapon".into(),
+                class_key: String::new(),
                 tier: 1,
                 atk_bonus: 7,
                 def_bonus: 0,
@@ -1482,7 +1517,7 @@ mod tests {
         // conflict, and hero 0 keeps the starter — two different heroes with
         // two different weapons is exactly the point of this feature.
         assert_eq!(db.set_equipped(p, looted, Some(1)).await.unwrap(), EquipResult::Ok);
-        let bonuses = db.equipped_gear_bonuses(p, 4).await.unwrap();
+        let bonuses = db.equipped_gear_bonuses(p, 4, &[]).await.unwrap();
         assert_eq!(bonuses[0].atk, 3);
         assert_eq!(bonuses[1].atk, 7);
         assert_eq!(db.set_equipped(p, Uuid::now_v7(), Some(0)).await.unwrap(), EquipResult::NotFound);

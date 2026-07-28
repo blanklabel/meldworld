@@ -187,6 +187,15 @@ pub struct GearRarity {
     pub rare_mult: f64,
     pub epic_mult: f64,
     pub legendary_mult: f64,
+    /// Chance a gear drop is its class's one signature item for that slot
+    /// instead of the normal tiered catalog name (independent of rarity —
+    /// a signature item can still separately roll Legendary).
+    pub class_signature_chance: f64,
+    /// Signature items can't appear before this tier (keeps them from
+    /// showing up on a shallow kill).
+    pub class_signature_min_tier: i32,
+    /// Stat-bonus multiplier for a signature item, stacking with rarity.
+    pub class_signature_mult: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

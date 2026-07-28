@@ -231,6 +231,12 @@ legendary_weight = 0.02
 rare_mult = 1.5                  # stat-bonus multiplier vs a Common piece
 epic_mult = 2.3
 legendary_mult = 3.6
+# Class-specific gear (each class has its own named 20-item catalog per slot,
+# meld-world::CLASS_KEYS/class_slot_noun) plus one signature item per
+# class+slot (meld-world::class_signature_name) — much stronger, much rarer.
+class_signature_chance = 0.04    # +chance a drop is the class's signature item
+class_signature_min_tier = 8     # signature items never appear before this tier
+class_signature_mult = 1.6       # stat-bonus multiplier, stacks with rarity
 
 [meld]
 # Meld-skill progression. Simple linear curve for the slice; the real per-skill

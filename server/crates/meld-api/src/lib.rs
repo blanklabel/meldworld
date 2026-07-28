@@ -272,6 +272,7 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     gear_id: g.gear_id.to_string(),
                     name: g.name,
                     slot: g.slot,
+                    class_key: g.class_key,
                     insurance: g.insurance,
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,

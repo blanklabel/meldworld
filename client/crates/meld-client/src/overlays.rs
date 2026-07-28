@@ -647,9 +647,14 @@ pub(crate) fn render_overlay(
                                             }
                                         };
                                         let ins = if g.insurance == "red" { " red" } else { "" };
+                                        let class_tag = if g.class_key.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" {}", class_display(&g.class_key))
+                                        };
                                         let text = format!(
-                                            "  {} {}  [{}{} t{}]  +{}{}{}",
-                                            gear_slot_icon(category), g.name, category, ins, g.tier, stat, arrow, tag
+                                            "  {} {}  [{}{}{} t{}]  +{}{}{}",
+                                            gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, stat, arrow, tag
                                         );
                                         let mut col = if worn_here {
                                             Color::srgb(0.6, 0.95, 0.7)
@@ -746,12 +751,20 @@ pub(crate) fn render_overlay(
                                         let worn = effective_worn_item(&inv, &run_gear, category, selected);
                                         let icon = gear_slot_icon(category);
                                         let text = match worn {
-                                            Some(g) => format!(
-                                                "- {} -   {icon} {}   +{}",
-                                                class_display(category),
-                                                g.name,
-                                                gear_slot_stat(g)
-                                            ),
+                                            Some(g) => {
+                                                let class_tag = if g.class_key.is_empty() {
+                                                    String::new()
+                                                } else {
+                                                    format!(" ({})", class_display(&g.class_key))
+                                                };
+                                                format!(
+                                                    "- {} -   {icon} {}   +{}{}",
+                                                    class_display(category),
+                                                    g.name,
+                                                    gear_slot_stat(g),
+                                                    class_tag
+                                                )
+                                            }
                                             None => {
                                                 format!("- {} -   (empty)", class_display(category))
                                             }
@@ -894,9 +907,15 @@ pub(crate) fn render_gear_tooltip(
     } else {
         format!("{}/{}", item.max_durability, item.base_max_durability)
     };
+    let class_label = if item.class_key.is_empty() {
+        "Any class".to_string()
+    } else {
+        class_display(&item.class_key)
+    };
     let mut lines: Vec<(String, Color)> = vec![
         (item.name.clone(), gold),
         (format!("{} | Tier {} | {}", class_display(&item.slot), item.tier, ins_label), dim),
+        (format!("Class: {class_label}"), dim),
         (format!("{stat_label}: +{}", gear_slot_stat(item)), good),
         (format!("Durability: {dur}"), dim),
     ];
