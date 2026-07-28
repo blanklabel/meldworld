@@ -303,6 +303,12 @@ lateral_half_extent = 28.0       # ±y half-height of the play area — tall eno
 # so the map feels populated in every direction (area 0 stays on the line for the
 # deterministic tutorial). Kept a touch inside lateral_half_extent.
 creature_lateral_spread = 22.0   # ± y range creatures spawn across (areas ≥ 1)
+# Keep a creature-free ring around the Center Hub in the SPAWN section only, so a
+# just-spawned player isn't instantly aggro'd into a fight before they can orient.
+# MUST stay > [ai] aggro_radius (11.0): a creature's hub-distance equals its corridor-x
+# in the radial world, so any creature placed closer than aggro_radius would chase the
+# stationary spawn on the first tick.
+hub_safe_radius = 13.0           # spawn-section creatures start this far out from the hub
 # Harvestable resource nodes scattered through each area (biome-specific kinds).
 resources_per_area = 3           # avg nodes per area
 resource_lateral_spread = 22.0   # ± y range nodes scatter across
