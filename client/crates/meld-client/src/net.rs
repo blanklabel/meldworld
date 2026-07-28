@@ -294,6 +294,13 @@ pub struct HeroLine {
     pub dex: i32,
     pub wll: i32,
     pub max_hp: i32,
+    /// Current HP this run (wounds persist across battles until healed).
+    pub hp: i32,
+    /// This run's total XP and the level curve's threshold to advance —
+    /// shared by the whole player's party, so every hero carries the same
+    /// values.
+    pub xp: i64,
+    pub xp_to_next: i64,
     /// Formation rank: `true` = back row (halved damage, targeted less).
     pub back_row: bool,
 }
@@ -1090,6 +1097,9 @@ impl Inner {
                                 dex: h["dex"].as_i64().unwrap_or(0) as i32,
                                 wll: h["wll"].as_i64().unwrap_or(0) as i32,
                                 max_hp: h["max_hp"].as_i64().unwrap_or(0) as i32,
+                                hp: h["hp"].as_i64().unwrap_or(0) as i32,
+                                xp: h["xp"].as_i64().unwrap_or(0),
+                                xp_to_next: h["xp_to_next"].as_i64().unwrap_or(0),
                                 back_row: h["back_row"].as_bool().unwrap_or(false),
                             })
                             .collect()

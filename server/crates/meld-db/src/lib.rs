@@ -474,7 +474,7 @@ impl Db {
                 .expect("bcrypt hash task panicked")?
         };
         let player_id = Uuid::now_v7();
-        match &self.backend {
+        let player_row: Result<PlayerRow, DbError> = match &self.backend {
             Backend::Pg(pool) => {
                 let mut tx = pool.begin().await?;
                 let row = sqlx::query(
@@ -576,7 +576,14 @@ impl Db {
                     active_title: None,
                 })
             }
-        }
+        };
+        let player_row = player_row?;
+        // Backfill the rest of the starter kit (every hero slot × category not
+        // already covered by the weapon just seeded above) — same permanent,
+        // class-unrestricted +1 gear a pre-existing account gets caught up on
+        // via `ensure_starter_gear`'s other call sites.
+        self.ensure_starter_gear(player_id, 4).await?;
+        Ok(player_row)
     }
 
     /// Credit Meld-skill XP (upsert; caps handled by the level curve on read).
@@ -920,6 +927,87 @@ impl Db {
                 Ok(rows)
             }
         }
+    }
+
+    /// Backfill any of a player's hero slots (`0..party_size`) missing a
+    /// piece of gear in some category (weapon/armor/accessory) with a
+    /// permanent, class-unrestricted +1 starter piece — so nobody is ever
+    /// looking at a genuinely empty slot, in town or mid-run. Idempotent
+    /// (checks what's already equipped first, in that category, regardless
+    /// of source); safe to call on every Vault touch. `blue`-chest like the
+    /// starter weapon it complements, so it survives death like the rest of
+    /// an account's permanent kit.
+    pub async fn ensure_starter_gear(&self, player_id: Uuid, party_size: i32) -> Result<(), DbError> {
+        let existing = self.get_gear(player_id).await?;
+        let mut have: std::collections::HashSet<(i32, String)> = std::collections::HashSet::new();
+        for g in &existing {
+            if let Some(slot) = g.equipped_hero_slot {
+                have.insert((slot, g.slot.clone()));
+            }
+        }
+        let kit = [
+            ("weapon", "Novice Blade", 1, 0, 0),
+            ("armor", "Novice Vest", 0, 1, 0),
+            ("accessory", "Novice Charm", 0, 0, 1),
+        ];
+        let mut to_insert = Vec::new();
+        for slot in 0..party_size {
+            for (category, name, atk, def, spd) in kit {
+                if !have.contains(&(slot, category.to_string())) {
+                    to_insert.push((slot, category, name, atk, def, spd));
+                }
+            }
+        }
+        if to_insert.is_empty() {
+            return Ok(());
+        }
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                for (slot, category, name, atk, def, spd) in &to_insert {
+                    sqlx::query(
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot)
+                         VALUES ($1, $2, $3, $4, '', 'blue', 0, $5, $6, $7, 100, 100, $8)",
+                    )
+                    .bind(Uuid::now_v7())
+                    .bind(player_id)
+                    .bind(*name)
+                    .bind(*category)
+                    .bind(*atk)
+                    .bind(*def)
+                    .bind(*spd)
+                    .bind(*slot)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                for (slot, category, name, atk, def, spd) in &to_insert {
+                    let gear_id = Uuid::now_v7();
+                    m.gear.insert(
+                        gear_id,
+                        MemGear {
+                            gear_id,
+                            owner_player_id: player_id,
+                            name: (*name).to_string(),
+                            slot: (*category).to_string(),
+                            class_key: String::new(),
+                            insurance: "blue".to_string(),
+                            tier: 0,
+                            atk_bonus: *atk,
+                            def_bonus: *def,
+                            spd_bonus: *spd,
+                            base_max_durability: 100,
+                            max_durability: 100,
+                            equipped_hero_slot: Some(*slot),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Bank a run's looted red-chest gear into the Vault as owned gear
@@ -1389,11 +1477,16 @@ mod tests {
         assert!(db.verify_login("alice", "nope").await.unwrap().is_none());
         assert!(db.verify_login("ghost", "pw").await.unwrap().is_none());
 
-        // Seeded: 4 hero names, 3 skills, a starter weapon equipped to hero 0, empty vault.
+        // Seeded: 4 hero names, 3 skills, a starter weapon equipped to hero 0
+        // plus the rest of the starter kit backfilled for all 4 heroes (12
+        // pieces total: the one named "Chipped Blade" + 11 "Novice ..."),
+        // empty vault.
         assert_eq!(db.get_hero_names(p.player_id).await.unwrap().len(), 4);
         assert_eq!(db.get_skills(p.player_id).await.unwrap().len(), 3);
         let gear = db.get_gear(p.player_id).await.unwrap();
-        assert_eq!(gear.len(), 1);
+        assert_eq!(gear.len(), 12);
+        assert!(gear.iter().all(|g| g.equipped_hero_slot.is_some()));
+        assert_eq!(gear[0].name, "Chipped Blade");
         assert_eq!(gear[0].equipped_hero_slot, Some(0));
         assert_eq!(db.equipped_gear_bonuses(p.player_id, 4, &[]).await.unwrap()[0].atk, 3);
         assert_eq!(db.get_vault(p.player_id).await.unwrap(), (0, vec![]));
@@ -1513,6 +1606,18 @@ mod tests {
             .gear_id;
 
         assert_eq!(db.set_equipped(p, looted, Some(0)).await.unwrap(), EquipResult::SlotOccupied);
+        // Hero 1 also starts with its own starter weapon (the backfilled
+        // starter kit covers every hero) — unequip it first, same as a real
+        // player swapping in better gear.
+        let hero1_starter_weapon = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|g| g.equipped_hero_slot == Some(1) && g.slot == "weapon")
+            .unwrap()
+            .gear_id;
+        assert_eq!(db.set_equipped(p, hero1_starter_weapon, None).await.unwrap(), EquipResult::Ok);
         // Per-character equip: the looted sword goes on hero 1 instead, no
         // conflict, and hero 0 keeps the starter — two different heroes with
         // two different weapons is exactly the point of this feature.

@@ -179,6 +179,9 @@ pub(crate) fn mock_overlay_setup(
             dex: 12,
             wll: 20,
             max_hp: 40,
+            hp: 40,
+            xp: 0,
+            xp_to_next: 80,
             back_row,
         };
         roster.heroes = vec![

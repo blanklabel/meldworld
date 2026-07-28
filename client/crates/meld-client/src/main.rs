@@ -1105,20 +1105,33 @@ fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Opt
     }
 }
 
+/// Hero slot `i`'s class this dive, if known — only the roster (populated
+/// during an active run) carries class; browsing gear from the City with no
+/// dive in progress has no class to filter by (`category_gear` shows
+/// everything in that case rather than guessing).
+fn hero_class_at(roster: &PartyRoster, i: usize) -> Option<&str> {
+    roster.heroes.get(i).map(|h| h.class_key.as_str())
+}
+
 /// Gear from one source, filtered to one category and `selected` — unequipped
 /// or already worn by `selected`. A hero's row never shows gear another hero
-/// currently has on, so there's nothing to accidentally snipe. Shared by
-/// `equip_tab_rows` and the Equip tab's render body so the two can't drift.
+/// currently has on, so there's nothing to accidentally snipe. Also hides gear
+/// restricted to a different class whenever `hero_class` is known (mid-run,
+/// via the roster) — unrestricted gear and, when the class isn't known (e.g.
+/// browsing from the City with no active run), everything still shows. Shared
+/// by `equip_tab_rows` and the Equip tab's render body so the two can't drift.
 fn category_gear<'a>(
     gear: &'a [GearLine],
     category: &str,
     selected: usize,
+    hero_class: Option<&str>,
 ) -> Vec<&'a GearLine> {
     let mut items: Vec<&GearLine> = gear
         .iter()
         .filter(|g| {
             g.slot == category
                 && (g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(selected))
+                && (g.class_key.is_empty() || hero_class.map_or(true, |c| c == g.class_key))
         })
         .collect();
     items.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1143,12 +1156,13 @@ fn equip_picker_rows(
     run_gear: &RunGearData,
     category: &str,
     selected: usize,
+    hero_class: Option<&str>,
 ) -> Vec<PickerRow> {
     let mut rows = vec![PickerRow::Unequip];
-    rows.extend(category_gear(&inv.gear, category, selected).into_iter().map(|g| {
+    rows.extend(category_gear(&inv.gear, category, selected, hero_class).into_iter().map(|g| {
         PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::Vault }
     }));
-    rows.extend(category_gear(&run_gear.gear, category, selected).into_iter().map(|g| {
+    rows.extend(category_gear(&run_gear.gear, category, selected, hero_class).into_iter().map(|g| {
         PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::RunLoot }
     }));
     rows

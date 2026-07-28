@@ -478,6 +478,16 @@ pub mod run {
         pub dex: i32,
         pub wll: i32,
         pub max_hp: i32,
+        /// Current HP this run (wounds persist across battles until healed).
+        #[serde(default)]
+        pub hp: i32,
+        /// This run's total XP and the level curve's threshold to advance —
+        /// level (like XP) is tracked per player, not per individual hero, so
+        /// every hero on the same player's roster carries the same values.
+        #[serde(default)]
+        pub xp: i64,
+        #[serde(default)]
+        pub xp_to_next: i64,
         /// Formation rank: `true` = back row (halved damage, targeted less). The
         /// player sets this per hero on the party screen; defaults to the class
         /// default (casters back) until overridden. See [`SetFormation`].
