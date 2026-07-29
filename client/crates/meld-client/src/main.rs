@@ -216,6 +216,7 @@ fn main() {
                 city_interact,
                 city_camera,
                 city_input,
+                city_action_buttons,
                 render_city,
                 pulse_magitech,
                 hd2d::animate_chars,
@@ -229,7 +230,7 @@ fn main() {
         .add_systems(OnExit(Screen::Lobby), despawn::<LobbyRoot>)
         .add_systems(
             Update,
-            (lobby_input, render_lobby).run_if(in_state(Screen::Lobby)),
+            (lobby_input, lobby_buttons, render_lobby).run_if(in_state(Screen::Lobby)),
         )
         // Overworld
         //
@@ -421,7 +422,7 @@ fn main() {
             ),
         )
         .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
-        .add_systems(Update, ended_input.run_if(in_state(Screen::Ended)))
+        .add_systems(Update, (ended_input, ended_buttons).run_if(in_state(Screen::Ended)))
         .run();
 }
 

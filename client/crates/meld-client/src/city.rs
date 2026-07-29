@@ -29,6 +29,20 @@ pub(crate) enum CityAction {
     Notice(&'static str),
 }
 
+/// A city action reachable by an on-screen (touch) button — always available, so a
+/// player can dive / open the Vault / go co-op with a tap instead of walking to the
+/// matching district and pressing a key. The keyboard paths (`city_input`) still work.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum CityAct {
+    Dive,
+    Vault,
+    Coop,
+}
+
+/// Marks a tappable on-screen city action button.
+#[derive(Component)]
+pub(crate) struct CityActionButton(pub(crate) CityAct);
+
 /// A walkable district: an anchor on the plaza the avatar can stand in and act on.
 pub(crate) struct District {
     label: &'static str,
@@ -185,7 +199,100 @@ pub(crate) fn city_hud(
                 TextFont { font_size: 18.0, ..default() },
                 TextColor(Color::srgb(0.95, 0.88, 0.62)),
             ));
+            // Always-available tap actions (bottom-right). Mirror the keyboard: Dive
+            // (Enter), Vault (V), Co-op (C) — so the hub is fully click/tap driven
+            // without having to walk to each district first.
+            p.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(16.0),
+                    bottom: Val::Px(16.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(8.0),
+                    align_items: AlignItems::FlexEnd,
+                    ..default()
+                },
+            ))
+            .with_children(|bar| {
+                for (act, label) in [
+                    (CityAct::Dive, "Dive"),
+                    (CityAct::Vault, "Vault"),
+                    (CityAct::Coop, "Co-op"),
+                ] {
+                    city_button(bar, act, label);
+                }
+            });
         });
+}
+
+/// Spawn one always-available city action button into the tap bar.
+fn city_button(parent: &mut ChildSpawnerCommands, act: CityAct, label: &str) {
+    parent
+        .spawn((
+            Button,
+            CityActionButton(act),
+            Node {
+                width: Val::Px(150.0),
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(11.0)),
+                justify_content: JustifyContent::Center,
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.5, 0.42, 0.2)),
+            BorderRadius::all(Val::Px(8.0)),
+            BackgroundColor(Color::srgba(0.16, 0.12, 0.05, 0.9)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.98, 0.9, 0.68)),
+            ));
+        });
+}
+
+/// Handle taps on the city action buttons — the same effects as the `city_input`
+/// keyboard shortcuts, so touch and keyboard stay interchangeable.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn city_action_buttons(
+    q: Query<(&Interaction, &CityActionButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
+    mut session: ResMut<Session>,
+    mut overlay: ResMut<Overlay>,
+    mut tab: ResMut<OverlayTab>,
+    mut inv: ResMut<InventoryData>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    for (interaction, btn) in &q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match btn.0 {
+            CityAct::Dive => {
+                if !session.entered {
+                    session.entered = true;
+                    session.coop = false;
+                    session.status = "stepping through The Threshold...".to_string();
+                    net.0.send(ClientCmd::EnterMaze { party: session.party.clone() });
+                }
+            }
+            CityAct::Vault => {
+                if overlay.kind == Some(OverlayKind::Inventory) {
+                    overlay.kind = None;
+                } else {
+                    overlay.kind = Some(OverlayKind::Inventory);
+                    *tab = OverlayTab::Items;
+                    inv.loaded = false;
+                    net.0.fetch_inventory();
+                    net.0.fetch_hero_names();
+                }
+            }
+            CityAct::Coop => {
+                session.coop = true;
+                next.set(Screen::Lobby);
+            }
+        }
+    }
 }
 
 /// Spawn the walkable 3D city: a plaza floor, the Kenney-kit buildings/props from
