@@ -525,27 +525,22 @@ impl CharSprite {
 pub fn animate_chars(
     time: Res<Time>,
     look: Res<Look>,
-    cam_q: Query<&GlobalTransform, With<Camera3d>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(&Transform, &mut CharSprite)>,
 ) {
     let dt = time.delta_secs();
     let fps = look.anim_fps.max(1.0);
-    // Facing is chosen **relative to the camera**, not the world: a character
-    // walking toward the viewer shows its front, one walking into the screen its
-    // back — regardless of how the camera is orbited. Project the camera's forward
-    // and right onto the ground plane for the screen-space basis.
-    let (fwd, right) = match cam_q.single() {
-        Ok(cam) => {
-            let f = Vec3::from(cam.forward());
-            let r = Vec3::from(cam.right());
-            (
-                Vec2::new(f.x, f.z).normalize_or_zero(),
-                Vec2::new(r.x, r.z).normalize_or_zero(),
-            )
-        }
-        Err(_) => (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0)),
-    };
+    // Facing frame is chosen against a FIXED reference frame (the default camera
+    // orientation: forward = world −Z, right = +X), NOT the live camera. This makes
+    // the shown direction depend only on WORLD movement, so walking north always
+    // shows the north frame — even if the camera has been orbited/drifted by a mouse
+    // drag (overworld_camera_control mutates cam_yaw, and that drift previously
+    // scrambled the camera-relative facing, which read as "stuck facing the camera").
+    // At the default camera this is identical to the old camera-relative basis; it
+    // only diverges once the view is orbited, where world-relative is the predictable
+    // choice for gameplay. (Trade-off: orbiting no longer reveals a standing
+    // character's other sides — an acceptable loss for consistent facing.)
+    let (fwd, right) = (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0));
     for (tf, mut cs) in &mut q {
         let pos = tf.translation;
         let d = pos - cs.last;
