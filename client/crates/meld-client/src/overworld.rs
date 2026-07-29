@@ -1153,6 +1153,7 @@ pub(crate) fn biome_rock_color(bi: usize) -> Color {
 pub(crate) fn spawn_wall_prop(
     commands: &mut Commands,
     wa: &WorldAssets,
+    mats: &mut Assets<StandardMaterial>,
     rock_mats: &[Handle<StandardMaterial>],
     bi: usize,
     x: f32,
@@ -1162,21 +1163,48 @@ pub(crate) fn spawn_wall_prop(
     let id = format!("wall-{idx}");
     match bi {
         0 => {
-            // Forest → a dense treeline built from the real 3D tree models (same
-            // Kenney Nature Kit scenes the obstacles use), variant + yaw from the id.
-            if let Some(variants) = wa.prop_scenes.get("tree").filter(|v| !v.is_empty()) {
-                let (scene, base) = &variants[hash_pick(&id, variants.len())];
-                let scale = base * (1.0 + (hash_pick(&id, 24) as f32) * 0.012); // slight variety
-                let yaw = (hash_pick(&id, 360) as f32).to_radians();
-                commands.spawn((
-                    WorldWall,
-                    SceneRoot(scene.clone()),
-                    Transform::from_translation(world_pos(x, y, 0.0))
-                        .with_scale(Vec3::splat(scale))
-                        .with_rotation(Quat::from_rotation_y(yaw)),
-                ));
+            // Forest → a dense treeline of HD-2D tree billboards — the SAME PixelLab
+            // sprites the playfield trees use — so the border reads as pixel-art like
+            // the rest of the world instead of clashing smooth 3D Kenney models.
+            // Variant + height vary per id so the canopy line is layered, not stamped.
+            const TREE_VARIANTS: [&str; 6] = [
+                "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
+                "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
+            ];
+            let pool: Vec<Handle<Image>> = TREE_VARIANTS
+                .iter()
+                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
+                .collect();
+            if !pool.is_empty() {
+                let tex = pool[hash_pick(&id, pool.len())].clone();
+                // Per-id height 4.0..7.5 → a varied, layered wall of trees.
+                let vf = 0.85 + (hash_pick(&id, 100) as f32 / 100.0) * 0.9;
+                let height = (5.2 * vf).clamp(4.0, 7.5);
+                let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
+                commands
+                    .spawn((
+                        WorldWall,
+                        Transform::from_translation(world_pos(x, y, 0.0)),
+                        Visibility::default(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Mesh3d(wa.sprite_quad.clone()),
+                            MeshMaterial3d(mat),
+                            Transform::from_xyz(0.0, height * 0.5, 0.0)
+                                .with_scale(Vec3::splat(height / 2.2)),
+                            hd2d::Billboard,
+                        ));
+                        p.spawn((
+                            Mesh3d(wa.shadow_mesh.clone()),
+                            MeshMaterial3d(wa.shadow_mat.clone()),
+                            Transform::from_xyz(0.0, 0.02, 0.0)
+                                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                                .with_scale(Vec3::new(height * 0.28, height * 0.28 * 0.55, height * 0.28)),
+                        ));
+                    });
             } else {
-                // Fallback: a rugged rock if the tree scenes failed to load.
+                // Fallback: a rugged rock if the tree sprites failed to load.
                 let mat = rock_mats.first().cloned().unwrap_or_default();
                 let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08;
                 commands.spawn((
@@ -1280,7 +1308,7 @@ pub(crate) fn build_world_walls(
             let mut y = -lat;
             while y <= lat {
                 if (y - gap_y).abs() > gap_h {
-                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, sx, y, sid);
+                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, sx, y, sid);
                     sid += 1;
                 }
                 y += step;
@@ -1436,7 +1464,7 @@ pub(crate) fn build_world_walls(
                     let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.06;
                     let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.05;
                     let depth = 0.6 + r as f32 * 2.3;
-                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, x + jx, side * (base + depth) + jy, id);
+                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, x + jx, side * (base + depth) + jy, id);
                     id += 1;
                 }
             }
@@ -1449,7 +1477,7 @@ pub(crate) fn build_world_walls(
             while y <= lat {
                 for r in 0..ranks_e {
                     let depth = 0.6 + r as f32 * 2.3;
-                    spawn_wall_prop(&mut commands, &wa, &rock_mats, bi, xe - depth, y, id);
+                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, xe - depth, y, id);
                     id += 1;
                 }
                 y += step;
