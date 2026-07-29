@@ -129,6 +129,7 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
+        .init_resource::<SpawnView>()
         .init_resource::<WorldPath>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
@@ -247,6 +248,7 @@ fn main() {
             OnEnter(Screen::Overworld),
             (
                 overworld_ui,
+                arm_spawn_view,
                 despawn::<BattleActor>,
                 despawn::<CityScene>,
                 despawn::<WorldEntity>,
@@ -625,6 +627,28 @@ struct RunStats {
     distance: i64,
     tier: i64,
     biome: String,
+}
+
+/// Spawn establishing shot. On a fresh dive the radial fan pushes the Last City gate
+/// off the camera's left edge ("can't see the castle at spawn"), so the overworld
+/// camera briefly starts looking WEST at the gate, then eases to the normal
+/// maze-facing follow. `blend` runs 0 (castle view) → 1 (default follow); `hd2d_follow`
+/// cancels it early on movement, and skips it entirely on a battle return (player far
+/// from the hub). Armed by `arm_spawn_view` on entering the overworld.
+#[derive(Resource, Default)]
+struct SpawnView {
+    active: bool,
+    blend: f32,
+}
+
+/// Arm the spawn establishing shot when the overworld opens. Skipped under the idle
+/// screenshot flag so those frames stay deterministic.
+fn arm_spawn_view(mut spawn: ResMut<SpawnView>) {
+    if world_idle_flag() {
+        return;
+    }
+    spawn.active = true;
+    spawn.blend = 0.0;
 }
 
 /// The guaranteed clear path (world-unit waypoints), drawn as a faint trail so the
