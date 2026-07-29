@@ -1345,97 +1345,46 @@ pub(crate) fn build_world_walls(
         // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5.
         const WALL_SCALE: f32 = 3.5;
         const SEG_W: f32 = 6.5;
-        if arc_deg > 0.0 {
-            // Radial world: Last City occupies the western angular WEDGE the content fan
-            // (`arc_deg`) leaves open, at radius R = |wx|. Draw the wall/gate as an arc
-            // clipped to that wedge (centred on due-west, each piece facing the hub), so
-            // it never spills across the fan's western content — the bug the old straight
-            // rampart (±44 in z) had, where its ends landed on real creatures/terrain.
-            // The wedge is `360 - arc_deg` wide.
-            let r = wx.abs();
-            let content_half = arc_deg.to_radians() * 0.5; // fan half-arc (rad)
-            let wedge_half = (std::f32::consts::PI - content_half).max(0.05); // city half-wedge
-            // World (x, z) of a wedge point `a` rad off due-west, and the yaw that faces
-            // that point back toward the hub (origin) — `at(0)` is the gate, due-west.
-            let at = |a: f32| Vec2::new(-r * a.cos(), -r * a.sin());
-            let face = |p: Vec2| (-p.x).atan2(-p.y).to_degrees();
-            // Central gatehouse, due-west, facing the hub.
-            let g = at(0.0);
-            prop(&mut commands, "pirate/castle-gate", g.x, g.y, face(g), WALL_SCALE);
-            // Flanking towers + pennants at the wedge edges — they frame the gate and
-            // mark where the content fan begins (nothing spawns past these bearings).
-            for s in [-1.0_f32, 1.0] {
-                let p = at(s * wedge_half);
-                prop(&mut commands, "pirate/tower-complete-large", p.x, p.y, face(p), 3.5);
-                prop(&mut commands, "pirate/flag-high", p.x, p.y, face(p), 3.5);
+        // A STRAIGHT rampart facing the hub with a central gateway you walk THROUGH —
+        // so the doorway is legible head-on. `wall_half` bounds how far ±z the wall
+        // runs: MODERATE in the radial fan (a clear gate that neither spans the whole
+        // field like the old ±44 wall nor wraps around the approach like the wedge-arc
+        // did — and stays off the fan's creatures, which top out well outside it), and
+        // full in a flat corridor. The gate sits due-west on the return line; the
+        // skyline is set straight back so it's glimpsed through the open door.
+        let wall_half: f32 = if arc_deg > 0.0 { 14.0 } else { 44.0 };
+        let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
+        let wall_yaw = 90.0_f32; // segments run north–south along world z
+        let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
+        const GATE_HALF: f32 = 7.0; // half-width of the central gateway
+        let mut z = -wall_half;
+        while z <= wall_half {
+            if z.abs() > GATE_HALF {
+                prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
             }
-            // Wall stubs bridging gate → towers along the arc (only if the wedge is wide
-            // enough to fit a segment; a narrow 20° wedge is just the gate + towers).
-            let step_a = (SEG_W / r).max(0.02);
-            let mut a = step_a;
-            while a < wedge_half - 0.02 {
-                for s in [-1.0_f32, 1.0] {
-                    let p = at(s * a);
-                    prop(&mut commands, "pirate/castle-wall", p.x, p.y, face(p), WALL_SCALE);
-                }
-                a += step_a;
-            }
-            // The city skyline behind the gate — deeper into the wedge (larger radius),
-            // kept inside the wedge so it stays clear of the fan. Tuples: (model, extra
-            // radius behind the wall, fraction of the half-wedge, scale).
-            let city: &[(&str, f32, f32, f32)] = &[
-                ("pirate/tower-complete-large", 10.0, 0.0, 4.0),
-                ("pirate/tower-complete-small", 8.0, -0.55, 3.0),
-                ("pirate/tower-complete-small", 8.0, 0.55, 3.0),
-                ("graveyard/crypt-large", 13.0, -0.35, 2.4),
-                ("graveyard/crypt-large", 13.0, 0.4, 2.4),
-                ("pirate/tower-watch", 17.0, -0.5, 3.5),
-                ("pirate/tower-watch", 17.0, 0.5, 3.5),
-                ("pirate/tower-complete-large", 22.0, 0.15, 4.5),
-            ];
-            for (path, back, afrac, scale) in city {
-                let rr = r + back;
-                let a = afrac * wedge_half;
-                let p = Vec2::new(-rr * a.cos(), -rr * a.sin());
-                prop(&mut commands, path, p.x, p.y, face(p), *scale);
-            }
-        } else {
-            // Corridor (flat) fallback: a straight north–south rampart at wx, gap for the
-            // gate. Correct here because a flat corridor has no western content to spill
-            // onto (the city sits straight behind the hub).
-            let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
-            let wall_yaw = 90.0_f32;
-            let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 };
-            const WALL_HALF: f32 = 44.0;
-            const GATE_HALF: f32 = 7.0;
-            let mut z = -WALL_HALF;
-            while z <= WALL_HALF {
-                if z.abs() > GATE_HALF {
-                    prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
-                }
-                z += SEG_W;
-            }
-            prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
-            for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
-                prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
-                prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
-            }
-            for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
-                prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
-            }
-            let city: &[(&str, f32, f32, f32, f32)] = &[
-                ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
-                ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
-                ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
-                ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
-                ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
-                ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
-                ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
-                ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
-            ];
-            for (path, back, cz, yaw, scale) in city {
-                prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
-            }
+            z += SEG_W;
+        }
+        // Gatehouse dead-centre (the doorway) + two flanking towers with pennants.
+        prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
+        for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
+            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+        }
+        // A tower capping each end of the rampart.
+        for tz in [-wall_half + 2.0, wall_half - 2.0] {
+            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+        }
+        // City skyline set straight back behind the gate — seen through the doorway.
+        let city: &[(&str, f32, f32, f32, f32)] = &[
+            ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
+            ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
+            ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
+            ("pirate/tower-watch", 16.0, -5.0, 0.0, 3.5),
+            ("pirate/tower-watch", 16.0, 5.0, 0.0, 3.5),
+            ("pirate/tower-complete-large", 21.0, 1.0, 0.0, 4.5),
+        ];
+        for (path, back, cz, yaw, scale) in city {
+            prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
         }
     }
 
