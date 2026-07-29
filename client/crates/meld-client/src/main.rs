@@ -376,6 +376,7 @@ fn main() {
                 validate_active,
                 auto_fire_queued,
                 tactics_toggle,
+                tactics_click,
                 menu_keyboard,
                 menu_click,
                 party_select_click,
@@ -1583,6 +1584,9 @@ struct CommandWindow;
 struct MenuRow {
     index: usize,
 }
+/// The tappable Iron Hull Tactics-stance toggle in the command window (keyboard: T).
+#[derive(Component)]
+struct TacticsButton;
 /// A clickable party HUD cell: tapping it makes that hero the one the command panel
 /// is giving orders to (if it's alive and hasn't locked an action yet). The
 /// touch-friendly way to pick WHICH ready hero to command.

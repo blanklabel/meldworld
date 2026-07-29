@@ -1258,14 +1258,16 @@ pub(crate) fn cmd_tile(
 pub(crate) fn rebuild_command_menu(
     mut commands: Commands,
     battle: Res<BattleData>,
+    tactics: Res<Tactics>,
     mut menu: ResMut<BattleMenu>,
     existing: Query<Entity, With<CommandWindow>>,
 ) {
     let show = battle.active.is_some();
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
-    // Include the dynamic row count so re-opening a Target page (same level) rebuilds.
-    let sig = format!("{show}|{active_id}|{level:?}|{}", menu.rows.len());
+    // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
+    // and the Tactics state so the tap toggle's label refreshes when it flips.
+    let sig = format!("{show}|{active_id}|{level:?}|{}|{}", menu.rows.len(), tactics.0);
     if !menu.dirty && sig == menu.sig {
         return;
     }
@@ -1448,8 +1450,54 @@ pub(crate) fn rebuild_command_menu(
                             }
                         });
                 }
+                // Iron Hull stance toggle — the last keyboard-only battle control ([T]),
+                // now also a tap button so battle is fully click/tap driven. Shown only
+                // when an Iron Hull anchors the line (mirrors `tactics_toggle`).
+                if battle_has_iron_hull(&battle) {
+                    let (label, col) = if tactics.0 {
+                        ("\u{f132} TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
+                    } else {
+                        ("\u{f132} TACTICS: OFF  [T]", Color::srgb(0.75, 0.8, 0.95))
+                    };
+                    panel
+                        .spawn((
+                            Button,
+                            TacticsButton,
+                            Node {
+                                margin: UiRect::top(Val::Px(6.0)),
+                                padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor(glass_edge()),
+                            BackgroundColor(glass_fill()),
+                            BorderRadius::all(Val::Px(6.0)),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Text::new(label),
+                                TextFont { font_size: 13.0, ..default() },
+                                TextColor(col),
+                            ));
+                        });
+                }
             });
         });
+}
+
+/// Toggle the Iron Hull Tactics stance from its tap button (the keyboard [T] path
+/// is `tactics_toggle`). Marks the command menu dirty so the label rebuilds.
+pub(crate) fn tactics_click(
+    q: Query<&Interaction, (With<TacticsButton>, Changed<Interaction>)>,
+    mut tactics: ResMut<Tactics>,
+    mut menu: ResMut<BattleMenu>,
+) {
+    for interaction in &q {
+        if *interaction == Interaction::Pressed {
+            tactics.0 = !tactics.0;
+            menu.dirty = true;
+        }
+    }
 }
 
 /// Highlight the cursor tile/row (and hover). Cross tiles keep a dark base so
@@ -2276,8 +2324,10 @@ pub(crate) fn render_hit_fx(
                 });
             }
 
-            // Tactics hint (spec §6): shown while an Iron Hull anchors the line.
-            if battle_has_iron_hull(&battle) {
+            // Tactics status (spec §6): a passive top-right readout while an Iron Hull
+            // anchors the line. Suppressed while a hero is being commanded, since the
+            // command window then shows the interactive TACTICS toggle button instead.
+            if battle_has_iron_hull(&battle) && battle.active.is_none() {
                 let (label, col) = if tactics.0 {
                     ("TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
                 } else {
