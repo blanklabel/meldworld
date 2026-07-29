@@ -297,8 +297,6 @@ pub(crate) fn hd2d_follow(
         ),
         With<Camera3d>,
     >,
-    mut spawn: ResMut<SpawnView>,
-    steer: Res<Steer>,
 ) {
     let Some(pos) = players
         .iter()
@@ -309,35 +307,8 @@ pub(crate) fn hd2d_follow(
     };
     // Rise with the player's terrace (pos.y already carries the smoothed elevation).
     let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
-    // Spawn establishing shot: on a fresh dive, start the camera looking WEST at the
-    // Last City gate (the radial fan otherwise pushes it off the left edge) and ease
-    // to the default follow. Skip on a battle return (player already far from the hub);
-    // a movement input snaps it closed. `cam_yaw = 90°` parks the camera east of the
-    // player, looking back over them at the gate at world-x = west_return_border.
-    let mut cam_yaw_override = None;
-    if spawn.active {
-        if pos.x * pos.x + pos.z * pos.z > 64.0 {
-            spawn.active = false; // returned from battle away from spawn — no intro
-        } else {
-            let rate = if steer.0.length_squared() > 0.0 { 1.0 / 0.4 } else { 1.0 / 2.2 };
-            spawn.blend = (spawn.blend + time.delta_secs() * rate).min(1.0);
-            if spawn.blend >= 1.0 {
-                spawn.active = false;
-            } else {
-                let e = spawn.blend * spawn.blend * (3.0 - 2.0 * spawn.blend); // smoothstep
-                cam_yaw_override = Some(90.0 + (look.cam_yaw - 90.0) * e);
-            }
-        }
-    }
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
-        let elapsed = time.elapsed_secs();
-        *t = if let Some(y) = cam_yaw_override {
-            let mut l = look.clone();
-            l.cam_yaw = y;
-            hd2d::camera_transform(&l, target, elapsed)
-        } else {
-            hd2d::camera_transform(&look, target, elapsed)
-        };
+        *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
         hd2d::apply_post(
             &look,
             &mut proj,
