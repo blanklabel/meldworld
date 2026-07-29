@@ -1235,13 +1235,23 @@ impl GameState {
         // Each dive starts with a stock of Town Portal items — the primary way
         // home now that there's a single, deep fixed portal.
         let starting_tp = self.balance.runs.starting_town_portals;
-        if starting_tp > 0 {
+        // Seed the starting consumables: Town Portals (extraction) + finite battle heal
+        // items (Salve/Elixir), so the battle Item command is now inventory-backed.
+        let starting_stock = [
+            (TOWN_PORTAL, starting_tp),
+            ("salve", self.balance.runs.starting_salves),
+            ("elixir", self.balance.runs.starting_elixirs),
+        ];
+        for (kind, qty) in starting_stock {
+            if qty <= 0 {
+                continue;
+            }
             for pid in &party_ids {
                 if let Some(r) = inst.run.run_mut(pid) {
                     r.backpack.push(ItemStack {
                         item_id: Uuid::now_v7().to_string(),
-                        item_kind: TOWN_PORTAL.to_string(),
-                        quantity: starting_tp,
+                        item_kind: kind.to_string(),
+                        quantity: qty,
                         insurance: None,
                     });
                 }
@@ -2324,17 +2334,78 @@ impl GameState {
             },
         };
 
-        let battle = &mut inst.battle_by_id_mut(&submit.battle_id).unwrap().battle;
-        let result = battle.submit(
-            &actor_cid,
-            submit.action_id.clone(),
-            submit.action,
-            submit.target_ids.clone(),
-            submit.skill_kind.clone(),
-            submit.item_id.clone(),
-        );
+        // Battle heal items are FINITE (inventory-backed): an Item action consumes one
+        // of its item from the run backpack, and is rejected when you're out. Checked
+        // BEFORE submit (reject), spent AFTER it's accepted.
+        let consume_kind: Option<String> = if submit.action == BattleActionKind::Item {
+            submit.item_id.clone()
+        } else {
+            None
+        };
+        if let Some(kind) = &consume_kind {
+            let have = inst
+                .run
+                .run_mut(player_id)
+                .map(|r| {
+                    r.backpack
+                        .iter()
+                        .find(|i| &i.item_kind == kind)
+                        .map_or(0, |i| i.quantity)
+                })
+                .unwrap_or(0);
+            if have <= 0 {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    format!("Out of {}.", kind.replace('_', " ")),
+                    Some(raw.seq),
+                )];
+            }
+        }
+        let result = {
+            let battle = &mut inst.battle_by_id_mut(&submit.battle_id).unwrap().battle;
+            battle.submit(
+                &actor_cid,
+                submit.action_id.clone(),
+                submit.action,
+                submit.target_ids.clone(),
+                submit.skill_kind.clone(),
+                submit.item_id.clone(),
+            )
+        };
         match result {
-            Ok(events) => self.emit_battle_events(&submit.battle_id, events),
+            Ok(events) => {
+                let mut out = Vec::new();
+                // Accepted → spend one of the item and tell the client (so its count
+                // ticks down and the menu can grey it out at zero).
+                if let Some(kind) = consume_kind {
+                    if let Some(r) = inst.run.run_mut(player_id) {
+                        if let Some(slot) = r.backpack.iter_mut().find(|i| i.item_kind == kind) {
+                            slot.quantity -= 1;
+                        }
+                        r.backpack.retain(|i| i.quantity > 0);
+                    }
+                    out.push(out_msg(
+                        player_id,
+                        &wr::BackpackUpdate {
+                            changes: vec![wr::BackpackChange {
+                                item: ItemStack {
+                                    item_id: String::new(),
+                                    item_kind: kind,
+                                    quantity: 1,
+                                    insurance: None,
+                                },
+                                delta: "removed".to_string(),
+                                cause: "battle_item".to_string(),
+                            }],
+                            chits_delta: 0,
+                            gear_added: Vec::new(),
+                        },
+                    ));
+                }
+                out.extend(self.emit_battle_events(&submit.battle_id, events));
+                out
+            }
             Err(reject) => {
                 let (code, message) = reject_to_error(&reject);
                 vec![error(player_id, code, message, Some(raw.seq))]

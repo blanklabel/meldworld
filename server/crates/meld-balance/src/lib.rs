@@ -73,6 +73,9 @@ pub struct Runs {
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
     pub town_portal_drop_chance: f64,
+    /// Finite battle heal items each dive starts with (consumed on use in battle).
+    pub starting_salves: i32,
+    pub starting_elixirs: i32,
 }
 
 /// How the four attributes (Str/Mnd/Dex/Wll) map to combat stats. See the
