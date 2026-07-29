@@ -21,6 +21,9 @@ pub(crate) enum OverworldAct {
     Extract,
     TownPortal,
     Join,
+    /// Open the inventory/menu overlay (where distance, biome and the backpack now
+    /// live). Keyboard equivalent: C / I, or tapping your own character.
+    Menu,
 }
 
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
@@ -51,7 +54,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows or drag = move | tap = go there | tap yourself = party/inventory | walk into nodes to harvest | T town portal | J join | E portal",
+                    "WASD/arrows or drag = move | tap = go there | Menu (or tap yourself / C) = inventory, distance & stats | walk into nodes to harvest | T town portal | J join | E portal",
                 ),
                 TextFont {
                     font_size: 14.0,
@@ -72,12 +75,14 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
-                // Harvest is automatic (walk into a node); inventory/party opens by
-                // tapping your character — so the bar is just the situational actions.
+                // Harvest is automatic (walk into a node). Menu opens the inventory/
+                // stats overlay (also: tap yourself, or C/I); the rest are the
+                // situational actions. Every action is reachable by tap AND keyboard.
                 for (act, label) in [
                     (OverworldAct::Join, "Join"),
                     (OverworldAct::Extract, "Portal"),
                     (OverworldAct::TownPortal, "Town Portal"),
+                    (OverworldAct::Menu, "\u{f0214} Menu"), // list icon
                 ] {
                     action_button(bar, act, label);
                 }
@@ -201,6 +206,8 @@ pub(crate) fn touch_action_buttons(
     world: Res<Overworld>,
     session: Res<Session>,
     backpack: Res<RunBackpack>,
+    mut overlay: ResMut<Overlay>,
+    mut tab: ResMut<OverlayTab>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -217,6 +224,16 @@ pub(crate) fn touch_action_buttons(
             OverworldAct::Join => {
                 if near_fight(&world, me) {
                     net.0.send(ClientCmd::JoinBattle);
+                }
+            }
+            OverworldAct::Menu => {
+                // Toggle the overlay open to the Status tab, where distance/biome and
+                // the run backpack now live (moved off the always-on HUD).
+                if overlay.kind.is_some() {
+                    overlay.kind = None;
+                } else {
+                    overlay.kind = Some(OverlayKind::Inventory);
+                    *tab = OverlayTab::Status;
                 }
             }
         }
@@ -372,19 +389,51 @@ pub(crate) fn draw_path_trail(
     world_path.drawn = true;
 }
 
-/// Update the distance/biome HUD from the player's authoritative position.
+/// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
+/// and the run backpack moved off the HUD into the menu (Status tab — see
+/// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: the
+/// "join the fight" prompt and active server-side perk hints.
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
-    backpack: Res<RunBackpack>,
     perks: Res<PerksRes>,
-    terrain: Res<Terrain>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
     };
+    let me_pos = Some((me.x, me.y));
+    if let Ok(mut t) = q.single_mut() {
+        let mut parts: Vec<String> = Vec::new();
+        if near_fight(&world, me_pos) {
+            parts.push("\u{f0817} Press [J] to join the fight".into()); // crossed-swords marker
+        }
+        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
+        if perks.0.resonant_regen > 0.0 {
+            parts.push("Regen".into());
+        }
+        if perks.0.ironhull_aggro_mult < 1.0 {
+            parts.push("Bulwark".into());
+        }
+        **t = parts.join("  -  ");
+    }
+}
+
+/// Recompute the live exploration readouts (distance / tier / biome) into the
+/// [`RunStats`] resource. Writes a field ONLY when its displayed value actually
+/// changes, so the immediate-mode menu overlay's change-gate doesn't fire every
+/// frame (movement is frozen while the overlay is open, so this is quiescent then).
+pub(crate) fn update_run_stats(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    terrain: Res<Terrain>,
+    mut stats: ResMut<RunStats>,
+) {
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    let tier = d / 100; // tier(d) = floor(d/100) — the CANON distance axis.
     // The biome label reads the ACTUAL section the player stands in (its radius ring),
     // so it agrees with the ground + the creatures — not the fixed distance bands.
     let r = d as f64;
@@ -394,39 +443,14 @@ pub(crate) fn update_overworld_hud(
         .find(|s| r >= s.start_x && r < s.end_x)
         .map(|s| title_case(&s.biome))
         .unwrap_or_else(|| biome_display(d).to_string());
-    // Town Portals first (your way home), then a compact tally of gathered materials.
-    let tp = backpack.count("town_portal");
-    let mats: String = backpack
-        .items
-        .iter()
-        .filter(|(k, _)| k != "town_portal")
-        .map(|(k, q)| format!("{} {}", nice_name(k), q))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let me_pos = Some((me.x, me.y));
-    if let Ok(mut t) = q.single_mut() {
-        let mut line = format!("distance {d}  -  {biome}  -  \u{f0f10}{tp}"); // teleport = Town Portals
-        // Chits found this run (banked on extraction), then gathered materials.
-        if backpack.chits > 0 {
-            line.push_str(&format!("  -  {} chits", backpack.chits));
-        }
-        if !mats.is_empty() {
-            line.push_str(&format!("  -  {mats}"));
-        }
-        if !backpack.gear.is_empty() {
-            line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
-        }
-        if near_fight(&world, me_pos) {
-            line.push_str("  -  \u{f0817} Press [J] to join the fight"); // crossed-swords marker
-        }
-        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
-        if perks.0.resonant_regen > 0.0 {
-            line.push_str("  -  Regen");
-        }
-        if perks.0.ironhull_aggro_mult < 1.0 {
-            line.push_str("  -  Bulwark");
-        }
-        **t = line;
+    if stats.distance != d {
+        stats.distance = d;
+    }
+    if stats.tier != tier {
+        stats.tier = tier;
+    }
+    if stats.biome != biome {
+        stats.biome = biome;
     }
 }
 

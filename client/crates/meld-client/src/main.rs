@@ -128,6 +128,7 @@ fn main() {
         .init_resource::<AccountHeroNames>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
+        .init_resource::<RunStats>()
         .init_resource::<WorldPath>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
@@ -286,7 +287,7 @@ fn main() {
                 hd2d::billboard,
                 animate_sway,
                 ambient::update_ambient_scatter,
-                update_overworld_hud,
+                (update_overworld_hud, update_run_stats),
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -610,6 +611,18 @@ impl RunBackpack {
     fn count(&self, kind: &str) -> i32 {
         self.items.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
     }
+}
+
+/// Live exploration readouts (distance / biome / tier) that used to sit in the
+/// always-on overworld HUD but now live only in the menu (Status tab). Kept as a
+/// coarse resource — `update_run_stats` writes a field ONLY when its displayed
+/// value actually changes — so the immediate-mode overlay doesn't rebuild every
+/// frame (it must not: gear rows are real buttons that persist for click detection).
+#[derive(Resource, Default)]
+struct RunStats {
+    distance: i64,
+    tier: i64,
+    biome: String,
 }
 
 /// The guaranteed clear path (world-unit waypoints), drawn as a faint trail so the
