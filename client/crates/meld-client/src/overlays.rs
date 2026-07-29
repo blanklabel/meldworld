@@ -239,6 +239,7 @@ pub(crate) fn render_overlay(
     hero_names: Res<AccountHeroNames>,
     stats: Res<RunStats>,
     backpack: Res<RunBackpack>,
+    wa: Option<Res<WorldAssets>>,
     existing: Query<Entity, With<OverlayRoot>>,
 ) {
     // Rebuild only when something the overlay shows changed. The gear rows are
@@ -280,6 +281,43 @@ pub(crate) fn render_overlay(
     // Keyboard cursor highlight: a bright border on whatever row Up/Down is on.
     let focus_border = Color::srgb(1.0, 0.9, 0.5);
     let no_border = Color::NONE;
+    // A small item icon: the material's harvest-node sprite reused from the world,
+    // so the vault/backpack lists read like DQ3's item panel. Falls back to a
+    // nerdfont glyph when a material has no node art (e.g. consumables).
+    let mat_icon = |row: &mut ChildSpawnerCommands, kind: &str| {
+        if let Some(tex) = wa
+            .as_ref()
+            .and_then(|w| w.prop_sprites.get(&format!("resource_{kind}")))
+        {
+            row.spawn((
+                ImageNode::new(tex.clone()),
+                Node {
+                    width: Val::Px(28.0),
+                    height: Val::Px(28.0),
+                    ..default()
+                },
+            ));
+        } else {
+            let glyph = match kind {
+                "town_portal" => "\u{f0f10}", // portal
+                "salve" | "elixir" => "\u{f0f04}", // flask
+                "chits" => "\u{f0114}",       // coin
+                _ => "\u{f0a7d}",              // generic cube
+            };
+            row.spawn(Node {
+                width: Val::Px(28.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            })
+            .with_children(|b| {
+                b.spawn((
+                    Text::new(glyph),
+                    TextFont { font_size: 18.0, ..default() },
+                    TextColor(dim),
+                ));
+            });
+        }
+    };
     commands
         .spawn((
             OverlayRoot,
@@ -392,8 +430,9 @@ pub(crate) fn render_overlay(
                                             ..default()
                                         })
                                         .with_children(|row| {
+                                            mat_icon(row, kind);
                                             row.spawn((
-                                                Text::new(format!("  {} x{}", kind.replace('_', " "), qty)),
+                                                Text::new(format!("{} x{}", kind.replace('_', " "), qty)),
                                                 TextFont { font_size: 15.0, ..default() },
                                                 TextColor(dim),
                                             ));
@@ -419,12 +458,21 @@ pub(crate) fn render_overlay(
                                 if !inv.pending.is_empty() {
                                     label(content, "- Queued for next run -".into(), 15.0, gold);
                                     for (kind, qty) in &inv.pending {
-                                        label(
-                                            content,
-                                            format!("  {} x{}", kind.replace('_', " "), qty),
-                                            14.0,
-                                            Color::srgb(0.6, 0.95, 0.7),
-                                        );
+                                        content
+                                            .spawn(Node {
+                                                flex_direction: FlexDirection::Row,
+                                                align_items: AlignItems::Center,
+                                                column_gap: Val::Px(8.0),
+                                                ..default()
+                                            })
+                                            .with_children(|row| {
+                                                mat_icon(row, kind);
+                                                row.spawn((
+                                                    Text::new(format!("{} x{}", kind.replace('_', " "), qty)),
+                                                    TextFont { font_size: 14.0, ..default() },
+                                                    TextColor(Color::srgb(0.6, 0.95, 0.7)),
+                                                ));
+                                            });
                                     }
                                 }
                             }
@@ -450,19 +498,35 @@ pub(crate) fn render_overlay(
                                         bag.push_str(&format!("   |   Loot x{}", backpack.gear.len()));
                                     }
                                     label(content, bag, 14.0, dim);
-                                    let mats: String = backpack
+                                    // Backpack materials as icon rows (matches the Items tab),
+                                    // so harvested loot reads with its node sprite at a glance.
+                                    let mats: Vec<(&String, &i32)> = backpack
                                         .items
                                         .iter()
                                         .filter(|(k, _)| k != "town_portal")
-                                        .map(|(k, q)| format!("{} x{}", nice_name(k), q))
-                                        .collect::<Vec<_>>()
-                                        .join(", ");
-                                    label(
-                                        content,
-                                        if mats.is_empty() { "Materials: (none)".into() } else { format!("Materials: {mats}") },
-                                        14.0,
-                                        dim,
-                                    );
+                                        .map(|(k, q)| (k, q))
+                                        .collect();
+                                    label(content, "Materials:".into(), 14.0, dim);
+                                    if mats.is_empty() {
+                                        label(content, "  (none)".into(), 13.0, dim);
+                                    }
+                                    for (kind, qty) in mats {
+                                        content
+                                            .spawn(Node {
+                                                flex_direction: FlexDirection::Row,
+                                                align_items: AlignItems::Center,
+                                                column_gap: Val::Px(8.0),
+                                                ..default()
+                                            })
+                                            .with_children(|row| {
+                                                mat_icon(row, kind);
+                                                row.spawn((
+                                                    Text::new(format!("{} x{}", nice_name(kind), qty)),
+                                                    TextFont { font_size: 14.0, ..default() },
+                                                    TextColor(dim),
+                                                ));
+                                            });
+                                    }
                                     // Return-home actions, also reachable from the overworld
                                     // bar / T,E keys — tagged TouchActionButton so the existing
                                     // `touch_action_buttons` handler drives them. Town Portal
