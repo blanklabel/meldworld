@@ -37,6 +37,10 @@ embedded-server = ["dep:meld-server", "dep:tokio", "dep:bevy_embedded_assets"]
 meld-server = { path = "../../../server/crates/meld-server", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }
 bevy_embedded_assets = { version = "0.13", optional = true }
+# Raise the process's open-file limit at startup — Bevy's asset loader opens many
+# files at once and a low soft limit (256 on a GUI/launchd-launched macOS process)
+# makes loads fail with "Too many open files", silently dropping sprites + models.
+rlimit = "0.10"
 
 # In the browser, uuid/getrandom need the JS entropy backend, and we read the
 # server base from the page origin.

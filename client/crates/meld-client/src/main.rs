@@ -55,7 +55,22 @@ pub(crate) use world_render::*;
 const MOVE_INTENT_HZ: f32 = 20.0;
 
 
+/// Raise the process's open-file limit as high as the OS allows. Bevy's asset
+/// server opens many files at once loading the ~84 MB of art; a process launched
+/// with a low soft `RLIMIT_NOFILE` (256 on a GUI/launchd-started macOS app) runs
+/// out of descriptors and loads fail with "Too many open files (os error 24)" —
+/// which silently drops sprite atlases and GLB models (missing creatures, a
+/// wrecked/absent castle, ground decals). Harmless no-op when the limit is already
+/// high. No-op on wasm (no such limit in the browser).
+#[cfg(not(target_arch = "wasm32"))]
+fn raise_open_file_limit() {
+    let _ = rlimit::increase_nofile_limit(u64::MAX);
+}
+#[cfg(target_arch = "wasm32")]
+fn raise_open_file_limit() {}
+
 fn main() {
+    raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
     // balance) and set MELD_SERVER before we read it below. No-op in normal builds.
     #[cfg(feature = "embedded-server")]
