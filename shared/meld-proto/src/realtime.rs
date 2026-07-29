@@ -465,6 +465,13 @@ pub mod run {
         /// the city's **wall + gate** here so you can see the boundary coming.
         #[serde(default)]
         pub west_return_border: f64,
+        /// WG-4 radial fan arc (degrees); 0 = flat corridor. The content fans across
+        /// this arc, leaving the western `360 - arc` sliver for Last City. The client
+        /// uses it to place the city wall/gate as an ARC clipped to that western
+        /// wedge (radius = `|west_return_border|`), instead of a straight wall that
+        /// would spill across the fan's western content.
+        #[serde(default)]
+        pub radial_arc_degrees: f64,
     }
     /// One biome seam for the client to wall + gate.
     #[derive(Debug, Clone, Serialize, Deserialize)]

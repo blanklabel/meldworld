@@ -694,6 +694,10 @@ struct WorldFrame {
     /// Crossing west of this world-x returns to Last City — the client marks it with
     /// a castle wall + gate so the boundary is visible before you cross it.
     west_return_border: f32,
+    /// WG-4 radial fan arc (degrees; 0 = flat corridor). Content fans across this arc,
+    /// leaving the western `360 - arc` wedge for Last City; the wall/gate is drawn as
+    /// an arc clipped to that wedge (see the castle block in `build_terrain_sections`).
+    radial_arc_degrees: f32,
     seams: Vec<meld_client::net::SeamLine>,
 }
 
