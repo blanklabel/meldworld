@@ -39,6 +39,11 @@ xp_growth_factor = 2.0
 # so the item is the primary way home. [TUNABLE]
 starting_town_portals = 1
 town_portal_drop_chance = 0.2
+# Battle heal items are FINITE now — each dive starts with this many and using one in
+# battle (Item → Salve / Elixir) consumes one; when you're out, the action is rejected.
+# [TUNABLE]
+starting_salves = 3
+starting_elixirs = 1
 
 # How the four attributes (Str/Mnd/Dex/Wll) turn into combat stats. A hero's
 # attribute = its class base + per-level gain * (level-1); the derived stat is the

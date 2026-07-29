@@ -69,6 +69,17 @@ fn raise_open_file_limit() {
 #[cfg(target_arch = "wasm32")]
 fn raise_open_file_limit() {}
 
+/// The window mode at launch: borderless-fullscreen on the native desktop (big +
+/// readable), plain windowed in the browser (the canvas fills its parent instead).
+#[cfg(not(target_arch = "wasm32"))]
+fn default_window_mode() -> bevy::window::WindowMode {
+    bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+}
+#[cfg(target_arch = "wasm32")]
+fn default_window_mode() -> bevy::window::WindowMode {
+    bevy::window::WindowMode::Windowed
+}
+
 fn main() {
     raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
@@ -93,7 +104,11 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MELDWORLD".to_string(),
-                        resolution: (960.0_f32, 640.0_f32).into(),
+                        // Open BIG: borderless-fullscreen on the native desktop so the
+                        // world + sprites are readable; the resolution is the windowed
+                        // fallback (and what the wasm canvas uses).
+                        resolution: (1280.0_f32, 800.0_f32).into(),
+                        mode: default_window_mode(),
                         // Browser (wasm): bind to <canvas id="bevy"> and fill its parent.
                         canvas: Some("#bevy".to_string()),
                         fit_canvas_to_parent: true,
