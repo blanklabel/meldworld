@@ -1360,6 +1360,7 @@ impl GameState {
             x_max: bx_max,
             lateral: blat,
             west_return_border: self.balance.worldgen.west_return_border,
+            radial_arc_degrees: self.balance.worldgen.radial_arc_degrees,
         };
         let seam_views: Vec<wr::SeamView> = inst
             .arena
@@ -1703,11 +1704,10 @@ impl GameState {
         let Some(inst) = self.instance.as_mut() else {
             return false;
         };
-        let west = inst
-            .arena
-            .avatar(player_id)
-            .map(|a| a.position.x < border)
-            .unwrap_or(false);
+        // Radial-aware: "west" is the empty city wedge due-west of the hub, NOT a
+        // straight x < border line (which would slice through explorable western
+        // content in the 340° fan and extract a player merely walking over to a fight).
+        let west = inst.arena.heading_into_city(player_id, border);
         // Already heading home? don't re-enqueue.
         if !west || inst.extraction.contains_key(player_id) {
             return false;

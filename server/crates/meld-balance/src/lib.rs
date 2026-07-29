@@ -262,6 +262,9 @@ pub struct WorldGen {
     pub world_margin: f64,
     pub lateral_half_extent: f64,
     pub creature_lateral_spread: f64,
+    /// Creature-free safe ring around the Center Hub in the spawn section (must stay
+    /// above `[ai] aggro_radius` so a just-spawned player isn't instantly aggro'd).
+    pub hub_safe_radius: f64,
     pub resources_per_area: f64,
     pub resource_lateral_spread: f64,
     pub obstacles_per_area: f64,

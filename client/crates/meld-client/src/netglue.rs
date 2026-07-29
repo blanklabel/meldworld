@@ -104,12 +104,13 @@ pub(crate) fn pump_net(
                 }
                 terrain.sections.insert(section.index, section);
             }
-            ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, seams } => {
+            ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, radial_arc_degrees, seams } => {
                 world_frame.have = true;
                 world_frame.x_min = x_min as f32;
                 world_frame.x_max = x_max as f32;
                 world_frame.lateral = lateral as f32;
                 world_frame.west_return_border = west_return_border as f32;
+                world_frame.radial_arc_degrees = radial_arc_degrees as f32;
                 world_frame.seams = seams;
             }
             ServerMsg::Connected { player_id } => {

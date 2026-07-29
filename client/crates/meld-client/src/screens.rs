@@ -726,6 +726,63 @@ pub(crate) fn lobby_ui(mut commands: Commands) {
                 TextFont { font_size: 20.0, ..default() },
                 TextColor(Color::srgb(0.8, 0.88, 1.0)),
             ));
+            // Tap actions. Which are visible depends on lobby state (`render_lobby`
+            // toggles them): Create before you're in a lobby; Ready/Start/Leave once
+            // you are. Typing/joining by CODE stays on the keyboard (text entry).
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(12.0),
+                margin: UiRect::top(Val::Px(8.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                for (act, label) in [
+                    (LobbyAct::Create, "Create Lobby"),
+                    (LobbyAct::Ready, "Ready"),
+                    (LobbyAct::Start, "Start"),
+                    (LobbyAct::Leave, "Leave"),
+                ] {
+                    lobby_button(row, act, label);
+                }
+            });
+        });
+}
+
+/// A tap action in the co-op lobby (mirrors the keyboard, except code entry).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum LobbyAct {
+    Create,
+    Ready,
+    Start,
+    Leave,
+}
+
+/// Marks a tappable lobby button; `render_lobby` shows/hides it per lobby state.
+#[derive(Component)]
+pub(crate) struct LobbyButton(pub(crate) LobbyAct);
+
+/// Spawn one lobby button (starts hidden; `render_lobby` reveals the relevant ones).
+fn lobby_button(parent: &mut ChildSpawnerCommands, act: LobbyAct, label: &str) {
+    parent
+        .spawn((
+            Button,
+            LobbyButton(act),
+            Node {
+                display: Display::None,
+                padding: UiRect::axes(Val::Px(18.0), Val::Px(10.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.5, 0.6, 0.85)),
+            BorderRadius::all(Val::Px(8.0)),
+            BackgroundColor(Color::srgba(0.1, 0.14, 0.28, 0.92)),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 18.0, ..default() },
+                TextColor(Color::srgb(0.9, 0.94, 1.0)),
+            ));
         });
 }
 
@@ -797,11 +854,24 @@ pub(crate) fn lobby_input(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn render_lobby(
     lobby: Res<LobbyData>,
     session: Res<Session>,
     mut q: Query<&mut Text, With<LobbyText>>,
+    mut btns: Query<(&LobbyButton, &mut Node), Without<LobbyText>>,
 ) {
+    // Reveal only the buttons that apply to the current lobby state: Create before
+    // you're in a lobby; Ready/Leave once in; Start only for the host.
+    let host_is_me = lobby.host == session.player_id;
+    for (btn, mut node) in &mut btns {
+        let show = match btn.0 {
+            LobbyAct::Create => !lobby.in_lobby,
+            LobbyAct::Ready | LobbyAct::Leave => lobby.in_lobby,
+            LobbyAct::Start => lobby.in_lobby && host_is_me,
+        };
+        node.display = if show { Display::Flex } else { Display::None };
+    }
     let Ok(mut t) = q.single_mut() else { return };
     if !lobby.in_lobby {
         **t = format!(
@@ -827,6 +897,44 @@ pub(crate) fn render_lobby(
     };
     lines.push(format!("R: toggle ready    {start}    ESC: leave"));
     **t = lines.join("\n");
+}
+
+/// Tap handler for the lobby buttons — same effects as [`lobby_input`] (except code
+/// entry, which stays on the keyboard).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn lobby_buttons(
+    q: Query<(&Interaction, &LobbyButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
+    session: Res<Session>,
+    mut lobby: ResMut<LobbyData>,
+    mut next: ResMut<NextState<Screen>>,
+) {
+    for (interaction, btn) in &q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match btn.0 {
+            LobbyAct::Create => {
+                net.0.send(ClientCmd::LobbyCreate { party: session.party.clone() });
+            }
+            LobbyAct::Ready => {
+                let want = !lobby.my_ready;
+                lobby.my_ready = want;
+                net.0.send(ClientCmd::LobbyReady { ready: want });
+            }
+            LobbyAct::Start => {
+                if lobby.host == session.player_id {
+                    net.0.send(ClientCmd::LobbyStart);
+                }
+            }
+            LobbyAct::Leave => {
+                net.0.send(ClientCmd::LobbyLeave);
+                lobby.in_lobby = false;
+                lobby.code_input.clear();
+                next.set(Screen::City);
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------- ended ---
@@ -882,12 +990,58 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                 TextColor(color),
             ));
             p.spawn((
-                Text::new("Press ENTER to return to The Last City    -    ESC to quit"),
+                Text::new("Tap a button below, or press ENTER to return / ESC to quit"),
                 TextFont {
                     font_size: 18.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
+            ));
+            // Tap equivalents of Enter / Esc, so the summary is click/tap driven too.
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(14.0),
+                margin: UiRect::top(Val::Px(6.0)),
+                ..default()
+            })
+            .with_children(|row| {
+                ended_button(row, EndedAct::Continue, "Return to The Last City", Color::srgb(0.35, 0.55, 0.85));
+                ended_button(row, EndedAct::Quit, "Quit", Color::srgb(0.55, 0.3, 0.3));
+            });
+        });
+}
+
+/// A tap action on the run-summary screen (mirrors ENTER / ESC).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum EndedAct {
+    Continue,
+    Quit,
+}
+
+/// Marks a tappable button on the Ended screen.
+#[derive(Component)]
+pub(crate) struct EndedButton(pub(crate) EndedAct);
+
+/// Spawn one Ended-screen button.
+fn ended_button(parent: &mut ChildSpawnerCommands, act: EndedAct, label: &str, bg: Color) {
+    parent
+        .spawn((
+            Button,
+            EndedButton(act),
+            Node {
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(12.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(Color::srgb(0.5, 0.6, 0.85)),
+            BorderRadius::all(Val::Px(8.0)),
+            BackgroundColor(bg),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(label.to_string()),
+                TextFont { font_size: 18.0, ..default() },
+                TextColor(Color::srgb(0.95, 0.97, 1.0)),
             ));
         });
 }
@@ -908,5 +1062,29 @@ pub(crate) fn ended_input(
     }
     if keys.just_pressed(KeyCode::Escape) {
         exit.write(AppExit::Success);
+    }
+}
+
+/// Tap handler for the Ended screen buttons — same effects as [`ended_input`].
+pub(crate) fn ended_buttons(
+    q: Query<(&Interaction, &EndedButton), Changed<Interaction>>,
+    mut session: ResMut<Session>,
+    mut next: ResMut<NextState<Screen>>,
+    mut exit: EventWriter<AppExit>,
+) {
+    for (interaction, btn) in &q {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match btn.0 {
+            EndedAct::Continue => {
+                session.channeling = false;
+                session.status.clear();
+                next.set(Screen::City);
+            }
+            EndedAct::Quit => {
+                exit.write(AppExit::Success);
+            }
+        }
     }
 }

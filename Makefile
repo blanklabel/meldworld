@@ -65,14 +65,14 @@ help:
 # realtime WebSocket on the SAME origin — no separate web server, no proxy, no
 # second port. Open $(URL) once you see "server healthy". First build compiles
 # the wasm bundle (a minute or two); leave it running (Ctrl-C to stop).
-play:
-	@echo "→ Building the web client (first run compiles wasm — a minute or two)…"
-	client/scripts/trunk-build.sh
-	@echo "→ Starting Postgres + server…  then OPEN:  $(URL)"
-	MELD_CLIENT_DIST="$(DIST)" $(SERVE) bash -c 'echo; echo "▶ OPEN  $$MELD_SERVER  in your browser  (Ctrl-C to stop)"; tail -f /dev/null'
-
+#play:
+#	@echo "→ Building the web client (first run compiles wasm — a minute or two)…"
+#	client/scripts/trunk-build.sh
+#	@echo "→ Starting Postgres + server…  then OPEN:  $(URL)"
+#	MELD_CLIENT_DIST="$(DIST)" $(SERVE) bash -c 'echo; echo "▶ OPEN  $$MELD_SERVER  in your browser  (Ctrl-C to stop)"; tail -f /dev/null'
+#
 # Native desktop window (serve.sh's default command is `cargo run -p meld-client`).
-play-native:
+play:
 	$(SERVE)
 
 # The self-contained build: a single native binary that boots the whole server

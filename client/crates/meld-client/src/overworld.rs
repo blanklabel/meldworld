@@ -21,6 +21,9 @@ pub(crate) enum OverworldAct {
     Extract,
     TownPortal,
     Join,
+    /// Open the inventory/menu overlay (where distance, biome and the backpack now
+    /// live). Keyboard equivalent: C / I, or tapping your own character.
+    Menu,
 }
 
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
@@ -51,7 +54,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
             ));
             p.spawn((
                 Text::new(
-                    "WASD/arrows or drag = move | tap = go there | tap yourself = party/inventory | walk into nodes to harvest | T town portal | J join | E portal",
+                    "WASD/arrows or drag = move | tap = go there | Menu (or tap yourself / C) = inventory, distance & stats | walk into nodes to harvest | T town portal | J join | E portal",
                 ),
                 TextFont {
                     font_size: 14.0,
@@ -72,12 +75,14 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
-                // Harvest is automatic (walk into a node); inventory/party opens by
-                // tapping your character — so the bar is just the situational actions.
+                // Harvest is automatic (walk into a node). Menu opens the inventory/
+                // stats overlay (also: tap yourself, or C/I); the rest are the
+                // situational actions. Every action is reachable by tap AND keyboard.
                 for (act, label) in [
                     (OverworldAct::Join, "Join"),
                     (OverworldAct::Extract, "Portal"),
                     (OverworldAct::TownPortal, "Town Portal"),
+                    (OverworldAct::Menu, "\u{f0214} Menu"), // list icon
                 ] {
                     action_button(bar, act, label);
                 }
@@ -201,6 +206,8 @@ pub(crate) fn touch_action_buttons(
     world: Res<Overworld>,
     session: Res<Session>,
     backpack: Res<RunBackpack>,
+    mut overlay: ResMut<Overlay>,
+    mut tab: ResMut<OverlayTab>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -217,6 +224,16 @@ pub(crate) fn touch_action_buttons(
             OverworldAct::Join => {
                 if near_fight(&world, me) {
                     net.0.send(ClientCmd::JoinBattle);
+                }
+            }
+            OverworldAct::Menu => {
+                // Toggle the overlay open to the Status tab, where distance/biome and
+                // the run backpack now live (moved off the always-on HUD).
+                if overlay.kind.is_some() {
+                    overlay.kind = None;
+                } else {
+                    overlay.kind = Some(OverlayKind::Inventory);
+                    *tab = OverlayTab::Status;
                 }
             }
         }
@@ -268,6 +285,8 @@ pub(crate) fn hd2d_follow(
         ),
         With<Camera3d>,
     >,
+    mut spawn: ResMut<SpawnView>,
+    steer: Res<Steer>,
 ) {
     let Some(pos) = players
         .iter()
@@ -278,8 +297,35 @@ pub(crate) fn hd2d_follow(
     };
     // Rise with the player's terrace (pos.y already carries the smoothed elevation).
     let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
+    // Spawn establishing shot: on a fresh dive, start the camera looking WEST at the
+    // Last City gate (the radial fan otherwise pushes it off the left edge) and ease
+    // to the default follow. Skip on a battle return (player already far from the hub);
+    // a movement input snaps it closed. `cam_yaw = 90°` parks the camera east of the
+    // player, looking back over them at the gate at world-x = west_return_border.
+    let mut cam_yaw_override = None;
+    if spawn.active {
+        if pos.x * pos.x + pos.z * pos.z > 64.0 {
+            spawn.active = false; // returned from battle away from spawn — no intro
+        } else {
+            let rate = if steer.0.length_squared() > 0.0 { 1.0 / 0.4 } else { 1.0 / 2.2 };
+            spawn.blend = (spawn.blend + time.delta_secs() * rate).min(1.0);
+            if spawn.blend >= 1.0 {
+                spawn.active = false;
+            } else {
+                let e = spawn.blend * spawn.blend * (3.0 - 2.0 * spawn.blend); // smoothstep
+                cam_yaw_override = Some(90.0 + (look.cam_yaw - 90.0) * e);
+            }
+        }
+    }
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
-        *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        let elapsed = time.elapsed_secs();
+        *t = if let Some(y) = cam_yaw_override {
+            let mut l = look.clone();
+            l.cam_yaw = y;
+            hd2d::camera_transform(&l, target, elapsed)
+        } else {
+            hd2d::camera_transform(&look, target, elapsed)
+        };
         hd2d::apply_post(
             &look,
             &mut proj,
@@ -372,19 +418,51 @@ pub(crate) fn draw_path_trail(
     world_path.drawn = true;
 }
 
-/// Update the distance/biome HUD from the player's authoritative position.
+/// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
+/// and the run backpack moved off the HUD into the menu (Status tab — see
+/// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: the
+/// "join the fight" prompt and active server-side perk hints.
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
-    backpack: Res<RunBackpack>,
     perks: Res<PerksRes>,
-    terrain: Res<Terrain>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
     };
+    let me_pos = Some((me.x, me.y));
+    if let Ok(mut t) = q.single_mut() {
+        let mut parts: Vec<String> = Vec::new();
+        if near_fight(&world, me_pos) {
+            parts.push("\u{f0817} Press [J] to join the fight".into()); // crossed-swords marker
+        }
+        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
+        if perks.0.resonant_regen > 0.0 {
+            parts.push("Regen".into());
+        }
+        if perks.0.ironhull_aggro_mult < 1.0 {
+            parts.push("Bulwark".into());
+        }
+        **t = parts.join("  -  ");
+    }
+}
+
+/// Recompute the live exploration readouts (distance / tier / biome) into the
+/// [`RunStats`] resource. Writes a field ONLY when its displayed value actually
+/// changes, so the immediate-mode menu overlay's change-gate doesn't fire every
+/// frame (movement is frozen while the overlay is open, so this is quiescent then).
+pub(crate) fn update_run_stats(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    terrain: Res<Terrain>,
+    mut stats: ResMut<RunStats>,
+) {
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
+    let tier = d / 100; // tier(d) = floor(d/100) — the CANON distance axis.
     // The biome label reads the ACTUAL section the player stands in (its radius ring),
     // so it agrees with the ground + the creatures — not the fixed distance bands.
     let r = d as f64;
@@ -394,39 +472,14 @@ pub(crate) fn update_overworld_hud(
         .find(|s| r >= s.start_x && r < s.end_x)
         .map(|s| title_case(&s.biome))
         .unwrap_or_else(|| biome_display(d).to_string());
-    // Town Portals first (your way home), then a compact tally of gathered materials.
-    let tp = backpack.count("town_portal");
-    let mats: String = backpack
-        .items
-        .iter()
-        .filter(|(k, _)| k != "town_portal")
-        .map(|(k, q)| format!("{} {}", nice_name(k), q))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let me_pos = Some((me.x, me.y));
-    if let Ok(mut t) = q.single_mut() {
-        let mut line = format!("distance {d}  -  {biome}  -  \u{f0f10}{tp}"); // teleport = Town Portals
-        // Chits found this run (banked on extraction), then gathered materials.
-        if backpack.chits > 0 {
-            line.push_str(&format!("  -  {} chits", backpack.chits));
-        }
-        if !mats.is_empty() {
-            line.push_str(&format!("  -  {mats}"));
-        }
-        if !backpack.gear.is_empty() {
-            line.push_str(&format!("  -  loot x{}", backpack.gear.len()));
-        }
-        if near_fight(&world, me_pos) {
-            line.push_str("  -  \u{f0817} Press [J] to join the fight"); // crossed-swords marker
-        }
-        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
-        if perks.0.resonant_regen > 0.0 {
-            line.push_str("  -  Regen");
-        }
-        if perks.0.ironhull_aggro_mult < 1.0 {
-            line.push_str("  -  Bulwark");
-        }
-        **t = line;
+    if stats.distance != d {
+        stats.distance = d;
+    }
+    if stats.tier != tier {
+        stats.tier = tier;
+    }
+    if stats.biome != biome {
+        stats.biome = biome;
     }
 }
 
@@ -1220,10 +1273,7 @@ pub(crate) fn build_world_walls(
         // approach. Crossing west of `west_return_border` returns you; the gate marks
         // the line. All models sit at y=0 (Kenney base-origin), so nothing floats.
         let wx = frame.west_return_border;
-        // "Into the city" is away from the hub; the wall faces back toward the player.
-        let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
-        let wall_yaw = 90.0_f32; // segments run north–south along world z
-        let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
+        let arc_deg = frame.radial_arc_degrees;
         let prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
             commands.spawn((
                 WorldWall,
@@ -1233,45 +1283,100 @@ pub(crate) fn build_world_walls(
                     .with_scale(Vec3::splat(scale)),
             ));
         };
-        // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5; tile at
-        // 6.5 so segments overlap slightly into a continuous rampart (no gaps).
+        // castle-wall renders ~2 units wide at scale 1 → ~7 wide at scale 3.5.
         const WALL_SCALE: f32 = 3.5;
         const SEG_W: f32 = 6.5;
-        const WALL_HALF: f32 = 44.0; // how far ±z the rampart runs
-        const GATE_HALF: f32 = 7.0; // half-width of the central gateway (fits the gatehouse)
-        // The rampart: tiled wall segments, leaving the central gate gap.
-        let mut z = -WALL_HALF;
-        while z <= WALL_HALF {
-            if z.abs() > GATE_HALF {
-                prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
+        if arc_deg > 0.0 {
+            // Radial world: Last City occupies the western angular WEDGE the content fan
+            // (`arc_deg`) leaves open, at radius R = |wx|. Draw the wall/gate as an arc
+            // clipped to that wedge (centred on due-west, each piece facing the hub), so
+            // it never spills across the fan's western content — the bug the old straight
+            // rampart (±44 in z) had, where its ends landed on real creatures/terrain.
+            // The wedge is `360 - arc_deg` wide.
+            let r = wx.abs();
+            let content_half = arc_deg.to_radians() * 0.5; // fan half-arc (rad)
+            let wedge_half = (std::f32::consts::PI - content_half).max(0.05); // city half-wedge
+            // World (x, z) of a wedge point `a` rad off due-west, and the yaw that faces
+            // that point back toward the hub (origin) — `at(0)` is the gate, due-west.
+            let at = |a: f32| Vec2::new(-r * a.cos(), -r * a.sin());
+            let face = |p: Vec2| (-p.x).atan2(-p.y).to_degrees();
+            // Central gatehouse, due-west, facing the hub.
+            let g = at(0.0);
+            prop(&mut commands, "pirate/castle-gate", g.x, g.y, face(g), WALL_SCALE);
+            // Flanking towers + pennants at the wedge edges — they frame the gate and
+            // mark where the content fan begins (nothing spawns past these bearings).
+            for s in [-1.0_f32, 1.0] {
+                let p = at(s * wedge_half);
+                prop(&mut commands, "pirate/tower-complete-large", p.x, p.y, face(p), 3.5);
+                prop(&mut commands, "pirate/flag-high", p.x, p.y, face(p), 3.5);
             }
-            z += SEG_W;
-        }
-        // The gatehouse in the gap + two flanking towers (with pennants) framing it.
-        prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
-        for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
-            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
-            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
-        }
-        // Towers punctuating the rampart at intervals.
-        for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
-            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
-        }
-        // The city BEHIND the wall — a skyline of towers + rooftops set back so it's
-        // seen through the gate. Concentrated near z=0 (behind the doorway). Fixed
-        // layout: (model, back-offset, z, yaw°, scale).
-        let city: &[(&str, f32, f32, f32, f32)] = &[
-            ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
-            ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
-            ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
-            ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
-            ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
-            ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
-            ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
-            ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
-        ];
-        for (path, back, cz, yaw, scale) in city {
-            prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
+            // Wall stubs bridging gate → towers along the arc (only if the wedge is wide
+            // enough to fit a segment; a narrow 20° wedge is just the gate + towers).
+            let step_a = (SEG_W / r).max(0.02);
+            let mut a = step_a;
+            while a < wedge_half - 0.02 {
+                for s in [-1.0_f32, 1.0] {
+                    let p = at(s * a);
+                    prop(&mut commands, "pirate/castle-wall", p.x, p.y, face(p), WALL_SCALE);
+                }
+                a += step_a;
+            }
+            // The city skyline behind the gate — deeper into the wedge (larger radius),
+            // kept inside the wedge so it stays clear of the fan. Tuples: (model, extra
+            // radius behind the wall, fraction of the half-wedge, scale).
+            let city: &[(&str, f32, f32, f32)] = &[
+                ("pirate/tower-complete-large", 10.0, 0.0, 4.0),
+                ("pirate/tower-complete-small", 8.0, -0.55, 3.0),
+                ("pirate/tower-complete-small", 8.0, 0.55, 3.0),
+                ("graveyard/crypt-large", 13.0, -0.35, 2.4),
+                ("graveyard/crypt-large", 13.0, 0.4, 2.4),
+                ("pirate/tower-watch", 17.0, -0.5, 3.5),
+                ("pirate/tower-watch", 17.0, 0.5, 3.5),
+                ("pirate/tower-complete-large", 22.0, 0.15, 4.5),
+            ];
+            for (path, back, afrac, scale) in city {
+                let rr = r + back;
+                let a = afrac * wedge_half;
+                let p = Vec2::new(-rr * a.cos(), -rr * a.sin());
+                prop(&mut commands, path, p.x, p.y, face(p), *scale);
+            }
+        } else {
+            // Corridor (flat) fallback: a straight north–south rampart at wx, gap for the
+            // gate. Correct here because a flat corridor has no western content to spill
+            // onto (the city sits straight behind the hub).
+            let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
+            let wall_yaw = 90.0_f32;
+            let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 };
+            const WALL_HALF: f32 = 44.0;
+            const GATE_HALF: f32 = 7.0;
+            let mut z = -WALL_HALF;
+            while z <= WALL_HALF {
+                if z.abs() > GATE_HALF {
+                    prop(&mut commands, "pirate/castle-wall", wx, z, wall_yaw, WALL_SCALE);
+                }
+                z += SEG_W;
+            }
+            prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
+            for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
+                prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+                prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+            }
+            for tz in [-WALL_HALF + 2.0, -WALL_HALF * 0.5, WALL_HALF * 0.5, WALL_HALF - 2.0] {
+                prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+            }
+            let city: &[(&str, f32, f32, f32, f32)] = &[
+                ("pirate/tower-complete-large", 10.0, 0.0, 0.0, 4.0),
+                ("pirate/tower-complete-small", 9.0, -6.0, 0.0, 3.0),
+                ("pirate/tower-complete-small", 9.0, 6.0, 0.0, 3.0),
+                ("graveyard/crypt-large", 14.0, -4.0, 90.0, 2.4),
+                ("graveyard/crypt-large", 14.0, 5.0, 90.0, 2.4),
+                ("pirate/tower-watch", 18.0, -9.0, 0.0, 3.5),
+                ("pirate/tower-watch", 18.0, 9.0, 0.0, 3.5),
+                ("pirate/tower-complete-large", 22.0, 2.0, 0.0, 4.5),
+            ];
+            for (path, back, cz, yaw, scale) in city {
+                prop(&mut commands, path, wx + behind * back, *cz, *yaw, *scale);
+            }
         }
     }
 

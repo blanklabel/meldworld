@@ -237,6 +237,8 @@ pub(crate) fn render_overlay(
     roster: Res<PartyRoster>,
     rename: Res<HeroRename>,
     hero_names: Res<AccountHeroNames>,
+    stats: Res<RunStats>,
+    backpack: Res<RunBackpack>,
     existing: Query<Entity, With<OverlayRoot>>,
 ) {
     // Rebuild only when something the overlay shows changed. The gear rows are
@@ -252,7 +254,9 @@ pub(crate) fn render_overlay(
         || prog.is_changed()
         || roster.is_changed()
         || rename.is_changed()
-        || hero_names.is_changed())
+        || hero_names.is_changed()
+        || stats.is_changed()
+        || backpack.is_changed())
     {
         return;
     }
@@ -425,6 +429,42 @@ pub(crate) fn render_overlay(
                                 }
                             }
                             OverlayTab::Status => {
+                                // --- Run readouts (moved off the always-on HUD) ---
+                                // Distance / tier / biome and the run backpack now live
+                                // here in the menu, so the overworld view stays clean.
+                                // Only meaningful during a live dive (distance > 0 or a
+                                // non-empty backpack); in the City it's just zeroes.
+                                if !roster.heroes.is_empty() {
+                                    label(
+                                        content,
+                                        format!(
+                                            "Distance {}   |   Tier {}   |   {}",
+                                            stats.distance, stats.tier, stats.biome
+                                        ),
+                                        17.0,
+                                        gold,
+                                    );
+                                    let tp = backpack.count("town_portal");
+                                    let mut bag = format!("Town Portals: {tp}   |   Chits: {}", backpack.chits);
+                                    if !backpack.gear.is_empty() {
+                                        bag.push_str(&format!("   |   Loot x{}", backpack.gear.len()));
+                                    }
+                                    label(content, bag, 14.0, dim);
+                                    let mats: String = backpack
+                                        .items
+                                        .iter()
+                                        .filter(|(k, _)| k != "town_portal")
+                                        .map(|(k, q)| format!("{} x{}", nice_name(k), q))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    label(
+                                        content,
+                                        if mats.is_empty() { "Materials: (none)".into() } else { format!("Materials: {mats}") },
+                                        14.0,
+                                        dim,
+                                    );
+                                    label(content, "- Heroes -".into(), 15.0, gold);
+                                }
                                 // Every hero's name, class, level and stats — this is
                                 // where attributes live (not the battle HUD). Outside
                                 // an active run (e.g. opened from the City's storage

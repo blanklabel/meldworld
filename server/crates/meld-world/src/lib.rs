@@ -1404,7 +1404,14 @@ impl Arena {
             wg.monster_spacing
         };
         let inner_end = end_x - wg.portal_setback - 1.0;
-        let mut x = start_x + 2.0;
+        // The SPAWN section (i == 0) keeps a creature-free safe ring around the Center
+        // Hub: a just-spawned, stationary player used to be placed ~2 tiles from the
+        // first creature — well inside `[ai] aggro_radius` — so an aggressive creature
+        // closed and yanked them into a battle before they could react. `hub_safe_radius`
+        // exceeds aggro_radius, and in the radial world a creature's hub-distance is its
+        // corridor-x, so starting placement there guarantees a calm spawn. Deeper
+        // sections start right at their western edge as before.
+        let mut x = start_x + if i == 0 { wg.hub_safe_radius.max(2.0) } else { 2.0 };
         // FS-4: a fraction of creatures roll ELITE (champions). A SEPARATE rng stream
         // so the main placement draws stay byte-identical (determinism tests hold).
         // Never in the spawn section (i == 0), which stays gentle onboarding.
@@ -2181,6 +2188,30 @@ impl Arena {
             return false;
         };
         a.elevation == 0 && a.position.distance_to(&self.portal) <= self.interaction_radius
+    }
+
+    /// WG-4: is `player` stepping back into Last City (the western free return)?
+    ///
+    /// In the **radial** world the city is the angular wedge due-west that the content
+    /// fan does NOT cover (`|bearing| > radial_half`); the content fans across the rest.
+    /// A naive `position.x < border` test would fire across *explorable* western content
+    /// — a creature legitimately placed at, say, bearing ~130° / radius 30 sits at a
+    /// world-x well past `border`, so walking over to fight it would silently extract
+    /// you. So return only when the player is genuinely out past the wall ring AND
+    /// inside that empty western wedge. In **corridor** mode (no bend) the city is
+    /// straight west of the hub, so the original `x < border` line is exactly right.
+    pub fn heading_into_city(&self, player_id: &str, border: f64) -> bool {
+        let Some(a) = self.avatar(player_id) else {
+            return false;
+        };
+        let p = a.position;
+        if self.radial_half > 0.0 {
+            // Out to the gate ring (|border| from the hub) and inside the fan's western
+            // angular gap. `bearing`: 0 = due east, ±π = due west.
+            p.x.hypot(p.y) >= border.abs() && p.y.atan2(p.x).abs() > self.radial_half
+        } else {
+            p.x < border
+        }
     }
 
     /// Harvest the resource node `entity_id` if `player` is within interaction
@@ -3435,6 +3466,85 @@ mod tests {
             .map(|m| (m.position.x.powi(2) + m.position.y.powi(2)).sqrt())
             .fold(0.0_f64, f64::max);
         assert!(max_r > 50.0, "the world extends outward, not just a ring");
+    }
+
+    #[test]
+    fn spawn_section_keeps_a_creature_free_hub_ring() {
+        // Bug fix: procedural area 0 used to place creatures ~2 tiles from the hub, so
+        // an aggressive creature closed on the stationary just-spawned player and pulled
+        // it into a battle before the player could orient. The spawn section now clears a
+        // `hub_safe_radius` ring that MUST exceed aggro_radius. Check across many seeds.
+        let b = Balance::load_default().unwrap();
+        let safe = b.worldgen.hub_safe_radius;
+        assert!(
+            safe > b.ai.aggro_radius,
+            "hub_safe_radius {safe} must exceed aggro_radius {}",
+            b.ai.aggro_radius
+        );
+        for seed in [1u64, 2, 3, 7, 42, 100, 555, 9001] {
+            let mut arena = Arena::generate(&b, seed, false); // non-tutorial → procedural area 0
+            arena.add_avatar("p1".into(), 6.0);
+            // No creature spawns within aggro range of the hub, so the stationary spawn
+            // is never chased or touched on the first tick.
+            let nearest = arena
+                .monsters
+                .iter()
+                .map(|m| m.position.x.hypot(m.position.y))
+                .fold(f64::MAX, f64::min);
+            assert!(
+                nearest > b.ai.aggro_radius,
+                "seed {seed}: nearest creature {nearest:.1} inside aggro range at spawn"
+            );
+            assert!(
+                arena.check_touch().is_none(),
+                "seed {seed}: player spawned already in contact with a creature"
+            );
+        }
+    }
+
+    #[test]
+    fn city_return_is_the_west_wedge_not_a_straight_line() {
+        // Bug fix: `west_return` used a straight `x < border` test, which in the 340°
+        // radial fan sliced through explorable western content — walking over to a
+        // creature at a west-ish bearing silently extracted the player. Only the empty
+        // due-west wedge (beyond the fan's arc, out past the wall ring) returns you now.
+        let b = Balance::load_default().unwrap();
+        let border = b.worldgen.west_return_border; // -20.0
+        let mut arena = Arena::generate(&b, 7, false);
+        arena.add_avatar("p1".into(), 6.0);
+        let place = |arena: &mut Arena, x: f64, y: f64| {
+            arena.avatars[0].position = Position::new(x, y);
+        };
+
+        // Fresh spawn at the hub is not returning.
+        assert!(!arena.heading_into_city("p1", border));
+
+        // West-ish FAN content: far past `border` in x, but inside the content arc — a
+        // legit place to fight. Must NOT extract. (bearing ~150°, radius ~35.)
+        let (r, th) = (35.0_f64, 150.0_f64.to_radians());
+        place(&mut arena, r * th.cos(), r * th.sin());
+        assert!(
+            arena.avatars[0].position.x < border,
+            "sanity: the test point is genuinely west of the straight border"
+        );
+        assert!(
+            !arena.heading_into_city("p1", border),
+            "west-ish fan content must not trigger the city return"
+        );
+
+        // Due-west, out past the wall ring → genuinely stepping into the city wedge.
+        place(&mut arena, border - 5.0, 0.0);
+        assert!(
+            arena.heading_into_city("p1", border),
+            "walking due-west into the city wedge returns you"
+        );
+
+        // Due-west but still inside the wall ring (not out to the gate yet) → not yet.
+        place(&mut arena, -(border.abs() * 0.5), 0.0);
+        assert!(
+            !arena.heading_into_city("p1", border),
+            "not out to the gate ring yet — no return"
+        );
     }
 
     #[test]

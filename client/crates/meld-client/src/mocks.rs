@@ -96,11 +96,12 @@ pub(crate) fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // Two martial hunters hold the front; a Psyker + Resonant sit the back row.
+        // A Hunter + Iron Hull hold the front; a Psyker + Resonant sit the back row.
+        // (The Iron Hull makes the TACTICS tap toggle visible for screenshots.)
         hero("h1", 32, 1.0, "hunter", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
-        hero("h4", 36, 0.75, "hunter", false),
+        hero("h4", 36, 0.75, "iron_hull", false),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),
@@ -162,11 +163,14 @@ pub(crate) fn mock_battle_setup(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn mock_overlay_setup(
     mut overlay: ResMut<Overlay>,
+    mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
     mut prog: ResMut<ProgressData>,
     mut world: ResMut<Overworld>,
     mut levelup: ResMut<LevelUpQueue>,
     mut roster: ResMut<PartyRoster>,
+    mut stats: ResMut<RunStats>,
+    mut backpack: ResMut<RunBackpack>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if inventory_mockup_flag() {
@@ -228,7 +232,20 @@ pub(crate) fn mock_overlay_setup(
                 spd_bonus: 1,
             },
         ];
+        // Seed the run readouts that moved off the HUD into the Status tab, and open
+        // there so `MELD_INVENTORY` screenshots the distance/biome/backpack-in-menu.
+        stats.distance = 342;
+        stats.tier = 3;
+        stats.biome = "Ashfall".into();
+        backpack.items = vec![
+            ("town_portal".into(), 2),
+            ("forest_bloom_petal".into(), 7),
+            ("ashfall_cinder".into(), 4),
+        ];
+        backpack.chits = 1240;
+        backpack.gear = vec![("Duneglass Charm".into(), 0)];
         overlay.kind = Some(OverlayKind::Inventory);
+        *tab = OverlayTab::Status;
     } else if levelup_mockup_flag() {
         prog.loaded = true;
         prog.skills = vec![

@@ -338,6 +338,7 @@ pub enum ServerMsg {
         x_max: f64,
         lateral: f64,
         west_return_border: f64,
+        radial_arc_degrees: f64,
         seams: Vec<SeamLine>,
     },
     /// Current run backpack — drives the HUD. `items` are (item_kind, quantity),
@@ -1021,6 +1022,7 @@ impl Inner {
                         x_max: b["x_max"].as_f64().unwrap_or(0.0),
                         lateral: b["lateral"].as_f64().unwrap_or(28.0),
                         west_return_border: b["west_return_border"].as_f64().unwrap_or(-2.5),
+                        radial_arc_degrees: b["radial_arc_degrees"].as_f64().unwrap_or(0.0),
                         seams,
                     });
                 }

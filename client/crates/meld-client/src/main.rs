@@ -128,6 +128,8 @@ fn main() {
         .init_resource::<AccountHeroNames>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
+        .init_resource::<RunStats>()
+        .init_resource::<SpawnView>()
         .init_resource::<WorldPath>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
@@ -215,6 +217,7 @@ fn main() {
                 city_interact,
                 city_camera,
                 city_input,
+                city_action_buttons,
                 render_city,
                 pulse_magitech,
                 hd2d::animate_chars,
@@ -228,7 +231,7 @@ fn main() {
         .add_systems(OnExit(Screen::Lobby), despawn::<LobbyRoot>)
         .add_systems(
             Update,
-            (lobby_input, render_lobby).run_if(in_state(Screen::Lobby)),
+            (lobby_input, lobby_buttons, render_lobby).run_if(in_state(Screen::Lobby)),
         )
         // Overworld
         //
@@ -245,6 +248,7 @@ fn main() {
             OnEnter(Screen::Overworld),
             (
                 overworld_ui,
+                arm_spawn_view,
                 despawn::<BattleActor>,
                 despawn::<CityScene>,
                 despawn::<WorldEntity>,
@@ -286,7 +290,7 @@ fn main() {
                 hd2d::billboard,
                 animate_sway,
                 ambient::update_ambient_scatter,
-                update_overworld_hud,
+                (update_overworld_hud, update_run_stats),
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -375,6 +379,7 @@ fn main() {
                 validate_active,
                 auto_fire_queued,
                 tactics_toggle,
+                tactics_click,
                 menu_keyboard,
                 menu_click,
                 party_select_click,
@@ -419,7 +424,7 @@ fn main() {
             ),
         )
         .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
-        .add_systems(Update, ended_input.run_if(in_state(Screen::Ended)))
+        .add_systems(Update, (ended_input, ended_buttons).run_if(in_state(Screen::Ended)))
         .run();
 }
 
@@ -612,6 +617,40 @@ impl RunBackpack {
     }
 }
 
+/// Live exploration readouts (distance / biome / tier) that used to sit in the
+/// always-on overworld HUD but now live only in the menu (Status tab). Kept as a
+/// coarse resource — `update_run_stats` writes a field ONLY when its displayed
+/// value actually changes — so the immediate-mode overlay doesn't rebuild every
+/// frame (it must not: gear rows are real buttons that persist for click detection).
+#[derive(Resource, Default)]
+struct RunStats {
+    distance: i64,
+    tier: i64,
+    biome: String,
+}
+
+/// Spawn establishing shot. On a fresh dive the radial fan pushes the Last City gate
+/// off the camera's left edge ("can't see the castle at spawn"), so the overworld
+/// camera briefly starts looking WEST at the gate, then eases to the normal
+/// maze-facing follow. `blend` runs 0 (castle view) → 1 (default follow); `hd2d_follow`
+/// cancels it early on movement, and skips it entirely on a battle return (player far
+/// from the hub). Armed by `arm_spawn_view` on entering the overworld.
+#[derive(Resource, Default)]
+struct SpawnView {
+    active: bool,
+    blend: f32,
+}
+
+/// Arm the spawn establishing shot when the overworld opens. Skipped under the idle
+/// screenshot flag so those frames stay deterministic.
+fn arm_spawn_view(mut spawn: ResMut<SpawnView>) {
+    if world_idle_flag() {
+        return;
+    }
+    spawn.active = true;
+    spawn.blend = 0.0;
+}
+
 /// The guaranteed clear path (world-unit waypoints), drawn as a faint trail so the
 /// feasible route through the terrain is legible. `drawn` gates one-time spawning.
 #[derive(Resource, Default)]
@@ -655,6 +694,10 @@ struct WorldFrame {
     /// Crossing west of this world-x returns to Last City — the client marks it with
     /// a castle wall + gate so the boundary is visible before you cross it.
     west_return_border: f32,
+    /// WG-4 radial fan arc (degrees; 0 = flat corridor). Content fans across this arc,
+    /// leaving the western `360 - arc` wedge for Last City; the wall/gate is drawn as
+    /// an arc clipped to that wedge (see the castle block in `build_terrain_sections`).
+    radial_arc_degrees: f32,
     seams: Vec<meld_client::net::SeamLine>,
 }
 
@@ -1570,6 +1613,9 @@ struct CommandWindow;
 struct MenuRow {
     index: usize,
 }
+/// The tappable Iron Hull Tactics-stance toggle in the command window (keyboard: T).
+#[derive(Component)]
+struct TacticsButton;
 /// A clickable party HUD cell: tapping it makes that hero the one the command panel
 /// is giving orders to (if it's alive and hasn't locked an action yet). The
 /// touch-friendly way to pick WHICH ready hero to command.
