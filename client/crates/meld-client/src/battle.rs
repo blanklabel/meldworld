@@ -419,6 +419,25 @@ pub(crate) fn drive_battle_action_clips(
     hitfx.act_clip.clear();
 }
 
+/// Turn the hero currently AWAITING your command to face the camera (look at you);
+/// every other combatant keeps its fighting stance facing the foes. "Awaiting a
+/// command" = its ATB gauge is full (`ready`) AND it's the hero the command window is
+/// addressing (`active`) — so the moment you issue an order it turns back and acts.
+/// Only heroes carry a `CharSprite`, so enemies are unaffected. Facing is untouched,
+/// so the lunge-toward-target motion still works.
+pub(crate) fn drive_battle_facing(
+    battle: Res<BattleData>,
+    mut q: Query<(&BattleActor, &mut hd2d::CharSprite)>,
+) {
+    for (ba, mut cs) in &mut q {
+        let awaiting =
+            battle.active.as_deref() == Some(ba.id.as_str()) && battle.ready.contains(&ba.id);
+        if cs.face_cam != awaiting {
+            cs.face_cam = awaiting;
+        }
+    }
+}
+
 /// Give combat weight: struck sprites flash white + recoil (with a quick shake),
 /// attackers lunge in and back, and a downed combatant grays out. Drives each sprite
 /// *child* (leaving the actor root — and thus the walk-cycle logic + shadow — alone).

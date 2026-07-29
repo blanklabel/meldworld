@@ -416,6 +416,7 @@ fn main() {
                     battle_click_target,
                     highlight_target,
                     drive_battle_action_clips,
+                    drive_battle_facing,
                     animate_battle_actors,
                     battle_zoom_input,
                     battle_camera,
