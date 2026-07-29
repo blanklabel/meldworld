@@ -221,19 +221,19 @@ fn class_card(
             if !sub.is_empty() {
                 c.spawn((
                     Text::new(sub.to_string()),
-                    TextFont { font_size: 12.0, ..default() },
+                    TextFont { font_size: 15.0, ..default() },
                     TextColor(Color::srgb(0.55, 0.6, 0.75)),
                 ));
             }
             c.spawn((
                 ImageNode::new(sprite),
                 sprite_tag,
-                Node { width: Val::Px(w * 0.7), height: Val::Px(w * 0.7), ..default() },
+                Node { width: Val::Px(w * 0.9), height: Val::Px(w * 0.9), ..default() },
             ));
             c.spawn((
                 Text::new(label.to_string()),
                 name_tag,
-                TextFont { font_size: 15.0, ..default() },
+                TextFont { font_size: 19.0, ..default() },
                 TextColor(Color::srgb(0.9, 0.93, 1.0)),
             ));
         });
@@ -262,12 +262,12 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
         .with_children(|p| {
             p.spawn((
                 Text::new("MELDWORLD"),
-                TextFont { font_size: 30.0, ..default() },
+                TextFont { font_size: 44.0, ..default() },
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
                 Text::new("Your party of 4 \u{2014} click a slot, then a class. Hover any class for details."),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont { font_size: 19.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
 
@@ -303,7 +303,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                         sprite(&key),
                         class_info(&key).name,
                         &format!("Slot {}", i + 1),
-                        108.0,
+                        144.0,
                         JoinSlot(i),
                         JoinSlotSprite(i),
                         JoinSlotName(i),
@@ -325,7 +325,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             })
             .with_children(|row| {
                 for ci in &CLASS_INFO {
-                    class_card(row, sprite(ci.key), ci.name, "", 92.0, JoinClassCard(ci.key), JoinClassSprite(ci.key), ());
+                    class_card(row, sprite(ci.key), ci.name, "", 122.0, JoinClassCard(ci.key), JoinClassSprite(ci.key), ());
                 }
             });
 
@@ -333,10 +333,10 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             let lead = class_info(&session.party.first().cloned().unwrap_or_else(|| "hunter".into()));
             p.spawn((
                 Node {
-                    width: Val::Px(680.0),
+                    width: Val::Px(820.0),
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(16.0),
-                    padding: UiRect::all(Val::Px(12.0)),
+                    column_gap: Val::Px(18.0),
+                    padding: UiRect::all(Val::Px(14.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     margin: UiRect::top(Val::Px(2.0)),
                     ..default()
@@ -349,7 +349,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 d.spawn((
                     ImageNode::new(sprite(lead.key)),
                     JoinDetailSprite,
-                    Node { width: Val::Px(96.0), height: Val::Px(96.0), ..default() },
+                    Node { width: Val::Px(150.0), height: Val::Px(150.0), ..default() },
                 ));
                 d.spawn(Node {
                     flex_direction: FlexDirection::Column,
@@ -361,13 +361,13 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                     col.spawn((
                         Text::new(lead.name.to_string()),
                         JoinDetailName,
-                        TextFont { font_size: 24.0, ..default() },
+                        TextFont { font_size: 30.0, ..default() },
                         TextColor(Color::srgb(1.0, 0.85, 0.45)),
                     ));
                     col.spawn((
                         Text::new(lead.role.to_string()),
                         JoinDetailRole,
-                        TextFont { font_size: 14.0, ..default() },
+                        TextFont { font_size: 17.0, ..default() },
                         TextColor(Color::srgb(0.78, 0.82, 0.95)),
                     ));
                     // Stats (left) and skills (right) side by side to keep it compact.

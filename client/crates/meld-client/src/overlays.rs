@@ -463,6 +463,42 @@ pub(crate) fn render_overlay(
                                         14.0,
                                         dim,
                                     );
+                                    // Return-home actions, also reachable from the overworld
+                                    // bar / T,E keys — tagged TouchActionButton so the existing
+                                    // `touch_action_buttons` handler drives them. Town Portal
+                                    // works anywhere (needs one); Deep Portal only at the portal.
+                                    content
+                                        .spawn(Node {
+                                            flex_direction: FlexDirection::Row,
+                                            column_gap: Val::Px(10.0),
+                                            margin: UiRect::vertical(Val::Px(5.0)),
+                                            ..default()
+                                        })
+                                        .with_children(|row| {
+                                            let mut act_btn = |row: &mut ChildSpawnerCommands, act: OverworldAct, text: String, on: bool| {
+                                                row.spawn((
+                                                    Button,
+                                                    TouchActionButton(act),
+                                                    Node {
+                                                        padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                                                        border: UiRect::all(Val::Px(1.5)),
+                                                        ..default()
+                                                    },
+                                                    BorderColor(if on { Color::srgb(0.5, 0.6, 0.85) } else { Color::srgb(0.34, 0.37, 0.48) }),
+                                                    BorderRadius::all(Val::Px(6.0)),
+                                                    BackgroundColor(Color::srgba(0.12, 0.16, 0.3, if on { 0.9 } else { 0.4 })),
+                                                ))
+                                                .with_children(|b| {
+                                                    b.spawn((
+                                                        Text::new(text),
+                                                        TextFont { font_size: 14.0, ..default() },
+                                                        TextColor(if on { gold } else { dim }),
+                                                    ));
+                                                });
+                                            };
+                                            act_btn(row, OverworldAct::TownPortal, format!("\u{f0f10} Town Portal ({tp})"), tp > 0);
+                                            act_btn(row, OverworldAct::Extract, "\u{f0817} Deep Portal".into(), true);
+                                        });
                                     label(content, "- Heroes -".into(), 15.0, gold);
                                 }
                                 // Every hero's name, class, level and stats — this is
