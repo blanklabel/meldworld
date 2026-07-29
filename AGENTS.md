@@ -87,8 +87,8 @@ there are no locks** (CANON §S).
 A `Makefile` wraps the Postgres + server + client wiring:
 
 ```sh
-make play         # boot throwaway Postgres + server + browser client, then open the printed URL
-make play-native  # same, but the native desktop window
+make play         # boot throwaway Postgres + server + the native window (assets PACKED, release)
+make play-dev     # same, but a debug build that hot-reloads loose assets from disk (dev loop)
 make play-solo    # self-contained native window: server baked in, no Postgres, no setup
 make dist         # build the shippable single-file QA binary (server + assets embedded)
 make release VERSION=v0.1.0   # tag latest main + push → CI builds win/mac/linux + cuts a Release
@@ -203,7 +203,7 @@ only if you respect two shared, machine-global resources: the **server port** an
   default, the second fails to bind. Pick a per-agent port and export it, e.g.:
   ```sh
   export MELD_ADDR=127.0.0.1:181NN   # NN unique to your worktree (18101, 18102, …)
-  make server                        # or play / play-native / smoke — all honor MELD_ADDR
+  make server                        # or play / play-dev / smoke — all honor MELD_ADDR
   ```
   `make stop` kills only the server on *your* `MELD_ADDR` port (`lsof tcp:$PORT`), so it
   never disturbs anyone else. **Never** `pkill cargo` / `pkill meld-server` — that kills

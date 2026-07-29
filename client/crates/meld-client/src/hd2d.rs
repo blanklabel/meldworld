@@ -494,6 +494,11 @@ pub struct CharSprite {
     /// or special) instead of walk/idle until it finishes, then clear back to None.
     /// Set by the battle layer when an actor strikes; ignored in the overworld.
     pub action: Option<(String, f32)>,
+    /// When true, render the FRONT (camera-facing) frame regardless of world facing —
+    /// used in battle so the hero currently awaiting your command turns to look at you,
+    /// while everyone else keeps their fighting stance. Doesn't touch `facing`, so the
+    /// lunge direction (driven off `SpriteQuad.forward`) is unaffected.
+    pub face_cam: bool,
 }
 
 impl CharSprite {
@@ -508,6 +513,7 @@ impl CharSprite {
             still: 1.0, // start idle
             locked: None,
             action: None,
+            face_cam: false,
         }
     }
 }
@@ -562,9 +568,15 @@ pub fn animate_chars(
         }
         // Pick the sprite for the world facing *as seen from the camera* — this is
         // what makes the character look 3D when you orbit: same facing, new side.
-        let toward_cam = -cs.facing.dot(fwd); // + = facing the viewer (front)
-        let screen_right = cs.facing.dot(right);
-        let dir = dir_index(Vec2::new(screen_right, toward_cam));
+        // `face_cam` overrides it to the front frame (DIRS[0]) so a hero awaiting a
+        // command looks at the viewer, without disturbing its locked lunge direction.
+        let dir = if cs.face_cam {
+            0
+        } else {
+            let toward_cam = -cs.facing.dot(fwd); // + = facing the viewer (front)
+            let screen_right = cs.facing.dot(right);
+            dir_index(Vec2::new(screen_right, toward_cam))
+        };
 
         cs.timer.set_duration(Duration::from_secs_f32(1.0 / fps));
         cs.timer.tick(time.delta());

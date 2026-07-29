@@ -263,6 +263,18 @@ pub(crate) fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
 /// snapshots (higher = snappier + less smoothing). Kills the pixel-sprite jitter.
 pub(crate) const OW_SMOOTH_RATE: f32 = 16.0;
 
+/// Client render-unload radii (world units from the player). The server sends EVERY
+/// entity in the instance each snapshot; as you dive deep that set grows without
+/// bound. So the client only *renders* what's near: an entity beyond `_FAR` is
+/// despawned (freeing its sprite atlas / model), and one is (re)spawned from the
+/// snapshot once within `_NEAR` — the gap is hysteresis so nothing flickers at the
+/// edge. Both radii sit BEYOND the fog wall (`Look::fog_end` ~118), so culling is
+/// visually invisible; it purely bounds render + memory. This is a rendering concern
+/// only — the server still tracks and simulates every creature regardless. The local
+/// player and the deep portal (a landmark beacon) are never culled.
+pub(crate) const RENDER_UNLOAD_NEAR: f32 = 120.0;
+pub(crate) const RENDER_UNLOAD_FAR: f32 = 150.0;
+
 /// Drive the HD-2D camera each frame: orbit-follow the player, push the live
 /// `Look` post params into the camera, aim the sun, and recolour the ground to the
 /// player's current biome. Replaces the old flat 2D `follow_camera`.
@@ -888,12 +900,26 @@ pub(crate) fn sync_overworld_sprites(
     // smooth motion with no rubber-banding and no extrapolation overshoot.
     let k = 1.0 - (-time.delta_secs() * OW_SMOOTH_RATE).exp();
     let render_t = now - OW_INTERP_DELAY;
+    // Render-unload bookkeeping (see RENDER_UNLOAD_*): cull entities far from the
+    // player. The local player and the deep portal landmark are exempt. Positions come
+    // from the snapshot (not the smoothed transform) — good enough within a tick.
+    let me_pos = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+    let my_id = session.player_id.clone();
+    let exempt = |id: &str| id == my_id.as_str() || id == "portal";
+    let dist_from_me = |x: f32, y: f32| me_pos.map(|(mx, my)| (x - mx).hypot(y - my));
     let mut seen = HashSet::new();
     for (entity, we, mut tf) in &mut q {
         let Some(e) = world.entities.get(&we.0) else {
             commands.entity(entity).despawn();
             continue;
         };
+        // Render-unload: drop entities that have fallen far behind (past the fog wall)
+        // so render + memory stay bounded as you dive deep. The server keeps tracking
+        // and simulating them — this is purely what the client chooses to draw.
+        if !exempt(&we.0) && dist_from_me(e.x, e.y).is_some_and(|d| d > RENDER_UNLOAD_FAR) {
+            commands.entity(entity).despawn();
+            continue;
+        }
         // Idempotency guard: keep exactly one avatar per id. A rapid
         // Battle→Overworld round-trip could otherwise leave a second sprite for
         // the same id — it stops getting position updates and stands "frozen,
@@ -932,6 +958,11 @@ pub(crate) fn sync_overworld_sprites(
     }
     for (id, e) in &world.entities {
         if seen.contains(id) {
+            continue;
+        }
+        // Render-unload: hold off spawning far entities until they're within NEAR (the
+        // NEAR/FAR gap is hysteresis, so nothing flickers at the boundary).
+        if !exempt(id) && dist_from_me(e.x, e.y).is_some_and(|d| d > RENDER_UNLOAD_NEAR) {
             continue;
         }
         match e.kind {

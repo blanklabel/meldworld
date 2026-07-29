@@ -55,7 +55,22 @@ pub(crate) use world_render::*;
 const MOVE_INTENT_HZ: f32 = 20.0;
 
 
+/// Raise the process's open-file limit as high as the OS allows. Bevy's asset
+/// server opens many files at once loading the ~84 MB of art; a process launched
+/// with a low soft `RLIMIT_NOFILE` (256 on a GUI/launchd-started macOS app) runs
+/// out of descriptors and loads fail with "Too many open files (os error 24)" —
+/// which silently drops sprite atlases and GLB models (missing creatures, a
+/// wrecked/absent castle, ground decals). Harmless no-op when the limit is already
+/// high. No-op on wasm (no such limit in the browser).
+#[cfg(not(target_arch = "wasm32"))]
+fn raise_open_file_limit() {
+    let _ = rlimit::increase_nofile_limit(u64::MAX);
+}
+#[cfg(target_arch = "wasm32")]
+fn raise_open_file_limit() {}
+
 fn main() {
+    raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
     // balance) and set MELD_SERVER before we read it below. No-op in normal builds.
     #[cfg(feature = "embedded-server")]
@@ -63,9 +78,11 @@ fn main() {
 
     let base = server_base();
     let mut app = App::new();
-    // Serve every game asset from inside the binary so the QA build is one file
-    // with no `assets/` folder beside it. Must precede DefaultPlugins (AssetPlugin).
-    #[cfg(feature = "embedded-server")]
+    // Serve every game asset from inside the binary (no `assets/` folder beside it,
+    // and no file-descriptor storm from loading thousands of loose files). Gated on
+    // `embedded-assets` — on for `make play`/`play-solo`/`dist`, OFF for `make
+    // play-dev` (which hot-reloads loose files). Must precede DefaultPlugins.
+    #[cfg(feature = "embedded-assets")]
     app.add_plugins(bevy_embedded_assets::EmbeddedAssetPlugin {
         mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
     });
@@ -399,6 +416,7 @@ fn main() {
                     battle_click_target,
                     highlight_target,
                     drive_battle_action_clips,
+                    drive_battle_facing,
                     animate_battle_actors,
                     battle_zoom_input,
                     battle_camera,
