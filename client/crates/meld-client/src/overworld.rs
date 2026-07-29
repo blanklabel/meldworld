@@ -28,7 +28,7 @@ pub(crate) enum OverworldAct {
 
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
 #[derive(Component)]
-pub(crate) struct TouchActionButton(OverworldAct);
+pub(crate) struct TouchActionButton(pub(crate) OverworldAct);
 
 pub(crate) fn overworld_ui(mut commands: Commands) {
     commands
