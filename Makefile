@@ -1,14 +1,14 @@
 # MELDWORLD — one place for the commands you actually run.
 #
-#   make play         → build the web client, boot everything, play in a browser
-#   make play-native  → boot everything + the native desktop window
+#   make play         → boot everything + the native desktop window (packed assets)
+#   make play-dev     → same, but hot-reload loose assets from disk (dev loop)
 #   make test         → run the end-to-end test suite
 #   make help         → list all targets
 #
-# All of these boot a throwaway local Postgres under target/pg (reused across
+# play / play-dev boot a throwaway local Postgres under target/pg (reused across
 # runs) and the server on $(MELD_ADDR). Requires a local Postgres install
-# (initdb/pg_ctl/createdb on PATH); `make play` also needs `trunk`
-# (cargo install trunk) + the wasm target (rustup target add wasm32-unknown-unknown).
+# (initdb/pg_ctl/createdb on PATH). The browser/wasm client is parked for now —
+# native is the way we play (see `make play-solo` for a zero-setup one-file run).
 
 MELD_ADDR ?= 127.0.0.1:18090
 SERVE     := client/scripts/serve.sh
@@ -31,15 +31,16 @@ GH_SLUG := $(shell git remote get-url origin 2>/dev/null | sed -E 's|^.*github\.
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-native play-solo dist release look server smoke test stop
+.PHONY: help play play-dev play-solo dist release look server smoke test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
 	@echo ""
-	@echo "  make play         Build the web client + boot Postgres + server, then"
-	@echo "                     open $(URL) in your browser and press ENTER"
-	@echo "                     (or open $(URL)/?autoplay to watch it play itself)."
-	@echo "  make play-native  Boot Postgres + server + the native desktop window."
+	@echo "  make play         Boot Postgres + server + the native desktop window,"
+	@echo "                     with all art PACKED into the binary (release build —"
+	@echo "                     representative + robust; first build is slow)."
+	@echo "  make play-dev     Same, but a debug build that hot-reloads loose assets"
+	@echo "                     from disk — the fast art/UI iteration loop."
 	@echo "  make play-solo    Run the SELF-CONTAINED build: one native window, server"
 	@echo "                     baked in (in-memory DB, no Postgres, no config). Great"
 	@echo "                     for a quick local try; state is ephemeral (resets on exit)."
@@ -55,25 +56,21 @@ help:
 	@echo "  make test         Run the end-to-end test suite (throwaway Postgres)."
 	@echo "  make stop         Stop the local server (Postgres is left running)."
 	@echo ""
-	@echo "  everything lives at one URL: $(URL)"
-	@echo "  build your party of 4 on the Join screen (keys 1-4), or preset it:"
-	@echo "    browser: $(URL)/?party=squire,psyker,resonant,squire   (or ?class=psyker for the lead)"
-	@echo "    native:  MELD_PARTY=squire,psyker,resonant,squire make play-native"
+	@echo "  build your party of 4 on the Join screen (keys 1-4), or preset it, e.g.:"
+	@echo "    MELD_PARTY=squire,psyker,resonant,squire make play   (or MELD_CLASS=psyker for the lead)"
 
-# Browser client, single URL. Build the wasm bundle to dist/, then boot the
-# server with MELD_CLIENT_DIST set so it serves that client at / AND handles the
-# realtime WebSocket on the SAME origin — no separate web server, no proxy, no
-# second port. Open $(URL) once you see "server healthy". First build compiles
-# the wasm bundle (a minute or two); leave it running (Ctrl-C to stop).
-#play:
-#	@echo "→ Building the web client (first run compiles wasm — a minute or two)…"
-#	client/scripts/trunk-build.sh
-#	@echo "→ Starting Postgres + server…  then OPEN:  $(URL)"
-#	MELD_CLIENT_DIST="$(DIST)" $(SERVE) bash -c 'echo; echo "▶ OPEN  $$MELD_SERVER  in your browser  (Ctrl-C to stop)"; tail -f /dev/null'
-#
-# Native desktop window (serve.sh's default command is `cargo run -p meld-client`).
+# The native desktop window is how we play. `make play` boots Postgres + the server
+# (serve.sh) and runs the client with art PACKED into the binary (embedded-assets)
+# in release — representative + robust (no loose-file descriptor storms). First build
+# is slow (embeds ~84 MB); leave it running (Ctrl-C to stop). The browser/wasm client
+# is parked for now (the trunk scripts + wasm code still exist for when we revisit it).
 play:
-	$(SERVE)
+	$(SERVE) cargo run -p meld-client --features embedded-assets --release
+
+# The fast iteration loop: a debug build that loads loose assets from disk, so art
+# and UI hot-reload without a rebuild. Same server/Postgres as `make play`.
+play-dev:
+	$(SERVE) cargo run -p meld-client
 
 # The self-contained build: a single native binary that boots the whole server
 # in-process (in-memory DB + embedded balance — no Postgres, no separate server)

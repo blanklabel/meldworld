@@ -22,13 +22,18 @@ uuid = { version = "1", features = ["v4", "v7"] }
 meld-proto = { path = "../../../shared/meld-proto" }
 
 [features]
-# The self-contained QA / demo build. With this on, the native binary boots the
-# whole server in-process on a background thread (in-memory DB, embedded
-# balance — no Postgres, no separate server) and embeds every game asset, so it
-# runs as ONE file with nothing beside it. Off by default: the normal client
-# talks to a separate server (`MELD_SERVER`) and hot-reloads assets from disk.
-# Native only — never enabled for the wasm/browser build.
-embedded-server = ["dep:meld-server", "dep:tokio", "dep:bevy_embedded_assets"]
+# Bake every game asset into the binary (via bevy_embedded_assets) instead of
+# loading loose files from disk. Used by `make play` for a robust, representative
+# run (no disk `assets/` folder, no file-descriptor storms) — but WITHOUT embedding
+# the server, so it still talks to a real `MELD_SERVER` (Postgres-backed). Native
+# only. `make play-dev` leaves this OFF so assets hot-reload from disk.
+embedded-assets = ["dep:bevy_embedded_assets"]
+
+# The self-contained QA / demo build. Implies `embedded-assets`, and additionally
+# boots the whole server in-process on a background thread (in-memory DB, embedded
+# balance — no Postgres, no separate server), so it runs as ONE file with nothing
+# beside it. Native only — never enabled for the wasm/browser build.
+embedded-server = ["embedded-assets", "dep:meld-server", "dep:tokio"]
 
 # Native-only extras for the `embedded-server` build. Optional, so a normal
 # `cargo build -p meld-client` (and the wasm build) never compiles the server

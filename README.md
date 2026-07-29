@@ -66,25 +66,27 @@ fight you didn't pick.
 
 ## Play it
 
-The fastest way in — one command, one URL:
+The fastest way in — one command:
 
 ```sh
-make play          # build the web client, boot everything, then open the URL it prints
+make play          # boot everything + open the native game window
 ```
 
-`make play` builds the WebAssembly client, boots a throwaway local Postgres, and
-starts the server — which serves the client itself, so the whole game lives at a
-single address (**http://127.0.0.1:18090** by default). The first build compiles
-the wasm bundle, so give it a minute or two. Then open the URL, click the page,
-and press **ENTER**.
+`make play` boots a throwaway local Postgres, starts the server, and opens the
+native desktop window with all art packed into the binary (a release build, so
+it's representative and robust). The first build is slow — it compiles the client
+and embeds ~84 MB of assets — but subsequent runs are fast.
 
 Other ways to run it:
 
 ```sh
-make play-native   # the native desktop window instead of a browser
+make play-dev      # debug build that hot-reloads loose assets from disk (fast art/UI iteration)
 make play-solo     # a self-contained native build — no Postgres, no setup, nothing to install
 make help          # every command, explained
 ```
+
+(The browser/WebAssembly client is parked for now — native is how we play — but the
+wasm code and its build scripts are still in the tree for when we revisit it.)
 
 **`make play-solo` is the zero-setup option.** It's a single binary with the
 server baked in (in-memory database, embedded assets) — great for a quick local

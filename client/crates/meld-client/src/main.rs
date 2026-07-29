@@ -78,9 +78,11 @@ fn main() {
 
     let base = server_base();
     let mut app = App::new();
-    // Serve every game asset from inside the binary so the QA build is one file
-    // with no `assets/` folder beside it. Must precede DefaultPlugins (AssetPlugin).
-    #[cfg(feature = "embedded-server")]
+    // Serve every game asset from inside the binary (no `assets/` folder beside it,
+    // and no file-descriptor storm from loading thousands of loose files). Gated on
+    // `embedded-assets` — on for `make play`/`play-solo`/`dist`, OFF for `make
+    // play-dev` (which hot-reloads loose files). Must precede DefaultPlugins.
+    #[cfg(feature = "embedded-assets")]
     app.add_plugins(bevy_embedded_assets::EmbeddedAssetPlugin {
         mode: bevy_embedded_assets::PluginMode::ReplaceDefault,
     });
