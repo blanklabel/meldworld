@@ -436,6 +436,7 @@ fn main() {
                     hd2d::animate_chars,
                     hd2d::place_billboards,
                     hd2d::billboard,
+                    render_status_icons,
                 ),
             )
                 .run_if(in_state(Screen::Battle)),

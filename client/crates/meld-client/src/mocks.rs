@@ -126,6 +126,17 @@ pub(crate) fn mock_battle_setup(
             statuses: vec![],
         },
     ];
+    // Seed status effects so the floating status-icon layer (buffs + DoT debuffs,
+    // cycling when multiple) can be screenshotted: h1 shielded+regenerating, h3
+    // evading, Grendel both poisoned and burning (so its icon alternates).
+    let add = |battle: &mut BattleData, id: &str, toks: &[&str]| {
+        if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == id) {
+            c.statuses.extend(toks.iter().map(|s| s.to_string()));
+        }
+    };
+    add(&mut battle, "h1", &["barrier:8", "regen:3"]);
+    add(&mut battle, "h3", &["evasion:20"]);
+    add(&mut battle, "grendel", &["poison", "burn"]);
     // `MELD_BATTLE=coop` seeds a few joined allied parties so the surround layout
     // (each player's lineup on its own edge, enemies shrunk in the middle) can be
     // screenshotted. `MELD_BATTLE=1` stays a solo fight.
@@ -197,11 +208,16 @@ pub(crate) fn mock_overlay_setup(
             hero("Bram", "hunter", false),
         ];
         inv.chits = 1240;
+        // Real material keys (match `resource_<key>.png`) so the Items tab shows
+        // their harvest-node sprites; `bloom_salve` has no node art and exercises
+        // the glyph fallback.
         inv.materials = vec![
-            ("forest_bloom_petal".into(), 7),
-            ("stalker_hide".into(), 3),
+            ("bloom_herb".into(), 7),
+            ("heartoak_bark".into(), 3),
+            ("dune_iron".into(), 5),
             ("bloom_salve".into(), 2),
         ];
+        inv.pending = vec![("bloom_herb".into(), 2)];
         inv.gear = vec![
             GearLine {
                 gear_id: "mock-weapon".into(),
@@ -239,8 +255,8 @@ pub(crate) fn mock_overlay_setup(
         stats.biome = "Ashfall".into();
         backpack.items = vec![
             ("town_portal".into(), 2),
-            ("forest_bloom_petal".into(), 7),
-            ("ashfall_cinder".into(), 4),
+            ("bloom_herb".into(), 7),
+            ("cinder_ore".into(), 4),
         ];
         backpack.chits = 1240;
         backpack.gear = vec![("Duneglass Charm".into(), 0)];

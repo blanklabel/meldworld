@@ -1743,6 +1743,118 @@ pub(crate) fn render_enemy_panel(
         });
 }
 
+/// Full-screen, non-interactive layer holding the floating status-effect icons that
+/// hover over each afflicted combatant. Rebuilt every frame like [`render_enemy_panel`].
+#[derive(Component)]
+pub(crate) struct StatusIconLayer;
+
+/// The visible status effects on a combatant, in a stable display order, each as
+/// (nerdfont glyph, colour, label). Class resources (adrenaline / focus) and the
+/// row/faction/class/attribute tokens are intentionally excluded — those show in the
+/// HUD cells, not as an aura over the sprite.
+fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str)> {
+    let has = |name: &str| statuses.iter().any(|s| s == name);
+    let num = |p: &str| {
+        statuses
+            .iter()
+            .find_map(|s| s.strip_prefix(p).and_then(|n| n.parse::<i32>().ok()))
+            .unwrap_or(0)
+    };
+    let mut v = Vec::new();
+    // Debuffs first (the ones you most need to notice), then buffs.
+    if has("poison") {
+        v.push(("\u{f068c}", Color::srgb(0.58, 0.9, 0.4), "Poison")); // skull
+    }
+    if has("burn") {
+        v.push(("\u{f0238}", Color::srgb(1.0, 0.55, 0.25), "Burn")); // fire
+    }
+    if num("barrier:") > 0 {
+        v.push(("\u{f0498}", Color::srgb(0.45, 0.78, 1.0), "Barrier")); // shield
+    }
+    if num("regen:") > 0 {
+        v.push(("\u{f05f5}", Color::srgb(0.5, 0.95, 0.6), "Regen")); // heart-pulse
+    }
+    if num("evasion:") > 0 {
+        v.push(("\u{f046e}", Color::srgb(0.78, 0.9, 1.0), "Evasion")); // run-fast
+    }
+    v
+}
+
+/// A small nerdfont status icon floating over each combatant that carries an active
+/// effect (poison / burn debuffs, barrier / regen / evasion buffs). When a combatant
+/// carries several, the glyph cycles one-at-a-time on a 1.5 s timer so a single icon
+/// always reads cleanly. Projected from the arena each frame like [`render_enemy_panel`],
+/// so the effect reads on the creature itself.
+pub(crate) fn render_status_icons(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    time: Res<Time>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    actors: Query<(&BattleActor, &GlobalTransform)>,
+    existing: Query<Entity, With<StatusIconLayer>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    // Which effect shows this instant when a combatant carries several (1.5 s each).
+    let phase = (time.elapsed_secs() / 1.5) as usize;
+    commands
+        .spawn((
+            StatusIconLayer,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            for c in battle.combatants.iter().filter(|c| c.hp > 0) {
+                let effects = status_effects(&c.statuses);
+                if effects.is_empty() {
+                    continue;
+                }
+                let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == c.id) else { continue };
+                // Hover just over the sprite's head (~2.55 world units above its root).
+                let Ok(head) = cam.world_to_viewport(cam_tf, gt.translation() + Vec3::Y * 2.55)
+                else {
+                    continue;
+                };
+                let (glyph, color, _label) = effects[phase % effects.len()];
+                p.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(head.x - 15.0),
+                        top: Val::Px(head.y - 30.0),
+                        width: Val::Px(30.0),
+                        height: Val::Px(30.0),
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        border: UiRect::all(Val::Px(1.5)),
+                        ..default()
+                    },
+                    BorderColor(color),
+                    BorderRadius::all(Val::Px(15.0)),
+                    BackgroundColor(Color::srgba(0.05, 0.06, 0.1, 0.82)),
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(glyph),
+                        TextFont { font_size: 18.0, ..default() },
+                        TextColor(color),
+                        // The glyph's font baseline sits high in its line box, so flex
+                        // centring alone leaves it looking top-heavy in the circle — a
+                        // hair of top margin drops it to the badge's optical centre.
+                        Node {
+                            margin: UiRect::top(Val::Px(2.0)),
+                            ..default()
+                        },
+                    ));
+                });
+            }
+        });
+}
+
 /// Collapse state for the single ally box (toggled by its header button).
 #[derive(Resource, Default)]
 pub(crate) struct AllyPanel {
