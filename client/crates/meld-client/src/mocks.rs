@@ -96,11 +96,12 @@ pub(crate) fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // Two martial hunters hold the front; a Psyker + Resonant sit the back row.
+        // A Hunter + Iron Hull hold the front; a Psyker + Resonant sit the back row.
+        // (The Iron Hull makes the TACTICS tap toggle visible for screenshots.)
         hero("h1", 32, 1.0, "hunter", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
-        hero("h4", 36, 0.75, "hunter", false),
+        hero("h4", 36, 0.75, "iron_hull", false),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),
