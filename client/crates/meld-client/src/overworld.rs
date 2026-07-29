@@ -1239,7 +1239,14 @@ pub(crate) fn build_world_walls(
     }
     // A fresh run (new bounds) wipes the old framing + per-section tracking.
     let new_run = frame.is_changed();
-    if new_run {
+    // WorldWall entities are despawned on OnExit(Overworld) — e.g. every time you
+    // enter a battle. On return `new_run` is false and `walled` still marks every
+    // section done, so WITHOUT this nothing would rebuild — including the Last City
+    // gate, leaving an INVISIBLE return border you extract through by accident. So
+    // also rebuild when the walls are gone but terrain exists (mirrors the path trail).
+    let wiped = existing.is_empty() && !terrain.sections.is_empty();
+    let rebuild = new_run || wiped;
+    if rebuild {
         for e in &existing {
             commands.entity(e).despawn();
         }
@@ -1252,7 +1259,7 @@ pub(crate) fn build_world_walls(
         .copied()
         .filter(|i| !walled.contains(i))
         .collect();
-    if !new_run && todo.is_empty() {
+    if !rebuild && todo.is_empty() {
         return;
     }
     todo.sort_unstable();
@@ -1268,9 +1275,11 @@ pub(crate) fn build_world_walls(
         .collect();
     let step = 3.0_f32;
 
-    // Initial biome-seam gates (a ridge across the corridor with one gap you funnel
-    // through, flanked by standing-stone posts), built once when bounds arrive.
-    if new_run {
+    // Biome-seam gates (a ridge across the corridor with one gap you funnel through,
+    // flanked by standing-stone posts) + the Last City gate. Rebuilt whenever the
+    // framing is (re)built — including on return from a battle — so the city is always
+    // visible before its return border (never an invisible extraction trap).
+    if rebuild {
         let lat = frame.lateral;
         let mut sid = 900_000usize;
         for s in &frame.seams {
