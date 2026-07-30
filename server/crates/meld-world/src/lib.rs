@@ -2553,11 +2553,17 @@ fn radial_tf(p: Position, half: f64, lat: f64) -> Position {
 /// path-follower (and a real player steering toward the trail). Emits the intermediates
 /// AND `next`; never `prev` (the caller already placed it).
 fn push_bent_segment(out: &mut Vec<Position>, prev: Position, next: Position, half: f64, lat: f64) {
-    // Keep each piece's bearing swing tiny (~2°) and its radial span modest, so the
-    // chord-to-arc gap stays far under the path clear radius at every depth.
+    // Subdivide by real ARC LENGTH (~one piece per `PIECE` world units): the tangential
+    // arc r·Δθ plus the radial span dr. This scales naturally — few pieces near the hub
+    // (small radius), more for a wide deep swing — and bounds the chord-to-arc sag to
+    // well under the path clear radius at every depth, without exploding the point count
+    // the way a fixed angular budget does across the fan.
+    const PIECE: f64 = 6.0;
     let dbear = (((next.y - prev.y) / lat.max(1.0)) * half).abs();
+    let r_avg = (prev.x.max(0.0) + next.x.max(0.0)) * 0.5;
     let dr = (next.x - prev.x).abs();
-    let n = (dbear / 0.035).max(dr / 5.0).ceil().max(1.0) as usize;
+    let seg_len = ((r_avg * dbear).powi(2) + dr * dr).sqrt();
+    let n = (seg_len / PIECE).ceil().max(1.0) as usize;
     for k in 1..=n {
         let t = k as f64 / n as f64;
         let mid = Position::new(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t);
