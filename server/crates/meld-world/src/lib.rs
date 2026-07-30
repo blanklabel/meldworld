@@ -171,6 +171,22 @@ fn fill_kind_for_biome(biome: &str) -> &'static str {
     }
 }
 
+/// A biome's VERTICALITY weight — scales its terrace count AND path-climb chance so
+/// each biome climbs differently: Ashfall is a mountain-pass MAZE (tall terraces block
+/// most routes, the path almost always climbs); Forest has some rises but does its
+/// mazing with trees; Tundra rolls gently; the Mire is flooded (little to climb, it's
+/// mostly water); the Desert is the OPEN breather — nearly flat. Keeps the desert open
+/// (#8) while the forest/ashfall become real mazes.
+fn biome_terrace_mult(biome: &str) -> f64 {
+    match biome {
+        "ashfall" => 1.6, // a maze of mountain terraces — the path climbs constantly
+        "forest" => 0.8,  // trees do the mazing; a few rises
+        "tundra" => 0.7,  // rolling
+        "mire" => 0.35,   // flooded, not mountainous
+        _ => 0.15,        // desert: the open breather — nearly flat
+    }
+}
+
 /// A biome's maze-fill density multiplier (× `obstacles_per_area`). Each biome has its
 /// own so it FEELS distinct; unlisted biomes fall back to `maze_obstacle_mult`.
 fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
@@ -1503,7 +1519,8 @@ impl Arena {
         // tutorial (a first dive's climb tops out in loot, not a wall of HP); every run
         // still gets one or the other. Its own rng stream keeps the main creature/
         // obstacle/chest draws byte-stable.
-        if let Some((peak, lvl)) = self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance) {
+        let terr_mult = biome_terrace_mult(biome);
+        if let Some((peak, lvl)) = self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance * terr_mult) {
             let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x5EED_9EA1_B055_0BEE);
             // A summit boss never spawns inside the creature-free hub ring (would pull a
             // just-spawned player into a fight); such a summit tops out in a chest instead.
@@ -1572,7 +1589,8 @@ impl Arena {
         // pockets + treasure). Each gets a connector so it's reachable; overlapped
         // creatures/resources are lifted onto it (a reward for climbing). These are
         // kept off the path — the path's own climb is the plateau raised above.
-        let n_terraces = self.terraces_per_area.max(0.0).round() as usize;
+        // Biome-weighted: ashfall is mountainous, desert nearly flat (see biome_terrace_mult).
+        let n_terraces = (self.terraces_per_area * biome_terrace_mult(biome)).max(0.0).round() as usize;
         let (mut tplaced, mut tattempts) = (0usize, 0usize);
         while tplaced < n_terraces && tattempts < n_terraces * 12 {
             tattempts += 1;
@@ -1848,6 +1866,18 @@ impl Arena {
                 tier: Scaling::new(balance).tier(chest_x.floor() as i64) as i32,
                 opened: false,
                 elevation,
+            });
+        }
+
+        // Keep every connector's reach CLEAR: the dense biome fill (now much denser)
+        // could otherwise drop a tree/rock right on a ladder or ramp and strand a
+        // terrace. Prune any obstacle overlapping a connector's reach (scatter fill runs
+        // before connectors exist, so a placement-time check alone can't catch it).
+        if !terrain.connectors.is_empty() {
+            let conns: Vec<(Position, f64)> =
+                terrain.connectors.iter().map(|c| (c.position, c.radius)).collect();
+            self.obstacles.retain(|o| {
+                !conns.iter().any(|(cp, cr)| o.position.distance_to(cp) < cr + o.radius + 0.5)
             });
         }
 
