@@ -385,7 +385,12 @@ fn broadcast_ser<'a>(
 /// connector props. `path` carries the section's trail contribution — non-empty for
 /// streamed sections (they extend the trail); the initial chain's path already
 /// rides `run.started.path`, so those pass an empty vec.
-fn terrain_section_msg(area: &Area, path: Vec<Position>) -> ww::TerrainSection {
+fn terrain_section_msg(
+    area: &Area,
+    path: Vec<Position>,
+    radial_half: f64,
+    corridor_lateral: f64,
+) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
         index: area.index as u32,
@@ -409,6 +414,8 @@ fn terrain_section_msg(area: &Area, path: Vec<Position>) -> ww::TerrainSection {
             .collect(),
         path,
         biome: area.biome.to_string(),
+        radial_half,
+        corridor_lateral,
     }
 }
 
@@ -1431,8 +1438,9 @@ impl GameState {
             // Stream the initial chain's terrain (elevation grid + connectors) so
             // the client can build the stepped relief. Path rides run.started, so
             // these carry no path segment.
+            let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
             for area in &inst.arena.areas {
-                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new())));
+                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new(), rh, cl)));
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
@@ -2953,6 +2961,7 @@ impl GameState {
         // client extends its relief and path — the endless-world payoff.
         if !created_sections.is_empty() {
             if let Some(inst) = self.instance.as_ref() {
+                let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
                 for &i in &created_sections {
                     let Some(area) = inst.arena.areas.get(i) else { continue };
                     let seg = if i + 1 < inst.arena.path.len() {
@@ -2960,7 +2969,7 @@ impl GameState {
                     } else {
                         Vec::new()
                     };
-                    let msg = terrain_section_msg(area, seg);
+                    let msg = terrain_section_msg(area, seg, rh, cl);
                     for r in &inst.run.runs {
                         out.push(out_msg(&r.player_id, &msg));
                     }

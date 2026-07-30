@@ -333,14 +333,14 @@ obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1
 # neighbouring section's density, so a forest visibly THINS as it gives way to desert
 # and the rock THICKENS as it gives way to Ashfall (matching the ground cross-fade).
 # [TUNABLE]
-forest_obstacle_mult = 4.0       # dense wood
-desert_obstacle_mult = 0.8       # open desert — a scattering of cacti
-ashfall_obstacle_mult = 3.4      # dense volcanic rock — a mountain pass
+forest_obstacle_mult = 7.0       # a THICK wood — a real maze of trees, only the trail is open
+desert_obstacle_mult = 0.8       # open desert — a scattering of cacti (the breather biome)
+ashfall_obstacle_mult = 6.0      # a choked volcanic mountain-pass maze of rock
 tundra_obstacle_mult = 1.6       # sparse frozen spires
-mire_obstacle_mult = 2.8         # choked swamp
+mire_obstacle_mult = 7.5         # MOSTLY water: the swamp is a flooded maze, land is the trail
 maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 biome_transition_width = 30.0    # world units over which density blends at a section edge
-obstacle_min_radius = 0.9        # smallest feature (a lone tree/rock)
+obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
 path_meander = 18.0              # how far ±y the clear path wanders between areas
@@ -352,8 +352,8 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # climbs: `path_climb_chance` sections raise a mid-segment plateau the route crosses
 # via guaranteed ramps, with the endpoints staying on level 0 so extraction is always
 # feasible. Cliffs are impassable; the only way up is a connector. All [TUNABLE].
-terraces_per_area = 0.0          # WG-4 radial world is flat: no terraces/connectors (they can't survive the arc bend)
-max_level = 0                    # tallest terrace (levels above ground)
+terraces_per_area = 2.0          # side terraces (grind/treasure detours) per section; the client bends the elevation grid with the radial arc so they survive the fan
+max_level = 2                    # tallest terrace (levels above ground)
 # WG-4: the generated corridor is bent into a radial ARC of this many degrees around
 # the hub — the world fans out from the Center Hub, leaving the western sliver for
 # Last City. `x` becomes radius (distance = difficulty, unchanged), lateral `y`
@@ -366,6 +366,7 @@ connector_radius = 2.2           # reach around a connector that permits a level
 stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
 path_climb_chance = 0.6          # chance a section's clear path climbs a plateau (0..1)
 chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace (0..1)
+peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

@@ -75,13 +75,11 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
-                // Harvest is automatic (walk into a node). Menu opens the inventory/
-                // stats overlay (also: tap yourself, or C/I); the rest are the
-                // situational actions. Every action is reachable by tap AND keyboard.
+                // Only the Menu button shows on the overworld now — it opens the
+                // inventory/stats overlay (also: tap yourself, or C/I). The situational
+                // actions (Join / deep Portal / Town Portal) live INSIDE that menu (and
+                // still have keyboard shortcuts J/E/T), so the field view stays clean.
                 for (act, label) in [
-                    (OverworldAct::Join, "Join"),
-                    (OverworldAct::Extract, "Portal"),
-                    (OverworldAct::TownPortal, "Town Portal"),
                     (OverworldAct::Menu, "\u{f0214} Menu"), // list icon
                 ] {
                     action_button(bar, act, label);
@@ -1759,9 +1757,13 @@ pub(crate) fn illuminate_players(
     let ef = night * 1.15;
     for mh in &sprites {
         if let Some(m) = mats.get_mut(&mh.0) {
-            if m.emissive_texture.is_none() {
-                m.emissive_texture = m.base_color_texture.clone();
-            }
+            // Track the CURRENT frame every tick, not once. `animate_chars` swaps
+            // `base_color_texture` to the right facing/walk frame each frame; if the
+            // emissive layer latched onto the first (idle-south) frame it would paint a
+            // frozen south sprite over the animating base — at night, where emissive
+            // dominates, the hero looked permanently stuck facing south while its walk
+            // cycle still played. Mirroring it here keeps the lit glow in sync.
+            m.emissive_texture = m.base_color_texture.clone();
             m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         }
     }
@@ -2078,8 +2080,9 @@ pub(crate) fn build_terrain_sections(
             commands.spawn((TerrainMesh(*idx), Transform::default(), Visibility::Hidden));
         }
         // The ladders / ropes / slopes that make each terrace reachable.
+        let (half, lat) = radial_params(sec);
         for c in &sec.connectors {
-            spawn_connector(&mut commands, &mut meshes, &mut mats, &assets, *idx, c);
+            spawn_connector(&mut commands, &mut meshes, &mut mats, &assets, *idx, c, half, lat);
         }
     }
 }
@@ -2107,6 +2110,7 @@ pub(crate) fn spawn_terrace_cliffs(
     let cell = sec.cell as f32;
     let sx = sec.start_x as f32;
     let zmin = sec.y_min as f32;
+    let (half, lat) = radial_params(sec); // bend cliff billboards into the fan
     let lvl = |gx: i64, gy: i64| -> u8 {
         if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
             0
@@ -2138,6 +2142,7 @@ pub(crate) fn spawn_terrace_cliffs(
             let _ = dir; // billboards face the camera, so no outward yaw needed
             let cx = sx + (gx as f32 + 0.5) * cell;
             let cz = zmin + (gy as f32 + 0.5) * cell;
+            let (bx, bz) = radial_bend(cx, cz, half, lat); // fan the cliff into the arc
             let by = lowest as f32 * STEP_HEIGHT;
             // Span the rise from the lower neighbour up to this cell's top, a touch
             // taller so the rocky face overlaps the lip.
@@ -2145,7 +2150,7 @@ pub(crate) fn spawn_terrace_cliffs(
             commands
                 .spawn((
                     TerrainMesh(idx),
-                    Transform::from_xyz(cx, by, cz),
+                    Transform::from_xyz(bx, by, bz),
                     Visibility::default(),
                 ))
                 .with_children(|p| {
@@ -2163,6 +2168,30 @@ pub(crate) fn spawn_terrace_cliffs(
             }
         }
     }
+}
+
+/// Half-arc (radians) + corridor lateral for a section's WG-4 radial bend. `(0, 0)`
+/// ⇒ flat corridor (no bend). Falls back to `-y_min` for the lateral if the wire
+/// didn't carry it (older stream), since the grid spans `y ∈ [y_min, -y_min]`.
+pub(crate) fn radial_params(sec: &meld_client::net::TerrainSectionView) -> (f32, f32) {
+    let lat = if sec.corridor_lateral > 0.0 {
+        sec.corridor_lateral as f32
+    } else {
+        (-sec.y_min) as f32
+    };
+    (sec.radial_half as f32, lat)
+}
+
+/// Bend a corridor point (`x` = radius axis, `z` = lateral axis) into the WG-4 fan,
+/// matching the server's `radial_tf` exactly so raised terrain lines up with the
+/// server-bent positions the avatar walks on. Identity when `half`/`lat` ≤ 0.
+pub(crate) fn radial_bend(x: f32, z: f32, half: f32, lat: f32) -> (f32, f32) {
+    if half <= 0.0 || lat <= 0.0 {
+        return (x, z);
+    }
+    let r = x.max(0.0);
+    let theta = (z / lat).clamp(-1.0, 1.0) * half;
+    (r * theta.cos(), r * theta.sin())
 }
 
 /// Append a quad (two triangles) with a flat `normal` and per-corner `uv`. Winding
@@ -2200,6 +2229,20 @@ pub(crate) fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mes
     let sx = sec.start_x as f32;
     let zmin = sec.y_min as f32;
     let tile = 0.22f32; // texture repeats per world unit
+    // WG-4 radial fan: the grid is in corridor coords; bend every vertex by the same
+    // arc the server used to fan entity positions, so the terrace lines up with where
+    // the (server-bent) avatar walks. Identity when the world is a flat corridor.
+    let (half, lat) = radial_params(sec);
+    let bend = |x: f32, z: f32| -> (f32, f32) { radial_bend(x, z, half, lat) };
+    // Rotate a horizontal (cliff) normal by the local bearing so lighting still reads.
+    let bend_n = |n: [f32; 3], z: f32| -> [f32; 3] {
+        if half <= 0.0 || lat <= 0.0 {
+            return n;
+        }
+        let th = (z / lat).clamp(-1.0, 1.0) * half;
+        let (s, c) = th.sin_cos();
+        [n[0] * c - n[2] * s, n[1], n[0] * s + n[2] * c]
+    };
     let lvl = |gx: i64, gy: i64| -> u8 {
         if gx < 0 || gy < 0 || gx >= cols as i64 || gy >= rows as i64 {
             0
@@ -2220,33 +2263,38 @@ pub(crate) fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mes
             let x1 = x0 + cell;
             let z0 = zmin + gy as f32 * cell;
             let z1 = z0 + cell;
+            // Bent world XZ of each corner (radial fan; identity in corridor mode).
+            let (a0, a1) = (bend(x0, z0), bend(x1, z0));
+            let (a2, a3) = (bend(x1, z1), bend(x0, z1));
             // Terrace top.
             push_quad(
                 &mut tp, &mut tn, &mut tu, &mut ti,
-                [x0, topy, z0], [x1, topy, z0], [x1, topy, z1], [x0, topy, z1],
+                [a0.0, topy, a0.1], [a1.0, topy, a1.1], [a2.0, topy, a2.1], [a3.0, topy, a3.1],
                 [0.0, 1.0, 0.0],
                 [[x0 * tile, z0 * tile], [x1 * tile, z0 * tile], [x1 * tile, z1 * tile], [x0 * tile, z1 * tile]],
             );
             // Cliff faces toward any lower neighbour (outside grid counts as level 0).
-            let mut face = |gx2: i64, gy2: i64, quad: [[f32; 3]; 4], normal: [f32; 3]| {
+            // `quad` gives the two TOP corners as bent world XZ; the two bottom corners
+            // reuse the same XZ at the neighbour's floor height.
+            let mut face = |gx2: i64, gy2: i64, top_a: (f32, f32), top_b: (f32, f32), zc: f32, normal: [f32; 3]| {
                 let nl = lvl(gx2, gy2);
                 if (nl as f32) < l as f32 {
                     let by = nl as f32 * STEP_HEIGHT;
                     let hh = (topy - by) * tile;
-                    let mut q = quad;
-                    q[0][1] = by;
-                    q[1][1] = by;
                     push_quad(
-                        &mut cp, &mut cn, &mut cu, &mut ci, q[0], q[1], q[2], q[3], normal,
+                        &mut cp, &mut cn, &mut cu, &mut ci,
+                        [top_a.0, by, top_a.1], [top_b.0, by, top_b.1],
+                        [top_b.0, topy, top_b.1], [top_a.0, topy, top_a.1],
+                        bend_n(normal, zc),
                         [[0.0, 0.0], [cell * tile, 0.0], [cell * tile, hh], [0.0, hh]],
                     );
                 }
             };
-            // -Z, +Z, -X, +X. Bottom two verts' Y is overwritten inside `face`.
-            face(gx as i64, gy as i64 - 1, [[x1, 0.0, z0], [x0, 0.0, z0], [x0, topy, z0], [x1, topy, z0]], [0.0, 0.0, -1.0]);
-            face(gx as i64, gy as i64 + 1, [[x0, 0.0, z1], [x1, 0.0, z1], [x1, topy, z1], [x0, topy, z1]], [0.0, 0.0, 1.0]);
-            face(gx as i64 - 1, gy as i64, [[x0, 0.0, z0], [x0, 0.0, z1], [x0, topy, z1], [x0, topy, z0]], [-1.0, 0.0, 0.0]);
-            face(gx as i64 + 1, gy as i64, [[x1, 0.0, z1], [x1, 0.0, z0], [x1, topy, z0], [x1, topy, z1]], [1.0, 0.0, 0.0]);
+            // -Z, +Z, -X, +X. Each face's two top corners in bent world XZ.
+            face(gx as i64, gy as i64 - 1, a1, a0, z0, [0.0, 0.0, -1.0]);
+            face(gx as i64, gy as i64 + 1, a3, a2, z1, [0.0, 0.0, 1.0]);
+            face(gx as i64 - 1, gy as i64, a0, a3, z0, [-1.0, 0.0, 0.0]);
+            face(gx as i64 + 1, gy as i64, a2, a1, z1, [1.0, 0.0, 0.0]);
         }
     }
     let build = |p: Vec<[f32; 3]>, n: Vec<[f32; 3]>, u: Vec<[f32; 2]>, i: Vec<u32>| {
@@ -2263,6 +2311,7 @@ pub(crate) fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mes
 /// Spawn the visible prop for one connector so the route up a cliff is legible: a
 /// **slope** as a tilted ramp board, a **ladder** as an upright rung post, a **rope**
 /// as a thin dangling line — each faintly emissive so it's findable in shade.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_connector(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -2270,14 +2319,22 @@ pub(crate) fn spawn_connector(
     assets: &AssetServer,
     idx: u32,
     c: &meld_client::net::ConnectorView,
+    half: f32,
+    lat: f32,
 ) {
     let lo_y = c.lo as f32 * STEP_HEIGHT;
     let hi_y = c.hi as f32 * STEP_HEIGHT;
     let h = (hi_y - lo_y).max(0.2);
-    let x = c.x as f32;
-    // Stand the prop a touch proud of the cliff base (toward the camera / −Z) so it
-    // reads as a distinct affordance and isn't swallowed by the cliff face.
-    let z = c.y as f32 - 0.5; // overworld y → world Z
+    // Bend into the fan, then stand the prop a touch proud of the cliff base (nudged
+    // toward the hub) so it reads as a distinct affordance, not swallowed by the face.
+    let (mut x, mut z) = radial_bend(c.x as f32, c.y as f32, half, lat);
+    let d = (x * x + z * z).sqrt();
+    if d > 1.0 {
+        x -= x / d * 0.5;
+        z -= z / d * 0.5;
+    } else {
+        z -= 0.5;
+    }
 
     // HD-2D pixel billboard for the connector (PixelLab art): a plank ramp for a
     // slope, a rung ladder, or a dangling rope — standing the whole rise so the route

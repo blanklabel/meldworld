@@ -157,15 +157,33 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
 }
 
 /// The SIGNATURE prop a biome's dense maze fill is made of — the thing you're walking
-/// through (a wood of trees, a scatter of cacti, a field of volcanic rock, …). Solid
-/// geometry only (never a flat water pool), so the fill reads as cover.
+/// through (a wood of trees, a scatter of cacti, a field of volcanic rock, …). Usually
+/// solid geometry so the fill reads as cover — EXCEPT the Mire, which is MOSTLY water:
+/// its fill is impassable `bog_pool` water, so the swamp floods into a maze of pools
+/// with the trail as the only reliable land.
 fn fill_kind_for_biome(biome: &str) -> &'static str {
     match biome {
         "forest" => "tree",
         "desert" => "cactus",
         "ashfall" => "cinder_rock",
         "tundra" => "ice_spire",
-        _ => "mire_root",
+        _ => "bog_pool", // mire: flooded — water is the fill, land is the trail
+    }
+}
+
+/// A biome's VERTICALITY weight — scales its terrace count AND path-climb chance so
+/// each biome climbs differently: Ashfall is a mountain-pass MAZE (tall terraces block
+/// most routes, the path almost always climbs); Forest has some rises but does its
+/// mazing with trees; Tundra rolls gently; the Mire is flooded (little to climb, it's
+/// mostly water); the Desert is the OPEN breather — nearly flat. Keeps the desert open
+/// (#8) while the forest/ashfall become real mazes.
+fn biome_terrace_mult(biome: &str) -> f64 {
+    match biome {
+        "ashfall" => 1.6, // a maze of mountain terraces — the path climbs constantly
+        "forest" => 0.8,  // trees do the mazing; a few rises
+        "tundra" => 0.7,  // rolling
+        "mire" => 0.35,   // flooded, not mountainous
+        _ => 0.15,        // desert: the open breather — nearly flat
     }
 }
 
@@ -1168,9 +1186,9 @@ impl Arena {
         for m in &mut self.monsters {
             m.position = tf(m.position);
             m.home = tf(m.home);
-            // Corridor x-bounds no longer map to world x; let creatures roam near home.
-            m.area_min_x = f64::NEG_INFINITY;
-            m.area_max_x = f64::INFINITY;
+            // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
+            // creature's hub-distance is its corridor x, so `step_creatures` clamps its
+            // radius to this band and it never wanders out of its biome ring (#10).
         }
         for r in &mut self.resources {
             r.position = tf(r.position);
@@ -1181,8 +1199,17 @@ impl Arena {
         for c in &mut self.chests {
             c.position = tf(c.position);
         }
-        for p in &mut self.path {
-            *p = tf(*p);
+        // Bend the path with DENSIFICATION: the meander swings the corridor path across
+        // the fan, so a straight world chord between two far-apart-in-bearing waypoints
+        // would cut deep across the arc — off the cleared tube and into off-path
+        // terraces (breaking a path-follower). Inserting collinear intermediates makes
+        // the bent trail hug the arc so a follower stays inside the corridor tube.
+        let corridor_path = std::mem::take(&mut self.path);
+        if let Some(&first) = corridor_path.first() {
+            self.path.push(radial_tf(first, half, lat));
+            for w in corridor_path.windows(2) {
+                push_bent_segment(&mut self.path, w[0], w[1], half, lat);
+            }
         }
         self.portal = tf(self.portal);
         // The non-linear bend distorts the carefully-carved clear-path tube, so an
@@ -1276,8 +1303,8 @@ impl Arena {
         for m in &mut self.monsters[m0..] {
             m.position = tf(m.position);
             m.home = tf(m.home);
-            m.area_min_x = f64::NEG_INFINITY; // roam near home, not a corridor x-band.
-            m.area_max_x = f64::INFINITY;
+            // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
+            // creatures also stay inside their own biome ring (#10).
         }
         for r in &mut self.resources[r0..] {
             r.position = tf(r.position);
@@ -1288,9 +1315,13 @@ impl Arena {
         for c in &mut self.chests[c0..] {
             c.position = tf(c.position);
         }
-        // Append this section's new corridor waypoint(s) to the bent public path.
+        // Append this section's new corridor waypoint(s) to the bent public path,
+        // densified (see `radialize`) so the streamed trail hugs the arc and stays
+        // walkable across the terraced fan.
+        let mut prev = self.corridor_path[p0.saturating_sub(1)];
         for k in p0..self.corridor_path.len() {
-            self.path.push(tf(self.corridor_path[k]));
+            push_bent_segment(&mut self.path, prev, self.corridor_path[k], half, lat);
+            prev = self.corridor_path[k];
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
@@ -1482,7 +1513,42 @@ impl Arena {
         // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
         // terrace/chest draws below stay byte-stable.
         let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
-        self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance);
+        // Crown a climbed summit with a payoff (#3): a gate-boss guards the top on a
+        // `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards the
+        // climb — so scaling a mountain is always worth it. The boss is held off the
+        // tutorial (a first dive's climb tops out in loot, not a wall of HP); every run
+        // still gets one or the other. Its own rng stream keeps the main creature/
+        // obstacle/chest draws byte-stable.
+        let terr_mult = biome_terrace_mult(biome);
+        if let Some((peak, lvl)) = self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance * terr_mult) {
+            let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x5EED_9EA1_B055_0BEE);
+            // A summit boss never spawns inside the creature-free hub ring (would pull a
+            // just-spawned player into a fight); such a summit tops out in a chest instead.
+            if !self.tutorial && peak.x > wg.hub_safe_radius && prng.unit() < wg.peak_boss_chance {
+                let gidx = self.monsters.len();
+                let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
+                self.monsters
+                    .push(MonsterSpawn::build(balance, format!("mob-{gidx}"), kinds[0], peak, gseed));
+                self.monsters[gidx].area_min_x = start_x;
+                self.monsters[gidx].area_max_x = end_x;
+                self.monsters[gidx].elevation = lvl; // must climb to fight it
+                self.monsters[gidx].promote(
+                    enc.gatekeeper_hp_mult,
+                    enc.gatekeeper_atk_mult,
+                    enc.gatekeeper_xp_mult,
+                    "gatekeeper",
+                );
+                self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
+            } else {
+                self.chests.push(Chest {
+                    entity_id: format!("chest-{}", self.chests.len()),
+                    position: peak,
+                    tier: Scaling::new(balance).tier(peak.x.floor() as i64) as i32,
+                    opened: false,
+                    elevation: lvl, // must climb to open it
+                });
+            }
+        }
 
         // Scatter impassable biome terrain, rejecting anything that would block the
         // clear path tube or bury a creature/resource. Rejection-sampled so the
@@ -1523,7 +1589,8 @@ impl Arena {
         // pockets + treasure). Each gets a connector so it's reachable; overlapped
         // creatures/resources are lifted onto it (a reward for climbing). These are
         // kept off the path — the path's own climb is the plateau raised above.
-        let n_terraces = self.terraces_per_area.max(0.0).round() as usize;
+        // Biome-weighted: ashfall is mountainous, desert nearly flat (see biome_terrace_mult).
+        let n_terraces = (self.terraces_per_area * biome_terrace_mult(biome)).max(0.0).round() as usize;
         let (mut tplaced, mut tattempts) = (0usize, 0usize);
         while tplaced < n_terraces && tattempts < n_terraces * 12 {
             tattempts += 1;
@@ -1657,10 +1724,11 @@ impl Arena {
             });
             // FS-4: a GATEKEEPER boss stands in the door — a big, unavoidable fight
             // guarding the pass into the next region, with a fat guaranteed reward.
-            // Not on the tutorial run (a new player's first dive stays gentle).
-            if self.tutorial {
-                continue;
-            }
+            // Gatekeepers spawn on EVERY run, including the tutorial: a milestone
+            // gate-boss is a legible "you made it to the next biome" moment, and the
+            // in-memory demo build is perpetually a first (tutorial) dive — gating them
+            // off it meant bosses effectively never appeared. Scattered Elites stay off
+            // the tutorial (see the elite roll above); only the gate-bosses run here.
             let gk_pos = Position::new(bd, path_y_at(&self.path, bd));
             let gidx = self.monsters.len();
             let gseed = section_seed(self.seed_base, i) ^ (0x6A7E_0000_0000_0000 | bd as u64);
@@ -1801,6 +1869,18 @@ impl Arena {
             });
         }
 
+        // Keep every connector's reach CLEAR: the dense biome fill (now much denser)
+        // could otherwise drop a tree/rock right on a ladder or ramp and strand a
+        // terrace. Prune any obstacle overlapping a connector's reach (scatter fill runs
+        // before connectors exist, so a placement-time check alone can't catch it).
+        if !terrain.connectors.is_empty() {
+            let conns: Vec<(Position, f64)> =
+                terrain.connectors.iter().map(|c| (c.position, c.radius)).collect();
+            self.obstacles.retain(|o| {
+                !conns.iter().any(|(cp, cr)| o.position.distance_to(cp) < cr + o.radius + 0.5)
+            });
+        }
+
         self.areas.push(Area {
             index: i,
             biome,
@@ -1828,20 +1908,22 @@ impl Arena {
     ///
     /// Uses its own rng stream so the main creature/obstacle/terrace/chest draws stay
     /// byte-stable.
-    fn maybe_climb_path(&self, terrain: &mut Terrain, i: usize, climb_chance: f64) {
+    /// Returns the plateau **top centre** (on the path) + its level when a climb was
+    /// raised, so the caller can crown the summit with a reward (boss or chest).
+    fn maybe_climb_path(&self, terrain: &mut Terrain, i: usize, climb_chance: f64) -> Option<(Position, u8)> {
         if self.max_level < 1 || self.path.len() < 2 {
-            return;
+            return None;
         }
         let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x9A5E_9A5E_9A5E_9A5E);
         if prng.unit() >= climb_chance {
-            return;
+            return None;
         }
         let from = self.path[self.path.len() - 2];
         let to = self.path[self.path.len() - 1];
         let dx = to.x - from.x;
         // Need room for a level-0 approach, the plateau, and two ramps.
         if dx <= 14.0 {
-            return;
+            return None;
         }
         let level: u8 = 1 + prng.below(self.max_level.max(1) as usize) as u8;
         let px0 = from.x + dx * 0.30;
@@ -1863,6 +1945,8 @@ impl Arena {
                 radius: ramp_r,
             });
         }
+        let mx = (px0 + px1) * 0.5;
+        Some((Position::new(mx, y_at(mx)), level))
     }
 
     /// Does the axis-aligned terrace rectangle come within the clear-path tube?
@@ -1884,10 +1968,38 @@ impl Arena {
         samples.iter().any(|s| dist_to_path(s, &self.path) < margin)
     }
 
+    /// WG-4: half the fan arc in radians (0 ⇒ flat corridor). Exposed so the wire can
+    /// carry it to the client, which bends terrace/cliff/connector geometry by the same
+    /// arc the server used to fan entity positions.
+    pub fn radial_half(&self) -> f64 {
+        self.radial_half
+    }
+
+    /// The corridor half-extent the arc maps against (pairs with [`Self::radial_half`]).
+    pub fn corridor_lateral(&self) -> f64 {
+        self.corridor_lateral
+    }
+
+    /// Un-bend a WORLD position back into the corridor frame the terrain grids live
+    /// in. Identity in flat-corridor mode (`radial_half == 0`). Inverse of the
+    /// `radialize` map `world = (r·cosθ, r·sinθ)` with `r = corridor_x`,
+    /// `θ = (corridor_y / lat)·half` — so terrace elevation, connectors and touch all
+    /// sample the right cell even though the world fans around the hub.
+    pub fn corridorize(&self, p: &Position) -> Position {
+        if self.radial_half <= 0.0 {
+            return *p;
+        }
+        let r = p.x.hypot(p.y);
+        let theta = p.y.atan2(p.x);
+        let lat = self.corridor_lateral.max(1.0);
+        Position::new(r, (theta / self.radial_half) * lat)
+    }
+
     /// The elevation level at world position `p` — samples whichever section's
-    /// terrain contains `p.x` (0 outside any section, e.g. behind the hub).
+    /// terrain contains `p` (0 outside any section, e.g. behind the hub). Un-bends
+    /// into corridor coords first so it works in the radial world.
     pub fn level_at(&self, p: &Position) -> u8 {
-        area_level_at(&self.areas, p)
+        area_level_at(&self.areas, &self.corridorize(p))
     }
 
     /// Is there a connector within reach of `p` that joins levels `a`↔`b`? (A move
@@ -1896,11 +2008,14 @@ impl Arena {
         if a == b {
             return false;
         }
+        // Connectors live in un-bent corridor coords (radialize leaves the terrain
+        // grids alone), so compare the reach in that frame.
+        let cp = self.corridorize(p);
         self.areas.iter().any(|area| {
             area.terrain
                 .connectors
                 .iter()
-                .any(|c| c.joins(a, b) && p.distance_to(&c.position) <= c.radius)
+                .any(|c| c.joins(a, b) && cp.distance_to(&c.position) <= c.radius)
         })
     }
 
@@ -1934,6 +2049,18 @@ impl Arena {
             })
             .collect();
         let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
+        // Arc params for un-bending world → corridor when sampling terrace elevation
+        // (creatures stay on their own level even though the world fans around the hub).
+        let (radial_half, corridor_lateral) = (self.radial_half, self.corridor_lateral);
+        let corridorize = |p: &Position| -> Position {
+            if radial_half <= 0.0 {
+                *p
+            } else {
+                let r = p.x.hypot(p.y);
+                let theta = p.y.atan2(p.x);
+                Position::new(r, (theta / radial_half) * corridor_lateral.max(1.0))
+            }
+        };
         let (wander, chase) = (self.wander_speed, self.chase_speed);
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
@@ -2061,23 +2188,34 @@ impl Arena {
                 dx /= mag;
                 dy /= mag;
                 let step = speed * dt;
-                // Clamp to the world bounds AND the creature's own area (creatures
-                // stay in their biome; distant ones never wander into a safe area).
-                let lo_x = x_min.max(m.area_min_x);
-                let hi_x = x_max.min(m.area_max_x);
-                let nx = (m.position.x + dx * step).max(lo_x).min(hi_x);
-                let ny = (m.position.y + dy * step).max(-lateral).min(lateral);
+                // Clamp to the world bounds AND the creature's own area so it stays in
+                // its biome. In the radial fan the area is a RADIUS band ([start_x,
+                // end_x] = a biome ring), so clamp the candidate's radius; in flat
+                // corridor mode it's an x-band as before. Keeps biome creatures inside
+                // their biome instead of wandering across rings (#10).
+                let (mut nx, mut ny) = (m.position.x + dx * step, m.position.y + dy * step);
+                if radial_half > 0.0 {
+                    let r = (nx * nx + ny * ny).sqrt();
+                    let (r_lo, r_hi) = (m.area_min_x.max(0.0), m.area_max_x);
+                    if r > 1e-6 && (r < r_lo || r > r_hi) {
+                        let rc = r.clamp(r_lo, r_hi);
+                        nx *= rc / r;
+                        ny *= rc / r;
+                    }
+                }
+                let nx = if radial_half > 0.0 { nx } else { nx.max(x_min.max(m.area_min_x)).min(x_max.min(m.area_max_x)) };
+                let ny = ny.max(-lateral).min(lateral);
                 // Creatures don't walk through terrain either (slide per axis), and
                 // they stay on their own elevation (never wander off a terrace edge).
                 let cand = Position::new(nx, ny);
-                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) && area_level_at(areas, &cand) == m.elevation {
+                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) && area_level_at(areas, &corridorize(&cand)) == m.elevation {
                     m.position = cand;
                 } else if !Self::obstacle_blocks(&obstacles, &Position::new(nx, m.position.y), 0.5)
-                    && area_level_at(areas, &Position::new(nx, m.position.y)) == m.elevation
+                    && area_level_at(areas, &corridorize(&Position::new(nx, m.position.y))) == m.elevation
                 {
                     m.position.x = nx;
                 } else if !Self::obstacle_blocks(&obstacles, &Position::new(m.position.x, ny), 0.5)
-                    && area_level_at(areas, &Position::new(m.position.x, ny)) == m.elevation
+                    && area_level_at(areas, &corridorize(&Position::new(m.position.x, ny))) == m.elevation
                 {
                     m.position.y = ny;
                 }
@@ -2425,6 +2563,41 @@ impl Arena {
             }
         }
         None
+    }
+}
+
+/// Bend a corridor point (`x` = radius axis, `y` = lateral axis) into the WG-4 fan:
+/// `x → radius`, `y → bearing`. The one true forward map, shared by `radialize` and
+/// streaming so every bend site agrees (and `Arena::corridorize` inverts it).
+fn radial_tf(p: Position, half: f64, lat: f64) -> Position {
+    let r = p.x.max(0.0);
+    let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
+    Position::new(r * theta.cos(), r * theta.sin())
+}
+
+/// Append the bent images of the straight corridor segment `prev → next`, inserting
+/// collinear intermediate points so the bent polyline hugs the arc. The path meander
+/// swings across the fan, so without this a straight world chord between two
+/// far-apart-in-bearing waypoints cuts deep across the arc — off the cleared corridor
+/// tube and into legitimately-placed side terraces/obstacles, which strands a
+/// path-follower (and a real player steering toward the trail). Emits the intermediates
+/// AND `next`; never `prev` (the caller already placed it).
+fn push_bent_segment(out: &mut Vec<Position>, prev: Position, next: Position, half: f64, lat: f64) {
+    // Subdivide by real ARC LENGTH (~one piece per `PIECE` world units): the tangential
+    // arc r·Δθ plus the radial span dr. This scales naturally — few pieces near the hub
+    // (small radius), more for a wide deep swing — and bounds the chord-to-arc sag to
+    // well under the path clear radius at every depth, without exploding the point count
+    // the way a fixed angular budget does across the fan.
+    const PIECE: f64 = 6.0;
+    let dbear = (((next.y - prev.y) / lat.max(1.0)) * half).abs();
+    let r_avg = (prev.x.max(0.0) + next.x.max(0.0)) * 0.5;
+    let dr = (next.x - prev.x).abs();
+    let seg_len = ((r_avg * dbear).powi(2) + dr * dr).sqrt();
+    let n = (seg_len / PIECE).ceil().max(1.0) as usize;
+    for k in 1..=n {
+        let t = k as f64 / n as f64;
+        let mid = Position::new(prev.x + (next.x - prev.x) * t, prev.y + (next.y - prev.y) * t);
+        out.push(radial_tf(mid, half, lat));
     }
 }
 
@@ -2911,9 +3084,12 @@ mod tests {
     }
 
     #[test]
-    fn no_obstacle_or_terrace_intrudes_on_the_clear_path() {
-        // The feasibility guarantee: the path tube holds no obstacle AND stays on
-        // level 0, so extraction is always feasible without ever needing to climb.
+    fn no_obstacle_intrudes_the_clear_path_and_the_ends_stay_grounded() {
+        // The feasibility guarantee: the path tube holds no blocking obstacle, and the
+        // route both STARTS and ENDS on the ground (spawn + portal on level 0) so a
+        // dive always opens and extraction always closes without a climb. The middle of
+        // the path MAY climb a ramp-connected plateau (the `path_climb` feature) — that
+        // it stays traversable is proven by `the_clear_path_actually_reaches_the_portal`.
         for seed in [1u64, 7, 42, 999, 123456] {
             let b = Balance::load_default().unwrap();
             let arena = Arena::generate(&b, seed, true);
@@ -2925,11 +3101,85 @@ mod tests {
                     o.entity_id
                 );
             }
-            // Every path waypoint is on the ground.
-            for wp in &arena.path {
-                assert_eq!(arena.level_at(wp), 0, "seed {seed}: path waypoint left level 0");
+            if let (Some(first), Some(last)) = (arena.path.first(), arena.path.last()) {
+                assert_eq!(arena.level_at(first), 0, "seed {seed}: the route starts off the ground");
+                assert_eq!(arena.level_at(last), 0, "seed {seed}: the portal end is off the ground");
             }
         }
+    }
+
+    #[test]
+    fn creatures_stay_inside_their_biome_ring() {
+        // #10: a creature belongs to its biome, which in the radial fan is a RADIUS
+        // ring ([start_x, end_x]). After a long roam (chasing a player around) no
+        // creature has wandered out of its ring into a neighbouring biome.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7, false);
+        // A player roaming the fan gives aggressive creatures something to chase.
+        arena.add_avatar("p".into(), 40.0);
+        let bands: Vec<(usize, f64, f64)> = arena
+            .monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.area_min_x.is_finite() && m.area_max_x.is_finite())
+            .map(|(i, m)| (i, m.area_min_x, m.area_max_x))
+            .collect();
+        assert!(!bands.is_empty(), "creatures carry a radius band");
+        for tick in 0..2000 {
+            // Sweep the player around so aggressive creatures try to chase across rings.
+            let ang = (tick as f64) * 0.05;
+            arena.apply_move("p", ang.cos(), ang.sin(), tick as u32);
+            arena.step_creatures(0.1);
+        }
+        for (i, lo, hi) in bands {
+            let m = &arena.monsters[i];
+            let r = m.position.x.hypot(m.position.y);
+            assert!(
+                r >= lo - 3.0 && r <= hi + 3.0,
+                "creature {} left its biome ring: r={r:.1} band=[{lo:.1},{hi:.1}]",
+                m.entity_id
+            );
+        }
+    }
+
+    #[test]
+    fn forest_is_a_dense_maze_and_desert_is_open() {
+        // #8: a forest section packs far more blocking fill than the open desert, so
+        // the wood reads as a maze with only the trail open. Compare per-biome counts.
+        let b = Balance::load_default().unwrap();
+        let count_for = |biome: &str| -> usize {
+            // Find a non-tutorial arena whose first procedural section is `biome`.
+            for seed in 0u64..200 {
+                let a = Arena::generate(&b, seed, false);
+                if let Some(sec) = a.areas.iter().find(|s| s.index == 1) {
+                    if sec.biome == biome {
+                        let (lo, hi) = (sec.start_x, sec.end_x);
+                        return a
+                            .obstacles
+                            .iter()
+                            .filter(|o| {
+                                let r = o.position.x.hypot(o.position.y);
+                                r >= lo && r < hi
+                            })
+                            .count();
+                    }
+                }
+            }
+            0
+        };
+        let forest = count_for("forest");
+        let desert = count_for("desert");
+        // Forest is a thick maze; desert is the open breather biome. (Both carry the
+        // biome-independent base scatter, which dilutes the ratio, so require a clear
+        // margin rather than a strict multiple.)
+        assert!(forest as f64 > desert as f64 * 1.5, "forest ({forest}) should be far denser than desert ({desert})");
+    }
+
+    #[test]
+    fn the_mire_floods_with_water() {
+        // #9: the Mire's dense fill is impassable water (`bog_pool`) — a flooded maze,
+        // not a field of solid props.
+        assert_eq!(fill_kind_for_biome("mire"), "bog_pool");
     }
 
     #[test]
@@ -3351,12 +3601,17 @@ mod tests {
     }
 
     #[test]
-    fn the_tutorial_run_has_no_elites_or_gatekeepers() {
+    fn the_tutorial_run_has_no_scattered_elites_but_keeps_gate_bosses() {
         let b = Balance::load_default().unwrap();
         let mut a = Arena::generate(&b, 9, true);
         a.ensure_frontier(&b, 400.0);
-        assert!(a.monsters.iter().all(|m| m.encounter_class == "standard"),
-            "a new player's first dive stays gentle");
+        // Scattered elite champions stay OFF the tutorial (gentle onboarding)...
+        assert!(a.monsters.iter().all(|m| m.encounter_class != "elite"),
+            "no scattered elites on a first dive");
+        // ...but the milestone GATE bosses spawn on every run, tutorial included, so
+        // bosses actually appear in normal play (and the perpetual-tutorial demo build).
+        assert!(a.monsters.iter().any(|m| m.encounter_class == "gatekeeper"),
+            "a gate-boss guards a crossed biome border even on the tutorial");
     }
 
     #[test]

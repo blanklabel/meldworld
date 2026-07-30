@@ -312,6 +312,10 @@ pub struct WorldGen {
     /// Probability a section's treasure chest sits ON TOP of a raised terrace (at
     /// that elevation) instead of on the ground — treasure that rewards a climb.
     pub chest_terrace_chance: f64,
+    /// When a section's clear path climbs a summit, the probability a gate-boss guards
+    /// the top (otherwise a guaranteed treasure chest crowns it). Boss is held off the
+    /// tutorial regardless. The "there's always a payoff for the climb" knob (#3).
+    pub peak_boss_chance: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

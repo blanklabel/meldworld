@@ -215,6 +215,16 @@ pub mod world {
         /// label, and the section's creatures/obstacles finally agree.
         #[serde(default)]
         pub biome: String,
+        /// WG-4 radial world: half the fan arc in **radians** (0 ⇒ flat corridor, no
+        /// bend). The terrain grid above is in un-bent corridor coords; the client
+        /// bends each terrace/cliff/connector vertex by the same arc the server used
+        /// to fan entity positions, so the raised ground lines up with where you walk.
+        #[serde(default)]
+        pub radial_half: f64,
+        /// The corridor half-extent the arc maps against (corridor y ∈ [−lat, lat] ↦
+        /// bearing ∈ [−radial_half, radial_half]). Pairs with `radial_half` for the bend.
+        #[serde(default)]
+        pub corridor_lateral: f64,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";

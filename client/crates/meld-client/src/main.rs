@@ -401,6 +401,11 @@ fn main() {
                 despawn::<CommandWindow>,
                 despawn::<HitFxRoot>,
                 despawn::<BattleActor>,
+                // Floating status badges (regen/barrier/…) are rebuilt each frame by
+                // `render_status_icons`, which only runs in Battle. Without this, the
+                // last frame's badges (e.g. a lingering Regen heart) orphan onto the
+                // overworld and never clear. Tear them down on battle exit.
+                despawn::<StatusIconLayer>,
             ),
         )
         .add_systems(

@@ -560,6 +560,11 @@ pub(crate) fn render_overlay(
                                                     ));
                                                 });
                                             };
+                                            // Join an ally's in-progress fight (no-ops
+                                            // unless you're near one — the handler guards
+                                            // it). Kept here so the overworld shows only
+                                            // the Menu button (#6).
+                                            act_btn(row, OverworldAct::Join, "\u{f0fd2} Join Fight".into(), true);
                                             act_btn(row, OverworldAct::TownPortal, format!("\u{f0f10} Town Portal ({tp})"), tp > 0);
                                             act_btn(row, OverworldAct::Extract, "\u{f0817} Deep Portal".into(), true);
                                         });
@@ -623,10 +628,17 @@ pub(crate) fn render_overlay(
                                     } else {
                                         Color::srgb(0.85, 0.92, 1.0)
                                     };
+                                    // The hero's front-facing (south / idle[0]) class
+                                    // sprite as a portrait, so the status screen shows
+                                    // WHO each hero is, not just their stats (#7).
+                                    let portrait =
+                                        wa.as_ref().map(|w| w.class_frames(&h.class_key).idle[0].clone());
                                     content
                                         .spawn((
                                             Node {
-                                                flex_direction: FlexDirection::Column,
+                                                flex_direction: FlexDirection::Row,
+                                                align_items: AlignItems::Center,
+                                                column_gap: Val::Px(8.0),
                                                 border: UiRect::all(Val::Px(2.0)),
                                                 padding: UiRect::all(Val::Px(2.0)),
                                                 ..default()
@@ -634,6 +646,22 @@ pub(crate) fn render_overlay(
                                             BorderColor(if focused { focus_border } else { no_border }),
                                             BorderRadius::all(Val::Px(4.0)),
                                         ))
+                                        .with_children(|cell| {
+                                            if let Some(tex) = portrait {
+                                                cell.spawn((
+                                                    ImageNode::new(tex),
+                                                    Node {
+                                                        width: Val::Px(44.0),
+                                                        height: Val::Px(60.0),
+                                                        ..default()
+                                                    },
+                                                ));
+                                            }
+                                            cell.spawn(Node {
+                                                flex_direction: FlexDirection::Column,
+                                                flex_grow: 1.0,
+                                                ..default()
+                                            })
                                         .with_children(|hero_box| {
                                             label(hero_box, name_line, 16.0, name_col);
                                             label(
@@ -679,6 +707,7 @@ pub(crate) fn render_overlay(
                                                         TextColor(row_col),
                                                     ));
                                                 });
+                                            });
                                         });
                                 }
                                 if !roster.heroes.is_empty() {
