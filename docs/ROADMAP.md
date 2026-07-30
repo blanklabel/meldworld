@@ -244,8 +244,14 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     off the ACTUAL per-section biome (streamed on `TerrainSection.biome`, radial LUT
     in `ground_biome.wgsl`), cross-fading at real section boundaries; each biome has
     its own fill density/props + edge taper (forest→open desert→Ashfall rock).
-  **Remaining (minor cosmetic):** re-homing terraces + biome-seam walls into the
-  radial layout (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
+  **Terraces now survive the fan:** the elevation grid stays in un-bent corridor
+  coords; the server un-bends world→corridor when sampling level/connectors
+  (`Arena::corridorize`) and the client bends each terrace/cliff/connector vertex by
+  the same arc, so climbable plateaus, ladders and summit rewards (a gate-boss or a
+  guaranteed chest) work in the radial world. The path is densified before bending so
+  a follower hugs the arc instead of chord-cutting into off-path terrain.
+  **Remaining (minor cosmetic):** re-homing biome-seam walls into the radial layout
+  (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
 

@@ -190,6 +190,12 @@ pub struct TerrainSectionView {
     /// The section's biome theme, so the client keys ground + HUD off the actual
     /// per-section biome (radius ring) rather than fixed distance bands.
     pub biome: String,
+    /// WG-4 radial fan: half the arc in radians (0 ⇒ flat). The elevation grid is in
+    /// un-bent corridor coords; the client bends terrace/cliff/connector geometry by
+    /// this arc so raised ground lines up with the (server-bent) positions it walks on.
+    pub radial_half: f64,
+    /// Corridor half-extent the arc maps against (pairs with `radial_half`).
+    pub corridor_lateral: f64,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -1281,6 +1287,8 @@ impl Inner {
                             .collect(),
                         path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
                         biome: t.biome,
+                        radial_half: t.radial_half,
+                        corridor_lateral: t.corridor_lateral,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }
