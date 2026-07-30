@@ -162,6 +162,7 @@ fn main() {
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
         .init_resource::<WorldPath>()
+        .init_resource::<WorldWeb>()
         .init_resource::<Terrain>()
         .init_resource::<PartyRoster>()
         .init_resource::<PerksRes>()
@@ -312,7 +313,7 @@ fn main() {
                 joystick_visual,
                 touch_action_buttons,
                 sync_overworld_sprites,
-                draw_path_trail,
+                (draw_path_trail, draw_web_trail),
                 build_terrain_sections,
                 hd2d::animate_chars,
                 hd2d_follow,
@@ -674,6 +675,15 @@ struct WorldPath {
     drawn: bool,
 }
 
+/// The web of extra trails (disjoint edges), drawn as fainter dot-trails than the
+/// backbone so the overworld reads as an interconnected maze of routes. `drawn` gates
+/// one-time spawning (rebuilt after a battle, like [`WorldPath`]).
+#[derive(Resource, Default)]
+struct WorldWeb {
+    edges: Vec<((f32, f32), (f32, f32))>,
+    drawn: bool,
+}
+
 /// One elevation level of a terrace lifts the ground (and anything standing on it)
 /// by this many world units — roughly one Kenney cliff-block tall, so a terrace
 /// edge is dressed with a single row of `cliff_rock` models (see `spawn_terrace_cliffs`).
@@ -769,6 +779,10 @@ struct LevelUpRoot;
 /// Marker for spawned path-trail dots (despawned when the path changes).
 #[derive(Component)]
 struct PathTrail;
+
+/// Marker for spawned WEB-trail dots (the branch/loop/spur trails off the backbone).
+#[derive(Component)]
+struct WebTrail;
 
 #[derive(Resource, Default)]
 struct BattleData {

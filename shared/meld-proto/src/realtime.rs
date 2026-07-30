@@ -456,6 +456,11 @@ pub mod run {
         /// The client draws this as a faint trail so the feasible route is legible.
         #[serde(default)]
         pub path: Vec<Position>,
+        /// The WEB of extra trails (edges `(a, b)`) woven through the field — branches,
+        /// loops and spurs off the backbone. The client draws these as trail dots too,
+        /// so the overworld reads as an interconnected maze of routes, not one lane.
+        #[serde(default)]
+        pub web: Vec<(Position, Position)>,
         /// Walkable bounds — the client frames the map (edge cliffs/water + end
         /// walls) from these so it reads as a contained map, not an endless plain.
         #[serde(default, skip_serializing_if = "Option::is_none")]

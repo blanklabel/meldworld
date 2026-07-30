@@ -104,6 +104,7 @@ fn main() {
                 | ServerMsg::Perks { .. }
                 | ServerMsg::LevelUp { .. }
                 | ServerMsg::WorldPath { .. }
+                | ServerMsg::WorldWeb { .. }
                 | ServerMsg::TerrainSection { .. }
                 | ServerMsg::WorldFrame { .. }
                 | ServerMsg::Snapshot { .. }
