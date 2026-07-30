@@ -344,6 +344,7 @@ obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunk
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
 path_meander = 18.0              # how far ±y the clear path wanders between areas
+web_trails_per_area = 3.0        # extra WEB trails woven through each section (branches/loops/spurs) so the overworld is an interconnected maze of routes, not one lane (narrow slits — the dense terrain stays the walls)
 player_radius = 0.5              # the avatar's collision radius vs obstacles
 
 # Verticality: raised terraces joined to the ground by connectors (ladders/ropes/

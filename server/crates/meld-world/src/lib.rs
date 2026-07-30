@@ -959,6 +959,13 @@ fn dist_to_path(p: &Position, path: &[Position]) -> f64 {
     best
 }
 
+/// Distance from `p` to the nearest edge of the trail web (∞ if the web is empty).
+fn dist_to_web(p: &Position, web: &[(Position, Position)]) -> f64 {
+    web.iter()
+        .map(|(a, b)| dist_point_segment(p, a, b))
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// Distance from point `p` to segment `a`–`b`.
 fn dist_point_segment(p: &Position, a: &Position, b: &Position) -> f64 {
     let (abx, aby) = (b.x - a.x, b.y - a.y);
@@ -1029,6 +1036,13 @@ pub struct Arena {
     /// of `path_clear_radius` around it holds no obstacles AND no raised terrace, so
     /// the exit is always reachable on level 0; the client draws it as a faint trail.
     pub path: Vec<Position>,
+    /// The WEB of extra trails woven through each section — cross-links, loops and
+    /// dead-end spurs (with loot) branching off the backbone, each an edge `(a, b)` in
+    /// the SAME frame as `path` (bent in radial mode). The clear tube is carved around
+    /// these too, so the overworld reads as an interconnected maze of trails with real
+    /// junctions and choices, not one lane. Feasibility still rides `path`; the web is
+    /// extra. Client draws them as trail dots like the backbone.
+    pub web: Vec<(Position, Position)>,
     /// The single fixed extraction portal, deep at the end of the initial chain.
     /// Extraction is otherwise the Town Portal item (works anywhere).
     pub portal: Position,
@@ -1052,6 +1066,9 @@ pub struct Arena {
     /// radial mode) copy sent to clients; `corridor_path` is what section generation
     /// rejects obstacles/terraces against, so streaming stays in the corridor frame.
     corridor_path: Vec<Position>,
+    /// The web of trails in **unbent corridor** space (mirrors `corridor_path`).
+    /// Generation clears obstacles/terraces around these; `web` is the bent public copy.
+    corridor_web: Vec<(Position, Position)>,
     /// The avatar's collision radius against obstacles.
     player_radius: f64,
     touch_radius: f64,
@@ -1102,6 +1119,8 @@ impl Arena {
             chests: Vec::new(),
             seams: Vec::new(),
             path: vec![Position::new(0.0, 0.0)],
+            web: Vec::new(),
+            corridor_web: Vec::new(),
             portal: Position::new(0.0, 0.0),
             avatars: Vec::new(),
             cursor: 0.0,
@@ -1212,13 +1231,24 @@ impl Arena {
             }
         }
         self.portal = tf(self.portal);
-        // The non-linear bend distorts the carefully-carved clear-path tube, so an
-        // obstacle can end up on it. Re-clear the tube (in the bent coords) so a
-        // feasible route outward is preserved by construction, as in the corridor.
+        // Bend the web edges into the fan too (endpoints only — each edge is short
+        // enough that its chord hugs the arc). This is the public `web` sent to clients.
+        self.web = self
+            .corridor_web
+            .iter()
+            .map(|(a, b)| (radial_tf(*a, half, lat), radial_tf(*b, half, lat)))
+            .collect();
+        // The non-linear bend distorts the carefully-carved clear tube, so an obstacle
+        // can end up on the backbone OR a web trail. Re-clear both (in bent coords) so
+        // every route stays feasible by construction, as in the corridor.
         let clear_r = self.path_clear_radius;
+        let web_r = self.web_clear();
         let path = self.path.clone();
-        self.obstacles
-            .retain(|o| dist_to_path(&o.position, &path) > clear_r + o.radius);
+        let web = self.web.clone();
+        self.obstacles.retain(|o| {
+            dist_to_path(&o.position, &path) > clear_r + o.radius
+                && dist_to_web(&o.position, &web) > web_r + o.radius
+        });
         // Straight-wall biome seams don't survive the bend — drop them.
         self.seams.clear();
         // A square box that contains the whole fan (radius up to the frontier).
@@ -1284,6 +1314,7 @@ impl Arena {
             self.seams.len(),
         );
         let p0 = self.path.len();
+        let w0 = self.corridor_web.len();
 
         self.push_section(balance, i); // corridor-space append; advances `cursor`.
 
@@ -1323,6 +1354,11 @@ impl Arena {
             push_bent_segment(&mut self.path, prev, self.corridor_path[k], half, lat);
             prev = self.corridor_path[k];
         }
+        // Bend this section's new web edges and append to the public `web`.
+        for e in w0..self.corridor_web.len() {
+            let (a, b) = self.corridor_web[e];
+            self.web.push((tf(a), tf(b)));
+        }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
         // The bend distorts the clear-path tube AND appending this section's waypoint
@@ -1331,9 +1367,13 @@ impl Arena {
         // full bent path, exactly as the one-shot `radialize` does, so a feasible route
         // outward stays guaranteed by construction across the whole streamed world.
         let clear_r = self.path_clear_radius;
+        let web_r = self.web_clear();
         let path = self.path.clone();
-        self.obstacles
-            .retain(|o| dist_to_path(&o.position, &path) > clear_r + o.radius);
+        let web = self.web.clone();
+        self.obstacles.retain(|o| {
+            dist_to_path(&o.position, &path) > clear_r + o.radius
+                && dist_to_web(&o.position, &web) > web_r + o.radius
+        });
         // Grow the fan's bounding box to contain the new outer ring.
         let rmax = self.cursor + 4.0;
         self.x_min = -rmax;
@@ -1505,6 +1545,58 @@ impl Arena {
             Position::new(end_x - wg.portal_setback, 0.0)
         };
 
+        // WEB of trails: weave extra routes through this section so the overworld is an
+        // interconnected maze with real junctions + choices, not one lane. Built in
+        // CORRIDOR space (bent + streamed like `path`) from the section's entry/exit
+        // backbone points; own rng stream so the main creature/obstacle/terrace draws
+        // stay byte-stable. The clear tube is carved around these too (below).
+        {
+            let entry = self.path[self.path.len() - 2];
+            let exit = *self.path.last().unwrap();
+            // Dungeons keep their own rooms-and-corridors layout — no woven web through
+            // them. Scale the count with section size so a small early section keeps its
+            // dense walls (a few trails) while a big deep one webs richly.
+            let n = if is_dungeon {
+                0
+            } else {
+                (wg.web_trails_per_area * (length / 40.0).clamp(0.35, 1.5)).round() as usize
+            };
+            if n > 0 {
+                let mut wrng = Rng(section_seed(self.seed_base, i) ^ 0x3EB0_57A1_3EB0_57A1);
+                let lat = (self.lateral - 2.0).max(2.0);
+                // A parallel LOOP: a chain of side-offset nodes from entry to exit (a
+                // second route alongside the backbone — take either fork).
+                let mut prev = entry;
+                let mut nodes: Vec<Position> = Vec::new();
+                for k in 0..n {
+                    let t = (k as f64 + 1.0) / (n as f64 + 1.0);
+                    let bx = entry.x + (exit.x - entry.x) * t;
+                    let by = entry.y + (exit.y - entry.y) * t;
+                    let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+                    let off = wrng.range(6.0, lat) * side;
+                    let nd = Position::new(bx, (by + off).clamp(-lat, lat));
+                    self.corridor_web.push((prev, nd));
+                    prev = nd;
+                    nodes.push(nd);
+                }
+                self.corridor_web.push((prev, exit)); // close the loop back to the backbone
+                // CROSS-LINKS: tie every other loop node straight to the backbone
+                // midpoint — real junctions where routes cross.
+                let mid = Position::new((entry.x + exit.x) * 0.5, (entry.y + exit.y) * 0.5);
+                for &nd in nodes.iter().step_by(2) {
+                    self.corridor_web.push((nd, mid));
+                }
+                // A DEAD-END SPUR off the last node — an explore-for-it pocket.
+                if let Some(&last) = nodes.last() {
+                    let spur = Position::new(
+                        (last.x + wrng.range(-6.0, 6.0)).clamp(start_x + 2.0, end_x - 2.0),
+                        (last.y + wrng.range(-8.0, 8.0)).clamp(-lat, lat),
+                    );
+                    self.corridor_web.push((last, spur));
+                }
+            }
+        }
+
         // Climbing maze (#B): the terrain for this section is created up front so a
         // plateau can be raised over the INTERIOR of the clear-path segment — the
         // critical route itself climbs up a ramp and back down. Endpoints (the
@@ -1563,7 +1655,9 @@ impl Arena {
             let radius =
                 wg.obstacle_min_radius + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
             let pos = Position::new(ox, oy);
-            if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
+            if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
+                || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
+            {
                 continue;
             }
             // Don't strand an obstacle on (or half-buried under) the raised path
@@ -1799,7 +1893,9 @@ impl Arena {
                 let radius = wg.obstacle_min_radius
                     + frng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
                 let pos = Position::new(ox, oy);
-                if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius {
+                if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
+                    || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
+                {
                     continue;
                 }
                 if terrain.level_at(&pos) != 0 {
@@ -1949,8 +2045,16 @@ impl Arena {
         Some((Position::new(mx, y_at(mx)), level))
     }
 
-    /// Does the axis-aligned terrace rectangle come within the clear-path tube?
-    /// Samples the rect corners + centre + edge midpoints against the path.
+    /// Half-width of a WEB trail's cleared slit — narrower than the backbone tube so the
+    /// web threads tight paths THROUGH the dense terrain rather than clearing it away
+    /// (the maze must keep its walls). Still wide enough to walk.
+    fn web_clear(&self) -> f64 {
+        (self.path_clear_radius * 0.5).max(1.8)
+    }
+
+    /// Does the axis-aligned terrace rectangle come within the clear-path tube OR a web
+    /// trail? Samples the rect corners + centre + edge midpoints. Keeps raised cliffs off
+    /// both the backbone and the woven trails, so every route stays walkable on level 0.
     fn rect_intrudes_path(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
         let margin = self.path_clear_radius + self.terrain_cell;
         let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
@@ -1965,7 +2069,10 @@ impl Arena {
             Position::new(x1, cy),
             Position::new(cx, cy),
         ];
-        samples.iter().any(|s| dist_to_path(s, &self.path) < margin)
+        let web_margin = self.web_clear() + self.terrain_cell;
+        samples.iter().any(|s| {
+            dist_to_path(s, &self.path) < margin || dist_to_web(s, &self.corridor_web) < web_margin
+        })
     }
 
     /// WG-4: half the fan arc in radians (0 ⇒ flat corridor). Exposed so the wire can
@@ -3147,32 +3254,53 @@ mod tests {
         // #8: a forest section packs far more blocking fill than the open desert, so
         // the wood reads as a maze with only the trail open. Compare per-biome counts.
         let b = Balance::load_default().unwrap();
-        let count_for = |biome: &str| -> usize {
-            // Find a non-tutorial arena whose first procedural section is `biome`.
-            for seed in 0u64..200 {
+        // Aggregate obstacle DENSITY (obstacles per unit corridor-length) for a biome
+        // across many sections/seeds — robust to per-section noise from the web + terraces.
+        let density_for = |biome: &str| -> f64 {
+            let (mut obs, mut span) = (0.0f64, 0.0f64);
+            for seed in 0u64..80 {
                 let a = Arena::generate(&b, seed, false);
-                if let Some(sec) = a.areas.iter().find(|s| s.index == 1) {
-                    if sec.biome == biome {
-                        let (lo, hi) = (sec.start_x, sec.end_x);
-                        return a
-                            .obstacles
-                            .iter()
-                            .filter(|o| {
-                                let r = o.position.x.hypot(o.position.y);
-                                r >= lo && r < hi
-                            })
-                            .count();
-                    }
+                for sec in a.areas.iter().filter(|s| s.index >= 1 && s.biome == biome && !s.dungeon) {
+                    let (lo, hi) = (sec.start_x, sec.end_x);
+                    obs += a
+                        .obstacles
+                        .iter()
+                        .filter(|o| {
+                            let r = o.position.x.hypot(o.position.y);
+                            r >= lo && r < hi
+                        })
+                        .count() as f64;
+                    span += hi - lo;
                 }
             }
-            0
+            if span > 0.0 { obs / span } else { 0.0 }
         };
-        let forest = count_for("forest");
-        let desert = count_for("desert");
-        // Forest is a thick maze; desert is the open breather biome. (Both carry the
-        // biome-independent base scatter, which dilutes the ratio, so require a clear
-        // margin rather than a strict multiple.)
-        assert!(forest as f64 > desert as f64 * 1.5, "forest ({forest}) should be far denser than desert ({desert})");
+        let forest = density_for("forest");
+        let desert = density_for("desert");
+        // Forest is a thick maze; desert is the open breather biome. Both carry the
+        // biome-independent base scatter (dilutes the ratio), so require a clear margin.
+        assert!(forest > desert * 1.5, "forest density ({forest:.2}/u) should far exceed desert ({desert:.2}/u)");
+    }
+
+    #[test]
+    fn the_overworld_weaves_a_web_of_trails_not_one_lane() {
+        // Ditch the corridor: each non-tutorial run weaves extra trails (branches,
+        // loops, spurs) beyond the backbone, and the dense fill is carved clear of them
+        // so they're actually walkable — an interconnected maze, not a single route.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 7, false);
+        a.ensure_frontier(&b, 400.0);
+        assert!(a.web.len() > a.areas.len(), "several web trails woven per section");
+        // No obstacle sits on a web trail (its slit is cleared), so every trail walks.
+        let web_r = a.web_clear();
+        for o in &a.obstacles {
+            let d = dist_to_web(&o.position, &a.web);
+            assert!(
+                d >= web_r - 1e-6,
+                "obstacle {} blocks a web trail (d={d:.2} < {web_r:.2})",
+                o.entity_id
+            );
+        }
     }
 
     #[test]

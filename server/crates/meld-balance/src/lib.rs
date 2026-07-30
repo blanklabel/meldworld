@@ -289,6 +289,10 @@ pub struct WorldGen {
     pub obstacle_max_radius: f64,
     pub path_clear_radius: f64,
     pub path_meander: f64,
+    /// Extra WEB trails woven through each section (branches, loops, dead-end spurs)
+    /// so the overworld reads as an interconnected maze of routes with real junctions,
+    /// not a single lane. The clear tube is carved around these too. 0 ⇒ just the backbone.
+    pub web_trails_per_area: f64,
     pub player_radius: f64,
     // --- Verticality (terraces + connectors), docs/proposals/verticality.md. ---
     /// Avg raised terraces per procedural section (area 0 stays flat).
