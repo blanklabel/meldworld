@@ -157,15 +157,17 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
 }
 
 /// The SIGNATURE prop a biome's dense maze fill is made of — the thing you're walking
-/// through (a wood of trees, a scatter of cacti, a field of volcanic rock, …). Solid
-/// geometry only (never a flat water pool), so the fill reads as cover.
+/// through (a wood of trees, a scatter of cacti, a field of volcanic rock, …). Usually
+/// solid geometry so the fill reads as cover — EXCEPT the Mire, which is MOSTLY water:
+/// its fill is impassable `bog_pool` water, so the swamp floods into a maze of pools
+/// with the trail as the only reliable land.
 fn fill_kind_for_biome(biome: &str) -> &'static str {
     match biome {
         "forest" => "tree",
         "desert" => "cactus",
         "ashfall" => "cinder_rock",
         "tundra" => "ice_spire",
-        _ => "mire_root",
+        _ => "bog_pool", // mire: flooded — water is the fill, land is the trail
     }
 }
 
@@ -1168,9 +1170,9 @@ impl Arena {
         for m in &mut self.monsters {
             m.position = tf(m.position);
             m.home = tf(m.home);
-            // Corridor x-bounds no longer map to world x; let creatures roam near home.
-            m.area_min_x = f64::NEG_INFINITY;
-            m.area_max_x = f64::INFINITY;
+            // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
+            // creature's hub-distance is its corridor x, so `step_creatures` clamps its
+            // radius to this band and it never wanders out of its biome ring (#10).
         }
         for r in &mut self.resources {
             r.position = tf(r.position);
@@ -1285,8 +1287,8 @@ impl Arena {
         for m in &mut self.monsters[m0..] {
             m.position = tf(m.position);
             m.home = tf(m.home);
-            m.area_min_x = f64::NEG_INFINITY; // roam near home, not a corridor x-band.
-            m.area_max_x = f64::INFINITY;
+            // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
+            // creatures also stay inside their own biome ring (#10).
         }
         for r in &mut self.resources[r0..] {
             r.position = tf(r.position);
@@ -2156,12 +2158,23 @@ impl Arena {
                 dx /= mag;
                 dy /= mag;
                 let step = speed * dt;
-                // Clamp to the world bounds AND the creature's own area (creatures
-                // stay in their biome; distant ones never wander into a safe area).
-                let lo_x = x_min.max(m.area_min_x);
-                let hi_x = x_max.min(m.area_max_x);
-                let nx = (m.position.x + dx * step).max(lo_x).min(hi_x);
-                let ny = (m.position.y + dy * step).max(-lateral).min(lateral);
+                // Clamp to the world bounds AND the creature's own area so it stays in
+                // its biome. In the radial fan the area is a RADIUS band ([start_x,
+                // end_x] = a biome ring), so clamp the candidate's radius; in flat
+                // corridor mode it's an x-band as before. Keeps biome creatures inside
+                // their biome instead of wandering across rings (#10).
+                let (mut nx, mut ny) = (m.position.x + dx * step, m.position.y + dy * step);
+                if radial_half > 0.0 {
+                    let r = (nx * nx + ny * ny).sqrt();
+                    let (r_lo, r_hi) = (m.area_min_x.max(0.0), m.area_max_x);
+                    if r > 1e-6 && (r < r_lo || r > r_hi) {
+                        let rc = r.clamp(r_lo, r_hi);
+                        nx *= rc / r;
+                        ny *= rc / r;
+                    }
+                }
+                let nx = if radial_half > 0.0 { nx } else { nx.max(x_min.max(m.area_min_x)).min(x_max.min(m.area_max_x)) };
+                let ny = ny.max(-lateral).min(lateral);
                 // Creatures don't walk through terrain either (slide per axis), and
                 // they stay on their own elevation (never wander off a terrace edge).
                 let cand = Position::new(nx, ny);
@@ -3057,6 +3070,80 @@ mod tests {
                 assert_eq!(arena.level_at(last), 0, "seed {seed}: the portal end is off the ground");
             }
         }
+    }
+
+    #[test]
+    fn creatures_stay_inside_their_biome_ring() {
+        // #10: a creature belongs to its biome, which in the radial fan is a RADIUS
+        // ring ([start_x, end_x]). After a long roam (chasing a player around) no
+        // creature has wandered out of its ring into a neighbouring biome.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7, false);
+        // A player roaming the fan gives aggressive creatures something to chase.
+        arena.add_avatar("p".into(), 40.0);
+        let bands: Vec<(usize, f64, f64)> = arena
+            .monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.area_min_x.is_finite() && m.area_max_x.is_finite())
+            .map(|(i, m)| (i, m.area_min_x, m.area_max_x))
+            .collect();
+        assert!(!bands.is_empty(), "creatures carry a radius band");
+        for tick in 0..2000 {
+            // Sweep the player around so aggressive creatures try to chase across rings.
+            let ang = (tick as f64) * 0.05;
+            arena.apply_move("p", ang.cos(), ang.sin(), tick as u32);
+            arena.step_creatures(0.1);
+        }
+        for (i, lo, hi) in bands {
+            let m = &arena.monsters[i];
+            let r = m.position.x.hypot(m.position.y);
+            assert!(
+                r >= lo - 3.0 && r <= hi + 3.0,
+                "creature {} left its biome ring: r={r:.1} band=[{lo:.1},{hi:.1}]",
+                m.entity_id
+            );
+        }
+    }
+
+    #[test]
+    fn forest_is_a_dense_maze_and_desert_is_open() {
+        // #8: a forest section packs far more blocking fill than the open desert, so
+        // the wood reads as a maze with only the trail open. Compare per-biome counts.
+        let b = Balance::load_default().unwrap();
+        let count_for = |biome: &str| -> usize {
+            // Find a non-tutorial arena whose first procedural section is `biome`.
+            for seed in 0u64..200 {
+                let a = Arena::generate(&b, seed, false);
+                if let Some(sec) = a.areas.iter().find(|s| s.index == 1) {
+                    if sec.biome == biome {
+                        let (lo, hi) = (sec.start_x, sec.end_x);
+                        return a
+                            .obstacles
+                            .iter()
+                            .filter(|o| {
+                                let r = o.position.x.hypot(o.position.y);
+                                r >= lo && r < hi
+                            })
+                            .count();
+                    }
+                }
+            }
+            0
+        };
+        let forest = count_for("forest");
+        let desert = count_for("desert");
+        // Forest is a thick maze; desert is the open breather biome. (Both carry the
+        // biome-independent base scatter, which dilutes the ratio, so require a clear
+        // margin rather than a strict multiple.)
+        assert!(forest as f64 > desert as f64 * 1.5, "forest ({forest}) should be far denser than desert ({desert})");
+    }
+
+    #[test]
+    fn the_mire_floods_with_water() {
+        // #9: the Mire's dense fill is impassable water (`bog_pool`) — a flooded maze,
+        // not a field of solid props.
+        assert_eq!(fill_kind_for_biome("mire"), "bog_pool");
     }
 
     #[test]
