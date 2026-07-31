@@ -28,11 +28,11 @@ fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
         + 4.5 * sin(p.x * 0.015 - 0.8) * cos(p.y * 0.013 + 0.5)
         + 2.2 * sin(p.x * 0.033 + 1.7) * cos(p.y * 0.037 - 0.9)
         + 0.9 * sin((p.x + p.y) * 0.061 + 2.3);
-    // Isolated steep mesas = cliffs — DISABLED (amplitude 0), mirrors
-    // `meld_proto::terrain::height` (cliff maze pending A* routing).
+    // Isolated steep mesas = the CLIFFS (the A*-routed backbone bends around them).
+    // Amplitude MUST match `meld_proto::terrain::height`'s CLIFF_HEIGHT.
     let m = sin(p.x * 0.03 + 1.1) * cos(p.y * 0.028 - 0.6)
         + 0.5 * sin(p.x * 0.051 - 2.0) * cos(p.y * 0.047 + 1.4);
-    return base + 0.0 * smoothstep(0.80, 0.92, m);
+    return base + 11.0 * smoothstep(0.80, 0.92, m);
 }
 
 // Surface normal by finite differences — works for the (non-analytic) cliff term, so
