@@ -1169,9 +1169,12 @@ pub(crate) fn follow_world_ground(
 /// displaces its vertices by this; Rust places every entity/camera on it). Keep the two
 /// in lock-step: if you change a coefficient here, change it in the shader.
 pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
-    3.2 * (x * 0.018).sin() * (z * 0.021).cos()
-        + 1.6 * (x * 0.041 + 1.7).sin() * (z * 0.036 - 0.9).cos()
-        + 0.8 * ((x + z) * 0.058 + 2.3).sin()
+    // Big rolling hills + valleys (long wavelength ⇒ visible relief, still gentle
+    // grades) with medium + fine detail on top.
+    9.0 * (x * 0.0063 + 0.4).sin() * (z * 0.0071 - 0.3).cos()
+        + 4.5 * (x * 0.015 - 0.8).sin() * (z * 0.013 + 0.5).cos()
+        + 2.2 * (x * 0.033 + 1.7).sin() * (z * 0.037 - 0.9).cos()
+        + 0.9 * ((x + z) * 0.061 + 2.3).sin()
 }
 
 /// Capitalize the first letter for display ("ashfall" → "Ashfall").
