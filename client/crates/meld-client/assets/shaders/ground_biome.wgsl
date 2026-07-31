@@ -35,41 +35,15 @@ fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
     return base + 11.0 * smoothstep(0.80, 0.92, m);
 }
 
-// Surface normal by finite differences — works for the (non-analytic) cliff term, so
-// mesa faces + rolling hills both light naturally.
-fn terrain_normal(p: vec2<f32>) -> vec3<f32> {
-    let e = 1.5;
-    let hl = terrain_height_wgsl(p - vec2<f32>(e, 0.0));
-    let hr = terrain_height_wgsl(p + vec2<f32>(e, 0.0));
-    let hd = terrain_height_wgsl(p - vec2<f32>(0.0, e));
-    let hu = terrain_height_wgsl(p + vec2<f32>(0.0, e));
-    return normalize(vec3<f32>(hl - hr, 2.0 * e, hd - hu));
-}
-
-// Displace the sliding ground plane into rolling hills. Keyed off WORLD xz (like the
-// biome/texture below), so the hills stay world-fixed even as the plane slides under
-// the player — no swimming.
-@vertex
-fn vertex(vertex: Vertex) -> VertexOutput {
-    var out: VertexOutput;
-    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
-    var world_position = mesh_functions::mesh_position_local_to_world(
-        world_from_local, vec4<f32>(vertex.position, 1.0));
-    world_position.y += terrain_height_wgsl(world_position.xz);
-    out.world_position = world_position;
-    out.position = position_world_to_clip(world_position.xyz);
-    out.world_normal = terrain_normal(world_position.xz);
-    out.uv = vertex.uv;
-    out.instance_index = vertex.instance_index;
-    return out;
-}
-
 struct BiomeParams {
     rings: array<vec4<f32>, 32>,
     count: u32,
     uv_scale: f32,
     blend_half: f32,
-    _pad0: f32,
+    // Displacement amplitude: 1.0 in the Overworld (rolling hills + cliffs), 0.0 in the
+    // City/menus (flat ground — those scenes are hand-placed for a level plaza, and the
+    // rolling heightmap would tilt every prop and shade the troughs into blue ribbons).
+    terrain_amp: f32,
 }
 
 @group(2) @binding(100) var t_forest: texture_2d<f32>;
@@ -79,6 +53,37 @@ struct BiomeParams {
 @group(2) @binding(104) var t_mire: texture_2d<f32>;
 @group(2) @binding(105) var samp: sampler;
 @group(2) @binding(106) var<uniform> params: BiomeParams;
+
+// Surface normal by finite differences — works for the (non-analytic) cliff term, so
+// mesa faces + rolling hills both light naturally. `amp` scales the field so a flat
+// (amp 0) ground lights with a plain up-normal.
+fn terrain_normal(p: vec2<f32>, amp: f32) -> vec3<f32> {
+    let e = 1.5;
+    let hl = amp * terrain_height_wgsl(p - vec2<f32>(e, 0.0));
+    let hr = amp * terrain_height_wgsl(p + vec2<f32>(e, 0.0));
+    let hd = amp * terrain_height_wgsl(p - vec2<f32>(0.0, e));
+    let hu = amp * terrain_height_wgsl(p + vec2<f32>(0.0, e));
+    return normalize(vec3<f32>(hl - hr, 2.0 * e, hd - hu));
+}
+
+// Displace the sliding ground plane into rolling hills. Keyed off WORLD xz (like the
+// biome/texture below), so the hills stay world-fixed even as the plane slides under
+// the player — no swimming. Scaled by `terrain_amp` so non-overworld scenes stay flat.
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    var world_position = mesh_functions::mesh_position_local_to_world(
+        world_from_local, vec4<f32>(vertex.position, 1.0));
+    let amp = params.terrain_amp;
+    world_position.y += amp * terrain_height_wgsl(world_position.xz);
+    out.world_position = world_position;
+    out.position = position_world_to_clip(world_position.xyz);
+    out.world_normal = terrain_normal(world_position.xz, amp);
+    out.uv = vertex.uv;
+    out.instance_index = vertex.instance_index;
+    return out;
+}
 
 // The tinted ground colour for biome index `bi` at `uv`. Tints make each biome read
 // distinctly under the cool ambient: forest/desert as-authored, Ashfall a charred

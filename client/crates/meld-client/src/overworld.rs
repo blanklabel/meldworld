@@ -280,10 +280,16 @@ pub(crate) const RENDER_UNLOAD_FAR: f32 = 150.0;
 /// `Look` post params into the camera, aim the sun, and recolour the ground to the
 /// player's current biome. Replaces the old flat 2D `follow_camera`.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
+/// Smoothed extra camera-eye height (above the orbit base) that keeps the player clear
+/// of intervening hills/cliffs — see the terrain-aware lift in [`hd2d_follow`].
+#[derive(Resource, Default)]
+pub(crate) struct CamLift(pub f32);
+
 pub(crate) fn hd2d_follow(
     session: Res<Session>,
     look: Res<hd2d::Look>,
     time: Res<Time>,
+    mut cam_lift: ResMut<CamLift>,
     // Follow the player's *smoothed* transform (not the raw 20 Hz snapshot), so the
     // camera and the sprite move together — no relative jitter. Exclude the camera
     // and sun so this `&Transform` read is disjoint from their `&mut Transform`.
@@ -309,7 +315,36 @@ pub(crate) fn hd2d_follow(
     // Rise with the player's terrace (pos.y already carries the smoothed elevation).
     let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
-        *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        let mut cam = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        // TERRAIN-AWARE eye lift: the low HD-2D pitch means a hill or cliff-mesa BETWEEN
+        // the camera and the player easily hides them (and on a slope the eye can sink
+        // into the ground). Sample the heightmap along the horizontal eye→target line and
+        // raise the eye just enough that the whole sightline clears every intervening
+        // ridge — so the player is never buried. The clearance TAPERS to zero at the
+        // player (whose feet are on the ground, so no lift is demanded there), and the
+        // total lift is capped at ~50° pitch (sprites go edge-on past that) + smoothed
+        // (rise fast so a wall never clips in, settle slowly so open ground doesn't bob).
+        let eye = cam.translation;
+        let base_y = eye.y;
+        let mut want = base_y;
+        const CLEAR: f32 = 2.5;
+        const STEPS: i32 = 18;
+        for k in 1..STEPS {
+            let f = k as f32 / STEPS as f32;
+            let px = eye.x + (target.x - eye.x) * f;
+            let pz = eye.z + (target.z - eye.z) * f;
+            let ground = crate::world_render::terrain_height(px, pz) + CLEAR * (1.0 - f);
+            // eye.y solving `eye.y*(1-f) + f*target.y >= ground` for the ray to clear here.
+            let need = (ground - f * target.y) / (1.0 - f);
+            want = want.max(need);
+        }
+        let max_pitch = 50f32.to_radians().sin() - look.cam_pitch.to_radians().sin();
+        let want_lift = (want - base_y).clamp(0.0, (look.cam_dist * max_pitch).max(0.0));
+        let rate = if want_lift > cam_lift.0 { 8.0 } else { 2.5 };
+        cam_lift.0 += (want_lift - cam_lift.0) * (rate * time.delta_secs()).min(1.0);
+        cam.translation.y = base_y + cam_lift.0;
+        cam.look_at(target, Vec3::Y);
+        *t = cam;
         hd2d::apply_post(
             &look,
             &mut proj,
