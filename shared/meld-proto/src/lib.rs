@@ -19,6 +19,7 @@ pub mod http;
 pub mod limits;
 pub mod realtime;
 pub mod skills;
+pub mod terrain;
 
 pub use enums::*;
 pub use envelope::{Envelope, RawEnvelope};
