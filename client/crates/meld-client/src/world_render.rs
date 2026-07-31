@@ -38,7 +38,9 @@ pub(crate) struct BiomeParams {
     count: u32,
     uv_scale: f32,
     blend_half: f32,
-    _pad0: f32,
+    /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
+    /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
+    terrain_amp: f32,
 }
 
 impl Default for BiomeParams {
@@ -48,7 +50,9 @@ impl Default for BiomeParams {
             count: 0,
             uv_scale: 1.0 / 3.0,
             blend_half: 18.0,
-            _pad0: 0.0,
+            // Default flat: menus/join/city render level ground. The Overworld flips it
+            // to 1.0 on entry (`set_ground_terrain_amp`).
+            terrain_amp: 0.0,
         }
     }
 }
@@ -1224,11 +1228,17 @@ pub(crate) fn update_ground_biome_rings(
     terrain: Res<Terrain>,
     world: Res<Overworld>,
     session: Res<Session>,
+    state: Res<State<Screen>>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
     let Some(mat) = mats.get_mut(&handle.0) else { return };
+    // Roll the ground into hills+cliffs ONLY in the Overworld. The City + menus are
+    // hand-placed for FLAT ground (a level plaza), so displacing it there tilts every
+    // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
+    mat.extension.params.terrain_amp =
+        if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections

@@ -125,6 +125,7 @@ fn main() {
         .insert_resource(hd2d::ambient_light())
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
+        .init_resource::<overworld::CamLift>()
         .insert_non_send_resource(NetRes(net::start(base)))
         // Demo and autoplay are mutually exclusive; demo skips networking.
         // `?city` connects via the autoplay path but parks in the hub (see CityIdle).
