@@ -43,6 +43,15 @@ pub enum ServerEvent {
     Client { player_id: String, raw: RawEnvelope },
 }
 
+/// A world-scoped tick/handler can't touch Router-owned state (sessions, world
+/// teardown) directly — it emits these effects, which `GameState` applies. This is
+/// what lets a world's logic move off `GameState` now and onto its own task later.
+enum WorldEffect {
+    /// A player left their run (death/extraction) — the Router flips the session's
+    /// `in_instance` and tears the world down if it's now empty.
+    ReleaseFromRun(String),
+}
+
 /// Handle used by the gateway to feed the loop.
 #[derive(Clone)]
 pub struct GameHandle {
@@ -499,7 +508,7 @@ fn terrain_section_msg(
 
 /// Tag each ally combatant with its hero's persistent name (`name:<name>`) so the
 /// client shows names in battle. Slot = the combatant's index among its player's
-/// combatants; the name comes from `ActiveInstance::hero_names`.
+/// combatants; the name comes from `WorldActor::hero_names`.
 fn inject_hero_names(
     player_combatants: &HashMap<String, Vec<String>>,
     hero_names: &HashMap<String, Vec<String>>,
@@ -551,8 +560,15 @@ struct BattleSlot {
     pos: Position,
 }
 
-/// The single active MazeInstance of the slice.
-struct ActiveInstance {
+/// One world's authoritative state — the nucleus that SC-3 will own on its own
+/// task (a `WorldActor`). Today the server runs exactly one, owned inline by
+/// `GameState`; the tick and world-pure logic are being migrated onto it so the
+/// eventual per-world task split is a change of transport, not a rewrite.
+struct WorldActor {
+    balance: Arc<Balance>,
+    /// Fire-and-forget persistence sink (a clone of `GameState`'s), so world-owned
+    /// lifecycle logic (deaths, etc.) can enqueue writes without touching the Router.
+    db_writes: mpsc::UnboundedSender<DbWrite>,
     arena: Arena,
     run: InstanceRun,
     /// Every battle currently running in the instance. Independent parties fight
@@ -565,6 +581,13 @@ struct ActiveInstance {
     /// player_id -> per-hero class (the mixed party composition), parallel to
     /// `hero_hp`. Each slot's class drives its stats/kit for the whole run.
     party_classes: HashMap<String, Vec<CharacterClass>>,
+    /// player_id -> per-hero equipped Vault gear bonuses — a world-local mirror of
+    /// each member's `Session.gear_bonuses`, so world-owned combat/roster logic
+    /// reads gear WITHOUT reaching into the Router's sessions. Seeded in `form_run`
+    /// and kept in sync wherever `Session.gear_bonuses` is written (`flush_gear_loads`).
+    /// Gear only changes at connect/form_run/flush and `flush_gear_loads` runs after
+    /// `tick`, so within any tick this equals a live session read (behaviour-identical).
+    gear_bonuses: HashMap<String, Vec<meld_db::GearBonus>>,
     /// player_id -> per-hero display name (parallel to `party_classes`).
     hero_names: HashMap<String, Vec<String>>,
     /// player_id -> per-hero formation flag (`true` = back row), parallel to
@@ -578,7 +601,7 @@ struct ActiveInstance {
     regen_accum: HashMap<String, f32>,
 }
 
-impl ActiveInstance {
+impl WorldActor {
     /// The party id a player belongs to (their run's `party_id`).
     fn party_id_of(&self, player_id: &str) -> Option<u32> {
         self.run
@@ -616,6 +639,597 @@ impl ActiveInstance {
             .map(|r| r.player_id.clone())
             .collect()
     }
+
+    /// A player's earned overworld class perks (Overworld Class Perks / "party
+    /// sense"): class *presence* in the party gates each perk, the shared
+    /// `run_level` scales its tier. Defaults (no perks) if the player isn't in
+    /// the instance. See [`Self::compute_perks`] and the `[perks]` balance block.
+    fn perks_for(&self, pid: &str) -> wr::Perks {
+        let Some(classes) = self.party_classes.get(pid) else {
+            return wr::Perks::default();
+        };
+        let run_level = self
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| r.run_level)
+            .unwrap_or(1);
+        self.compute_perks(classes, run_level)
+    }
+
+    /// Pure mapping from (party classes × run level) → earned perks against the
+    /// `[perks]` balance thresholds. A perk stays neutral unless its class is in
+    /// the party. Kept deterministic + side-effect-free so it can be unit-tested.
+    fn compute_perks(&self, classes: &[CharacterClass], run_level: i32) -> wr::Perks {
+        let p = &self.balance.perks;
+        let has = |c: CharacterClass| classes.contains(&c);
+        let lvl = run_level.max(1);
+        let above = |floor: i32| (lvl - floor).max(0) as f32;
+        let mut out = wr::Perks::default();
+        // Explorer — night glow + "predator's eye" monster intel.
+        if has(CharacterClass::Explorer) {
+            out.explorer_glow = p.explorer_glow_base + p.explorer_glow_per_level * (lvl - 1) as f32;
+            out.explorer_intel = if lvl >= p.explorer_intel_atb_at {
+                3
+            } else if lvl >= p.explorer_intel_hp_at {
+                2
+            } else if lvl >= p.explorer_intel_level_at {
+                1
+            } else {
+                0
+            };
+        }
+        // Shifter — corner minimap.
+        if has(CharacterClass::Shifter) && lvl >= p.shifter_map_at {
+            out.shifter_map = if lvl >= p.shifter_map_harvest_at {
+                3
+            } else if lvl >= p.shifter_map_chests_at {
+                2
+            } else {
+                1
+            };
+            out.shifter_map_radius =
+                p.shifter_map_radius_base + p.shifter_map_radius_per_level * above(p.shifter_map_at);
+        }
+        // Psyker — threat sense.
+        if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
+            out.psyker_threat = if lvl >= p.psyker_threat_aggro_at { 2 } else { 1 };
+            out.psyker_reveal_radius = (p.psyker_reveal_base
+                + p.psyker_reveal_per_level * above(p.psyker_threat_elites_at) as f64)
+                as f32;
+        }
+        // Resonant — overworld regen (HP/sec).
+        if has(CharacterClass::Resonant) {
+            out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
+        }
+        // Iron Hull — bulwark (shrinks how close creatures chase this party).
+        if has(CharacterClass::IronHull) {
+            let mult = 1.0 - p.ironhull_aggro_reduction_per_level * lvl as f64;
+            out.ironhull_aggro_mult = mult.max(p.ironhull_aggro_mult_floor) as f32;
+        }
+        out
+    }
+
+    fn snapshot_msgs(&self) -> Vec<Outgoing> {
+        let mut entities: Vec<wm::SnapshotEntity> = self
+            .arena
+            .avatars
+            .iter()
+            .map(|a| wm::SnapshotEntity {
+                entity_id: a.player_id.clone(),
+                position: a.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(a.state.clone()),
+                level: Some(a.elevation),
+                ..Default::default()
+            })
+            .collect();
+        // Every living creature is a dynamic entity too (movement-world.md:
+        // snapshots carry players and monsters). We tag a monster's `avatar_state`
+        // as `mob:<kind>:<faction>` so the client can colour/label it by faction;
+        // that's distinct from the player states and the `portal` tag below. Slain
+        // creatures are dropped from the snapshot.
+        for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
+            entities.push(wm::SnapshotEntity {
+                entity_id: m.entity_id.clone(),
+                position: m.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
+                level: Some(m.elevation),
+                // Overworld mob intel (client shows each field only when the
+                // viewer's Explorer/Psyker perk unlocks it — see `run.perks`).
+                mob_level: Some(m.level),
+                hp: Some(m.hp),
+                max_hp: Some(m.max_hp),
+                encounter_class: Some(m.encounter_class.clone()),
+                aggression: Some(m.aggression.clone()),
+            });
+        }
+        // The single deep extraction portal (extraction is otherwise the Town
+        // Portal item). Tagged `portal` so the client renders it specially.
+        entities.push(wm::SnapshotEntity {
+            entity_id: "portal".to_string(),
+            position: self.arena.portal,
+            velocity: wm::Velocity { x: 0.0, y: 0.0 },
+            avatar_state: Some("portal".to_string()),
+            level: Some(0),
+            ..Default::default()
+        });
+        // Treasure chests, tagged `chest:<tier>:<open>` (`open` = 0/1) so the client
+        // draws unopened vs opened. Opened chests stay in the world (as opened).
+        for c in &self.arena.chests {
+            entities.push(wm::SnapshotEntity {
+                entity_id: c.entity_id.clone(),
+                position: c.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
+                level: Some(c.elevation),
+                ..Default::default()
+            });
+        }
+        // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
+        for n in self.arena.resources.iter().filter(|n| !n.harvested) {
+            entities.push(wm::SnapshotEntity {
+                entity_id: n.entity_id.clone(),
+                position: n.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("resource:{}", n.kind)),
+                level: Some(n.elevation),
+                ..Default::default()
+            });
+        }
+        // Ground loot dropped by creature-vs-creature skirmishes, tagged
+        // `loot:<kind>` — walk over it to auto-collect (see `collect_ground_loot`).
+        for l in &self.arena.ground_loot {
+            entities.push(wm::SnapshotEntity {
+                entity_id: l.entity_id.clone(),
+                position: l.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("loot:{}", l.kind)),
+                level: None,
+                ..Default::default()
+            });
+        }
+        // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
+        // renders each feature at its true size (static, but sent with the snapshot
+        // like the other world entities — pragmatic for the slice).
+        for o in &self.arena.obstacles {
+            entities.push(wm::SnapshotEntity {
+                entity_id: o.entity_id.clone(),
+                position: o.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
+                level: None,
+                ..Default::default()
+            });
+        }
+        let server_tick = now_ms() as i64;
+        // Interest management (CANON §B networking): a player only receives entities
+        // within the interest radius (`interest_radius_chunks × chunk_size` tiles) of
+        // their own avatar — instead of the whole world every tick, which grew
+        // unbounded as the endless world streamed in. This bounds each snapshot (and
+        // its per-recipient serialization) to a rolling window around the player.
+        // Purely a bandwidth/CPU cull: the server stays authoritative, so nothing
+        // gameplay-affecting depends on what a client is sent. The recipient's own
+        // avatar and the deep portal (a navigation landmark) are always included.
+        //
+        // SC-1: the cull runs off a per-tick chunk grid (built once here) so each
+        // player's query touches only the cells in range instead of re-scanning the
+        // whole entity list — O(sessions × visible) not O(sessions × entities).
+        let cell = self.balance.world.chunk_size.max(1) as f64;
+        let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let radius2 = radius * radius;
+        let grid = build_interest_grid(&entities, cell);
+        let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
+        // Overworld snapshots go to players NOT in any battle. A fighting party is
+        // on the battle screen and driven by battle messages instead; when no battle
+        // is running, `in_battle` is empty so this sends to everyone.
+        let in_battle = self.parties_in_battle();
+        let mut out = Vec::new();
+        for r in self
+            .run
+            .runs
+            .iter()
+            .filter(|r| !in_battle.contains(&r.party_id))
+        {
+            // Avatars are pushed first, in arena order, so an avatar's index in
+            // `entities` equals its index in `arena.avatars` — reuse it as `own_idx`.
+            let me = self
+                .arena
+                .avatars
+                .iter()
+                .enumerate()
+                .find(|(_, a)| a.player_id == r.player_id);
+            let me_pos = me.map(|(_, a)| a.position);
+            let own_idx = me.map(|(i, _)| i);
+            // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
+            // (dangerous foes sensed at range). Non-mob entities keep the base radius.
+            let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
+            let mob_radius2 = mob_radius * mob_radius;
+            let culled: Vec<wm::SnapshotEntity> = match me_pos {
+                // Grid-indexed interest cull (SC-1): behaviour-identical to the old
+                // full scan (own avatar + portal always; mobs at `mob_radius`, the
+                // rest at `radius`) but O(visible) via the chunk grid.
+                Some(p) => interest_visible_indices(
+                    &entities, &grid, cell, p.x, p.y, radius2, mob_radius, mob_radius2, own_idx,
+                    portal_idx,
+                )
+                .into_iter()
+                .map(|i| entities[i].clone())
+                .collect(),
+                // Defensive: a roaming run should always have an avatar; if not, don't
+                // cull (send the full set) rather than send an empty world.
+                None => entities.clone(),
+            };
+            out.push(out_msg(
+                &r.player_id,
+                &wm::Snapshot {
+                    server_tick,
+                    entities: culled,
+                },
+            ));
+        }
+        out
+    }
+
+    /// The caller's hero roster (name/class/level/attributes) for the party panel.
+    /// Reuses `party_fighters` so the stats match combat exactly.
+    fn party_views(&self, pid: &str) -> Vec<wr::HeroView> {
+        let inst = self;
+        let Some(comp) = inst.party_classes.get(pid).cloned() else {
+            return Vec::new();
+        };
+        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
+        let rows = inst.hero_rows.get(pid).cloned().unwrap_or_default();
+        // Reflect each hero's own equipped gear (Vault baseline + any run-loot
+        // worn this run) so the party panel matches combat. Sourced from the world's
+        // own synced mirror of the session gear (see `WorldActor::gear_bonuses`).
+        let hero_bonuses = self.gear_bonuses.get(pid);
+        let looted = inst
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| r.looted_gear.as_slice())
+            .unwrap_or(&[]);
+        let party: Vec<meld_run::PartyMember> = comp
+            .iter()
+            .enumerate()
+            .map(|(slot, c)| {
+                let b = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
+                (pid.to_string(), String::new(), *c, effective_gear_bonus(b, looted, slot as i32))
+            })
+            .collect();
+        let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
+        let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance, &row_overrides);
+        // Current (possibly wounded) HP persists across battles within a run —
+        // `hero_hp` is the live source; a missing slot (not yet in a battle
+        // this run) reads as full.
+        let hp_now = inst.hero_hp.get(pid).cloned().unwrap_or_default();
+        // XP/level are per-player (the whole party levels together), not
+        // per-hero — every hero view below carries the same two values.
+        let (run_xp, run_level) = inst
+            .run
+            .runs
+            .iter()
+            .find(|r| r.player_id == pid)
+            .map(|r| (r.xp, r.run_level))
+            .unwrap_or((0, 1));
+        let xp_to_next = meld_run::xp_to_next(run_level, &self.balance);
+        fighters
+            .iter()
+            .enumerate()
+            .map(|(slot, f)| wr::HeroView {
+                slot: slot as i32,
+                name: names
+                    .get(slot)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                class_key: f.class_key.clone(),
+                level: f.level,
+                str_: f.str_,
+                mnd: f.mnd,
+                dex: f.dex,
+                wll: f.wll,
+                max_hp: f.max_hp,
+                xp: run_xp,
+                xp_to_next,
+                hp: hp_now.get(slot).copied().unwrap_or(f.max_hp).clamp(0, f.max_hp),
+                back_row: f.back_row,
+            })
+            .collect()
+    }
+
+    /// Resonant "Overworld Regen": restore carried hero HP over time while a party
+    /// roams (not in battle). Regen is HP/sec but `hero_hp` is integer, so the
+    /// sub-1 remainder is banked in `regen_accum` and whole HP is applied as it
+    /// accrues, most-wounded living hero first (downed heroes at 0 HP are not
+    /// revived — that needs a real fight). Purely server state.
+    fn apply_overworld_regen(&mut self, dt: f64) {
+        // Plan first (shared borrow), then mutate hero_hp (exclusive borrow).
+        let plans: Vec<(String, f32, Vec<i32>)> = {
+            let in_battle = self.parties_in_battle();
+            let mut v = Vec::new();
+            for r in &self.run.runs {
+                if in_battle.contains(&r.party_id) {
+                    continue;
+                }
+                let regen = self.perks_for(&r.player_id).resonant_regen;
+                if regen <= 0.0 {
+                    continue;
+                }
+                let caps: Vec<i32> = self
+                    .party_views(&r.player_id)
+                    .iter()
+                    .map(|h| h.max_hp)
+                    .collect();
+                v.push((r.player_id.clone(), regen, caps));
+            }
+            v
+        };
+        if plans.is_empty() {
+            return;
+        }
+        for (pid, regen, caps) in plans {
+            let acc = self.regen_accum.entry(pid.clone()).or_insert(0.0);
+            *acc += regen * dt as f32;
+            let whole = acc.floor();
+            if whole < 1.0 {
+                continue;
+            }
+            *acc -= whole;
+            let mut budget = whole as i32;
+            let Some(hps) = self.hero_hp.get_mut(&pid) else {
+                continue;
+            };
+            while budget > 0 {
+                // Most-wounded living hero still below its cap.
+                let mut best: Option<usize> = None;
+                let mut best_deficit = 0;
+                for (i, h) in hps.iter().enumerate() {
+                    let cap = caps.get(i).copied().unwrap_or(*h);
+                    let deficit = cap - *h;
+                    if *h > 0 && deficit > best_deficit {
+                        best_deficit = deficit;
+                        best = Some(i);
+                    }
+                }
+                let Some(i) = best else { break };
+                hps[i] += 1;
+                budget -= 1;
+            }
+        }
+    }
+
+    /// Per-hero stat gains for a party level-up (old_level → new_level), for the
+    /// classic JRPG "LEVEL UP!" screen. Mirrors the `party_fighters` derivation
+    /// (max HP from Wll; the four attributes from `attributes_at`) so the numbers
+    /// exactly match the party panel.
+    fn hero_level_ups(&self, pid: &str, old_level: i32, new_level: i32) -> Vec<wr::HeroLevelUp> {
+        let inst = self;
+        let Some(comp) = inst.party_classes.get(pid).cloned() else {
+            return Vec::new();
+        };
+        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
+        let b = &self.balance;
+        let a = &b.attributes;
+        // (max_hp, str, mnd, dex, wll) for a class at a level — same formula as
+        // meld_run::party_fighters (attributes_at + Wll→HP growth).
+        let statline = |class: meld_proto::enums::CharacterClass, level: i32| {
+            let key = meld_run::class_key(class);
+            let s = b
+                .player
+                .get(key)
+                .unwrap_or_else(|| b.player.get("explorer").expect("explorer stats"));
+            let (str_, mnd, dex, wll) = s.attributes_at(level);
+            let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
+            let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
+            (max_hp, str_, mnd, dex, wll)
+        };
+        comp.iter()
+            .enumerate()
+            .map(|(slot, class)| {
+                let (hp0, st0, mn0, dx0, wl0) = statline(*class, old_level);
+                let (hp1, st1, mn1, dx1, wl1) = statline(*class, new_level);
+                wr::HeroLevelUp {
+                    slot: slot as i32,
+                    name: names
+                        .get(slot)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                    class_key: meld_run::class_key(*class).to_string(),
+                    level: new_level,
+                    max_hp_before: hp0,
+                    max_hp_after: hp1,
+                    str_before: st0,
+                    str_after: st1,
+                    mnd_before: mn0,
+                    mnd_after: mn1,
+                    dex_before: dx0,
+                    dex_after: dx1,
+                    wll_before: wl0,
+                    wll_after: wl1,
+                }
+            })
+            .collect()
+    }
+
+    /// Start a fresh battle for every active avatar currently in contact with a free
+    /// creature. Loops because several players can be touched in the same tick;
+    /// `start_battle` flips the toucher's avatar and its creature to `in_battle`, so
+    /// each pass resolves a distinct contact and the loop drains in ≤ (avatars)
+    /// passes. Independent battles run concurrently — one party's fight never blocks
+    /// another's — and teammates still opt into an *ongoing* fight via `join_battle`.
+    fn resolve_touches(&mut self) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let max_passes = self.arena.avatars.len();
+        for _ in 0..max_passes {
+            let decision = self.arena.check_touch().and_then(|(toucher, monster_idx)| {
+                self.run
+                    .runs
+                    .iter()
+                    .find(|r| r.player_id == toucher)
+                    .map(|r| (toucher, r.party_id, monster_idx))
+            });
+            match decision {
+                Some((toucher, pid, monster_idx)) => {
+                    out.extend(self.start_battle(&toucher, pid, monster_idx))
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    fn start_battle(&mut self, toucher: &str, party_id: u32, monster_idx: usize) -> Vec<Outgoing> {
+        let seed = now_ms();
+        let balance = self.balance.clone();
+        // Snapshot the world's own synced gear mirror before the mutable reborrow —
+        // behaviour-identical to the old per-tick session read (see `gear_bonuses`).
+        let bonuses = self.gear_bonuses.clone();
+        let inst = &mut *self;
+
+        let battle_id = Uuid::now_v7().to_string();
+        let monster_combatant_id = Uuid::now_v7().to_string();
+
+        // Assign combatant ids for the *touching* party only. This battle owns its
+        // own combatant maps (a fresh slot), so concurrent battles never collide.
+        let mut party: Vec<meld_run::PartyMember> = Vec::new();
+        let mut combatant_player: HashMap<String, String> = HashMap::new();
+        let mut player_combatants: HashMap<String, Vec<String>> = HashMap::new();
+        let party_players: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| r.party_id == party_id)
+            .map(|r| r.player_id.clone())
+            .collect();
+        // Every player fields a mixed party of up to `party_size_per_player`
+        // heroes (GDD: per-player party), each slot its own class from the party
+        // composition. Up to PARTY_MAX players share the instance, so a full co-op
+        // battle is (players × party size) combatants. Per-hero starting HP is
+        // aligned with `party` (carried across the run so wounds persist).
+        let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        let mut row_overrides: Vec<Option<bool>> = Vec::new();
+        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
+            let hero_bonuses = bonuses.get(&r.player_id);
+            let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
+            let row_vec = inst.hero_rows.get(&r.player_id).cloned().unwrap_or_default();
+            let comp = inst
+                .party_classes
+                .get(&r.player_id)
+                .cloned()
+                .unwrap_or_else(|| party_composition(r.character_class, hp_vec.len().max(1)));
+            let mut cids = Vec::new();
+            for (slot, cls) in comp.iter().enumerate() {
+                let cid = Uuid::now_v7().to_string();
+                combatant_player.insert(cid.clone(), r.player_id.clone());
+                // Each hero wears their own gear (per-character equip slots).
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
+                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
+                party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
+                hp_overrides.push(hp_vec.get(slot).copied());
+                // Some(row) forces the saved rank; None falls back to the class default.
+                row_overrides.push(row_vec.get(slot).copied());
+                cids.push(cid);
+            }
+            player_combatants.insert(r.player_id.clone(), cids);
+        }
+
+        // The encounter is the touched creature plus every creature grouped
+        // around it — they all pile in (their factions sort out who fights whom).
+        let group_idxs = inst.arena.group_around(monster_idx);
+        // Give each grouped creature a combatant id; the touched one leads (its id
+        // is the client's default target).
+        let mut enemy_members: Vec<(meld_world::MonsterSpawn, String)> = Vec::new();
+        for &gi in &group_idxs {
+            let cid = if gi == monster_idx {
+                monster_combatant_id.clone()
+            } else {
+                Uuid::now_v7().to_string()
+            };
+            enemy_members.push((inst.arena.monsters[gi].clone(), cid));
+        }
+        // Put the touched creature first so `monster_combatant_id` = enemies[0].
+        enemy_members.sort_by_key(|(_, cid)| *cid != monster_combatant_id);
+        let enemies_ref: Vec<_> = enemy_members
+            .iter()
+            .map(|(m, cid)| (m, cid.clone()))
+            .collect();
+        let battle = build_battle(
+            battle_id.clone(),
+            &party,
+            &enemies_ref,
+            &inst.run,
+            &balance,
+            seed,
+            &hp_overrides,
+            &row_overrides,
+        );
+        // Store the group's stable ids (indices are only valid until the next prune).
+        let monster_ids: Vec<String> = group_idxs
+            .iter()
+            .filter_map(|&gi| inst.arena.monsters.get(gi).map(|m| m.entity_id.clone()))
+            .collect();
+        let slot = BattleSlot {
+            battle,
+            battle_id: battle_id.clone(),
+            monster_ids,
+            combatant_player,
+            player_combatants,
+            parties: std::iter::once(party_id).collect(),
+            pos: inst
+                .arena
+                .monsters
+                .get(monster_idx)
+                .map(|m| m.position)
+                .unwrap_or_else(|| Position::new(0.0, 0.0)),
+        };
+        let (mut allies, enemies) = slot.battle.wire_combatants();
+        inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
+
+        for pid in &party_players {
+            if let Some(a) = inst.arena.avatar_mut(pid) {
+                a.state = "in_battle".to_string();
+            }
+        }
+        // Lock the grouped creatures out of roaming while the fight is on.
+        for &gi in &group_idxs {
+            if let Some(m) = inst.arena.monsters.get_mut(gi) {
+                m.in_battle = true;
+            }
+        }
+
+        let encounter_class = slot.battle.encounter_class;
+        tracing::info!(
+            battle_id = %battle_id,
+            party = party_players.len(),
+            enemies = group_idxs.len(),
+            triggered_by = %toucher,
+            active_battles = inst.battles.len() + 1,
+            "battle started"
+        );
+
+        let mut out = Vec::new();
+        for pid in &party_players {
+            let yours = slot.player_combatants.get(pid).cloned().unwrap_or_default();
+            out.push(out_msg(
+                pid,
+                &wb::Started {
+                    battle_id: battle_id.clone(),
+                    encounter_class,
+                    allies: allies.clone(),
+                    enemies: enemies.clone(),
+                    your_combatant_id: yours.first().cloned().unwrap_or_default(),
+                    your_combatant_ids: yours,
+                    triggered_by: Some(toucher.to_string()),
+                },
+            ));
+        }
+        inst.battles.push(slot);
+        out
+    }
 }
 
 /// One member of a pre-maze co-op lobby.
@@ -638,7 +1252,7 @@ struct GameState {
     sessions: HashMap<String, Session>,
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
-    instance: Option<ActiveInstance>,
+    world: Option<WorldActor>,
     /// Open co-op lobbies, keyed by join code.
     lobbies: HashMap<String, Lobby>,
     /// player_id -> the lobby code they're in.
@@ -660,7 +1274,7 @@ impl GameState {
             db,
             sessions: HashMap::new(),
             order: Vec::new(),
-            instance: None,
+            world: None,
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
@@ -683,7 +1297,8 @@ impl GameState {
                     None => break, // all senders dropped
                 },
                 _ = ticker.tick() => {
-                    let out = self.tick();
+                    let (out, effects) = self.world.as_mut().map(|w| w.tick()).unwrap_or_default();
+                    self.apply_world_effects(effects);
                     self.dispatch(out);
                 }
             }
@@ -782,7 +1397,7 @@ impl GameState {
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
                 // equipped Vault-owned red gear is permanently deleted.
-                let abandoned = self.instance.as_ref().is_some_and(|inst| {
+                let abandoned = self.world.as_ref().is_some_and(|inst| {
                     inst.run
                         .runs
                         .iter()
@@ -814,7 +1429,7 @@ impl GameState {
     /// next `enter_maze` rebuilds a clean arena with a live monster — otherwise
     /// dead avatars pile up and the slain monster never returns.
     fn remove_from_instance(&mut self, player_id: &str) {
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return;
         };
         inst.arena.avatars.retain(|a| a.player_id != player_id);
@@ -833,7 +1448,7 @@ impl GameState {
         inst.hero_rows.remove(player_id);
         inst.extraction.remove(player_id);
         if inst.run.runs.is_empty() {
-            self.instance = None;
+            self.world = None;
         }
     }
 
@@ -848,6 +1463,17 @@ impl GameState {
             s.in_instance = false;
         }
         self.remove_from_instance(player_id);
+    }
+
+    /// Apply the world actor's emitted [`WorldEffect`]s. World-scoped tick/handler
+    /// logic can't touch the Router's sessions or tear the world down mid-borrow,
+    /// so it returns these and the Router applies them once the world borrow ends.
+    fn apply_world_effects(&mut self, effects: Vec<WorldEffect>) {
+        for e in effects {
+            match e {
+                WorldEffect::ReleaseFromRun(pid) => self.release_from_run(&pid),
+            }
+        }
     }
 
     fn handle_client(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
@@ -979,271 +1605,6 @@ impl GameState {
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
     /// each. The initiator's `run.started` echoes `client_seq`. Every enrolled
     /// player's session must already carry its `character_class` / `party_comp`.
-    /// The caller's hero roster (name/class/level/attributes) for the party panel.
-    /// Reuses `party_fighters` so the stats match combat exactly.
-    fn party_views(&self, pid: &str) -> Vec<wr::HeroView> {
-        let Some(inst) = self.instance.as_ref() else {
-            return Vec::new();
-        };
-        let Some(comp) = inst.party_classes.get(pid).cloned() else {
-            return Vec::new();
-        };
-        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
-        let rows = inst.hero_rows.get(pid).cloned().unwrap_or_default();
-        // Reflect each hero's own equipped gear (Vault baseline + any run-loot
-        // worn this run) so the party panel matches combat.
-        let hero_bonuses = self.sessions.get(pid).map(|s| &s.gear_bonuses);
-        let looted = inst
-            .run
-            .runs
-            .iter()
-            .find(|r| r.player_id == pid)
-            .map(|r| r.looted_gear.as_slice())
-            .unwrap_or(&[]);
-        let party: Vec<meld_run::PartyMember> = comp
-            .iter()
-            .enumerate()
-            .map(|(slot, c)| {
-                let b = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                (pid.to_string(), String::new(), *c, effective_gear_bonus(b, looted, slot as i32))
-            })
-            .collect();
-        let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
-        let fighters = meld_run::party_fighters(&party, &inst.run, &self.balance, &row_overrides);
-        // Current (possibly wounded) HP persists across battles within a run —
-        // `hero_hp` is the live source; a missing slot (not yet in a battle
-        // this run) reads as full.
-        let hp_now = inst.hero_hp.get(pid).cloned().unwrap_or_default();
-        // XP/level are per-player (the whole party levels together), not
-        // per-hero — every hero view below carries the same two values.
-        let (run_xp, run_level) = inst
-            .run
-            .runs
-            .iter()
-            .find(|r| r.player_id == pid)
-            .map(|r| (r.xp, r.run_level))
-            .unwrap_or((0, 1));
-        let xp_to_next = meld_run::xp_to_next(run_level, &self.balance);
-        fighters
-            .iter()
-            .enumerate()
-            .map(|(slot, f)| wr::HeroView {
-                slot: slot as i32,
-                name: names
-                    .get(slot)
-                    .cloned()
-                    .unwrap_or_else(|| format!("Hero {}", slot + 1)),
-                class_key: f.class_key.clone(),
-                level: f.level,
-                str_: f.str_,
-                mnd: f.mnd,
-                dex: f.dex,
-                wll: f.wll,
-                max_hp: f.max_hp,
-                xp: run_xp,
-                xp_to_next,
-                hp: hp_now.get(slot).copied().unwrap_or(f.max_hp).clamp(0, f.max_hp),
-                back_row: f.back_row,
-            })
-            .collect()
-    }
-
-    /// A player's earned overworld class perks (Overworld Class Perks / "party
-    /// sense"): class *presence* in the party gates each perk, the shared
-    /// `run_level` scales its tier. Defaults (no perks) if the player isn't in
-    /// the instance. See [`Self::compute_perks`] and the `[perks]` balance block.
-    fn perks_for(&self, pid: &str) -> wr::Perks {
-        let Some(inst) = self.instance.as_ref() else {
-            return wr::Perks::default();
-        };
-        let Some(classes) = inst.party_classes.get(pid) else {
-            return wr::Perks::default();
-        };
-        let run_level = inst
-            .run
-            .runs
-            .iter()
-            .find(|r| r.player_id == pid)
-            .map(|r| r.run_level)
-            .unwrap_or(1);
-        self.compute_perks(classes, run_level)
-    }
-
-    /// Pure mapping from (party classes × run level) → earned perks against the
-    /// `[perks]` balance thresholds. A perk stays neutral unless its class is in
-    /// the party. Kept deterministic + side-effect-free so it can be unit-tested.
-    fn compute_perks(&self, classes: &[CharacterClass], run_level: i32) -> wr::Perks {
-        let p = &self.balance.perks;
-        let has = |c: CharacterClass| classes.contains(&c);
-        let lvl = run_level.max(1);
-        let above = |floor: i32| (lvl - floor).max(0) as f32;
-        let mut out = wr::Perks::default();
-        // Explorer — night glow + "predator's eye" monster intel.
-        if has(CharacterClass::Explorer) {
-            out.explorer_glow = p.explorer_glow_base + p.explorer_glow_per_level * (lvl - 1) as f32;
-            out.explorer_intel = if lvl >= p.explorer_intel_atb_at {
-                3
-            } else if lvl >= p.explorer_intel_hp_at {
-                2
-            } else if lvl >= p.explorer_intel_level_at {
-                1
-            } else {
-                0
-            };
-        }
-        // Shifter — corner minimap.
-        if has(CharacterClass::Shifter) && lvl >= p.shifter_map_at {
-            out.shifter_map = if lvl >= p.shifter_map_harvest_at {
-                3
-            } else if lvl >= p.shifter_map_chests_at {
-                2
-            } else {
-                1
-            };
-            out.shifter_map_radius =
-                p.shifter_map_radius_base + p.shifter_map_radius_per_level * above(p.shifter_map_at);
-        }
-        // Psyker — threat sense.
-        if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
-            out.psyker_threat = if lvl >= p.psyker_threat_aggro_at { 2 } else { 1 };
-            out.psyker_reveal_radius = (p.psyker_reveal_base
-                + p.psyker_reveal_per_level * above(p.psyker_threat_elites_at) as f64)
-                as f32;
-        }
-        // Resonant — overworld regen (HP/sec).
-        if has(CharacterClass::Resonant) {
-            out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
-        }
-        // Iron Hull — bulwark (shrinks how close creatures chase this party).
-        if has(CharacterClass::IronHull) {
-            let mult = 1.0 - p.ironhull_aggro_reduction_per_level * lvl as f64;
-            out.ironhull_aggro_mult = mult.max(p.ironhull_aggro_mult_floor) as f32;
-        }
-        out
-    }
-
-    /// Resonant "Overworld Regen": restore carried hero HP over time while a party
-    /// roams (not in battle). Regen is HP/sec but `hero_hp` is integer, so the
-    /// sub-1 remainder is banked in `regen_accum` and whole HP is applied as it
-    /// accrues, most-wounded living hero first (downed heroes at 0 HP are not
-    /// revived — that needs a real fight). Purely server state.
-    fn apply_overworld_regen(&mut self, dt: f64) {
-        // Plan first (shared borrow), then mutate hero_hp (exclusive borrow).
-        let plans: Vec<(String, f32, Vec<i32>)> = {
-            let Some(inst) = self.instance.as_ref() else {
-                return;
-            };
-            let in_battle = inst.parties_in_battle();
-            let mut v = Vec::new();
-            for r in &inst.run.runs {
-                if in_battle.contains(&r.party_id) {
-                    continue;
-                }
-                let regen = self.perks_for(&r.player_id).resonant_regen;
-                if regen <= 0.0 {
-                    continue;
-                }
-                let caps: Vec<i32> = self
-                    .party_views(&r.player_id)
-                    .iter()
-                    .map(|h| h.max_hp)
-                    .collect();
-                v.push((r.player_id.clone(), regen, caps));
-            }
-            v
-        };
-        if plans.is_empty() {
-            return;
-        }
-        let Some(inst) = self.instance.as_mut() else {
-            return;
-        };
-        for (pid, regen, caps) in plans {
-            let acc = inst.regen_accum.entry(pid.clone()).or_insert(0.0);
-            *acc += regen * dt as f32;
-            let whole = acc.floor();
-            if whole < 1.0 {
-                continue;
-            }
-            *acc -= whole;
-            let mut budget = whole as i32;
-            let Some(hps) = inst.hero_hp.get_mut(&pid) else {
-                continue;
-            };
-            while budget > 0 {
-                // Most-wounded living hero still below its cap.
-                let mut best: Option<usize> = None;
-                let mut best_deficit = 0;
-                for (i, h) in hps.iter().enumerate() {
-                    let cap = caps.get(i).copied().unwrap_or(*h);
-                    let deficit = cap - *h;
-                    if *h > 0 && deficit > best_deficit {
-                        best_deficit = deficit;
-                        best = Some(i);
-                    }
-                }
-                let Some(i) = best else { break };
-                hps[i] += 1;
-                budget -= 1;
-            }
-        }
-    }
-
-    /// Per-hero stat gains for a party level-up (old_level → new_level), for the
-    /// classic JRPG "LEVEL UP!" screen. Mirrors the `party_fighters` derivation
-    /// (max HP from Wll; the four attributes from `attributes_at`) so the numbers
-    /// exactly match the party panel.
-    fn hero_level_ups(&self, pid: &str, old_level: i32, new_level: i32) -> Vec<wr::HeroLevelUp> {
-        let Some(inst) = self.instance.as_ref() else {
-            return Vec::new();
-        };
-        let Some(comp) = inst.party_classes.get(pid).cloned() else {
-            return Vec::new();
-        };
-        let names = inst.hero_names.get(pid).cloned().unwrap_or_default();
-        let b = &self.balance;
-        let a = &b.attributes;
-        // (max_hp, str, mnd, dex, wll) for a class at a level — same formula as
-        // meld_run::party_fighters (attributes_at + Wll→HP growth).
-        let statline = |class: meld_proto::enums::CharacterClass, level: i32| {
-            let key = meld_run::class_key(class);
-            let s = b
-                .player
-                .get(key)
-                .unwrap_or_else(|| b.player.get("explorer").expect("explorer stats"));
-            let (str_, mnd, dex, wll) = s.attributes_at(level);
-            let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
-            let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
-            (max_hp, str_, mnd, dex, wll)
-        };
-        comp.iter()
-            .enumerate()
-            .map(|(slot, class)| {
-                let (hp0, st0, mn0, dx0, wl0) = statline(*class, old_level);
-                let (hp1, st1, mn1, dx1, wl1) = statline(*class, new_level);
-                wr::HeroLevelUp {
-                    slot: slot as i32,
-                    name: names
-                        .get(slot)
-                        .cloned()
-                        .unwrap_or_else(|| format!("Hero {}", slot + 1)),
-                    class_key: meld_run::class_key(*class).to_string(),
-                    level: new_level,
-                    max_hp_before: hp0,
-                    max_hp_after: hp1,
-                    str_before: st0,
-                    str_after: st1,
-                    mnd_before: mn0,
-                    mnd_after: mn1,
-                    dex_before: dx0,
-                    dex_after: dx1,
-                    wll_before: wl0,
-                    wll_after: wl1,
-                }
-            })
-            .collect()
-    }
-
     fn form_run(
         &mut self,
         party_ids: Vec<String>,
@@ -1255,7 +1616,7 @@ impl GameState {
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
         // Create the shared instance on the first entry.
-        if self.instance.is_none() {
+        if self.world.is_none() {
             let instance_id = Uuid::now_v7().to_string();
             // The tutorial is OPT-IN, not auto-forced on a first dive: the hub OFFERS the
             // guided Forest-first onboarding (centred, obstacle-free area 0) but a normal
@@ -1280,12 +1641,15 @@ impl GameState {
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or_else(world_seed);
-            self.instance = Some(ActiveInstance {
+            self.world = Some(WorldActor {
+                balance: self.balance.clone(),
+                db_writes: self.db_writes.clone(),
                 arena: Arena::generate_with(&self.balance, seed, tutorial, force_biome),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
+                gear_bonuses: HashMap::new(),
                 hero_names: HashMap::new(),
                 hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
@@ -1303,7 +1667,7 @@ impl GameState {
             }
         }
 
-        let inst = self.instance.as_mut().expect("instance exists");
+        let inst = self.world.as_mut().expect("instance exists");
         let instance_id = inst.run.instance_id.clone();
         let base_run_level = inst.run.base_run_level;
 
@@ -1384,11 +1748,19 @@ impl GameState {
         // across battles (see hero_hp write-back).
         let party_size = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let (chosen, explicit, names, rows) = self
+            let (chosen, explicit, names, rows, gear) = self
                 .sessions
                 .get(pid)
-                .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone(), s.hero_rows.clone()))
-                .unwrap_or((CharacterClass::Explorer, None, None, None));
+                .map(|s| {
+                    (
+                        s.character_class,
+                        s.party_comp.clone(),
+                        s.hero_names.clone(),
+                        s.hero_rows.clone(),
+                        s.gear_bonuses.clone(),
+                    )
+                })
+                .unwrap_or((CharacterClass::Explorer, None, None, None, Vec::new()));
             // The builder's explicit composition wins (normalized to party size,
             // padded with Explorer); otherwise build a default mixed party around
             // the lead.
@@ -1424,6 +1796,7 @@ impl GameState {
             // and on every dive alike, with no dive-time special-casing here.
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
+            inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);
         }
@@ -1435,9 +1808,9 @@ impl GameState {
         // Roster views per player (built before the shared instance borrow below).
         let rosters: HashMap<String, Vec<wr::HeroView>> = party_ids
             .iter()
-            .map(|pid| (pid.clone(), self.party_views(pid)))
+            .map(|pid| (pid.clone(), self.world.as_ref().unwrap().party_views(pid)))
             .collect();
-        let inst = self.instance.as_ref().expect("instance exists");
+        let inst = self.world.as_ref().expect("instance exists");
 
         // run.started to this party's members (spawn positions from the arena).
         let member_views: Vec<wr::Member> = party_ids
@@ -1525,7 +1898,7 @@ impl GameState {
                 },
             ));
             // The caller's earned overworld class perks ("party sense").
-            out.push(out_msg(pid, &self.perks_for(pid)));
+            out.push(out_msg(pid, &inst.perks_for(pid)));
             // Stream the initial chain's terrain (elevation grid + connectors) so
             // the client can build the stepped relief. Path rides run.started, so
             // these carry no path segment.
@@ -1755,7 +2128,7 @@ impl GameState {
                 )]
             }
         };
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return vec![error(
                 player_id,
                 ErrorCode::InvalidState,
@@ -1801,7 +2174,7 @@ impl GameState {
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
-        self.resolve_touches()
+        self.world.as_mut().map(|w| w.resolve_touches()).unwrap_or_default()
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -1812,7 +2185,7 @@ impl GameState {
     /// free extraction. The client routes the `abandoned` result to the City screen.
     fn west_return(&mut self, player_id: &str) -> bool {
         let border = self.balance.worldgen.west_return_border;
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return false;
         };
         // Radial-aware: "west" is the empty city wedge due-west of the hub, NOT a
@@ -1839,199 +2212,13 @@ impl GameState {
         true
     }
 
-    /// Start a fresh battle for every active avatar currently in contact with a free
-    /// creature. Loops because several players can be touched in the same tick;
-    /// `start_battle` flips the toucher's avatar and its creature to `in_battle`, so
-    /// each pass resolves a distinct contact and the loop drains in ≤ (avatars)
-    /// passes. Independent battles run concurrently — one party's fight never blocks
-    /// another's — and teammates still opt into an *ongoing* fight via `join_battle`.
-    fn resolve_touches(&mut self) -> Vec<Outgoing> {
-        let mut out = Vec::new();
-        let max_passes = self
-            .instance
-            .as_ref()
-            .map(|i| i.arena.avatars.len())
-            .unwrap_or(0);
-        for _ in 0..max_passes {
-            let Some(inst) = self.instance.as_ref() else { break };
-            let decision = inst.arena.check_touch().and_then(|(toucher, monster_idx)| {
-                inst.run
-                    .runs
-                    .iter()
-                    .find(|r| r.player_id == toucher)
-                    .map(|r| (toucher, r.party_id, monster_idx))
-            });
-            match decision {
-                Some((toucher, pid, monster_idx)) => {
-                    out.extend(self.start_battle(&toucher, pid, monster_idx))
-                }
-                None => break,
-            }
-        }
-        out
-    }
-
-    fn start_battle(&mut self, toucher: &str, party_id: u32, monster_idx: usize) -> Vec<Outgoing> {
-        let seed = now_ms();
-        let balance = self.balance.clone();
-        // Snapshot gear bonuses before borrowing the instance mutably.
-        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self
-            .sessions
-            .iter()
-            .map(|(k, s)| (k.clone(), s.gear_bonuses.clone()))
-            .collect();
-        let Some(inst) = self.instance.as_mut() else {
-            return Vec::new();
-        };
-
-        let battle_id = Uuid::now_v7().to_string();
-        let monster_combatant_id = Uuid::now_v7().to_string();
-
-        // Assign combatant ids for the *touching* party only. This battle owns its
-        // own combatant maps (a fresh slot), so concurrent battles never collide.
-        let mut party: Vec<meld_run::PartyMember> = Vec::new();
-        let mut combatant_player: HashMap<String, String> = HashMap::new();
-        let mut player_combatants: HashMap<String, Vec<String>> = HashMap::new();
-        let party_players: Vec<String> = inst
-            .run
-            .runs
-            .iter()
-            .filter(|r| r.party_id == party_id)
-            .map(|r| r.player_id.clone())
-            .collect();
-        // Every player fields a mixed party of up to `party_size_per_player`
-        // heroes (GDD: per-player party), each slot its own class from the party
-        // composition. Up to PARTY_MAX players share the instance, so a full co-op
-        // battle is (players × party size) combatants. Per-hero starting HP is
-        // aligned with `party` (carried across the run so wounds persist).
-        let mut hp_overrides: Vec<Option<i32>> = Vec::new();
-        let mut row_overrides: Vec<Option<bool>> = Vec::new();
-        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
-            let hero_bonuses = bonuses.get(&r.player_id);
-            let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
-            let row_vec = inst.hero_rows.get(&r.player_id).cloned().unwrap_or_default();
-            let comp = inst
-                .party_classes
-                .get(&r.player_id)
-                .cloned()
-                .unwrap_or_else(|| party_composition(r.character_class, hp_vec.len().max(1)));
-            let mut cids = Vec::new();
-            for (slot, cls) in comp.iter().enumerate() {
-                let cid = Uuid::now_v7().to_string();
-                combatant_player.insert(cid.clone(), r.player_id.clone());
-                // Each hero wears their own gear (per-character equip slots).
-                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
-                party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
-                hp_overrides.push(hp_vec.get(slot).copied());
-                // Some(row) forces the saved rank; None falls back to the class default.
-                row_overrides.push(row_vec.get(slot).copied());
-                cids.push(cid);
-            }
-            player_combatants.insert(r.player_id.clone(), cids);
-        }
-
-        // The encounter is the touched creature plus every creature grouped
-        // around it — they all pile in (their factions sort out who fights whom).
-        let group_idxs = inst.arena.group_around(monster_idx);
-        // Give each grouped creature a combatant id; the touched one leads (its id
-        // is the client's default target).
-        let mut enemy_members: Vec<(meld_world::MonsterSpawn, String)> = Vec::new();
-        for &gi in &group_idxs {
-            let cid = if gi == monster_idx {
-                monster_combatant_id.clone()
-            } else {
-                Uuid::now_v7().to_string()
-            };
-            enemy_members.push((inst.arena.monsters[gi].clone(), cid));
-        }
-        // Put the touched creature first so `monster_combatant_id` = enemies[0].
-        enemy_members.sort_by_key(|(_, cid)| *cid != monster_combatant_id);
-        let enemies_ref: Vec<_> = enemy_members
-            .iter()
-            .map(|(m, cid)| (m, cid.clone()))
-            .collect();
-        let battle = build_battle(
-            battle_id.clone(),
-            &party,
-            &enemies_ref,
-            &inst.run,
-            &balance,
-            seed,
-            &hp_overrides,
-            &row_overrides,
-        );
-        // Store the group's stable ids (indices are only valid until the next prune).
-        let monster_ids: Vec<String> = group_idxs
-            .iter()
-            .filter_map(|&gi| inst.arena.monsters.get(gi).map(|m| m.entity_id.clone()))
-            .collect();
-        let slot = BattleSlot {
-            battle,
-            battle_id: battle_id.clone(),
-            monster_ids,
-            combatant_player,
-            player_combatants,
-            parties: std::iter::once(party_id).collect(),
-            pos: inst
-                .arena
-                .monsters
-                .get(monster_idx)
-                .map(|m| m.position)
-                .unwrap_or_else(|| Position::new(0.0, 0.0)),
-        };
-        let (mut allies, enemies) = slot.battle.wire_combatants();
-        inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
-
-        for pid in &party_players {
-            if let Some(a) = inst.arena.avatar_mut(pid) {
-                a.state = "in_battle".to_string();
-            }
-        }
-        // Lock the grouped creatures out of roaming while the fight is on.
-        for &gi in &group_idxs {
-            if let Some(m) = inst.arena.monsters.get_mut(gi) {
-                m.in_battle = true;
-            }
-        }
-
-        let encounter_class = slot.battle.encounter_class;
-        tracing::info!(
-            battle_id = %battle_id,
-            party = party_players.len(),
-            enemies = group_idxs.len(),
-            triggered_by = %toucher,
-            active_battles = inst.battles.len() + 1,
-            "battle started"
-        );
-
-        let mut out = Vec::new();
-        for pid in &party_players {
-            let yours = slot.player_combatants.get(pid).cloned().unwrap_or_default();
-            out.push(out_msg(
-                pid,
-                &wb::Started {
-                    battle_id: battle_id.clone(),
-                    encounter_class,
-                    allies: allies.clone(),
-                    enemies: enemies.clone(),
-                    your_combatant_id: yours.first().cloned().unwrap_or_default(),
-                    your_combatant_ids: yours,
-                    triggered_by: Some(toucher.to_string()),
-                },
-            ));
-        }
-        inst.battles.push(slot);
-        out
-    }
-
     /// Opt into the nearby ongoing fight (`run.join_battle`). Validates that a
     /// battle is in progress, the caller isn't already in it, and their avatar is
     /// within `join_radius` of the fight — then merges their party in.
     fn handle_join_battle(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let join_radius = self.balance.ai.join_radius;
         let (party_id, battle_id) = {
-            let Some(inst) = self.instance.as_ref() else {
+            let Some(inst) = self.world.as_ref() else {
                 return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
             };
             if inst.battles.is_empty() {
@@ -2080,7 +2267,7 @@ impl GameState {
         }
         let slot = req.slot as usize;
         // Active run's names (so battle + panel reflect it now).
-        if let Some(inst) = self.instance.as_mut() {
+        if let Some(inst) = self.world.as_mut() {
             if let Some(names) = inst.hero_names.get_mut(player_id) {
                 if let Some(n) = names.get_mut(slot) {
                     *n = name.clone();
@@ -2102,7 +2289,11 @@ impl GameState {
         vec![out_msg(
             player_id,
             &wr::Party {
-                heroes: self.party_views(player_id),
+                heroes: self
+                    .world
+                    .as_ref()
+                    .map(|w| w.party_views(player_id))
+                    .unwrap_or_default(),
             },
         )]
     }
@@ -2125,7 +2316,7 @@ impl GameState {
         let slot = req.slot as usize;
         let back = req.back_row;
         // Active run's formation (so the panel + next battle reflect it).
-        if let Some(inst) = self.instance.as_mut() {
+        if let Some(inst) = self.world.as_mut() {
             let rows = inst.hero_rows.entry(player_id.to_string()).or_default();
             while rows.len() <= slot {
                 rows.push(false);
@@ -2147,7 +2338,11 @@ impl GameState {
         vec![out_msg(
             player_id,
             &wr::Party {
-                heroes: self.party_views(player_id),
+                heroes: self
+                    .world
+                    .as_ref()
+                    .map(|w| w.party_views(player_id))
+                    .unwrap_or_default(),
             },
         )]
     }
@@ -2170,7 +2365,7 @@ impl GameState {
                 return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))];
             }
         }
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
         };
         // This dive's class for the target slot (if equipping) — class isn't
@@ -2234,12 +2429,14 @@ impl GameState {
         let balance = self.balance.clone();
         let cap =
             meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
+        // Read gear from the world's own synced mirror (same data a live session
+        // read returned; see `WorldActor::gear_bonuses`).
         let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self
-            .sessions
-            .iter()
-            .map(|(k, s)| (k.clone(), s.gear_bonuses.clone()))
-            .collect();
-        let Some(inst) = self.instance.as_mut() else {
+            .world
+            .as_ref()
+            .map(|w| w.gear_bonuses.clone())
+            .unwrap_or_default();
+        let Some(inst) = self.world.as_mut() else {
             return Vec::new();
         };
         if inst.battle_by_id(battle_id).is_none() {
@@ -2389,7 +2586,7 @@ impl GameState {
                 )]
             }
         };
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return vec![error(
                 player_id,
                 ErrorCode::NotFound,
@@ -2504,7 +2701,11 @@ impl GameState {
                         },
                     ));
                 }
-                out.extend(self.emit_battle_events(&submit.battle_id, events));
+                let (evout, eff) = inst.emit_battle_events(&submit.battle_id, events);
+                out.extend(evout);
+                // Drop the world borrow before applying Router-scoped effects
+                // (release-from-run touches sessions, which `inst` was borrowing).
+                self.apply_world_effects(eff);
                 out
             }
             Err(reject) => {
@@ -2528,7 +2729,7 @@ impl GameState {
         };
         let now = now_ms();
         let channel_ms = self.balance.runs.extraction_channel_ms;
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return vec![error(
                 player_id,
                 ErrorCode::InvalidState,
@@ -2626,14 +2827,24 @@ impl GameState {
         for pid in loads {
             if let Ok(uid) = Uuid::parse_str(&pid) {
                 let hero_classes: Vec<String> = self
-                    .instance
+                    .world
                     .as_ref()
                     .and_then(|inst| inst.party_classes.get(&pid))
                     .map(|classes| classes.iter().map(|c| meld_run::class_key(*c).to_string()).collect())
                     .unwrap_or_default();
                 if let Ok(bonuses) = self.db.equipped_gear_bonuses(uid, party_size, &hero_classes).await {
                     if let Some(s) = self.sessions.get_mut(&pid) {
-                        s.gear_bonuses = bonuses;
+                        s.gear_bonuses = bonuses.clone();
+                    }
+                    // Keep the world-local mirror in lock-step for any player who is
+                    // currently a member of the running world. This is what makes the
+                    // world copy behaviour-identical to a live session read: gear only
+                    // changes here (and at form_run), and this flush runs AFTER `tick`
+                    // in the loop, so a moved method never sees a stale copy mid-tick.
+                    if let Some(w) = self.world.as_mut() {
+                        if w.run.runs.iter().any(|r| r.player_id == pid) {
+                            w.gear_bonuses.insert(pid.clone(), bonuses);
+                        }
                     }
                 }
             }
@@ -2718,7 +2929,7 @@ impl GameState {
         };
         let balance = self.balance.clone();
         let (item, skill, xp, kind) = {
-            let Some(inst) = self.instance.as_mut() else {
+            let Some(inst) = self.world.as_mut() else {
                 return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
             };
             if inst.battle_of_player(player_id).is_some() {
@@ -2781,7 +2992,7 @@ impl GameState {
             }
         };
         let balance = self.balance.clone();
-        let Some(inst) = self.instance.as_mut() else {
+        let Some(inst) = self.world.as_mut() else {
             return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
         };
         if inst.battle_of_player(player_id).is_some() {
@@ -2858,7 +3069,7 @@ impl GameState {
             gear: Vec<LootGear>,
         }
         let (banks, members): (Vec<Banked>, Vec<String>) = {
-            let Some(inst) = self.instance.as_mut() else {
+            let Some(inst) = self.world.as_mut() else {
                 return Vec::new();
             };
             let done: Vec<(String, String)> = inst
@@ -2997,15 +3208,20 @@ impl GameState {
         }
         out
     }
+}
 
+impl WorldActor {
     // --- tick ---------------------------------------------------------------
+    //
+    // The authoritative per-tick advance and its battle subtree live on the world
+    // actor (SC-3): `self` IS the world here. World-scoped logic can't touch the
+    // Router's sessions or tear the world down, so it emits [`WorldEffect`]s that
+    // `GameState::apply_world_effects` applies after the borrow ends.
 
-    fn tick(&mut self) -> Vec<Outgoing> {
-        if self.instance.is_none() {
-            return Vec::new();
-        }
+    fn tick(&mut self) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
         let mut out = Vec::new();
+        let mut effects: Vec<WorldEffect> = Vec::new();
 
         // 1) The overworld always advances — even while some party is in a battle.
         // Roaming creatures move and skirmish with rival factions; creatures pulled
@@ -3017,11 +3233,7 @@ impl GameState {
         // close a creature will chase/skirmish-pull that party). Built before the
         // mut borrow below (perks_for needs a shared borrow of the instance).
         let aggro_mult: HashMap<String, f64> = {
-            let ids: Vec<String> = self
-                .instance
-                .as_ref()
-                .map(|inst| inst.run.runs.iter().map(|r| r.player_id.clone()).collect())
-                .unwrap_or_default();
+            let ids: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
             ids.into_iter()
                 .map(|pid| {
                     let m = self.perks_for(&pid).ironhull_aggro_mult as f64;
@@ -3031,41 +3243,36 @@ impl GameState {
         };
         let mut created_sections: Vec<usize> = Vec::new();
         {
-            // `balance` and `instance` are disjoint fields → both borrowable.
-            let balance = &self.balance;
-            if let Some(inst) = self.instance.as_mut() {
-                inst.arena.step_creatures_with_aggro(dt, &aggro_mult);
-                // Stream in new sections as the frontier player advances (endless world).
-                // Difficulty is radial (distance = hypot from the hub), so in the radial
-                // world the frontier is the player's RADIUS; in corridor mode it's x.
-                let radial = balance.worldgen.radial_arc_degrees > 0.0;
-                let reach = inst
-                    .arena
-                    .avatars
-                    .iter()
-                    .map(|a| if radial { a.position.x.hypot(a.position.y) } else { a.position.x })
-                    .fold(f64::NEG_INFINITY, f64::max);
-                if reach.is_finite() {
-                    created_sections = inst.arena.ensure_frontier(balance, reach);
-                }
+            let balance = self.balance.clone();
+            self.arena.step_creatures_with_aggro(dt, &aggro_mult);
+            // Stream in new sections as the frontier player advances (endless world).
+            // Difficulty is radial (distance = hypot from the hub), so in the radial
+            // world the frontier is the player's RADIUS; in corridor mode it's x.
+            let radial = balance.worldgen.radial_arc_degrees > 0.0;
+            let reach = self
+                .arena
+                .avatars
+                .iter()
+                .map(|a| if radial { a.position.x.hypot(a.position.y) } else { a.position.x })
+                .fold(f64::NEG_INFINITY, f64::max);
+            if reach.is_finite() {
+                created_sections = self.arena.ensure_frontier(&balance, reach);
             }
         }
         // Stream the freshly-generated sections' terrain (+ trail segment) so the
         // client extends its relief and path — the endless-world payoff.
         if !created_sections.is_empty() {
-            if let Some(inst) = self.instance.as_ref() {
-                let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
-                for &i in &created_sections {
-                    let Some(area) = inst.arena.areas.get(i) else { continue };
-                    let seg = if i + 1 < inst.arena.path.len() {
-                        vec![inst.arena.path[i], inst.arena.path[i + 1]]
-                    } else {
-                        Vec::new()
-                    };
-                    let msg = terrain_section_msg(area, seg, rh, cl);
-                    for r in &inst.run.runs {
-                        out.push(out_msg(&r.player_id, &msg));
-                    }
+            let (rh, cl) = (self.arena.radial_half(), self.arena.corridor_lateral());
+            for &i in &created_sections {
+                let Some(area) = self.arena.areas.get(i) else { continue };
+                let seg = if i + 1 < self.arena.path.len() {
+                    vec![self.arena.path[i], self.arena.path[i + 1]]
+                } else {
+                    Vec::new()
+                };
+                let msg = terrain_section_msg(area, seg, rh, cl);
+                for r in &self.run.runs {
+                    out.push(out_msg(&r.player_id, &msg));
                 }
             }
         }
@@ -3086,23 +3293,19 @@ impl GameState {
         // Concurrent battles: separate groups fight different encounters at once, so
         // we tick each slot and emit its events scoped to its own members. A slot
         // that ends is removed inside `emit_battle_events`.
-        let battle_ids: Vec<String> = self
-            .instance
-            .as_ref()
-            .map(|i| i.battles.iter().map(|b| b.battle_id.clone()).collect())
-            .unwrap_or_default();
+        let battle_ids: Vec<String> = self.battles.iter().map(|b| b.battle_id.clone()).collect();
         for id in battle_ids {
-            let events = match self.instance.as_mut().and_then(|i| i.battle_by_id_mut(&id)) {
+            let events = match self.battle_by_id_mut(&id) {
                 Some(slot) => slot.battle.tick(),
                 None => continue,
             };
-            out.extend(self.emit_battle_events(&id, events));
+            let (evout, eveffects) = self.emit_battle_events(&id, events);
+            out.extend(evout);
+            effects.extend(eveffects);
             // Gauge keepalive (event-driven + periodic per battle.md) — only if the
             // battle is still running (didn't end on this tick).
-            if let Some(inst) = self.instance.as_ref() {
-                if let Some(slot) = inst.battle_by_id(&id) {
-                    out.extend(self.gauge_update_msgs(inst, slot));
-                }
+            if let Some(slot) = self.battle_by_id(&id) {
+                out.extend(self.gauge_update_msgs(slot));
             }
         }
 
@@ -3115,19 +3318,15 @@ impl GameState {
         // dive instead of accumulating a corpse per kill forever. Safe here: this is
         // after all battle-end processing (which refers to creatures by stable id,
         // not index) and after the snapshot (which already omits defeated creatures).
-        if let Some(inst) = self.instance.as_mut() {
-            inst.arena.prune_defeated();
-        }
-        out
+        self.arena.prune_defeated();
+        (out, effects)
     }
 
     /// Auto-collect ground loot (creature-skirmish drops) for every active player
     /// standing on it, banking each into the run backpack and reporting the change.
     fn collect_ground_loot(&mut self) -> Vec<Outgoing> {
         let mut out = Vec::new();
-        let Some(inst) = self.instance.as_mut() else {
-            return out;
-        };
+        let inst = &mut *self;
         let players: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
         for pid in players {
             let drops = inst.arena.collect_loot(&pid);
@@ -3159,7 +3358,7 @@ impl GameState {
         out
     }
 
-    fn gauge_update_msgs(&self, inst: &ActiveInstance, slot: &BattleSlot) -> Vec<Outgoing> {
+    fn gauge_update_msgs(&self, slot: &BattleSlot) -> Vec<Outgoing> {
         // Borrow each fighter's cached wire-status list rather than cloning it, so
         // this per-tick, per-battle broadcast allocates nothing for statuses. These
         // borrowing structs serialize byte-identically to `wb::GaugeEntry` /
@@ -3193,7 +3392,7 @@ impl GameState {
             combatants,
         };
         broadcast_ser(
-            inst.run
+            self.run
                 .runs
                 .iter()
                 .filter(|r| slot.parties.contains(&r.party_id))
@@ -3203,183 +3402,21 @@ impl GameState {
         )
     }
 
-    fn snapshot_msgs(&self) -> Vec<Outgoing> {
-        let Some(inst) = self.instance.as_ref() else {
-            return Vec::new();
-        };
-        let mut entities: Vec<wm::SnapshotEntity> = inst
-            .arena
-            .avatars
-            .iter()
-            .map(|a| wm::SnapshotEntity {
-                entity_id: a.player_id.clone(),
-                position: a.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(a.state.clone()),
-                level: Some(a.elevation),
-                ..Default::default()
-            })
-            .collect();
-        // Every living creature is a dynamic entity too (movement-world.md:
-        // snapshots carry players and monsters). We tag a monster's `avatar_state`
-        // as `mob:<kind>:<faction>` so the client can colour/label it by faction;
-        // that's distinct from the player states and the `portal` tag below. Slain
-        // creatures are dropped from the snapshot.
-        for m in inst.arena.monsters.iter().filter(|m| !m.defeated) {
-            entities.push(wm::SnapshotEntity {
-                entity_id: m.entity_id.clone(),
-                position: m.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
-                level: Some(m.elevation),
-                // Overworld mob intel (client shows each field only when the
-                // viewer's Explorer/Psyker perk unlocks it — see `run.perks`).
-                mob_level: Some(m.level),
-                hp: Some(m.hp),
-                max_hp: Some(m.max_hp),
-                encounter_class: Some(m.encounter_class.clone()),
-                aggression: Some(m.aggression.clone()),
-            });
-        }
-        // The single deep extraction portal (extraction is otherwise the Town
-        // Portal item). Tagged `portal` so the client renders it specially.
-        entities.push(wm::SnapshotEntity {
-            entity_id: "portal".to_string(),
-            position: inst.arena.portal,
-            velocity: wm::Velocity { x: 0.0, y: 0.0 },
-            avatar_state: Some("portal".to_string()),
-            level: Some(0),
-            ..Default::default()
-        });
-        // Treasure chests, tagged `chest:<tier>:<open>` (`open` = 0/1) so the client
-        // draws unopened vs opened. Opened chests stay in the world (as opened).
-        for c in &inst.arena.chests {
-            entities.push(wm::SnapshotEntity {
-                entity_id: c.entity_id.clone(),
-                position: c.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
-                level: Some(c.elevation),
-                ..Default::default()
-            });
-        }
-        // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
-        for n in inst.arena.resources.iter().filter(|n| !n.harvested) {
-            entities.push(wm::SnapshotEntity {
-                entity_id: n.entity_id.clone(),
-                position: n.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("resource:{}", n.kind)),
-                level: Some(n.elevation),
-                ..Default::default()
-            });
-        }
-        // Ground loot dropped by creature-vs-creature skirmishes, tagged
-        // `loot:<kind>` — walk over it to auto-collect (see `collect_ground_loot`).
-        for l in &inst.arena.ground_loot {
-            entities.push(wm::SnapshotEntity {
-                entity_id: l.entity_id.clone(),
-                position: l.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("loot:{}", l.kind)),
-                level: None,
-                ..Default::default()
-            });
-        }
-        // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
-        // renders each feature at its true size (static, but sent with the snapshot
-        // like the other world entities — pragmatic for the slice).
-        for o in &inst.arena.obstacles {
-            entities.push(wm::SnapshotEntity {
-                entity_id: o.entity_id.clone(),
-                position: o.position,
-                velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
-                level: None,
-                ..Default::default()
-            });
-        }
-        let server_tick = now_ms() as i64;
-        // Interest management (CANON §B networking): a player only receives entities
-        // within the interest radius (`interest_radius_chunks × chunk_size` tiles) of
-        // their own avatar — instead of the whole world every tick, which grew
-        // unbounded as the endless world streamed in. This bounds each snapshot (and
-        // its per-recipient serialization) to a rolling window around the player.
-        // Purely a bandwidth/CPU cull: the server stays authoritative, so nothing
-        // gameplay-affecting depends on what a client is sent. The recipient's own
-        // avatar and the deep portal (a navigation landmark) are always included.
-        //
-        // SC-1: the cull runs off a per-tick chunk grid (built once here) so each
-        // player's query touches only the cells in range instead of re-scanning the
-        // whole entity list — O(sessions × visible) not O(sessions × entities).
-        let cell = self.balance.world.chunk_size.max(1) as f64;
-        let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
-        let radius2 = radius * radius;
-        let grid = build_interest_grid(&entities, cell);
-        let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
-        // Overworld snapshots go to players NOT in any battle. A fighting party is
-        // on the battle screen and driven by battle messages instead; when no battle
-        // is running, `in_battle` is empty so this sends to everyone.
-        let in_battle = inst.parties_in_battle();
-        let mut out = Vec::new();
-        for r in inst
-            .run
-            .runs
-            .iter()
-            .filter(|r| !in_battle.contains(&r.party_id))
-        {
-            // Avatars are pushed first, in arena order, so an avatar's index in
-            // `entities` equals its index in `arena.avatars` — reuse it as `own_idx`.
-            let me = inst
-                .arena
-                .avatars
-                .iter()
-                .enumerate()
-                .find(|(_, a)| a.player_id == r.player_id);
-            let me_pos = me.map(|(_, a)| a.position);
-            let own_idx = me.map(|(i, _)| i);
-            // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
-            // (dangerous foes sensed at range). Non-mob entities keep the base radius.
-            let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
-            let mob_radius2 = mob_radius * mob_radius;
-            let culled: Vec<wm::SnapshotEntity> = match me_pos {
-                // Grid-indexed interest cull (SC-1): behaviour-identical to the old
-                // full scan (own avatar + portal always; mobs at `mob_radius`, the
-                // rest at `radius`) but O(visible) via the chunk grid.
-                Some(p) => interest_visible_indices(
-                    &entities, &grid, cell, p.x, p.y, radius2, mob_radius, mob_radius2, own_idx,
-                    portal_idx,
-                )
-                .into_iter()
-                .map(|i| entities[i].clone())
-                .collect(),
-                // Defensive: a roaming run should always have an avatar; if not, don't
-                // cull (send the full set) rather than send an empty world.
-                None => entities.clone(),
-            };
-            out.push(out_msg(
-                &r.player_id,
-                &wm::Snapshot {
-                    server_tick,
-                    entities: culled,
-                },
-            ));
-        }
-        out
-    }
-
     /// Translate one battle's engine events into wire messages, handling its
     /// terminal outcome. `battle_id` scopes every message + member lookup to that
     /// battle (concurrent battles each get their own event stream).
-    fn emit_battle_events(&mut self, battle_id: &str, events: Vec<BattleEvent>) -> Vec<Outgoing> {
+    fn emit_battle_events(
+        &mut self,
+        battle_id: &str,
+        events: Vec<BattleEvent>,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let mut out = Vec::new();
+        let mut effects: Vec<WorldEffect> = Vec::new();
         for ev in events {
             match ev {
                 BattleEvent::TurnReady { combatant_id } => {
                     let is_player = self
-                        .instance
-                        .as_ref()
-                        .and_then(|i| i.battle_by_id(battle_id))
+                        .battle_by_id(battle_id)
                         .map(|s| s.combatant_player.contains_key(&combatant_id))
                         .unwrap_or(false);
                     let timeout_at = if is_player {
@@ -3445,11 +3482,13 @@ impl GameState {
                     out.extend(broadcast(members.iter().map(String::as_str), &msg));
                 }
                 BattleEvent::Ended { outcome } => {
-                    out.extend(self.handle_battle_end(battle_id, outcome));
+                    let (bout, beff) = self.handle_battle_end(battle_id, outcome);
+                    out.extend(bout);
+                    effects.extend(beff);
                 }
             }
         }
-        out
+        (out, effects)
     }
 
     /// Apply a monster's connected `steal` effect to the victim's run (spec §2):
@@ -3459,10 +3498,7 @@ impl GameState {
     fn apply_steal(&mut self, victim: &str, kind: meld_proto::abilities::StealTargetKind) {
         use meld_proto::abilities::StealTargetKind as K;
         let frac = self.balance.battle.steal_chits_fraction;
-        let Some(inst) = self.instance.as_mut() else {
-            return;
-        };
-        let Some(r) = inst.run.run_mut(victim) else {
+        let Some(r) = self.run.run_mut(victim) else {
             return;
         };
         match kind {
@@ -3489,27 +3525,30 @@ impl GameState {
 
     /// The players (across every merged party) currently in a given battle.
     fn members_of_battle(&self, battle_id: &str) -> Vec<String> {
-        match &self.instance {
-            Some(inst) => match inst.battle_by_id(battle_id) {
-                Some(slot) => inst.members_of(slot),
-                None => Vec::new(),
-            },
+        match self.battle_by_id(battle_id) {
+            Some(slot) => self.members_of(slot),
             None => Vec::new(),
         }
     }
 
-    fn handle_battle_end(&mut self, battle_id: &str, outcome: BattleOutcome) -> Vec<Outgoing> {
+    fn handle_battle_end(
+        &mut self,
+        battle_id: &str,
+        outcome: BattleOutcome,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let mut out = Vec::new();
+        let mut effects: Vec<WorldEffect> = Vec::new();
         let mut leveled: Vec<String> = Vec::new();
         // (player_id, old_run_level, new_run_level) for anyone who leveled up this
         // victory — drives the classic per-hero stat-gain screen.
         let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
         let balance = self.balance.clone();
-        let Some(inst) = self.instance.as_mut() else {
-            return out;
-        };
+        // `self` IS the world now; reborrow it for the world-state block below so
+        // the Router-scoped tail (effects, level-up party refresh) can use `self`
+        // once this borrow ends (as `collect_ground_loot` does).
+        let inst = &mut *self;
         let Some(bidx) = inst.battles.iter().position(|b| b.battle_id == battle_id) else {
-            return out;
+            return (out, effects);
         };
         let monster_ids = inst.battles[bidx].monster_ids.clone();
         let battle_pos = inst.battles[bidx].pos;
@@ -3881,9 +3920,16 @@ impl GameState {
         inst.battles.retain(|b| b.battle_id != battle_id);
         for pid in dead {
             let _ = self.db_writes.send(DbWrite::Death(pid.clone()));
-            // The run is over: release the player from the instance so they can
-            // dive again from the hub (see `release_from_run`).
-            self.release_from_run(&pid);
+            // Drop the dead player's avatar + run from the world NOW — inline, this
+            // tick, before the later overworld snapshot — so they don't linger a frame
+            // (matching the pre-SC-3 behaviour where release ran inline here). The rest
+            // of the teardown (session `in_instance` flip, per-player bookkeeping, and
+            // dropping the world if it's now empty) can't be done from world logic, so
+            // it rides the effect below; its `remove_from_instance` re-runs these two
+            // retains idempotently.
+            self.arena.avatars.retain(|a| a.player_id != pid);
+            self.run.runs.retain(|r| r.player_id != pid);
+            effects.push(WorldEffect::ReleaseFromRun(pid));
         }
         // Announce level-ups (classic stat-gain screen) then refresh the party
         // panel for anyone who leveled up (stats changed).
@@ -3904,7 +3950,7 @@ impl GameState {
             // Perk tiers scale with run level, so refresh them on level-up too.
             out.push(out_msg(pid, &self.perks_for(pid)));
         }
-        out
+        (out, effects)
     }
 }
 
