@@ -15,7 +15,46 @@
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-    forward_io::{VertexOutput, FragmentOutput},
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
+    mesh_functions,
+    view_transformations::position_world_to_clip,
+}
+
+// Continuous overworld terrain height — MUST match `world_render::terrain_height` in
+// Rust exactly (that places entities/camera; this displaces the ground vertices).
+fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
+    return 3.2 * sin(p.x * 0.018) * cos(p.y * 0.021)
+        + 1.6 * sin(p.x * 0.041 + 1.7) * cos(p.y * 0.036 - 0.9)
+        + 0.8 * sin((p.x + p.y) * 0.058 + 2.3);
+}
+
+// Analytic surface normal from the height gradient, so slopes light naturally.
+fn terrain_normal(p: vec2<f32>) -> vec3<f32> {
+    let dhdx = 3.2 * 0.018 * cos(p.x * 0.018) * cos(p.y * 0.021)
+        + 1.6 * 0.041 * cos(p.x * 0.041 + 1.7) * cos(p.y * 0.036 - 0.9)
+        + 0.8 * 0.058 * cos((p.x + p.y) * 0.058 + 2.3);
+    let dhdz = 3.2 * (-0.021) * sin(p.x * 0.018) * sin(p.y * 0.021)
+        + 1.6 * (-0.036) * sin(p.x * 0.041 + 1.7) * sin(p.y * 0.036 - 0.9)
+        + 0.8 * 0.058 * cos((p.x + p.y) * 0.058 + 2.3);
+    return normalize(vec3<f32>(-dhdx, 1.0, -dhdz));
+}
+
+// Displace the sliding ground plane into rolling hills. Keyed off WORLD xz (like the
+// biome/texture below), so the hills stay world-fixed even as the plane slides under
+// the player — no swimming.
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    var world_position = mesh_functions::mesh_position_local_to_world(
+        world_from_local, vec4<f32>(vertex.position, 1.0));
+    world_position.y += terrain_height_wgsl(world_position.xz);
+    out.world_position = world_position;
+    out.position = position_world_to_clip(world_position.xyz);
+    out.world_normal = terrain_normal(world_position.xz);
+    out.uv = vertex.uv;
+    out.instance_index = vertex.instance_index;
+    return out;
 }
 
 struct BiomeParams {

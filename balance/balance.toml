@@ -353,8 +353,8 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # climbs: `path_climb_chance` sections raise a mid-segment plateau the route crosses
 # via guaranteed ramps, with the endpoints staying on level 0 so extraction is always
 # feasible. Cliffs are impassable; the only way up is a connector. All [TUNABLE].
-terraces_per_area = 2.0          # side terraces (grind/treasure detours) per section; the client bends the elevation grid with the radial arc so they survive the fan
-max_level = 2                    # tallest terrace (levels above ground)
+terraces_per_area = 0.0          # discrete blocky terraces retired — the continuous heightmap (client terrain_height) is the new natural elevation (Phase A). Peak rewards + slope-walking return via the heightmap in Phase B/C.
+max_level = 0                    # no discrete cliffs; elevation is the smooth heightmap now
 # WG-4: the generated corridor is bent into a radial ARC of this many degrees around
 # the hub — the world fans out from the Center Hub, leaving the western sliver for
 # Last City. `x` becomes radius (distance = difficulty, unchanged), lateral `y`

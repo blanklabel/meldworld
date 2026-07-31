@@ -252,9 +252,12 @@ pub(crate) fn biome_display(d: i64) -> &'static str {
 }
 
 /// Server (x, y) → HD-2D world space: x east, **z = server y** (south, +Z toward
-/// the camera parked behind the player). Y is up (height above the ground plane).
+/// the camera parked behind the player). Y is up: `height` above the rolling ground,
+/// which sits at `terrain_height(x, z)` — so everything placed through here rides the
+/// continuous heightmap the ground shader displaces to (Phase A). Moving entities
+/// (avatar/mobs) re-apply it per frame in the interp/camera systems.
 pub(crate) fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
-    Vec3::new(x, height, y)
+    Vec3::new(x, height + crate::world_render::terrain_height(x, y), y)
 }
 
 /// Exponential rate the rendered overworld positions chase the 20 Hz server
@@ -661,7 +664,7 @@ pub(crate) fn overworld_click_menu(
     // Primary hit-test: project the sprite's vertical extent (feet→head) to the
     // screen and measure the click's pixel distance to that line. This matches the
     // billboard the player sees, regardless of camera tilt or zoom.
-    let base_y = me.level as f32 * STEP_HEIGHT;
+    let base_y = me.level as f32 * STEP_HEIGHT + crate::world_render::terrain_height(me.x, me.y);
     let feet_w = Vec3::new(me.x, base_y, me.y);
     let head_w = feet_w + Vec3::Y * (look.sprite_y * 2.0);
     let on_sprite = match (
@@ -950,8 +953,8 @@ pub(crate) fn sync_overworld_sprites(
         // to smooth toward — and smoothing it (STEP_HEIGHT = 2.0 per level, ramped
         // over ~10 frames) briefly left the avatar root *below* a terrace it had just
         // stepped onto, so the raised ground clipped the billboard's lower half and
-        // the hero looked buried to the thigh until y caught up.
-        tf.translation.y = e.level as f32 * STEP_HEIGHT;
+        // the hero looked buried to the thigh until y caught up. (Y is set after xz
+        // below, so it can read the rolling-ground height under the updated position.)
         if we.0 == session.player_id {
             // Responsive: chase the latest snapshot directly.
             tf.translation.x += (e.x - tf.translation.x) * k;
@@ -971,6 +974,10 @@ pub(crate) fn sync_overworld_sprites(
             tf.translation.x = e.x;
             tf.translation.z = e.y;
         }
+        // Ride the rolling ground: discrete terrace level + the continuous heightmap
+        // under the just-updated xz. Matches `world_pos` so spawn and per-frame agree.
+        tf.translation.y = e.level as f32 * STEP_HEIGHT
+            + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
     }
     for (id, e) in &world.entities {
         if seen.contains(id) {
