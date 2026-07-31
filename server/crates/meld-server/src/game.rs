@@ -1420,6 +1420,7 @@ impl GameState {
                     chits: 0,
                     backpack_gear: backpack_gear.clone(),
                     path: inst.arena.path.clone(),
+                    web: inst.arena.web.clone(),
                     bounds: Some(world_bounds.clone()),
                     seams: seam_views.clone(),
                 },

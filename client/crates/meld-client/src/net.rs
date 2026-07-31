@@ -334,6 +334,8 @@ pub enum ServerMsg {
     },
     /// Waypoints of the guaranteed clear path (world units) — drawn as a trail.
     WorldPath { points: Vec<(f64, f64)> },
+    /// The web of extra trails (disjoint edges) drawn as dot-trails like the backbone.
+    WorldWeb { edges: Vec<((f64, f64), (f64, f64))> },
     /// One overworld section's elevation grid + connectors (terraced verticality).
     /// Streamed at run start (initial chain) and as the frontier advances (endless).
     TerrainSection { section: TerrainSectionView },
@@ -1005,6 +1007,23 @@ impl Inner {
                         .collect();
                     if !points.is_empty() {
                         self.out.push_back(ServerMsg::WorldPath { points });
+                    }
+                }
+                // The web of extra trails: each edge is a `[ {x,y}, {x,y} ]` pair.
+                if let Some(edges_json) = raw.payload["web"].as_array() {
+                    let edges: Vec<((f64, f64), (f64, f64))> = edges_json
+                        .iter()
+                        .filter_map(|e| {
+                            let a = e.get(0)?;
+                            let b = e.get(1)?;
+                            Some((
+                                (a["x"].as_f64()?, a["y"].as_f64()?),
+                                (b["x"].as_f64()?, b["y"].as_f64()?),
+                            ))
+                        })
+                        .collect();
+                    if !edges.is_empty() {
+                        self.out.push_back(ServerMsg::WorldWeb { edges });
                     }
                 }
                 // Map bounds + biome seams → the client frames the map with walls.

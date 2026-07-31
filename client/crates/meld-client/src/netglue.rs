@@ -67,13 +67,14 @@ pub(crate) fn pump_net(
         ResMut<PerksRes>,
         ResMut<AccountHeroNames>,
         ResMut<RunGearData>,
+        ResMut<WorldWeb>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -92,6 +93,13 @@ pub(crate) fn pump_net(
             ServerMsg::WorldPath { points } => {
                 world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();
                 world_path.drawn = false;
+            }
+            ServerMsg::WorldWeb { edges } => {
+                world_web.edges = edges
+                    .iter()
+                    .map(|((ax, ay), (bx, by))| ((*ax as f32, *ay as f32), (*bx as f32, *by as f32)))
+                    .collect();
+                world_web.drawn = false;
             }
             ServerMsg::TerrainSection { section } => {
                 // A streamed section extends the clear-path trail (initial-chain

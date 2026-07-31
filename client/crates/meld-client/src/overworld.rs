@@ -399,6 +399,53 @@ pub(crate) fn draw_path_trail(
     world_path.drawn = true;
 }
 
+/// Draw the WEB of trails (disjoint branch/loop/spur edges) as fainter dotted trails
+/// than the backbone, so the overworld reads as an interconnected maze of routes. Same
+/// redraw-when-absent idea as [`draw_path_trail`]; each edge is dotted independently.
+pub(crate) fn draw_web_trail(
+    mut commands: Commands,
+    mut world_web: ResMut<WorldWeb>,
+    existing: Query<Entity, With<WebTrail>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    if world_web.edges.is_empty() {
+        return;
+    }
+    if world_web.drawn && !existing.is_empty() {
+        return;
+    }
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let disc = meshes.add(Circle::new(0.28));
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(0.9, 0.86, 0.55, 0.14),
+        emissive: LinearRgba::rgb(0.34, 0.3, 0.11),
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    });
+    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let step = 2.5_f32;
+    for ((ax, ay), (bx, by)) in &world_web.edges {
+        let seg = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
+        let n = (seg / step).ceil().max(1.0) as i32;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let x = ax + (bx - ax) * t;
+            let y = ay + (by - ay) * t;
+            commands.spawn((
+                WebTrail,
+                Mesh3d(disc.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::from_translation(world_pos(x, y, 0.14)).with_rotation(flat),
+            ));
+        }
+    }
+    world_web.drawn = true;
+}
+
 /// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
 /// and the run backpack moved off the HUD into the menu (Status tab — see
 /// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: the
