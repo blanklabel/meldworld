@@ -1,0 +1,63 @@
+# Forest Barrow — the first authored dungeon (DG-1 sample / reference).
+#
+# Two floors, a forced critical path that exercises every DG-1 primitive:
+#   floor 0:  entrance > · trap · lever→door · ordered-plate→gate · stairs-down
+#   floor 1:  stairs-up · key→door · boss · boss-gated chest · exit <
+#
+# The grid is a fixed-width glyph map; the [legend] binds each glyph to an object
+# id, and the typed tables ([trap.*], [door.*], …) carry each object's params and
+# wiring. Structural glyphs are implicit: '#' wall, '.' floor, ' ' void,
+# '>' entrance, '<' exit.
+
+name  = "forest_barrow"
+biome = "forest"
+
+[legend]
+t = "trap T1"
+a = "lever L1"
+X = "door D1"
+"1" = "plate P1"
+"2" = "plate P2"
+"3" = "plate P3"
+Y = "gate G1"
+s = "stair S1 down"
+w = "stair S1 up"
+k = "key K1"
+Z = "door D2"
+B = "boss B1"
+C = "chest vault"
+
+[[floor]]
+grid = """
+####################
+#>.t.a.X.1.2.3.Y.s.#
+####################
+"""
+
+[[floor]]
+grid = """
+##################
+#w.k.Z.B...C...<.#
+##################
+"""
+
+[trap.T1]
+kind = "fire"
+disarmable = true      # Dex-check; the Shifter is far better (design §5)
+
+[door.D1]
+when = "L1"            # the lever opens it
+
+[gate.G1]
+when = "seq[P1,P2,P3]" # step the plates in order (use all[…] for a co-op gate)
+
+[door.D2]
+when = "has_key(K1)"
+
+[boss.B1]
+sprite = "sepulcher"
+on_enter_spawn = true
+
+[chest.vault]
+when = "boss_dead(B1)" # the reward drops on the kill
+loot = "rolled"        # scaled to the dungeon's stamped distance + floor depth

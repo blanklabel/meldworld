@@ -12,6 +12,7 @@ members = [
     "server/crates/meld-db",
     "server/crates/meld-api",
     "server/crates/meld-battle",
+    "server/crates/meld-dungeon",
     "server/crates/meld-world",
     "server/crates/meld-run",
     "server/crates/meld-server",

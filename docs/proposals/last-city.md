@@ -43,6 +43,34 @@
 >   HUD prompt names the district you're standing in for now), and a distinct plaza
 >   floor (the hub currently sits on the grass commons).
 
+## Direction: the city as a friendly *authored space* (LC-5)
+
+A city is mechanically an **authored, multi-room space you walk around in** — the
+**friendly profile** of the same substrate as the WG-1 designed dungeons
+([`dungeons.md`](dungeons.md) §"one authored-space substrate"). Both want the same
+three things: a hand-designed **glyph-grid + manifest** layout (agent-editable
+content, not props hand-placed in client code), **placed interactables** driven by
+`run.interact`, and a server-known **space** you're "in." A dungeon then adds the
+hostile layer (traps, boss, committed-path, solvability, distance-loot); the city
+keeps only the grid + placement + interaction core and adds **services + NPCs**.
+
+Two caveats keep this honest:
+
+1. **The sharing models are opposite.** A dungeon is per-entry-fresh and ≤4; the
+   city is **one persistent space shared by hundreds** — which is exactly the hard
+   part of **LC-1** (the town presence loop, ward-sharded, *separate* from the
+   no-locks maze loop) and **SC-3** world-sharding ([`server-scaling.md`](server-scaling.md);
+   "towns are content, not their own shard"). The dungeon subinstance runtime is a
+   **foundation** for modelling the city as a space, **not** a solution to its
+   presence-at-scale.
+2. **Incremental path.** The city can adopt the **authored-layout format** (its
+   layout becomes a content file the client renders) *before* the presence work —
+   decoupled, and it validates the format against a second consumer. The full
+   server-side space + presence rebuild rides on DG-3 + LC-1.
+
+When DG-3's space runtime lands, factor the shared authored-space core out from
+under `meld-dungeon` so the city can be a profile of it (tracked as **LC-5**).
+
 ## The problem: the loop has no home
 
 The core loop is **extract-or-die**, but today it just *ends*. The client flow is

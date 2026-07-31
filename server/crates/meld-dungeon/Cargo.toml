@@ -1,0 +1,11 @@
+[package]
+name = "meld-dungeon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Authored dungeons (WG-1/DG-1): glyph-grid + manifest model, parser, puzzle vocabulary, and the entrance→exit solvability validator. Pure + deterministic — no I/O, no RNG."
+
+[dependencies]
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
