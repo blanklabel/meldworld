@@ -50,6 +50,7 @@ fn main() {
                     // server fills the rest of the party.
                     net.send(ClientCmd::EnterMaze {
                         party: vec![class.clone()],
+                        tutorial: false,
                     });
                 }
                 ServerMsg::RunStarted => {

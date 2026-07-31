@@ -429,6 +429,12 @@ pub mod run {
         /// the headless bot tests); the co-op path is the `lobby.*` flow.
         #[serde(default)]
         pub solo: bool,
+        /// Request the guided TUTORIAL world (Forest-first ordered biomes + a centred,
+        /// obstacle-free area 0) for this dive. Opt-in: absent/false gives a normal
+        /// randomized run, so a returning player isn't dropped into the same onboarding
+        /// corridor every time. The hub offers it but never forces it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub tutorial: Option<bool>,
     }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";

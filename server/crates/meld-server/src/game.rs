@@ -894,7 +894,8 @@ impl GameState {
                 Some(client_seq),
             )];
         }
-        self.form_run(party_ids, player_id, Some(client_seq))
+        let wants_tutorial = req.as_ref().and_then(|e| e.tutorial).unwrap_or(false);
+        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial)
     }
 
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
@@ -1170,6 +1171,7 @@ impl GameState {
         party_ids: Vec<String>,
         initiator: &str,
         client_seq: Option<u32>,
+        wants_tutorial: bool,
     ) -> Vec<Outgoing> {
         let departure_hub_distance = 0; // Center Hub
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
@@ -1177,30 +1179,23 @@ impl GameState {
         // Create the shared instance on the first entry.
         if self.instance.is_none() {
             let instance_id = Uuid::now_v7().to_string();
-            // The instance initiator's account decides the tutorial (roadmap WG-2):
-            // an account's very first dive walks the gentle Forest-first biome order
-            // with the centred area-0 onboarding; every dive after gets a randomized
-            // biome order + start (WG-3). The world seed is always server-random —
-            // the tutorial shapes the *structure*, not a fixed world.
-            // `MELD_NO_TUTORIAL=1` forces a randomized-biome world on the first dive
-            // too (dev/QA/screenshots — the in-memory build always starts fresh, so
-            // you'd otherwise only ever see the distance-ordered tutorial order).
+            // The tutorial is OPT-IN, not auto-forced on a first dive: the hub OFFERS the
+            // guided Forest-first onboarding (centred, obstacle-free area 0) but a normal
+            // dive is a randomized run, so a returning player isn't dropped into the same
+            // corridor every `make play`. `wants_tutorial` comes from the client's
+            // `run.enter_maze` `tutorial` flag; `MELD_TUTORIAL=1` forces it on for
+            // headless/QA.
             // DEV/QA harness (in-memory build): `MELD_BIOME=<forest|desert|ashfall|
             // tundra|mire>` pins every section to that biome so its maze can be loaded +
             // screenshotted on demand, and `MELD_SEED=<n>` fixes the layout for
-            // reproducibility. `MELD_BIOME` also forces the tutorial off (the tutorial
-            // pins area 0 to Forest, which would fight the override). Both are read only
-            // here at the server boundary — `meld-world` stays pure.
+            // reproducibility. `MELD_BIOME`/`MELD_NO_TUTORIAL` force the tutorial off.
+            // All read only here at the server boundary — `meld-world` stays pure.
             let force_biome: Option<&'static str> = std::env::var("MELD_BIOME")
                 .ok()
                 .and_then(|v| meld_world::BIOMES.iter().copied().find(|b| *b == v.trim()));
             let tutorial = force_biome.is_none()
                 && !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
-                && !self
-                    .sessions
-                    .get(initiator)
-                    .map(|s| s.has_dived)
-                    .unwrap_or(false);
+                && (wants_tutorial || std::env::var("MELD_TUTORIAL").is_ok_and(|v| v != "0"));
             // Server-generated world seed (CANON: the client never supplies or
             // computes seeds) — overridable by `MELD_SEED` for the QA harness.
             let seed = std::env::var("MELD_SEED")
@@ -1661,7 +1656,9 @@ impl GameState {
         }
         self.lobbies.remove(&code);
         let ids: Vec<String> = members.into_iter().map(|(pid, _)| pid).collect();
-        self.form_run(ids, player_id, Some(seq))
+        // Co-op dives are always the normal randomized run (the tutorial is a solo,
+        // first-load onboarding — never the shared lobby path).
+        self.form_run(ids, player_id, Some(seq), false)
     }
 
     fn handle_move(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {

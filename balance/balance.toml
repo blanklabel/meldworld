@@ -339,6 +339,14 @@ ashfall_obstacle_mult = 6.0      # a choked volcanic mountain-pass maze of rock
 tundra_obstacle_mult = 1.6       # sparse frozen spires
 mire_obstacle_mult = 7.5         # MOSTLY water: the swamp is a flooded maze, land is the trail
 maze_obstacle_mult = 2.0         # fallback for any unlisted biome
+# Radial density compensation: the WG-4 fan bends the fixed-width corridor into an arc
+# that widens with radius, so a per-area obstacle count spreads ever thinner at depth (a
+# deep area is a huge annular sector — the maze reads as an open field with a few rocks).
+# Scale each area's obstacle count by how much its arc stretches vs the corridor width,
+# so density-per-tile stays roughly constant with depth. Capped so the deepest areas
+# don't explode the obstacle count (wire size + client draw calls). 1.0 = off (old
+# behaviour). [TUNABLE]
+maze_radial_scale_cap = 4.0      # max × the arc-stretch can multiply an area's obstacle count
 biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)

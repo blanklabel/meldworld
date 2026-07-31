@@ -282,6 +282,11 @@ pub struct WorldGen {
     pub mire_obstacle_mult: f64,
     /// Fallback fill density for any biome without its own multiplier.
     pub maze_obstacle_mult: f64,
+    /// Cap on the radial density compensation: a deep area's arc is much wider than the
+    /// corridor, so its obstacle count is scaled up by the arc-stretch (min 1.0) to keep
+    /// maze density roughly constant with depth — but never beyond this multiple, so the
+    /// deepest areas don't blow up the obstacle count. 1.0 disables the compensation.
+    pub maze_radial_scale_cap: f64,
     /// World units over which a section's fill density blends toward the neighbouring
     /// section's near its edges (forest thins into desert; rock thickens into Ashfall).
     pub biome_transition_width: f64,

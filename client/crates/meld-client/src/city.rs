@@ -273,7 +273,7 @@ pub(crate) fn city_action_buttons(
                     session.entered = true;
                     session.coop = false;
                     session.status = "stepping through The Threshold...".to_string();
-                    net.0.send(ClientCmd::EnterMaze { party: session.party.clone() });
+                    net.0.send(ClientCmd::EnterMaze { party: session.party.clone(), tutorial: false });
                 }
             }
             CityAct::Vault => {
@@ -555,12 +555,20 @@ pub(crate) fn city_input(
     let dive = keys.just_pressed(KeyCode::Enter)
         || (keys.just_pressed(KeyCode::KeyE) && at_threshold)
         || (autoplay.0 && !city_idle.0);
-    if dive && !session.entered {
+    // T = the guided TUTORIAL dive (offered, never forced). A normal dive (ENTER/E/
+    // autoplay) is a randomized run, so you don't reappear in the onboarding corridor.
+    let tutorial_dive = keys.just_pressed(KeyCode::KeyT);
+    if (dive || tutorial_dive) && !session.entered {
         session.entered = true;
         session.coop = false;
-        session.status = "stepping through The Threshold...".to_string();
+        session.status = if tutorial_dive {
+            "beginning the guided dive...".to_string()
+        } else {
+            "stepping through The Threshold...".to_string()
+        };
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
+            tutorial: tutorial_dive,
         });
         return;
     }
@@ -729,7 +737,7 @@ pub(crate) fn render_city(
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
-            "WASD move    [E] enter a district    [ENTER] dive    [C] co-op    [V] storage chest"
+            "WASD move    [E] enter a district    [ENTER] dive    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
         **t = if city.notice.is_empty() {

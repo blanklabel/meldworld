@@ -1901,7 +1901,21 @@ impl Arena {
         // A dungeon lays out rooms-and-corridors instead of the scattered maze fill.
         if maze_mult > 0.0 && !is_dungeon {
             let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
-            let extra = (maze_mult * wg.obstacles_per_area).round().max(0.0) as usize;
+            // Radial density compensation: the fan bends the fixed-width corridor into an
+            // arc that widens with radius, so a per-area count spreads ever thinner at
+            // depth (a deep area is a huge annular sector). Scale the count by how much
+            // this area's arc stretches vs the corridor width — capped so the deepest
+            // areas stay renderable — so the maze holds its density instead of thinning
+            // into an open field. Obstacles are still placed across the corridor lateral
+            // and bent, so the extra count fills the widened arc.
+            let r_mid = (start_x + end_x) * 0.5;
+            let arc_stretch = if self.radial_half > 0.0 {
+                (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
+            } else {
+                1.0
+            };
+            let radial_scale = arc_stretch.min(wg.maze_radial_scale_cap.max(1.0));
+            let extra = (maze_mult * wg.obstacles_per_area * radial_scale).round().max(0.0) as usize;
             let fill_kind = fill_kind_for_biome(biome);
             // Density taper: near each edge, blend toward the NEIGHBOUR section's
             // density so a dense biome visibly THINS as it gives way to a sparser one
@@ -4161,4 +4175,5 @@ mod tests {
         assert_eq!(twin.areas.len(), arena.areas.len());
     }
 }
+
 
