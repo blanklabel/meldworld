@@ -474,6 +474,13 @@ pub mod run {
         /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
         #[serde(default)]
         pub seams: Vec<SeamView>,
+        /// Per-run world-space offset into the shared terrain height field
+        /// (`terrain::seed_offset`, hub-validated). The client feeds it to the ground
+        /// shader + entity/camera Y so it renders the SAME hills/mesas the server placed
+        /// content on — and so the world looks DIFFERENT every run (fixed function of
+        /// position otherwise). `[0, 0]` = the un-shifted hand-tuned field.
+        #[serde(default)]
+        pub terrain_offset: [f32; 2],
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

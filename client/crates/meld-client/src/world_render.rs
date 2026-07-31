@@ -41,6 +41,10 @@ pub(crate) struct BiomeParams {
     /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
     /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
     terrain_amp: f32,
+    /// This run's terrain offset (mirrors `world_render::terrain_offset` / the server's
+    /// `run.started.terrain_offset`), so the displaced ground matches every entity's Y and
+    /// the world looks different every run.
+    terrain_off: Vec2,
 }
 
 impl Default for BiomeParams {
@@ -53,6 +57,7 @@ impl Default for BiomeParams {
             // Default flat: menus/join/city render level ground. The Overworld flips it
             // to 1.0 on entry (`set_ground_terrain_amp`).
             terrain_amp: 0.0,
+            terrain_off: Vec2::ZERO,
         }
     }
 }
@@ -1124,6 +1129,7 @@ pub(crate) fn drift_clouds(
 pub(crate) fn tile_ground_detail(
     cam_q: Query<&Transform, With<Camera3d>>,
     kit: Option<Res<DetailKit>>,
+    state: Res<State<Screen>>,
     mut q: Query<
         (&mut GroundDetail, &mut Transform, &mut Visibility, &mut SceneRoot),
         Without<Camera3d>,
@@ -1131,6 +1137,10 @@ pub(crate) fn tile_ground_detail(
 ) {
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
+    // Ride the heightmap ONLY in the Overworld (where the ground is displaced); the City
+    // + menus keep flat ground (terrain_amp 0), so detail sits at y=0 there. Matches the
+    // ground shader's `terrain_amp` gate — otherwise the props float over a flat plaza.
+    let amp = if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
     let cc = IVec2::new(
         (focus.x / DETAIL_CELL).floor() as i32,
         (focus.z / DETAIL_CELL).floor() as i32,
@@ -1154,11 +1164,8 @@ pub(crate) fn tile_ground_detail(
         let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
         let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
         let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
-        tf.translation = Vec3::new(
-            (cell.x as f32 + jx) * DETAIL_CELL,
-            0.0,
-            (cell.y as f32 + jz) * DETAIL_CELL,
-        );
+        let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
+        tf.translation = Vec3::new(wx, amp * terrain_height(wx, wz), wz);
         tf.rotation = Quat::from_rotation_y(yaw);
         tf.scale = Vec3::splat(sc);
         *vis = Visibility::Inherited;
@@ -1194,8 +1201,28 @@ pub(crate) fn follow_world_ground(
 /// crucially, TRIVIAL to mirror EXACTLY in `ground_biome.wgsl` (the ground shader
 /// displaces its vertices by this; Rust places every entity/camera on it). Keep the two
 /// in lock-step: if you change a coefficient here, change it in the shader.
+/// This run's terrain offset (from `run.started.terrain_offset`), held globally so the
+/// free-function `terrain_height` — called from every entity/camera placement — applies
+/// it without threading a resource through all of them. Two `f32` bit-patterns.
+static TERRAIN_OFF_X: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TERRAIN_OFF_Z: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Store this run's terrain offset (call on `run.started`); the ground shader reads the
+/// same value via [`terrain_offset`] so its displaced ground matches every entity's Y.
+pub(crate) fn set_terrain_offset(ox: f32, oz: f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    TERRAIN_OFF_X.store(ox.to_bits(), Relaxed);
+    TERRAIN_OFF_Z.store(oz.to_bits(), Relaxed);
+}
+/// The current run's terrain offset.
+pub(crate) fn terrain_offset() -> (f32, f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (f32::from_bits(TERRAIN_OFF_X.load(Relaxed)), f32::from_bits(TERRAIN_OFF_Z.load(Relaxed)))
+}
+
 pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
-    meld_proto::terrain::height(x, z)
+    let (ox, oz) = terrain_offset();
+    meld_proto::terrain::height(x, z, ox, oz)
 }
 
 /// Capitalize the first letter for display ("ashfall" → "Ashfall").
@@ -1239,6 +1266,8 @@ pub(crate) fn update_ground_biome_rings(
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
     mat.extension.params.terrain_amp =
         if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
+    let (ox, oz) = terrain_offset();
+    mat.extension.params.terrain_off = Vec2::new(ox, oz);
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections

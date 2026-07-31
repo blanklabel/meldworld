@@ -321,7 +321,9 @@ type ProgPayload = (Vec<SkillLine>, Vec<String>);
 pub enum ServerMsg {
     Connected { player_id: String },
     Error { message: String },
-    RunStarted,
+    /// `run.started` — carries this run's terrain offset so the bin can seed the ground
+    /// shader + entity Y (the lib netcode can't reach the render module directly).
+    RunStarted { terrain_off: (f32, f32) },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party { heroes: Vec<HeroLine> },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
@@ -999,7 +1001,16 @@ impl Inner {
                     let atk = g["atk_bonus"].as_i64().unwrap_or(0) as i32;
                     self.run_gear.push((name, atk));
                 }
-                self.out.push_back(ServerMsg::RunStarted);
+                // This run's terrain offset — ride it to the bin (render module) so the
+                // ground shader + entity Y grow the same (per-run-varied) hills.
+                let terrain_off = match raw.payload["terrain_offset"].as_array() {
+                    Some(a) if a.len() == 2 => (
+                        a[0].as_f64().unwrap_or(0.0) as f32,
+                        a[1].as_f64().unwrap_or(0.0) as f32,
+                    ),
+                    _ => (0.0, 0.0),
+                };
+                self.out.push_back(ServerMsg::RunStarted { terrain_off });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts

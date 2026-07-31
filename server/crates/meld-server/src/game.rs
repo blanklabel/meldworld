@@ -1509,6 +1509,10 @@ impl GameState {
                     web: inst.arena.web.clone(),
                     bounds: Some(world_bounds.clone()),
                     seams: seam_views.clone(),
+                    terrain_offset: {
+                        let (ox, oz) = inst.arena.terrain_offset();
+                        [ox, oz]
+                    },
                 },
             ));
             if !backpack_gear.is_empty() {

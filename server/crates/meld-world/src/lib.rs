@@ -1085,6 +1085,11 @@ pub struct Arena {
     /// of waiting for a random draw to surface it. `None` in normal play. Set at the
     /// server boundary from `MELD_BIOME` (see `generate_with`); the engine stays pure.
     force_biome: Option<&'static str>,
+    /// Per-run world-space offset into the shared height field (`terrain::seed_offset`),
+    /// so each seed grows DIFFERENT hills/mesas at the hub and the clear path bends a
+    /// different way — no more "same corridor every run". Every terrain sample in this
+    /// arena passes it; the client gets it on `run.started` and samples the same field.
+    terrain_off: (f32, f32),
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -1116,14 +1121,96 @@ impl Arena {
         Self::generate_with(balance, seed, tutorial, None)
     }
 
+    /// This run's terrain offset into the shared height field (sent to the client on
+    /// `run.started` so it renders the identical hills/mesas). See `terrain::seed_offset`.
+    pub fn terrain_offset(&self) -> (f32, f32) {
+        self.terrain_off
+    }
+
+    /// Height / slope-walkability of world `(x, z)` under THIS run's terrain offset — the
+    /// only way the arena should sample terrain, so every collision/route/placement check
+    /// agrees with the client's offset-shifted ground.
+    fn t_height(&self, x: f64, z: f64) -> f64 {
+        meld_proto::terrain::height(x as f32, z as f32, self.terrain_off.0, self.terrain_off.1) as f64
+    }
+    fn t_walkable(&self, x: f64, z: f64) -> bool {
+        meld_proto::terrain::walkable(x as f32, z as f32, self.terrain_off.0, self.terrain_off.1)
+    }
+    fn t_routable(&self, x: f64, z: f64) -> bool {
+        meld_proto::terrain::routable(x as f32, z as f32, self.terrain_off.0, self.terrain_off.1)
+    }
+
     /// Like [`Self::generate`], but with a DEV/QA `force_biome` override (from the
     /// server's `MELD_BIOME` env) that pins every section to one biome so its maze can be
     /// loaded + screenshotted directly. `None` reproduces normal generation exactly.
+    ///
+    /// Seeds the per-run terrain (so each run's hills differ) and RE-ROLLS the offset if
+    /// the resulting initial-chain backbone isn't cleanly walkable end-to-end — a mesa can
+    /// occasionally land on a seam gap / dungeon door and pinch the route. Re-rolling
+    /// (rather than patching every placement) keeps the "every run is feasible by
+    /// construction" guarantee while the terrain still varies; the last resort is the
+    /// hand-tuned un-shifted field.
     pub fn generate_with(
         balance: &Balance,
         seed: u64,
         tutorial: bool,
         force_biome: Option<&'static str>,
+    ) -> Self {
+        let mut off = hub_terrain_offset(seed);
+        for attempt in 0..12u64 {
+            let mut arena = Self::build_with(balance, seed, tutorial, force_biome, off);
+            if arena.backbone_feasible() {
+                return arena;
+            }
+            off = hub_terrain_offset(seed ^ (attempt + 1).wrapping_mul(0x2545_F491_4F6C_DD1D));
+        }
+        // Nothing clean found (extremely rare): the un-shifted hand-tuned field is known
+        // feasible, so fall back to it rather than ship a pinched world.
+        Self::build_with(balance, seed, tutorial, force_biome, (0.0, 0.0))
+    }
+
+    /// Can a walker actually follow the initial-chain clear path from the hub to the deep
+    /// portal? Simulates it exactly like the conformance walker test — so it catches a
+    /// seeded mesa pinching a seam gap / dungeon door / bend that the A* backbone (which
+    /// only guarantees ITS own edges) can't see. The re-roll gate that keeps every run
+    /// feasible by construction while the terrain varies. Uses + removes a throwaway
+    /// probe avatar; `apply_move` is pure movement (no touch/battle side effects), so the
+    /// arena is left pristine.
+    fn backbone_feasible(&mut self) -> bool {
+        if self.path.len() < 2 {
+            return false;
+        }
+        let waypoints = self.path.clone();
+        let portal = self.portal;
+        let probe = "__feasibility_probe__".to_string();
+        self.add_avatar(probe.clone(), 6.0);
+        let (mut wp, mut reached) = (1usize, false);
+        for _ in 0..100_000 {
+            let pos = match self.avatar(&probe) {
+                Some(a) => a.position,
+                None => break,
+            };
+            let target = waypoints[wp];
+            if pos.distance_to(&target) < 0.6 {
+                if wp + 1 >= waypoints.len() {
+                    reached = pos.distance_to(&portal) < 2.0;
+                    break;
+                }
+                wp += 1;
+                continue;
+            }
+            self.apply_move(&probe, target.x - pos.x, target.y - pos.y, 0);
+        }
+        self.avatars.retain(|a| a.player_id != probe);
+        reached
+    }
+
+    fn build_with(
+        balance: &Balance,
+        seed: u64,
+        tutorial: bool,
+        force_biome: Option<&'static str>,
+        terrain_off: (f32, f32),
     ) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
@@ -1158,6 +1245,7 @@ impl Arena {
             seed_base: seed,
             tutorial,
             force_biome,
+            terrain_off,
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -1215,6 +1303,7 @@ impl Arena {
         // Bend against the corridor half-extent (self.lateral still equals it here,
         // but corridor_lateral is what streaming reuses after lateral widens).
         let lat = self.corridor_lateral.max(1.0);
+        let toff = self.terrain_off;
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
@@ -1233,13 +1322,13 @@ impl Arena {
         // reachable. (Summit chests already sit on the walkable route, so it's a no-op
         // for them.) Obstacles are left on cliffs — impassable scenery is fine there.
         for r in &mut self.resources {
-            r.position = nudge_to_walkable(tf(r.position));
+            r.position = nudge_to_walkable(tf(r.position), toff);
         }
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
         for c in &mut self.chests {
-            c.position = nudge_to_walkable(tf(c.position));
+            c.position = nudge_to_walkable(tf(c.position), toff);
         }
         // Bend the path with DENSIFICATION: the meander swings the corridor path across
         // the fan, so a straight world chord between two far-apart-in-bearing waypoints
@@ -1266,10 +1355,10 @@ impl Arena {
         // the web trails + portal onto walkable ground (the web isn't A*-routed), and
         // re-anchor the portal to the routed path's walkable end.
         for (a, b) in self.web.iter_mut() {
-            *a = nudge_to_walkable(*a);
-            *b = nudge_to_walkable(*b);
+            *a = nudge_to_walkable(*a, toff);
+            *b = nudge_to_walkable(*b, toff);
         }
-        self.portal = nudge_to_walkable(self.portal);
+        self.portal = nudge_to_walkable(self.portal, toff);
         if let Some(last) = self.path.last_mut() {
             *last = self.portal;
         }
@@ -1340,6 +1429,7 @@ impl Arena {
         let saved_lateral = self.lateral;
         let saved_path = std::mem::replace(&mut self.path, std::mem::take(&mut self.corridor_path));
         self.lateral = self.corridor_lateral;
+        let toff = self.terrain_off;
         // Snapshot the tails so we can bend exactly what this section appends.
         let (m0, r0, o0, c0, s0) = (
             self.monsters.len(),
@@ -1374,13 +1464,13 @@ impl Arena {
         }
         // Keep streamed chests + harvest nodes off cliffs too (see `radialize`).
         for r in &mut self.resources[r0..] {
-            r.position = nudge_to_walkable(tf(r.position));
+            r.position = nudge_to_walkable(tf(r.position), toff);
         }
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
         for c in &mut self.chests[c0..] {
-            c.position = nudge_to_walkable(tf(c.position));
+            c.position = nudge_to_walkable(tf(c.position), toff);
         }
         // Append this section's new corridor waypoint(s) to the bent public path,
         // densified (see `radialize`) so the streamed trail hugs the arc and stays
@@ -1396,7 +1486,7 @@ impl Arena {
         // Bend this section's new web edges and append to the public `web`.
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
-            self.web.push((nudge_to_walkable(tf(a)), nudge_to_walkable(tf(b))));
+            self.web.push((nudge_to_walkable(tf(a), toff), nudge_to_walkable(tf(b), toff)));
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
@@ -2084,10 +2174,11 @@ impl Arena {
         const CELL: f64 = 1.5;
         let half = self.radial_half;
         let lat = self.corridor_lateral.max(1.0);
+        let (ox, oz) = self.terrain_off;
         // A corridor cell is passable iff its BENT (world) position is walkable ground.
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
-            meld_proto::terrain::routable(w.x as f32, w.y as f32)
+            meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
         };
         // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
         // at large radius, so checking only cell centres would leap over buttes. Check the
@@ -2106,7 +2197,7 @@ impl Arena {
                 let t = s as f64 / steps as f64;
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
                 let w = radial_tf(c, half, lat);
-                if !meld_proto::terrain::routable(w.x as f32, w.y as f32) {
+                if !meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz) {
                     return false;
                 }
             }
@@ -2237,7 +2328,7 @@ impl Arena {
         // WORLD height of a corridor waypoint (bend it, then sample the shared heightmap).
         let world_h = |p: &Position| -> f64 {
             let w = radial_tf(*p, half, lat);
-            meld_proto::terrain::height(w.x as f32, w.y as f32) as f64
+            self.t_height(w.x, w.y)
         };
         let best = route[1..route.len() - 1]
             .iter()
@@ -2798,7 +2889,7 @@ impl Arena {
             // Heightmap CLIFFS: a steep terrain face is an impassable wall — you walk
             // AROUND it, not up it (the slide logic below routes along the edge). Gentle
             // rolling ground stays walkable. World-space, matching `cand`.
-            if !meld_proto::terrain::walkable(cand.x as f32, cand.y as f32) {
+            if !self.t_walkable(cand.x, cand.y) {
                 return None;
             }
             let cl = self.level_at(&cand);
@@ -2880,12 +2971,33 @@ impl Arena {
     }
 }
 
+/// A per-run terrain offset that VARIES the world each seed (so no two runs grow the
+/// same hills at the hub) but keeps the HUB itself on gentle, walkable ground — so spawn
+/// is never buried under a cliff and area-0 generation stays feasible (a cliff at the
+/// origin would box the clear path in and strand generation). Re-hashes the seed until a
+/// small hub ring is routable; the base is mostly gentle so this succeeds within a few
+/// tries, and falls back to the hand-tuned un-shifted field if nothing qualifies.
+fn hub_terrain_offset(seed: u64) -> (f32, f32) {
+    for k in 0..128u64 {
+        let off = meld_proto::terrain::seed_offset(seed ^ k.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let hub_ok = meld_proto::terrain::routable(0.0, 0.0, off.0, off.1)
+            && (0..8).all(|i| {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                meld_proto::terrain::routable(12.0 * a.cos(), 12.0 * a.sin(), off.0, off.1)
+            });
+        if hub_ok {
+            return off;
+        }
+    }
+    (0.0, 0.0)
+}
+
 /// Nudge `p` off any heightmap CLIFF to the nearest walkable ground, spiralling out.
 /// Buttes are small + convex and sit in a connected walkable base, so a short search
 /// always finds walkable terrain around them — this routes the clear path AROUND a
 /// cliff instead of through it, keeping the world feasible under slope collision.
-fn nudge_to_walkable(p: Position) -> Position {
-    if meld_proto::terrain::walkable(p.x as f32, p.y as f32) {
+fn nudge_to_walkable(p: Position, off: (f32, f32)) -> Position {
+    if meld_proto::terrain::walkable(p.x as f32, p.y as f32, off.0, off.1) {
         return p;
     }
     for step in 1..48 {
@@ -2893,7 +3005,7 @@ fn nudge_to_walkable(p: Position) -> Position {
         for k in 0..12 {
             let a = k as f64 * std::f64::consts::TAU / 12.0;
             let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
-            if meld_proto::terrain::walkable(q.x as f32, q.y as f32) {
+            if meld_proto::terrain::walkable(q.x as f32, q.y as f32, off.0, off.1) {
                 return q;
             }
         }
@@ -3058,7 +3170,10 @@ mod tests {
     #[test]
     fn seam_wall_blocks_crossing_outside_the_gap() {
         let b = corridor_balance();
-        let mut arena = Arena::generate(&b, 7, true);
+        // Un-seeded terrain: this asserts SEAM-WALL geometry (a gap-only crossing), which
+        // is independent of per-run terrain; the seeded field's own feasibility is covered
+        // by the walker sweep. (A seeded mesa could otherwise sit on this exact gap point.)
+        let mut arena = Arena::build_with(&b, 7, true, None, (0.0, 0.0));
         let seam = arena.seams[0].clone();
         arena.add_avatar("p".into(), 100.0); // fast: one step would cross the seam
         // Far from the gap in y → the wall blocks the crossing.
@@ -3300,7 +3415,10 @@ mod tests {
     #[test]
     fn areas_trend_larger_and_carry_creatures() {
         let b = Balance::load_default().unwrap();
-        let arena = Arena::generate(&b, 7, true);
+        // Un-seeded terrain: asserts area SIZING + the portal-in-bounds invariant, which a
+        // per-run mesa nudging the portal shouldn't perturb (terrain variety is tested by
+        // the walker sweep). Deterministic structure only.
+        let arena = Arena::build_with(&b, 7, true, None, (0.0, 0.0));
         assert_eq!(arena.areas.len(), b.worldgen.area_count);
         assert!(!arena.monsters.is_empty());
         // Every area has a portal past its creatures and at least one creature.
@@ -3550,13 +3668,14 @@ mod tests {
         let (mut summits, mut checked) = (0usize, 0usize);
         for seed in 0u64..48 {
             let a = Arena::generate(&b, seed, false);
+            let (ox, oz) = a.terrain_offset();
             for c in &a.chests {
                 checked += 1;
-                let h = meld_proto::terrain::height(c.position.x as f32, c.position.y as f32) as f64;
+                let h = meld_proto::terrain::height(c.position.x as f32, c.position.y as f32, ox, oz) as f64;
                 if h >= b.worldgen.summit_min_height {
                     summits += 1;
                     assert!(
-                        meld_proto::terrain::walkable(c.position.x as f32, c.position.y as f32),
+                        meld_proto::terrain::walkable(c.position.x as f32, c.position.y as f32, ox, oz),
                         "seed {seed}: summit chest at height {h:.1} must sit on walkable ground"
                     );
                 }

@@ -44,6 +44,9 @@ struct BiomeParams {
     // City/menus (flat ground — those scenes are hand-placed for a level plaza, and the
     // rolling heightmap would tilt every prop and shade the troughs into blue ribbons).
     terrain_amp: f32,
+    // This run's terrain offset (matches `world_render::terrain_offset`), so the field —
+    // and the route through it — differs every run instead of the same hills at the hub.
+    terrain_off: vec2<f32>,
 }
 
 @group(2) @binding(100) var t_forest: texture_2d<f32>;
@@ -76,10 +79,14 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     var world_position = mesh_functions::mesh_position_local_to_world(
         world_from_local, vec4<f32>(vertex.position, 1.0));
     let amp = params.terrain_amp;
-    world_position.y += amp * terrain_height_wgsl(world_position.xz);
+    // Shift the sample by the run's offset so each run grows different hills (see
+    // `world_render::terrain_offset`) — the world_position itself is unchanged, only where
+    // we READ the height field, so ground + entities (same offset) stay in lock-step.
+    let sp = world_position.xz + params.terrain_off;
+    world_position.y += amp * terrain_height_wgsl(sp);
     out.world_position = world_position;
     out.position = position_world_to_clip(world_position.xyz);
-    out.world_normal = terrain_normal(world_position.xz, amp);
+    out.world_normal = terrain_normal(sp, amp);
     out.uv = vertex.uv;
     out.instance_index = vertex.instance_index;
     return out;
