@@ -3924,10 +3924,16 @@ mod tests {
             .find(|a| a.dungeon)
             .expect("a dungeon section exists in the chain");
         let (s, e) = (dungeon.start_x, dungeon.end_x);
-        let walls = arena.obstacles.iter().filter(|o| o.position.x >= s && o.position.x <= e).count();
+        // The section is a RADIUS band in the bent world, so test by radius (hypot), not
+        // world-x — after the radial bend `position.x` is `r·cosθ`, not the radius.
+        let in_dungeon = |p: &Position| {
+            let r = p.x.hypot(p.y);
+            r >= s && r <= e
+        };
+        let walls = arena.obstacles.iter().filter(|o| in_dungeon(&o.position)).count();
         assert!(walls > 0, "dungeon carries divider-wall obstacles");
         assert!(
-            arena.chests.iter().any(|c| c.position.x >= s && c.position.x <= e),
+            arena.chests.iter().any(|c| in_dungeon(&c.position)),
             "dungeon has a guaranteed loot chest",
         );
     }

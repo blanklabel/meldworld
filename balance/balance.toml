@@ -350,9 +350,9 @@ maze_radial_scale_cap = 4.0      # max × the arc-stretch can multiply an area's
 biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
-path_clear_radius = 4.0          # half-width of the guaranteed clear path tube
+path_clear_radius = 1.9          # half-width of the guaranteed route's slit. NARROW (was a 4.0 "highway" that read as a corridor) — just wide enough to pass, so the backbone is one trail among the web, not an obvious cleared lane. A route always EXISTS; you have to find it.
 path_meander = 18.0              # how far ±y the clear path wanders between areas
-web_trails_per_area = 3.0        # extra WEB trails woven through each section (branches/loops/spurs) so the overworld is an interconnected maze of routes, not one lane (narrow slits — the dense terrain stays the walls)
+web_trails_per_area = 5.0        # extra WEB trails woven through each section (branches/loops/spurs) so the overworld is an interconnected maze of routes, not one lane (narrow slits — the dense terrain stays the walls)
 player_radius = 0.5              # the avatar's collision radius vs obstacles
 
 # Verticality: raised terraces joined to the ground by connectors (ladders/ropes/

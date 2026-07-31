@@ -388,51 +388,17 @@ pub(crate) fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
         .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
 }
 
-/// Draw the guaranteed clear path as a faint glowing trail of ground discs so the
-/// feasible route through the terrain reads at a glance. Redraws whenever the trail
-/// is gone (e.g. after returning from a battle, where the overworld is despawned).
+/// The backbone route is NO LONGER drawn as a glowing "walkway" — that highlighted trail
+/// (plus the old wide clear tube) read as a tutorial corridor. A traversable route still
+/// exists, but you have to FIND it through the maze; the client keeps any legacy trail
+/// discs cleared so none linger. (`draw_web_trails` still hints the branch network.)
 pub(crate) fn draw_path_trail(
     mut commands: Commands,
     mut world_path: ResMut<WorldPath>,
     existing: Query<Entity, With<PathTrail>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
-    if world_path.points.len() < 2 {
-        return;
-    }
-    if world_path.drawn && !existing.is_empty() {
-        return;
-    }
     for e in &existing {
         commands.entity(e).despawn();
-    }
-    let disc = meshes.add(Circle::new(0.35));
-    let mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.95, 0.9, 0.5, 0.2),
-        emissive: LinearRgba::rgb(0.5, 0.45, 0.15),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-    let step = 2.5_f32; // world units between dots
-    for w in world_path.points.windows(2) {
-        let (ax, ay) = w[0];
-        let (bx, by) = w[1];
-        let seg = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
-        let n = (seg / step).ceil().max(1.0) as i32;
-        for i in 0..=n {
-            let t = i as f32 / n as f32;
-            let x = ax + (bx - ax) * t;
-            let y = ay + (by - ay) * t;
-            commands.spawn((
-                PathTrail,
-                Mesh3d(disc.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(world_pos(x, y, 0.15)).with_rotation(flat),
-            ));
-        }
     }
     world_path.drawn = true;
 }
@@ -1391,14 +1357,17 @@ pub(crate) fn build_world_walls(
         // western return border with a central gatehouse; behind it, towers + rooftops
         // read as the city itself — mostly glimpsed THROUGH the open gate as you
         // approach. Crossing west of `west_return_border` returns you; the gate marks
-        // the line. All models sit at y=0 (Kenney base-origin), so nothing floats.
+        // the line. The seeded terrain is no longer flat at y=0, so the whole city is set
+        // on ONE terrain height (at the gate) — grounded so it never floats in the sky,
+        // and rigid (a single base so the wall/towers don't step across the rolling ground).
         let wx = frame.west_return_border;
         let arc_deg = frame.radial_arc_degrees;
+        let city_base_y = crate::world_render::terrain_height(wx, 0.0);
         let prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
             commands.spawn((
                 WorldWall,
                 SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
-                Transform::from_xyz(x, 0.0, z)
+                Transform::from_xyz(x, city_base_y, z)
                     .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
                     .with_scale(Vec3::splat(scale)),
             ));
