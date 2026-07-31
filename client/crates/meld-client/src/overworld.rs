@@ -451,12 +451,13 @@ pub(crate) fn draw_web_trail(
 
 /// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
 /// and the run backpack moved off the HUD into the menu (Status tab — see
-/// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: the
-/// "join the fight" prompt and active server-side perk hints.
+/// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: only
+/// the "join the fight" prompt. (Passive-perk hints like "Regen"/"Bulwark" were
+/// dropped — the party always has a Resonant, so "Regen" was always on and read as a
+/// stuck status badge cluttering the world map.)
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
-    perks: Res<PerksRes>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
@@ -467,13 +468,6 @@ pub(crate) fn update_overworld_hud(
         let mut parts: Vec<String> = Vec::new();
         if near_fight(&world, me_pos) {
             parts.push("\u{f0817} Press [J] to join the fight".into()); // crossed-swords marker
-        }
-        // Active server-side perk hints (Resonant regen, Iron Hull bulwark).
-        if perks.0.resonant_regen > 0.0 {
-            parts.push("Regen".into());
-        }
-        if perks.0.ironhull_aggro_mult < 1.0 {
-            parts.push("Bulwark".into());
         }
         **t = parts.join("  -  ");
     }

@@ -368,6 +368,7 @@ stream_lookahead = 60.0          # generate new sections this far ahead of the f
 path_climb_chance = 0.6          # chance a section's clear path climbs a plateau (0..1)
 chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace (0..1)
 peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
+summit_min_height = 7.0          # min world terrain height a clear-path crest must reach to earn a summit reward (heightmap #3); filters flat sections
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

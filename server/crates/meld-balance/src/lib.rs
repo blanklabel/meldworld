@@ -320,6 +320,10 @@ pub struct WorldGen {
     /// the top (otherwise a guaranteed treasure chest crowns it). Boss is held off the
     /// tutorial regardless. The "there's always a payoff for the climb" knob (#3).
     pub peak_boss_chance: f64,
+    /// Minimum WORLD terrain height a clear-path crest must reach to earn a summit
+    /// reward (#3, heightmap era). Filters flat/gentle sections so a boss/chest only
+    /// crowns a genuine hill the route actually climbs — not every meander bump.
+    pub summit_min_height: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).
