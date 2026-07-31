@@ -29,7 +29,7 @@ pub(crate) struct ClassInfo {
 }
 
 pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
-    ClassInfo { key: "hunter", name: "Hunter", role: "Front-line bruiser. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
+    ClassInfo { key: "hunter", name: "Explorer", role: "Rugged front-line trailblazer. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
         ("Power Strike", "a heavy hit"),
         ("Second Wind", "heal yourself (Lv2)"),
         ("Snare", "hit + drain the foe's turn gauge (Lv2)"),
@@ -421,7 +421,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             });
 
             p.spawn((
-                Text::new("ENTER: dive solo     C: co-op"),
+                Text::new("ENTER: run solo     C: co-op"),
                 TextFont { font_size: 15.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
@@ -891,7 +891,7 @@ pub(crate) fn render_lobby(
     lines.push(String::new());
     let all_ready = !lobby.members.is_empty() && lobby.members.iter().all(|(_, _, r)| *r);
     let start = if host_is_me {
-        if all_ready { "ENTER: start the dive" } else { "ENTER: start (need everyone READY)" }
+        if all_ready { "ENTER: start the run" } else { "ENTER: start (need everyone READY)" }
     } else {
         "waiting for the host to start..."
     };
