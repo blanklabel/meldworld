@@ -111,6 +111,9 @@ pub(crate) fn spawn_hero_actor(
     facing: Vec2,
     bust: bool,
 ) {
+    // Sit the actor on the rolling ground (heightmap), not a flat Y=0 — otherwise the
+    // displaced terrain buries the party/enemies where the battle stages.
+    let root = Vec3::new(root.x, root.y + crate::world_render::terrain_height(root.x, root.z), root.z);
     let class = c
         .statuses
         .iter()
@@ -189,6 +192,8 @@ pub(crate) fn spawn_enemy_actor(
     root: Vec3,
     h: f32,
 ) {
+    // Sit on the rolling ground (heightmap), matching the heroes (see spawn_hero_actor).
+    let root = Vec3::new(root.x, root.y + crate::world_render::terrain_height(root.x, root.z), root.z);
     // Exactly the billboard the overworld uses for this creature: resolve by the
     // normalized kind (strips any champion affix like "Swift ") so a mob keeps its
     // sprite crossing from the overworld into the fight.
@@ -684,8 +689,12 @@ pub(crate) fn battle_camera(
         // base sits a touch closer than before so a lone party fills the frame
         // (there was a lot of empty arena); the auto-fit reclaims the distance for
         // co-op.
-        *t = Transform::from_translation(Vec3::new(0.0, 8.6, 11.2) * dist)
-            .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        // The arena stages on the rolling ground, so lift the framing (eye + target) by
+        // the terrain height at its centre — keeps the party centred instead of framing
+        // empty sky above buried actors.
+        let ah = crate::world_render::terrain_height(0.0, -1.6);
+        *t = Transform::from_translation(Vec3::new(0.0, 8.6, 11.2) * dist + Vec3::new(0.0, ah, 0.0))
+            .looking_at(Vec3::new(0.0, 0.9 + ah, -1.6), Vec3::Y);
         // Battle gets its own mood: a punchier bloom so hits/markers glow, and a
         // tighter fog that closes the arena in (the walkable field beyond hazes off)
         // — without disturbing the shared overworld look. The fog distances scale
