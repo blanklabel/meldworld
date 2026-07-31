@@ -311,10 +311,21 @@ rather than new fields" convention (CLAUDE.md):
 - **DG-4 — traps + puzzles live**. Trap state machine + Dex/Shifter disarm; the
   emitter/receiver runtime (levers, plates, doors, gates, keys, boss-clear, spawn,
   mover); `run.interact`.
-- **DG-5 — loot**. Dungeon-level stamp; rolled (effective-distance) + authored +
-  hybrid chests; richer dungeon richness.
-- **DG-6 — client**. Render the entrance, floors, stairs, traps/puzzle props, boss
-  arena; space transitions; the "you're committed" framing.
+- **DG-5 — loot** ✅ *(shipped)*. `DungeonInstance::resolve_chest` (in
+  `meld-dungeon-run`) turns a chest's `ChestLoot` into a `ChestReward` scaled by the
+  floor's `effective_distance` — **rolled** (reuses `meld_world::roll_creature_loot`),
+  **authored** (fixed contents), **hybrid** (both). Rides the *stamped* distance, not
+  the meaningless dungeon-local position; richness/rarity are driver params. 5 tests.
+  Banking the reward into the run backpack is DG-3b.
+- **DG-6 — client**, split like DG-3:
+  - **DG-6a — visualizer** ✅ *(shipped)*. `meld-dungeon-viz`: `to_svg(&DungeonDef)`
+    renders a top-down map of every floor (walls, entrance/exit, stairs, traps,
+    levers/plates, doors/gates, keys, boss, treasure, legend) so an author can *see*
+    a dungeon without the game; `dungeon-preview` bin dumps the pool. The reference
+    the in-game render matches.
+  - **DG-6b — in-game** *(pending)*. The live Bevy render of a dungeon space + the
+    space transitions + the "you're committed" framing — needs DG-3b's wire surface
+    (pending SC-3).
 - **DG-7 — CANON + spec**. `D`-number, `behaviors/dungeons.md`, `interfaces/`
   updates; tick WG-1.
 

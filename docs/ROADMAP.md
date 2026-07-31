@@ -255,8 +255,19 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     global instance.
   - [ ] **DG-4** — traps + puzzles live (state machine, Dex/Shifter disarm,
     emitter/receiver runtime, `run.interact`).
-  - [ ] **DG-5** — loot: dungeon-level stamp, rolled + authored + hybrid chests.
-  - [ ] **DG-6** — client rendering (entrance, floors, stairs, traps/puzzles, boss).
+  - [x] **DG-5** — loot: `DungeonInstance::resolve_chest` turns a chest's
+    `ChestLoot` into a reward scaled by the floor's `effective_distance` (deeper =
+    richer, off the *stamped* distance not local position) — **rolled** (reuses
+    `roll_creature_loot`), **authored** (fixed designer contents), and **hybrid**
+    (guaranteed + rolled). Pure, in `meld-dungeon-run`; tunables (richness / rarity)
+    are driver params so no `balance.toml` churn. 5 tests. (Wiring the reward into
+    the run backpack is part of DG-3b.)
+  - [ ] **DG-6** — client rendering. 🟡 *DG-6a (visualizer) shipped:* `meld-dungeon-viz`
+    renders any `DungeonDef` to a top-down **SVG** (walls, entrance/exit, stairs,
+    traps, levers/plates, doors/gates, keys, boss, treasure, legend) — see an
+    authored dungeon without running the game; `dungeon-preview` bin dumps the whole
+    pool. The reference the in-game view will match. **Remaining — DG-6b:** the live
+    Bevy render of a dungeon space (needs DG-3b's wire surface, pending SC-3).
   - [ ] **DG-7** — CANON `D`-number + `behaviors/dungeons.md`; tick WG-1.
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first

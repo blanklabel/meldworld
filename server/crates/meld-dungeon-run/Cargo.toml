@@ -8,3 +8,6 @@ description = "Dungeon runtime engine (DG-3a): the live-subinstance state model 
 [dependencies]
 meld-dungeon-content = { path = "../meld-dungeon-content" }
 meld-proto.workspace = true
+# DG-5 loot resolution reuses the world's distance-scaled roll + the balance table.
+meld-world.workspace = true
+meld-balance.workspace = true
