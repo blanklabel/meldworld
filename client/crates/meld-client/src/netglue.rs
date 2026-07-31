@@ -142,7 +142,11 @@ pub(crate) fn pump_net(
                     next.set(Screen::City);
                 }
             }
-            ServerMsg::RunStarted => {
+            ServerMsg::RunStarted { terrain_off } => {
+                // Seed this run's terrain BEFORE the ground/entities render, so the shader
+                // + every entity Y grow the same per-run-varied hills (no "same hill by the
+                // hub every run").
+                crate::world_render::set_terrain_offset(terrain_off.0, terrain_off.1);
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();

@@ -53,7 +53,7 @@ fn main() {
                         tutorial: false,
                     });
                 }
-                ServerMsg::RunStarted => {
+                ServerMsg::RunStarted { .. } => {
                     entered = true;
                     eprintln!("[smoke] run started; walking to the monster");
                 }
