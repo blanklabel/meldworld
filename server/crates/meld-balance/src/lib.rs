@@ -249,6 +249,10 @@ pub struct WorldGen {
     pub dungeon_creature_mult: f64,
     pub dungeon_wall_radius: f64,
     pub dungeon_door_half: f64,
+    /// DG-3: per-streamed-section chance of a hand-designed dungeon entrance.
+    pub dungeon_spawn_chance: f64,
+    /// DG-3/DG-5: effective-distance (difficulty + loot) added per dungeon floor.
+    pub dungeon_depth_level_step: i64,
     /// WG-4: crossing this far west of the hub returns the player to Last City.
     pub west_return_border: f64,
     /// WG-4: bend the generated corridor into a radial arc of this many degrees.

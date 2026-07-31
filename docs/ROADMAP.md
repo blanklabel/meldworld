@@ -247,12 +247,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     between floors, end-exit detection, the committed-space rule, and the
     per-floor `effective_distance` difficulty stamp), and **seeded entrance
     placement** from the biome pool (`roll_entrance`). Pure + deterministic; 14
-    unit tests + doctest. **Remaining — DG-3b (the `game.rs` wiring):** own a
-    map-of-spaces + avatar `Location` in the loop, place entrances as the world
-    streams, and the enter/seal/exit/death flow + per-space snapshots — built *on*
-    **SC-3**'s `WorldActor` (dungeons are content in a world, not their own shard),
-    so it waits on / lands with that refactor rather than churning today's single
-    global instance.
+    unit tests + doctest. **DG-3b (the `game.rs` wiring, on the merged SC-3
+    `WorldActor`) — in progress, staged like SC-3 was:**
+    - *(1/n) — entrances appear ✅* As the world streams, each non-tutorial section
+      rolls a chanced entrance from its biome pool (`dungeon_spawn_chance`) placed on
+      the clear path; the `WorldActor` holds them and the overworld snapshot streams
+      them as `entrance:<dungeon>`. Purely additive — no existing flow changes; core
+      loop qa green. (`place_entrance` in `meld-dungeon-run`, tested.)
+    - *Remaining:* touch-an-entrance → enter (group via `join_radius`), per-player
+      `Location` + per-space snapshots/movement scoping, the seal/exit/death flow,
+      and reject Town Portal while `InDungeon`.
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),

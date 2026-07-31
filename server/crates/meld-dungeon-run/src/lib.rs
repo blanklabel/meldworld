@@ -501,6 +501,32 @@ pub fn roll_entrance(section_seed: u64, biome: &str, spawn_chance: f64) -> Optio
     Some(EntranceRoll { dungeon: pool[pick].name.as_str(), lateral_frac })
 }
 
+/// A placed dungeon entrance: which dungeon, and a concrete overworld position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntrancePlacement {
+    pub dungeon: &'static str,
+    pub position: Position,
+}
+
+/// Roll **and place** a dungeon entrance for a streamed section, given the
+/// section's clear-path segment `p0 → p1` (the driver passes two consecutive path
+/// waypoints). The entrance sits on the segment near mid-section — a guaranteed
+/// walkable, reachable spot — at a deterministic fraction in `[0.35, 0.65]` from
+/// `lateral_frac`, so entrances don't all land dead-centre. `None` when
+/// [`roll_entrance`] declines. Pure + deterministic in `section_seed`.
+pub fn place_entrance(
+    section_seed: u64,
+    biome: &str,
+    spawn_chance: f64,
+    p0: Position,
+    p1: Position,
+) -> Option<EntrancePlacement> {
+    let roll = roll_entrance(section_seed, biome, spawn_chance)?;
+    let t = 0.35 + roll.lateral_frac * 0.30;
+    let position = Position { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
+    Some(EntrancePlacement { dungeon: roll.dungeon, position })
+}
+
 /// A `[0,1)` double from a 64-bit draw (top 53 bits → mantissa).
 fn unit(x: u64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
@@ -569,6 +595,24 @@ mod tests {
         // Over many seeds at a middling chance, we see both spawns and misses.
         let spawns = (0..200u64).filter(|s| roll_entrance(*s, "forest", 0.5).is_some()).count();
         assert!(spawns > 20 && spawns < 180, "≈50% of sections spawn one, got {spawns}/200");
+    }
+
+    #[test]
+    fn place_entrance_sits_on_the_section_path_segment() {
+        let p0 = Position { x: 10.0, y: 4.0 };
+        let p1 = Position { x: 20.0, y: 4.0 };
+        let pl = place_entrance(1, "forest", 1.0, p0, p1).expect("forest spawns at chance 1");
+        assert!(meld_dungeon_content::by_name(pl.dungeon).is_some(), "names a real dungeon");
+        // On the segment, between the 0.35 and 0.65 marks.
+        assert!((13.5..=16.5).contains(&pl.position.x), "x in mid-section, got {}", pl.position.x);
+        assert_eq!(pl.position.y, 4.0, "on the straight segment");
+    }
+
+    #[test]
+    fn place_entrance_declines_when_the_roll_declines() {
+        let p = Position { x: 0.0, y: 0.0 };
+        assert!(place_entrance(1, "forest", 0.0, p, p).is_none(), "chance 0 → no entrance");
+        assert!(place_entrance(1, "no_such_biome", 1.0, p, p).is_none(), "no pool → no entrance");
     }
 
     // --- instance: occupancy + committed space ---

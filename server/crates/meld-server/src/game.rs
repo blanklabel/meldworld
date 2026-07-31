@@ -599,6 +599,22 @@ struct WorldActor {
     /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
     /// bank the sub-1 remainder here and apply whole HP as it accrues).
     regen_accum: HashMap<String, f32>,
+    /// DG-3: hand-designed dungeon entrances placed as the world streams (a chanced
+    /// per-section draw from the biome's authored pool). Rendered in the overworld
+    /// snapshot as `entrance:<dungeon>`; touching one to descend lands in DG-3b's
+    /// next increment.
+    entrances: Vec<DungeonEntrance>,
+    /// Whether this world is the gentle first-dive tutorial — entrances are
+    /// suppressed there to keep onboarding clean.
+    tutorial: bool,
+}
+
+/// A placed dungeon entrance in the overworld (DG-3).
+struct DungeonEntrance {
+    entity_id: String,
+    /// The authored dungeon this entrance leads to (`meld_dungeon_content` name).
+    dungeon: &'static str,
+    position: Position,
 }
 
 impl WorldActor {
@@ -801,6 +817,19 @@ impl WorldActor {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
                 level: None,
+                ..Default::default()
+            });
+        }
+        // DG-3: hand-designed dungeon entrances, tagged `entrance:<dungeon>` — walk
+        // up to descend (the enter flow lands in the next increment). Pushed before
+        // the interest grid so they cull by position like any other entity.
+        for e in &self.entrances {
+            entities.push(wm::SnapshotEntity {
+                entity_id: e.entity_id.clone(),
+                position: e.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("entrance:{}", e.dungeon)),
+                level: Some(0),
                 ..Default::default()
             });
         }
@@ -1654,6 +1683,8 @@ impl GameState {
                 hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
                 regen_accum: HashMap::new(),
+                entrances: Vec::new(),
+                tutorial,
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -3275,6 +3306,29 @@ impl WorldActor {
                     out.push(out_msg(&r.player_id, &msg));
                 }
             }
+        }
+        // DG-3b: roll a hand-designed dungeon entrance for each freshly-streamed
+        // section (chanced, from the biome's authored pool), placed on the section's
+        // clear-path segment. Suppressed during the tutorial. The entrance streams to
+        // clients via `snapshot_msgs` as `entrance:<dungeon>`; the touch→descend flow
+        // lands in the next increment.
+        if !created_sections.is_empty() && !self.tutorial {
+            let chance = self.balance.worldgen.dungeon_spawn_chance;
+            let mut placed: Vec<DungeonEntrance> = Vec::new();
+            for &i in &created_sections {
+                let Some(area) = self.arena.areas.get(i) else { continue };
+                let p0 = self.arena.path.get(i).copied().unwrap_or(area.portal);
+                let p1 = self.arena.path.get(i + 1).copied().unwrap_or(p0);
+                let seed = meld_world::section_seed(self.arena.seed, i);
+                if let Some(pl) = meld_dungeon_run::place_entrance(seed, area.biome, chance, p0, p1) {
+                    placed.push(DungeonEntrance {
+                        entity_id: format!("dungeon-entrance-{i}"),
+                        dungeon: pl.dungeon,
+                        position: pl.position,
+                    });
+                }
+            }
+            self.entrances.extend(placed);
         }
         // Resonant "Overworld Regen": top up carried hero HP while walking (feeds
         // the next fight's starting HP). Server-authoritative; emits no messages.

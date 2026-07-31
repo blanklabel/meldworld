@@ -301,13 +301,16 @@ rather than new fields" convention (CLAUDE.md):
     difficulty stamp), and **seeded entrance placement** from the biome pool
     (`roll_entrance`). Pure + deterministic (splitmix64), 14 unit tests + doctest,
     no `game.rs` changes — the same isolation as DG-1/DG-2.
-  - **DG-3b — the `game.rs` wiring** *(pending)*. Own a map of spaces + avatar
-    `Location` **inside the world-actor** (built on / after **SC-3**'s `Router` +
-    `WorldActor` refactor — dungeons are content in a world, not their own shard);
-    entrance placement in `ensure_frontier` (`dungeon_spawn_chance`); the
-    enter/seal/exit/death flow; per-space snapshots via **SC-1**'s interest index;
-    `[worldgen]` tunables (`dungeon_spawn_chance`, `dungeon_depth_level_step`).
-    Deferred rather than churning today's single global instance twice.
+  - **DG-3b — the `game.rs` wiring** *(in progress on the merged `WorldActor`,
+    staged like SC-3)*.
+    - *(1/n) entrances appear* ✅ — the `WorldActor` rolls a chanced entrance per
+      streamed non-tutorial section (`dungeon_spawn_chance`, from the biome pool,
+      placed on the clear path via `meld_dungeon_run::place_entrance`) and streams it
+      in the overworld snapshot as `entrance:<dungeon>`. Purely additive; core-loop
+      qa green. `[worldgen]` tunables `dungeon_spawn_chance` + `dungeon_depth_level_step`.
+    - *Remaining* — touch → enter (group via `join_radius`), per-player `Location`
+      + per-space snapshots/movement scoping (SC-1 interest index), the
+      seal/exit/death flow, and rejecting Town Portal while `InDungeon`.
 - **DG-4 — traps + puzzles live**, engine-first like DG-3:
   - **DG-4a — the engine** ✅ *(shipped)*. The puzzle emitter/barrier runtime
     already lives in `meld-dungeon-run` (DG-3a: levers/plates/keys/boss-clear open
