@@ -1209,14 +1209,19 @@ impl Arena {
             // creature's hub-distance is its corridor x, so `step_creatures` clamps its
             // radius to this band and it never wanders out of its biome ring (#10).
         }
+        // Chests + harvest nodes are scattered without a walkability check, so the bend
+        // can drop one onto a heightmap CLIFF — an unreachable reward. Nudge each onto
+        // the nearest walkable ground so everything the player is meant to collect stays
+        // reachable. (Summit chests already sit on the walkable route, so it's a no-op
+        // for them.) Obstacles are left on cliffs — impassable scenery is fine there.
         for r in &mut self.resources {
-            r.position = tf(r.position);
+            r.position = nudge_to_walkable(tf(r.position));
         }
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
         for c in &mut self.chests {
-            c.position = tf(c.position);
+            c.position = nudge_to_walkable(tf(c.position));
         }
         // Bend the path with DENSIFICATION: the meander swings the corridor path across
         // the fan, so a straight world chord between two far-apart-in-bearing waypoints
@@ -1349,14 +1354,15 @@ impl Arena {
             // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
             // creatures also stay inside their own biome ring (#10).
         }
+        // Keep streamed chests + harvest nodes off cliffs too (see `radialize`).
         for r in &mut self.resources[r0..] {
-            r.position = tf(r.position);
+            r.position = nudge_to_walkable(tf(r.position));
         }
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
         for c in &mut self.chests[c0..] {
-            c.position = tf(c.position);
+            c.position = nudge_to_walkable(tf(c.position));
         }
         // Append this section's new corridor waypoint(s) to the bent public path,
         // densified (see `radialize`) so the streamed trail hugs the arc and stays
@@ -1634,17 +1640,20 @@ impl Arena {
         // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
         // terrace/chest draws below stay byte-stable.
         let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
-        // Crown a climbed summit with a payoff (#3): a gate-boss guards the top on a
-        // `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards the
-        // climb — so scaling a mountain is always worth it. The boss is held off the
-        // tutorial (a first dive's climb tops out in loot, not a wall of HP); every run
-        // still gets one or the other. Its own rng stream keeps the main creature/
-        // obstacle/chest draws byte-stable.
+        // Crown a walkable SUMMIT with a payoff (#3): where the A*-routed clear path
+        // climbs over a genuine crest of the rolling heightmap, a gate-boss guards the
+        // top on a `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards
+        // the climb — so scaling a hill is always worth it. No discrete terrace now: the
+        // crest IS the heightmap, so the reward sits at elevation 0 on high ground (the
+        // client grounds every entity on `terrain_height`), and it's guaranteed reachable
+        // because it lands ON the cleared route. Boss is held off the tutorial (a first
+        // dive tops out in loot, not a wall of HP) and the creature-free hub ring; every
+        // other qualifying summit still gets one or the other. Own rng stream keeps the
+        // main creature/obstacle/chest draws byte-stable.
         let terr_mult = biome_terrace_mult(biome);
-        if let Some((peak, lvl)) = self.maybe_climb_path(&mut terrain, i, wg.path_climb_chance * terr_mult) {
+        if let Some(peak) = self.heightmap_summit(&route, i, wg.path_climb_chance * terr_mult, wg.summit_min_height)
+        {
             let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x5EED_9EA1_B055_0BEE);
-            // A summit boss never spawns inside the creature-free hub ring (would pull a
-            // just-spawned player into a fight); such a summit tops out in a chest instead.
             if !self.tutorial && peak.x > wg.hub_safe_radius && prng.unit() < wg.peak_boss_chance {
                 let gidx = self.monsters.len();
                 let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
@@ -1652,7 +1661,6 @@ impl Arena {
                     .push(MonsterSpawn::build(balance, format!("mob-{gidx}"), kinds[0], peak, gseed));
                 self.monsters[gidx].area_min_x = start_x;
                 self.monsters[gidx].area_max_x = end_x;
-                self.monsters[gidx].elevation = lvl; // must climb to fight it
                 self.monsters[gidx].promote(
                     enc.gatekeeper_hp_mult,
                     enc.gatekeeper_atk_mult,
@@ -1666,7 +1674,7 @@ impl Arena {
                     position: peak,
                     tier: Scaling::new(balance).tier(peak.x.floor() as i64) as i32,
                     opened: false,
-                    elevation: lvl, // must climb to open it
+                    elevation: 0,
                 });
             }
         }
@@ -2184,45 +2192,34 @@ impl Arena {
         cells.iter().skip(1).map(|&c| pos_of(c)).collect()
     }
 
-    /// Returns the plateau **top centre** (on the path) + its level when a climb was
-    /// raised, so the caller can crown the summit with a reward (boss or chest).
-    fn maybe_climb_path(&self, terrain: &mut Terrain, i: usize, climb_chance: f64) -> Option<(Position, u8)> {
-        if self.max_level < 1 || self.path.len() < 2 {
+    /// Where this section's A*-routed clear path climbs over a genuine CREST of the
+    /// rolling heightmap: the interior route waypoint with the greatest WORLD terrain
+    /// height, if that height clears `min_height` (a real hill, not a flat/gentle
+    /// section). Returned in CORRIDOR space (bent with the rest of the section by
+    /// `radialize`); the caller crowns it with a boss or chest. Guaranteed reachable
+    /// because it lands ON the cleared route. Endpoints are excluded so the reward never
+    /// sits on a section seam. Own rng stream keeps the main draws byte-stable.
+    fn heightmap_summit(&self, route: &[Position], i: usize, chance: f64, min_height: f64) -> Option<Position> {
+        // Need at least one interior waypoint between the two seam endpoints.
+        if route.len() < 3 {
             return None;
         }
         let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x9A5E_9A5E_9A5E_9A5E);
-        if prng.unit() >= climb_chance {
+        if prng.unit() >= chance {
             return None;
         }
-        let from = self.path[self.path.len() - 2];
-        let to = self.path[self.path.len() - 1];
-        let dx = to.x - from.x;
-        // Need room for a level-0 approach, the plateau, and two ramps.
-        if dx <= 14.0 {
-            return None;
-        }
-        let level: u8 = 1 + prng.below(self.max_level.max(1) as usize) as u8;
-        let px0 = from.x + dx * 0.30;
-        let px1 = from.x + dx * 0.70;
-        let y_at = |x: f64| from.y + (to.y - from.y) * (x - from.x) / dx;
-        let (y0, y1) = (y_at(px0), y_at(px1));
-        let clear = self.path_clear_radius + self.terrain_cell;
-        raise_terrace(terrain, px0, y0.min(y1) - clear, px1, y0.max(y1) + clear, level);
-        // Ramps ON the path at each boundary — always slopes, and wide enough that a
-        // walker anywhere in the path tube crosses within reach.
-        let ramp_r = (self.path_clear_radius + 0.5).max(self.connector_radius);
-        for (k, (rx, ry)) in [(px0, y0), (px1, y1)].into_iter().enumerate() {
-            terrain.connectors.push(Connector {
-                entity_id: format!("pramp-{i}-{k}"),
-                kind: ConnectorKind::Slope,
-                position: Position::new(rx, ry),
-                lo: 0,
-                hi: level,
-                radius: ramp_r,
-            });
-        }
-        let mx = (px0 + px1) * 0.5;
-        Some((Position::new(mx, y_at(mx)), level))
+        let half = self.radial_half;
+        let lat = self.corridor_lateral.max(1.0);
+        // WORLD height of a corridor waypoint (bend it, then sample the shared heightmap).
+        let world_h = |p: &Position| -> f64 {
+            let w = radial_tf(*p, half, lat);
+            meld_proto::terrain::height(w.x as f32, w.y as f32) as f64
+        };
+        let best = route[1..route.len() - 1]
+            .iter()
+            .copied()
+            .max_by(|a, b| world_h(a).total_cmp(&world_h(b)))?;
+        (world_h(&best) >= min_height).then_some(best)
     }
 
     /// Half-width of a WEB trail's cleared slit — narrower than the backbone tube so the
@@ -3515,6 +3512,34 @@ mod tests {
         // #9: the Mire's dense fill is impassable water (`bog_pool`) — a flooded maze,
         // not a field of solid props.
         assert_eq!(fill_kind_for_biome("mire"), "bog_pool");
+    }
+
+    #[test]
+    fn heightmap_summits_crown_high_walkable_ground() {
+        // #3 (heightmap era): where the clear path climbs a genuine crest, a boss/chest
+        // crowns it. The reward sits at elevation 0 on the rolling heightmap itself, ON
+        // the cleared route — so it's always reachable. Assert that summit rewards do
+        // appear, and that any reward on high ground sits on WALKABLE terrain (never
+        // stranded on a cliff face). A chest above `summit_min_height` is a summit chest
+        // (the tutorial starter chest sits low by the hub; discrete terraces are retired).
+        let b = Balance::load_default().unwrap();
+        let (mut summits, mut checked) = (0usize, 0usize);
+        for seed in 0u64..48 {
+            let a = Arena::generate(&b, seed, false);
+            for c in &a.chests {
+                checked += 1;
+                let h = meld_proto::terrain::height(c.position.x as f32, c.position.y as f32) as f64;
+                if h >= b.worldgen.summit_min_height {
+                    summits += 1;
+                    assert!(
+                        meld_proto::terrain::walkable(c.position.x as f32, c.position.y as f32),
+                        "seed {seed}: summit chest at height {h:.1} must sit on walkable ground"
+                    );
+                }
+            }
+        }
+        assert!(checked > 0, "sections produce chests");
+        assert!(summits > 0, "summit rewards crown crests across 48 procedural seeds");
     }
 
     #[test]
