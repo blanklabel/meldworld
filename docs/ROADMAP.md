@@ -341,6 +341,18 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
+- [ ] **WG-5 — Mountains as a content pillar (the "new dungeon").** 🟡 *Backlog.* WG-4
+  shipped authored climbable mountains as **landmarks** — a raised dome with a single
+  boss/chest on the summit. The bigger idea: promote a mountain into a **destination
+  with its own content**, the open-air sibling of a WG-1 dungeon. A climb becomes a
+  multi-stage ascent (switchback route, mid-slope guardians/elites, environmental
+  hazards, a real summit encounter + reward tier that scales with the peak's distance),
+  a **committed space** you enter and clear rather than a prop you walk over. Likely
+  reuses the DG authored-space substrate (glyph-grid/manifest for the climb route +
+  placed encounters) projected onto the terrain dome, minus the enclosed walls. Design
+  TBD — fold into [`proposals/verticality.md`](proposals/verticality.md) +
+  [`proposals/dungeons.md`](proposals/dungeons.md) when picked up. Depends on the DG
+  space runtime (DG-3) for the encounter/space model.
 
 ---
 
