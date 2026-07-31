@@ -15,6 +15,7 @@ members = [
     "server/crates/meld-dungeon",
     "server/crates/meld-dungeon-content",
     "server/crates/meld-dungeon-run",
+    "server/crates/meld-dungeon-viz",
     "server/crates/meld-world",
     "server/crates/meld-run",
     "server/crates/meld-server",

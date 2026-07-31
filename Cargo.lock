@@ -1078,8 +1078,17 @@ dependencies = [
 name = "meld-dungeon-run"
 version = "0.1.0"
 dependencies = [
+ "meld-balance",
  "meld-dungeon-content",
  "meld-proto",
+ "meld-world",
+]
+
+[[package]]
+name = "meld-dungeon-viz"
+version = "0.1.0"
+dependencies = [
+ "meld-dungeon-content",
 ]
 
 [[package]]

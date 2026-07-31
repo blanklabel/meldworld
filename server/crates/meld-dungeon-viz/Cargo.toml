@@ -1,0 +1,13 @@
+[package]
+name = "meld-dungeon-viz"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Authored-dungeon visualizer (DG-6a): render a DungeonDef to a top-down SVG so designers/agents can SEE an authored dungeon (entrance, floors, stairs, traps, puzzles, boss, treasure) without the game running. The reference the in-game Bevy renderer (DG-6b) will match."
+
+[[bin]]
+name = "dungeon-preview"
+path = "src/bin/preview.rs"
+
+[dependencies]
+meld-dungeon-content = { path = "../meld-dungeon-content" }

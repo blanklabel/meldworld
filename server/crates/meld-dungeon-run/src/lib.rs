@@ -27,8 +27,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use meld_dungeon_content::{DungeonDef, Id, ObjectKind, StairDir, Tile};
+use meld_balance::Balance;
+use meld_dungeon_content::{ChestItem, ChestLoot, DungeonDef, Id, ObjectKind, StairDir, Tile};
 use meld_proto::common::Position;
+use meld_world::{roll_creature_loot, CreatureLoot};
 
 /// A unique id for a live dungeon subinstance. Minted by the driver (DG-3b) — the
 /// engine never generates one, so many fresh copies of the same dungeon coexist
@@ -277,6 +279,52 @@ impl<'a> DungeonInstance<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DG-5 — chest loot resolution
+// ---------------------------------------------------------------------------
+
+/// What a dungeon chest yields when opened. The driver banks `rolled` (material +
+/// chits + gear, exactly like an overworld chest) and grants each `authored` item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChestReward {
+    /// The effective distance the roll was scaled to (`level + floor × depth_step`).
+    pub effective_distance: i64,
+    /// The distance-scaled roll (`Rolled` / `Hybrid` chests), else `None`.
+    pub rolled: Option<CreatureLoot>,
+    /// Designer-authored fixed contents (`Authored` / `Hybrid` chests), else empty.
+    pub authored: Vec<ChestItem>,
+}
+
+impl DungeonInstance<'_> {
+    /// Resolve `chest_id`'s loot (design §6). `Rolled`/`Hybrid` chests roll off the
+    /// chest's floor's [`Self::effective_distance`] — so **deeper = richer** and the
+    /// whole thing rides the *dungeon's stamped distance*, not the meaningless
+    /// dungeon-local position. `richness` (≈`dungeon_chest_richness`) and
+    /// `loot_mult` (≈`dungeon_loot_rarity_bonus`) are driver-supplied tunables.
+    /// `None` if `chest_id` is not a chest.
+    pub fn resolve_chest(
+        &self,
+        chest_id: &str,
+        balance: &Balance,
+        richness: i32,
+        loot_mult: f64,
+        seed: u64,
+    ) -> Option<ChestReward> {
+        let ObjectKind::Chest { loot, .. } = self.def.objects.get(chest_id)? else {
+            return None;
+        };
+        let floor = self.def.placements.iter().find(|p| p.id == chest_id)?.floor;
+        let effective_distance = self.effective_distance(floor);
+        let roll = || roll_creature_loot(balance, effective_distance, richness, loot_mult, seed);
+        let (rolled, authored) = match loot {
+            ChestLoot::Rolled => (Some(roll()), Vec::new()),
+            ChestLoot::Authored(items) => (None, items.clone()),
+            ChestLoot::Hybrid(items) => (Some(roll()), items.clone()),
+        };
+        Some(ChestReward { effective_distance, rolled, authored })
+    }
+}
+
 /// Map each stair endpoint cell to its partner on the neighbouring floor (both
 /// ways). Relies on validation having paired every stair (one `Down` on floor n,
 /// one `Up` on floor n+1).
@@ -359,6 +407,14 @@ mod tests {
 
     fn forest() -> &'static DungeonDef {
         meld_dungeon_content::by_name("verdant_barrow").expect("DG-2 forest dungeon")
+    }
+
+    fn desert() -> &'static DungeonDef {
+        meld_dungeon_content::by_name("sunken_vault").expect("DG-2 desert dungeon")
+    }
+
+    fn balance() -> Balance {
+        Balance::from_toml_str(Balance::EMBEDDED_DEFAULT).unwrap()
     }
 
     /// Find the (floor, centre) of the single placement of object `id`.
@@ -509,5 +565,62 @@ mod tests {
         assert_eq!(d.effective_distance(0), 250, "floor 0 = the stamped entry distance");
         assert_eq!(d.effective_distance(1), 270, "floor 1 adds one depth step");
         assert_eq!(d.effective_distance(3), 310);
+    }
+
+    // --- DG-5: chest loot resolution ---
+
+    #[test]
+    fn a_rolled_chest_rolls_at_its_floors_effective_distance() {
+        // verdant_barrow's `vault` is a Rolled chest on floor 1.
+        let def = forest();
+        let d = DungeonInstance::new(1, def, 400, 25);
+        let floor = def.placements.iter().find(|p| p.id == "vault").unwrap().floor;
+        let r = d.resolve_chest("vault", &balance(), 4, 1.0, 99).unwrap();
+        assert_eq!(r.effective_distance, d.effective_distance(floor));
+        assert_eq!(r.effective_distance, 400 + floor as i64 * 25, "rides the stamp, not local position");
+        assert!(r.rolled.is_some(), "a Rolled chest produces a roll");
+        assert!(r.authored.is_empty());
+    }
+
+    #[test]
+    fn a_hybrid_chest_grants_the_authored_relic_and_a_roll() {
+        // sunken_vault's `sun_relic` is Hybrid: guaranteed relic + a roll.
+        let d = DungeonInstance::new(1, desert(), 600, 30);
+        let r = d.resolve_chest("sun_relic", &balance(), 4, 1.0, 7).unwrap();
+        assert!(r.rolled.is_some(), "hybrid rolls too");
+        assert_eq!(r.authored.len(), 1);
+        assert_eq!(r.authored[0].gear.as_deref(), Some("sunspine_relic"));
+    }
+
+    #[test]
+    fn chest_loot_is_deterministic_in_the_seed() {
+        let d = DungeonInstance::new(1, forest(), 400, 25);
+        let a = d.resolve_chest("vault", &balance(), 4, 1.0, 1234);
+        let b = d.resolve_chest("vault", &balance(), 4, 1.0, 1234);
+        assert_eq!(a, b, "same seed → same loot");
+    }
+
+    #[test]
+    fn deeper_dungeons_out_scale_shallower_ones_on_average() {
+        // Aggregate chit yield rises with the stamped distance (depth axis, design §6).
+        let bal = balance();
+        let sum = |level: i64| -> i64 {
+            (0..64u64)
+                .filter_map(|s| {
+                    DungeonInstance::new(1, forest(), level, 25)
+                        .resolve_chest("vault", &bal, 4, 1.0, s)
+                        .and_then(|r| r.rolled)
+                        .map(|l| l.chits)
+                })
+                .sum()
+        };
+        assert!(sum(1500) > sum(100), "a deep barrow out-rewards a shallow one");
+    }
+
+    #[test]
+    fn resolving_a_non_chest_is_none() {
+        let d = DungeonInstance::new(1, forest(), 100, 10);
+        assert!(d.resolve_chest("L1", &balance(), 4, 1.0, 0).is_none(), "a lever is not a chest");
+        assert!(d.resolve_chest("nope", &balance(), 4, 1.0, 0).is_none());
     }
 }
