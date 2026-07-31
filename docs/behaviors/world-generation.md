@@ -41,6 +41,33 @@ Related: [run-lifecycle.md](./run-lifecycle.md) (what happens at portals and Gat
 
 ---
 
+## Radial layout, web-of-trails & per-section streaming
+
+**Source:** CANON.md §B (Distance → difficulty, Hubs & run levels), §G (MazeInstance, Chunk, Distance), §S. Roadmap WG-2/WG-3/WG-4 (shipped); design + research in [`../design-notes/worldgen-research.md`](../design-notes/worldgen-research.md).
+
+This section specifies three shipped behaviors of the current build (WG-4 + streaming) that refine the seeded-generation and chunk-streaming flows above. All three preserve the invariants already stated here: difficulty stays `distance = floor(hypot(x, y))`, generation stays deterministic per seed, and world content stays server-authoritative.
+
+### Radial infinite layout (WG-4)
+
+1. The overworld opens **radially** from the Center Hub (Last City): the world fans outward across a wide arc (`radial_arc_degrees` **[TUNABLE]**, ~340°) in every direction except a western sliver reserved for Last City.
+2. A point's **radius** is its distance from the hub, and difficulty rides that radius exactly as `distance = floor(hypot(x, y))` — the radial layout is a presentation of the same distance axis, not a new one. Content is stored in Cartesian corridor coordinates and *bent* into the arc as a post-process; the eastward corridor `x` becomes radius and lateral `y` becomes an angle across the arc. Storage stays Cartesian so obstacle/terrace rejection and seam-stitching stay correct against the un-bent corridor.
+3. **Last City is anchored to the west** by a return border: crossing west of `west_return_border` (a world-x threshold, streamed on `WorldBounds`) returns the player to Last City as an instant free extraction home — the backpack is kept and banked, with no channel, item cost, or death penalty (extraction method `west_return`; see [run-lifecycle.md](./run-lifecycle.md)). The boundary is drawn as a city wall + gate so it is visible before it is crossed.
+
+### Web-of-trails overworld
+
+1. The overworld is **not a single carved corridor**. In addition to the guaranteed hub→portal **clear path** (the backbone; see Chokepoint guarantees), generation weaves a **web of extra trails** — branches, loops, and spurs off the backbone — so the field reads as an interconnected maze of routes with real junctions and choices, not one lane.
+2. Only the backbone `path` carries the feasibility guarantee; the `web` edges are additional traversable routes layered on top. Both are streamed to the client as faint trails (`run.started.path` + `run.started.web`, and each streamed section extends them). Obstacles and terraces are kept clear of both the backbone and the web so every drawn trail stays walkable.
+
+### Per-section streaming
+
+1. The world is generated as a stream of independent **sections**. Each section `n` is generated from its **own** derived seed `section_seed(run_seed, n)`, so one section's RNG draws never perturb another's, and any single section reproduces exactly from `(run_seed, n)`.
+2. Sections are generated **on demand** as the player advances outward (`ensure_frontier`, keyed off the player's radius): the initial chain streams at run start, and new content **rings** are generated just-in-time as the frontier is approached. The world is therefore **endless** — a run has no fixed length, and difficulty keeps scaling with radius as far as the player pushes — while remaining fully reproducible from `run_seed`.
+3. Streamed sections stitch continuously onto the existing world: a new section's clear path starts where the previous section's ended, and its fresh tail is bent into the same arc the initial disk used, so the backbone, the trail web, and the terrain read as one continuous place across seams.
+
+This is the concrete, shipped realization of the abstract "Chunk Streaming" flow below: per-section seeds are the deterministic chunking, and `ensure_frontier` is the on-demand generation.
+
+---
+
 ## Distance → Difficulty Formulas
 
 All formulas operate on integer `distance` (`d`), the floored Euclidean distance from world origin in tile units. All constants are **[TUNABLE]** server config unless marked structural.
@@ -63,7 +90,7 @@ Notes:
 
 ## Biome Bands
 
-Difficulty is a pure function of `distance` (below); the **biome is a difficulty-neutral *skin*** — it picks the section's theme (creature/resource/obstacle tables) but never its difficulty, since creature stats scale from `distance` via `stat_mult` at spawn. So biome *ordering* is randomized per run without affecting fairness (roadmap WG-2/WG-3; design in [`../proposals/worldgen-wg.md`](../proposals/worldgen-wg.md)). *(This stays true under the target model's **Shift**: a Shift retiles a region to a new biome-skin — the biome still carries no steady-state difficulty; the Shift's Force damage + creature/collectable wipe is a discrete **hazard event**, not the biome band's difficulty. CANON §W2.)*
+Difficulty is a pure function of `distance` (below); the **biome is a difficulty-neutral *skin*** — it picks the section's theme (creature/resource/obstacle tables) but never its difficulty, since creature stats scale from `distance` via `stat_mult` at spawn. So biome *ordering* is randomized per run without affecting fairness (roadmap WG-2/WG-3; rationale in [`../design-notes/worldgen-research.md`](../design-notes/worldgen-research.md)). *(This stays true under the target model's **Shift**: a Shift retiles a region to a new biome-skin — the biome still carries no steady-state difficulty; the Shift's Force damage + creature/collectable wipe is a discrete **hazard event**, not the biome band's difficulty. CANON §W2.)*
 
 - **Tutorial run** (an account's first dive, gated on the persistent `has_dived` flag): biomes walk the **fixed distance bands** in the table below — the gentle Forest→Desert→… onboarding (plus the centred, single-creature area 0). The seed is still server-random; the tutorial shapes the biome *order* and area-0 structure, not a fixed world.
 - **Every other run:** each section draws a biome per `section_seed`, excluding the previous section's biome (no adjacent repeat). The *start* biome is randomized too (WG-2), and the *order* varies per run (WG-3). The fixed table below is the tutorial order and the difficulty-band reference; it is no longer the biome order for non-tutorial runs.
@@ -101,7 +128,7 @@ Band boundaries use integer `distance` thresholds (a tile at floored distance ex
 
 1. Procedural generation forces geographic chokepoints (bridges, canyon passes, etc.) at intervals so that outward travel funnels players through shared narrow routes. Chokepoint frequency and geometry are content-table driven **[TUNABLE]**.
 2. Guarantee: the maze is never a fully open plane — every path from a hub to the next tier band crosses at least one generated chokepoint.
-3. Guarantee (reachability): generation never produces an unreachable ring; for every `distance` there exists at least one traversable path from the Center Hub, subject only to Gatekeeper blockers (below). The traversable path may change **elevation** (it can climb a plateau and descend again), but every such level change on the guaranteed path is served by a ramp connector, so the route is always completable — verified across seeds by the `meld-world` clear-path tests. See [`VERTICALITY-PROPOSAL.md`](../proposals/verticality.md).
+3. Guarantee (reachability): generation never produces an unreachable ring; for every `distance` there exists at least one traversable path from the Center Hub, subject only to Gatekeeper blockers (below). The traversable path may change **elevation** (it can climb a plateau and descend again), but every such level change on the guaranteed path is served by a ramp connector, so the route is always completable — verified across seeds by the `meld-world` clear-path tests. See [`verticality.md`](./verticality.md) (CANON D24).
 
 ---
 

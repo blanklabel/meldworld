@@ -87,3 +87,13 @@ Persistent world structure and the seasonal leaderboard.
 | `BiomeBand` | Curated distance band mapping to a biome theme | [world-models.md](data-models/world-models.md) |
 | `Season` | 13-week leaderboard epoch | [world-models.md](data-models/world-models.md) |
 | `VanguardBoardEntry` | One instance's best-distance record on the seasonal Vanguard Board | [world-models.md](data-models/world-models.md) |
+
+### Persistent World & Structures (target — CANON §W)
+
+The persistent, player-seeded world model (D19–D23) the slice evolves toward. **Not yet built** — the current ephemeral `MazeInstance` (see Runs & Maze above) is the precursor.
+
+| Model | Summary | Detail |
+|-------|---------|--------|
+| `World` | Persistent player-seeded overworld shard; persists as seed + event log | [world-models.md](data-models/world-models.md) |
+| `Structure` | Player-built HP-bearing world object (`anchor`/`portal`/`wall`/`stash`); anchor is a `function`, not its own model | [world-models.md](data-models/world-models.md) |
+| `ShiftEvent` | Event-log entry: a Shift that fired or was suppressed by an anchor | [world-models.md](data-models/world-models.md) |

@@ -92,3 +92,24 @@ Because the world generation formula is theoretically infinite, the game accommo
 * The Vanguard Board: A global, real-time leaderboard tracks the highest distance achieved by a 4-player instance.
 * Infinite Scaling: Past the final curated Outer Hub (e.g., Distance 5000), the Rust server continues to procedurally generate the world. Monsters gain exponential stat multipliers and drop highly coveted "Prestige" cosmetic aura items that prove how far a player has pushed.
 * Seasonal Wipes: To keep the Vanguard Board fresh, the infinite scaling leaderboards operate on a seasonal schedule (e.g., every 3 months). When a season ends, the board is immortalized, and top players receive unique cosmetic titles in the Hub.
+
+## §9. Direction note — the Shifting Lands (see CANON §W)
+
+> Added after the original §1–§8; **CANON §W (D19–D23) is authoritative** where this note
+> and the framing above disagree.
+
+The world model has evolved beyond the "ephemeral instanced maze" framing of §2.2/§3 toward
+a **persistent, player-seeded world** — the genre is a **sim / world-builder / desperate
+roguelite**. Players enter a seeded **World** (à la Minecraft) that is the hostile **Shifting
+Lands**: regions periodically **Shift** — swap biome with little warning, damaging and wiping
+what is inside — so the map rearranges rather than sitting still. Against that, players build
+and defend **Structures** — towns, plantable extraction portals, and **anchors** that *pin* a
+region against the Shift while they are defended — to hold ground and push a **seasonal** race
+toward a far end-world boss with the juiciest unlocks.
+
+The extract-or-die loop is unchanged in spirit: returning to the Last City still resets the run
+to Level 1 and drops ephemeral items, and forward towns exist precisely to sustain a deep push
+*without* that reset. What changes is that the **world persists** (as seed + an event log; only
+the *Run* is ephemeral) and actively fights to erase your progress. Authoritative rules: **CANON
+§W**. Fiction + biome bestiary: [`lore/shifting-lands.md`](lore/shifting-lands.md). Server/scaling
+plan: [`proposals/server-scaling.md`](proposals/server-scaling.md).

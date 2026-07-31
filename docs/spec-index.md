@@ -6,7 +6,7 @@ Forward-design behavior specifications derived from the source documents [`../GD
 
 ### interfaces/data-models
 
-Canonical data types split into persistent vs. ephemeral classes: player/progression models (Player, Vault, MeldSkill, ClassEmblem, cosmetics), gear & items (GearItem blue/red insurance, Gem, consumables, wards, materials), runs & maze (MazeInstance, Party, Run, Backpack, AvatarState, Chunk), combat (Battle, BattleCombatant, monsters, GatekeeperBoss), economy (Stall, StallListing, Contract, LedgerEntry), and world & seasons (Hub, BiomeBand, Season, VanguardBoardEntry).
+Canonical data types split into persistent vs. ephemeral classes: player/progression models (Player, Vault, MeldSkill, ClassEmblem, cosmetics), gear & items (GearItem blue/red insurance, Gem, consumables, wards, materials), runs & maze (MazeInstance, Party, Run, Backpack, AvatarState, Chunk), combat (Battle, BattleCombatant, monsters, GatekeeperBoss), economy (Stall, StallListing, Contract, LedgerEntry), world & seasons (Hub, BiomeBand, Season, VanguardBoardEntry), and the **target** persistent-world model (World, Structure, ShiftEvent — CANON §W, not yet built).
 
 → [`interfaces/data-models.md`](interfaces/data-models.md) (index + 6 detail files)
 
@@ -26,9 +26,15 @@ Documents the realtime WebSocket protocol (ephemeral state only): connection lif
 
 ### behaviors/world-generation
 
-Deterministic seeded world generation per MazeInstance: radial distance model, tier/mlevel/stat_mult formulas, biome bands, chunk streaming, chokepoints, Gatekeeper arenas, extraction portal placement, loot banding, and infinite scaling past d=5000.
+Deterministic seeded world generation: radial distance model, tier/mlevel/stat_mult formulas, biome bands, chunk streaming, chokepoints, Gatekeeper arenas, extraction portal placement, loot banding, and infinite scaling past d=5000 — plus the shipped radial infinite layout, web-of-trails overworld, and per-section streaming (WG-4/streaming). The persistent-world + **Shift** target it evolves toward is CANON §W (see the precursor-vs-target banner in the doc).
 
 → [`behaviors/world-generation.md`](behaviors/world-generation.md)
+
+### behaviors/verticality
+
+Terraced verticality (shipped): discrete integer elevation levels, cliffs as impassable walls, connectors (slope/ladder/rope) as the only way to change level, the hub→portal clear-path feasibility invariant, and the additive wire surface (`SnapshotEntity.level`, `world.terrain_section`). CANON D24.
+
+→ [`behaviors/verticality.md`](behaviors/verticality.md)
 
 ### behaviors/run-lifecycle
 

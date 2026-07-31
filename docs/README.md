@@ -20,6 +20,7 @@ is the human table of contents.
 ## Spec — how it must behave
 
 - [`behaviors/`](behaviors/) — observable behavior: [world generation](behaviors/world-generation.md),
+  [verticality](behaviors/verticality.md),
   [run lifecycle](behaviors/run-lifecycle.md), [combat/ATB](behaviors/combat-atb.md),
   [economy](behaviors/economy.md), [meta-progression](behaviors/meta-progression.md),
   [disconnect handling](behaviors/disconnect-handling.md),
@@ -30,17 +31,25 @@ is the human table of contents.
   [data models](interfaces/data-models.md).
 - [`edge-cases/`](edge-cases/limits.md) — the consolidated table of every numeric
   limit, cap, and timeout.
+- [`lore/shifting-lands.md`](lore/shifting-lands.md) — the world fiction + biome
+  bestiary. The **world model** it drives — persistent player-seeded worlds, the
+  **Shift**, and Structures/anchors — is authoritative in **[CANON §W](CANON.md)**.
+- [`design-notes/`](design-notes/worldgen-research.md) — non-normative design
+  rationale (e.g. the worldgen research survey).
 
 ## Proposals — designs not yet folded into CANON
 
 - [`proposals/last-city.md`](proposals/last-city.md) — **Last City**, the persistent
   social/economic hub (M0 shipped; M1–M3 = roadmap epic **LC**).
-- [`proposals/verticality.md`](proposals/verticality.md) — terraces + ladders/ropes/slopes
-  (implemented as a spike; awaiting a CANON §/D-number).
 - [`proposals/server-scaling.md`](proposals/server-scaling.md) — lifting the
   authoritative server's concurrency ceiling (interest indexing → sim/IO split →
-  instance sharding) without breaking the single-owner/no-locks loop; includes a
-  forward-compat analysis of overworld hazards and sieged player towns.
+  world sharding) without breaking the single-owner/no-locks loop; includes a
+  forward-compat analysis of overworld hazards, sieged player towns, and the Shift.
+
+*Graduated out of proposals (shipped + now specced): verticality →
+[`behaviors/verticality.md`](behaviors/verticality.md) + CANON D24; worldgen (WG) →
+[`behaviors/world-generation.md`](behaviors/world-generation.md) +
+[`design-notes/worldgen-research.md`](design-notes/worldgen-research.md).*
 
 ## What's built vs. next
 
