@@ -292,11 +292,22 @@ rather than new fields" convention (CLAUDE.md):
   `verdant_barrow` (forest), `sunken_vault` (desert). *(The embedded form is a
   build-validated JSON blob deserialized once at startup — the compile-time
   guarantee is the validation, not Rust-literal construction.)*
-- **DG-3 — runtime subinstance**. A map of spaces + avatar location **inside the
-  world-actor** (built on / after **SC-3**'s `Router` + `WorldActor` refactor —
-  dungeons are content in a world, not their own shard); entrance placement in
-  `ensure_frontier` (`dungeon_spawn_chance`); enter/exit/seal/death rules; floors +
-  stairs; per-space snapshots via **SC-1**'s interest index; `[worldgen]` tunables.
+- **DG-3 — runtime subinstance**, split so the loop-invasive half waits on SC-3:
+  - **DG-3a — the pure engine** ✅ *(shipped)*. `meld-dungeon-run`: the `Location`
+    model, a live `DungeonInstance` (barrier/emitter puzzle state — reaching a
+    lever/plate/key/boss opens the doors/gates whose condition now holds; stairs
+    between floors; end-exit detection; the committed-space rule
+    `town_portal_allowed() == false`; and the per-floor `effective_distance`
+    difficulty stamp), and **seeded entrance placement** from the biome pool
+    (`roll_entrance`). Pure + deterministic (splitmix64), 14 unit tests + doctest,
+    no `game.rs` changes — the same isolation as DG-1/DG-2.
+  - **DG-3b — the `game.rs` wiring** *(pending)*. Own a map of spaces + avatar
+    `Location` **inside the world-actor** (built on / after **SC-3**'s `Router` +
+    `WorldActor` refactor — dungeons are content in a world, not their own shard);
+    entrance placement in `ensure_frontier` (`dungeon_spawn_chance`); the
+    enter/seal/exit/death flow; per-space snapshots via **SC-1**'s interest index;
+    `[worldgen]` tunables (`dungeon_spawn_chance`, `dungeon_depth_level_step`).
+    Deferred rather than churning today's single global instance twice.
 - **DG-4 — traps + puzzles live**. Trap state machine + Dex/Shifter disarm; the
   emitter/receiver runtime (levers, plates, doors, gates, keys, boss-clear, spawn,
   mover); `run.interact`.

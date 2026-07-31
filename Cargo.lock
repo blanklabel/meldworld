@@ -1075,6 +1075,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "meld-dungeon-run"
+version = "0.1.0"
+dependencies = [
+ "meld-dungeon-content",
+ "meld-proto",
+]
+
+[[package]]
 name = "meld-proto"
 version = "0.1.0"
 dependencies = [
