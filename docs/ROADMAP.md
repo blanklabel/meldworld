@@ -427,6 +427,51 @@ risk. These are the owner's calls to make; this epic just tracks them honestly.
 
 ---
 
+## Epic SC — Server scale & simulation capacity
+
+Lift the authoritative server's concurrency ceiling *without* breaking the
+single-owner/no-locks loop (CANON §S). Full plan + a forward-compat analysis of
+overworld hazards and sieged player towns in
+[`proposals/server-scaling.md`](proposals/server-scaling.md). Today: no admission
+cap, one task drives one global `MazeInstance`; the binding cost is the per-client
+overworld snapshot (**O(sessions × entities)** every tick), not the world sim.
+Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC-1
+(hundreds synced in the hub).
+
+- [ ] **SC-1 — Interest index for the snapshot (chunk grid).** Replace the
+  per-player linear entity scan in `meld-server::snapshot_msgs` with a chunk
+  grid / spatial hash (cell size = `interest_radius_chunks × chunk_size`),
+  turning **O(sessions × E)** → **O(sessions × visible)**; add a per-chunk
+  serialize cache so shared chunks serialize once. Reuses the
+  `HashMap<(i32,i32), Vec<_>>` pattern already in `Arena::step_creatures_with_aggro`.
+  Highest leverage-to-effort item; acceptance = a QA bot-ramp load test. Also the
+  broadphase that overworld projectiles/traps (FS) will reuse.
+- [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
+  immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
+  send in parallel across cores. Decouples sim cadence from snapshot cadence
+  (enables sub-stepped projectiles). Single-owner invariant preserved — workers
+  only read a frozen copy.
+- [ ] **SC-3 — World sharding (`Router` + `WorldActor`).** Split `GameState` into a
+  routing/matchmaking supervisor and one actor per **world/realm** (each its own
+  tick, no locks). A **world** = one **player-seeded** persistent overworld + its
+  players + monsters + **player towns built on it** (towns are content, not their
+  own shard). Worlds are player-created & capped; scale = **many worlds**, a full
+  one queues (no auto-fork — unique towns). Pure single-actor refactor first, then
+  multi-world + hub handoff. Load becomes **O(N × M)** not **O(N²)**. Makes world
+  shards **persistent by default — they hibernate to Postgres when empty and store
+  only the *seed delta*** (built/damaged/harvested/population diffs, not the map;
+  worldgen regenerates the baseline) — the current `runs.is_empty() ⇒ instance =
+  None` is wrong for a buildable/sieged world. Only a player's run/backpack stays
+  ephemeral (level resets to 1 on death *or* extraction). Underpins MON-2 camps +
+  pinned seeds. Add a two-world isolation QA test.
+- [ ] **SC-4 — Cross-process sim + gateways (only when one box can't hold it).**
+  Keep the sim central/authoritative; push per-client fan-out to horizontally-scaled
+  gateway processes next to the sockets. Determinism makes live instance migration
+  a `serde` call; the 100 ms/15 s-ATB clock tolerates the extra hop. Scope as its
+  own doc before building.
+
+---
+
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,
