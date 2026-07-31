@@ -23,19 +23,22 @@
 // Continuous overworld terrain height — MUST match `world_render::terrain_height` in
 // Rust exactly (that places entities/camera; this displaces the ground vertices).
 fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
-    return 3.2 * sin(p.x * 0.018) * cos(p.y * 0.021)
-        + 1.6 * sin(p.x * 0.041 + 1.7) * cos(p.y * 0.036 - 0.9)
-        + 0.8 * sin((p.x + p.y) * 0.058 + 2.3);
+    return 9.0 * sin(p.x * 0.0063 + 0.4) * cos(p.y * 0.0071 - 0.3)
+        + 4.5 * sin(p.x * 0.015 - 0.8) * cos(p.y * 0.013 + 0.5)
+        + 2.2 * sin(p.x * 0.033 + 1.7) * cos(p.y * 0.037 - 0.9)
+        + 0.9 * sin((p.x + p.y) * 0.061 + 2.3);
 }
 
 // Analytic surface normal from the height gradient, so slopes light naturally.
 fn terrain_normal(p: vec2<f32>) -> vec3<f32> {
-    let dhdx = 3.2 * 0.018 * cos(p.x * 0.018) * cos(p.y * 0.021)
-        + 1.6 * 0.041 * cos(p.x * 0.041 + 1.7) * cos(p.y * 0.036 - 0.9)
-        + 0.8 * 0.058 * cos((p.x + p.y) * 0.058 + 2.3);
-    let dhdz = 3.2 * (-0.021) * sin(p.x * 0.018) * sin(p.y * 0.021)
-        + 1.6 * (-0.036) * sin(p.x * 0.041 + 1.7) * sin(p.y * 0.036 - 0.9)
-        + 0.8 * 0.058 * cos((p.x + p.y) * 0.058 + 2.3);
+    let dhdx = 9.0 * 0.0063 * cos(p.x * 0.0063 + 0.4) * cos(p.y * 0.0071 - 0.3)
+        + 4.5 * 0.015 * cos(p.x * 0.015 - 0.8) * cos(p.y * 0.013 + 0.5)
+        + 2.2 * 0.033 * cos(p.x * 0.033 + 1.7) * cos(p.y * 0.037 - 0.9)
+        + 0.9 * 0.061 * cos((p.x + p.y) * 0.061 + 2.3);
+    let dhdz = 9.0 * (-0.0071) * sin(p.x * 0.0063 + 0.4) * sin(p.y * 0.0071 - 0.3)
+        + 4.5 * (-0.013) * sin(p.x * 0.015 - 0.8) * sin(p.y * 0.013 + 0.5)
+        + 2.2 * (-0.037) * sin(p.x * 0.033 + 1.7) * sin(p.y * 0.037 - 0.9)
+        + 0.9 * 0.061 * cos((p.x + p.y) * 0.061 + 2.3);
     return normalize(vec3<f32>(-dhdx, 1.0, -dhdz));
 }
 
