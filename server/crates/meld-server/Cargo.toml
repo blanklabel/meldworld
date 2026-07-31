@@ -26,6 +26,10 @@ meld-api.workspace = true
 meld-battle.workspace = true
 meld-world.workspace = true
 meld-run.workspace = true
+# DG-3b: authored-dungeon runtime (entrance placement + live subinstances) and the
+# compiled content pool it draws from.
+meld-dungeon-run = { path = "../meld-dungeon-run" }
+meld-dungeon-content = { path = "../meld-dungeon-content" }
 
 [lib]
 name = "meld_server"

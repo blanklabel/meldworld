@@ -1140,6 +1140,8 @@ dependencies = [
  "meld-balance",
  "meld-battle",
  "meld-db",
+ "meld-dungeon-content",
+ "meld-dungeon-run",
  "meld-proto",
  "meld-run",
  "meld-world",

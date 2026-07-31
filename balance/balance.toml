@@ -288,6 +288,12 @@ dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal d
 dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
 dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall
 dungeon_door_half = 2.6          # half-width of the door gap a divider leaves on the path
+# Authored dungeons (WG-1 full / DG-3): as the world streams, each non-tutorial
+# section has this chance to also host a hand-designed dungeon ENTRANCE (drawn from
+# its biome's authored pool). 0 disables. Depth-step bumps the effective distance
+# (difficulty + loot) per dungeon floor descended.
+dungeon_spawn_chance = 0.12      # per streamed non-tutorial section (DG-3b)
+dungeon_depth_level_step = 25    # effective-distance added per floor descended (DG-3/DG-5)
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
 # the safe anchor is always just to the west. Negative = behind the origin.
 west_return_border = -20.0     # walk this far west (open ground) up to the city WALL+GATE to return; a clear deliberate distance, not an accidental step
