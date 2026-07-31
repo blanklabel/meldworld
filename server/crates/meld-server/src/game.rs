@@ -1185,17 +1185,30 @@ impl GameState {
             // `MELD_NO_TUTORIAL=1` forces a randomized-biome world on the first dive
             // too (dev/QA/screenshots — the in-memory build always starts fresh, so
             // you'd otherwise only ever see the distance-ordered tutorial order).
-            let tutorial = !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
+            // DEV/QA harness (in-memory build): `MELD_BIOME=<forest|desert|ashfall|
+            // tundra|mire>` pins every section to that biome so its maze can be loaded +
+            // screenshotted on demand, and `MELD_SEED=<n>` fixes the layout for
+            // reproducibility. `MELD_BIOME` also forces the tutorial off (the tutorial
+            // pins area 0 to Forest, which would fight the override). Both are read only
+            // here at the server boundary — `meld-world` stays pure.
+            let force_biome: Option<&'static str> = std::env::var("MELD_BIOME")
+                .ok()
+                .and_then(|v| meld_world::BIOMES.iter().copied().find(|b| *b == v.trim()));
+            let tutorial = force_biome.is_none()
+                && !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
                 && !self
                     .sessions
                     .get(initiator)
                     .map(|s| s.has_dived)
                     .unwrap_or(false);
             // Server-generated world seed (CANON: the client never supplies or
-            // computes seeds).
-            let seed = world_seed();
+            // computes seeds) — overridable by `MELD_SEED` for the QA harness.
+            let seed = std::env::var("MELD_SEED")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or_else(world_seed);
             self.instance = Some(ActiveInstance {
-                arena: Arena::generate(&self.balance, seed, tutorial),
+                arena: Arena::generate_with(&self.balance, seed, tutorial, force_biome),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),

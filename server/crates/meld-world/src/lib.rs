@@ -1080,6 +1080,11 @@ pub struct Arena {
     /// the centred area-0 onboarding. Otherwise biomes are drawn per-section
     /// (roadmap WG-2/WG-3) and area 0 is a normal procedural section.
     tutorial: bool,
+    /// DEV/QA harness override: when set to a `BIOMES` name, EVERY section is forced to
+    /// that biome so a specific biome's maze can be loaded + inspected on demand instead
+    /// of waiting for a random draw to surface it. `None` in normal play. Set at the
+    /// server boundary from `MELD_BIOME` (see `generate_with`); the engine stays pure.
+    force_biome: Option<&'static str>,
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -1108,6 +1113,18 @@ impl Arena {
     /// clear path are known at run start); further sections stream on demand via
     /// [`Arena::ensure_frontier`].
     pub fn generate(balance: &Balance, seed: u64, tutorial: bool) -> Self {
+        Self::generate_with(balance, seed, tutorial, None)
+    }
+
+    /// Like [`Self::generate`], but with a DEV/QA `force_biome` override (from the
+    /// server's `MELD_BIOME` env) that pins every section to one biome so its maze can be
+    /// loaded + screenshotted directly. `None` reproduces normal generation exactly.
+    pub fn generate_with(
+        balance: &Balance,
+        seed: u64,
+        tutorial: bool,
+        force_biome: Option<&'static str>,
+    ) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
             seed,
@@ -1140,6 +1157,7 @@ impl Arena {
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
             seed_base: seed,
             tutorial,
+            force_biome,
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -1413,13 +1431,9 @@ impl Arena {
         let start_x = self.cursor;
         // Theme rides the run (WG-2/WG-3) but difficulty rides `distance` as always.
         let prev_biome = self.areas.last().map(|a| a.biome);
-        let biome = section_biome(
-            self.seed_base,
-            i,
-            start_x.floor() as i64,
-            prev_biome,
-            self.tutorial,
-        );
+        let biome = self.force_biome.unwrap_or_else(|| {
+            section_biome(self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
+        });
         let kinds = creatures_for_biome(biome);
 
         // Area 0 of the TUTORIAL run is a small, deterministic onboarding section
@@ -1895,13 +1909,9 @@ impl Arena {
             // Ashfall) — matching the ground cross-fade. Only ever thins (a section
             // never exceeds its own count), and the neighbour ramps up from its side.
             let tw = wg.biome_transition_width.max(0.0);
-            let next_biome = section_biome(
-                self.seed_base,
-                i + 1,
-                end_x.floor() as i64,
-                Some(biome),
-                self.tutorial,
-            );
+            let next_biome = self.force_biome.unwrap_or_else(|| {
+                section_biome(self.seed_base, i + 1, end_x.floor() as i64, Some(biome), self.tutorial)
+            });
             let prev_ratio = (biome_obstacle_mult(wg, prev_biome.unwrap_or(biome)) / maze_mult).min(1.0);
             let next_ratio = (biome_obstacle_mult(wg, next_biome) / maze_mult).min(1.0);
             let keep_prob = |ox: f64| -> f64 {
@@ -4151,3 +4161,4 @@ mod tests {
         assert_eq!(twin.areas.len(), arena.areas.len());
     }
 }
+
