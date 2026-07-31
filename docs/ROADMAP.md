@@ -521,6 +521,39 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
 
 ---
 
+## Epic AX — Agent play (MCP)
+
+Make **AI agents first-class players** via an MCP over the existing wire protocol.
+MELDWORLD is an unusually good agent-play target: combat is **server-authoritative**
+with a clean `meld-proto` C2S-intent / S2C-state boundary, there's already a **`qa/`
+headless-bot framework** driving the real wire, the **turn-based ATB** (100 ms tick,
+15 s window) needs *reasoning, not reflexes*, and the **async economy** (stalls,
+bounty contracts) is built for offline actors. **PvE-only** (no player-vs-player)
+keeps agent participation low-risk. Sequenced so the cheap QA layer lands over
+today's protocol; the living-world layer follows **SC-3**. Focus **adventure first**,
+then the rest.
+
+- [ ] **AX-1 — MCP over the wire protocol.** An MCP server that lets an agent
+  **connect**, **read** authoritative state (overworld snapshot, battle state,
+  run/backpack), and **submit intents** (movement; battle actions; `run.harvest` /
+  `begin_extraction` / `join_battle`). A thin adapter over the `meld-proto` envelope
+  — **no client-side combat math** — reusing the `qa/` bot plumbing. Deliverable: an
+  agent completes a full dive→fight→extract loop through the MCP.
+- [ ] **AX-2 — Agent-as-playtester harness.** Drive the whole loop with a reasoning
+  agent and emit **balance telemetry** — win/extract/die rates by distance, and the
+  feel of the loss knife-edge. The honest way to measure the "desperate but not
+  despair" tuning *at scale* before the sim/builder layers land. Extends AX-1 + the
+  `qa/` conformance suite.
+- [ ] **AX-3 — Agent inhabitants (living world).** Agents as first-class **async
+  actors**: run stalls, fulfil bounty contracts (**EC**), harvest, and **garrison
+  towns/anchors while owners are offline** — populating persistent seeded worlds
+  (solves the empty-world cold-start) and answering the offline-siege feel-bad (the
+  Shift, CANON §W2). Depends on **SC-3** (populated persistent worlds); PvE-only keeps
+  it safe. A natural **premium/convenience hook** (an offline-defense garrison agent,
+  pinned worlds — cf. **MON**), sold as *participation*, not "skip the loss."
+
+---
+
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,
