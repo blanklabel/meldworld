@@ -96,3 +96,34 @@ pub const ROUTE_SLOPE: f32 = 0.32;
 pub fn routable(x: f32, z: f32, ox: f32, oz: f32) -> bool {
     slope(x, z, ox, oz) < ROUTE_SLOPE
 }
+
+/// Max authored landmark peaks the ground shader blends at once (windowed around the
+/// player like the biome rings). The run may hold more across all sections.
+pub const MAX_PEAKS: usize = 24;
+
+/// Keep an authored dome WALKABLE (climbable): its steepest slope (raised-cosine, at
+/// d = radius/2) is `height·π/(2·radius)`, so `height ≤ radius · PEAK_MAX_ASPECT` stays
+/// under `WALKABLE_SLOPE` with margin — you can climb the mountain from any side.
+pub const PEAK_MAX_ASPECT: f32 = 0.42;
+
+/// Extra height from authored CLIMBABLE landmark peaks at world `(x, z)` — smooth
+/// raised-cosine DOMES (never a cliff), each `[cx, cz, radius, height]`. This is summed
+/// ONTO [`height`] on the server, the client, and the WGSL mirror, so a mountain renders,
+/// the ground rises under you as you climb, and the summit reward sits on top. Domes are
+/// gentle by construction (`height ≤ radius · PEAK_MAX_ASPECT`), so they add no collision
+/// or path-routing cost — hence they live outside `slope`/`walkable`/`routable`. Peaks are
+/// placed at true world positions (NOT through the seed offset). MUST match the WGSL mirror.
+pub fn peak_height(x: f32, z: f32, peaks: &[[f32; 4]]) -> f32 {
+    let mut h = 0.0;
+    for p in peaks {
+        let (cx, cz, r, ph) = (p[0], p[1], p[2], p[3]);
+        if r <= 0.0 {
+            continue;
+        }
+        let d = ((x - cx) * (x - cx) + (z - cz) * (z - cz)).sqrt();
+        if d < r {
+            h += ph * 0.5 * (1.0 + (std::f32::consts::PI * d / r).cos());
+        }
+    }
+    h
+}

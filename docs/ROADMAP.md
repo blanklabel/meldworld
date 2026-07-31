@@ -316,12 +316,17 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     off the ACTUAL per-section biome (streamed on `TerrainSection.biome`, radial LUT
     in `ground_biome.wgsl`), cross-fading at real section boundaries; each biome has
     its own fill density/props + edge taper (forest→open desert→Ashfall rock).
-  **Terraces now survive the fan:** the elevation grid stays in un-bent corridor
-  coords; the server un-bends world→corridor when sampling level/connectors
-  (`Arena::corridorize`) and the client bends each terrace/cliff/connector vertex by
-  the same arc, so climbable plateaus, ladders and summit rewards (a gate-boss or a
-  guaranteed chest) work in the radial world. The path is densified before bending so
-  a follower hugs the arc instead of chord-cutting into off-path terrain.
+  **Authored climbable mountains + summit rewards:** the procedural cliff-mesas were
+  flattened (they read as an accidental corridor), so verticality is now delivered by
+  *intentional* landmark peaks — smooth raised-cosine domes summed into the terrain
+  (`meld_proto::terrain::peak_height`, mirrored in `ground_biome.wgsl`), kept under the
+  walkable-slope aspect (`PEAK_MAX_ASPECT`) so you climb them (zero collision cost). A
+  section's clear-path crest raises one (`path_climb_chance`, out past `peak_min_distance`)
+  and CROWNS its summit with a reward — a gate-boss (`peak_boss_chance`) or a guaranteed
+  treasure chest. Peaks bend with the fan alongside the chests/monsters and ride the wire
+  on `run.started.peaks` + `TerrainSection.peaks`, so ground + entity Y raise together and
+  the reward sits on top. Screenshot-verified (a Lv-boss atop a desert mountain).
+  `[worldgen]`: `peak_radius`, `peak_min_distance`, `path_climb_chance`, `peak_boss_chance`.
   **Remaining (minor cosmetic):** re-homing biome-seam walls into the radial layout
   (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into

@@ -383,6 +383,8 @@ path_climb_chance = 0.6          # chance a section's clear path climbs a platea
 chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace (0..1)
 peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
 summit_min_height = 7.0          # min world terrain height a clear-path crest must reach to earn a summit reward (heightmap #3); filters flat sections
+peak_radius = 26.0               # world-radius of an authored CLIMBABLE landmark mountain (#3); its height = radius * PEAK_MAX_ASPECT * ~0.9 so the dome stays walkable (you climb it) while reading as a real peak
+peak_min_distance = 45.0         # nearest hub distance an authored peak may spawn (keeps big domes out of the tight near-hub rings)
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

@@ -196,6 +196,8 @@ pub struct TerrainSectionView {
     pub radial_half: f64,
     /// Corridor half-extent the arc maps against (pairs with `radial_half`).
     pub corridor_lateral: f64,
+    /// Authored CLIMBABLE peaks this streamed section adds (`[cx, cz, radius, height]`).
+    pub peaks: Vec<[f32; 4]>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -323,7 +325,7 @@ pub enum ServerMsg {
     Error { message: String },
     /// `run.started` — carries this run's terrain offset so the bin can seed the ground
     /// shader + entity Y (the lib netcode can't reach the render module directly).
-    RunStarted { terrain_off: (f32, f32) },
+    RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]> },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party { heroes: Vec<HeroLine> },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
@@ -1010,7 +1012,24 @@ impl Inner {
                     ),
                     _ => (0.0, 0.0),
                 };
-                self.out.push_back(ServerMsg::RunStarted { terrain_off });
+                // Authored climbable peaks (mountains) — each `[cx, cz, radius, height]`.
+                let peaks: Vec<[f32; 4]> = raw.payload["peaks"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| {
+                                let a = p.as_array()?;
+                                Some([
+                                    a.first()?.as_f64()? as f32,
+                                    a.get(1)?.as_f64()? as f32,
+                                    a.get(2)?.as_f64()? as f32,
+                                    a.get(3)?.as_f64()? as f32,
+                                ])
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::RunStarted { terrain_off, peaks });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts
@@ -1320,6 +1339,7 @@ impl Inner {
                         biome: t.biome,
                         radial_half: t.radial_half,
                         corridor_lateral: t.corridor_lateral,
+                        peaks: t.peaks,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }

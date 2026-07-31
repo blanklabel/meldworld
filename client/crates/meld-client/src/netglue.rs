@@ -121,6 +121,11 @@ pub(crate) fn pump_net(
                     }
                     world_path.drawn = false;
                 }
+                // Streamed sections carry their own authored mountains — append them so the
+                // ground shader + entity Y raise the new peaks as the player walks out.
+                if !section.peaks.is_empty() {
+                    crate::world_render::append_peaks(&section.peaks);
+                }
                 terrain.sections.insert(section.index, section);
             }
             ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, radial_arc_degrees, seams } => {
@@ -142,11 +147,14 @@ pub(crate) fn pump_net(
                     next.set(Screen::City);
                 }
             }
-            ServerMsg::RunStarted { terrain_off } => {
+            ServerMsg::RunStarted { terrain_off, peaks } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
                 // + every entity Y grow the same per-run-varied hills (no "same hill by the
                 // hub every run").
                 crate::world_render::set_terrain_offset(terrain_off.0, terrain_off.1);
+                // Replace any prior run's mountains with this run's authored peaks (the
+                // initial-chain sections' peaks all ride here on run.started).
+                crate::world_render::set_peaks(peaks);
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();

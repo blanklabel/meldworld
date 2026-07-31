@@ -45,7 +45,23 @@ pub(crate) struct BiomeParams {
     /// `run.started.terrain_offset`), so the displaced ground matches every entity's Y and
     /// the world looks different every run.
     terrain_off: Vec2,
+    /// Explicit pad so `peaks` (a vec4 array, 16-aligned) starts on a 16-byte boundary in
+    /// BOTH the Rust (encase) and WGSL uniform layouts — no implicit padding to mismatch.
+    _pad_peaks: Vec2,
+    /// Authored CLIMBABLE peaks (`[cx, cz, radius, height]`), summed onto the displaced
+    /// ground so each mountain renders (mirrors `terrain::peak_height`). Windowed to
+    /// `MAX_PEAKS`; `peak_count` live entries.
+    peaks: [Vec4; PEAK_SLOTS],
+    peak_count: u32,
+    // Three SCALAR pads (not a `[u32; 3]` — a u32 array needs a 16-byte stride in a
+    // uniform, which fails validation) to round the struct out to a 16-byte multiple.
+    _pad_pc0: u32,
+    _pad_pc1: u32,
+    _pad_pc2: u32,
 }
+
+/// Shader uniform peak slots (must equal `meld_proto::terrain::MAX_PEAKS`).
+const PEAK_SLOTS: usize = 24;
 
 impl Default for BiomeParams {
     fn default() -> Self {
@@ -58,6 +74,12 @@ impl Default for BiomeParams {
             // to 1.0 on entry (`set_ground_terrain_amp`).
             terrain_amp: 0.0,
             terrain_off: Vec2::ZERO,
+            _pad_peaks: Vec2::ZERO,
+            peaks: [Vec4::ZERO; PEAK_SLOTS],
+            peak_count: 0,
+            _pad_pc0: 0,
+            _pad_pc1: 0,
+            _pad_pc2: 0,
         }
     }
 }
@@ -1221,9 +1243,41 @@ pub(crate) fn terrain_offset() -> (f32, f32) {
     (f32::from_bits(TERRAIN_OFF_X.load(Relaxed)), f32::from_bits(TERRAIN_OFF_Z.load(Relaxed)))
 }
 
+/// This run's authored CLIMBABLE peaks (mountains), world-space `[cx, cz, radius,
+/// height]`, summed onto the ground so each renders + you climb it. Set on `run.started`
+/// and appended per streamed section. A `RwLock` read is cheap + uncontended (only the
+/// main thread touches it), and `terrain_height` is called on the render thread.
+static PEAKS: std::sync::RwLock<Vec<[f32; 4]>> = std::sync::RwLock::new(Vec::new());
+
+/// Replace this run's peak set (call on `run.started`).
+pub(crate) fn set_peaks(peaks: Vec<[f32; 4]>) {
+    if let Ok(mut p) = PEAKS.write() {
+        *p = peaks;
+    }
+}
+/// Append a streamed section's peaks (call on `world.terrain_section`).
+pub(crate) fn append_peaks(peaks: &[[f32; 4]]) {
+    if peaks.is_empty() {
+        return;
+    }
+    if let Ok(mut p) = PEAKS.write() {
+        p.extend_from_slice(peaks);
+    }
+}
+/// A snapshot of the current peaks (for the ground shader uniform).
+pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
+    PEAKS.read().map(|p| p.clone()).unwrap_or_default()
+}
+
 pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     let (ox, oz) = terrain_offset();
-    meld_proto::terrain::height(x, z, ox, oz)
+    let base = meld_proto::terrain::height(x, z, ox, oz);
+    let peaks = PEAKS.read();
+    let peak = peaks
+        .as_ref()
+        .map(|p| meld_proto::terrain::peak_height(x, z, p))
+        .unwrap_or(0.0);
+    base + peak
 }
 
 /// Capitalize the first letter for display ("ashfall" → "Ashfall").
@@ -1269,6 +1323,18 @@ pub(crate) fn update_ground_biome_rings(
         if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
     let (ox, oz) = terrain_offset();
     mat.extension.params.terrain_off = Vec2::new(ox, oz);
+    // Feed the authored peaks to the shader (windowed to the slot count) so each mountain
+    // dome renders on the ground, matching `terrain_height`.
+    let peaks = peaks_snapshot();
+    let n = peaks.len().min(PEAK_SLOTS);
+    for (i, slot) in mat.extension.params.peaks.iter_mut().enumerate() {
+        *slot = if i < n {
+            Vec4::new(peaks[i][0], peaks[i][1], peaks[i][2], peaks[i][3])
+        } else {
+            Vec4::ZERO
+        };
+    }
+    mat.extension.params.peak_count = n as u32;
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections
