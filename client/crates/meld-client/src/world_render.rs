@@ -670,19 +670,20 @@ pub(crate) fn setup(
     }
     commands.insert_resource(SkyMats { cloud: cloud_mat });
 
-    // Distant cliff/mountain backdrop: a sparse ring of BIG rock models far out on the
-    // horizon, anchored around the camera (see `anchor_backdrop`) so the diorama always
-    // has depth behind the play area. Sparse + far, so it reads as a scattered skyline
-    // rather than a wall, and the distance fog softens it into the sky.
+    // FAR distant mountain skyline: a few BIG rock models way out past the play area,
+    // anchored around the camera (see `anchor_backdrop`) for a hint of horizon depth.
+    // Pushed WAY out (was a ring at 165-220 that loomed as a wall on every side and read
+    // as a corridor); now beyond ~300u it's a faint fogged silhouette on the horizon, not
+    // an arena wall. Fewer of them, too, so gaps of open sky show between.
     let backdrop: Vec<Handle<Scene>> = ["cliff_large_rock", "rock_largeA", "cliff_cornerLarge_rock"]
         .into_iter()
         .map(|p| assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))))
         .collect();
-    for i in 0..14 {
-        let ang = i as f32 / 14.0 * std::f32::consts::TAU + (rnd() - 0.5) * 0.35;
-        let rad = 165.0 + rnd() * 55.0;
+    for i in 0..8 {
+        let ang = i as f32 / 8.0 * std::f32::consts::TAU + (rnd() - 0.5) * 0.5;
+        let rad = 320.0 + rnd() * 140.0;
         let off = Vec2::new(ang.cos() * rad, ang.sin() * rad);
-        let size = 10.0 + rnd() * 10.0;
+        let size = 14.0 + rnd() * 12.0;
         commands.spawn((
             Backdrop { off },
             SceneRoot(backdrop[i % backdrop.len()].clone()),

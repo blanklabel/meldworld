@@ -54,15 +54,16 @@ pub fn height(x: f32, z: f32, ox: f32, oz: f32) -> f32 {
         + 4.5 * (x * 0.015 - 0.8).sin() * (z * 0.013 + 0.5).cos()
         + 2.2 * (x * 0.033 + 1.7).sin() * (z * 0.037 - 0.9).cos()
         + 0.9 * ((x + z) * 0.061 + 2.3).sin();
-    // Small, SPARSE steep buttes = the CLIFFS. The mesa mask spikes only where `m`
-    // crosses the [0.80, 0.92] smoothstep band, so buttes are isolated bumps that leave
-    // the walkable base a single connected region. Slope collision walls their faces and
-    // the guaranteed route (`Arena::astar_route`) bends AROUND them through walkable
-    // cells, so the world stays feasible. `CLIFF_HEIGHT` MUST match the WGSL mirror.
+    // RARE steep buttes = the CLIFFS: dramatic landmark peaks, NOT pervasive walls. The
+    // mask only reaches the [1.15, 1.30] band on a small fraction of the world (was 0.80,
+    // which walled off ~10% of the map and funneled the walkable ground into channels —
+    // reading as a corridor). Now the base stays open and you round the occasional
+    // mountain. Slope collision walls their faces and the guaranteed route
+    // (`Arena::astar_route`) bends AROUND them. `CLIFF_HEIGHT` MUST match the WGSL mirror.
     let m = (x * 0.03 + 1.1).sin() * (z * 0.028 - 0.6).cos()
         + 0.5 * (x * 0.051 - 2.0).sin() * (z * 0.047 + 1.4).cos();
     const CLIFF_HEIGHT: f32 = 11.0;
-    base + CLIFF_HEIGHT * smoothstep(0.80, 0.92, m)
+    base + CLIFF_HEIGHT * smoothstep(1.15, 1.30, m)
 }
 
 /// Terrain slope (gradient magnitude) at `(x, z)` under offset `(ox, oz)`, by central
