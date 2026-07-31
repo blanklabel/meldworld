@@ -29,6 +29,7 @@ Authoritative resolutions of every gap, ambiguity, and naming decision in `GDD.m
 | D21 | Structures & anchors — one primitive | Player-built world objects are **one `Structure` primitive** (HP-bearing, destructible, siege-able) distinguished by a `function` tag: `anchor` (pins its region against the Shift while defended), `portal` (extraction; the plantable/defendable evolution of D15), `wall` (defense), `stash` (field storage). Costs/HP/radii **[TUNABLE]**. Detail: §W3. |
 | D22 | Run Level reset on return | **Full extraction to the Last City — or death — resets Run Level to 1.** Run Level is built by pushing outward and **persists across forward-town stops within a single push**; it resets only on return to the Last City or death. Refines D4 (`base_run_level`). Detail: §W4. |
 | D23 | Ephemerality tiers | Three lifetimes: **Run** (a dive; ephemeral — Run Level + red-chest items lost on any exit), **World** (a shard; persistent as seed + event log), **Account** (always persistent: Vault, permanent gear, Meld skills, heroes, unlocks). Refines D12. Detail: §W4–§W5. |
+| D24 | Verticality — terraces, cliffs-as-walls, connectors-only | Overworld elevation is a small number of **discrete integer levels** (terraces/plateaus, bounded by `max_level` **[TUNABLE]**) per section, derived deterministically from the section seed — **not** a continuous heightmap. A boundary between cells of different level is a **cliff: an impassable wall** (movement blocks and slides). An avatar's level changes **if and only if** it is on a placed **connector** — a **slope** (walkable ramp), **ladder**, or **rope** — joining those levels; there is **no free climbing**, and generation places ≥1 connector per raised terrace so none is stranded. Touch/harvest/battle-join compare **level as well as position**. Elevation never feeds difficulty (`tier`/`mlevel`/`stat_mult` stay functions of `distance` only, §G). **Path feasibility holds by construction:** every level change on the hub→portal clear path is served by a Slope connector and both endpoints stay on level 0, so a grounded route home always exists. Server-authoritative (§S); wire surface is additive (2-D `Position` + `SnapshotEntity.level: Option<u8>` + `world.terrain_section`). Behavior: [`behaviors/verticality.md`](behaviors/verticality.md). |
 
 ## §G. Glossary & Canonical Names
 
@@ -158,6 +159,14 @@ at cap **queues** rather than auto-forking (it holds unique player structures th
 can't be cloned). A player's town/anchors live in exactly one world. This supersedes
 "the instance is discarded on close" *as the target*: the world persists; only a
 player's **Run** is ephemeral (§W4).
+
+> **Authored spaces are content within a world, not shards.** Alongside the
+> procedural persistent overworld, the game has *authored* spaces on the same
+> "authored-space substrate": **dungeons** (ephemeral, per-entry-fresh subinstances,
+> ≤4 players, **discarded on exit — never persisted**, the opposite lifecycle to §W5)
+> and the **City** (a persistent authored hub). Both are **content living on a world's
+> single owning task — a "map of live spaces" — not their own shard** (consistent with
+> D19 and the "towns are content, not shards" rule). Design (proposal): [`proposals/dungeons.md`](proposals/dungeons.md).
 
 ### §W2. The Shift (D20)
 
