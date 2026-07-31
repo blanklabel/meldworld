@@ -1508,14 +1508,74 @@ impl GameState {
             wl::Leave::TYPE => self.handle_lobby_leave(player_id, raw.seq),
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
             wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
-            wr::Harvest::TYPE => self.handle_harvest(player_id, raw),
-            wr::OpenChest::TYPE => self.handle_open_chest(player_id, raw),
-            wr::JoinBattle::TYPE => self.handle_join_battle(player_id, raw),
+            wr::Harvest::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_harvest(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::OpenChest::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_open_chest(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::JoinBattle::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_join_battle(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
             wr::SetFormation::TYPE => self.handle_set_formation(player_id, raw),
-            wr::EquipLoot::TYPE => self.handle_equip_loot(player_id, raw),
-            wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
-            wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
+            wr::EquipLoot::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_equip_loot(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wm::MoveIntent::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_move(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wb::SubmitAction::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_submit(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::NotFound, "No battle.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             other => vec![error(
                 player_id,
                 ErrorCode::ValidationError,
@@ -2116,47 +2176,52 @@ impl GameState {
         self.form_run(ids, player_id, Some(seq), false)
     }
 
-    fn handle_move(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+}
+
+impl WorldActor {
+    fn handle_move(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let intent: wm::MoveIntent = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "bad move_intent",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "bad move_intent",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
-        };
-        let Some(inst) = self.world.as_mut() else {
-            return vec![error(
-                player_id,
-                ErrorCode::InvalidState,
-                "Not in a run.",
-                Some(raw.seq),
-            )];
         };
         // Any movement interrupts an in-progress extraction channel (D15).
-        if inst.extraction.remove(player_id).is_some() {
-            if let Some(a) = inst.arena.avatar_mut(player_id) {
+        if self.extraction.remove(player_id).is_some() {
+            if let Some(a) = self.arena.avatar_mut(player_id) {
                 a.state = "active".to_string();
             }
-            let members: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
-            return members
-                .iter()
-                .map(|pid| {
-                    out_msg(
-                        pid,
-                        &wr::ChannelInterrupted {
-                            player_id: player_id.to_string(),
-                            reason: "moved".to_string(),
-                        },
-                    )
-                })
-                .collect();
+            let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+            return (
+                members
+                    .iter()
+                    .map(|pid| {
+                        out_msg(
+                            pid,
+                            &wr::ChannelInterrupted {
+                                player_id: player_id.to_string(),
+                                reason: "moved".to_string(),
+                            },
+                        )
+                    })
+                    .collect(),
+                Vec::new(),
+            );
         }
         // Movement is ignored while in battle (avatar not `active`).
-        inst.arena.apply_move(
+        self.arena.apply_move(
             player_id,
             intent.move_dir.x,
             intent.move_dir.y,
@@ -2167,14 +2232,14 @@ impl GameState {
         // (an instant extraction home — you keep your backpack). `complete_extractions`
         // banks it this same tick and sends the result, so no touch/battle is resolved.
         if self.west_return(player_id) {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         // Contact starts a battle. Checked here for an instant response to the
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
-        self.world.as_mut().map(|w| w.resolve_touches()).unwrap_or_default()
+        (self.resolve_touches(), Vec::new())
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -2185,15 +2250,12 @@ impl GameState {
     /// free extraction. The client routes the `abandoned` result to the City screen.
     fn west_return(&mut self, player_id: &str) -> bool {
         let border = self.balance.worldgen.west_return_border;
-        let Some(inst) = self.world.as_mut() else {
-            return false;
-        };
         // Radial-aware: "west" is the empty city wedge due-west of the hub, NOT a
         // straight x < border line (which would slice through explorable western
         // content in the 340° fan and extract a player merely walking over to a fight).
-        let west = inst.arena.heading_into_city(player_id, border);
+        let west = self.arena.heading_into_city(player_id, border);
         // Already heading home? don't re-enqueue.
-        if !west || inst.extraction.contains_key(player_id) {
+        if !west || self.extraction.contains_key(player_id) {
             return false;
         }
         // The city is right there to the west — step back in and KEEP your backpack.
@@ -2202,7 +2264,7 @@ impl GameState {
         // punished for it; from deep, walking all the way back west is its own
         // gauntlet, so it's a fair "fight your way home" route. `complete_extractions`
         // banks the backpack next tick (method != "town_portal", so nothing is spent).
-        inst.extraction.insert(
+        self.extraction.insert(
             player_id.to_string(),
             Extraction {
                 completes_at: now_ms(),
@@ -2215,27 +2277,28 @@ impl GameState {
     /// Opt into the nearby ongoing fight (`run.join_battle`). Validates that a
     /// battle is in progress, the caller isn't already in it, and their avatar is
     /// within `join_radius` of the fight — then merges their party in.
-    fn handle_join_battle(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    fn handle_join_battle(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let join_radius = self.balance.ai.join_radius;
         let (party_id, battle_id) = {
-            let Some(inst) = self.world.as_ref() else {
-                return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
-            };
-            if inst.battles.is_empty() {
-                return vec![error(player_id, ErrorCode::InvalidState, "No fight in progress.", Some(raw.seq))];
+            if self.battles.is_empty() {
+                return (vec![error(player_id, ErrorCode::InvalidState, "No fight in progress.", Some(raw.seq))], Vec::new());
             }
-            let Some(pid) = inst.party_id_of(player_id) else {
-                return vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))];
+            let Some(pid) = self.party_id_of(player_id) else {
+                return (vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))], Vec::new());
             };
-            if inst.battle_of_party(pid).is_some() {
-                return vec![error(player_id, ErrorCode::InvalidState, "You're already in a fight.", Some(raw.seq))];
+            if self.battle_of_party(pid).is_some() {
+                return (vec![error(player_id, ErrorCode::InvalidState, "You're already in a fight.", Some(raw.seq))], Vec::new());
             }
-            let Some(pos) = inst.arena.avatar(player_id).map(|a| a.position) else {
-                return vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))];
+            let Some(pos) = self.arena.avatar(player_id).map(|a| a.position) else {
+                return (vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))], Vec::new());
             };
             // Join the NEAREST battle within join_radius (concurrent battles: there
             // may be several going on around the map).
-            let target = inst
+            let target = self
                 .battles
                 .iter()
                 .map(|b| (b.battle_id.clone(), pos.distance_to(&b.pos)))
@@ -2243,13 +2306,16 @@ impl GameState {
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(id, _)| id);
             let Some(battle_id) = target else {
-                return vec![error(player_id, ErrorCode::OutOfRange, "Too far from any fight to join.", Some(raw.seq))];
+                return (vec![error(player_id, ErrorCode::OutOfRange, "Too far from any fight to join.", Some(raw.seq))], Vec::new());
             };
             (pid, battle_id)
         };
-        self.join_battle(player_id, party_id, &battle_id)
+        (self.join_battle(player_id, party_id, &battle_id), Vec::new())
     }
 
+}
+
+impl GameState {
     /// Rename one of the caller's heroes: update the active run's names + the
     /// session cache (for the next dive), persist to Postgres, and re-send the
     /// roster so the party panel updates at once.
@@ -2347,51 +2413,55 @@ impl GameState {
         )]
     }
 
+}
+
+impl WorldActor {
     /// Equip (or unequip) a piece of this run's not-yet-banked loot gear onto a
     /// hero slot. Unlike Vault equip (HTTP, persists to Postgres, effective
     /// from the next dive), this only touches the in-memory run — no DB write,
     /// since red gear isn't owned until extraction anyway — and takes effect
     /// on the caller's very next battle via `effective_gear_bonus`.
-    fn handle_equip_loot(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    fn handle_equip_loot(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let req: wr::EquipLoot = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(player_id, ErrorCode::ValidationError, "bad equip_loot", Some(raw.seq))]
+                return (vec![error(player_id, ErrorCode::ValidationError, "bad equip_loot", Some(raw.seq))], Vec::new())
             }
         };
         if let Some(slot) = req.hero_slot {
             let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
             if slot < 0 || slot >= party_size {
-                return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))];
+                return (vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))], Vec::new());
             }
         }
-        let Some(inst) = self.world.as_mut() else {
-            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
-        };
         // This dive's class for the target slot (if equipping) — class isn't
         // persisted per hero, only chosen per dive, so `party_classes` (set at
         // `enter_maze`) is the only place this run's actual class lives.
         let hero_class: Option<String> = req.hero_slot.and_then(|slot| {
-            inst.party_classes
+            self.party_classes
                 .get(player_id)
                 .and_then(|v| v.get(slot as usize))
                 .map(|c| meld_run::class_key(*c).to_string())
         });
-        let Some(r) = inst.run.run_mut(player_id) else {
-            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
+        let Some(r) = self.run.run_mut(player_id) else {
+            return (vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))], Vec::new());
         };
         let Some(idx) = r.looted_gear.iter().position(|g| g.gear_id == req.gear_id) else {
-            return vec![error(player_id, ErrorCode::NotFound, "No such loot gear.", Some(raw.seq))];
+            return (vec![error(player_id, ErrorCode::NotFound, "No such loot gear.", Some(raw.seq))], Vec::new());
         };
         if let Some(slot) = req.hero_slot {
             let item_class = &r.looted_gear[idx].class_key;
             if !item_class.is_empty() && hero_class.as_deref() != Some(item_class.as_str()) {
-                return vec![error(
+                return (vec![error(
                     player_id,
                     ErrorCode::ValidationError,
                     "Wrong class for this item.",
                     Some(raw.seq),
-                )];
+                )], Vec::new());
             }
             // One item per hero+category: unequip anything else this hero has
             // worn this run in the same category before wearing the new one.
@@ -2419,7 +2489,7 @@ impl GameState {
         } else {
             r.looted_gear[idx].equipped_hero_slot = None;
         }
-        vec![out_msg(player_id, &wr::RunGear { gear: r.looted_gear.clone() })]
+        (vec![out_msg(player_id, &wr::RunGear { gear: r.looted_gear.clone() })], Vec::new())
     }
 
     /// Merge a party into the in-progress battle (the toucher opted in via
@@ -2431,22 +2501,15 @@ impl GameState {
             meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
         // Read gear from the world's own synced mirror (same data a live session
         // read returned; see `WorldActor::gear_bonuses`).
-        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self
-            .world
-            .as_ref()
-            .map(|w| w.gear_bonuses.clone())
-            .unwrap_or_default();
-        let Some(inst) = self.world.as_mut() else {
-            return Vec::new();
-        };
-        if inst.battle_by_id(battle_id).is_none() {
+        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self.gear_bonuses.clone();
+        if self.battle_by_id(battle_id).is_none() {
             return Vec::new();
         }
 
         // Build the joining party's combatants — the joiner's full hero
         // composition (parallel to `hero_hp`), just like starting a fight. These go
         // into the target battle's own combatant maps.
-        let joiners: Vec<String> = inst
+        let joiners: Vec<String> = self
             .run
             .runs
             .iter()
@@ -2459,16 +2522,16 @@ impl GameState {
         let mut add_combatant_player: HashMap<String, String> = HashMap::new();
         let mut add_player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         for pid in &joiners {
-            let r_ref = inst.run.runs.iter().find(|r| &r.player_id == pid);
+            let r_ref = self.run.runs.iter().find(|r| &r.player_id == pid);
             let lead = r_ref.map(|r| r.character_class).unwrap_or(CharacterClass::Explorer);
             let looted = r_ref.map(|r| r.looted_gear.as_slice()).unwrap_or(&[]);
-            let comp = inst
+            let comp = self
                 .party_classes
                 .get(pid)
                 .cloned()
                 .unwrap_or_else(|| vec![lead]);
-            let hp_vec = inst.hero_hp.get(pid).cloned().unwrap_or_default();
-            let row_vec = inst.hero_rows.get(pid).cloned().unwrap_or_default();
+            let hp_vec = self.hero_hp.get(pid).cloned().unwrap_or_default();
+            let row_vec = self.hero_rows.get(pid).cloned().unwrap_or_default();
             let hero_bonuses = bonuses.get(pid);
             let mut cids = Vec::new();
             for (slot, cls) in comp.iter().enumerate() {
@@ -2488,12 +2551,12 @@ impl GameState {
             return Vec::new();
         }
         // Merge cap: a touch that would exceed it does not merge (combat-atb.md).
-        let current = inst.battle_by_id(battle_id).unwrap().battle.player_count();
+        let current = self.battle_by_id(battle_id).unwrap().battle.player_count();
         if current + party.len() > cap {
             return Vec::new();
         }
 
-        let mut fighters = meld_run::party_fighters(&party, &inst.run, &balance, &row_overrides);
+        let mut fighters = meld_run::party_fighters(&party, &self.run, &balance, &row_overrides);
         // Carry each joining hero's persisted HP into the merged battle.
         for (f, hp) in fighters.iter_mut().zip(hp_overrides.iter()) {
             if let Some(h) = hp {
@@ -2503,7 +2566,7 @@ impl GameState {
 
         // Apply to the target battle slot, then extract what messaging needs.
         let (encounter_class, mut allies, enemies, joined_pc) = {
-            let slot = inst.battle_by_id_mut(battle_id).unwrap();
+            let slot = self.battle_by_id_mut(battle_id).unwrap();
             slot.battle.join(fighters);
             slot.parties.insert(party_id);
             for (k, v) in add_combatant_player {
@@ -2515,9 +2578,9 @@ impl GameState {
             let (allies, enemies) = slot.battle.wire_combatants();
             (slot.battle.encounter_class, allies, enemies, slot.player_combatants.clone())
         };
-        inject_hero_names(&joined_pc, &inst.hero_names, &mut allies);
+        inject_hero_names(&joined_pc, &self.hero_names, &mut allies);
         for pid in &joiners {
-            if let Some(a) = inst.arena.avatar_mut(pid) {
+            if let Some(a) = self.arena.avatar_mut(pid) {
                 a.state = "in_battle".to_string();
             }
         }
@@ -2553,9 +2616,9 @@ impl GameState {
             ));
         }
         // battle.party_joined (delta) to everyone already in the battle.
-        let members = inst
+        let members = self
             .battle_by_id(&battle_id)
-            .map(|s| inst.members_of(s))
+            .map(|s| self.members_of(s))
             .unwrap_or_default();
         let existing: Vec<String> = members
             .into_iter()
@@ -2566,7 +2629,7 @@ impl GameState {
                 pid,
                 &wb::PartyJoined {
                     battle_id: battle_id.clone(),
-                    joining_instance_id: inst.run.instance_id.clone(),
+                    joining_instance_id: self.run.instance_id.clone(),
                     joining_allies: joining_allies.clone(),
                 },
             ));
@@ -2574,37 +2637,39 @@ impl GameState {
         out
     }
 
-    fn handle_submit(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    fn handle_submit(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let submit: wb::SubmitAction = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "bad submit_action",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "bad submit_action",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
-        };
-        let Some(inst) = self.world.as_mut() else {
-            return vec![error(
-                player_id,
-                ErrorCode::NotFound,
-                "No battle.",
-                Some(raw.seq),
-            )];
         };
         // Route to the battle named in the request, and only if the sender is
         // actually in it (with concurrent battles, the id disambiguates which one).
-        let owned = match inst.battle_by_id(&submit.battle_id) {
+        let owned = match self.battle_by_id(&submit.battle_id) {
             Some(slot) => slot.player_combatants.get(player_id).cloned().unwrap_or_default(),
             None => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::NotFound,
-                    "Unknown battle.",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::NotFound,
+                        "Unknown battle.",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
         };
         // The actor must be one of the sender's own combatants; default to their
@@ -2612,22 +2677,28 @@ impl GameState {
         let actor_cid = match &submit.actor_combatant_id {
             Some(cid) if owned.contains(cid) => cid.clone(),
             Some(_) => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "That combatant is not yours.",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "That combatant is not yours.",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
             None => match owned.first() {
                 Some(cid) => cid.clone(),
                 None => {
-                    return vec![error(
-                        player_id,
-                        ErrorCode::NotFound,
-                        "Not a combatant.",
-                        Some(raw.seq),
-                    )]
+                    return (
+                        vec![error(
+                            player_id,
+                            ErrorCode::NotFound,
+                            "Not a combatant.",
+                            Some(raw.seq),
+                        )],
+                        Vec::new(),
+                    )
                 }
             },
         };
@@ -2641,7 +2712,7 @@ impl GameState {
             None
         };
         if let Some(kind) = &consume_kind {
-            let have = inst
+            let have = self
                 .run
                 .run_mut(player_id)
                 .map(|r| {
@@ -2652,16 +2723,19 @@ impl GameState {
                 })
                 .unwrap_or(0);
             if have <= 0 {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    format!("Out of {}.", kind.replace('_', " ")),
-                    Some(raw.seq),
-                )];
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        format!("Out of {}.", kind.replace('_', " ")),
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                );
             }
         }
         let result = {
-            let battle = &mut inst.battle_by_id_mut(&submit.battle_id).unwrap().battle;
+            let battle = &mut self.battle_by_id_mut(&submit.battle_id).unwrap().battle;
             battle.submit(
                 &actor_cid,
                 submit.action_id.clone(),
@@ -2677,7 +2751,7 @@ impl GameState {
                 // Accepted → spend one of the item and tell the client (so its count
                 // ticks down and the menu can grey it out at zero).
                 if let Some(kind) = consume_kind {
-                    if let Some(r) = inst.run.run_mut(player_id) {
+                    if let Some(r) = self.run.run_mut(player_id) {
                         if let Some(slot) = r.backpack.iter_mut().find(|i| i.item_kind == kind) {
                             slot.quantity -= 1;
                         }
@@ -2701,20 +2775,22 @@ impl GameState {
                         },
                     ));
                 }
-                let (evout, eff) = inst.emit_battle_events(&submit.battle_id, events);
+                let (evout, eff) = self.emit_battle_events(&submit.battle_id, events);
                 out.extend(evout);
-                // Drop the world borrow before applying Router-scoped effects
-                // (release-from-run touches sessions, which `inst` was borrowing).
-                self.apply_world_effects(eff);
-                out
+                // The world can't apply Router-scoped effects (release-from-run
+                // touches sessions); hand them back to the Router to apply.
+                (out, eff)
             }
             Err(reject) => {
                 let (code, message) = reject_to_error(&reject);
-                vec![error(player_id, code, message, Some(raw.seq))]
+                (vec![error(player_id, code, message, Some(raw.seq))], Vec::new())
             }
         }
     }
 
+}
+
+impl GameState {
     fn handle_begin_extraction(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let req: wr::BeginExtraction = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
@@ -2912,44 +2988,57 @@ impl GameState {
         }
     }
 
+}
+
+impl WorldActor {
     /// Harvest the named resource node the avatar is standing next to: bank its
     /// material into the backpack and queue its Meld-skill XP. The node vanishes
     /// from the next snapshot (server-authoritative — client just renders).
-    fn handle_harvest(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    fn handle_harvest(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let req: wr::Harvest = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "bad harvest",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "bad harvest",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
         };
         let balance = self.balance.clone();
         let (item, skill, xp, kind) = {
-            let Some(inst) = self.world.as_mut() else {
-                return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
-            };
-            if inst.battle_of_player(player_id).is_some() {
-                return vec![error(
-                    player_id,
-                    ErrorCode::InvalidState,
-                    "Resolve the battle first.",
-                    Some(raw.seq),
-                )];
+            if self.battle_of_player(player_id).is_some() {
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::InvalidState,
+                        "Resolve the battle first.",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                );
             }
-            let Some(kind) = inst.arena.harvest(player_id, &req.entity_id) else {
-                return vec![error(
-                    player_id,
-                    ErrorCode::OutOfRange,
-                    "Nothing to harvest here.",
-                    Some(raw.seq),
-                )];
+            let Some(kind) = self.arena.harvest(player_id, &req.entity_id) else {
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::OutOfRange,
+                        "Nothing to harvest here.",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                );
             };
             let Some(res) = balance.resource.get(&kind) else {
-                return vec![error(player_id, ErrorCode::ValidationError, "unknown resource", Some(raw.seq))];
+                return (vec![error(player_id, ErrorCode::ValidationError, "unknown resource", Some(raw.seq))], Vec::new());
             };
             let item = ItemStack {
                 item_id: Uuid::now_v7().to_string(),
@@ -2957,7 +3046,7 @@ impl GameState {
                 quantity: 1,
                 insurance: None,
             };
-            if let Some(r) = inst.run.run_mut(player_id) {
+            if let Some(r) = self.run.run_mut(player_id) {
                 r.backpack.push(item.clone());
             }
             (item, res.skill.clone(), res.xp, kind)
@@ -2965,44 +3054,48 @@ impl GameState {
         let _ = self
             .db_writes
             .send(DbWrite::SkillXp(player_id.to_string(), skill, xp));
-        vec![out_msg(
-            player_id,
-            &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item,
-                    delta: "added".to_string(),
-                    cause: format!("harvest:{kind}"),
-                }],
-                chits_delta: 0,
-                gear_added: Vec::new(),
-            },
-        )]
+        (
+            vec![out_msg(
+                player_id,
+                &wr::BackpackUpdate {
+                    changes: vec![wr::BackpackChange {
+                        item,
+                        delta: "added".to_string(),
+                        cause: format!("harvest:{kind}"),
+                    }],
+                    chits_delta: 0,
+                    gear_added: Vec::new(),
+                },
+            )],
+            Vec::new(),
+        )
     }
 
     /// Open the treasure chest the avatar is standing next to: roll its loot
     /// (a richer chit payout than a kill, a biome material, and deep-enough red
     /// gear) into the backpack. The chest shows opened on the next snapshot.
-    fn handle_open_chest(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    fn handle_open_chest(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         // A chest pays out like several kills' worth of chits (economy.md S2).
         const CHEST_RICHNESS: i32 = 4;
         let req: wr::OpenChest = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(player_id, ErrorCode::ValidationError, "bad open_chest", Some(raw.seq))]
+                return (vec![error(player_id, ErrorCode::ValidationError, "bad open_chest", Some(raw.seq))], Vec::new())
             }
         };
         let balance = self.balance.clone();
-        let Some(inst) = self.world.as_mut() else {
-            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))];
-        };
-        if inst.battle_of_player(player_id).is_some() {
-            return vec![error(player_id, ErrorCode::InvalidState, "Resolve the battle first.", Some(raw.seq))];
+        if self.battle_of_player(player_id).is_some() {
+            return (vec![error(player_id, ErrorCode::InvalidState, "Resolve the battle first.", Some(raw.seq))], Vec::new());
         }
-        let Some((_tier, distance)) = inst.arena.open_chest(player_id, &req.entity_id) else {
-            return vec![error(player_id, ErrorCode::OutOfRange, "No chest in reach.", Some(raw.seq))];
+        let Some((_tier, distance)) = self.arena.open_chest(player_id, &req.entity_id) else {
+            return (vec![error(player_id, ErrorCode::OutOfRange, "No chest in reach.", Some(raw.seq))], Vec::new());
         };
         // Deterministic per (chest, player); the chest can only be opened once.
-        let seed = inst.arena.seed ^ hash_str(&req.entity_id) ^ hash_str(player_id);
+        let seed = self.arena.seed ^ hash_str(&req.entity_id) ^ hash_str(player_id);
         let loot = meld_world::roll_creature_loot(&balance, distance, CHEST_RICHNESS, 1.0, seed);
         let loot_item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
@@ -3031,7 +3124,7 @@ impl GameState {
             })
             .collect();
         let mut run_gear_snapshot = None;
-        if let Some(r) = inst.run.run_mut(player_id) {
+        if let Some(r) = self.run.run_mut(player_id) {
             r.backpack.push(loot_item.clone());
             r.chits += loot.chits;
             r.looted_gear.extend(gear.iter().cloned());
@@ -3054,9 +3147,12 @@ impl GameState {
         if let Some(gear) = run_gear_snapshot {
             out.push(out_msg(player_id, &wr::RunGear { gear }));
         }
-        out
+        (out, Vec::new())
     }
 
+}
+
+impl GameState {
     /// Complete any extraction channels whose timer elapsed: bank the backpack
     /// into the Vault (Postgres) and finalize the run as `extracted`.
     async fn complete_extractions(&mut self) -> Vec<Outgoing> {
