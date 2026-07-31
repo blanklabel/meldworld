@@ -6,6 +6,15 @@ Meldworld's overworld is an infinite radial plane expanding outward from the Cen
 
 Related: [run-lifecycle.md](./run-lifecycle.md) (what happens at portals and Gatekeepers), [combat-atb.md](./combat-atb.md) (how `mlevel`/`stat_mult` feed battles), [../interfaces/realtime-protocol.md](../interfaces/realtime-protocol.md) (`world.*` chunk sync messages).
 
+> **Model status — precursor vs. target.** This file specifies the **current build**: one
+> shared, ephemeral `MazeInstance`, regenerated per run and discarded on close. CANON
+> [§W](../CANON.md) (D19–D23) defines the **target** it evolves toward — a *persistent,
+> player-seeded* **World** that persists as **seed + event log** and periodically
+> **Shifts** (regions swap biome mid-run, damaging + wiping what's inside). Wherever this
+> spec says a world is ephemeral or a biome is fixed for a run, read it as *precursor*
+> behavior; the persistent-world + Shift rules are canon-authoritative for the target and
+> fold in here as they ship. Server plan: [`../proposals/server-scaling.md`](../proposals/server-scaling.md).
+
 ---
 
 ## Flow: Deterministic Seeded Generation
@@ -16,7 +25,7 @@ Related: [run-lifecycle.md](./run-lifecycle.md) (what happens at portals and Gat
 2. All world content for that instance — tile layout, biome detailing, monster spawns, chest spawns, chokepoint geometry, Gatekeeper arenas, procedural extraction portals — is derived deterministically from `(instance_seed, chunk_coords)`. Regenerating the same chunk for the same instance always yields identical content.
 3. Two different `MazeInstance`s (even for the same party, back to back) have different seeds and therefore different world layouts, except for the **structural guarantees** below (hub positions, Gatekeeper arena distances, biome band boundaries), which hold in every instance regardless of seed.
 4. World generation is entirely server-side. Clients receive generated chunk data over the realtime channel and render it; they never generate or validate world content themselves.
-5. Instance world state is ephemeral: it lives in server memory (with periodic snapshots for crash recovery only) and is discarded when the instance closes. Nothing about a generated world persists across instances.
+5. Instance world state is ephemeral: it lives in server memory (with periodic snapshots for crash recovery only) and is discarded when the instance closes. Nothing about a generated world persists across instances. *(Precursor model. Target: a persistent player-seeded World stored as seed + event log — CANON §W1/§W5.)*
 
 ### Structural guarantees (seed-independent)
 
@@ -54,7 +63,7 @@ Notes:
 
 ## Biome Bands
 
-Difficulty is a pure function of `distance` (below); the **biome is a difficulty-neutral *skin*** — it picks the section's theme (creature/resource/obstacle tables) but never its difficulty, since creature stats scale from `distance` via `stat_mult` at spawn. So biome *ordering* is randomized per run without affecting fairness (roadmap WG-2/WG-3; design in [`../proposals/worldgen-wg.md`](../proposals/worldgen-wg.md)):
+Difficulty is a pure function of `distance` (below); the **biome is a difficulty-neutral *skin*** — it picks the section's theme (creature/resource/obstacle tables) but never its difficulty, since creature stats scale from `distance` via `stat_mult` at spawn. So biome *ordering* is randomized per run without affecting fairness (roadmap WG-2/WG-3; design in [`../proposals/worldgen-wg.md`](../proposals/worldgen-wg.md)). *(This stays true under the target model's **Shift**: a Shift retiles a region to a new biome-skin — the biome still carries no steady-state difficulty; the Shift's Force damage + creature/collectable wipe is a discrete **hazard event**, not the biome band's difficulty. CANON §W2.)*
 
 - **Tutorial run** (an account's first dive, gated on the persistent `has_dived` flag): biomes walk the **fixed distance bands** in the table below — the gentle Forest→Desert→… onboarding (plus the centred, single-creature area 0). The seed is still server-random; the tutorial shapes the biome *order* and area-0 structure, not a fixed world.
 - **Every other run:** each section draws a biome per `section_seed`, excluding the previous section's biome (no adjacent repeat). The *start* biome is randomized too (WG-2), and the *order* varies per run (WG-3). The fixed table below is the tutorial order and the difficulty-band reference; it is no longer the biome order for non-tutorial runs.
@@ -82,7 +91,7 @@ Band boundaries use integer `distance` thresholds (a tile at floored distance ex
 2. Chunks are generated **on demand**: the server generates a chunk the first time any party member's position (or interest radius) requires it. Nothing is pre-generated for the whole (infinite) world.
 3. The server streams chunk content to each client over the realtime channel for chunks within the client's interest radius (**2 chunks [TUNABLE]**, a non-binding performance target). See [../interfaces/realtime-protocol.md](../interfaces/realtime-protocol.md), `world.*` messages.
 4. Generated chunks are cached in server memory for the lifetime of the `MazeInstance`. Because generation is deterministic, the server may evict and regenerate distant chunks freely with no observable difference — except for **mutable overlay state** (dropped items, opened chests, cleared flags, deployed `WardItem`s, sleeping avatars), which is instance state tracked independently of the deterministic base terrain.
-5. When the instance closes (see [run-lifecycle.md](./run-lifecycle.md) for close conditions), all chunks and overlay state for that instance are **discarded**. The world is never persisted.
+5. When the instance closes (see [run-lifecycle.md](./run-lifecycle.md) for close conditions), all chunks and overlay state for that instance are **discarded**. The world is never persisted. *(Precursor model; in the target, structures/damage/harvest deltas persist as the world's event log — CANON §W5.)*
 
 ---
 
@@ -148,7 +157,7 @@ Procedural portal positions are a function of the instance seed: the same instan
 
 1. **Determinism:** For a fixed instance seed, chunk content (base terrain, spawns, portals, arenas) is identical no matter when, in what order, or how many times chunks are generated.
 2. **Server authority:** No world content is ever generated, decided, or validated client-side.
-3. **Ephemerality:** No generated world data survives instance close; the only cross-instance world facts are the structural guarantees (hub/arena distances, biome bands).
+3. **Ephemerality:** No generated world data survives instance close; the only cross-instance world facts are the structural guarantees (hub/arena distances, biome bands). *(Precursor invariant — relaxed in the target model, where a World persists its seed + event-log delta; CANON §W5.)*
 4. **Monotone difficulty:** `tier`, `mlevel`, and `stat_mult` are non-decreasing in `d`.
 5. **Gatekeeper impassability:** while an arena's per-instance clear flag is unset, no movement path crosses its distance ring (movement validation is server-side and enforces this).
 6. **Red-chest floor:** no `insurance: red` gear ever spawns at `d < 300`.

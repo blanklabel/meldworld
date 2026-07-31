@@ -24,6 +24,11 @@ Authoritative resolutions of every gap, ambiguity, and naming decision in `GDD.m
 | D16 | UI framework pivot | **No Flutter.** All UI — ATB battle screens, hub UIs (Vault, Training Ground, Stall shop, Bounty Board, leaderboards), menus — is built in Bevy (bevy_ui/ecosystem UI crates). Any GDD/spec reference to "Flutter UI" reads as "Bevy UI layer". Art direction: indie-style HD-2D (pixel sprites/tiles with 3D lighting, DoF, particles). |
 | D17 | Auth mechanism | Registration/login is username + password only. Usernames unique, 3–20 chars `^[a-zA-Z0-9_]+$`. Passwords 8–128 chars, stored as bcrypt hashes (cost 12 **[TUNABLE]**) in Postgres; plaintext never persisted or logged. Successful login issues a short-lived session token (Bearer, 24 h expiry **[TUNABLE]**) for HTTP plus a single-use realtime session ticket. No OAuth/email/2FA at v0.1. |
 | D18 | Persistence engine | Persistent state lives in **Postgres** (explicit implementation mandate; specs still describe observable behavior, with storage noted only where the mandate requires it, e.g. bcrypt credential storage). |
+| D19 | World model — persistent, player-seeded shard | The target overworld is a **persistent, player-seeded World** (à la Minecraft): worldgen is deterministic from the seed; many **capped** worlds exist and a full one queues (no auto-fork, since worlds hold unique player structures). This **supersedes "`MazeInstance` is ephemeral, discarded on close"** (§G, D13) *as the target*; the current single-shared-instance build is the precursor. Detail: §W. Server plan: [`proposals/server-scaling.md`](proposals/server-scaling.md). |
+| D20 | The Shift | Regions of the overworld periodically **Shift** — swap biome, dealing Force damage to and wiping the entities inside. The scheduler is **deterministic** from `(world_seed, shift_generation)`, driven by the server tick counter, **never wall-clock** (preserves the deterministic-engine invariant and makes persistence a cheap replay). Graduates [`lore/shifting-lands.md`](lore/shifting-lands.md) → canon. Cadence/size/damage **[TUNABLE]**. Detail: §W2. |
+| D21 | Structures & anchors — one primitive | Player-built world objects are **one `Structure` primitive** (HP-bearing, destructible, siege-able) distinguished by a `function` tag: `anchor` (pins its region against the Shift while defended), `portal` (extraction; the plantable/defendable evolution of D15), `wall` (defense), `stash` (field storage). Costs/HP/radii **[TUNABLE]**. Detail: §W3. |
+| D22 | Run Level reset on return | **Full extraction to the Last City — or death — resets Run Level to 1.** Run Level is built by pushing outward and **persists across forward-town stops within a single push**; it resets only on return to the Last City or death. Refines D4 (`base_run_level`). Detail: §W4. |
+| D23 | Ephemerality tiers | Three lifetimes: **Run** (a dive; ephemeral — Run Level + red-chest items lost on any exit), **World** (a shard; persistent as seed + event log), **Account** (always persistent: Vault, permanent gear, Meld skills, heroes, unlocks). Refines D12. Detail: §W4–§W5. |
 
 ## §G. Glossary & Canonical Names
 
@@ -35,7 +40,7 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 | Chits | `chits` | The currency (D10). 64-bit integer, symbol `c`. Replaces every "Gold"/"G" reference. |
 | Character class | `CharacterClass` | Enum: `hunter`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Spike additions (implemented kits): `psyker`, `resonant`, `shifter`, `iron_hull`. |
 | Run | `Run` | One ephemeral maze excursion by an instance. Ends in `extracted`, `died`, or `abandoned`. |
-| Instance | `MazeInstance` | The 1–4 player shared maze world for a run set. Has its own world seed. |
+| Instance | `MazeInstance` | The 1–4 player shared maze world for a run set. Has its own world seed. **Precursor**: D19/§W1 evolve this into the persistent, player-seeded `World`. |
 | Party | `Party` | The 1–4 players inside one MazeInstance. |
 | Hub | `Hub` | Persistent safe zone. `hub_kind`: `center` or `outer`. Keyed by `distance` (0, 500, 1000, …). |
 | The Last City | `Hub` (`center`) | Canonical name of the Center Hub city — the post-auth home and extraction return target. Supersedes the "The Weld" working name. |
@@ -43,7 +48,7 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 | Backpack | `Backpack` | Per-player ephemeral run inventory. Deleted on death, banked on extraction. |
 | Blue Chest gear | `GearItem` with `insurance: blue` | Permanent insured equipment. Survives death; loses max durability. |
 | Red Chest gear | `GearItem` with `insurance: red` | Run-found power gear. Lost on death unless extracted (extraction converts it to owned Vault gear, still `red` tier). |
-| Run Level | `run_level` | Ephemeral combat level, resets per run to `base_run_level(hub)`. |
+| Run Level | `run_level` | Ephemeral combat level (D4 `base_run_level(hub)`). **D22 refines:** resets to 1 on return to the Last City / death; persists across forward-town stops within a push (§W4). |
 | Meld Skill | `MeldSkill` | Persistent non-combat skill. `skill_kind`: `forging`, `mercantile`, `alchemy`. Levels 1–99. |
 | Gem | `Gem` | Permanent socketable (GDD "Materia/Gems"), crafted via Alchemy, slots into blue-chest gear. |
 | Gatekeeper | `GatekeeperBoss` | Boss at each biome border (distance ≡ 500·k − 1). Drops class emblems. |
@@ -57,6 +62,10 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 | Season | `Season` | 13-week leaderboard epoch. |
 | Chunk | `Chunk` | Server-streamed square region of overworld, 64×64 tiles. **[TUNABLE]** |
 | Distance | `distance` | Euclidean distance from world origin (Center Hub) in tile units, `floor`ed to integer for all threshold checks. |
+| World / Realm | `World` | A **persistent, player-seeded** overworld shard — the target evolution of `MazeInstance` (D19, §W1). Holds its players, monster population, and player-built structures; persists as **seed + event log** (§W5). Capped; a full world queues (no auto-fork). |
+| Shift | `Shift` | A dimensional swap: a region of the overworld retiles to a different biome, dealing Force damage to and wiping the creatures/collectables of everything inside (D20, §W2). |
+| Structure | `Structure` | Any player-built, HP-bearing, destructible, siege-able world object. One primitive distinguished by a `function` tag (D21, §W3). |
+| Anchor | `Structure` (`function: anchor`) | A defendable Structure that **pins its region against the Shift while it stands**; reduced to 0 HP, its region becomes shiftable again (§W3). |
 
 ## §I. Identifier & Wire Conventions
 
@@ -96,7 +105,7 @@ All constants **[TUNABLE]** unless noted structural.
 - Gatekeeper arenas at `d = 500k − 1` for k = 1..10 (structural); arena is a full-width chokepoint — no path past it without clearing (per-instance clear flag).
 
 ### Biome bands (curated tutorial order; theme is randomized per run)
-`0–100` Forest, `100–300` Desert, `300–500` Ashfall, `500–1000` Tundra, `1000–1500` Mire, then repeating themed bands defined by content tables per 500. This fixed order is the **tutorial** order (an account's first dive) and the difficulty-band reference. The biome is a **difficulty-neutral skin** (difficulty rides `distance`; creatures scale via `stat_mult`), so on every non-tutorial run the biome *theme* is drawn per section from the run seed with no adjacent repeat — the start and order both vary (roadmap WG-2/WG-3; [`behaviors/world-generation.md`](behaviors/world-generation.md)).
+`0–100` Forest, `100–300` Desert, `300–500` Ashfall, `500–1000` Tundra, `1000–1500` Mire, then repeating themed bands defined by content tables per 500. This fixed order is the **tutorial** order (an account's first dive) and the difficulty-band reference. The biome is a **difficulty-neutral skin** (difficulty rides `distance`; creatures scale via `stat_mult`), so on every non-tutorial run the biome *theme* is drawn per section from the run seed with no adjacent repeat — the start and order both vary (roadmap WG-2/WG-3; [`behaviors/world-generation.md`](behaviors/world-generation.md)). The **Shift** (§W2) preserves this: a Shift re-skins a region's biome; its Force damage + entity wipe is a discrete **hazard event**, not the biome carrying steady-state difficulty.
 
 ### ATB combat
 - ATB tick: 100 ms server tick. Gauge fill per tick: `speed_stat / 400` (gauge full at 1.0).
@@ -125,3 +134,94 @@ All constants **[TUNABLE]** unless noted structural.
 ### Networking targets (non-binding perf goals)
 - Overworld sim 20 Hz, snapshot broadcast 10 Hz, interest radius 2 chunks.
 - Battle updates event-driven + 1 Hz keepalive.
+
+## §W. World Model — the Shifting Lands
+
+> **Status: target model (evolves the slice).** The current build implements the
+> precursor — one shared, ephemeral `MazeInstance` (§G, D13). This section is the
+> authoritative *target*: a persistent, player-seeded world that actively rearranges
+> itself, in which players build and defend structures to hold ground and race a
+> seasonal push to a far end-world boss. The genre it defines is a **sim /
+> world-builder / desperate roguelite**. Fiction + biome bestiary:
+> [`lore/shifting-lands.md`](lore/shifting-lands.md); server/scaling plan:
+> [`proposals/server-scaling.md`](proposals/server-scaling.md). Higher docs still
+> win on conflict; fold rules here into behaviors/interfaces as each system is built.
+
+### §W1. A world is a persistent, player-seeded shard (D19)
+
+A **World** (a "realm") is one persistent overworld + the players in it + its monster
+population + the structures players have built on it. Its identity is a
+**player-chosen seed**; because worldgen is deterministic from the seed
+(`section_seed(run_seed, n)`), the baseline map is regenerable for free and never
+stored (§W5). Worlds are **capped**; horizontal scale is **many worlds**, and a world
+at cap **queues** rather than auto-forking (it holds unique player structures that
+can't be cloned). A player's town/anchors live in exactly one world. This supersedes
+"the instance is discarded on close" *as the target*: the world persists; only a
+player's **Run** is ephemeral (§W4).
+
+### §W2. The Shift (D20)
+
+The overworld is the **Shifting Lands**: regions periodically **Shift** — swap to a
+different bestiary biome mid-run, after a brief warning tell, dealing **Force** damage
+to entities in the swapped cells and **wiping that region's creatures + collectables**.
+This is the roguelite-freshness engine: the map is not a fixed route, it *rearranges*.
+
+- **Tabletop reference** (from [`lore/shifting-lands.md`](lore/shifting-lands.md)):
+  cadence = roll 1d10 → count of natural 1s on ongoing checks before the next Shift;
+  location 1d100 × 1d100; size 1d6 (Tiny → Cataclysmic); Force damage scales with size
+  (Tiny 1d6 … Cataclysmic 10d10). **Biomes are variable-sized** (the size table).
+- **Game translation** (ATB/overworld build): cadence, region size, and damage are
+  server config **[TUNABLE]**; the retile picks a biome from the bestiary.
+- **Determinism (structural):** the Shift scheduler MUST be seeded from
+  `(world_seed, shift_generation)` and driven by the **server tick counter — never
+  `Instant::now`/wall-clock**. This keeps the engine deterministic (as `meld-world`
+  already is) and makes world persistence a cheap replay (§W5).
+
+### §W3. Structures & anchors — one primitive (D21)
+
+A **Structure** is a player-built, HP-bearing, destructible world object that monsters
+path to and attack (siege). There is **one** primitive; a `function` tag varies its
+role:
+
+- `anchor` — **pins its region against the Shift while it stands.** It holds only while
+  **defended**: reduce it to 0 HP and its region becomes shiftable again. Anchors are
+  how players manufacture permanence in a self-rearranging world ("Hope is hard work;
+  nothing is free").
+- `portal` — a **plantable, defendable extraction** point (the evolution of D15).
+- `wall` / defense — blocks and soaks siege.
+- `stash` — field storage.
+
+The siege sim, the spatial interest index, and world persistence handle every function
+uniformly — do not build towns, anchors, portals, and camps as separate systems.
+Costs, HP, defense values, and pin radius are **[TUNABLE]**.
+
+### §W4. Ephemerality — three lifetime tiers (D22, D23)
+
+| Tier | Lifetime | Contents |
+|------|----------|----------|
+| **Run** (one dive) | reset on **any** exit — death *or* full extraction to the Last City | Run Level (→ 1), ephemeral items (red-chest class) |
+| **World** (a shard) | persistent — seed + event log (§W5) | terrain-via-seed, structures, monster population, dropped loot |
+| **Account** | always persistent | Vault, permanent gear, Meld skills, heroes, unlocks |
+
+**Run Level** is built by pushing outward and **persists across forward-town stops
+within a single push**; it resets to 1 only on **return to the Last City** (full
+extraction) or **death** (refines D4). Forward towns exist precisely to sustain a deep
+push toward the end-world boss without triggering that reset. Consequently the reward
+gap between **extracting and dying is not** the level or ephemeral items (lost either
+way) — it is the **backpack**: extraction banks it to the Vault, death drops it.
+
+### §W5. World persistence — seed + event log (D23, refines D12)
+
+A world stores only its **delta from the seed baseline**, event-sourced:
+
+- The **baseline** (terrain, biome layout, initial monster/resource placement) is
+  regenerated from the seed and **never stored**.
+- The **natural Shift schedule** is a pure function of `(seed, shift_generation)`
+  (§W2) — replayable, not stored.
+- **Persisted state = the log of player-caused events**: structures built / damaged /
+  destroyed, anchors placed / lost (and the Shifts they suppressed or re-enabled),
+  harvested / looted state. Replaying seed + log reconstructs exact world state.
+- Empty worlds **hibernate** to Postgres and reload on first joiner.
+- **Seasons are the GC:** at a season boundary worlds are archived / reset, bounding
+  the event log. Account-tier state is **not** wiped (consistent with §B "Sessions &
+  seasons").

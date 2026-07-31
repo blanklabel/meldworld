@@ -37,6 +37,10 @@ is the human table of contents.
   social/economic hub (M0 shipped; M1–M3 = roadmap epic **LC**).
 - [`proposals/verticality.md`](proposals/verticality.md) — terraces + ladders/ropes/slopes
   (implemented as a spike; awaiting a CANON §/D-number).
+- [`proposals/server-scaling.md`](proposals/server-scaling.md) — lifting the
+  authoritative server's concurrency ceiling (interest indexing → sim/IO split →
+  instance sharding) without breaking the single-owner/no-locks loop; includes a
+  forward-compat analysis of overworld hazards and sieged player towns.
 
 ## What's built vs. next
 
