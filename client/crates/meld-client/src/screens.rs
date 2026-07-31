@@ -29,7 +29,7 @@ pub(crate) struct ClassInfo {
 }
 
 pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
-    ClassInfo { key: "hunter", name: "Explorer", role: "Rugged front-line trailblazer. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
+    ClassInfo { key: "explorer", name: "Explorer", role: "Rugged front-line trailblazer. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
         ("Power Strike", "a heavy hit"),
         ("Second Wind", "heal yourself (Lv2)"),
         ("Snare", "hit + drain the foe's turn gauge (Lv2)"),
@@ -77,7 +77,7 @@ fn kit_text(ci: &ClassInfo) -> String {
 pub(crate) struct JoinFocus(pub String);
 impl Default for JoinFocus {
     fn default() -> Self {
-        JoinFocus("hunter".into())
+        JoinFocus("explorer".into())
     }
 }
 
@@ -297,7 +297,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             })
             .with_children(|row| {
                 for i in 0..4 {
-                    let key = session.party.get(i).cloned().unwrap_or_else(|| "hunter".into());
+                    let key = session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
                     class_card(
                         row,
                         sprite(&key),
@@ -330,7 +330,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             });
 
             // The detail panel (filled by `join_refresh` from `JoinFocus`).
-            let lead = class_info(&session.party.first().cloned().unwrap_or_else(|| "hunter".into()));
+            let lead = class_info(&session.party.first().cloned().unwrap_or_else(|| "explorer".into()));
             p.spawn((
                 Node {
                     width: Val::Px(820.0),

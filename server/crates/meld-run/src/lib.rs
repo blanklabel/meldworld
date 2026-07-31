@@ -128,7 +128,7 @@ impl InstanceRun {
 /// Map a `CharacterClass` to its balance content key.
 pub fn class_key(class: CharacterClass) -> &'static str {
     match class {
-        CharacterClass::Hunter => "hunter",
+        CharacterClass::Explorer => "explorer",
         CharacterClass::Dragoon => "dragoon",
         CharacterClass::Sage => "sage",
         CharacterClass::Ranger => "ranger",
@@ -148,7 +148,7 @@ pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> 
     let stats = balance
         .player
         .get(class_key(class))
-        .unwrap_or_else(|| balance.player.get("hunter").expect("hunter stats"));
+        .unwrap_or_else(|| balance.player.get("explorer").expect("explorer stats"));
     let (_, _, _, wll) = stats.attributes_at(level);
     let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
     stats.base_hp + grow(wll, stats.wll, balance.attributes.wll_to_hp)
@@ -219,7 +219,7 @@ pub fn party_fighters(
             let stats = balance
                 .player
                 .get(class_key(*class))
-                .unwrap_or_else(|| balance.player.get("hunter").expect("hunter stats"));
+                .unwrap_or_else(|| balance.player.get("explorer").expect("explorer stats"));
             let level = level_by_player
                 .get(player_id.as_str())
                 .copied()
@@ -287,10 +287,10 @@ pub fn party_fighters(
                     f.regen = balance.battle.resonant_regen_per_turn;
                     f.back_row = true;
                 }
-                // The Hunter (martial baseline) earns Adrenaline through basic attacks
+                // The Explorer (martial baseline) earns Adrenaline through basic attacks
                 // and spends it on skills; it holds the front line. Starts at 0.
-                CharacterClass::Hunter => {
-                    f.adrenaline_max = balance.battle.hunter_adrenaline_max;
+                CharacterClass::Explorer => {
+                    f.adrenaline_max = balance.battle.explorer_adrenaline_max;
                 }
                 // Other martial classes hold the front line with no special resource.
                 _ => {}
@@ -403,7 +403,7 @@ mod tests {
             run_id: "r".into(),
             player_id: "p".into(),
             username: "u".into(),
-            character_class: CharacterClass::Hunter,
+            character_class: CharacterClass::Explorer,
             run_level: 1,
             xp: 0,
             backpack: vec![],
@@ -446,7 +446,7 @@ mod tests {
         // base stats, so nothing about the existing balance shifts.
         let b = Balance::load_default().unwrap();
         for class in [
-            CharacterClass::Hunter,
+            CharacterClass::Explorer,
             CharacterClass::Psyker,
             CharacterClass::Resonant,
         ] {
@@ -478,24 +478,24 @@ mod tests {
     }
 
     #[test]
-    fn hunter_starts_with_an_empty_adrenaline_pool() {
+    fn explorer_starts_with_an_empty_adrenaline_pool() {
         // The martial baseline earns its resource in-battle: the pool exists (max
         // from balance) but starts empty, and it holds the front line.
         let b = Balance::load_default().unwrap();
-        let h = solo_fighter(CharacterClass::Hunter, 1, &b);
-        assert_eq!(h.adrenaline_max, b.battle.hunter_adrenaline_max);
+        let h = solo_fighter(CharacterClass::Explorer, 1, &b);
+        assert_eq!(h.adrenaline_max, b.battle.explorer_adrenaline_max);
         assert_eq!(h.adrenaline, 0, "Adrenaline is banked in-fight, not granted");
-        assert!(!h.back_row, "the Hunter holds the front line");
+        assert!(!h.back_row, "the Explorer holds the front line");
     }
 
     #[test]
     fn leveling_grows_stats_per_class_focus() {
         let b = Balance::load_default().unwrap();
-        let sq1 = solo_fighter(CharacterClass::Hunter, 1, &b);
-        let sq5 = solo_fighter(CharacterClass::Hunter, 5, &b);
-        // The Hunter hardens: Str -> more atk, Wll -> more HP.
-        assert!(sq5.atk > sq1.atk, "hunter atk grows with Str");
-        assert!(sq5.max_hp > sq1.max_hp, "hunter HP grows with Wll");
+        let sq1 = solo_fighter(CharacterClass::Explorer, 1, &b);
+        let sq5 = solo_fighter(CharacterClass::Explorer, 5, &b);
+        // The Explorer hardens: Str -> more atk, Wll -> more HP.
+        assert!(sq5.atk > sq1.atk, "explorer atk grows with Str");
+        assert!(sq5.max_hp > sq1.max_hp, "explorer HP grows with Wll");
         assert!(sq5.str_ > sq1.str_ && sq5.wll > sq1.wll);
 
         // The Psyker's manifestation power grows with Mnd, not its atk.
@@ -513,13 +513,13 @@ mod tests {
         runs.add_party(vec![(
             "p1".into(),
             "u1".into(),
-            CharacterClass::Hunter,
+            CharacterClass::Explorer,
             "r1".into(),
         )]);
         // Use a real generated creature as the enemy.
         let arena = meld_world::Arena::generate(&b, 5, true);
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Hunter, GearBonus::default())];
+        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
         // Carry a wounded hero in: start at 17 HP rather than full.
         let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[]);
         let (allies, _) = battle.wire_combatants();
@@ -534,33 +534,33 @@ mod tests {
         let mut runs = InstanceRun::new("i".into(), 0, &b);
         runs.add_party(vec![
             ("p".into(), "u".into(), CharacterClass::Psyker, "r1".into()),
-            ("p".into(), "u".into(), CharacterClass::Hunter, "r2".into()),
+            ("p".into(), "u".into(), CharacterClass::Explorer, "r2".into()),
         ]);
         let party: Vec<PartyMember> = vec![
             ("p".into(), "c1".into(), CharacterClass::Psyker, GearBonus::default()), // class default: back
-            ("p".into(), "c2".into(), CharacterClass::Hunter, GearBonus::default()), // class default: front
+            ("p".into(), "c2".into(), CharacterClass::Explorer, GearBonus::default()), // class default: front
         ];
-        // Override: send the Psyker to the front and pull the Hunter to the back.
+        // Override: send the Psyker to the front and pull the Explorer to the back.
         let fighters = party_fighters(&party, &runs, &b, &[Some(false), Some(true)]);
         assert!(!fighters[0].back_row, "Psyker forced to the front row");
-        assert!(fighters[1].back_row, "Hunter forced to the back row");
+        assert!(fighters[1].back_row, "Explorer forced to the back row");
         // An absent/None override keeps the class default.
         let dflt = party_fighters(&party, &runs, &b, &[]);
         assert!(dflt[0].back_row, "Psyker keeps its back-row default");
-        assert!(!dflt[1].back_row, "Hunter keeps its front-row default");
+        assert!(!dflt[1].back_row, "Explorer keeps its front-row default");
     }
 
     #[test]
     fn gear_bonus_adds_into_atk_def_speed() {
         let b = Balance::load_default().unwrap();
         let mut runs = InstanceRun::new("i".into(), 0, &b);
-        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Hunter, "r".into())]);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let bare: Vec<PartyMember> =
-            vec![("p".into(), "c".into(), CharacterClass::Hunter, GearBonus::default())];
+            vec![("p".into(), "c".into(), CharacterClass::Explorer, GearBonus::default())];
         let geared: Vec<PartyMember> = vec![(
             "p".into(),
             "c".into(),
-            CharacterClass::Hunter,
+            CharacterClass::Explorer,
             GearBonus { atk: 5, def: 3, spd: 2, modifiers: Vec::new() },
         )];
         let f0 = party_fighters(&bare, &runs, &b, &[]).pop().unwrap();

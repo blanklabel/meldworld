@@ -142,7 +142,7 @@ pub mod movement {
         /// render height by `level × step_height`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub level: Option<u8>,
-        /// Overworld mob intel (Hunter/Psyker perks). All absent for non-mobs and
+        /// Overworld mob intel (Explorer/Psyker perks). All absent for non-mobs and
         /// old wire; the client renders each only when its own party perk unlocks
         /// it (nameplates gated by `run.perks`). `mob_level` is the creature's
         /// combat level; `hp`/`max_hp` drive the pre-fight HP bar (mobs already
@@ -413,7 +413,7 @@ pub mod run {
     /// C2S — start the party's run. Class selection is optional and back-compatible:
     /// `party` is the explicit per-hero composition from the party builder; if it is
     /// absent the server falls back to `character_class` as the party lead (building
-    /// a default mixed party around it), and to Hunter if both are absent.
+    /// a default mixed party around it), and to Explorer if both are absent.
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct EnterMaze {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -572,12 +572,12 @@ pub mod run {
     /// server-side and mirrored here only for a HUD hint. See CANON class taxonomy.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Perks {
-        /// Hunter avatar-light intensity factor (0 = no Hunter in party).
+        /// Explorer avatar-light intensity factor (0 = no Explorer in party).
         #[serde(default)]
-        pub hunter_glow: f32,
-        /// Hunter intel tier: 0 none · 1 mob level · 2 +HP bar · 3 +battle ATB reveal.
+        pub explorer_glow: f32,
+        /// Explorer intel tier: 0 none · 1 mob level · 2 +HP bar · 3 +battle ATB reveal.
         #[serde(default)]
-        pub hunter_intel: u8,
+        pub explorer_intel: u8,
         /// Shifter minimap tier: 0 none · 1 map+mob/portal · 2 +chests · 3 +harvestables.
         #[serde(default)]
         pub shifter_map: u8,
@@ -606,8 +606,8 @@ pub mod run {
     impl Default for Perks {
         fn default() -> Self {
             Self {
-                hunter_glow: 0.0,
-                hunter_intel: 0,
+                explorer_glow: 0.0,
+                explorer_intel: 0,
                 shifter_map: 0,
                 shifter_map_radius: 0.0,
                 psyker_threat: 0,
@@ -965,11 +965,11 @@ mod tests {
         // Old/empty wire: aggro mult defaults to 1.0 (no Iron Hull), rest to 0.
         let empty: run::Perks = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.ironhull_aggro_mult, 1.0);
-        assert_eq!(empty.hunter_intel, 0);
+        assert_eq!(empty.explorer_intel, 0);
         assert_eq!(empty.shifter_map, 0);
-        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"hunter_glow":2.5,"hunter_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"ironhull_aggro_mult":0.6}}"#;
+        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"explorer_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"ironhull_aggro_mult":0.6}}"#;
         let env: Envelope<run::Perks> = serde_json::from_str(env_json).unwrap();
-        assert_eq!(env.payload.hunter_intel, 3);
+        assert_eq!(env.payload.explorer_intel, 3);
         assert_eq!(env.payload.ironhull_aggro_mult, 0.6);
         let s = serde_json::to_string(&env.payload).unwrap();
         let back: run::Perks = serde_json::from_str(&s).unwrap();

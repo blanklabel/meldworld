@@ -109,9 +109,9 @@ pub(crate) const BOSS_KEYS: [&str; 10] = [
 #[derive(Resource)]
 pub(crate) struct WorldAssets {
     /// Per-class hero sprite sets (bespoke PixelLab art, one folder per class under
-    /// `characters/<class>/`), keyed by `CharacterClass` wire key ("hunter", "psyker",
+    /// `characters/<class>/`), keyed by `CharacterClass` wire key ("explorer", "psyker",
     /// "resonant", "shifter", "iron_hull"). Look up via [`Self::class_frames`], which
-    /// falls back to the Hunter for any unknown key.
+    /// falls back to the Explorer for any unknown key.
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
     /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
     /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
@@ -161,7 +161,7 @@ pub(crate) struct WorldAssets {
 }
 
 impl WorldAssets {
-    /// The hero sprite set for a class wire key, falling back to the Hunter for any
+    /// The hero sprite set for a class wire key, falling back to the Explorer for any
     /// key without bespoke art (keeps rendering robust if a new class ships before
     /// its art does).
     /// The water material for an obstacle kind (`pond`/`bog_pool`/`frozen_pond`),
@@ -182,8 +182,8 @@ impl WorldAssets {
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
         self.class_chars
             .get(class)
-            .or_else(|| self.class_chars.get("hunter"))
-            .expect("hunter class sprite always loaded")
+            .or_else(|| self.class_chars.get("explorer"))
+            .expect("explorer class sprite always loaded")
     }
 }
 
@@ -466,7 +466,7 @@ pub(crate) fn setup(
             "shifter" => &[
                 ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
             ],
-            "hunter" => &[
+            "explorer" => &[
                 ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
                 ("snare", 8), ("frenzy", 8),
             ],
@@ -484,7 +484,7 @@ pub(crate) fn setup(
             _ => &[("walk", 8)],
         }
     }
-    let class_chars: HashMap<String, CharacterFrames> = ["hunter", "psyker", "resonant", "shifter", "iron_hull"]
+    let class_chars: HashMap<String, CharacterFrames> = ["explorer", "psyker", "resonant", "shifter", "iron_hull"]
         .iter()
         .map(|&class| {
             (
@@ -1428,7 +1428,7 @@ pub(crate) struct Sky {
     /// Counts storms, so the super-storm roll varies each time.
     pub(crate) cycle: u32,
     /// Daylight factor (0 = night, 1 = day), recomputed each frame by [`apply_sky`]
-    /// so other systems (e.g. the Hunter avatar lamp) can read the darkness without
+    /// so other systems (e.g. the Explorer avatar lamp) can read the darkness without
     /// duplicating the sun-angle math.
     pub(crate) day: f32,
 }
@@ -1548,7 +1548,7 @@ pub(crate) fn apply_sky(
     let day = ((sun_h + 0.14) / 0.36).clamp(0.0, 1.0); // 0 night → 1 day
     let dusk = ((0.30 - sun_h.abs()).max(0.0) / 0.30).powf(1.2); // horizon glow
     let rain = sky.weather;
-    // Publish the daylight factor so other systems (Hunter lamp) can read darkness.
+    // Publish the daylight factor so other systems (Explorer lamp) can read darkness.
     sky.day = day;
 
     let night_sky = Color::srgb(0.03, 0.05, 0.10);

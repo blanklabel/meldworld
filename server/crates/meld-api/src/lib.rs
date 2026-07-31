@@ -367,7 +367,7 @@ fn authenticate(st: &ApiState, headers: &HeaderMap) -> Result<Uuid, ApiReject> {
         .ok_or_else(ApiReject::unauthorized)
 }
 
-/// Build the wire `Player` from a DB row + its meld skills. `hunter` is always
+/// Build the wire `Player` from a DB row + its meld skills. `explorer` is always
 /// unlocked (auth-players.md).
 fn to_player(row: PlayerRow, meld_skills: Vec<MeldSkillEntry>) -> Player {
     Player {
@@ -375,7 +375,7 @@ fn to_player(row: PlayerRow, meld_skills: Vec<MeldSkillEntry>) -> Player {
         username: row.username,
         created_at: row.created_at.to_rfc3339(),
         active_title: row.active_title,
-        class_unlocks: vec![CharacterClass::Hunter],
+        class_unlocks: vec![CharacterClass::Explorer],
         meld_skills,
     }
 }

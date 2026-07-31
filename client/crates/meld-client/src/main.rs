@@ -345,7 +345,7 @@ fn main() {
                 auto_open_chest,
                 pulse_collectibles,
                 // Overworld class perks ("party sense").
-                update_hunter_lamp,
+                update_explorer_lamp,
                 update_mob_nameplates,
                 update_minimap,
             )
@@ -517,7 +517,7 @@ struct Session {
     channeling: bool,
     status: String,
     /// The party the player built on the Join screen — one class key per hero
-    /// slot (wire form: "hunter" / "psyker" / "resonant"). Sent on enter_maze.
+    /// slot (wire form: "explorer" / "psyker" / "resonant"). Sent on enter_maze.
     party: Vec<String>,
     /// Which party slot the builder cursor is on.
     party_cursor: usize,
@@ -538,10 +538,10 @@ impl Default for Session {
             status: String::new(),
             // A diverse default so newcomers see a spread of classes at once.
             party: vec![
-                "hunter".into(),
+                "explorer".into(),
                 "psyker".into(),
                 "resonant".into(),
-                "hunter".into(),
+                "explorer".into(),
             ],
             party_cursor: 0,
             coop: false,
@@ -568,7 +568,7 @@ struct OwEntity {
     /// For chests: whether it's been opened.
     opened: bool,
     /// Overworld mob intel (monsters only; `None` otherwise). Rendered as a
-    /// nameplate only when the viewer's Hunter/Psyker perk unlocks each field.
+    /// nameplate only when the viewer's Explorer/Psyker perk unlocks each field.
     mob_level: Option<i32>,
     hp: Option<i32>,
     max_hp: Option<i32>,
@@ -749,7 +749,7 @@ struct PartyRoster {
 }
 
 /// The caller's earned overworld class perks ("party sense"), from `run.perks`.
-/// Gates the Hunter avatar glow + monster intel, the Shifter minimap, the Psyker
+/// Gates the Explorer avatar glow + monster intel, the Shifter minimap, the Psyker
 /// threat markers, and the battle ATB reveal. Default = no perks.
 #[derive(Resource, Default)]
 struct PerksRes(meld_client::net::PerksLine);
@@ -881,7 +881,7 @@ impl BattleData {
             .as_ref()
             .and_then(|a| self.view(a))
             .map(hero_class)
-            .unwrap_or_else(|| "hunter".to_string())
+            .unwrap_or_else(|| "explorer".to_string())
     }
     /// Level of the active hero (for level-gated menus), default 1.
     fn active_level(&self) -> i32 {
@@ -976,12 +976,12 @@ fn parse_foci(statuses: &[String]) -> (usize, Vec<(String, u8)>) {
     (max, foci)
 }
 
-/// A hero's class key parsed from its wire statuses (`class:<key>`), default hunter.
+/// A hero's class key parsed from its wire statuses (`class:<key>`), default explorer.
 fn hero_class(view: &CombatantView) -> String {
     view.statuses
         .iter()
         .find_map(|s| s.strip_prefix("class:"))
-        .unwrap_or("hunter")
+        .unwrap_or("explorer")
         .to_string()
 }
 
@@ -1006,8 +1006,8 @@ fn resonant_autoplay_op(battle: &BattleData) -> QueuedKind {
     }
 }
 
-/// Hunter kit catalog: (wire kind, unlock level, Adrenaline cost). A display/autoplay
-/// mirror of balance `[battle] hunter_*_cost` + `meld_proto::skills` unlock levels —
+/// Explorer kit catalog: (wire kind, unlock level, Adrenaline cost). A display/autoplay
+/// mirror of balance `[battle] explorer_*_cost` + `meld_proto::skills` unlock levels —
 /// the server stays authoritative; this only steers the menu/autoplay.
 const HUNTER_SKILLS: [(&str, i32, i32); 4] = [
     ("power_strike", 1, 40),
@@ -1016,11 +1016,11 @@ const HUNTER_SKILLS: [(&str, i32, i32); 4] = [
     ("frenzy", 3, 80),
 ];
 
-/// Autoplay heuristic for a Hunter hero: build Adrenaline with basic attacks, then
+/// Autoplay heuristic for a Explorer hero: build Adrenaline with basic attacks, then
 /// release. Heal with Second Wind when badly hurt and it can afford it; otherwise if
 /// it has leveled into Frenzy it banks toward that big hit, else cashes in Power
 /// Strike as soon as it can afford it.
-fn hunter_autoplay_op(view: &CombatantView) -> QueuedKind {
+fn explorer_autoplay_op(view: &CombatantView) -> QueuedKind {
     let adr = status_num(&view.statuses, "adrenaline:");
     let skill = |kind: &str| HUNTER_SKILLS.iter().find(|(k, _, _)| *k == kind).unwrap();
     let (_, sw_lv, sw_cost) = *skill("second_wind");
@@ -1567,9 +1567,9 @@ fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry
             v.push(e("Back", EntryAction::Back));
             v
         }
-        // Hunter (the martial baseline / default). Its skills spend banked Adrenaline;
+        // Explorer (the martial baseline / default). Its skills spend banked Adrenaline;
         // the row is shown once unlocked by level, and the server rejects it if the
-        // Hunter can't yet afford the cost (the Adrenaline bar shows the running total).
+        // Explorer can't yet afford the cost (the Adrenaline bar shows the running total).
         MenuLevel::Skills => {
             let mut v = skill_entries(
                 &[
@@ -1822,9 +1822,9 @@ mod tests {
         BattleData {
             your_ids: vec!["h1".into(), "h2".into()],
             combatants: vec![
-                cv("h1", true, 40, 40, &["class:hunter"]),
+                cv("h1", true, 40, 40, &["class:explorer"]),
                 cv("h2", true, 12, 40, &["class:resonant"]), // most wounded ally
-                cv("ally", true, 30, 40, &["class:hunter"]), // joined co-op hero
+                cv("ally", true, 30, 40, &["class:explorer"]), // joined co-op hero
                 cv("m1", false, 100, 100, &["faction:beast"]),
                 cv("m2", false, 40, 100, &["faction:beast"]),
             ],

@@ -239,23 +239,23 @@ fn modifiers_json(entries: &[(String, f64)]) -> String {
 
 /// The per-hero class composition of a player's party of `size`. The picked class
 /// leads; the rest are a fixed spread so a single party mixes classes that play
-/// very differently (Hunter bruiser + Psyker channeler + Resonant healer).
+/// very differently (Explorer bruiser + Psyker channeler + Resonant healer).
 fn party_composition(chosen: CharacterClass, size: usize) -> Vec<CharacterClass> {
     let base = [
         chosen,
         CharacterClass::Psyker,
         CharacterClass::Resonant,
-        CharacterClass::Hunter,
+        CharacterClass::Explorer,
     ];
     (0..size.max(1)).map(|i| base[i % base.len()]).collect()
 }
 
-/// A class's starting/max HP from balance (falls back to hunter).
+/// A class's starting/max HP from balance (falls back to explorer).
 fn class_base_hp(class: CharacterClass, balance: &Balance) -> i32 {
     balance
         .player
         .get(meld_run::class_key(class))
-        .or_else(|| balance.player.get("hunter"))
+        .or_else(|| balance.player.get("explorer"))
         .map(|p| p.base_hp)
         .unwrap_or(40)
 }
@@ -291,7 +291,7 @@ struct Session {
     /// Per-hero-slot combat bonuses from equipped gear, loaded from the DB
     /// after connect (each hero can wear different gear).
     gear_bonuses: Vec<meld_db::GearBonus>,
-    /// Class chosen at the player's most recent `run.enter_maze` (default Hunter).
+    /// Class chosen at the player's most recent `run.enter_maze` (default Explorer).
     /// This is the party *lead* (slot 0).
     character_class: CharacterClass,
     /// Explicit per-hero party composition from the builder, if the client sent
@@ -757,7 +757,7 @@ impl GameState {
                         last_client_seq: 0,
                         in_instance: false,
                         gear_bonuses: Vec::new(),
-                        character_class: CharacterClass::Hunter,
+                        character_class: CharacterClass::Explorer,
                         party_comp: None,
                         hero_names: None,
                         hero_rows: None,
@@ -911,7 +911,7 @@ impl GameState {
             .as_ref()
             .and_then(|e| e.character_class)
             .or_else(|| party_comp.as_ref().and_then(|p| p.first().copied()))
-            .unwrap_or(CharacterClass::Hunter);
+            .unwrap_or(CharacterClass::Explorer);
         let names = req
             .as_ref()
             .and_then(|e| e.names.clone())
@@ -1078,14 +1078,14 @@ impl GameState {
         let lvl = run_level.max(1);
         let above = |floor: i32| (lvl - floor).max(0) as f32;
         let mut out = wr::Perks::default();
-        // Hunter — night glow + "predator's eye" monster intel.
-        if has(CharacterClass::Hunter) {
-            out.hunter_glow = p.hunter_glow_base + p.hunter_glow_per_level * (lvl - 1) as f32;
-            out.hunter_intel = if lvl >= p.hunter_intel_atb_at {
+        // Explorer — night glow + "predator's eye" monster intel.
+        if has(CharacterClass::Explorer) {
+            out.explorer_glow = p.explorer_glow_base + p.explorer_glow_per_level * (lvl - 1) as f32;
+            out.explorer_intel = if lvl >= p.explorer_intel_atb_at {
                 3
-            } else if lvl >= p.hunter_intel_hp_at {
+            } else if lvl >= p.explorer_intel_hp_at {
                 2
-            } else if lvl >= p.hunter_intel_level_at {
+            } else if lvl >= p.explorer_intel_level_at {
                 1
             } else {
                 0
@@ -1210,7 +1210,7 @@ impl GameState {
             let s = b
                 .player
                 .get(key)
-                .unwrap_or_else(|| b.player.get("hunter").expect("hunter stats"));
+                .unwrap_or_else(|| b.player.get("explorer").expect("explorer stats"));
             let (str_, mnd, dex, wll) = s.attributes_at(level);
             let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
             let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
@@ -1314,7 +1314,7 @@ impl GameState {
                     .sessions
                     .get(pid)
                     .map(|s| (s.username.clone(), s.character_class))
-                    .unwrap_or((String::new(), CharacterClass::Hunter));
+                    .unwrap_or((String::new(), CharacterClass::Explorer));
                 (pid.clone(), username, class, Uuid::now_v7().to_string())
             })
             .collect();
@@ -1388,15 +1388,15 @@ impl GameState {
                 .sessions
                 .get(pid)
                 .map(|s| (s.character_class, s.party_comp.clone(), s.hero_names.clone(), s.hero_rows.clone()))
-                .unwrap_or((CharacterClass::Hunter, None, None, None));
+                .unwrap_or((CharacterClass::Explorer, None, None, None));
             // The builder's explicit composition wins (normalized to party size,
-            // padded with Hunter); otherwise build a default mixed party around
+            // padded with Explorer); otherwise build a default mixed party around
             // the lead.
             let comp = match explicit {
                 Some(mut p) => {
                     p.truncate(party_size);
                     while p.len() < party_size {
-                        p.push(CharacterClass::Hunter);
+                        p.push(CharacterClass::Explorer);
                     }
                     p
                 }
@@ -1578,11 +1578,11 @@ impl GameState {
             Some(mut p) if !p.is_empty() => {
                 p.truncate(size);
                 while p.len() < size {
-                    p.push(CharacterClass::Hunter);
+                    p.push(CharacterClass::Explorer);
                 }
                 p
             }
-            _ => party_composition(CharacterClass::Hunter, size),
+            _ => party_composition(CharacterClass::Explorer, size),
         }
     }
 
@@ -1731,7 +1731,7 @@ impl GameState {
             .collect();
         for (pid, party) in &members {
             if let Some(s) = self.sessions.get_mut(pid) {
-                s.character_class = party.first().copied().unwrap_or(CharacterClass::Hunter);
+                s.character_class = party.first().copied().unwrap_or(CharacterClass::Explorer);
                 s.party_comp = Some(party.clone());
             }
             self.player_lobby.remove(pid);
@@ -2263,7 +2263,7 @@ impl GameState {
         let mut add_player_combatants: HashMap<String, Vec<String>> = HashMap::new();
         for pid in &joiners {
             let r_ref = inst.run.runs.iter().find(|r| &r.player_id == pid);
-            let lead = r_ref.map(|r| r.character_class).unwrap_or(CharacterClass::Hunter);
+            let lead = r_ref.map(|r| r.character_class).unwrap_or(CharacterClass::Explorer);
             let looted = r_ref.map(|r| r.looted_gear.as_slice()).unwrap_or(&[]);
             let comp = inst
                 .party_classes
@@ -3233,7 +3233,7 @@ impl GameState {
                 avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
                 level: Some(m.elevation),
                 // Overworld mob intel (client shows each field only when the
-                // viewer's Hunter/Psyker perk unlocks it — see `run.perks`).
+                // viewer's Explorer/Psyker perk unlocks it — see `run.perks`).
                 mob_level: Some(m.level),
                 hp: Some(m.hp),
                 max_hp: Some(m.max_hp),

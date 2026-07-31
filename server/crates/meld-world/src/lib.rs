@@ -253,7 +253,7 @@ pub struct CreatureLoot {
 /// meld-run's `CharacterClass` enum) since this crate only ever needs the
 /// strings, to pick which class a gear drop belongs to.
 pub const CLASS_KEYS: [&str; 10] = [
-    "hunter",
+    "explorer",
     "dragoon",
     "sage",
     "ranger",
@@ -301,9 +301,9 @@ const POWER_ADJECTIVES: [&str; 20] = [
 /// prefixes to build that class's 20-item catalog name for one slot.
 pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
     match (class_key, slot) {
-        ("hunter", "main_hand") => "Warblade",
-        ("hunter", "chest") => "Battleplate",
-        ("hunter", "accessory") => "Bloodcuff",
+        ("explorer", "main_hand") => "Warblade",
+        ("explorer", "chest") => "Battleplate",
+        ("explorer", "accessory") => "Bloodcuff",
         ("dragoon", "main_hand") => "Lance",
         ("dragoon", "chest") => "Greaves",
         ("dragoon", "accessory") => "Windclasp",
@@ -332,9 +332,9 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("iron_hull", "chest") => "Bulwark Plate",
         ("iron_hull", "accessory") => "Aggro Band",
         // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
-        ("hunter", "off_hand") => "Targe",
-        ("hunter", "head") => "Warhelm",
-        ("hunter", "legs") => "Striders",
+        ("explorer", "off_hand") => "Targe",
+        ("explorer", "head") => "Warhelm",
+        ("explorer", "legs") => "Striders",
         ("dragoon", "off_hand") => "Wing Shield",
         ("dragoon", "head") => "Drakehelm",
         ("dragoon", "legs") => "Skygreaves",
@@ -371,9 +371,9 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
 /// `roll_creature_loot`'s `class_signature_*` roll).
 fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
     match (class_key, slot) {
-        ("hunter", "main_hand") => "Bloodfang, the Frenzied Cleaver",
-        ("hunter", "chest") => "Aegis of the Unbroken Line",
-        ("hunter", "accessory") => "The Last Adrenaline",
+        ("explorer", "main_hand") => "Bloodfang, the Frenzied Cleaver",
+        ("explorer", "chest") => "Aegis of the Unbroken Line",
+        ("explorer", "accessory") => "The Last Adrenaline",
         ("dragoon", "main_hand") => "Skyreaver, Lance of the Falling Star",
         ("dragoon", "chest") => "Stormstep Greaves",
         ("dragoon", "accessory") => "The Windbound Clasp",
@@ -382,7 +382,7 @@ fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
         ("sage", "accessory") => "Runestone of First Light",
         ("ranger", "main_hand") => "Farsight, the Wind-Bent Bow",
         ("ranger", "chest") => "Cloak of the Silent Trail",
-        ("ranger", "accessory") => "The Hunter's Mark",
+        ("ranger", "accessory") => "The Explorer's Mark",
         ("alchemist_knight", "main_hand") => "Mercurial Edge",
         ("alchemist_knight", "chest") => "Platemail of the Transmuted Heart",
         ("alchemist_knight", "accessory") => "The Philosopher's Vial",
@@ -764,7 +764,7 @@ pub struct MonsterSpawn {
     pub hp: i32,
     /// Full HP at spawn (= `hp` before any damage). Overworld mobs lose `hp` to
     /// hostile-faction skirmishes, so `hp/max_hp` is a meaningful pre-fight bar
-    /// (surfaced to the client for the Hunter's HP-intel perk).
+    /// (surfaced to the client for the Explorer's HP-intel perk).
     pub max_hp: i32,
     pub atk: i32,
     pub def: i32,
@@ -3924,10 +3924,16 @@ mod tests {
             .find(|a| a.dungeon)
             .expect("a dungeon section exists in the chain");
         let (s, e) = (dungeon.start_x, dungeon.end_x);
-        let walls = arena.obstacles.iter().filter(|o| o.position.x >= s && o.position.x <= e).count();
+        // The section is a RADIUS band in the bent world, so test by radius (hypot), not
+        // world-x — after the radial bend `position.x` is `r·cosθ`, not the radius.
+        let in_dungeon = |p: &Position| {
+            let r = p.x.hypot(p.y);
+            r >= s && r <= e
+        };
+        let walls = arena.obstacles.iter().filter(|o| in_dungeon(&o.position)).count();
         assert!(walls > 0, "dungeon carries divider-wall obstacles");
         assert!(
-            arena.chests.iter().any(|c| c.position.x >= s && c.position.x <= e),
+            arena.chests.iter().any(|c| in_dungeon(&c.position)),
             "dungeon has a guaranteed loot chest",
         );
     }

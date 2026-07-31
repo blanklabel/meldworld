@@ -56,7 +56,7 @@ pub struct LootGear {
     pub rarity: String,
     /// Equipment slot key (content-defined opaque string, e.g. `weapon`).
     pub slot: String,
-    /// Which class this item is for (`meld_world::CLASS_KEYS`, e.g. `hunter`).
+    /// Which class this item is for (`meld_world::CLASS_KEYS`, e.g. `explorer`).
     /// Only that class's heroes gain its equipped bonus. Additive; old
     /// wire/clients default to empty (treated as unrestricted).
     #[serde(default)]

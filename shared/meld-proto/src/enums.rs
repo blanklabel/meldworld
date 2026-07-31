@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Character classes (CANON.md §G `CharacterClass`, D9). `hunter` is the default —
+/// Character classes (CANON.md §G `CharacterClass`, D9). `explorer` is the default —
 /// the martial baseline that builds Adrenaline with basic attacks and spends it on
 /// its skills (see `Battle::resolve_skill`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -11,7 +11,7 @@ pub enum CharacterClass {
     /// Martial baseline / default. Basic attacks bank Adrenaline; skills (Power
     /// Strike, Second Wind, Snare, Frenzy) spend it. The
     /// disposal-of-dangerous-creatures guild.
-    Hunter,
+    Explorer,
     Dragoon,
     Sage,
     Ranger,
@@ -21,7 +21,7 @@ pub enum CharacterClass {
     Psyker,
     /// Healer: spends its own HP to mend allies, grants Regen + Barrier.
     Resonant,
-    /// Rogue / fortune-hunter ("Runner"): fast, fragile, evasive. Armour-piercing
+    /// Rogue / fortune-explorer ("Runner"): fast, fragile, evasive. Armour-piercing
     /// Backstab, a Flicker evasion blink, and Ransack (damage + ATB-gauge steal).
     Shifter,
     /// Order of the Iron Hull monk: a dense, slow front-line tank. Blunt kinetic

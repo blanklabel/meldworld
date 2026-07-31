@@ -15,7 +15,7 @@ async fn start_server() -> String {
     let db_url = std::env::var("MELD_DATABASE_URL")
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
-    balance.battle.party_size_per_player = 1; // one hero → slot 0 leads (a Hunter)
+    balance.battle.party_size_per_player = 1; // one hero → slot 0 leads (a Explorer)
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
@@ -104,7 +104,7 @@ async fn formation_persists_and_reloads() {
         201
     );
 
-    // Dive 1: a Hunter defaults to the FRONT row, then move it to the BACK — the
+    // Dive 1: a Explorer defaults to the FRONT row, then move it to the BACK — the
     // re-sent roster reflects the change immediately.
     let (ticket, _token) = login(&addr, &http, &username).await;
     let after_set = dive_and_read_back_row(&addr, &ticket, Some(true)).await;

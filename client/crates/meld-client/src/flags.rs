@@ -107,7 +107,7 @@ pub(crate) fn class_flag() -> Option<String> {
 }
 
 /// Pre-build the whole party (comma-separated class keys) without the builder.
-/// Native: `MELD_PARTY=hunter,psyker,resonant,hunter`. Browser: `?party=…`.
+/// Native: `MELD_PARTY=explorer,psyker,resonant,explorer`. Browser: `?party=…`.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn party_flag() -> Option<String> {
     std::env::var("MELD_PARTY").ok().filter(|s| !s.is_empty())

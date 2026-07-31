@@ -9,7 +9,7 @@ use meld_client::net::{CombatantView, GearLine, SkillLine};
 use super::*;
 
 /// The classes the party builder cycles through.
-pub(crate) const PARTY_CLASSES: [&str; 5] = ["hunter", "psyker", "resonant", "shifter", "iron_hull"];
+pub(crate) const PARTY_CLASSES: [&str; 5] = ["explorer", "psyker", "resonant", "shifter", "iron_hull"];
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
@@ -96,9 +96,9 @@ pub(crate) fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // A Hunter + Iron Hull hold the front; a Psyker + Resonant sit the back row.
+        // A Explorer + Iron Hull hold the front; a Psyker + Resonant sit the back row.
         // (The Iron Hull makes the TACTICS tap toggle visible for screenshots.)
-        hero("h1", 32, 1.0, "hunter", false),
+        hero("h1", 32, 1.0, "explorer", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
         hero("h4", 36, 0.75, "iron_hull", false),
@@ -153,13 +153,13 @@ pub(crate) fn mock_battle_setup(
             statuses: vec![format!("class:{class}")],
         };
         battle.combatants.extend([
-            ally("a1", "ally_a", "Bram", "hunter", 34, 0.5),
+            ally("a1", "ally_a", "Bram", "explorer", 34, 0.5),
             ally("a2", "ally_a", "Ivo", "psyker", 28, 0.2),
             ally("a3", "ally_a", "Sten", "resonant", 40, 0.9),
             ally("b1", "ally_b", "Wren", "psyker", 22, 0.7),
-            ally("b2", "ally_b", "Cael", "hunter", 37, 0.35),
+            ally("b2", "ally_b", "Cael", "explorer", 37, 0.35),
             ally("c1", "ally_c", "Doon", "resonant", 31, 0.6),
-            ally("c2", "ally_c", "Fisk", "hunter", 40, 0.15),
+            ally("c2", "ally_c", "Fisk", "explorer", 40, 0.15),
         ]);
     }
     // Pre-pick a target so the shimmering reticle is visible in a static screenshot
@@ -202,10 +202,10 @@ pub(crate) fn mock_overlay_setup(
             back_row,
         };
         roster.heroes = vec![
-            hero("Rurik", "hunter", false),
+            hero("Rurik", "explorer", false),
             hero("Ivo", "psyker", true),
             hero("Sten", "resonant", true),
-            hero("Bram", "hunter", false),
+            hero("Bram", "explorer", false),
         ];
         inv.chits = 1240;
         // Real material keys (match `resource_<key>.png`) so the Items tab shows
@@ -237,7 +237,7 @@ pub(crate) fn mock_overlay_setup(
                 gear_id: "mock-accessory".into(),
                 name: "Duneglass Charm".into(),
                 slot: "accessory".into(),
-                class_key: "hunter".into(),
+                class_key: "explorer".into(),
                 insurance: "red".into(),
                 tier: 3,
                 equipped_hero_slot: None,
@@ -269,7 +269,7 @@ pub(crate) fn mock_overlay_setup(
             SkillLine { kind: "forging".into(), level: 2, xp: 130 },
             SkillLine { kind: "gatekeeping".into(), level: 1, xp: 20 },
         ];
-        prog.classes = vec!["hunter".into(), "dragoon".into()];
+        prog.classes = vec!["explorer".into(), "dragoon".into()];
         overlay.kind = Some(OverlayKind::LevelUp);
     } else if levelup_anim_mockup_flag() {
         use meld_client::net::HeroLevelUpLine;
@@ -278,7 +278,7 @@ pub(crate) fn mock_overlay_setup(
         levelup.pending.extend([
             HeroLevelUpLine {
                 name: "Rurik".into(),
-                class_key: "hunter".into(),
+                class_key: "explorer".into(),
                 level: 5,
                 max_hp: (52, 62),
                 str_: (24, 27),
