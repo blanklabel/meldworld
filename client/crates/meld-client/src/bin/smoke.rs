@@ -33,7 +33,15 @@ fn main() {
     let mut monster: Option<String> = None;
     let mut my_turn = false;
     let mut last_move = Instant::now();
-    let deadline = Instant::now() + Duration::from_secs(40);
+    // Wall-clock budget for the whole smoke loop. Default 40 s, but overridable via
+    // MELD_SMOKE_TIMEOUT_SECS so the smoke can still complete (and thus verify the
+    // real netcode end-to-end) on a heavily-loaded shared box where the 100 ms tick
+    // jitters and the ATB battle runs in real-world minutes rather than seconds.
+    let timeout_secs = std::env::var("MELD_SMOKE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
 
     loop {
         if Instant::now() > deadline {
