@@ -308,9 +308,17 @@ rather than new fields" convention (CLAUDE.md):
     enter/seal/exit/death flow; per-space snapshots via **SC-1**'s interest index;
     `[worldgen]` tunables (`dungeon_spawn_chance`, `dungeon_depth_level_step`).
     Deferred rather than churning today's single global instance twice.
-- **DG-4 — traps + puzzles live**. Trap state machine + Dex/Shifter disarm; the
-  emitter/receiver runtime (levers, plates, doors, gates, keys, boss-clear, spawn,
-  mover); `run.interact`.
+- **DG-4 — traps + puzzles live**, engine-first like DG-3:
+  - **DG-4a — the engine** ✅ *(shipped)*. The puzzle emitter/barrier runtime
+    already lives in `meld-dungeon-run` (DG-3a: levers/plates/keys/boss-clear open
+    doors/gates via the `Condition` grammar). DG-4a adds the **trap state machine**
+    (`TrapState` armed→disarmed) with `spring_trap` (fires on contact; `severity`
+    rides the floor's effective distance) and `attempt_disarm` (the **Dex check the
+    Shifter is far better at**, design §5 — failure springs it; non-disarmable traps
+    return `NotDisarmable`). Pure, 7 tests.
+  - **DG-4b — the loop** *(pending, with DG-3b)*. The `spawn` / `mover` / `timer`
+    receivers (need `meld-dungeon` model additions), the `run.interact` wire, and
+    applying trap hits + interact-dispatch server-side.
 - **DG-5 — loot** ✅ *(shipped)*. `DungeonInstance::resolve_chest` (in
   `meld-dungeon-run`) turns a chest's `ChestLoot` into a `ChestReward` scaled by the
   floor's `effective_distance` — **rolled** (reuses `meld_world::roll_creature_loot`),

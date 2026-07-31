@@ -99,6 +99,9 @@ pub struct DungeonInstance<'a> {
     occupants: HashMap<String, Occupant>,
     /// Cell → its stair partner cell on the neighbouring floor (both directions).
     stair_links: HashMap<(usize, usize, usize), (usize, usize, usize)>,
+    /// Trap id → armed/disarmed (DG-4). Every trap starts armed; disarming (or a
+    /// future `trap.disarm` signal) makes it inert.
+    traps: HashMap<Id, TrapState>,
 }
 
 impl<'a> DungeonInstance<'a> {
@@ -115,6 +118,12 @@ impl<'a> DungeonInstance<'a> {
             open: HashSet::new(),
             occupants: HashMap::new(),
             stair_links: build_stair_links(def),
+            traps: def
+                .objects
+                .iter()
+                .filter(|(_, k)| matches!(k, ObjectKind::Trap { .. }))
+                .map(|(id, _)| (id.clone(), TrapState::Armed))
+                .collect(),
         }
     }
 
@@ -276,6 +285,112 @@ impl<'a> DungeonInstance<'a> {
             }
         }
         opened
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DG-4 — traps: armed/disarmed state + the Dex/Shifter disarm check
+// ---------------------------------------------------------------------------
+
+/// A trap's live state. Every trap starts [`Armed`](TrapState::Armed); a successful
+/// disarm makes it [`Disarmed`](TrapState::Disarmed) (inert). Firing does *not*
+/// change state — an armed trap is a persistent hazard until disarmed or routed
+/// around (design §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrapState {
+    Armed,
+    Disarmed,
+}
+
+/// What a sprung trap does to the party. The driver maps `kind` (the authored
+/// `"thorns"` / `"dart"` / `"fire"` …) to a damage type and scales damage by
+/// `severity` (the floor's effective distance, so deeper traps bite harder).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrapHit {
+    pub kind: String,
+    pub severity: i64,
+}
+
+/// The result of an attempted disarm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisarmOutcome {
+    /// The check passed — the trap is now inert.
+    Disarmed,
+    /// The check failed — the trap fired.
+    Sprung(TrapHit),
+    /// This trap is authored `disarmable = false`; you must route around it.
+    NotDisarmable,
+    /// Already inert.
+    AlreadyDisarmed,
+    /// No trap on that cell.
+    NotATrap,
+}
+
+impl DungeonInstance<'_> {
+    /// A trap's current state, if `id` is a trap.
+    pub fn trap_state(&self, id: &str) -> Option<TrapState> {
+        self.traps.get(id).copied()
+    }
+
+    /// Fire the trap on `(floor, pos)` if one is there and armed — the movement
+    /// path (the driver calls this when a player steps onto the cell). Returns the
+    /// [`TrapHit`]; `None` if the cell has no armed trap. Does not change state
+    /// (armed traps are persistent hazards).
+    pub fn spring_trap(&self, floor: usize, pos: Position) -> Option<TrapHit> {
+        let id = self.object_at(floor, pos)?;
+        if self.traps.get(id) != Some(&TrapState::Armed) {
+            return None;
+        }
+        match self.def.objects.get(id) {
+            Some(ObjectKind::Trap { kind, .. }) => {
+                Some(TrapHit { kind: kind.clone(), severity: self.effective_distance(floor) })
+            }
+            _ => None,
+        }
+    }
+
+    /// Attempt to disarm the trap on `(floor, pos)` — the `run.interact` path. A Dex
+    /// check the **Shifter** is far better at (design §5): success probability
+    /// `p = dex / dex_divisor (+ shifter_bonus if a Shifter)`, clamped to
+    /// `[0.05, 0.95]`. On success the trap is neutralised; **on failure it springs**.
+    /// A non-disarmable trap returns [`DisarmOutcome::NotDisarmable`] (no roll).
+    /// `dex_divisor` / `shifter_bonus` are driver-supplied tunables.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attempt_disarm(
+        &mut self,
+        floor: usize,
+        pos: Position,
+        dex: i32,
+        is_shifter: bool,
+        dex_divisor: f64,
+        shifter_bonus: f64,
+        seed: u64,
+    ) -> DisarmOutcome {
+        let def = self.def;
+        let Some(id) = self.object_at(floor, pos).cloned() else {
+            return DisarmOutcome::NotATrap;
+        };
+        let (kind, disarmable) = match def.objects.get(&id) {
+            Some(ObjectKind::Trap { kind, disarmable }) => (kind.clone(), *disarmable),
+            _ => return DisarmOutcome::NotATrap,
+        };
+        match self.traps.get(&id) {
+            None => return DisarmOutcome::NotATrap,
+            Some(TrapState::Disarmed) => return DisarmOutcome::AlreadyDisarmed,
+            Some(TrapState::Armed) => {}
+        }
+        if !disarmable {
+            return DisarmOutcome::NotDisarmable;
+        }
+        let bonus = if is_shifter { shifter_bonus } else { 0.0 };
+        let p = (dex as f64 / dex_divisor + bonus).clamp(0.05, 0.95);
+        let mut s = seed;
+        if unit(splitmix64(&mut s)) < p {
+            self.traps.insert(id, TrapState::Disarmed);
+            DisarmOutcome::Disarmed
+        } else {
+            DisarmOutcome::Sprung(TrapHit { kind, severity: self.effective_distance(floor) })
+        }
     }
 }
 
@@ -622,5 +737,108 @@ mod tests {
         let d = DungeonInstance::new(1, forest(), 100, 10);
         assert!(d.resolve_chest("L1", &balance(), 4, 1.0, 0).is_none(), "a lever is not a chest");
         assert!(d.resolve_chest("nope", &balance(), 4, 1.0, 0).is_none());
+    }
+
+    // --- DG-4: traps + disarm ---
+
+    #[test]
+    fn traps_start_armed() {
+        assert_eq!(DungeonInstance::new(1, forest(), 0, 0).trap_state("T1"), Some(TrapState::Armed));
+        assert_eq!(DungeonInstance::new(1, desert(), 0, 0).trap_state("T2"), Some(TrapState::Armed));
+        assert_eq!(DungeonInstance::new(1, forest(), 0, 0).trap_state("L1"), None, "a lever is not a trap");
+    }
+
+    #[test]
+    fn an_armed_trap_springs_on_its_cell_and_stays_armed() {
+        let def = forest();
+        let d = DungeonInstance::new(1, def, 300, 20);
+        let (tf, tp) = cell(def, "T1"); // thorns, floor 0
+        let hit = d.spring_trap(tf, tp).expect("armed trap fires");
+        assert_eq!(hit.kind, "thorns");
+        assert_eq!(hit.severity, d.effective_distance(tf), "severity rides the stamped distance");
+        assert!(d.spring_trap(tf, tp).is_some(), "still armed after firing (persistent hazard)");
+        // Not on an empty cell.
+        let (_, entrance) = { let e = &def.entrances[0]; (e.floor, cell_center(e.x, e.y)) };
+        assert!(d.spring_trap(0, entrance).is_none());
+    }
+
+    /// The smallest `seed` for which a disarm at the given odds resolves to `want`.
+    fn seed_for(def: &'static DungeonDef, dex: i32, is_shifter: bool, div: f64, bonus: f64, want_disarm: bool) -> u64 {
+        let (tf, tp) = cell(def, "T1");
+        (0u64..10_000)
+            .find(|s| {
+                let mut d = DungeonInstance::new(1, def, 0, 0);
+                let got = d.attempt_disarm(tf, tp, dex, is_shifter, div, bonus, *s);
+                matches!(got, DisarmOutcome::Disarmed) == want_disarm
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_successful_disarm_neutralises_the_trap() {
+        let def = forest();
+        let (tf, tp) = cell(def, "T1");
+        let seed = seed_for(def, 100_000, false, 100.0, 0.0, true);
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        assert_eq!(d.attempt_disarm(tf, tp, 100_000, false, 100.0, 0.0, seed), DisarmOutcome::Disarmed);
+        assert_eq!(d.trap_state("T1"), Some(TrapState::Disarmed));
+        assert!(d.spring_trap(tf, tp).is_none(), "a disarmed trap no longer fires");
+        assert_eq!(
+            d.attempt_disarm(tf, tp, 100_000, false, 100.0, 0.0, seed),
+            DisarmOutcome::AlreadyDisarmed
+        );
+    }
+
+    #[test]
+    fn a_failed_disarm_springs_the_trap_and_leaves_it_armed() {
+        let def = forest();
+        let (tf, tp) = cell(def, "T1");
+        let seed = seed_for(def, 0, false, 100.0, 0.0, false); // p clamps to 0.05
+        let mut d = DungeonInstance::new(1, def, 500, 0);
+        match d.attempt_disarm(tf, tp, 0, false, 100.0, 0.0, seed) {
+            DisarmOutcome::Sprung(hit) => assert_eq!(hit.kind, "thorns"),
+            other => panic!("expected Sprung, got {other:?}"),
+        }
+        assert_eq!(d.trap_state("T1"), Some(TrapState::Armed), "a fumbled disarm leaves it armed");
+    }
+
+    #[test]
+    fn the_shifter_is_far_better_at_disarming() {
+        let def = forest();
+        let (tf, tp) = cell(def, "T1");
+        // A middling Dex: base p ≈ 0.10, Shifter p ≈ 0.60.
+        let count = |shifter: bool| {
+            (0..300u64)
+                .filter(|s| {
+                    let mut d = DungeonInstance::new(1, def, 0, 0);
+                    matches!(
+                        d.attempt_disarm(tf, tp, 10, shifter, 100.0, 0.5, *s),
+                        DisarmOutcome::Disarmed
+                    )
+                })
+                .count()
+        };
+        let (plain, shifter) = (count(false), count(true));
+        assert!(shifter > plain * 3, "shifter {shifter} ≫ plain {plain}");
+    }
+
+    #[test]
+    fn a_non_disarmable_trap_cannot_be_disarmed() {
+        let def = desert(); // T2 is the dart, disarmable = false
+        let (tf, tp) = cell(def, "T2");
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        assert_eq!(
+            d.attempt_disarm(tf, tp, 100_000, true, 100.0, 0.5, 1),
+            DisarmOutcome::NotDisarmable
+        );
+        assert_eq!(d.trap_state("T2"), Some(TrapState::Armed), "still a live hazard");
+    }
+
+    #[test]
+    fn disarming_a_non_trap_cell_is_not_a_trap() {
+        let def = forest();
+        let (lf, lp) = cell(def, "L1");
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        assert_eq!(d.attempt_disarm(lf, lp, 50, false, 100.0, 0.0, 0), DisarmOutcome::NotATrap);
     }
 }

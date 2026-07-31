@@ -253,8 +253,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     **SC-3**'s `WorldActor` (dungeons are content in a world, not their own shard),
     so it waits on / lands with that refactor rather than churning today's single
     global instance.
-  - [ ] **DG-4** — traps + puzzles live (state machine, Dex/Shifter disarm,
-    emitter/receiver runtime, `run.interact`).
+  - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
+    puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
+    reaching a lever/plate/key/boss opens the doors/gates whose condition holds),
+    and DG-4a adds the **trap state machine** (armed→disarmed) with `spring_trap`
+    (fires on contact, severity rides the stamped distance) and `attempt_disarm`
+    (the **Dex check the Shifter is far better at**; failure springs it;
+    non-disarmable traps must be routed around). Pure, 7 tests. **Remaining —
+    DG-4b:** the `spawn`/`mover`/`timer` receivers (need model additions), the
+    `run.interact` wire message, and applying trap hits / interact dispatch in the
+    loop — with DG-3b.
   - [x] **DG-5** — loot: `DungeonInstance::resolve_chest` turns a chest's
     `ChestLoot` into a reward scaled by the floor's `effective_distance` (deeper =
     richer, off the *stamped* distance not local position) — **rolled** (reuses
