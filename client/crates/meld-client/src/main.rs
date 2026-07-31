@@ -313,7 +313,9 @@ fn main() {
                 joystick_visual,
                 touch_action_buttons,
                 sync_overworld_sprites,
-                (draw_path_trail, draw_web_trail),
+                // Dotted trail overlays retired — the terrain itself will convey routes
+                // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
+                // (draw_path_trail, draw_web_trail)
                 build_terrain_sections,
                 hd2d::animate_chars,
                 hd2d_follow,
