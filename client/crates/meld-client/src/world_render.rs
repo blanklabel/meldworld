@@ -67,6 +67,10 @@ impl MaterialExtension for GroundBiome {
     fn fragment_shader() -> ShaderRef {
         "shaders/ground_biome.wgsl".into()
     }
+    /// Custom vertex shader displaces the ground into rolling hills (`terrain_height`).
+    fn vertex_shader() -> ShaderRef {
+        "shaders/ground_biome.wgsl".into()
+    }
 }
 
 /// The blended-biome ground material type (StandardMaterial lighting + our extension).
@@ -252,8 +256,10 @@ pub(crate) fn setup(
     commands.spawn((
         WorldGround,
         // Square (was 2000×600, a corridor) so the WG-4 radial fan has ground in
-        // every direction the player roams.
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0))),
+        // every direction the player roams. SUBDIVIDED into a fine grid so the ground
+        // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
+        // rather than a tilted quad — ~5-unit cells over the hill wavelength (~350u).
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0).subdivisions(400))),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),
     ));
@@ -1155,6 +1161,17 @@ pub(crate) fn follow_world_ground(
         tf.translation.x = focus.x;
         tf.translation.z = focus.z;
     }
+}
+
+/// Continuous overworld terrain height at world `(x, z)` — smooth rolling hills, the
+/// DQ3/FF natural-elevation base. A sum of low-frequency sines so it's cheap and,
+/// crucially, TRIVIAL to mirror EXACTLY in `ground_biome.wgsl` (the ground shader
+/// displaces its vertices by this; Rust places every entity/camera on it). Keep the two
+/// in lock-step: if you change a coefficient here, change it in the shader.
+pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
+    3.2 * (x * 0.018).sin() * (z * 0.021).cos()
+        + 1.6 * (x * 0.041 + 1.7).sin() * (z * 0.036 - 0.9).cos()
+        + 0.8 * ((x + z) * 0.058 + 2.3).sin()
 }
 
 /// Capitalize the first letter for display ("ashfall" → "Ashfall").
