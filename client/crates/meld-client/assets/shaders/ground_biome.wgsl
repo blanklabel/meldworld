@@ -22,24 +22,28 @@
 
 // Continuous overworld terrain height — MUST match `world_render::terrain_height` in
 // Rust exactly (that places entities/camera; this displaces the ground vertices).
+// MUST match `meld_proto::terrain::height` (Rust) exactly.
 fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
-    return 9.0 * sin(p.x * 0.0063 + 0.4) * cos(p.y * 0.0071 - 0.3)
+    let base = 9.0 * sin(p.x * 0.0063 + 0.4) * cos(p.y * 0.0071 - 0.3)
         + 4.5 * sin(p.x * 0.015 - 0.8) * cos(p.y * 0.013 + 0.5)
         + 2.2 * sin(p.x * 0.033 + 1.7) * cos(p.y * 0.037 - 0.9)
         + 0.9 * sin((p.x + p.y) * 0.061 + 2.3);
+    // Isolated steep mesas = cliffs — DISABLED (amplitude 0), mirrors
+    // `meld_proto::terrain::height` (cliff maze pending A* routing).
+    let m = sin(p.x * 0.03 + 1.1) * cos(p.y * 0.028 - 0.6)
+        + 0.5 * sin(p.x * 0.051 - 2.0) * cos(p.y * 0.047 + 1.4);
+    return base + 0.0 * smoothstep(0.80, 0.92, m);
 }
 
-// Analytic surface normal from the height gradient, so slopes light naturally.
+// Surface normal by finite differences — works for the (non-analytic) cliff term, so
+// mesa faces + rolling hills both light naturally.
 fn terrain_normal(p: vec2<f32>) -> vec3<f32> {
-    let dhdx = 9.0 * 0.0063 * cos(p.x * 0.0063 + 0.4) * cos(p.y * 0.0071 - 0.3)
-        + 4.5 * 0.015 * cos(p.x * 0.015 - 0.8) * cos(p.y * 0.013 + 0.5)
-        + 2.2 * 0.033 * cos(p.x * 0.033 + 1.7) * cos(p.y * 0.037 - 0.9)
-        + 0.9 * 0.061 * cos((p.x + p.y) * 0.061 + 2.3);
-    let dhdz = 9.0 * (-0.0071) * sin(p.x * 0.0063 + 0.4) * sin(p.y * 0.0071 - 0.3)
-        + 4.5 * (-0.013) * sin(p.x * 0.015 - 0.8) * sin(p.y * 0.013 + 0.5)
-        + 2.2 * (-0.037) * sin(p.x * 0.033 + 1.7) * sin(p.y * 0.037 - 0.9)
-        + 0.9 * 0.061 * cos((p.x + p.y) * 0.061 + 2.3);
-    return normalize(vec3<f32>(-dhdx, 1.0, -dhdz));
+    let e = 1.5;
+    let hl = terrain_height_wgsl(p - vec2<f32>(e, 0.0));
+    let hr = terrain_height_wgsl(p + vec2<f32>(e, 0.0));
+    let hd = terrain_height_wgsl(p - vec2<f32>(0.0, e));
+    let hu = terrain_height_wgsl(p + vec2<f32>(0.0, e));
+    return normalize(vec3<f32>(hl - hr, 2.0 * e, hd - hu));
 }
 
 // Displace the sliding ground plane into rolling hills. Keyed off WORLD xz (like the

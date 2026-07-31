@@ -22,10 +22,21 @@ pub(crate) fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, Wit
 #[derive(Resource)]
 pub(crate) struct UiFont(Handle<Font>);
 
-pub(crate) fn load_ui_font(mut commands: Commands, assets: Res<AssetServer>) {
-    commands.insert_resource(UiFont(
-        assets.load("fonts/JetBrainsMonoNerdFont-Regular.ttf"),
-    ));
+pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+    // Embed the Nerd Font bytes at COMPILE time and register it directly as a Font
+    // asset, bypassing the async asset loader. Loading it as a loose/streamed asset was
+    // fragile across build paths (loose-disk, wasm) — when that load silently failed,
+    // every text node fell back to Bevy's default face, which has the Latin glyphs but
+    // none of the private-use icon codepoints, so all the HUD icons rendered as tofu
+    // boxes. Compiling the bytes in makes the symbol-capable font ALWAYS present.
+    const FONT_BYTES: &[u8] =
+        include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf");
+    match Font::try_from_bytes(FONT_BYTES.to_vec()) {
+        Ok(font) => {
+            commands.insert_resource(UiFont(fonts.add(font)));
+        }
+        Err(e) => error!("bundled UI font failed to parse: {e}"),
+    }
 }
 
 /// Retro-fit the bundled font onto every text node, so all UI (spawned across many

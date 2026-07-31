@@ -1238,6 +1238,18 @@ impl Arena {
             .iter()
             .map(|(a, b)| (radial_tf(*a, half, lat), radial_tf(*b, half, lat)))
             .collect();
+        // Heightmap cliffs: route the clear path AROUND any butte (nudge waypoints onto
+        // walkable ground), then re-anchor the portal to the last (walkable) waypoint so
+        // extraction stays reachable under slope collision.
+        repair_path_around_cliffs(&mut self.path);
+        for (a, b) in self.web.iter_mut() {
+            *a = nudge_to_walkable(*a);
+            *b = nudge_to_walkable(*b);
+        }
+        self.portal = nudge_to_walkable(self.portal);
+        if let Some(last) = self.path.last_mut() {
+            *last = self.portal;
+        }
         // The non-linear bend distorts the carefully-carved clear tube, so an obstacle
         // can end up on the backbone OR a web trail. Re-clear both (in bent coords) so
         // every route stays feasible by construction, as in the corridor.
@@ -1349,15 +1361,29 @@ impl Arena {
         // Append this section's new corridor waypoint(s) to the bent public path,
         // densified (see `radialize`) so the streamed trail hugs the arc and stays
         // walkable across the terraced fan.
+        let repair_from = self.path.len();
         let mut prev = self.corridor_path[p0.saturating_sub(1)];
         for k in p0..self.corridor_path.len() {
             push_bent_segment(&mut self.path, prev, self.corridor_path[k], half, lat);
             prev = self.corridor_path[k];
         }
+        // Route the streamed trail around cliffs too (see `radialize`), repairing only
+        // the new tail (connected from the last existing point) so the path doesn't grow
+        // unboundedly as the world streams.
+        if repair_from > 0 && repair_from < self.path.len() {
+            let anchor = self.path[repair_from - 1];
+            let tail = self.path.split_off(repair_from);
+            let mut a = anchor;
+            for p in tail {
+                let target = nudge_to_walkable(p);
+                route_around_cliffs(a, target, &mut self.path, 0);
+                a = target;
+            }
+        }
         // Bend this section's new web edges and append to the public `web`.
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
-            self.web.push((tf(a), tf(b)));
+            self.web.push((nudge_to_walkable(tf(a)), nudge_to_walkable(tf(b))));
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
@@ -2594,6 +2620,12 @@ impl Arena {
             {
                 return None;
             }
+            // Heightmap CLIFFS: a steep terrain face is an impassable wall — you walk
+            // AROUND it, not up it (the slide logic below routes along the edge). Gentle
+            // rolling ground stays walkable. World-space, matching `cand`.
+            if !meld_proto::terrain::walkable(cand.x as f32, cand.y as f32) {
+                return None;
+            }
             let cl = self.level_at(&cand);
             if cl == cur_elev
                 || self.connector_between(&cur, cur_elev, cl)
@@ -2671,6 +2703,59 @@ impl Arena {
         }
         None
     }
+}
+
+/// Nudge `p` off any heightmap CLIFF to the nearest walkable ground, spiralling out.
+/// Buttes are small + convex and sit in a connected walkable base, so a short search
+/// always finds walkable terrain around them — this routes the clear path AROUND a
+/// cliff instead of through it, keeping the world feasible under slope collision.
+fn nudge_to_walkable(p: Position) -> Position {
+    if meld_proto::terrain::walkable(p.x as f32, p.y as f32) {
+        return p;
+    }
+    for step in 1..48 {
+        let r = step as f64 * 2.0;
+        for k in 0..12 {
+            let a = k as f64 * std::f64::consts::TAU / 12.0;
+            let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
+            if meld_proto::terrain::walkable(q.x as f32, q.y as f32) {
+                return q;
+            }
+        }
+    }
+    p
+}
+
+/// Push points carrying the walkable route from `a` (already in `out`) to `b`,
+/// subdividing wherever the segment's midpoint lands on a cliff and nudging that
+/// midpoint onto walkable ground — so the whole run from `a` to `b` stays walkable and
+/// bends AROUND any butte between them. Pushes the intermediates + `b` (not `a`).
+fn route_around_cliffs(a: Position, b: Position, out: &mut Vec<Position>, depth: u32) {
+    let mid = Position::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+    if depth >= 7 || meld_proto::terrain::walkable(mid.x as f32, mid.y as f32) {
+        out.push(b);
+        return;
+    }
+    let nmid = nudge_to_walkable(mid);
+    route_around_cliffs(a, nmid, out, depth + 1);
+    route_around_cliffs(nmid, b, out, depth + 1);
+}
+
+/// Rewrite a bent path so EVERY waypoint and every segment stays on walkable ground —
+/// nudging waypoints off buttes and routing segments around them (see
+/// `route_around_cliffs`). Keeps the world feasible under heightmap slope collision.
+fn repair_path_around_cliffs(path: &mut Vec<Position>) {
+    if path.is_empty() {
+        return;
+    }
+    let mut out = Vec::with_capacity(path.len() + 4);
+    out.push(nudge_to_walkable(path[0]));
+    for i in 1..path.len() {
+        let target = nudge_to_walkable(path[i]);
+        let a = *out.last().unwrap();
+        route_around_cliffs(a, target, &mut out, 0);
+    }
+    *path = out;
 }
 
 /// Bend a corridor point (`x` = radius axis, `y` = lateral axis) into the WG-4 fan:
