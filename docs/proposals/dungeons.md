@@ -279,14 +279,19 @@ rather than new fields" convention (CLAUDE.md):
 (the Dex-check), `dungeon_trap_severity_mult`.
 
 ## Build plan (phase IDs)
-- **DG-1 — authoring + validation foundation** *(in progress)*. New pure crate
+- **DG-1 — authoring + validation foundation** ✅ *(shipped, #118)*. Pure crate
   `meld-dungeon`: the `DungeonDef` data model, the glyph-grid + manifest parser, the
   full emitter/receiver/condition vocabulary, and the **validator incl. the
-  solvability search**. One hand-authored sample dungeon + exhaustive unit tests. No
-  game-loop or client changes — isolated and testable, like `meld-world`.
-- **DG-2 — `build.rs` codegen + content**. Compile authored files into embedded
-  `DUNGEONS` statics with compile-time validation; author the first real per-biome
-  pool.
+  solvability search**. `forest_barrow` sample + 16 unit tests. No game-loop or
+  client changes — isolated and testable, like `meld-world`.
+- **DG-2 — `build.rs` codegen + content** ✅ *(shipped)*. New `meld-dungeon-content`
+  crate: its `build.rs` runs the real parser+validator (incl. the solvability gate)
+  over every `content/**/*.dungeon.toml` — **a malformed or unsolvable dungeon is a
+  compile error** — and embeds the validated defs (serialized to `$OUT_DIR`) as a
+  `&'static` registry (`all()` / `for_biome()` / `by_name()`). First pool:
+  `verdant_barrow` (forest), `sunken_vault` (desert). *(The embedded form is a
+  build-validated JSON blob deserialized once at startup — the compile-time
+  guarantee is the validation, not Rust-literal construction.)*
 - **DG-3 — runtime subinstance**. A map of spaces + avatar location **inside the
   world-actor** (built on / after **SC-3**'s `Router` + `WorldActor` refactor —
   dungeons are content in a world, not their own shard); entrance placement in

@@ -235,8 +235,12 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     entrance→exit **solvability search** across the floor stack. `forest_barrow`
     sample + 16 unit tests, all green. (`spawn`/`mover`/`timer` receivers land with
     the runtime in DG-4.)
-  - [ ] **DG-2** — `build.rs` codegen (embed authored dungeons as validated statics)
-    + first real per-biome content.
+  - [x] **DG-2** — `build.rs` codegen: new `meld-dungeon-content` crate whose build
+    script runs the real parser+validator (incl. the solvability gate) over every
+    `content/**/*.dungeon.toml` — **a malformed or unsolvable dungeon is a compile
+    error** — and embeds the validated defs as a `&'static` registry (`all()` /
+    `for_biome()` / `by_name()`). First content pool: `verdant_barrow` (forest),
+    `sunken_vault` (desert). Tests green; gate-failure verified.
   - [ ] **DG-3** — runtime subinstance: map-of-spaces in `game.rs` + avatar location,
     chanced entrance placement, enter/exit/seal/death rules, floors + stairs.
   - [ ] **DG-4** — traps + puzzles live (state machine, Dex/Shifter disarm,

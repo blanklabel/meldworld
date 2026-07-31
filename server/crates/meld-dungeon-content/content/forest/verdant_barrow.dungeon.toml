@@ -1,0 +1,56 @@
+# Verdant Barrow — a forest tomb (DG-2 content).
+# Floor 0: entrance · thorn trap · lever→door · pick up the barrow key · stairs down.
+# Floor 1: keyed door · a three-plate CO-OP gate (all three at once) · boss · vault · exit.
+
+name  = "verdant_barrow"
+biome = "forest"
+
+[legend]
+t = "trap T1"
+a = "lever L1"
+X = "door D1"
+k = "key K1"
+s = "stair S1 down"
+w = "stair S1 up"
+D = "door D2"
+"1" = "plate P1"
+"2" = "plate P2"
+"3" = "plate P3"
+Y = "gate G1"
+B = "boss B1"
+C = "chest vault"
+
+[[floor]]
+grid = """
+######################
+#>.t.a.X.k..........s#
+######################
+"""
+
+[[floor]]
+grid = """
+########################
+#w.D.1.2.3.Y.B...C....<#
+########################
+"""
+
+[trap.T1]
+kind = "thorns"
+disarmable = true
+
+[door.D1]
+when = "L1"
+
+[door.D2]
+when = "has_key(K1)"
+
+[gate.G1]
+when = "all[P1,P2,P3]"   # co-op: needs a body on each plate at once
+
+[boss.B1]
+sprite = "hollowbishop"
+on_enter_spawn = true
+
+[chest.vault]
+when = "boss_dead(B1)"
+loot = "rolled"

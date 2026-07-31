@@ -8,13 +8,15 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
 /// An author-assigned object id, unique within a dungeon (e.g. `"L1"`, `"vault"`).
 pub type Id = String;
 
 /// A single grid cell's base terrain. Interactive objects sit *on* a `Floor` cell
 /// (the cell's `object` names them); a `Door`/`Gate` object makes its floor cell
 /// passable only while open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tile {
     /// Impassable wall.
     Wall,
@@ -26,21 +28,21 @@ pub enum Tile {
 
 /// Which way a stair endpoint leads. A stair id has exactly one `Down` endpoint on
 /// floor `n` and one `Up` endpoint on floor `n+1`; stepping either transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StairDir {
     Down,
     Up,
 }
 
 /// One grid cell: base terrain plus the id of any object occupying it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cell {
     pub tile: Tile,
     pub object: Option<Id>,
 }
 
 /// One floor: a `width × height` row-major grid of [`Cell`]s.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grid {
     pub width: usize,
     pub height: usize,
@@ -55,7 +57,7 @@ impl Grid {
 
 /// Where an object sits. Most objects have exactly one placement; a stair has two
 /// (a `Down` on floor `n`, an `Up` on floor `n+1`), sharing one `id`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
     pub id: Id,
     pub floor: usize,
@@ -67,7 +69,7 @@ pub struct Placement {
 
 /// One item a chest yields when it holds *authored* (designer-defined) contents.
 /// Exactly one of `item`/`gear` is set (checked in validation).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChestItem {
     pub item: Option<String>,
     pub gear: Option<String>,
@@ -75,7 +77,7 @@ pub struct ChestItem {
 }
 
 /// How a chest is filled (design decision §6: "generated *and* defined").
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChestLoot {
     /// Rolled at open time from the dungeon's stamped effective distance.
     Rolled,
@@ -87,7 +89,7 @@ pub enum ChestLoot {
 
 /// The type + parameters of an object. Placement (which floor/cell) is tracked
 /// separately in [`Placement`]s so a stair can occupy two cells under one id.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ObjectKind {
     /// A lever: an emitter that latches on when flipped (active once reached).
     Lever,
@@ -146,7 +148,7 @@ impl ObjectKind {
 
 /// A boolean over emitter states — the puzzle-wiring grammar (design §"Puzzle
 /// vocabulary"). Parsed from a `when = "…"` string by [`crate::parse`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Condition {
     /// Bare atom `id` — the object (a lever/plate) is active.
     Ref(Id),
@@ -216,7 +218,7 @@ pub enum RefKind {
 }
 
 /// A fully parsed dungeon, ready to validate (and, later, to place at runtime).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DungeonDef {
     pub name: String,
     pub biome: String,
