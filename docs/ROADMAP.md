@@ -241,8 +241,18 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     error** — and embeds the validated defs as a `&'static` registry (`all()` /
     `for_biome()` / `by_name()`). First content pool: `verdant_barrow` (forest),
     `sunken_vault` (desert). Tests green; gate-failure verified.
-  - [ ] **DG-3** — runtime subinstance: map-of-spaces in `game.rs` + avatar location,
-    chanced entrance placement, enter/exit/seal/death rules, floors + stairs.
+  - [ ] **DG-3** — runtime subinstance. 🟡 *DG-3a (the pure engine) shipped:*
+    `meld-dungeon-run` — the `Location` model, a live `DungeonInstance` (barrier/
+    emitter puzzle state that opens doors/gates as the group solves them, stairs
+    between floors, end-exit detection, the committed-space rule, and the
+    per-floor `effective_distance` difficulty stamp), and **seeded entrance
+    placement** from the biome pool (`roll_entrance`). Pure + deterministic; 14
+    unit tests + doctest. **Remaining — DG-3b (the `game.rs` wiring):** own a
+    map-of-spaces + avatar `Location` in the loop, place entrances as the world
+    streams, and the enter/seal/exit/death flow + per-space snapshots — built *on*
+    **SC-3**'s `WorldActor` (dungeons are content in a world, not their own shard),
+    so it waits on / lands with that refactor rather than churning today's single
+    global instance.
   - [ ] **DG-4** — traps + puzzles live (state machine, Dex/Shifter disarm,
     emitter/receiver runtime, `run.interact`).
   - [ ] **DG-5** — loot: dungeon-level stamp, rolled + authored + hybrid chests.

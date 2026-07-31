@@ -1,0 +1,10 @@
+[package]
+name = "meld-dungeon-run"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Dungeon runtime engine (DG-3a): the live-subinstance state model — Location, a DungeonInstance (barrier/emitter puzzle state, stairs, exit, committed-space rules), and seeded entrance placement from the biome pool. Pure + deterministic; the game loop (DG-3b) drives it, like meld-battle/meld-world."
+
+[dependencies]
+meld-dungeon-content = { path = "../meld-dungeon-content" }
+meld-proto.workspace = true
