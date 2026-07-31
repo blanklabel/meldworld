@@ -112,7 +112,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 BorderRadius::all(Val::Percent(50.0)),
                 BackgroundColor(Color::srgba(0.8, 0.88, 1.0, 0.55)),
             ));
-            // Full-screen overlay that holds per-mob nameplates (Hunter/Psyker
+            // Full-screen overlay that holds per-mob nameplates (Explorer/Psyker
             // intel), positioned in screen space by `update_mob_nameplates`.
             p.spawn((
                 NameplateRoot,
@@ -986,8 +986,8 @@ pub(crate) fn sync_overworld_sprites(
         match e.kind {
             EntityKind::Player => {
                 // We only know the local player's lead class (from their party);
-                // remote avatars fall back to the Hunter.
-                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("hunter");
+                // remote avatars fall back to the Explorer.
+                let lead = session.party.first().map(|s| s.as_str()).unwrap_or("explorer");
                 spawn_player_avatar(
                     &mut commands,
                     &mut mats,
@@ -1603,12 +1603,12 @@ pub(crate) fn spawn_player_avatar(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(1.0, 0.55, 1.0)),
             ));
-            // Hunter "Predator's Eye" lamp: a real point light on the local avatar,
-            // brightening at night as the perk levels (see `update_hunter_lamp`). Only
+            // Explorer "Predator's Eye" lamp: a real point light on the local avatar,
+            // brightening at night as the perk levels (see `update_explorer_lamp`). Only
             // the local player carries it; intensity 0 until the perk is earned.
             if id == me {
                 p.spawn((
-                    HunterLamp,
+                    ExplorerLamp,
                     PointLight {
                         color: Color::srgb(1.0, 0.86, 0.6),
                         intensity: 0.0,
@@ -1727,7 +1727,7 @@ pub(crate) fn sync_party_followers(
     let mut present: Vec<usize> = followers.iter().map(|(_, f, _)| f.slot).collect();
     for slot in 1..=want {
         if !present.contains(&slot) {
-            let class = session.party.get(slot).map(String::as_str).unwrap_or("hunter");
+            let class = session.party.get(slot).map(String::as_str).unwrap_or("explorer");
             spawn_follower(&mut commands, &mut mats, &wa, &look, class, slot, lead_pos + slot_offset(slot));
             present.push(slot);
         }
@@ -1744,16 +1744,16 @@ pub(crate) fn sync_party_followers(
 
 // ---------------------------------------------------------- perks (party sense) ---
 
-/// Marks the point light carried by the local avatar (Hunter "Predator's Eye").
+/// Marks the point light carried by the local avatar (Explorer "Predator's Eye").
 #[derive(Component)]
-pub(crate) struct HunterLamp;
+pub(crate) struct ExplorerLamp;
 /// Marks a PLAYER-CHARACTER sprite billboard (overworld local hero + every battle
 /// hero) so its material self-illuminates at night — a co-located point light
 /// can't light the billboard it sits inside, so player sprites would otherwise go
 /// black in the dark. See [`illuminate_players`].
 #[derive(Component)]
 pub(crate) struct PlayerGlowSprite;
-/// A warm point light carried by each battle hero at night. The **Hunter** carries a
+/// A warm point light carried by each battle hero at night. The **Explorer** carries a
 /// big, bright lamp — its "Predator's Eye" class feature — with enough reach to light
 /// the enemy row across the arena; every other class carries only a soft, short-range
 /// glow so it stays visible without washing the scene or overflowing the renderer's
@@ -1763,7 +1763,7 @@ pub(crate) struct PlayerGlowSprite;
 pub(crate) struct BattlePartyLamp {
     pub(crate) strength: f32,
 }
-/// Root UI node that holds the per-mob nameplates (Hunter/Psyker intel).
+/// Root UI node that holds the per-mob nameplates (Explorer/Psyker intel).
 #[derive(Component)]
 pub(crate) struct NameplateRoot;
 /// One mob nameplate (rebuilt each frame).
@@ -1776,16 +1776,16 @@ pub(crate) struct MinimapRoot;
 #[derive(Component)]
 pub(crate) struct MinimapDot;
 
-/// Hunter "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
-/// perk levels, dark by day and absent without a Hunter (intensity from `run.perks`).
-/// Hunter "Predator's Eye": the avatar's point light illuminates the surrounding
+/// Explorer "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
+/// perk levels, dark by day and absent without a Explorer (intensity from `run.perks`).
+/// Explorer "Predator's Eye": the avatar's point light illuminates the surrounding
 /// overworld at night, brighter + wider as the perk levels (from `run.perks`).
-pub(crate) fn update_hunter_lamp(
+pub(crate) fn update_explorer_lamp(
     perks: Res<PerksRes>,
     sky: Res<Sky>,
-    mut q: Query<&mut PointLight, With<HunterLamp>>,
+    mut q: Query<&mut PointLight, With<ExplorerLamp>>,
 ) {
-    let glow = perks.0.hunter_glow;
+    let glow = perks.0.explorer_glow;
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     for mut light in &mut q {
         light.intensity = glow * night;
@@ -1819,15 +1819,15 @@ pub(crate) fn illuminate_players(
             m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         }
     }
-    // Each hero's lamp, scaled by nightfall and its own strength (the Hunter's is far
+    // Each hero's lamp, scaled by nightfall and its own strength (the Explorer's is far
     // brighter — its class feature — while the rest stay a soft fill).
     for (mut light, lamp) in &mut lamps {
         light.intensity = night * lamp.strength;
     }
 }
 
-/// Hunter/Psyker intel: float a nameplate over each overworld mob — its level
-/// (Hunter tier ≥1), an HP bar (tier ≥2), and a Psyker threat marker for
+/// Explorer/Psyker intel: float a nameplate over each overworld mob — its level
+/// (Explorer tier ≥1), an HP bar (tier ≥2), and a Psyker threat marker for
 /// elites/gatekeepers (≥1) and aggressive mobs (≥2). Rebuilt each frame from the
 /// mobs' rendered positions, projected to screen.
 #[allow(clippy::type_complexity)]
@@ -1844,7 +1844,7 @@ pub(crate) fn update_mob_nameplates(
     for e in &old {
         commands.entity(e).despawn();
     }
-    let intel = perks.0.hunter_intel;
+    let intel = perks.0.explorer_intel;
     let threat = perks.0.psyker_threat;
     if intel == 0 && threat == 0 {
         return;

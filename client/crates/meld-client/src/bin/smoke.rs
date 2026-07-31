@@ -24,7 +24,7 @@ fn main() {
 
     // Optional class (MELD_CLASS=psyker exercises the Psyker Focus system end to
     // end: focus slots + manifestations ticking + a win).
-    let class = std::env::var("MELD_CLASS").unwrap_or_else(|_| "hunter".to_string());
+    let class = std::env::var("MELD_CLASS").unwrap_or_else(|_| "explorer".to_string());
     let mut psyker_turn = 0u32;
     let mut entered = false;
     let mut in_battle = false;

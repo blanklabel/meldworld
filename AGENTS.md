@@ -136,7 +136,7 @@ proxy, no second port. It needs `trunk` (`cargo install trunk`) and the wasm tar
 (`initdb`/`pg_ctl`/`createdb` on PATH).
 
 Build your **party of four** on the Join screen (keys 1–4 cycle each slot's class),
-or preset it: `?party=hunter,psyker,resonant,hunter` / `?class=psyker` (lead) in the
+or preset it: `?party=explorer,psyker,resonant,explorer` / `?class=psyker` (lead) in the
 browser, or `MELD_PARTY=…` / `MELD_CLASS=…` natively. `?autoplay` self-drives the
 loop for demos/screenshots.
 
@@ -300,28 +300,28 @@ Use these terms consistently in code, comments, and UI.
 | **Run** | One player's ephemeral dive (`PlayerRun`): run-level, XP, backpack, result. Ends on extract or death. |
 | **MazeInstance** | One seeded world + its party's runs. Ephemeral; discarded on close. |
 | **Area** | A stretch of the seeded corridor in one biome, holding several creatures + a portal. Areas trend larger with depth. |
-| **Party** | A player's battle team of up to `party_size_per_player` **heroes of mixed classes** (default: Hunter + Psyker + Resonant + Hunter). Each hero is commanded by its own class's menu. |
+| **Party** | A player's battle team of up to `party_size_per_player` **heroes of mixed classes** (default: Explorer + Psyker + Resonant + Explorer). Each hero is commanded by its own class's menu. |
 | **ATB** | The 100 ms-tick combat: each fighter's gauge fills by `speed_stat/gauge_fill_divisor`; a turn fires at gauge 1.0. Players get a 15 s window then auto-act. |
 | **Barrier** | Temp HP: a pool that absorbs damage **before** HP and decays a fixed amount at the start of the holder's turn. |
 | **Regen** | HP restored at the start of the holder's turn. |
 | **Evasion** | A temporary dodge bonus (added to a fighter's Dex dodge) that decays a fixed amount at the start of the holder's turn. Granted by the Shifter's Flicker. |
-| **Adrenaline** | Hunter mechanic: a banked resource (0…`hunter_adrenaline_max`) that basic **attacks** build and **skills** spend. A Hunter skill is rejected unless its cost is banked. Rides the wire as `adrenaline:<cur>` + `adrenaline_max:<max>`. |
+| **Adrenaline** | Explorer mechanic: a banked resource (0…`explorer_adrenaline_max`) that basic **attacks** build and **skills** spend. A Explorer skill is rejected unless its cost is banked. Rides the wire as `adrenaline:<cur>` + `adrenaline_max:<max>`. |
 | **Focus / Manifestation** | Psyker mechanic: a Psyker has N Focus slots (grows with level); each holds a persistent Manifestation that fires every Psyker turn. Each turn it also casts / reinforces / revokes one. |
 
 **Classes** (per-hero; stats in `[player.<key>]`, kit in `meld-battle`):
 
-- **Hunter** — the martial baseline / **default** class (disposal-of-dangerous-creatures guild).
+- **Explorer** — the martial baseline / **default** class (disposal-of-dangerous-creatures guild).
   Front-line bruiser with the standard Attack / Defend / Item / Skill menu. It has no resource
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —
   Power Strike (heavy hit), Second Wind (L2, self-heal), Snare (L2, damage + ATB-gauge drain),
   Frenzy (L3, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
-  See `Battle::resolve_hunter`.
+  See `Battle::resolve_explorer`.
 - **Psyker** — psychic channeler. Instead of the martial kit it manages **Foci**: Gravity Well
   (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L3, stronger),
   Temporal Anchor (L5, drains the enemy's ATB gauge). See `Battle::resolve_psyker`.
 - **Resonant** — healer. Innate **Regen**, plus ally-auto-targeting skills: Transfuse (heal an ally,
   paid from its own HP), Regen Boon (grant Regen), Ward (grant **Barrier**). See `Battle::resolve_resonant`.
-- **Shifter** — rogue / fortune-hunter ("Runner"). Fast, fragile front-line skirmisher and the only
+- **Shifter** — rogue / fortune-explorer ("Runner"). Fast, fragile front-line skirmisher and the only
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
   that pierces most armour), Flicker (L2, self **Evasion** blink), Ransack (L3, damage + drains the
   enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).

@@ -138,15 +138,15 @@ pub struct Battle {
     pub shifter_flicker_decay: f64,
     pub shifter_ransack_mult: f64,
     pub shifter_ransack_drain: f64,
-    pub hunter_adrenaline_max: i32,
-    pub hunter_adrenaline_per_attack: i32,
-    pub hunter_power_strike_cost: i32,
-    pub hunter_second_wind_cost: i32,
-    pub hunter_snare_cost: i32,
-    pub hunter_snare_mult: f64,
-    pub hunter_snare_drain: f64,
-    pub hunter_frenzy_cost: i32,
-    pub hunter_frenzy_mult: f64,
+    pub explorer_adrenaline_max: i32,
+    pub explorer_adrenaline_per_attack: i32,
+    pub explorer_power_strike_cost: i32,
+    pub explorer_second_wind_cost: i32,
+    pub explorer_snare_cost: i32,
+    pub explorer_snare_mult: f64,
+    pub explorer_snare_drain: f64,
+    pub explorer_frenzy_cost: i32,
+    pub explorer_frenzy_mult: f64,
     pub ironhull_swell_mult: f64,
     pub ironhull_swell_drain: f64,
     pub ironhull_root_barrier_fraction: f64,
@@ -358,17 +358,17 @@ pub struct Ai {
 /// class taxonomy. All thresholds are run-level values (per-hero level is uniform).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Perks {
-    // --- Hunter: night glow + "predator's eye" monster intel. ---
+    // --- Explorer: night glow + "predator's eye" monster intel. ---
     /// Avatar-light intensity at run level 1 (client scales it by night darkness).
-    pub hunter_glow_base: f32,
+    pub explorer_glow_base: f32,
     /// Added avatar-light intensity per run level above 1.
-    pub hunter_glow_per_level: f32,
+    pub explorer_glow_per_level: f32,
     /// Run level that reveals a mob's LEVEL over its head.
-    pub hunter_intel_level_at: i32,
+    pub explorer_intel_level_at: i32,
     /// Run level that additionally reveals a mob's HP bar.
-    pub hunter_intel_hp_at: i32,
+    pub explorer_intel_hp_at: i32,
     /// Run level that additionally reveals enemy ATB gauges in battle.
-    pub hunter_intel_atb_at: i32,
+    pub explorer_intel_atb_at: i32,
     // --- Shifter: corner minimap. ---
     /// Run level that unlocks the minimap (+ mob/portal dots).
     pub shifter_map_at: i32,
@@ -524,9 +524,9 @@ mod tests {
         assert_eq!(b.battle.tick_ms, 100);
         assert_eq!(b.auth.bcrypt_cost, 12);
         assert!(b.creature.contains_key("forest_bloom_stalker"));
-        assert!(b.player.contains_key("hunter"));
+        assert!(b.player.contains_key("explorer"));
         // Overworld class perks load.
-        assert_eq!(b.perks.hunter_intel_hp_at, 3);
+        assert_eq!(b.perks.explorer_intel_hp_at, 3);
         assert_eq!(b.perks.shifter_map_at, 1);
         assert!(b.perks.ironhull_aggro_mult_floor > 0.0 && b.perks.ironhull_aggro_mult_floor <= 1.0);
     }

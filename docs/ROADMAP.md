@@ -147,14 +147,14 @@ burns on death/leave; some is single-use. See
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
   emblem drops** (GDD §4; FS-4) and **hiring at a town vendor** (EC-2). See
   [`behaviors/meta-progression.md`](behaviors/meta-progression.md) "class unlocks
-  via ClassEmblem." Existing classes (Hunter/Psyker/Resonant/Shifter/Iron Hull)
+  via ClassEmblem." Existing classes (Explorer/Psyker/Resonant/Shifter/Iron Hull)
   define the taxonomy — see [`CLAUDE.md`](../CLAUDE.md) "Combat & class taxonomy."
 - [ ] **CL-2 — Overworld class perks ("party sense") — deepen the system.** 🟡
   *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
   `game.rs::compute_perks`) — each class's *presence* in the party grants an
   earned overworld capability that scales with the shared `run_level`: the
   **Shifter grants a corner minimap** (+ mob/portal dots, coverage grows with
-  level), the **Hunter grants enemy-HP intel**, Iron Hull shrinks creature aggro
+  level), the **Explorer grants enemy-HP intel**, Iron Hull shrinks creature aggro
   range, Resonant grants overworld regen. **This is where overworld map-reveal and
   threat-reading belong — they're *what a class can do*, a reason to bring it, not
   universal UI.** Remaining: flesh the system out — round out perks per class
@@ -446,7 +446,7 @@ only the things that can't be class-gated.
   pair it with universally-available redundant signals (creature level tags,
   nameplates, threat icons) and a colorblind-safe palette option. Baseline
   readability for all players; the *richer* HP/threat intel on top of this is the
-  Hunter's class perk (CL-2). Bake this in while the difficulty-signaling systems
+  Explorer's class perk (CL-2). Bake this in while the difficulty-signaling systems
   (CR-1) are being built, not as a retrofit.
 
 ---

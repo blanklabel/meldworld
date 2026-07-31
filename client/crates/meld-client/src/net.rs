@@ -150,7 +150,7 @@ pub struct EntityView {
     pub level: u8,
     /// For chests: whether it's already been opened.
     pub opened: bool,
-    /// Overworld mob intel (Hunter/Psyker perks). `None` for non-mobs. The client
+    /// Overworld mob intel (Explorer/Psyker perks). `None` for non-mobs. The client
     /// shows each field only when the viewer's perk unlocks it (see `Perks`).
     pub mob_level: Option<i32>,
     pub hp: Option<i32>,
@@ -267,8 +267,8 @@ pub struct HeroLevelUpLine {
 /// and the battle ATB reveal by these. Defaults to no perks (aggro mult 1.0).
 #[derive(Clone, Copy)]
 pub struct PerksLine {
-    pub hunter_glow: f32,
-    pub hunter_intel: u8,
+    pub explorer_glow: f32,
+    pub explorer_intel: u8,
     pub shifter_map: u8,
     pub shifter_map_radius: f32,
     pub psyker_threat: u8,
@@ -280,8 +280,8 @@ pub struct PerksLine {
 impl Default for PerksLine {
     fn default() -> Self {
         Self {
-            hunter_glow: 0.0,
-            hunter_intel: 0,
+            explorer_glow: 0.0,
+            explorer_intel: 0,
             shifter_map: 0,
             shifter_map_radius: 0.0,
             psyker_threat: 0,
@@ -1141,7 +1141,7 @@ impl Inner {
                         arr.iter()
                             .map(|h| HeroLine {
                                 name: h["name"].as_str().unwrap_or("Hero").to_string(),
-                                class_key: h["class_key"].as_str().unwrap_or("hunter").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("explorer").to_string(),
                                 level: h["level"].as_i64().unwrap_or(1) as i32,
                                 str_: h["str_"].as_i64().unwrap_or(0) as i32,
                                 mnd: h["mnd"].as_i64().unwrap_or(0) as i32,
@@ -1163,8 +1163,8 @@ impl Inner {
                 let f = |k: &str| p[k].as_f64().unwrap_or(0.0) as f32;
                 let u = |k: &str| p[k].as_u64().unwrap_or(0) as u8;
                 let perks = PerksLine {
-                    hunter_glow: f("hunter_glow"),
-                    hunter_intel: u("hunter_intel"),
+                    explorer_glow: f("explorer_glow"),
+                    explorer_intel: u("explorer_intel"),
                     shifter_map: u("shifter_map"),
                     shifter_map_radius: f("shifter_map_radius"),
                     psyker_threat: u("psyker_threat"),
@@ -1188,7 +1188,7 @@ impl Inner {
                         arr.iter()
                             .map(|h| HeroLevelUpLine {
                                 name: h["name"].as_str().unwrap_or("Hero").to_string(),
-                                class_key: h["class_key"].as_str().unwrap_or("hunter").to_string(),
+                                class_key: h["class_key"].as_str().unwrap_or("explorer").to_string(),
                                 level: h["level"].as_i64().unwrap_or(1) as i32,
                                 max_hp: pair(h, "max_hp"),
                                 str_: pair(h, "str"),

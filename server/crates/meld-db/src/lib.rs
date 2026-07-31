@@ -1104,7 +1104,7 @@ impl Db {
     /// Per-hero-slot totals from a player's currently-equipped gear, indexed
     /// `0..party_size` (each hero's own weapon/armor/accessory summed).
     /// `hero_classes[slot]` is that slot's class *for this dive* (content key,
-    /// e.g. `"hunter"`; out-of-range/unknown slots contribute nothing from
+    /// e.g. `"explorer"`; out-of-range/unknown slots contribute nothing from
     /// class-restricted gear) — a class-specific item's bonus only counts
     /// when it matches, silently excluded otherwise. This is the enforcement
     /// point for class-restricted gear: equipping it (HTTP, outside any run)

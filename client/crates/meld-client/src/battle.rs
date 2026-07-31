@@ -118,7 +118,7 @@ pub(crate) fn spawn_hero_actor(
         .statuses
         .iter()
         .find_map(|s| s.strip_prefix("class:"))
-        .unwrap_or("hunter");
+        .unwrap_or("explorer");
     let frames = wa.class_frames(class);
     let base_tint = Color::srgb(1.2, 1.18, 1.08);
     let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
@@ -147,12 +147,12 @@ pub(crate) fn spawn_hero_actor(
                 PlayerGlowSprite,
             ));
             // The hero carries a warm lamp at night (driven by `illuminate_players`).
-            // The Hunter's is the big "Predator's Eye" beam that lights the enemy row
+            // The Explorer's is the big "Predator's Eye" beam that lights the enemy row
             // across the arena; every other class carries only a soft, short-range
             // glow — bright enough to stay readable, small enough not to flicker as
             // the renderer's light clusters fight over a pile of equal lights.
-            let is_hunter = class == "hunter";
-            let (strength, range, radius) = if is_hunter {
+            let is_explorer = class == "explorer";
+            let (strength, range, radius) = if is_explorer {
                 (140_000.0, 34.0, 0.6) // full, big — reaches the foes
             } else {
                 (16_000.0, 8.5, 0.3) // soft, close
@@ -496,9 +496,9 @@ pub(crate) fn animate_battle_actors(
         tf.translation.x = off.x;
         tf.translation.z = off.z;
 
-        // Hunter "rage": as banked Adrenaline climbs toward max, redden the sprite
-        // and add a faint hot glow so a Hunter *looks* angrier the more it's built.
-        // Only Hunters carry adrenaline_max > 0, so every other class stays neutral.
+        // Explorer "rage": as banked Adrenaline climbs toward max, redden the sprite
+        // and add a faint hot glow so a Explorer *looks* angrier the more it's built.
+        // Only Explorers carry adrenaline_max > 0, so every other class stays neutral.
         let rage = battle
             .view(&s.id)
             .map(|c| {
@@ -1068,12 +1068,12 @@ pub(crate) fn menu_keyboard(
         for h in idle {
             // Each hero autoplays by its own class: Psyker channels Foci, Resonant
             // mends the party, everyone else swings — each at a sensible default target.
-            let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "hunter".into());
+            let hc = battle.view(&h).map(hero_class).unwrap_or_else(|| "explorer".into());
             let kind = match hc.as_str() {
                 "psyker" => battle.view(&h).map(psyker_autoplay_op).unwrap_or(QueuedKind::Hold),
                 "resonant" => resonant_autoplay_op(&battle),
                 "shifter" => battle.view(&h).map(shifter_autoplay_op).unwrap_or(QueuedKind::Attack),
-                "hunter" => battle.view(&h).map(hunter_autoplay_op).unwrap_or(QueuedKind::Attack),
+                "explorer" => battle.view(&h).map(explorer_autoplay_op).unwrap_or(QueuedKind::Attack),
                 "iron_hull" => battle.view(&h).map(ironhull_autoplay_op).unwrap_or(QueuedKind::Attack),
                 _ => QueuedKind::Attack,
             };
@@ -1740,9 +1740,9 @@ pub(crate) fn render_enemy_panel(
                         TextColor(name_color),
                     ));
                     meter(e, frac, 10.0, hp_fill);
-                    // Hunter "Predator's Eye" top tier: reveal the enemy's ATB gauge
+                    // Explorer "Predator's Eye" top tier: reveal the enemy's ATB gauge
                     // (otherwise hidden — you only see foe HP). ATB shows in battle only.
-                    if perks.0.hunter_intel >= 3 {
+                    if perks.0.explorer_intel >= 3 {
                         meter(e, c.gauge as f32, 5.0, Color::srgb(0.5, 0.72, 1.0));
                     }
                 });

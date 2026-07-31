@@ -33,7 +33,7 @@ harvestable materials.
 
 Your party is up to four heroes of mixed classes, each commanded by its own menu:
 
-- **Hunter** — the martial backbone. Basic attacks bank **Adrenaline**; every
+- **Explorer** — the martial backbone. Basic attacks bank **Adrenaline**; every
   skill spends it, from a heavy Power Strike to a full-power Frenzy.
 - **Psyker** — a psychic channeler who juggles persistent **Manifestations**:
   armor-ignoring gravity wells, kinetic barriers, ATB-draining anchors.
@@ -106,7 +106,7 @@ class), then:
 
 Prefer to watch it play itself? Open **http://127.0.0.1:18090/?autoplay**. You can
 also preset a party without touching the Join screen:
-`?party=hunter,psyker,resonant,hunter` (or `?class=psyker` for the lead) in the
+`?party=explorer,psyker,resonant,explorer` (or `?class=psyker` for the lead) in the
 browser, or `MELD_PARTY=…` natively.
 
 ### Requirements
@@ -170,7 +170,7 @@ prompts:
 > the `[resource.<kind>]` balance entry, the biome mapping in `meld-world`, and a
 > QA test that harvests it. Cite the spec you're implementing against.
 
-> Tune the Hunter's Frenzy skill: find its Adrenaline cost and damage in
+> Tune the Explorer's Frenzy skill: find its Adrenaline cost and damage in
 > balance.toml, propose a change, and explain the trade-off using CANON's combat
 > spec.
 

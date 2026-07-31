@@ -9,7 +9,7 @@
 /// kind) unlocks. Returns 1 for always-available actions.
 pub fn unlock_level(skill: &str) -> i32 {
     match skill {
-        // Hunter (martial baseline): basic attacks bank Adrenaline, all skills spend
+        // Explorer (martial baseline): basic attacks bank Adrenaline, all skills spend
         // it. Power Strike is L1; the costlier releases gate by level too.
         "second_wind" => 2,
         "snare" => 2,
