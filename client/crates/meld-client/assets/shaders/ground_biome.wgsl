@@ -47,6 +47,10 @@ struct BiomeParams {
     // This run's terrain offset (matches `world_render::terrain_offset`), so the field —
     // and the route through it — differs every run instead of the same hills at the hub.
     terrain_off: vec2<f32>,
+    _pad_peaks: vec2<f32>,                 // align `peaks` to 16 (matches the Rust struct)
+    peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
+    peak_count: u32,
+    _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
 }
 
 @group(2) @binding(100) var t_forest: texture_2d<f32>;
@@ -57,15 +61,39 @@ struct BiomeParams {
 @group(2) @binding(105) var samp: sampler;
 @group(2) @binding(106) var<uniform> params: BiomeParams;
 
-// Surface normal by finite differences — works for the (non-analytic) cliff term, so
-// mesa faces + rolling hills both light naturally. `amp` scales the field so a flat
-// (amp 0) ground lights with a plain up-normal.
-fn terrain_normal(p: vec2<f32>, amp: f32) -> vec3<f32> {
+// Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
+// match `meld_proto::terrain::peak_height`. World-space (NOT offset-shifted).
+fn peak_dome(wxz: vec2<f32>) -> f32 {
+    var h = 0.0;
+    let n = i32(params.peak_count);
+    for (var i = 0; i < n; i = i + 1) {
+        let p = params.peaks[i];
+        let r = p.z;
+        if (r > 0.0) {
+            let d = distance(wxz, p.xy);
+            if (d < r) {
+                h = h + p.w * 0.5 * (1.0 + cos(3.14159265 * d / r));
+            }
+        }
+    }
+    return h;
+}
+
+// TOTAL ground height at world `wxz`: base rolling field (through the run offset) + the
+// authored peak domes, all scaled by `terrain_amp` (0 flattens City/menus). This is the
+// single source the vertex displaces by and the normal differentiates.
+fn total_height(wxz: vec2<f32>) -> f32 {
+    return params.terrain_amp * (terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz));
+}
+
+// Surface normal by finite differences over `total_height`, so both the rolling base and
+// the mountain domes light naturally (flat → up-normal at amp 0).
+fn terrain_normal(p: vec2<f32>) -> vec3<f32> {
     let e = 1.5;
-    let hl = amp * terrain_height_wgsl(p - vec2<f32>(e, 0.0));
-    let hr = amp * terrain_height_wgsl(p + vec2<f32>(e, 0.0));
-    let hd = amp * terrain_height_wgsl(p - vec2<f32>(0.0, e));
-    let hu = amp * terrain_height_wgsl(p + vec2<f32>(0.0, e));
+    let hl = total_height(p - vec2<f32>(e, 0.0));
+    let hr = total_height(p + vec2<f32>(e, 0.0));
+    let hd = total_height(p - vec2<f32>(0.0, e));
+    let hu = total_height(p + vec2<f32>(0.0, e));
     return normalize(vec3<f32>(hl - hr, 2.0 * e, hd - hu));
 }
 
@@ -78,15 +106,13 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     var world_position = mesh_functions::mesh_position_local_to_world(
         world_from_local, vec4<f32>(vertex.position, 1.0));
-    let amp = params.terrain_amp;
-    // Shift the sample by the run's offset so each run grows different hills (see
-    // `world_render::terrain_offset`) — the world_position itself is unchanged, only where
-    // we READ the height field, so ground + entities (same offset) stay in lock-step.
-    let sp = world_position.xz + params.terrain_off;
-    world_position.y += amp * terrain_height_wgsl(sp);
+    // Displace by the TOTAL height (rolling base through the run offset + authored peak
+    // domes, `terrain_amp`-gated). `world_position` itself is unchanged — only where we
+    // READ the field — so ground + entities (same functions) stay in lock-step.
+    world_position.y += total_height(world_position.xz);
     out.world_position = world_position;
     out.position = position_world_to_clip(world_position.xyz);
-    out.world_normal = terrain_normal(sp, amp);
+    out.world_normal = terrain_normal(world_position.xz);
     out.uv = vertex.uv;
     out.instance_index = vertex.instance_index;
     return out;

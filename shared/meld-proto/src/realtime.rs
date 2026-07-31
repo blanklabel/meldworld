@@ -225,6 +225,10 @@ pub mod world {
         /// bearing ∈ [−radial_half, radial_half]). Pairs with `radial_half` for the bend.
         #[serde(default)]
         pub corridor_lateral: f64,
+        /// Authored CLIMBABLE landmark peaks this section adds (world-space
+        /// `[cx, cz, radius, height]`; see `terrain::peak_height` / `run.started.peaks`).
+        #[serde(default)]
+        pub peaks: Vec<[f32; 4]>,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
@@ -481,6 +485,12 @@ pub mod run {
         /// position otherwise). `[0, 0]` = the un-shifted hand-tuned field.
         #[serde(default)]
         pub terrain_offset: [f32; 2],
+        /// Authored CLIMBABLE landmark peaks (mountains), each `[cx, cz, radius, height]`
+        /// in world space (see `terrain::peak_height`). The client sums them onto the
+        /// ground so each mountain renders + you climb it; a boss or treasure sits on the
+        /// summit. Streamed sections append more via `world.terrain_section`.
+        #[serde(default)]
+        pub peaks: Vec<[f32; 4]>,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

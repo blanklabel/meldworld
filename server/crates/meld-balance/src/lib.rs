@@ -329,6 +329,13 @@ pub struct WorldGen {
     /// reward (#3, heightmap era). Filters flat/gentle sections so a boss/chest only
     /// crowns a genuine hill the route actually climbs — not every meander bump.
     pub summit_min_height: f64,
+    /// World-radius of an authored CLIMBABLE landmark mountain (#3). Its height is
+    /// `radius * terrain::PEAK_MAX_ASPECT * ~0.9`, keeping the dome walkable (you climb
+    /// it) while reading as a real peak; a boss/treasure sits on the summit.
+    pub peak_radius: f64,
+    /// Nearest hub distance an authored peak may spawn — keeps the big domes out of the
+    /// tight near-hub rings where they'd swamp the width.
+    pub peak_min_distance: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

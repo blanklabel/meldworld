@@ -477,6 +477,7 @@ fn terrain_section_msg(
     path: Vec<Position>,
     radial_half: f64,
     corridor_lateral: f64,
+    peaks: Vec<[f32; 4]>,
 ) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
@@ -503,6 +504,7 @@ fn terrain_section_msg(
         biome: area.biome.to_string(),
         radial_half,
         corridor_lateral,
+        peaks,
     }
 }
 
@@ -1886,6 +1888,7 @@ impl GameState {
                         let (ox, oz) = inst.arena.terrain_offset();
                         [ox, oz]
                     },
+                    peaks: inst.arena.peaks.clone(),
                 },
             ));
             if !backpack_gear.is_empty() {
@@ -1904,7 +1907,9 @@ impl GameState {
             // these carry no path segment.
             let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
             for area in &inst.arena.areas {
-                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new(), rh, cl)));
+                // Initial-chain peaks ride `run.started.peaks`, so the per-section
+                // messages carry none (avoids double-sending).
+                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new(), rh, cl, Vec::new())));
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
@@ -3270,7 +3275,20 @@ impl WorldActor {
                 } else {
                     Vec::new()
                 };
-                let msg = terrain_section_msg(area, seg, rh, cl);
+                // This streamed section's peaks (centre radius in its band); the client
+                // appends them so the streamed mountains render.
+                let (s0, e0) = (area.start_x, area.end_x);
+                let section_peaks: Vec<[f32; 4]> = self
+                    .arena
+                    .peaks
+                    .iter()
+                    .filter(|p| {
+                        let r = (p[0] as f64).hypot(p[1] as f64);
+                        r >= s0 && r < e0
+                    })
+                    .copied()
+                    .collect();
+                let msg = terrain_section_msg(area, seg, rh, cl, section_peaks);
                 for r in &self.run.runs {
                     out.push(out_msg(&r.player_id, &msg));
                 }
