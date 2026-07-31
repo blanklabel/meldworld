@@ -2856,10 +2856,6 @@ impl Arena {
         let pr = self.player_radius;
         let obstacles: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
-        // (seam_x, gap_y, gap_half_width) — you may only cross a seam inside its gap.
-        let seams: Vec<(f64, f64, f64)> =
-            self.seams.iter().map(|s| (s.x, s.gap_y, s.gap_half_width)).collect();
-
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let (nx, ny) = if mag > 1.0 {
@@ -2877,15 +2873,10 @@ impl Arena {
             if Self::obstacle_blocks(&obstacles, &cand, pr) {
                 return None;
             }
-            // Crossing a biome seam is only permitted inside its gap: reject a
-            // candidate that would step over the seam's x off-gap (you must funnel
-            // through the pass). Mirrors an impassable wall, so the slide logic runs.
-            if seams
-                .iter()
-                .any(|&(sx, gy, gh)| (cur.x < sx) != (cand.x < sx) && (cand.y - gy).abs() > gh)
-            {
-                return None;
-            }
+            // Biome seams NO LONGER wall the world — that full-width barrier-with-a-gap
+            // funnelled you through a single pass (the "corridor"). You cross biome
+            // boundaries freely now; the boundary is just a cross-fade + a Gatekeeper you
+            // can round. (`seams` kept for the Gatekeeper/biome data — see `Seam`.)
             // Heightmap CLIFFS: a steep terrain face is an impassable wall — you walk
             // AROUND it, not up it (the slide logic below routes along the edge). Gentle
             // rolling ground stays walkable. World-space, matching `cand`.
@@ -3167,25 +3158,10 @@ mod tests {
         assert!(arena.seams.iter().all(|s| s.gap_half_width > 0.0));
     }
 
-    #[test]
-    fn seam_wall_blocks_crossing_outside_the_gap() {
-        let b = corridor_balance();
-        // Un-seeded terrain: this asserts SEAM-WALL geometry (a gap-only crossing), which
-        // is independent of per-run terrain; the seeded field's own feasibility is covered
-        // by the walker sweep. (A seeded mesa could otherwise sit on this exact gap point.)
-        let mut arena = Arena::build_with(&b, 7, true, None, (0.0, 0.0));
-        let seam = arena.seams[0].clone();
-        arena.add_avatar("p".into(), 100.0); // fast: one step would cross the seam
-        // Far from the gap in y → the wall blocks the crossing.
-        let off_y = (seam.gap_y + seam.gap_half_width + 6.0).min(arena.lateral - 1.0);
-        arena.avatar_mut("p").unwrap().position = Position::new(seam.x - 0.5, off_y);
-        let after = arena.apply_move("p", 1.0, 0.0, 1).unwrap();
-        assert!(after.x < seam.x, "blocked away from the gap (x={})", after.x);
-        // Lined up with the gap → the crossing is allowed.
-        arena.avatar_mut("p").unwrap().position = Position::new(seam.x - 0.5, seam.gap_y);
-        let after2 = arena.apply_move("p", 1.0, 0.0, 2).unwrap();
-        assert!(after2.x >= seam.x, "can pass through the gap (x={})", after2.x);
-    }
+    // (Removed `seam_wall_blocks_crossing_outside_the_gap`: biome seams no longer WALL the
+    // world with a gap-only crossing — that full-width barrier was the "corridor". You
+    // cross boundaries freely now; seams remain only as the Gatekeeper/biome-transition
+    // marker, tested by `generates_chests_and_biome_seams`.)
 
     #[test]
     fn aggressive_creature_chases_a_nearby_player() {

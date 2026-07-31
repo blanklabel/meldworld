@@ -91,10 +91,11 @@ impl Default for Look {
             // plain, but is loose enough forward that the NEXT biome fades into view
             // ahead of you as you approach a border (the ground cross-fades by world
             // position — see `GroundBiome`). The border thicket still walls the sides;
-            // this just lets you read the corridor ahead. (Was 30/78 in #40 — too tight
-            // to see a biome coming; nudged out so the transition is legible.)
-            fog_start: 42.0,
-            fog_end: 118.0,
+            // Open the view WAY out so the overworld reads as an open field, not a tunnel
+            // (heavy fog was a big part of the "corridor" feel — you could only see a strip
+            // ahead). The distant backdrop skyline sits past this and fogs into the sky.
+            fog_start: 70.0,
+            fog_end: 260.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,

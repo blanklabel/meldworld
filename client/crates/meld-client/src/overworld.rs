@@ -1327,30 +1327,13 @@ pub(crate) fn build_world_walls(
     // framing is (re)built — including on return from a battle — so the city is always
     // visible before its return border (never an invisible extraction trap).
     if rebuild {
-        let lat = frame.lateral;
-        let mut sid = 900_000usize;
-        for s in &frame.seams {
-            let (sx, gap_y, gap_h) = (s.x as f32, s.gap_y as f32, s.gap_half_width as f32);
-            let bi = biome_index(sx.floor() as i64);
-            let mut y = -lat;
-            while y <= lat {
-                if (y - gap_y).abs() > gap_h {
-                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, sx, y, sid);
-                    sid += 1;
-                }
-                y += step;
-            }
-            for py in [gap_y - gap_h - 0.4, gap_y + gap_h + 0.4] {
-                let mat = rock_mats.get(bi.min(4)).cloned().unwrap_or_default();
-                commands.spawn((
-                    WorldWall,
-                    Mesh3d(wa.rock_mesh.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_translation(world_pos(sx, py, 1.4))
-                        .with_scale(Vec3::new(2.2, 6.0, 2.2)),
-                ));
-            }
-        }
+        // Biome boundaries no longer WALL the world with a line of props + one gap — that
+        // full-width barrier (a line of trees in a forest, funnelling you through a single
+        // slit) was the "corridor". Biomes now just cross-fade on the ground (the shader)
+        // and a Gatekeeper still stands near the boundary as a milestone fight you can
+        // choose to round. `frame.seams` is left in the wire for that boss + the biome
+        // marker; nothing walls it. (`spawn_wall_prop`/`step` stay for legacy callers.)
+        let _ = step;
 
         // Last City's WALL + GATE + skyline, built from real Kenney castle models
         // (Pirate Kit, CC0) rather than scaled boxes. A stone rampart runs across the
