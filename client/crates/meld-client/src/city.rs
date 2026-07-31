@@ -215,7 +215,7 @@ pub(crate) fn city_hud(
             ))
             .with_children(|bar| {
                 for (act, label) in [
-                    (CityAct::Dive, "Dive"),
+                    (CityAct::Dive, "Run"),
                     (CityAct::Vault, "Vault"),
                     (CityAct::Coop, "Co-op"),
                 ] {
@@ -562,7 +562,7 @@ pub(crate) fn city_input(
         session.entered = true;
         session.coop = false;
         session.status = if tutorial_dive {
-            "beginning the guided dive...".to_string()
+            "beginning the guided run...".to_string()
         } else {
             "stepping through The Threshold...".to_string()
         };
@@ -737,7 +737,7 @@ pub(crate) fn render_city(
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
-            "WASD move    [E] enter a district    [ENTER] dive    [T] tutorial    [C] co-op    [V] storage chest"
+            "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
         **t = if city.notice.is_empty() {

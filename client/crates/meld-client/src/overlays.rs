@@ -414,7 +414,7 @@ pub(crate) fn render_overlay(
                                 );
                                 label(
                                     content,
-                                    "- Materials -  (Withdraw stages 1 for your next dive)".into(),
+                                    "- Materials -  (Withdraw stages 1 for your next run)".into(),
                                     15.0,
                                     gold,
                                 );
@@ -578,7 +578,7 @@ pub(crate) fn render_overlay(
                                 // formation aren't known without a live run.
                                 if roster.heroes.is_empty() {
                                     if hero_names.names.is_empty() {
-                                        label(content, "(enter a dive to see your heroes)".into(), 13.0, dim);
+                                        label(content, "(enter a run to see your heroes)".into(), 13.0, dim);
                                     } else {
                                         for (i, name) in hero_names.names.iter().enumerate() {
                                             let focused = cursor.index == i;
@@ -604,7 +604,7 @@ pub(crate) fn render_overlay(
                                         }
                                         label(
                                             content,
-                                            "(enter a dive to see class/level/stats)".into(),
+                                            "(enter a run to see class/level/stats)".into(),
                                             12.0,
                                             dim,
                                         );
@@ -726,7 +726,7 @@ pub(crate) fn render_overlay(
                                 }
                                 let n_heroes = hero_count(&roster, &hero_names);
                                 if n_heroes == 0 {
-                                    label(content, "(enter a dive to see your heroes)".into(), 13.0, dim);
+                                    label(content, "(enter a run to see your heroes)".into(), 13.0, dim);
                                     return;
                                 }
                                 let selected = equip_sel.hero_slot;
