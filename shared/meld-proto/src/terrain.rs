@@ -22,15 +22,14 @@ pub fn height(x: f32, z: f32) -> f32 {
         + 4.5 * (x * 0.015 - 0.8).sin() * (z * 0.013 + 0.5).cos()
         + 2.2 * (x * 0.033 + 1.7).sin() * (z * 0.037 - 0.9).cos()
         + 0.9 * ((x + z) * 0.061 + 2.3).sin();
-    // Small, SPARSE steep buttes = the CLIFFS. Currently DISABLED (amplitude 0): the
-    // cliff mask + slope collision + path-repair scaffolding are all in place, but a
-    // naive straight-line router still strands between two walkable waypoints when a
-    // butte sits on the segment — making the cliff maze feasible needs real A* graph
-    // pathfinding (routing the backbone + web through walkable cells), which is the
-    // next focused step. Set CLIFF_HEIGHT back to ~11.0 (and the WGSL mirror) then.
+    // Small, SPARSE steep buttes = the CLIFFS. The mesa mask spikes only where `m`
+    // crosses the [0.80, 0.92] smoothstep band, so buttes are isolated bumps that leave
+    // the walkable base a single connected region. Slope collision walls their faces and
+    // the guaranteed route (`Arena::astar_route`) bends AROUND them through walkable
+    // cells, so the world stays feasible. `CLIFF_HEIGHT` MUST match the WGSL mirror.
     let m = (x * 0.03 + 1.1).sin() * (z * 0.028 - 0.6).cos()
         + 0.5 * (x * 0.051 - 2.0).sin() * (z * 0.047 + 1.4).cos();
-    const CLIFF_HEIGHT: f32 = 0.0;
+    const CLIFF_HEIGHT: f32 = 11.0;
     base + CLIFF_HEIGHT * smoothstep(0.80, 0.92, m)
 }
 
@@ -49,7 +48,17 @@ pub fn slope(x: f32, z: f32) -> f32 {
 /// roll (~0.25), so gentle hills stay walkable and only mesa faces wall you off.
 pub const WALKABLE_SLOPE: f32 = 0.75;
 
-/// Is `(x, z)` walkable ground (not a cliff face)?
+/// Is `(x, z)` walkable ground (not a cliff face)? Used by movement collision.
 pub fn walkable(x: f32, z: f32) -> bool {
     slope(x, z) < WALKABLE_SLOPE
+}
+
+/// Stricter threshold for PATH ROUTING (A*): the guaranteed route stays well clear of
+/// the collision threshold, so a continuously-moving walker never clips a
+/// just-over-`WALKABLE_SLOPE` spot beside the route and stalls on the boundary.
+pub const ROUTE_SLOPE: f32 = 0.32;
+
+/// Is `(x, z)` safe to route the guaranteed path through (with margin below the cliff)?
+pub fn routable(x: f32, z: f32) -> bool {
+    slope(x, z) < ROUTE_SLOPE
 }

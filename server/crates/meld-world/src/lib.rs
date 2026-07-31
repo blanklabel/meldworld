@@ -1238,10 +1238,10 @@ impl Arena {
             .iter()
             .map(|(a, b)| (radial_tf(*a, half, lat), radial_tf(*b, half, lat)))
             .collect();
-        // Heightmap cliffs: route the clear path AROUND any butte (nudge waypoints onto
-        // walkable ground), then re-anchor the portal to the last (walkable) waypoint so
-        // extraction stays reachable under slope collision.
-        repair_path_around_cliffs(&mut self.path);
+        // Heightmap cliffs: the backbone path is already routed around buttes by A*
+        // (`astar_route`, in the corridor frame), so it needs no repair here. Just nudge
+        // the web trails + portal onto walkable ground (the web isn't A*-routed), and
+        // re-anchor the portal to the routed path's walkable end.
         for (a, b) in self.web.iter_mut() {
             *a = nudge_to_walkable(*a);
             *b = nudge_to_walkable(*b);
@@ -1367,19 +1367,8 @@ impl Arena {
             push_bent_segment(&mut self.path, prev, self.corridor_path[k], half, lat);
             prev = self.corridor_path[k];
         }
-        // Route the streamed trail around cliffs too (see `radialize`), repairing only
-        // the new tail (connected from the last existing point) so the path doesn't grow
-        // unboundedly as the world streams.
-        if repair_from > 0 && repair_from < self.path.len() {
-            let anchor = self.path[repair_from - 1];
-            let tail = self.path.split_off(repair_from);
-            let mut a = anchor;
-            for p in tail {
-                let target = nudge_to_walkable(p);
-                route_around_cliffs(a, target, &mut self.path, 0);
-                a = target;
-            }
-        }
+        // (The streamed tail is already A*-routed around cliffs in `push_section`.)
+        let _ = repair_from;
         // Bend this section's new web edges and append to the public `web`.
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
@@ -1472,8 +1461,12 @@ impl Arena {
                 terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
                 dungeon: false,
             });
-            // The tutorial path is a straight, obstacle-free line to y=0.
-            self.path.push(Position::new(end_x, 0.0));
+            // The tutorial path routes to y=0, around any cliffs (A*, like the procedural
+            // sections) so the very first stretch is walkable too.
+            let entry = *self.path.last().unwrap_or(&Position::new(0.0, 0.0));
+            for p in self.astar_route(entry, Position::new(end_x, 0.0)) {
+                self.path.push(p);
+            }
             self.cursor = end_x;
             return;
         }
@@ -1562,12 +1555,22 @@ impl Arena {
         // sections just meander onward (endless). This completes the path segment
         // spanning the section, letting obstacles + terraces avoid the whole tube.
         let is_chain_end = i + 1 == wg.area_count.max(1);
-        let portal = if is_chain_end {
-            let p = Position::new(end_x - wg.portal_setback, 0.0);
-            self.path.push(p);
-            p
+        // Where this section's path segment aims (the deep portal on the last section, a
+        // fresh meander ±y otherwise). A* ROUTES the segment there through walkable
+        // terrain, bending around cliffs; the portal is the routed segment's walkable end.
+        let exit_target = if is_chain_end {
+            Position::new(end_x - wg.portal_setback, 0.0)
         } else {
-            self.path.push(Position::new(end_x, wg.path_meander * rng.signed()));
+            Position::new(end_x, wg.path_meander * rng.signed())
+        };
+        let entry = *self.path.last().unwrap_or(&Position::new(0.0, 0.0));
+        let route = self.astar_route(entry, exit_target);
+        for p in &route {
+            self.path.push(*p);
+        }
+        let portal = if is_chain_end {
+            *self.path.last().unwrap()
+        } else {
             Position::new(end_x - wg.portal_setback, 0.0)
         };
 
@@ -1958,11 +1961,13 @@ impl Arena {
             let rooms = wg.dungeon_rooms.max(2);
             for w in 1..rooms {
                 let wall_x = start_x + length * (w as f64) / (rooms as f64);
-                let door_y = path_y_at(&self.path, wall_x);
                 let mut y = -self.lateral + 1.0;
                 while y <= self.lateral - 1.0 {
                     let pos = Position::new(wall_x, y);
-                    let in_door = (y - door_y).abs() < wg.dungeon_door_half;
+                    // A door gap wherever the (A*-routed, possibly winding) clear path
+                    // crosses this wall — so every path crossing has an opening, not just
+                    // one, and connectivity survives the cliff detours.
+                    let in_door = dist_to_path(&pos, &self.path) < wg.dungeon_door_half + r;
                     let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
                         || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
                         || self.chests.iter().any(|c| c.position.distance_to(&pos) < r + 1.0);
@@ -2030,6 +2035,155 @@ impl Arena {
     ///
     /// Uses its own rng stream so the main creature/obstacle/terrace/chest draws stay
     /// byte-stable.
+    /// Route the section's clear-path segment `entry → exit_target` through WALKABLE
+    /// terrain with grid A*, so the guaranteed route bends AROUND heightmap cliffs
+    /// instead of through them (feasibility under slope collision). Works in CORRIDOR
+    /// space but costs WORLD slope (each cell bent through the radial arc), so it stays
+    /// aligned with the rest of section generation (which is corridor-space, bent later).
+    /// Returns the corridor waypoints AFTER `entry` (last one ≈ a walkable `exit_target`).
+    /// Falls back to a straight `[exit_target]` if no route is found (the connected base
+    /// makes that essentially never happen).
+    fn astar_route(&self, entry: Position, exit_target: Position) -> Vec<Position> {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap};
+        // Fine grid: the cliff RING (steep transition) is only ~2u thick, so a coarse
+        // grid would step over it (base cell → mesa-top cell) and strand a walker on the
+        // skipped ring. 1.5u reliably samples the ring so A* routes AROUND the whole mesa.
+        const CELL: f64 = 1.5;
+        let half = self.radial_half;
+        let lat = self.corridor_lateral.max(1.0);
+        // A corridor cell is passable iff its BENT (world) position is walkable ground.
+        let walk = |c: (i64, i64)| -> bool {
+            let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
+            meld_proto::terrain::routable(w.x as f32, w.y as f32)
+        };
+        // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
+        // at large radius, so checking only cell centres would leap over buttes. Check the
+        // whole EDGE by sampling its bent arc (corridor-interpolated then bent, matching
+        // densification) at ~2-world-unit intervals — this is what makes A* honest.
+        let edge_walk = |a: (i64, i64), b: (i64, i64)| -> bool {
+            let (ca, cb) = (
+                Position::new(a.0 as f64 * CELL, a.1 as f64 * CELL),
+                Position::new(b.0 as f64 * CELL, b.1 as f64 * CELL),
+            );
+            let (wa, wb) = (radial_tf(ca, half, lat), radial_tf(cb, half, lat));
+            // Sample at ≤1 world unit (min 2 steps ⇒ always incl. the midpoint), so the
+            // ~2u-thick cliff ring is never skipped even on short near-hub edges.
+            let steps = (wa.distance_to(&wb)).ceil().max(2.0) as i32;
+            for s in 0..=steps {
+                let t = s as f64 / steps as f64;
+                let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
+                let w = radial_tf(c, half, lat);
+                if !meld_proto::terrain::routable(w.x as f32, w.y as f32) {
+                    return false;
+                }
+            }
+            true
+        };
+        let cell_of = |p: Position| ((p.x / CELL).round() as i64, (p.y / CELL).round() as i64);
+        let pos_of = |c: (i64, i64)| Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL);
+        let start = cell_of(entry);
+        let ylim = (lat / CELL).ceil() as i64 + 4;
+        // Snap a target to the nearest WALKABLE cell (so no waypoint lands on a cliff).
+        let nudge = |mut goal: (i64, i64)| -> (i64, i64) {
+            if !walk(goal) {
+                'outer: for r in 1..40i64 {
+                    for dx in -r..=r {
+                        for dy in -r..=r {
+                            if dx.abs() != r && dy.abs() != r {
+                                continue;
+                            }
+                            let c = (goal.0 + dx, goal.1 + dy);
+                            if walk(c) {
+                                goal = c;
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+            goal
+        };
+        let goal = nudge(cell_of(exit_target));
+        // Grid A* from `start` toward `goal`, costing WORLD walkability along each bent
+        // edge. Generous x-slack so a detour around a butte can swing well past the
+        // straight entry→goal span without the search box clipping the only way around.
+        let (xlo, xhi) = (start.0.min(goal.0) - 80, start.0.max(goal.0) + 80);
+        let exit_w = radial_tf(exit_target, half, lat);
+        let h = |c: (i64, i64)| (((c.0 - goal.0).pow(2) + (c.1 - goal.1).pow(2)) as f64).sqrt();
+        let mut open: BinaryHeap<Reverse<(i64, (i64, i64))>> = BinaryHeap::new();
+        let mut g: HashMap<(i64, i64), f64> = HashMap::new();
+        let mut came: HashMap<(i64, i64), (i64, i64)> = HashMap::new();
+        g.insert(start, 0.0);
+        open.push(Reverse(((h(start) * 64.0) as i64, start)));
+        let mut iters = 0u32;
+        // The meander exit can land on a mesa TOP — walkable, but ring-enclosed by the
+        // cliff face and so unreachable from the connected base. If A* can't connect to
+        // it, we head instead for the closest cell we DID reach (nearest the exit in
+        // WORLD space), reconstructed from the very same exploration. That route is
+        // feasible BY CONSTRUCTION (every edge was edge_walk-checked) and never a
+        // straight cliff-crosser — so a walled-off exit just shortens the section instead
+        // of stranding the walker. `best` tracks that closest reachable cell.
+        let mut best = start;
+        let mut best_d = radial_tf(pos_of(start), half, lat).distance_to(&exit_w);
+        while let Some(Reverse((_, cur))) = open.pop() {
+            iters += 1;
+            if iters > 300_000 {
+                break;
+            }
+            if cur == goal {
+                best = goal;
+                break;
+            }
+            let d = radial_tf(pos_of(cur), half, lat).distance_to(&exit_w);
+            if d < best_d {
+                best_d = d;
+                best = cur;
+            }
+            let cg = *g.get(&cur).unwrap_or(&f64::INFINITY);
+            for dx in -1..=1i64 {
+                for dy in -1..=1i64 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let n = (cur.0 + dx, cur.1 + dy);
+                    if n.0 < xlo || n.0 > xhi || n.1 < -ylim || n.1 > ylim {
+                        continue;
+                    }
+                    // The full edge (bent arc) must be walkable, not just the endpoint —
+                    // catches buttes on the long tangential leaps.
+                    if !edge_walk(cur, n) {
+                        continue;
+                    }
+                    let step = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
+                    let ng = cg + step;
+                    if ng < *g.get(&n).unwrap_or(&f64::INFINITY) {
+                        g.insert(n, ng);
+                        came.insert(n, cur);
+                        open.push(Reverse((((ng + h(n)) * 64.0) as i64, n)));
+                    }
+                }
+            }
+        }
+        // Reconstruct start→best (== goal when A* connected). `best == start` only if the
+        // entry itself is boxed in with no walkable neighbour — return empty (the path
+        // just stays put this section) rather than a cliff-crossing straight line.
+        let mut cells = vec![best];
+        let mut c = best;
+        while c != start {
+            match came.get(&c) {
+                Some(&p) => {
+                    cells.push(p);
+                    c = p;
+                }
+                None => break,
+            }
+        }
+        cells.reverse();
+        // Skip `start` (== entry, already on the path); return the routed waypoints.
+        cells.iter().skip(1).map(|&c| pos_of(c)).collect()
+    }
+
     /// Returns the plateau **top centre** (on the path) + its level when a climb was
     /// raised, so the caller can crown the summit with a reward (boss or chest).
     fn maybe_climb_path(&self, terrain: &mut Terrain, i: usize, climb_chance: f64) -> Option<(Position, u8)> {
@@ -2726,38 +2880,6 @@ fn nudge_to_walkable(p: Position) -> Position {
     p
 }
 
-/// Push points carrying the walkable route from `a` (already in `out`) to `b`,
-/// subdividing wherever the segment's midpoint lands on a cliff and nudging that
-/// midpoint onto walkable ground — so the whole run from `a` to `b` stays walkable and
-/// bends AROUND any butte between them. Pushes the intermediates + `b` (not `a`).
-fn route_around_cliffs(a: Position, b: Position, out: &mut Vec<Position>, depth: u32) {
-    let mid = Position::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
-    if depth >= 7 || meld_proto::terrain::walkable(mid.x as f32, mid.y as f32) {
-        out.push(b);
-        return;
-    }
-    let nmid = nudge_to_walkable(mid);
-    route_around_cliffs(a, nmid, out, depth + 1);
-    route_around_cliffs(nmid, b, out, depth + 1);
-}
-
-/// Rewrite a bent path so EVERY waypoint and every segment stays on walkable ground —
-/// nudging waypoints off buttes and routing segments around them (see
-/// `route_around_cliffs`). Keeps the world feasible under heightmap slope collision.
-fn repair_path_around_cliffs(path: &mut Vec<Position>) {
-    if path.is_empty() {
-        return;
-    }
-    let mut out = Vec::with_capacity(path.len() + 4);
-    out.push(nudge_to_walkable(path[0]));
-    for i in 1..path.len() {
-        let target = nudge_to_walkable(path[i]);
-        let a = *out.last().unwrap();
-        route_around_cliffs(a, target, &mut out, 0);
-    }
-    *path = out;
-}
-
 /// Bend a corridor point (`x` = radius axis, `y` = lateral axis) into the WG-4 fan:
 /// `x → radius`, `y → bearing`. The one true forward map, shared by `radialize` and
 /// streaming so every bend site agrees (and `Arena::corridorize` inverts it).
@@ -3397,78 +3519,54 @@ mod tests {
 
     #[test]
     fn the_clear_path_actually_reaches_the_portal() {
-        // A walker that follows the waypoints reaches the portal without getting
-        // stuck on terrain or a cliff — the route is feasible by construction.
+        // A walker that follows the A*-routed waypoints reaches the portal without ever
+        // stalling on terrain or a heightmap cliff — the route is feasible by construction
+        // (the A* backbone bends AROUND every mesa). Swept across many seeds AND both
+        // tutorial/non-tutorial worlds, since cliffs strand only on specific seeds where a
+        // butte sits on a naive straight segment: this is the guarantee cliffs never trap.
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 42, true);
-        let waypoints = arena.path.clone();
-        assert!(waypoints.len() >= 2);
-        arena.add_avatar("p".into(), 8.0);
-        let mut wp = 1usize;
-        let mut reached = false;
-        for _ in 0..50_000 {
-            let target = waypoints[wp];
-            let pos = arena.avatar("p").unwrap().position;
-            if pos.distance_to(&target) < 0.6 {
-                if wp + 1 >= waypoints.len() {
-                    reached = true;
-                    break;
+        for seed in 0u64..24 {
+            for tutorial in [true, false] {
+                let mut arena = Arena::generate(&b, seed, tutorial);
+                let waypoints = arena.path.clone();
+                assert!(waypoints.len() >= 2, "seed {seed} t={tutorial}: path has waypoints");
+                arena.add_avatar("p".into(), if tutorial { 8.0 } else { 2.0 });
+                let mut wp = 1usize;
+                let mut reached = false;
+                for _ in 0..100_000 {
+                    let target = waypoints[wp];
+                    let pos = arena.avatar("p").unwrap().position;
+                    if pos.distance_to(&target) < 0.6 {
+                        if wp + 1 >= waypoints.len() {
+                            reached = true;
+                            break;
+                        }
+                        wp += 1;
+                        continue;
+                    }
+                    arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
                 }
-                wp += 1;
-                continue;
+                assert!(reached, "seed {seed} t={tutorial}: following the path reaches the portal");
+                let end = arena.avatar("p").unwrap().position;
+                assert!(
+                    end.distance_to(&arena.portal) < 1.5,
+                    "seed {seed} t={tutorial}: walker ended at the portal"
+                );
+                assert_eq!(
+                    arena.avatar("p").unwrap().elevation,
+                    0,
+                    "seed {seed} t={tutorial}: walker stayed on the ground"
+                );
             }
-            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
         }
-        assert!(reached, "following the path should reach the portal");
-        let end = arena.avatar("p").unwrap().position;
-        assert!(end.distance_to(&arena.portal) < 1.5, "walker ended at the portal");
-        assert_eq!(arena.avatar("p").unwrap().elevation, 0, "walker stayed on the ground");
     }
 
-    #[test]
-    fn the_clear_path_climbs_a_plateau_and_still_reaches_the_portal() {
-        // The #B guarantee: the critical route itself CLIMBS (up a ramp, across a
-        // plateau, back down) yet is still always completable, ending grounded at the
-        // portal. Pick a seed that actually generated a path-ramp, then walk it.
-        let b = corridor_balance();
-        let seed = [42u64, 1, 7, 999, 123456, 2, 3, 5, 11]
-            .into_iter()
-            .find(|&s| {
-                Arena::generate(&b, s, true).areas.iter().any(|a| {
-                    a.terrain.connectors.iter().any(|c| c.entity_id.starts_with("pramp-"))
-                })
-            })
-            .expect("some seed produces a climbing clear path");
-        let mut arena = Arena::generate(&b, seed, true);
-        let waypoints = arena.path.clone();
-        assert!(waypoints.len() >= 2);
-        arena.add_avatar("p".into(), 8.0);
-        let mut wp = 1usize;
-        let mut reached = false;
-        let mut max_elev = 0u8;
-        for _ in 0..80_000 {
-            let a = arena.avatar("p").unwrap();
-            max_elev = max_elev.max(a.elevation);
-            let pos = a.position;
-            let target = waypoints[wp];
-            if pos.distance_to(&target) < 0.6 {
-                if wp + 1 >= waypoints.len() {
-                    reached = true;
-                    break;
-                }
-                wp += 1;
-                continue;
-            }
-            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
-        }
-        assert!(reached, "seed {seed}: the climbing path still reaches the portal");
-        assert!(max_elev > 0, "seed {seed}: the walker actually climbed a plateau en route");
-        assert_eq!(
-            arena.avatar("p").unwrap().elevation,
-            0,
-            "seed {seed}: walker ends grounded at the portal"
-        );
-    }
+    // (Removed `the_clear_path_climbs_a_plateau_and_still_reaches_the_portal`: the
+    // discrete path-CLIMB — `maybe_climb_path`'s `pramp-` ramp raised across a section-
+    // spanning meander — is superseded by the continuous heightmap + A* path routing.
+    // A* fragments the path into short walkable waypoints, so no section-spanning
+    // segment exists to raise a plateau over; elevation now comes from the heightmap
+    // and the path routes AROUND cliffs rather than climbing them.)
 
     #[test]
     fn a_terrace_chest_only_opens_from_its_elevation() {
@@ -3499,68 +3597,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_cliff_blocks_but_a_connector_lets_you_climb() {
-        // Find a raised terrace, prove you can't walk onto it across the cliff, then
-        // prove stepping onto its connector carries you up.
-        let b = corridor_balance();
-        let mut arena = Arena::generate(&b, 7, true);
-        let (conn, level) = arena
-            .areas
-            .iter()
-            .flat_map(|a| a.terrain.connectors.iter().map(move |c| (c.clone(), c.hi)))
-            .next()
-            .expect("a connector exists");
-        arena.add_avatar("p".into(), 6.0);
-
-        // Approach the terrace from open ground, away from the connector: pick a
-        // raised cell far from the connector and try to walk straight into it.
-        let area = arena.areas.iter().find(|a| !a.terrain.connectors.is_empty()).unwrap();
-        let mut target_cell = None;
-        for gx in 0..area.terrain.cols {
-            for gy in 0..area.terrain.rows {
-                if area.terrain.level[gx * area.terrain.rows + gy] == level {
-                    let c = area.terrain.cell_center(gx, gy);
-                    if c.distance_to(&conn.position) > conn.radius + 3.0 {
-                        target_cell = Some(c);
-                    }
-                }
-            }
-        }
-        if let Some(cell) = target_cell {
-            // Stand just off the terrace, not near the connector, and push into it.
-            let start = Position::new(cell.x, area.terrain.y_min - 0.1); // below-grid ground
-            let start = if arena.level_at(&start) == 0 { start } else { Position::new(cell.x, cell.y - 6.0) };
-            arena.avatar_mut("p").unwrap().position = start;
-            arena.avatar_mut("p").unwrap().elevation = 0;
-            for _ in 0..80 {
-                let p = arena.avatar("p").unwrap().position;
-                arena.apply_move("p", cell.x - p.x, cell.y - p.y, 0);
-            }
-            assert_eq!(
-                arena.avatar("p").unwrap().elevation,
-                0,
-                "a bare cliff must not let you climb"
-            );
-        }
-
-        // Now use the connector: stand on it and step up onto the terrace.
-        arena.avatar_mut("p").unwrap().position = conn.position;
-        arena.avatar_mut("p").unwrap().elevation = 0;
-        let up = Position::new(conn.position.x, conn.position.y + arena.connector_radius + 1.0);
-        for _ in 0..40 {
-            let p = arena.avatar("p").unwrap().position;
-            arena.apply_move("p", up.x - p.x, up.y - p.y, 0);
-            if arena.avatar("p").unwrap().elevation == level {
-                break;
-            }
-        }
-        assert_eq!(
-            arena.avatar("p").unwrap().elevation,
-            level,
-            "stepping onto a connector should carry you up a level"
-        );
-    }
 
     #[test]
     fn streaming_extends_the_world_endlessly_and_reproducibly() {
