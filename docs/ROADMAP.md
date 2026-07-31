@@ -249,14 +249,24 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     placement** from the biome pool (`roll_entrance`). Pure + deterministic; 14
     unit tests + doctest. **DG-3b (the `game.rs` wiring, on the merged SC-3
     `WorldActor`) — in progress, staged like SC-3 was:**
-    - *(1/n) — entrances appear ✅* As the world streams, each non-tutorial section
-      rolls a chanced entrance from its biome pool (`dungeon_spawn_chance`) placed on
-      the clear path; the `WorldActor` holds them and the overworld snapshot streams
-      them as `entrance:<dungeon>`. Purely additive — no existing flow changes; core
-      loop qa green. (`place_entrance` in `meld-dungeon-run`, tested.)
-    - *Remaining:* touch-an-entrance → enter (group via `join_radius`), per-player
-      `Location` + per-space snapshots/movement scoping, the seal/exit/death flow,
-      and reject Town Portal while `InDungeon`.
+    - *(1/n) — entrances appear ✅* Each non-tutorial section (the initial chain +
+      streamed ones, via a high-water mark) rolls a chanced entrance from its biome
+      pool (`dungeon_spawn_chance`) on the clear path; streamed to clients as
+      `entrance:<dungeon>`. (`place_entrance` in `meld-dungeon-run`, tested.)
+    - *(2/n) — enter / move / exit ✅* The `WorldActor` owns per-player `Location` +
+      live `DungeonInstance`s. A **deliberate** `run.enter_dungeon` (new C2S; never
+      automatic on walking past) descends: the dungeon is stamped at the entry's
+      distance and the avatar frozen at the entry spot. Inside, movement routes
+      through the dungeon (slide + wall collision via `try_move`), reaching a
+      lever/plate/key/boss **auto-opens** its gated doors, **stairs** move between
+      floors, and the **end-exit** returns you to the overworld exactly where you
+      entered. Town Portal is rejected while `InDungeon` (committed space). The
+      in-dungeon snapshot is scoped to the floor (crude render — walls/doors as
+      obstacles, exit as portal, chest/boss tags — pending DG-6b). New qa test
+      `dungeon_enter` drives it end-to-end; core-loop qa stays green.
+    - *Remaining (3/n):* group entry (`join_radius`), dungeon combat (boss/mobs, trap
+      damage via DG-4a, chest banking via DG-5), death-in-dungeon, and the proper
+      client render (DG-6b).
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),

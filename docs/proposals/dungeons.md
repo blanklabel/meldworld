@@ -304,13 +304,23 @@ rather than new fields" convention (CLAUDE.md):
   - **DG-3b — the `game.rs` wiring** *(in progress on the merged `WorldActor`,
     staged like SC-3)*.
     - *(1/n) entrances appear* ✅ — the `WorldActor` rolls a chanced entrance per
-      streamed non-tutorial section (`dungeon_spawn_chance`, from the biome pool,
-      placed on the clear path via `meld_dungeon_run::place_entrance`) and streams it
-      in the overworld snapshot as `entrance:<dungeon>`. Purely additive; core-loop
-      qa green. `[worldgen]` tunables `dungeon_spawn_chance` + `dungeon_depth_level_step`.
-    - *Remaining* — touch → enter (group via `join_radius`), per-player `Location`
-      + per-space snapshots/movement scoping (SC-1 interest index), the
-      seal/exit/death flow, and rejecting Town Portal while `InDungeon`.
+      non-tutorial section (initial chain + streamed, via a high-water mark;
+      `dungeon_spawn_chance`, from the biome pool, on the clear path via
+      `meld_dungeon_run::place_entrance`) and streams it as `entrance:<dungeon>`.
+      `[worldgen]` tunables `dungeon_spawn_chance` + `dungeon_depth_level_step`.
+    - *(2/n) enter / move / exit* ✅ — per-player `Location` + live `DungeonInstance`s
+      on the `WorldActor`. **Deliberate** entry (`run.enter_dungeon`, new C2S — never
+      automatic, so walking past never pulls you in) stamps the dungeon at the entry
+      distance and freezes the overworld avatar at the entry spot. In-dungeon
+      movement routes through `try_move` (slide + wall collision), reaching an emitter
+      auto-opens gated doors, stairs move between floors, the end-exit returns you to
+      the overworld where you entered, and Town Portal is rejected inside (committed
+      space). The in-dungeon snapshot is floor-scoped, mapped onto existing tags
+      (walls/doors → obstacles, exit → portal, chest/boss) as a **crude render pending
+      DG-6b**. qa `dungeon_enter` drives enter→dungeon-snapshot end-to-end.
+    - *Remaining (3/n)* — group entry (`join_radius`), dungeon combat (boss/mobs,
+      trap damage via DG-4a, chest banking via DG-5), death-in-dungeon, per-space
+      interest culling (SC-1), and the proper client render (DG-6b).
 - **DG-4 — traps + puzzles live**, engine-first like DG-3:
   - **DG-4a — the engine** ✅ *(shipped)*. The puzzle emitter/barrier runtime
     already lives in `meld-dungeon-run` (DG-3a: levers/plates/keys/boss-clear open

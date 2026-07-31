@@ -23,6 +23,8 @@ use meld_proto::realtime::{
     battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message,
 };
 use meld_proto::RawEnvelope;
+use meld_dungeon_content::{ObjectKind, Tile};
+use meld_dungeon_run::{DungeonInstance, Location};
 use meld_run::{build_battle, InstanceRun};
 use meld_world::{Arena, Area};
 use tokio::sync::mpsc;
@@ -603,12 +605,22 @@ struct WorldActor {
     regen_accum: HashMap<String, f32>,
     /// DG-3: hand-designed dungeon entrances placed as the world streams (a chanced
     /// per-section draw from the biome's authored pool). Rendered in the overworld
-    /// snapshot as `entrance:<dungeon>`; touching one to descend lands in DG-3b's
-    /// next increment.
+    /// snapshot as `entrance:<dungeon>`; touch one to descend (`enter_dungeon`).
     entrances: Vec<DungeonEntrance>,
     /// Whether this world is the gentle first-dive tutorial — entrances are
     /// suppressed there to keep onboarding clean.
     tutorial: bool,
+    /// DG-3b: each player's current space. Absent ⇒ overworld; `InDungeon` scopes
+    /// their movement + snapshot to a live [`DungeonInstance`].
+    location: HashMap<String, Location>,
+    /// DG-3b: live dungeon subinstances, keyed by a minted [`DungeonKey`]. Per-entry
+    /// fresh — created on entry, dropped when the last occupant leaves.
+    dungeons: HashMap<u64, DungeonInstance<'static>>,
+    /// Monotonic source of unique dungeon keys.
+    next_dungeon_key: u64,
+    /// High-water mark: sections `0..entrances_scanned` have already been rolled for
+    /// a dungeon entrance (covers the initial chain on the first tick + streamed ones).
+    entrances_scanned: usize,
 }
 
 /// A placed dungeon entrance in the overworld (DG-3).
@@ -617,6 +629,19 @@ struct DungeonEntrance {
     /// The authored dungeon this entrance leads to (`meld_dungeon_content` name).
     dungeon: &'static str,
     position: Position,
+}
+
+/// A static dungeon-floor prop as a snapshot entity (DG-3b crude render — walls,
+/// doors, exits, etc. mapped onto existing client tags until DG-6b).
+fn dungeon_prop(entity_id: String, position: Position, tag: &str) -> wm::SnapshotEntity {
+    wm::SnapshotEntity {
+        entity_id,
+        position,
+        velocity: wm::Velocity { x: 0.0, y: 0.0 },
+        avatar_state: Some(tag.to_string()),
+        level: Some(0),
+        ..Default::default()
+    }
 }
 
 impl WorldActor {
@@ -864,6 +889,12 @@ impl WorldActor {
             .iter()
             .filter(|r| !in_battle.contains(&r.party_id))
         {
+            // DG-3b: a player inside a dungeon gets THAT space's snapshot (its floor
+            // geometry + occupants), not the overworld cull.
+            if let Some((key, floor)) = self.dungeon_of(&r.player_id) {
+                out.push(self.dungeon_snapshot(&r.player_id, key, floor, server_tick));
+                continue;
+            }
             // Avatars are pushed first, in arena order, so an avatar's index in
             // `entities` equals its index in `arena.avatars` — reuse it as `own_idx`.
             let me = self
@@ -902,6 +933,180 @@ impl WorldActor {
             ));
         }
         out
+    }
+
+    // --- DG-3b: dungeon subinstances (enter / move / exit + per-space snapshot) ---
+
+    /// The `(key, floor)` of the dungeon a player is in, if any.
+    fn dungeon_of(&self, pid: &str) -> Option<(u64, usize)> {
+        match self.location.get(pid) {
+            Some(Location::InDungeon { key, floor }) => Some((*key, *floor)),
+            _ => None,
+        }
+    }
+
+    /// Deliberate descent (`run.enter_dungeon`): `pid` must be an overworld,
+    /// non-fighting player standing within reach of the named entrance. Returns an
+    /// error message if not; otherwise enters. Entry is never automatic — you press
+    /// to descend, so walking past an entrance never pulls you in.
+    fn enter_dungeon_by_id(&mut self, pid: &str, entity_id: &str, seq: u32) -> Vec<Outgoing> {
+        if self.dungeon_of(pid).is_some() {
+            return vec![error(pid, ErrorCode::InvalidState, "Already in a dungeon.", Some(seq))];
+        }
+        if self.battle_of_player(pid).is_some() {
+            return vec![error(pid, ErrorCode::InvalidState, "Resolve the battle first.", Some(seq))];
+        }
+        let Some(idx) = self.entrances.iter().position(|e| e.entity_id == entity_id) else {
+            return vec![error(pid, ErrorCode::NotFound, "No such dungeon entrance.", Some(seq))];
+        };
+        let radius = self.balance.world.interaction_radius_tiles;
+        let near = self
+            .arena
+            .avatar(pid)
+            .map(|a| a.state == "active" && a.position.distance_to(&self.entrances[idx].position) <= radius)
+            .unwrap_or(false);
+        if !near {
+            return vec![error(pid, ErrorCode::OutOfRange, "Not close enough to the entrance.", Some(seq))];
+        }
+        self.enter_dungeon(pid, idx)
+    }
+
+    /// Descend `pid` into the dungeon behind entrance `entrance_idx`: mint a key,
+    /// instantiate the authored dungeon stamped at the entry's overworld distance,
+    /// place the player at the entrance cell, and freeze their overworld avatar at
+    /// the entry position (restored on exit — you return exactly where you came in).
+    fn enter_dungeon(&mut self, pid: &str, entrance_idx: usize) -> Vec<Outgoing> {
+        let Some(name) = self.entrances.get(entrance_idx).map(|e| e.dungeon) else {
+            return Vec::new();
+        };
+        let Some(def) = meld_dungeon_content::by_name(name) else {
+            return Vec::new();
+        };
+        let level = self.arena.avatar(pid).map(|a| a.position.distance_floor()).unwrap_or(0);
+        let depth_step = self.balance.worldgen.dungeon_depth_level_step;
+        let key = self.next_dungeon_key;
+        self.next_dungeon_key += 1;
+        let mut inst = DungeonInstance::new(key, def, level, depth_step);
+        inst.enter(pid);
+        self.dungeons.insert(key, inst);
+        self.location.insert(pid.to_string(), Location::InDungeon { key, floor: 0 });
+        if let Some(a) = self.arena.avatar_mut(pid) {
+            a.state = "in_dungeon".to_string();
+        }
+        Vec::new()
+    }
+
+    /// Per-intent step for dungeon movement — `speed × sim_dt`, matching the
+    /// overworld so the feel is consistent.
+    fn dungeon_step(&self, pid: &str) -> f64 {
+        let hz = self.balance.world.overworld_sim_hz.max(1) as f64;
+        let speed = self.arena.avatar(pid).map(|a| a.max_speed_tiles_per_sec).unwrap_or(4.0);
+        speed / hz
+    }
+
+    /// Apply a move intent for a player inside a dungeon: slide-move on their floor,
+    /// auto-activate any emitter reached (opens doors/gates), take a stair on
+    /// contact, and exit to the overworld on reaching the end-exit.
+    fn dungeon_move(&mut self, pid: &str, intent: &wm::MoveIntent) -> Vec<Outgoing> {
+        let Some((key, floor)) = self.dungeon_of(pid) else {
+            return Vec::new();
+        };
+        let step = self.dungeon_step(pid);
+        // Move + activate + stair within one scoped borrow; capture the outcome.
+        let (final_floor, exiting) = {
+            let Some(dj) = self.dungeons.get_mut(&key) else {
+                return Vec::new();
+            };
+            let Some(newpos) = dj.try_move(pid, intent.move_dir.x, intent.move_dir.y, step) else {
+                return Vec::new();
+            };
+            dj.activate_at(floor, newpos); // reaching a lever/plate/key/boss opens gated doors
+            let stair = dj.stair_dest(floor, newpos);
+            if let Some((df, dp)) = stair {
+                dj.set_pos(pid, df, dp);
+            }
+            let (ff, fp) = stair.unwrap_or((floor, newpos));
+            (ff, dj.at_exit(ff, fp))
+        };
+        if final_floor != floor {
+            self.location.insert(pid.to_string(), Location::InDungeon { key, floor: final_floor });
+        }
+        if exiting {
+            return self.exit_dungeon(pid, key);
+        }
+        Vec::new()
+    }
+
+    /// Leave a dungeon: drop the occupant (despawning the instance if now empty —
+    /// per-entry fresh), clear the location, and un-freeze the overworld avatar,
+    /// which is still parked at the entry position.
+    fn exit_dungeon(&mut self, pid: &str, key: u64) -> Vec<Outgoing> {
+        if let Some(d) = self.dungeons.get_mut(&key) {
+            d.remove(pid);
+            if d.is_empty() {
+                self.dungeons.remove(&key);
+            }
+        }
+        self.location.remove(pid);
+        if let Some(a) = self.arena.avatar_mut(pid) {
+            a.state = "active".to_string();
+        }
+        Vec::new()
+    }
+
+    /// Build the snapshot for a player inside a dungeon floor. DG-6b will give
+    /// dungeons a proper wire/render; for now the floor is mapped onto existing
+    /// entity tags so the current client shows a (crude) space: occupants as
+    /// avatars, walls + closed doors as obstacles, the end-exit as a portal, chests
+    /// and the boss as their usual tags. No interest cull (a floor is small).
+    fn dungeon_snapshot(&self, pid: &str, key: u64, floor: usize, server_tick: i64) -> Outgoing {
+        let mut entities: Vec<wm::SnapshotEntity> = Vec::new();
+        if let Some(d) = self.dungeons.get(&key) {
+            let def = d.def();
+            for (opid, occ) in d.occupants() {
+                if occ.floor != floor {
+                    continue;
+                }
+                entities.push(wm::SnapshotEntity {
+                    entity_id: opid.clone(),
+                    position: occ.pos,
+                    velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                    avatar_state: Some("active".to_string()),
+                    level: Some(0),
+                    ..Default::default()
+                });
+            }
+            if let Some(grid) = def.grids.get(floor) {
+                for y in 0..grid.height {
+                    for x in 0..grid.width {
+                        let cell = grid.at(x, y);
+                        let pos = Position::new(x as f64 + 0.5, y as f64 + 0.5);
+                        if cell.tile == Tile::Wall {
+                            entities.push(dungeon_prop(format!("dwall-{floor}-{x}-{y}"), pos, "obstacle:dungeon_wall:0.5"));
+                            continue;
+                        }
+                        let Some(id) = &cell.object else { continue };
+                        match def.objects.get(id) {
+                            Some(k) if k.is_barrier() && !d.is_open(id) => {
+                                entities.push(dungeon_prop(format!("ddoor-{id}"), pos, "obstacle:dungeon_door:0.5"));
+                            }
+                            Some(ObjectKind::Chest { .. }) => {
+                                entities.push(dungeon_prop(format!("dchest-{id}"), pos, "chest:1:0"));
+                            }
+                            Some(ObjectKind::Boss { sprite, .. }) => {
+                                entities.push(dungeon_prop(format!("dboss-{id}"), pos, &format!("mob:{sprite}:hostile")));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                for (n, e) in def.exits.iter().filter(|e| e.floor == floor).enumerate() {
+                    let pos = Position::new(e.x as f64 + 0.5, e.y as f64 + 0.5);
+                    entities.push(dungeon_prop(format!("dexit-{floor}-{n}"), pos, "portal"));
+                }
+            }
+        }
+        out_msg(pid, &wm::Snapshot { server_tick, entities })
     }
 
     /// The caller's hero roster (name/class/level/attributes) for the party panel.
@@ -1545,6 +1750,7 @@ impl GameState {
             wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
             wr::SetFormation::TYPE => self.handle_set_formation(player_id, raw),
             wr::EquipLoot::TYPE => self.handle_equip_loot(player_id, raw),
+            wr::EnterDungeon::TYPE => self.handle_enter_dungeon(player_id, raw),
             wm::MoveIntent::TYPE => self.handle_move(player_id, raw),
             wb::SubmitAction::TYPE => self.handle_submit(player_id, raw),
             other => vec![error(
@@ -1554,6 +1760,21 @@ impl GameState {
                 Some(raw.seq),
             )],
         }
+    }
+
+    /// DG-3b: deliberate descent into a hand-designed dungeon (`run.enter_dungeon`).
+    fn handle_enter_dungeon(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let seq = raw.seq;
+        let req: wr::EnterDungeon = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad enter_dungeon", Some(seq))]
+            }
+        };
+        let Some(inst) = self.world.as_mut() else {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(seq))];
+        };
+        inst.enter_dungeon_by_id(player_id, &req.entity_id, seq)
     }
 
     fn handle_enter_maze(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
@@ -1687,6 +1908,10 @@ impl GameState {
                 regen_accum: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
+                location: HashMap::new(),
+                dungeons: HashMap::new(),
+                next_dungeon_key: 0,
+                entrances_scanned: 0,
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -2172,6 +2397,11 @@ impl GameState {
                 Some(raw.seq),
             )];
         };
+        // DG-3b: a player inside a dungeon moves within that space (its own
+        // walkability, stairs, exit) — never the overworld arena.
+        if inst.dungeon_of(player_id).is_some() {
+            return inst.dungeon_move(player_id, &intent);
+        }
         // Any movement interrupts an in-progress extraction channel (D15).
         if inst.extraction.remove(player_id).is_some() {
             if let Some(a) = inst.arena.avatar_mut(player_id) {
@@ -2781,6 +3011,15 @@ impl GameState {
                 Some(raw.seq),
             )];
         }
+        // DG-3b: a dungeon is a committed space (design §4) — no Town Portal inside.
+        if inst.dungeon_of(player_id).is_some() {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "Can't extract from inside a dungeon — reach the exit.",
+                Some(raw.seq),
+            )];
+        }
         if inst.extraction.contains_key(player_id) {
             return vec![error(
                 player_id,
@@ -3325,28 +3564,34 @@ impl WorldActor {
                 }
             }
         }
-        // DG-3b: roll a hand-designed dungeon entrance for each freshly-streamed
-        // section (chanced, from the biome's authored pool), placed on the section's
-        // clear-path segment. Suppressed during the tutorial. The entrance streams to
-        // clients via `snapshot_msgs` as `entrance:<dungeon>`; the touch→descend flow
-        // lands in the next increment.
-        if !created_sections.is_empty() && !self.tutorial {
+        // DG-3b: place a chanced hand-designed dungeon entrance for every section not
+        // yet scanned — the initial chain (first tick) AND each streamed section —
+        // drawn from the section's biome pool, on its clear-path segment. Suppressed
+        // in the tutorial; area 0 (spawn) is skipped. Streams to clients as
+        // `entrance:<dungeon>`; `run.enter_dungeon` descends.
+        if !self.tutorial {
             let chance = self.balance.worldgen.dungeon_spawn_chance;
-            let mut placed: Vec<DungeonEntrance> = Vec::new();
-            for &i in &created_sections {
-                let Some(area) = self.arena.areas.get(i) else { continue };
-                let p0 = self.arena.path.get(i).copied().unwrap_or(area.portal);
+            while self.entrances_scanned < self.arena.areas.len() {
+                let i = self.entrances_scanned;
+                self.entrances_scanned += 1;
+                if i == 0 {
+                    continue;
+                }
+                let (biome, portal) = {
+                    let Some(area) = self.arena.areas.get(i) else { continue };
+                    (area.biome, area.portal)
+                };
+                let p0 = self.arena.path.get(i).copied().unwrap_or(portal);
                 let p1 = self.arena.path.get(i + 1).copied().unwrap_or(p0);
                 let seed = meld_world::section_seed(self.arena.seed, i);
-                if let Some(pl) = meld_dungeon_run::place_entrance(seed, area.biome, chance, p0, p1) {
-                    placed.push(DungeonEntrance {
+                if let Some(pl) = meld_dungeon_run::place_entrance(seed, biome, chance, p0, p1) {
+                    self.entrances.push(DungeonEntrance {
                         entity_id: format!("dungeon-entrance-{i}"),
                         dungeon: pl.dungeon,
                         position: pl.position,
                     });
                 }
             }
-            self.entrances.extend(placed);
         }
         // Resonant "Overworld Regen": top up carried hero HP while walking (feeds
         // the next fight's starting HP). Server-authoritative; emits no messages.

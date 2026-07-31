@@ -682,6 +682,18 @@ pub mod run {
         const TYPE: &'static str = "run.open_chest";
     }
 
+    /// C2S — descend into a hand-designed dungeon whose entrance (`entity_id`, an
+    /// `entrance:<dungeon>` snapshot entity) the avatar is standing next to
+    /// (WG-1/DG-3b). A committed space: you leave by the exit or by dying, never a
+    /// Town Portal. Deliberate (a keypress), never automatic on walking past.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct EnterDungeon {
+        pub entity_id: Id,
+    }
+    impl Message for EnterDungeon {
+        const TYPE: &'static str = "run.enter_dungeon";
+    }
+
     /// C2S — opt into the fight already in progress nearby (the avatar must be
     /// within join range of the battle). The whole of the caller's party joins the
     /// existing side; teammates are never auto-pulled in.
