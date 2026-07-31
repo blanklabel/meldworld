@@ -1,0 +1,15 @@
+[package]
+name = "meld-dungeon-content"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Authored dungeon content (DG-2): every *.dungeon.toml under content/ is parsed + validated (incl. the solvability gate) at BUILD TIME and embedded as a validated registry. A malformed or unsolvable dungeon is a compile error."
+
+[dependencies]
+meld-dungeon = { path = "../meld-dungeon" }
+serde_json = { workspace = true }
+
+[build-dependencies]
+# The build script reuses the real parser/validator so the compile IS the gate.
+meld-dungeon = { path = "../meld-dungeon" }
+serde_json = { workspace = true }

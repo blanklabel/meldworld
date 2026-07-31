@@ -1,0 +1,60 @@
+# Sunken Vault — a desert ruin (DG-2 content).
+# Floor 0: lever→door, then a three-plate ORDERED gate (seq), stairs down.
+# Floor 1: a two-of-three plate gate (count), a dart trap you can't disarm (route
+#          the timing), the boss, and a HYBRID vault (a guaranteed relic + a roll).
+
+name  = "sunken_vault"
+biome = "desert"
+
+[legend]
+a = "lever L1"
+X = "door D1"
+"1" = "plate P1"
+"2" = "plate P2"
+"3" = "plate P3"
+Y = "gate G1"
+s = "stair S1 down"
+w = "stair S1 up"
+p = "plate P4"
+q = "plate P5"
+r = "plate P6"
+G = "gate G2"
+d = "trap T2"
+B = "boss B1"
+C = "chest sun_relic"
+
+[[floor]]
+grid = """
+######################
+#>.a.X.1.2.3.Y......s.#
+######################
+"""
+
+[[floor]]
+grid = """
+##########################
+#w.p.q.r.G.d.B....C.....<#
+##########################
+"""
+
+[door.D1]
+when = "L1"
+
+[gate.G1]
+when = "seq[P1,P2,P3]"          # step them in order
+
+[gate.G2]
+when = "count(2,[P4,P5,P6])"    # any two of the three
+
+[trap.T2]
+kind = "dart"
+disarmable = false             # a pure hazard — no disarm, only timing
+
+[boss.B1]
+sprite = "sepulcher"
+on_enter_spawn = true
+
+[chest.sun_relic]
+when = "boss_dead(B1)"
+loot = "rolled"                            # hybrid: a guaranteed relic PLUS a roll
+contents = [{ gear = "sunspine_relic", quantity = 1 }]
