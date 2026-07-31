@@ -176,6 +176,21 @@ for deterministic screenshot states. The `meld-web` entry in `.claude/launch.jso
 runs the trunk step for the browser-preview tooling. Pre-build the wasm once
 (`trunk-build.sh`) so the preview server starts fast instead of timing out on the
 cold Bevy compile.
+
+#### Biome/scenario harness (native embedded build)
+
+Two server-side env overrides (read only at the server boundary; `meld-world` stays
+pure) let you load a SPECIFIC world on demand instead of random-walking into it:
+
+- **`MELD_BIOME=<forest|desert|ashfall|tundra|mire>`** pins *every* section to that
+  biome (and forces the tutorial off), so you can inspect one biome's maze directly.
+- **`MELD_SEED=<u64>`** fixes the world layout for reproducible screenshots/repros.
+
+Combine with `MELD_AUTOPLAY` + the file-channel screenshot request. The wrapper
+`client/scripts/view_biome.sh <biome> [seed] [frames]` boots the embedded binary with
+those flags, sets a pulled-back survey camera via `LOOK_FILE`, and drops
+`/tmp/meld-biome-<biome>-<n>.png`. Density ramps with distance (the hub ring is
+deliberately sparse), so let it walk out a few frames to see the maze thicken.
 ## Working alongside other agents (up to ~20 concurrent)
 
 Many agents share this one repo at once. The workflow is built to make that safe — but
