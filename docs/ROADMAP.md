@@ -62,6 +62,22 @@ the dive→extract→dive loop. This epic finishes M1–M3.
   Vault + equipped gear + (pre-dive) loadout from within Last City — the Vault-Deep
   district UI reading the live `GET /v1/vault` / `/vault/gear`, plus equip/unequip.
   Prereq for GR-1/PT-1/PT-2/SV-1 having a home. (Depends on GR-1's slot model.)
+- [ ] **LC-5 — Rebuild Last City as a friendly *authored space*.** A city is an
+  authored, multi-room space you walk around in — mechanically the **friendly
+  profile** of the same substrate as WG-1 dungeons (authored glyph-grid + manifest
+  layout, placed interactables, a server-known space you're "in"), minus the
+  hostile layer (no traps/boss/committed-path/solvability/loot). Today the city is
+  **client-local** (hand-placed props, no server sim); this makes its **layout an
+  authored content file** (agent-editable, the same format the DG-2 codegen
+  compiles) and, when the LC-1 presence work lands, models it as a *space* on the
+  shared runtime. **Note the opposite sharing model:** a city is **one persistent
+  space shared by many** (LC-1's hard presence-at-scale problem, solved by SC-3
+  world-sharding + the ward-sharded presence loop), *not* per-entry-fresh ≤4 like a
+  dungeon — the dungeon runtime is a foundation, not a solution, for that scale.
+  Factor the shared **authored-space core** out from under `meld-dungeon` when
+  DG-3's space runtime lands. Design:
+  [`proposals/dungeons.md`](proposals/dungeons.md) §"one authored-space substrate"
+  + [`proposals/last-city.md`](proposals/last-city.md). Depends on DG-2/DG-3.
 
 ---
 
@@ -204,11 +220,30 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   clear path (connectivity guaranteed by construction, like a biome seam), packed
   denser with creatures and ending in a **guaranteed loot chest**, all rendered by
   the normal obstacle/creature path (`meld-world`, `[worldgen] dungeon_*`, unit-tested).
-  **Remaining:** the *separately-instanced* "walk through a portal into a discrete
-  sub-space" version + a mini-boss — that needs the multi-instance work (the current
-  slice is one shared instance). BSP room-and-corridor + `behaviors/dungeons.md`
-  when that lands. See
-  when built.
+  **Now building the full version** — separately-instanced, **hand-designed** (not
+  procgen) dungeons: a per-biome pool of authored multi-floor set-pieces with traps,
+  puzzles, a boss, and treasure; entered through a **chanced entrance** in the
+  streaming overworld; a **per-entry-fresh subinstance** shared by a group of up to 4;
+  a **committed space** (no Town Portal, exit-at-the-end returns to the entrance,
+  death = back to town); authored via a **glyph-grid + manifest compiled with a
+  solvability gate**; loot both **rolled** (scaled by distance-to-Last-City + floor
+  depth) and **authored**. Full design + decisions: [`proposals/dungeons.md`](proposals/dungeons.md).
+  - [x] **DG-1** — pure `meld-dungeon` crate: `DungeonDef` model, glyph-grid +
+    manifest parser, the condition grammar (`all`/`any`/`not`/`seq`/`count` +
+    `has_key`/`boss_dead`/`room_clear`), emitters (lever/plate/key/pedestal/boss)
+    + barrier receivers (door/gate/chest), and the validator incl. the
+    entrance→exit **solvability search** across the floor stack. `forest_barrow`
+    sample + 16 unit tests, all green. (`spawn`/`mover`/`timer` receivers land with
+    the runtime in DG-4.)
+  - [ ] **DG-2** — `build.rs` codegen (embed authored dungeons as validated statics)
+    + first real per-biome content.
+  - [ ] **DG-3** — runtime subinstance: map-of-spaces in `game.rs` + avatar location,
+    chanced entrance placement, enter/exit/seal/death rules, floors + stairs.
+  - [ ] **DG-4** — traps + puzzles live (state machine, Dex/Shifter disarm,
+    emitter/receiver runtime, `run.interact`).
+  - [ ] **DG-5** — loot: dungeon-level stamp, rolled + authored + hybrid chests.
+  - [ ] **DG-6** — client rendering (entrance, floors, stairs, traps/puzzles, boss).
+  - [ ] **DG-7** — CANON `D`-number + `behaviors/dungeons.md`; tick WG-1.
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
   onboarding (fixed biome order + centred area-0), gated on the persistent
