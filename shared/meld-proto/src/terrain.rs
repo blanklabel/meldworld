@@ -54,15 +54,16 @@ pub fn height(x: f32, z: f32, ox: f32, oz: f32) -> f32 {
         + 4.5 * (x * 0.015 - 0.8).sin() * (z * 0.013 + 0.5).cos()
         + 2.2 * (x * 0.033 + 1.7).sin() * (z * 0.037 - 0.9).cos()
         + 0.9 * ((x + z) * 0.061 + 2.3).sin();
-    // RARE steep buttes = the CLIFFS: dramatic landmark peaks, NOT pervasive walls. The
-    // mask only reaches the [1.15, 1.30] band on a small fraction of the world (was 0.80,
-    // which walled off ~10% of the map and funneled the walkable ground into channels —
-    // reading as a corridor). Now the base stays open and you round the occasional
-    // mountain. Slope collision walls their faces and the guaranteed route
-    // (`Arena::astar_route`) bends AROUND them. `CLIFF_HEIGHT` MUST match the WGSL mirror.
+    // Impassable steep cliff-mesas are OFF (amplitude 0): even sparse, they rendered as
+    // stair-stepped blocky WALLS (the coarse ground grid can't smooth an 11u vertical
+    // face) that the player kept reading as a corridor. The world is now open, gentle,
+    // fully-walkable rolling hills. The cliff mask + slope-collision + A* routing all
+    // still work if we bring dramatic terrain back later — but as WALKABLE tall hills
+    // (raise this gently, e.g. 4-6, and widen the band), not impassable blocky faces.
+    // `CLIFF_HEIGHT` MUST match the WGSL mirror.
     let m = (x * 0.03 + 1.1).sin() * (z * 0.028 - 0.6).cos()
         + 0.5 * (x * 0.051 - 2.0).sin() * (z * 0.047 + 1.4).cos();
-    const CLIFF_HEIGHT: f32 = 11.0;
+    const CLIFF_HEIGHT: f32 = 0.0;
     base + CLIFF_HEIGHT * smoothstep(1.15, 1.30, m)
 }
 

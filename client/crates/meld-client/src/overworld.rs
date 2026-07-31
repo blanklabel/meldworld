@@ -1277,10 +1277,10 @@ pub(crate) fn build_world_walls(
     wa: Option<Res<WorldAssets>>,
     assets: Res<AssetServer>,
     existing: Query<Entity, With<WorldWall>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
+    _mats: ResMut<Assets<StandardMaterial>>,
     mut walled: Local<std::collections::HashSet<u32>>,
 ) {
-    let Some(wa) = wa else { return };
+    let Some(_wa) = wa else { return };
     if !frame.have {
         return;
     }
@@ -1310,17 +1310,6 @@ pub(crate) fn build_world_walls(
         return;
     }
     todo.sort_unstable();
-    // One shared rock material per biome (avoids allocating hundreds).
-    let rock_mats: Vec<Handle<StandardMaterial>> = (0..5)
-        .map(|bi| {
-            mats.add(StandardMaterial {
-                base_color: biome_rock_color(bi),
-                perceptual_roughness: 1.0,
-                ..default()
-            })
-        })
-        .collect();
-    let step = 3.0_f32;
 
     // Biome-seam gates (a ridge across the corridor with one gap you funnel through,
     // flanked by standing-stone posts) + the Last City gate. Rebuilt whenever the
@@ -1332,8 +1321,7 @@ pub(crate) fn build_world_walls(
         // slit) was the "corridor". Biomes now just cross-fade on the ground (the shader)
         // and a Gatekeeper still stands near the boundary as a milestone fight you can
         // choose to round. `frame.seams` is left in the wire for that boss + the biome
-        // marker; nothing walls it. (`spawn_wall_prop`/`step` stay for legacy callers.)
-        let _ = step;
+        // marker; nothing walls it.
 
         // Last City's WALL + GATE + skyline, built from real Kenney castle models
         // (Pirate Kit, CC0) rather than scaled boxes. A stone rampart runs across the
@@ -1401,50 +1389,14 @@ pub(crate) fn build_world_walls(
         }
     }
 
-    // Per-section edge walls (deep forest thicket / 2-rank ridge) + the west
-    // end-cap for the first section (behind the hub).
+    // Per-section EDGE WALLS removed. These ran a 5-7 rank thick band of props down both
+    // lateral sides of every section ("thick enough to fully occlude the distance") — near
+    // the hub, where the radial fan is narrow, those bands crowded right up to the player
+    // and enclosed the start in a walled channel: THE corridor. The play area is bounded by
+    // a soft clamp at ±lateral; it doesn't need a prop wall drawing that boundary. The world
+    // now opens to the horizon (distant backdrop skyline + fog give the depth the wall used
+    // to fake). `spawn_wall_prop` stays for the (retired) seam gates / any future use.
     for sidx in todo {
-        let sec = &terrain.sections[&sidx];
-        let lat = (-sec.y_min) as f32;
-        let (sx0, sx1) = (sec.start_x as f32, sec.end_x as f32);
-        let bi = biome_index(sx0.floor().max(0.0) as i64);
-        // Thick enough to fully occlude the distance now that fog is pulled in — the
-        // forest is deepest, but every biome gets a real enclosing band, not 2 props.
-        let ranks = if bi == 0 { 7 } else { 5 };
-        let mut id = sidx as usize * 8192; // unique-per-section so props vary, not tile
-        let mut x = sx0;
-        while x < sx1 {
-            for side in [1.0_f32, -1.0] {
-                // Organic edge: the wall line bulges OUTWARD by a smooth 0..~3.4 units
-                // that meanders along x (two out-of-phase sines, different per side), so
-                // the treeline reads as natural geography rather than a ruler-straight
-                // hedge. Outward-only keeps it clear of the walkable clamp at ±lateral.
-                let ph = if side > 0.0 { 0.0 } else { 2.3 };
-                let wave = ((x * 0.16 + ph).sin() + (x * 0.41 + ph * 1.7).sin()) * 0.5; // -1..1
-                let base = lat + (wave + 1.0) * 1.7; // lat .. lat+3.4, outward
-                for r in 0..ranks {
-                    let jx = (hash_pick(&format!("jx{id}"), 100) as f32 - 50.0) * 0.06;
-                    let jy = (hash_pick(&format!("jy{id}"), 100) as f32 - 50.0) * 0.05;
-                    let depth = 0.6 + r as f32 * 2.3;
-                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, x + jx, side * (base + depth) + jy, id);
-                    id += 1;
-                }
-            }
-            x += step;
-        }
-        if sec.start_x <= 0.5 {
-            let xe = frame.x_min;
-            let ranks_e = if bi == 0 { 4 } else { 2 };
-            let mut y = -lat;
-            while y <= lat {
-                for r in 0..ranks_e {
-                    let depth = 0.6 + r as f32 * 2.3;
-                    spawn_wall_prop(&mut commands, &wa, &mut mats, &rock_mats, bi, xe - depth, y, id);
-                    id += 1;
-                }
-                y += step;
-            }
-        }
         walled.insert(sidx);
     }
 }
