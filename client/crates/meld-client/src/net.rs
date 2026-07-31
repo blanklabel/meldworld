@@ -28,7 +28,7 @@ pub const GUEST_PASSWORD: &str = "meld-guest-password";
 pub enum ClientCmd {
     Connect { username: String, password: String },
     /// Enter the maze with the built party (one class key per hero slot).
-    EnterMaze { party: Vec<String> },
+    EnterMaze { party: Vec<String>, tutorial: bool },
     Move { dx: f64, dy: f64 },
     /// Battle commands. `actor` is which of the player's heroes acts; `target` is the
     /// chosen combatant (an enemy for Attack/offensive Skill, an ally for a
@@ -811,9 +811,10 @@ impl Inner {
             // The client's direct enter is always a solo (private) dive; co-op
             // goes through the lobby. (Bot tests that want grouping send raw JSON
             // without `solo`.)
-            ClientCmd::EnterMaze { party } => {
-                self.send_env(wr::EnterMaze::TYPE, json!({ "party": party, "solo": true }))
-            }
+            ClientCmd::EnterMaze { party, tutorial } => self.send_env(
+                wr::EnterMaze::TYPE,
+                json!({ "party": party, "solo": true, "tutorial": tutorial }),
+            ),
             ClientCmd::Move { dx, dy } => {
                 self.input_seq += 1;
                 self.send_env(
