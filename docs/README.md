@@ -45,6 +45,10 @@ is the human table of contents.
   authoritative server's concurrency ceiling (interest indexing → sim/IO split →
   world sharding) without breaking the single-owner/no-locks loop; includes a
   forward-compat analysis of overworld hazards, sieged player towns, and the Shift.
+- [`proposals/dungeons.md`](proposals/dungeons.md) — **Designed dungeons** (WG-1
+  full / DG epic): authored, separately-instanced set-piece dungeons (the
+  `meld-dungeon` authoring + validation foundation shipped). Built as *content within
+  a world-actor* per the SC/§W model — ephemeral, per-entry-fresh, never persisted.
 
 *Graduated out of proposals (shipped + now specced): verticality →
 [`behaviors/verticality.md`](behaviors/verticality.md) + CANON D24; worldgen (WG) →

@@ -160,6 +160,14 @@ can't be cloned). A player's town/anchors live in exactly one world. This supers
 "the instance is discarded on close" *as the target*: the world persists; only a
 player's **Run** is ephemeral (§W4).
 
+> **Authored spaces are content within a world, not shards.** Alongside the
+> procedural persistent overworld, the game has *authored* spaces on the same
+> "authored-space substrate": **dungeons** (ephemeral, per-entry-fresh subinstances,
+> ≤4 players, **discarded on exit — never persisted**, the opposite lifecycle to §W5)
+> and the **City** (a persistent authored hub). Both are **content living on a world's
+> single owning task — a "map of live spaces" — not their own shard** (consistent with
+> D19 and the "towns are content, not shards" rule). Design (proposal): [`proposals/dungeons.md`](proposals/dungeons.md).
+
 ### §W2. The Shift (D20)
 
 The overworld is the **Shifting Lands**: regions periodically **Shift** — swap to a

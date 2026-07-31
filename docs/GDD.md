@@ -113,3 +113,8 @@ to Level 1 and drops ephemeral items, and forward towns exist precisely to susta
 the *Run* is ephemeral) and actively fights to erase your progress. Authoritative rules: **CANON
 §W**. Fiction + biome bestiary: [`lore/shifting-lands.md`](lore/shifting-lands.md). Server/scaling
 plan: [`proposals/server-scaling.md`](proposals/server-scaling.md).
+
+The procedural world is one pole; the other is **authored set-pieces** the procgen can't deliver —
+**dungeons** (hand-designed, separately-instanced sub-spaces with traps/puzzles/bosses, ephemeral and
+per-entry-fresh) and the authored City. They are *content within a world*, not shards of their own.
+Design: [`proposals/dungeons.md`](proposals/dungeons.md).
