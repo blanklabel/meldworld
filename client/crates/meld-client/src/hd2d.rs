@@ -75,12 +75,12 @@ impl Default for Look {
         // A first-guess HD-2D framing: a steep look-down, strong tilt-shift, warm
         // bloom. Tuned further via LOOK_FILE.
         Look {
-            // A shallower pitch keeps the horizon (and the sky + clouds) in frame and
-            // views the 2D sprites more head-on. Yaw 0 aligns the camera with the
-            // world axes, so cardinal movement (WASD) lands squarely on the N/S/E/W
-            // sprites instead of drifting onto the diagonals. Orbit from here for an
-            // angled look (facing stays camera-relative, so it keeps up).
-            cam_pitch: 21.0,
+            // Pitch raised from 21° so you look DOWN into the field a bit more — at the old
+            // shallow angle a dense treeline overlapped into a solid "wall" across the
+            // horizon (reading as a corridor). 30° sees the ground between/behind the trees
+            // (they separate) while the sprites still read near head-on (edge-on only
+            // sets in past ~55°). Yaw 0 keeps WASD square to the N/S/E/W sprites.
+            cam_pitch: 30.0,
             cam_yaw: 0.0,
             cam_dist: 26.0,
             focus: 26.0,   // track cam_dist so the followed hero stays sharp

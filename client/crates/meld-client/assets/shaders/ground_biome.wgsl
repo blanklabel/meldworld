@@ -32,7 +32,7 @@ fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
     // Amplitude MUST match `meld_proto::terrain::height`'s CLIFF_HEIGHT.
     let m = sin(p.x * 0.03 + 1.1) * cos(p.y * 0.028 - 0.6)
         + 0.5 * sin(p.x * 0.051 - 2.0) * cos(p.y * 0.047 + 1.4);
-    return base + 11.0 * smoothstep(1.15, 1.30, m);
+    return base + 0.0 * smoothstep(1.15, 1.30, m);
 }
 
 struct BiomeParams {
