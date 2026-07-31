@@ -18,6 +18,16 @@ use super::*;
 /// visible ground; deeper/closer sections beyond the window clamp to the ends.
 pub(crate) const MAX_BIOME_RINGS: usize = 32;
 
+/// The sliding ground plane's size + tessellation. The plane follows the player so
+/// there's always ground underfoot, and its vertices are displaced into hills by
+/// `terrain_height`. Bevy's `Plane3d` emits `subdivisions + 2` vertices per side, so
+/// the vertex spacing is `size / (subdivisions + 1)`.
+pub(crate) const GROUND_SIZE: f32 = 2000.0;
+pub(crate) const GROUND_SUBDIVISIONS: u32 = 400;
+/// World distance between adjacent ground vertices — the lattice the follow snaps to
+/// (see [`follow_world_ground`]) so the tessellation stops swimming under the hills.
+pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 1.0);
+
 /// Uniform for [`GroundBiome`] — the ACTUAL per-section biome rings, so the ground
 /// matches each section's real biome (radius ring) instead of fixed distance bands.
 /// `rings[i] = (outer_radius, biome_index, _, _)`, sorted by radius; `count` entries
@@ -259,7 +269,12 @@ pub(crate) fn setup(
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
         // rather than a tilted quad — ~5-unit cells over the hill wavelength (~350u).
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(2000.0, 2000.0).subdivisions(400))),
+        Mesh3d(meshes.add(
+            Plane3d::default()
+                .mesh()
+                .size(GROUND_SIZE, GROUND_SIZE)
+                .subdivisions(GROUND_SUBDIVISIONS),
+        )),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),
     ));
@@ -1157,9 +1172,16 @@ pub(crate) fn follow_world_ground(
 ) {
     let Ok(cam) = cam_q.single() else { return };
     let focus = ground_focus(cam);
+    // SNAP the plane's translation to the vertex lattice. The hills + ground texture are
+    // world-locked (the shader displaces + samples by world xz), but the tessellation
+    // vertices sit at `local + translation`; sliding `translation` continuously drags
+    // that finite sample grid across the fixed heightfield, so the polygonal hills — and
+    // especially the ~2u-thick cliff faces — shimmer and pop as vertices cross them.
+    // Snapping to a whole number of `GROUND_CELL`s pins the lattice to the same world
+    // positions every frame, so the surface holds still while the player glides over it.
     for mut tf in &mut ground_q {
-        tf.translation.x = focus.x;
-        tf.translation.z = focus.z;
+        tf.translation.x = (focus.x / GROUND_CELL).round() * GROUND_CELL;
+        tf.translation.z = (focus.z / GROUND_CELL).round() * GROUND_CELL;
     }
 }
 
