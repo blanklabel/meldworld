@@ -100,6 +100,11 @@ pub struct Fighter {
     /// `meld_world::abilities`. Empty for players and unknown creature kinds
     /// (they fight with basic attacks only).
     pub abilities: Vec<MonsterAbility>,
+    /// Which of the 10 named bosses (FS-4) this fighter is, if any — empty for
+    /// players and plain creatures. Rides the wire as a `boss:<key>` status
+    /// (see `build_wire_statuses`) so the client can render the actual boss
+    /// sprite/animation instead of the generic creature billboard.
+    pub boss_kind: String,
     /// Elemental profile: `DamageType → multiplier` (spec §1). `>1` weak,
     /// `<1` resist, `0` immune, `<0` absorb; missing types default to 1.0.
     /// Monsters get theirs from content; heroes aggregate theirs from gear.
@@ -182,6 +187,7 @@ impl Fighter {
             foci: Vec::new(),
             defending: false,
             abilities: Vec::new(),
+            boss_kind: String::new(),
             damage_modifiers: HashMap::new(),
             basic_attack_type: DamageType::None,
             ability_ready_at: HashMap::new(),
@@ -198,12 +204,16 @@ impl Fighter {
 
     /// Wire status list — the channel the client reads per-combatant extras from:
     /// `class:<key>` (drives the per-hero command menu), `faction:<f>` (creature
-    /// side), `barrier:<n>`, `regen:<n>`, and (Psyker) `focus_slots:<n>` +
-    /// `focus:<kind>:<stacks>` per Manifestation.
+    /// side), `boss:<key>` (FS-4 named-boss sprite/animation), `barrier:<n>`,
+    /// `regen:<n>`, and (Psyker) `focus_slots:<n>` + `focus:<kind>:<stacks>` per
+    /// Manifestation.
     fn build_wire_statuses(&self) -> Vec<String> {
         let mut v = Vec::new();
         if !self.class_key.is_empty() {
             v.push(format!("class:{}", self.class_key));
+        }
+        if !self.boss_kind.is_empty() {
+            v.push(format!("boss:{}", self.boss_kind));
         }
         if self.kind != CombatantKind::Player && !self.faction.is_empty() {
             v.push(format!("faction:{}", self.faction));
@@ -3739,5 +3749,19 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         format!("act-{}", N.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// FS-4: a fighter's `boss_kind` rides the wire as a `boss:<key>` status,
+    /// the same channel hero `class:` already uses — absent when it's empty
+    /// (a plain creature, no boss identity).
+    #[test]
+    fn boss_kind_surfaces_as_a_wire_status() {
+        let mut m = monster("m1", 500, 300);
+        m.boss_kind = "ironmaw".to_string();
+        let wire = m.to_wire();
+        assert!(wire.statuses.contains(&"boss:ironmaw".to_string()));
+
+        let plain = monster("m2", 500, 300);
+        assert!(!plain.to_wire().statuses.iter().any(|s| s.starts_with("boss:")));
     }
 }

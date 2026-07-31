@@ -333,12 +333,19 @@ pub fn build_battle(
     let enemy_fighters: Vec<Fighter> = enemies
         .iter()
         .map(|(m, cid)| {
-            // FS-4: a champion's affix rides the battle name so it reads distinctly
-            // ("Swift dune wyrm"). The stat twist is already baked into the spawn.
-            let name = if m.affix.is_empty() {
-                m.monster_kind.clone()
+            // FS-4 unique boss mechanics: an Elite/Gatekeeper carrying a named
+            // boss identity fights under that boss's own title and kit instead
+            // of its base biome creature's — the affix still prefixes it, so a
+            // champion-tier boss can read "Vicious Ironmaw".
+            let base_name = if m.boss_kind.is_empty() {
+                m.monster_kind.as_str()
             } else {
-                format!("{} {}", m.affix, m.monster_kind)
+                meld_world::boss_display_name(&m.boss_kind)
+            };
+            let name = if m.affix.is_empty() {
+                base_name.to_string()
+            } else {
+                format!("{} {}", m.affix, base_name)
             };
             let mut f = Fighter::new(
                 cid.clone(),
@@ -356,13 +363,16 @@ pub fn build_battle(
             // Creature AI content (spec §1/§2): the kind's permanent ability
             // pool (level-gated at selection time), its elemental profile,
             // and its typed basic swing. Keyed by the BASE kind — a champion
-            // ("Swift dune wyrm") shares its kind's pool.
-            f.abilities = meld_world::abilities::creature_abilities(&m.monster_kind);
-            f.damage_modifiers = meld_world::abilities::creature_damage_modifiers(&m.monster_kind)
+            // ("Swift dune wyrm") shares its kind's pool — unless it carries a
+            // named boss identity (FS-4), which gets its own bespoke kit.
+            let ability_key = if m.boss_kind.is_empty() { &m.monster_kind } else { &m.boss_kind };
+            f.boss_kind = m.boss_kind.clone();
+            f.abilities = meld_world::abilities::creature_abilities(ability_key);
+            f.damage_modifiers = meld_world::abilities::creature_damage_modifiers(ability_key)
                 .into_iter()
                 .collect();
             f.basic_attack_type =
-                meld_world::abilities::creature_basic_attack_type(&m.monster_kind);
+                meld_world::abilities::creature_basic_attack_type(ability_key);
             f
         })
         .collect();
@@ -526,6 +536,45 @@ mod tests {
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
         assert!(allies[0].max_hp > 17, "max HP stays at the class base");
+    }
+
+    /// FS-4 unique boss mechanics: a Gatekeeper's `boss_kind` (assigned in
+    /// world-gen) drives the assembled Fighter's abilities/damage-modifiers/
+    /// basic-attack — its own named-boss kit, not its base biome creature's —
+    /// and its display name reads as the boss's title.
+    #[test]
+    fn boss_kind_drives_the_assembled_fighters_kit_and_name() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
+        let mut arena = meld_world::Arena::generate(&b, 7, false);
+        arena.ensure_frontier(&b, 400.0); // cross a biome seam so a gatekeeper spawns
+        let gk = arena
+            .monsters
+            .iter()
+            .find(|m| m.encounter_class == "gatekeeper")
+            .expect("a gatekeeper spawned at the crossed seam");
+        assert!(!gk.boss_kind.is_empty(), "gatekeeper carries a boss identity");
+
+        let enemies = vec![(gk, "mc".to_string())];
+        let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[]);
+        let (_, wire_enemies) = battle.wire_combatants();
+        let boss = &wire_enemies[0];
+
+        let boss_title = meld_world::boss_display_name(&gk.boss_kind);
+        assert!(
+            boss.monster_kind.as_deref().unwrap_or("").contains(boss_title),
+            "display name uses the boss title, got {:?}", boss.monster_kind
+        );
+        assert!(
+            boss.statuses.contains(&format!("boss:{}", gk.boss_kind)),
+            "wire status carries the boss identity"
+        );
+        // The boss's own kit is used, not its base biome creature's.
+        let boss_abilities = meld_world::abilities::creature_abilities(&gk.boss_kind);
+        let base_abilities = meld_world::abilities::creature_abilities(&gk.monster_kind);
+        assert_ne!(boss_abilities, base_abilities, "boss kit differs from the base creature's");
     }
 
     #[test]

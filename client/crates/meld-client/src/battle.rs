@@ -193,12 +193,15 @@ pub(crate) fn spawn_enemy_actor(
     h: f32,
 ) {
     // Flat battle stage, matching the heroes (see spawn_hero_actor) — no terrain lift.
-    // Exactly the billboard the overworld uses for this creature: resolve by the
-    // normalized kind (strips any champion affix like "Swift ") so a mob keeps its
-    // sprite crossing from the overworld into the fight.
-    let tex = creature_sprite(wa, &c.name);
+    // FS-4 unique boss mechanics: an Elite/Gatekeeper carrying a named boss
+    // identity (`boss:<key>` wire status, mirroring hero `class:`) renders as
+    // its actual animated sprite set instead of the generic creature
+    // billboard, and a bit larger so it visibly reads as a boss — every enemy
+    // otherwise renders at the same size in the battle view.
+    let boss_key = c.statuses.iter().find_map(|s| s.strip_prefix("boss:"));
+    let boss_frames = boss_key.and_then(|k| wa.boss_frames(k));
+    let h = if boss_frames.is_some() { h * 1.5 } else { h };
     let base_tint = Color::srgb(1.2, 1.15, 1.1);
-    let mat = mats.add(hd2d::sprite_material(base_tint, tex));
     // The diamond marker hovers just above the sprite's head (its tip reaches down
     // toward the head, so keep a small gap above `h`).
     let marker_y = h + 0.45;
@@ -210,15 +213,18 @@ pub(crate) fn spawn_enemy_actor(
             .cloned()
             .unwrap_or_default(),
     ));
-    commands
-        .spawn((
-            BattleActor { id: c.id.clone() },
-            Transform::from_translation(root),
-            Visibility::default(),
-        ))
-        .with_children(|p| {
+    let mut root_cmds = commands.spawn((
+        BattleActor { id: c.id.clone() },
+        Transform::from_translation(root),
+        Visibility::default(),
+    ));
+    if let Some(frames) = boss_frames {
+        // Animated boss actor: same CharSprite pattern spawn_hero_actor uses,
+        // driven by the same generic `hd2d::animate_chars` system.
+        let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
+        root_cmds.insert(CharSprite::new(frames.clone(), mat.clone(), root));
+        root_cmds.with_children(|p| {
             p.spawn((
-                // Enemies strike toward the players (south, +z).
                 SpriteQuad {
                     id: c.id.clone(),
                     mat: mat.clone(),
@@ -237,8 +243,6 @@ pub(crate) fn spawn_enemy_actor(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
             ));
-            // Target marker — a camera-facing selection diamond sprite, hidden until
-            // this enemy is the picked target (bobbed by `highlight_target`).
             p.spawn((
                 TargetDiamond { id: c.id.clone(), base_y: marker_y },
                 Mesh3d(wa.sprite_quad.clone()),
@@ -248,6 +252,45 @@ pub(crate) fn spawn_enemy_actor(
                 Visibility::Hidden,
             ));
         });
+        return;
+    }
+    // Plain creature: exactly the billboard the overworld uses, resolved by the
+    // normalized kind (strips any champion affix like "Swift ") so a mob keeps
+    // its sprite crossing from the overworld into the fight.
+    let tex = creature_sprite(wa, &c.name);
+    let mat = mats.add(hd2d::sprite_material(base_tint, tex));
+    root_cmds.with_children(|p| {
+        p.spawn((
+            // Enemies strike toward the players (south, +z).
+            SpriteQuad {
+                id: c.id.clone(),
+                mat: mat.clone(),
+                base: base_tint,
+                forward: Vec3::new(0.0, 0.0, 1.0),
+            },
+            Mesh3d(wa.sprite_quad.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+            hd2d::Billboard,
+        ));
+        p.spawn((
+            Mesh3d(wa.shadow_mesh.clone()),
+            MeshMaterial3d(wa.shadow_mat.clone()),
+            Transform::from_xyz(0.0, 0.02, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
+        ));
+        // Target marker — a camera-facing selection diamond sprite, hidden until
+        // this enemy is the picked target (bobbed by `highlight_target`).
+        p.spawn((
+            TargetDiamond { id: c.id.clone(), base_y: marker_y },
+            Mesh3d(wa.sprite_quad.clone()),
+            MeshMaterial3d(marker_mat),
+            Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
+            hd2d::Billboard,
+            Visibility::Hidden,
+        ));
+    });
 }
 
 /// Reconcile the 3D battle arena with `BattleData`. Your party lines up on the near

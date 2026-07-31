@@ -756,6 +756,12 @@ pub struct MonsterSpawn {
     /// ground (0); a fight only triggers when the toucher shares its elevation.
     pub elevation: u8,
     pub encounter_class: String,
+    /// Which of the 10 named bosses (FS-4 "unique boss mechanics") this Elite/
+    /// Gatekeeper fights as — empty for a standard spawn. Drives a bespoke
+    /// ability pool (`meld_world::abilities`), the in-battle display name
+    /// (`boss_display_name`), and the client's boss sprite/animation. Set by
+    /// `pick_elite_boss_kind` / `pick_gatekeeper_boss_kind` at promotion time.
+    pub boss_kind: String,
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: String,
@@ -803,6 +809,7 @@ impl MonsterSpawn {
             level: scaling.mlevel(d),
             elevation: 0,
             encounter_class: stats.encounter_class.clone(),
+            boss_kind: String::new(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
             flees: stats.flees,
@@ -857,6 +864,51 @@ impl MonsterSpawn {
         self.def += def_add;
         self.speed_stat = ((self.speed_stat as f64) * spd_m).round().max(1.0) as i32;
         self.affix = name.to_string();
+    }
+}
+
+/// Which of the 10 named bosses (FS-4) an Elite champion fights as — the
+/// "elite" tier of `BOSS_KEYS` (`client::world_render`), reserved for the
+/// far-more-common Elite roll rather than the rarer Gatekeeper.
+fn pick_elite_boss_kind(seed: u64) -> &'static str {
+    let mut rng = Rng(seed);
+    ["gloamhound", "rustfang"][rng.below(2)]
+}
+
+/// Which of the 10 named bosses (FS-4) a Gatekeeper fights as, tiered by the
+/// distance of the seam/summit it guards — the same escalation the world
+/// already uses for difficulty, so early gates feel like a "miniboss" and the
+/// deep ones read as apocalyptic. Buckets align with the seam thresholds
+/// `push_section` already walls (100/300/500/1000/3000).
+fn pick_gatekeeper_boss_kind(distance: i64, seed: u64) -> &'static str {
+    let mut rng = Rng(seed);
+    let tier: [&str; 2] = if distance < 300 {
+        ["choirmother", "pyrewarden"] // miniboss
+    } else if distance < 500 {
+        ["sepulcher", "hollowbishop"] // dungeon
+    } else if distance < 1000 {
+        ["ironmaw", "weepingcolossus"] // region
+    } else {
+        ["miredrowned", "ashenleviathan"] // biome
+    };
+    tier[rng.below(2)]
+}
+
+/// The in-battle title for a boss id (FS-4), shown in place of the plain
+/// biome-creature name when a fighter carries a `boss_kind`.
+pub fn boss_display_name(key: &str) -> &'static str {
+    match key {
+        "gloamhound" => "Gloamhound",
+        "rustfang" => "Rustfang",
+        "choirmother" => "Choirmother",
+        "pyrewarden" => "Pyrewarden",
+        "sepulcher" => "Sepulcher",
+        "hollowbishop" => "Hollow Bishop",
+        "ironmaw" => "Ironmaw",
+        "weepingcolossus" => "Weeping Colossus",
+        "miredrowned" => "Miredrowned",
+        "ashenleviathan" => "Ashen Leviathan",
+        _ => "Unknown Horror",
     }
 }
 
@@ -1634,7 +1686,11 @@ impl Arena {
                     enc.elite_xp_mult,
                     "elite",
                 );
-                self.monsters[idx].apply_affix(erng.next_u64());
+                let bseed = erng.next_u64();
+                self.monsters[idx].apply_affix(bseed);
+                // FS-4: unique boss mechanics — an Elite fights as one of the
+                // "elite" tier's two named bosses instead of a plain reskin.
+                self.monsters[idx].boss_kind = pick_elite_boss_kind(bseed ^ 0xB055).to_string();
             }
 
             let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
@@ -1772,6 +1828,10 @@ impl Arena {
                     "gatekeeper",
                 );
                 self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
+                // FS-4: unique boss mechanics — this summit boss fights as one
+                // of the named bosses, tiered by how deep the summit sits.
+                self.monsters[gidx].boss_kind =
+                    pick_gatekeeper_boss_kind(peak.x.floor() as i64, gseed ^ 0xB055).to_string();
             } else {
                 self.chests.push(Chest {
                     entity_id: format!("chest-{}", self.chests.len()),
@@ -1978,6 +2038,10 @@ impl Arena {
                 "gatekeeper",
             );
             self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
+            // FS-4: unique boss mechanics — this gate boss fights as one of
+            // the named bosses, tiered by which biome-seam threshold it guards.
+            self.monsters[gidx].boss_kind =
+                pick_gatekeeper_boss_kind(bd as i64, gseed ^ 0xB055).to_string();
         }
 
         // Every biome is a MAZE: pack the play area with extra impassable props so
@@ -3974,6 +4038,41 @@ mod tests {
         assert!(elite.atk > base.atk && elite.xp_reward > base.xp_reward);
     }
 
+    /// FS-4: the Gatekeeper boss tier escalates with distance, matching the
+    /// seam thresholds `push_section` walls (100/300/500/1000/3000) — a
+    /// shallow gate reads as a miniboss, a deep one as apocalyptic.
+    #[test]
+    fn gatekeeper_boss_kind_escalates_with_distance() {
+        let miniboss = ["choirmother", "pyrewarden"];
+        let dungeon = ["sepulcher", "hollowbishop"];
+        let region = ["ironmaw", "weepingcolossus"];
+        let biome = ["miredrowned", "ashenleviathan"];
+        for seed in 0..20u64 {
+            assert!(miniboss.contains(&pick_gatekeeper_boss_kind(100, seed)));
+            assert!(dungeon.contains(&pick_gatekeeper_boss_kind(300, seed)));
+            assert!(region.contains(&pick_gatekeeper_boss_kind(500, seed)));
+            assert!(biome.contains(&pick_gatekeeper_boss_kind(1000, seed)));
+            assert!(biome.contains(&pick_gatekeeper_boss_kind(3000, seed)));
+        }
+    }
+
+    #[test]
+    fn elite_boss_kind_is_always_the_elite_tier() {
+        for seed in 0..20u64 {
+            assert!(["gloamhound", "rustfang"].contains(&pick_elite_boss_kind(seed)));
+        }
+    }
+
+    #[test]
+    fn boss_display_name_covers_every_key() {
+        for key in [
+            "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
+            "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
+        ] {
+            assert_ne!(boss_display_name(key), "Unknown Horror", "{key} has a title");
+        }
+    }
+
     #[test]
     fn gatekeepers_guard_biome_borders_and_are_a_wall_of_hp() {
         let b = Balance::load_default().unwrap();
@@ -3985,6 +4084,13 @@ mod tests {
             // Compare to a standard creature of the same kind at the same spot.
             let std_hp = MonsterSpawn::build(&b, "s".into(), &gk.monster_kind, gk.position, 1).max_hp;
             assert!(gk.max_hp > std_hp * 3, "gatekeeper is a real fight: {} vs {}", gk.max_hp, std_hp);
+            // FS-4: every gatekeeper fights as one of the 8 named Gatekeeper-tier
+            // bosses (never the "elite" tier, which is reserved for Elites).
+            assert!(!gk.boss_kind.is_empty(), "gatekeeper carries a boss identity");
+            assert!(
+                !["gloamhound", "rustfang"].contains(&gk.boss_kind.as_str()),
+                "gatekeeper doesn't use the elite-tier boss identity: {}", gk.boss_kind
+            );
         }
     }
 
@@ -3993,10 +4099,17 @@ mod tests {
         let b = Balance::load_default().unwrap();
         let mut a = Arena::generate(&b, 3, false);
         a.ensure_frontier(&b, 500.0);
-        let elites = a.monsters.iter().filter(|m| m.encounter_class == "elite").count();
+        let elites: Vec<_> = a.monsters.iter().filter(|m| m.encounter_class == "elite").collect();
         let standard = a.monsters.iter().filter(|m| m.encounter_class == "standard").count();
-        assert!(elites > 0, "some creatures are elite champions");
-        assert!(standard > elites, "but most creatures are still standard");
+        assert!(!elites.is_empty(), "some creatures are elite champions");
+        assert!(standard > elites.len(), "but most creatures are still standard");
+        // FS-4: every Elite fights as gloamhound or rustfang (the "elite" tier).
+        for elite in &elites {
+            assert!(
+                ["gloamhound", "rustfang"].contains(&elite.boss_kind.as_str()),
+                "elite carries the elite-tier boss identity: {}", elite.boss_kind
+            );
+        }
     }
 
     #[test]

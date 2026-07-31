@@ -100,10 +100,10 @@ fn ability(
 use AbilityTarget::{AllEnemies, MonsterGroup, SelfCast, SingleEnemy};
 // No glob import: `DamageType::None` would shadow `Option::None`.
 use DamageType::{
-    Blunt, Celestial, Earth, Fire, Ice, Lightning, Mind, Pierce, Poison, Shadow, Slash, Water,
-    Wind,
+    Blunt, Celestial, Earth, Ethereal, Fire, Ice, Infernal, Lightning, Mind, Pierce, Poison,
+    Shadow, Slash, Water, Wind,
 };
-use ScalingBase::{Attack, Magic, MaxHp};
+use ScalingBase::{Attack, Level, Magic, MaxHp};
 
 /// The full (level-unfiltered) ability pool for a creature kind. The battle
 /// engine gates entries by the spawn's level (`min_level`), cooldown, and
@@ -245,6 +245,100 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
             ability("neurotoxin", "Neurotoxin!", 2, 150, 10, 28, None,
                 vec![dmg(Magic, 1.2, Poison, SingleEnemy), status("numb", 50, SingleEnemy)]),
         ],
+        // -------------------------------------------------- bosses (FS-4) --
+        // The 10 named bosses (`client::world_render::BOSS_KEYS`): "elite" tier
+        // (gloamhound/rustfang) fights as an Elite champion; the other 8 (two
+        // per miniboss/dungeon/region/biome tier) fight as Gatekeepers, picked
+        // by `pick_elite_boss_kind`/`pick_gatekeeper_boss_kind`. Each gets a
+        // bespoke kit — a real signature move, not just bigger stats.
+        "gloamhound" => vec![
+            ability("gloom_bite", "Gloom Bite!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Shadow, SingleEnemy)]),
+            ability("dusk_howl", "Dusk Howl!", 2, 130, 0, 8, None,
+                vec![status("chill", 50, SingleEnemy), atb(-0.2, SingleEnemy)]),
+            ability("umbral_pounce", "Umbral Pounce!", 2, 180, 12, 16, None,
+                vec![dmg(Magic, 1.6, Shadow, SingleEnemy)]),
+        ],
+        "rustfang" => vec![
+            ability("rust_gnash", "Rust Gnash!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Blunt, SingleEnemy)]),
+            ability("spark_coil", "Spark Coil!", 2, 140, 0, 8, None,
+                vec![dmg(Magic, 0.8, Lightning, SingleEnemy), atb(0.2, SelfCast)]),
+            ability("overdrive_maul", "Overdrive Maul!", 2, 200, 14, 16, Some(0.5),
+                vec![dmg(Attack, 1.7, Lightning, SingleEnemy)]),
+        ],
+        "choirmother" => vec![
+            ability("discordant_note", "Discordant Note!", 3, 40, 0, 1, None,
+                vec![dmg(Magic, 0.9, Mind, SingleEnemy)]),
+            ability("mournful_hymn", "Mournful Hymn!", 2, 160, 0, 6, None,
+                vec![heal(MaxHp, 0.2, SelfCast), status("resolve", 80, SelfCast)]),
+            ability("choir_of_the_lost", "CHOIR OF THE LOST!", 2, 260, 24, 12, None,
+                vec![dmg(Magic, 1.1, Mind, AllEnemies), status("dread", 60, AllEnemies)]),
+        ],
+        "pyrewarden" => vec![
+            ability("cinder_lash", "Cinder Lash!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Fire, SingleEnemy)]),
+            ability("kindled_shell", "Kindled Shell!", 2, 180, 0, 6, Some(0.6),
+                vec![heal(MaxHp, 0.15, SelfCast), status("burn_ward", 80, SelfCast)]),
+            ability("pyre_eruption", "PYRE ERUPTION!", 2, 260, 24, 12, None,
+                vec![dmg(Magic, 1.2, Fire, AllEnemies), status("burn", 60, AllEnemies)]),
+        ],
+        "sepulcher" => vec![
+            ability("tomb_claw", "Tomb Claw!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Shadow, SingleEnemy)]),
+            ability("grave_siphon", "Grave Siphon!", 2, 150, 0, 6, None,
+                vec![dmg(Magic, 0.9, Shadow, SingleEnemy), heal(MaxHp, 0.12, SelfCast)]),
+            ability("epitaph_of_ruin", "EPITAPH OF RUIN!", 1, 300, 28, 14, Some(0.45),
+                vec![dmg(Magic, 1.5, Ethereal, SingleEnemy), status("dread", 70, SingleEnemy)]),
+        ],
+        "hollowbishop" => vec![
+            ability("hollow_gaze", "Hollow Gaze!", 3, 40, 0, 1, None,
+                vec![dmg(Magic, 0.9, Mind, SingleEnemy)]),
+            ability("last_rites", "Last Rites!", 2, 170, 0, 6, None,
+                vec![status("curse", 90, SingleEnemy), atb(-0.25, SingleEnemy)]),
+            ability("sermon_of_silence", "SERMON OF SILENCE!", 1, 280, 26, 14, None,
+                vec![dmg(Magic, 1.0, Mind, AllEnemies), status("numb", 60, AllEnemies)]),
+        ],
+        "ironmaw" => vec![
+            ability("crush_bite", "Crush Bite!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.15, Blunt, SingleEnemy)]),
+            ability("chain_lash", "Chain Lash!", 2, 160, 10, 8, None,
+                vec![dmg(Attack, 1.3, Lightning, SingleEnemy), status("bind", 50, SingleEnemy)]),
+            ability("magnetic_surge", "Magnetic Surge!", 2, 220, 0, 14, None,
+                vec![atb(-0.35, AllEnemies)]),
+            ability("ironmaw_rampage", "IRONMAW RAMPAGE!", 1, 320, 30, 20, Some(0.4),
+                vec![dmg(Attack, 1.6, Lightning, AllEnemies)]),
+        ],
+        "weepingcolossus" => vec![
+            ability("tremor_step", "Tremor Step!", 3, 50, 0, 1, None,
+                vec![dmg(Attack, 1.1, Earth, SingleEnemy)]),
+            ability("sorrow_wail", "Sorrow Wail!", 2, 170, 14, 8, None,
+                vec![dmg(Magic, 0.8, Ethereal, AllEnemies), status("dread", 50, AllEnemies)]),
+            ability("crushing_grief", "Crushing Grief!", 2, 210, 0, 14, None,
+                vec![atb(-0.3, SingleEnemy), dmg(Attack, 0.7, Earth, SingleEnemy)]),
+            ability("collapsing_sorrow", "COLLAPSING SORROW!", 1, 340, 32, 22, Some(0.4),
+                vec![dmg(Attack, 1.7, Earth, AllEnemies)]),
+        ],
+        "miredrowned" => vec![
+            ability("silt_claw", "Silt Claw!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.0, Poison, SingleEnemy), status("poison", 60, SingleEnemy)]),
+            ability("drowning_grip", "Drowning Grip!", 2, 170, 10, 8, None,
+                vec![dmg(Attack, 0.7, Water, SingleEnemy), status("bind", 60, SingleEnemy)]),
+            ability("bog_miasma", "Bog Miasma!", 2, 220, 0, 14, None,
+                vec![status("poison", 100, AllEnemies)]),
+            ability("depths_reclaim", "THE DEPTHS RECLAIM!", 1, 340, 30, 24, Some(0.4),
+                vec![dmg(Magic, 1.4, Poison, AllEnemies), status("poison", 80, AllEnemies)]),
+        ],
+        "ashenleviathan" => vec![
+            ability("ash_maw", "Ash Maw!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.15, Fire, SingleEnemy)]),
+            ability("cinder_wave", "Cinder Wave!", 2, 180, 14, 8, None,
+                vec![dmg(Magic, 0.9, Fire, AllEnemies), status("burn", 60, AllEnemies)]),
+            ability("infernal_maw", "Infernal Maw!", 2, 240, 0, 16, Some(0.5),
+                vec![dmg(Magic, 1.3, Infernal, SingleEnemy)]),
+            ability("ashfall_apocalypse", "ASHFALL APOCALYPSE!", 1, 360, 34, 26, Some(0.35),
+                vec![dmg(Level, 0.35, Infernal, AllEnemies), status("burn", 100, AllEnemies)]),
+        ],
         // Unknown kinds fight with basic attacks only (still a full combatant).
         _ => vec![],
     }
@@ -270,6 +364,17 @@ pub fn creature_damage_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         "bog_serpent" => vec![(Ice, 1.5), (Poison, -0.5), (Earth, 0.75)],
         "myconid_brute" => vec![(Fire, 2.0), (Poison, 0.0), (Slash, 1.25)],
         "bog_stinger" => vec![(Fire, 1.5), (Wind, 1.5), (Poison, 0.0)],
+        // -------------------------------------------------- bosses (FS-4) --
+        "gloamhound" => vec![(Celestial, 1.5), (Shadow, -0.25), (Fire, 0.75)],
+        "rustfang" => vec![(Water, 1.5), (Lightning, -0.25), (Earth, 0.75)],
+        "choirmother" => vec![(Shadow, 1.5), (Mind, 0.0), (Celestial, 0.5)],
+        "pyrewarden" => vec![(Water, 1.5), (Ice, 1.25), (Fire, 0.0)],
+        "sepulcher" => vec![(Celestial, 2.0), (Shadow, -0.25), (Mind, 0.5)],
+        "hollowbishop" => vec![(Celestial, 1.5), (Mind, -0.25), (Shadow, 0.5)],
+        "ironmaw" => vec![(Water, 1.5), (Earth, 0.5), (Lightning, 0.0), (Blunt, 0.5)],
+        "weepingcolossus" => vec![(Celestial, 1.25), (Ethereal, 0.5), (Blunt, 0.5), (Pierce, 0.75)],
+        "miredrowned" => vec![(Fire, 1.5), (Ice, 1.25), (Poison, 0.0), (Water, -0.25)],
+        "ashenleviathan" => vec![(Water, 2.0), (Ice, 1.5), (Fire, 0.0), (Infernal, 0.0)],
         _ => vec![],
     }
 }
@@ -283,6 +388,12 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
         }
         "forest_bloom_stalker" | "sand_shade" | "cinder_imp" | "ice_revenant" => Slash,
         "ember_wisp" => Fire,
+        // Bosses (FS-4): a fang/claw/maw basic, flavored per identity.
+        "gloamhound" | "sepulcher" | "hollowbishop" => Shadow,
+        "rustfang" | "ironmaw" | "weepingcolossus" => Blunt,
+        "pyrewarden" | "ashenleviathan" => Fire,
+        "choirmother" => Mind,
+        "miredrowned" => Poison,
         // Wyrms, lurkers, stingers, serpents, sporelings: piercing fangs/stings.
         _ => Pierce,
     }
@@ -300,6 +411,8 @@ mod tests {
             "cinder_imp", "magma_golem", "ember_wisp",
             "frost_lurker", "ice_revenant", "glacier_maw",
             "bog_serpent", "myconid_brute", "bog_stinger",
+            "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
+            "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
         ];
         for kind in kinds {
             let pool = creature_abilities(kind);
@@ -346,6 +459,30 @@ mod tests {
         let at = |lvl: i32| pool.iter().filter(|a| a.min_level <= lvl).count();
         assert!(at(1) < at(20), "higher level unlocks more abilities");
         assert_eq!(at(99), pool.len());
+    }
+
+    /// FS-4: every named boss carries its own kit, distinct from any of the 15
+    /// biome creatures, plus a signature telegraphed attack (not just a plain
+    /// instant like the base creature kits mostly are).
+    #[test]
+    fn every_boss_has_a_distinct_kit_with_a_signature_telegraph() {
+        let boss_keys = [
+            "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
+            "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
+        ];
+        for key in boss_keys {
+            let pool = creature_abilities(key);
+            assert!(!pool.is_empty(), "{key} has a kit");
+            assert!(
+                pool.iter().any(|a| a.telegraph_ticks > 0),
+                "{key} has a telegraphed signature move"
+            );
+            assert_ne!(
+                creature_basic_attack_type(key),
+                DamageType::None,
+                "{key} has a typed basic attack"
+            );
+        }
     }
 
     #[test]
