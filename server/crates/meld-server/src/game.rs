@@ -359,6 +359,84 @@ fn broadcast<'a, M: Message>(
         .collect()
 }
 
+/// Chunk coordinate of a world position for the interest grid (SC-1). Cell size is
+/// the balance `world.chunk_size` — the same bucketing `Arena::step_creatures` uses
+/// for its skirmish spatial hash.
+fn chunk_key(x: f64, y: f64, cell: f64) -> (i32, i32) {
+    ((x / cell).floor() as i32, (y / cell).floor() as i32)
+}
+
+/// Build the per-tick interest grid over `entities`: chunk coord → indices into
+/// `entities`. Built once per snapshot so each player's interest query touches only
+/// the cells around them instead of re-scanning the whole (endless-world) entity
+/// list — turning the per-player cull from O(entities) into O(visible).
+fn build_interest_grid(entities: &[wm::SnapshotEntity], cell: f64) -> HashMap<(i32, i32), Vec<usize>> {
+    let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+    for (i, e) in entities.iter().enumerate() {
+        grid.entry(chunk_key(e.position.x, e.position.y, cell))
+            .or_default()
+            .push(i);
+    }
+    grid
+}
+
+/// Indices of the entities visible to a viewer at (`px`, `py`), via the interest
+/// grid. Behaviour-identical to a full linear distance filter (proven in the tests
+/// below) but O(cells-in-range) instead of O(entities): mobs use `mob_radius` (the
+/// Psyker reveal radius, always ≥ `radius`), everything else uses the base `radius`;
+/// the viewer's own avatar (`own_idx`) and the portal landmark (`portal_idx`) are
+/// always included. Returned sorted + deduped so the emitted snapshot preserves the
+/// entities' original push order.
+///
+/// Why the box query is exact: any entity that passes the precise per-type test lies
+/// within `mob_radius` of the viewer (`mob_radius ≥ radius`), so its cell is inside
+/// the queried box — the grid can never drop a visible entity.
+#[allow(clippy::too_many_arguments)]
+fn interest_visible_indices(
+    entities: &[wm::SnapshotEntity],
+    grid: &HashMap<(i32, i32), Vec<usize>>,
+    cell: f64,
+    px: f64,
+    py: f64,
+    radius2: f64,
+    mob_radius: f64,
+    mob_radius2: f64,
+    own_idx: Option<usize>,
+    portal_idx: Option<usize>,
+) -> Vec<usize> {
+    let (min_cx, min_cy) = chunk_key(px - mob_radius, py - mob_radius, cell);
+    let (max_cx, max_cy) = chunk_key(px + mob_radius, py + mob_radius, cell);
+    let mut idxs: Vec<usize> = Vec::new();
+    for cx in min_cx..=max_cx {
+        for cy in min_cy..=max_cy {
+            let Some(bucket) = grid.get(&(cx, cy)) else {
+                continue;
+            };
+            for &i in bucket {
+                let e = &entities[i];
+                let (dx, dy) = (e.position.x - px, e.position.y - py);
+                let d2 = dx * dx + dy * dy;
+                let is_mob = e
+                    .avatar_state
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with("mob:"));
+                if d2 <= if is_mob { mob_radius2 } else { radius2 } {
+                    idxs.push(i);
+                }
+            }
+        }
+    }
+    if let Some(i) = own_idx {
+        idxs.push(i);
+    }
+    if let Some(i) = portal_idx {
+        idxs.push(i);
+    }
+    idxs.sort_unstable();
+    idxs.dedup();
+    idxs
+}
+
 /// Like [`broadcast`] but for a serialize-only body (e.g. a borrowing struct that
 /// can't be `DeserializeOwned`, so it isn't a [`Message`]). The wire `type` is
 /// passed explicitly. Used by the per-tick gauge_update, whose body borrows each
@@ -3226,9 +3304,15 @@ impl GameState {
         // Purely a bandwidth/CPU cull: the server stays authoritative, so nothing
         // gameplay-affecting depends on what a client is sent. The recipient's own
         // avatar and the deep portal (a navigation landmark) are always included.
-        let radius = (self.balance.world.interest_radius_chunks.max(0)
-            * self.balance.world.chunk_size.max(1)) as f64;
+        //
+        // SC-1: the cull runs off a per-tick chunk grid (built once here) so each
+        // player's query touches only the cells in range instead of re-scanning the
+        // whole entity list — O(sessions × visible) not O(sessions × entities).
+        let cell = self.balance.world.chunk_size.max(1) as f64;
+        let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
         let radius2 = radius * radius;
+        let grid = build_interest_grid(&entities, cell);
+        let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
         // Overworld snapshots go to players NOT in any battle. A fighting party is
         // on the battle screen and driven by battle messages instead; when no battle
         // is running, `in_battle` is empty so this sends to everyone.
@@ -3240,36 +3324,31 @@ impl GameState {
             .iter()
             .filter(|r| !in_battle.contains(&r.party_id))
         {
-            let me_pos = inst
+            // Avatars are pushed first, in arena order, so an avatar's index in
+            // `entities` equals its index in `arena.avatars` — reuse it as `own_idx`.
+            let me = inst
                 .arena
                 .avatars
                 .iter()
-                .find(|a| a.player_id == r.player_id)
-                .map(|a| a.position);
+                .enumerate()
+                .find(|(_, a)| a.player_id == r.player_id);
+            let me_pos = me.map(|(_, a)| a.position);
+            let own_idx = me.map(|(i, _)| i);
             // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
             // (dangerous foes sensed at range). Non-mob entities keep the base radius.
             let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
             let mob_radius2 = mob_radius * mob_radius;
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
-                Some(p) => entities
-                    .iter()
-                    .filter(|e| {
-                        // Always keep the recipient's own avatar (the client centres
-                        // its camera on it) and the portal landmark.
-                        e.entity_id == r.player_id
-                            || e.entity_id == "portal"
-                            || {
-                                let (dx, dy) = (e.position.x - p.x, e.position.y - p.y);
-                                let d2 = dx * dx + dy * dy;
-                                let is_mob = e
-                                    .avatar_state
-                                    .as_deref()
-                                    .is_some_and(|s| s.starts_with("mob:"));
-                                d2 <= if is_mob { mob_radius2 } else { radius2 }
-                            }
-                    })
-                    .cloned()
-                    .collect(),
+                // Grid-indexed interest cull (SC-1): behaviour-identical to the old
+                // full scan (own avatar + portal always; mobs at `mob_radius`, the
+                // rest at `radius`) but O(visible) via the chunk grid.
+                Some(p) => interest_visible_indices(
+                    &entities, &grid, cell, p.x, p.y, radius2, mob_radius, mob_radius2, own_idx,
+                    portal_idx,
+                )
+                .into_iter()
+                .map(|i| entities[i].clone())
+                .collect(),
                 // Defensive: a roaming run should always have an avatar; if not, don't
                 // cull (send the full set) rather than send an empty world.
                 None => entities.clone(),
@@ -3847,5 +3926,130 @@ fn reject_to_error(reject: &Reject) -> (ErrorCode, &'static str) {
         Reject::DuplicateAction => (ErrorCode::DuplicateAction, "Duplicate action_id."),
         Reject::InvalidState(m) => (ErrorCode::InvalidState, m),
         Reject::ValidationError(m) => (ErrorCode::ValidationError, m),
+    }
+}
+
+#[cfg(test)]
+mod interest_grid_tests {
+    use super::*;
+
+    fn ent(id: &str, x: f64, y: f64, state: Option<&str>) -> wm::SnapshotEntity {
+        wm::SnapshotEntity {
+            entity_id: id.to_string(),
+            position: Position { x, y },
+            avatar_state: state.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    /// The original full linear scan the grid replaces — the equivalence oracle.
+    fn naive_visible(
+        entities: &[wm::SnapshotEntity],
+        px: f64,
+        py: f64,
+        radius2: f64,
+        mob_radius2: f64,
+        own_id: &str,
+    ) -> Vec<usize> {
+        let mut v: Vec<usize> = entities
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                e.entity_id == own_id
+                    || e.entity_id == "portal"
+                    || {
+                        let (dx, dy) = (e.position.x - px, e.position.y - py);
+                        let d2 = dx * dx + dy * dy;
+                        let is_mob = e
+                            .avatar_state
+                            .as_deref()
+                            .is_some_and(|s| s.starts_with("mob:"));
+                        d2 <= if is_mob { mob_radius2 } else { radius2 }
+                    }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    // The grid-indexed cull must return exactly what the old whole-list scan did,
+    // for arbitrary worlds and (base, mob-reveal) radii — that equivalence is the
+    // whole safety guarantee of SC-1.
+    #[test]
+    fn grid_cull_matches_naive_over_random_worlds() {
+        let cell = 64.0;
+        let radius = 128.0;
+        let radius2 = radius * radius;
+        // Deterministic xorshift — reproducible, and the engine bans nondeterminism.
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let coord = |r: u64| ((r % 16000) as f64) / 10.0 - 800.0; // [-800, 800)
+
+        for trial in 0..300 {
+            let mut entities = vec![ent("me", coord(next()), coord(next()), Some("idle"))];
+            let (ax, ay) = (entities[0].position.x, entities[0].position.y);
+            let mut placed_portal = false;
+            let n = 4 + (next() % 70) as usize;
+            for k in 0..n {
+                let (x, y) = (coord(next()), coord(next()));
+                let (id, state) = match next() % 4 {
+                    0 => (format!("mob{k}"), Some("mob:wolf:hostile".to_string())),
+                    1 => (format!("res{k}"), Some("resource:herb".to_string())),
+                    2 if !placed_portal => {
+                        placed_portal = true;
+                        ("portal".to_string(), Some("portal".to_string()))
+                    }
+                    _ => (format!("obs{k}"), Some("obstacle:tree:1.00".to_string())),
+                };
+                entities.push(wm::SnapshotEntity {
+                    entity_id: id,
+                    position: Position { x, y },
+                    avatar_state: state,
+                    ..Default::default()
+                });
+            }
+            // Psyker reveal radius is always ≥ base (as the server enforces).
+            let mob_radius = radius + (next() % 500) as f64;
+            let mob_radius2 = mob_radius * mob_radius;
+
+            let grid = build_interest_grid(&entities, cell);
+            let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
+
+            let got = interest_visible_indices(
+                &entities, &grid, cell, ax, ay, radius2, mob_radius, mob_radius2, Some(0),
+                portal_idx,
+            );
+            let want = naive_visible(&entities, ax, ay, radius2, mob_radius2, "me");
+            assert_eq!(got, want, "trial {trial}: grid cull diverged from the naive scan");
+        }
+    }
+
+    #[test]
+    fn own_avatar_and_portal_included_even_when_out_of_range() {
+        let cell = 64.0;
+        let radius2 = 100.0; // radius 10
+        let (mob_radius, mob_radius2) = (10.0, 100.0);
+        let entities = vec![
+            ent("me", 0.0, 0.0, Some("idle")),
+            ent("portal", 5000.0, -5000.0, Some("portal")),
+            ent("far_mob", 9000.0, 0.0, Some("mob:x:y")),
+            ent("near_res", 3.0, 4.0, Some("resource:herb")), // d = 5 ≤ 10
+        ];
+        let grid = build_interest_grid(&entities, cell);
+        let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
+        let got = interest_visible_indices(
+            &entities, &grid, cell, 0.0, 0.0, radius2, mob_radius, mob_radius2, Some(0), portal_idx,
+        );
+        assert!(got.contains(&0), "own avatar always included");
+        assert!(got.contains(&1), "portal always included even when far");
+        assert!(!got.contains(&2), "far mob excluded");
+        assert!(got.contains(&3), "near resource included");
     }
 }

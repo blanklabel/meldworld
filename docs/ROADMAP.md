@@ -487,14 +487,16 @@ overworld snapshot (**O(sessions × entities)** every tick), not the world sim.
 Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC-1
 (hundreds synced in the hub).
 
-- [ ] **SC-1 — Interest index for the snapshot (chunk grid).** Replace the
-  per-player linear entity scan in `meld-server::snapshot_msgs` with a chunk
-  grid / spatial hash (cell size = `interest_radius_chunks × chunk_size`),
-  turning **O(sessions × E)** → **O(sessions × visible)**; add a per-chunk
-  serialize cache so shared chunks serialize once. Reuses the
-  `HashMap<(i32,i32), Vec<_>>` pattern already in `Arena::step_creatures_with_aggro`.
-  Highest leverage-to-effort item; acceptance = a QA bot-ramp load test. Also the
-  broadphase that overworld projectiles/traps (FS) will reuse.
+- [ ] **SC-1 — Interest index for the snapshot (chunk grid).** 🟡 *Core landed:* the
+  per-player linear entity scan in `meld-server::snapshot_msgs` now runs off a
+  per-tick chunk grid (cell = `chunk_size`), turning **O(sessions × E)** →
+  **O(sessions × visible)** — behaviour-identical to the old scan (proven by a
+  300-trial equivalence unit test vs. a naive oracle + an always-include invariant
+  test), reusing the `HashMap<(i32,i32), Vec<_>>` pattern from
+  `Arena::step_creatures_with_aggro`. Also the broadphase overworld projectiles/traps
+  (FS) + dungeon traps (DG-3/DG-4) reuse. **Remaining:** a per-chunk serialize cache
+  (second-order — dedup identical chunk bytes across viewers) and a QA bot-ramp load
+  test to quantify the win.
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence
