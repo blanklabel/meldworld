@@ -50,6 +50,19 @@ enum WorldEffect {
     /// A player left their run (death/extraction) — the Router flips the session's
     /// `in_instance` and tears the world down if it's now empty.
     ReleaseFromRun(String),
+    /// A hero rename must also update the caller's session cache (used to form the
+    /// NEXT dive) — Router-owned, so the world emits it.
+    SetSessionHeroName {
+        player_id: String,
+        slot: usize,
+        name: String,
+    },
+    /// Same, for the front/back-row formation flag.
+    SetSessionHeroRow {
+        player_id: String,
+        slot: usize,
+        back: bool,
+    },
 }
 
 /// Handle used by the gateway to feed the loop.
@@ -1472,6 +1485,34 @@ impl GameState {
         for e in effects {
             match e {
                 WorldEffect::ReleaseFromRun(pid) => self.release_from_run(&pid),
+                WorldEffect::SetSessionHeroName {
+                    player_id,
+                    slot,
+                    name,
+                } => {
+                    if let Some(s) = self.sessions.get_mut(&player_id) {
+                        let mut v = s.hero_names.clone().unwrap_or_default();
+                        while v.len() <= slot {
+                            v.push(format!("Hero {}", v.len() + 1));
+                        }
+                        v[slot] = name;
+                        s.hero_names = Some(v);
+                    }
+                }
+                WorldEffect::SetSessionHeroRow {
+                    player_id,
+                    slot,
+                    back,
+                } => {
+                    if let Some(s) = self.sessions.get_mut(&player_id) {
+                        let mut v = s.hero_rows.clone().unwrap_or_default();
+                        while v.len() <= slot {
+                            v.push(false);
+                        }
+                        v[slot] = back;
+                        s.hero_rows = Some(v);
+                    }
+                }
             }
         }
     }
@@ -1507,7 +1548,17 @@ impl GameState {
             wl::Ready::TYPE => self.handle_lobby_ready(player_id, raw),
             wl::Leave::TYPE => self.handle_lobby_leave(player_id, raw.seq),
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
-            wr::BeginExtraction::TYPE => self.handle_begin_extraction(player_id, raw),
+            wr::BeginExtraction::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_begin_extraction(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::Harvest::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_harvest(player_id, raw),
@@ -1541,8 +1592,90 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
-            wr::RenameHero::TYPE => self.handle_rename_hero(player_id, raw),
-            wr::SetFormation::TYPE => self.handle_set_formation(player_id, raw),
+            wr::RenameHero::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_rename_hero(player_id, raw),
+                    // No active run (party-builder pre-dive path): reproduce the
+                    // pre-move no-world behaviour — validate, update only the session
+                    // cache (for the NEXT dive) via the effect + persist, and return
+                    // an empty roster (no world → no party).
+                    None => match serde_json::from_value::<wr::RenameHero>(raw.payload) {
+                        Ok(req) => {
+                            let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+                            let name: String = req.name.trim().chars().take(24).collect();
+                            if name.is_empty() || req.slot < 0 || req.slot >= party_size {
+                                (
+                                    vec![error(player_id, ErrorCode::ValidationError, "Invalid hero name or slot.", Some(raw.seq))],
+                                    Vec::new(),
+                                )
+                            } else {
+                                let slot = req.slot as usize;
+                                let _ = self.db_writes.send(DbWrite::HeroRename(
+                                    player_id.to_string(),
+                                    slot as i16,
+                                    name.clone(),
+                                ));
+                                (
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new() })],
+                                    vec![WorldEffect::SetSessionHeroName {
+                                        player_id: player_id.to_string(),
+                                        slot,
+                                        name,
+                                    }],
+                                )
+                            }
+                        }
+                        Err(_) => (
+                            vec![error(player_id, ErrorCode::ValidationError, "bad rename_hero", Some(raw.seq))],
+                            Vec::new(),
+                        ),
+                    },
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::SetFormation::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_set_formation(player_id, raw),
+                    // No active run (party-builder pre-dive path): reproduce the
+                    // pre-move no-world behaviour — validate, update only the session
+                    // cache (for the NEXT dive) via the effect + persist, and return
+                    // an empty roster (no world → no party).
+                    None => match serde_json::from_value::<wr::SetFormation>(raw.payload) {
+                        Ok(req) => {
+                            let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+                            if req.slot < 0 || req.slot >= party_size {
+                                (
+                                    vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))],
+                                    Vec::new(),
+                                )
+                            } else {
+                                let slot = req.slot as usize;
+                                let back = req.back_row;
+                                let _ = self.db_writes.send(DbWrite::HeroFormation(
+                                    player_id.to_string(),
+                                    slot as i16,
+                                    back,
+                                ));
+                                (
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new() })],
+                                    vec![WorldEffect::SetSessionHeroRow {
+                                        player_id: player_id.to_string(),
+                                        slot,
+                                        back,
+                                    }],
+                                )
+                            }
+                        }
+                        Err(_) => (
+                            vec![error(player_id, ErrorCode::ValidationError, "bad set_formation", Some(raw.seq))],
+                            Vec::new(),
+                        ),
+                    },
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::EquipLoot::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_equip_loot(player_id, raw),
@@ -2315,104 +2448,113 @@ impl WorldActor {
 
 }
 
-impl GameState {
+impl WorldActor {
     /// Rename one of the caller's heroes: update the active run's names + the
-    /// session cache (for the next dive), persist to Postgres, and re-send the
-    /// roster so the party panel updates at once.
-    fn handle_rename_hero(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    /// session cache (for the next dive, via a `SetSessionHeroName` effect),
+    /// persist to Postgres, and re-send the roster so the party panel updates at
+    /// once.
+    fn handle_rename_hero(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let req: wr::RenameHero = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(player_id, ErrorCode::ValidationError, "bad rename_hero", Some(raw.seq))]
+                return (
+                    vec![error(player_id, ErrorCode::ValidationError, "bad rename_hero", Some(raw.seq))],
+                    Vec::new(),
+                )
             }
         };
         let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
         let name: String = req.name.trim().chars().take(24).collect();
         if name.is_empty() || req.slot < 0 || req.slot >= party_size {
-            return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero name or slot.", Some(raw.seq))];
+            return (
+                vec![error(player_id, ErrorCode::ValidationError, "Invalid hero name or slot.", Some(raw.seq))],
+                Vec::new(),
+            );
         }
         let slot = req.slot as usize;
         // Active run's names (so battle + panel reflect it now).
-        if let Some(inst) = self.world.as_mut() {
-            if let Some(names) = inst.hero_names.get_mut(player_id) {
-                if let Some(n) = names.get_mut(slot) {
-                    *n = name.clone();
-                }
+        if let Some(names) = self.hero_names.get_mut(player_id) {
+            if let Some(n) = names.get_mut(slot) {
+                *n = name.clone();
             }
         }
-        // Session cache (used to form the next dive).
-        if let Some(s) = self.sessions.get_mut(player_id) {
-            let mut v = s.hero_names.clone().unwrap_or_default();
-            while v.len() <= slot {
-                v.push(format!("Hero {}", v.len() + 1));
-            }
-            v[slot] = name.clone();
-            s.hero_names = Some(v);
-        }
+        // Session cache (used to form the next dive) — Router-owned, so emit an effect.
+        let effects = vec![WorldEffect::SetSessionHeroName {
+            player_id: player_id.to_string(),
+            slot,
+            name: name.clone(),
+        }];
         let _ = self
             .db_writes
             .send(DbWrite::HeroRename(player_id.to_string(), slot as i16, name));
-        vec![out_msg(
-            player_id,
-            &wr::Party {
-                heroes: self
-                    .world
-                    .as_ref()
-                    .map(|w| w.party_views(player_id))
-                    .unwrap_or_default(),
-            },
-        )]
+        (
+            vec![out_msg(
+                player_id,
+                &wr::Party {
+                    heroes: self.party_views(player_id),
+                },
+            )],
+            effects,
+        )
     }
 
     /// Set one of the caller's heroes to the front or back row: update the active
-    /// run's formation + the session cache (for the next dive), persist to Postgres,
-    /// and re-send the roster so the party panel updates at once. Applies to the
-    /// next battle assembled (an in-progress battle's Fighters are already built).
-    fn handle_set_formation(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+    /// run's formation + the session cache (for the next dive, via a
+    /// `SetSessionHeroRow` effect), persist to Postgres, and re-send the roster so
+    /// the party panel updates at once. Applies to the next battle assembled (an
+    /// in-progress battle's Fighters are already built).
+    fn handle_set_formation(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let req: wr::SetFormation = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(player_id, ErrorCode::ValidationError, "bad set_formation", Some(raw.seq))]
+                return (
+                    vec![error(player_id, ErrorCode::ValidationError, "bad set_formation", Some(raw.seq))],
+                    Vec::new(),
+                )
             }
         };
         let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
         if req.slot < 0 || req.slot >= party_size {
-            return vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))];
+            return (
+                vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))],
+                Vec::new(),
+            );
         }
         let slot = req.slot as usize;
         let back = req.back_row;
         // Active run's formation (so the panel + next battle reflect it).
-        if let Some(inst) = self.world.as_mut() {
-            let rows = inst.hero_rows.entry(player_id.to_string()).or_default();
-            while rows.len() <= slot {
-                rows.push(false);
-            }
-            rows[slot] = back;
+        let rows = self.hero_rows.entry(player_id.to_string()).or_default();
+        while rows.len() <= slot {
+            rows.push(false);
         }
-        // Session cache (used to form the next dive).
-        if let Some(s) = self.sessions.get_mut(player_id) {
-            let mut v = s.hero_rows.clone().unwrap_or_default();
-            while v.len() <= slot {
-                v.push(false);
-            }
-            v[slot] = back;
-            s.hero_rows = Some(v);
-        }
+        rows[slot] = back;
+        // Session cache (used to form the next dive) — Router-owned, so emit an effect.
+        let effects = vec![WorldEffect::SetSessionHeroRow {
+            player_id: player_id.to_string(),
+            slot,
+            back,
+        }];
         let _ = self
             .db_writes
             .send(DbWrite::HeroFormation(player_id.to_string(), slot as i16, back));
-        vec![out_msg(
-            player_id,
-            &wr::Party {
-                heroes: self
-                    .world
-                    .as_ref()
-                    .map(|w| w.party_views(player_id))
-                    .unwrap_or_default(),
-            },
-        )]
+        (
+            vec![out_msg(
+                player_id,
+                &wr::Party {
+                    heroes: self.party_views(player_id),
+                },
+            )],
+            effects,
+        )
     }
-
 }
 
 impl WorldActor {
@@ -2790,94 +2932,108 @@ impl WorldActor {
 
 }
 
-impl GameState {
-    fn handle_begin_extraction(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+impl WorldActor {
+    fn handle_begin_extraction(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let req: wr::BeginExtraction = match serde_json::from_value(raw.payload) {
             Ok(v) => v,
             Err(_) => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "bad begin_extraction",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "bad begin_extraction",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
         };
         let now = now_ms();
         let channel_ms = self.balance.runs.extraction_channel_ms;
-        let Some(inst) = self.world.as_mut() else {
-            return vec![error(
-                player_id,
-                ErrorCode::InvalidState,
-                "Not in a run.",
-                Some(raw.seq),
-            )];
-        };
-        if inst.battle_of_player(player_id).is_some() {
-            return vec![error(
-                player_id,
-                ErrorCode::InvalidState,
-                "Resolve the battle first.",
-                Some(raw.seq),
-            )];
+        if self.battle_of_player(player_id).is_some() {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Resolve the battle first.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
         }
-        if inst.extraction.contains_key(player_id) {
-            return vec![error(
-                player_id,
-                ErrorCode::InvalidState,
-                "Already channeling.",
-                Some(raw.seq),
-            )];
+        if self.extraction.contains_key(player_id) {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Already channeling.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
         }
         // "portal" requires standing at the single deep portal; "town_portal"
         // works anywhere but requires a Town Portal item (consumed on completion).
         match req.method.as_str() {
             "portal" => {
-                if !inst.arena.at_portal(player_id) {
-                    return vec![error(
-                        player_id,
-                        ErrorCode::OutOfRange,
-                        "Not at the extraction portal.",
-                        Some(raw.seq),
-                    )];
+                if !self.arena.at_portal(player_id) {
+                    return (
+                        vec![error(
+                            player_id,
+                            ErrorCode::OutOfRange,
+                            "Not at the extraction portal.",
+                            Some(raw.seq),
+                        )],
+                        Vec::new(),
+                    );
                 }
             }
             "town_portal" => {
-                let has = inst
+                let has = self
                     .run
                     .run_mut(player_id)
                     .is_some_and(|r| r.backpack.iter().any(|i| i.item_kind == TOWN_PORTAL));
                 if !has {
-                    return vec![error(
-                        player_id,
-                        ErrorCode::InvalidState,
-                        "No Town Portal item.",
-                        Some(raw.seq),
-                    )];
+                    return (
+                        vec![error(
+                            player_id,
+                            ErrorCode::InvalidState,
+                            "No Town Portal item.",
+                            Some(raw.seq),
+                        )],
+                        Vec::new(),
+                    );
                 }
             }
             _ => {
-                return vec![error(
-                    player_id,
-                    ErrorCode::ValidationError,
-                    "unknown extraction method",
-                    Some(raw.seq),
-                )]
+                return (
+                    vec![error(
+                        player_id,
+                        ErrorCode::ValidationError,
+                        "unknown extraction method",
+                        Some(raw.seq),
+                    )],
+                    Vec::new(),
+                )
             }
         }
         let completes_at = now + channel_ms;
-        inst.extraction.insert(
+        self.extraction.insert(
             player_id.to_string(),
             Extraction {
                 completes_at,
                 method: req.method.clone(),
             },
         );
-        if let Some(a) = inst.arena.avatar_mut(player_id) {
+        if let Some(a) = self.arena.avatar_mut(player_id) {
             a.state = "channeling".to_string();
         }
-        let members: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
-        members
+        let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        let msgs: Vec<Outgoing> = members
             .iter()
             .map(|pid| {
                 out_msg(
@@ -2890,9 +3046,12 @@ impl GameState {
                     },
                 )
             })
-            .collect()
+            .collect();
+        (msgs, Vec::new())
     }
+}
 
+impl GameState {
     /// Load equipped-gear bonuses (per hero slot) for freshly-connected players.
     /// Passes each slot's class *for this dive* (empty before any `enter_maze`)
     /// so class-restricted gear only contributes when it actually matches —
