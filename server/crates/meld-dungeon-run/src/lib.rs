@@ -178,6 +178,35 @@ impl<'a> DungeonInstance<'a> {
         }
     }
 
+    /// Move the occupant by direction `(dx, dy)` up to `step` tiles on their floor,
+    /// **sliding along walls** (axis-separated) so a corridor turn doesn't stick.
+    /// Cell-granular collision via [`Self::walkable`] (a closed door blocks; an open
+    /// one passes). Updates + returns the new position; `None` if not an occupant.
+    /// The driver computes `step = speed × sim_dt` to match overworld feel.
+    pub fn try_move(&mut self, player_id: &str, dx: f64, dy: f64, step: f64) -> Option<Position> {
+        let occ = *self.occupants.get(player_id)?;
+        let (floor, cur) = (occ.floor, occ.pos);
+        let mag = (dx * dx + dy * dy).sqrt();
+        let (nx, ny) = if mag > 1.0 { (dx / mag, dy / mag) } else { (dx, dy) };
+        let full = Position { x: cur.x + nx * step, y: cur.y + ny * step };
+        let dest = if self.walkable(floor, full) {
+            full
+        } else {
+            // Slide: keep whichever single-axis component clears a wall.
+            let sx = Position { x: full.x, y: cur.y };
+            let sy = Position { x: cur.x, y: full.y };
+            if self.walkable(floor, sx) {
+                sx
+            } else if self.walkable(floor, sy) {
+                sy
+            } else {
+                cur
+            }
+        };
+        self.occupants.insert(player_id.to_string(), Occupant { floor, pos: dest });
+        Some(dest)
+    }
+
     // --- difficulty ------------------------------------------------------
 
     /// The effective distance to scale a `floor`'s mobs / traps / rolled loot by:
@@ -650,6 +679,23 @@ mod tests {
     fn no_town_portal_in_a_dungeon() {
         let d = DungeonInstance::new(1, forest(), 0, 0);
         assert!(!d.town_portal_allowed());
+    }
+
+    #[test]
+    fn try_move_slides_on_walls_and_respects_doors() {
+        let def = forest(); // floor 0: `#>.t.a.X.k..........s#`, door D1 = X at cell 7, lever L1 at 5
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        let start = d.enter("p"); // entrance cell (1,1) → centre (1.5,1.5)
+        // Into the wall row (downward) is blocked — position unchanged.
+        assert_eq!(d.try_move("p", 0.0, 1.0, 0.5).unwrap(), start, "a wall blocks the move");
+        // Along the open corridor (rightward) moves freely on the same row.
+        let r = d.try_move("p", 1.0, 0.0, 0.5).unwrap();
+        assert!(r.x > start.x && (r.y - start.y).abs() < 1e-9, "corridor is walkable");
+        // A closed door blocks; opening its lever lets you through.
+        d.set_pos("p", 0, Position { x: 6.5, y: 1.5 }); // just before door D1 (cell 7)
+        assert_eq!(d.try_move("p", 1.0, 0.0, 1.0).unwrap(), Position { x: 6.5, y: 1.5 }, "closed door blocks");
+        d.activate("L1");
+        assert!(d.try_move("p", 1.0, 0.0, 1.0).unwrap().x > 6.5, "the opened door passes");
     }
 
     // --- instance: barriers open only when their puzzle is solved ---

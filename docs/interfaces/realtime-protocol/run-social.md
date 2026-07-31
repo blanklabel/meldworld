@@ -91,6 +91,35 @@ Starts an extraction channel — at an extraction portal, or from anywhere with 
 
 ---
 
+### `run.enter_dungeon` (C2S)
+
+Descend into a hand-designed dungeon whose entrance the avatar is standing next to (WG-1/DG-3). A **committed space**: you leave only by the end-exit or by dying — Town Portal is rejected inside. Entry is **deliberate** (a keypress), never automatic on walking past an entrance.
+
+**Source:** ROADMAP WG-1 / DG-3; [`proposals/dungeons.md`](../../proposals/dungeons.md).
+**Direction:** C2S — sent by a player in an active run, in the overworld, not in battle.
+**Idempotency:** Non-idempotent; `invalid_state` if already in a dungeon.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| entity_id | string | Yes | No | — | The `entrance:<dungeon>` snapshot entity to descend through. |
+
+**Server validation**
+
+- Already in a dungeon, or in battle → `invalid_state`.
+- `entity_id` not a live entrance in this world → `not_found`; farther than the interaction range → `out_of_range`.
+
+**Results in** — the sender's subsequent `world.snapshot`s are scoped to the dungeon floor (its geometry + occupants) instead of the overworld; the overworld avatar is parked at the entry position and restored there when the player reaches the end-exit. (In-dungeon rendering is a temporary tag mapping pending the dedicated dungeon render, DG-6b.)
+
+**Example**
+
+```json
+{"type": "run.enter_dungeon", "seq": 512, "ts": 1783729100000, "payload": {"entity_id": "dungeon-entrance-3"}}
+```
+
+---
+
 ### `run.cancel_extraction` (C2S)
 
 Voluntarily cancels the sender's own active extraction channel.
