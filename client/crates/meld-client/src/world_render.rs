@@ -1625,10 +1625,17 @@ pub(crate) fn apply_sky(
     let mut sky_col = mix_col(night_sky, day_sky, day);
     sky_col = mix_col(sky_col, dusk_sky, dusk * 0.6);
     sky_col = mix_col(sky_col, rain_sky, rain * 0.7 * (0.35 + day * 0.65));
-    // Ashfall haze: a thick, sooty red-grey smoke drops visibility and casts the
-    // whole scene volcanic. Layered on top of the day/weather sky by intensity.
+    // Ashfall haze: a thick, choking volcanic smoke that drops visibility and casts the
+    // whole scene volcanic. Layered on top of the day/weather sky by intensity. The smoke
+    // is DAYLIGHT-SCALED: by day it's a bright, glowing amber haze (a grim but unmistakably
+    // *daytime* sky — never a fake starless night), and only at true night does it go dark
+    // (so "sky blue by day, stars by night" holds — ashfall just swaps blue for ember).
     let ash = ashfall.intensity.clamp(0.0, 1.0);
-    let ash_smoke = Color::srgb(0.30, 0.16, 0.13);
+    let ash_smoke = mix_col(
+        Color::srgb(0.10, 0.06, 0.07), // night: dark ash
+        Color::srgb(0.66, 0.42, 0.33), // day: bright ember haze
+        day,
+    );
     if ash > 0.0 {
         clear.0 = mix_col(sky_col, ash_smoke, ash * 0.8);
     } else {
