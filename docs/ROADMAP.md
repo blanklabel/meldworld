@@ -215,7 +215,7 @@ Spec: [`behaviors/world-generation.md`](behaviors/world-generation.md) (radial
 distance model, biome bands, per-section streaming, verticality). Research +
 design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
-- [ ] **WG-1 — Dungeons.** 🟡 *Shipped as dungeon sections:* every Nth procedural
+- [x] **WG-1 — Dungeons.** ✅ *Full hand-designed dungeons ship.* 🟡 *Shipped as dungeon sections:* every Nth procedural
   section is now a **dungeon** — rooms divided by walls with a single door on the
   clear path (connectivity guaranteed by construction, like a biome seam), packed
   denser with creatures and ending in a **guaranteed loot chest**, all rendered by
@@ -241,7 +241,7 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     error** — and embeds the validated defs as a `&'static` registry (`all()` /
     `for_biome()` / `by_name()`). First content pool: `verdant_barrow` (forest),
     `sunken_vault` (desert). Tests green; gate-failure verified.
-  - [ ] **DG-3** — runtime subinstance. 🟡 *DG-3a (the pure engine) shipped:*
+  - [x] **DG-3** — runtime subinstance. ✅ *DG-3a (the pure engine) shipped:*
     `meld-dungeon-run` — the `Location` model, a live `DungeonInstance` (barrier/
     emitter puzzle state that opens doors/gates as the group solves them, stairs
     between floors, end-exit detection, the committed-space rule, and the
@@ -286,15 +286,17 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       at the dungeon's stamped distance + authored contents), gated on the chest's
       `when` (the `boss_dead` vault unlocks on the kill) and openable once.
       `DungeonInstance::chest_openable`/`open_chest` unit-tested.
-    - *(client) DG-6b — entrances render ✅* — the client recognizes
+    - *(client) DG-6b — entrances + interior render ✅* — the client recognizes
       `entrance:<dungeon>` and draws a distinct **glowing violet stone-archway
       doorway** (vs the exit portal's blue), fixing the bug where unknown tags fell
       through to a player avatar; press **F** by one to descend (`run.enter_dungeon`).
-      Native-screenshot verified. **Remaining DG-6b:** a proper *in-dungeon interior*
-      render (walls/floor/stairs/doors still ride the crude obstacle/portal tag-reuse).
-      DG-7 (CANON D25 + `behaviors/dungeons.md`) ✅ merged. With 3/n done, dungeons are
-      **server-complete** (co-op entry, traverse, puzzles, stairs, traps, death, boss
-      combat, loot, exit); WG-1's top box ticks once the interior render lands.
+      Inside, `dungeon_wall`/`dungeon_door` obstacles render as **tall grey stone
+      (timber for a door) masonry blocks**, so an in-dungeon floor reads as
+      stone-walled rooms — chest and exit-portal keep their tags. Native-screenshot
+      verified (both the entrance and the interior). DG-7 (CANON D25 +
+      `behaviors/dungeons.md`) ✅ merged. With 3/n + the client render done, dungeons
+      are **complete end-to-end** (co-op entry, traverse, puzzles, stairs, traps,
+      death, boss combat, loot, exit, rendered) — WG-1 ticks.
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),
@@ -312,16 +314,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     (guaranteed + rolled). Pure, in `meld-dungeon-run`; tunables (richness / rarity)
     are driver params so no `balance.toml` churn. 5 tests. (Wiring the reward into
     the run backpack is part of DG-3b.)
-  - [ ] **DG-6** — client rendering. 🟡 *DG-6a (visualizer) shipped:* `meld-dungeon-viz`
+  - [x] **DG-6** — client rendering. ✅ *DG-6a (visualizer) shipped:* `meld-dungeon-viz`
     renders any `DungeonDef` to a top-down **SVG** (walls, entrance/exit, stairs,
     traps, levers/plates, doors/gates, keys, boss, treasure, legend) — see an
     authored dungeon without running the game; `dungeon-preview` bin dumps the whole
-    pool. The reference the in-game view will match. **Remaining — DG-6b:** the live
-    Bevy render of a dungeon space (needs DG-3b's wire surface, pending SC-3).
+    pool. The reference the in-game view matches. *DG-6b (live Bevy render) shipped:*
+    the entrance archway billboard + the in-dungeon stone/timber masonry render, both
+    native-screenshot verified.
   - [x] **DG-7** — spec: **CANON D25** (dungeons — hand-authored committed
     sub-spaces) + `behaviors/dungeons.md` (full observable-behavior spec) + the
-    `run.enter_dungeon` interface entry. (WG-1's top box stays unticked until DG-6b's
-    in-game render is screenshot-verified — per the client-rendered-item rule above.)
+    `run.enter_dungeon` interface entry.
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
   onboarding (fixed biome order + centred area-0), gated on the persistent

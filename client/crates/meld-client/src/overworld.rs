@@ -2440,6 +2440,25 @@ pub(crate) fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
+    // DG-6b: dungeon interior masonry — a closed door or a wall segment renders as a
+    // tall grey stone (or timber, for a door) block, so an in-dungeon floor reads as
+    // stone-walled rooms rather than an overworld strewn with rocks.
+    if name == "dungeon_wall" || name == "dungeon_door" {
+        let (base_color, height) = if name == "dungeon_door" {
+            (Color::srgb(0.42, 0.26, 0.15), 2.3) // banded timber door
+        } else {
+            (Color::srgb(0.33, 0.31, 0.36), 2.9) // grey dungeon stone
+        };
+        let mat = mats.add(StandardMaterial { base_color, perceptual_roughness: 1.0, ..default() });
+        commands.spawn((
+            WorldEntity(id.to_string()),
+            Mesh3d(wa.rock_mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_translation(world_pos(e.x, e.y, 0.0))
+                .with_scale(Vec3::new((r * 1.7).max(0.9), height, (r * 1.7).max(0.9))),
+        ));
+        return;
+    }
     // Prefer the bespoke HD-2D pixel billboard for this obstacle (PixelLab art),
     // scaled by the collision radius. Water pools keep their animated shader (below),
     // where the moving surface reads better than a flat sprite.
