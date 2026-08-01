@@ -288,6 +288,7 @@ pub(crate) struct CamLift(pub f32);
 pub(crate) fn hd2d_follow(
     session: Res<Session>,
     look: Res<hd2d::Look>,
+    dungeon: Res<world_render::DungeonSceneRes>,
     time: Res<Time>,
     mut cam_lift: ResMut<CamLift>,
     // Follow the player's *smoothed* transform (not the raw 20 Hz snapshot), so the
@@ -314,8 +315,22 @@ pub(crate) fn hd2d_follow(
     };
     // Rise with the player's terrace (pos.y already carries the smoothed elevation).
     let target = Vec3::new(pos.x, 1.0 + pos.y, pos.z);
+    // DG-6b: inside a dungeon, pull the camera TIGHT and steeper — a Dragon-Quest
+    // dungeon rig where you see only the room around you and must move to explore,
+    // instead of the pulled-back overworld survey that reveals the whole floor. Close
+    // fog seals the view so a room reads as an enclosed space. (Look is cheap to clone
+    // per-frame; overworld path is unchanged.)
+    let mut look_eff = (*look).clone();
+    if dungeon.active {
+        look_eff.cam_dist = 13.0;
+        look_eff.cam_pitch = 49.0;
+        look_eff.focus = 13.0;
+        look_eff.fog_start = 20.0;
+        look_eff.fog_end = 64.0;
+    }
+    let look = &look_eff;
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
-        let mut cam = hd2d::camera_transform(&look, target, time.elapsed_secs());
+        let mut cam = hd2d::camera_transform(look, target, time.elapsed_secs());
         // TERRAIN-AWARE eye lift: the low HD-2D pitch means a hill or cliff-mesa BETWEEN
         // the camera and the player easily hides them (and on a slope the eye can sink
         // into the ground). Sample the heightmap along the horizontal eye→target line and
@@ -346,7 +361,7 @@ pub(crate) fn hd2d_follow(
         cam.look_at(target, Vec3::Y);
         *t = cam;
         hd2d::apply_post(
-            &look,
+            look,
             &mut proj,
             bloom.map(|b| b.into_inner()),
             dof.map(|d| d.into_inner()),
@@ -2451,58 +2466,53 @@ pub(crate) fn spawn_obstacle(
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
-    // DG-6b: dungeon interior maze walls. A forest dungeon reads as a forest — so a
-    // wall/closed-door cell is planted with LOW foliage (a squat bush, kept shorter
-    // than the ~1.6-tall hero so you always see your character to steer), not a stone
-    // block that would look out of place under the canopy. Non-forest themes (ruins in
-    // desert/ashfall/tundra/mire) keep tinted stone/timber masonry, which suits them.
+    // DG-6b: dungeon interior maze walls. Rendered as a SOLID, TILE-FILLING wall block
+    // (a full unit cube, slightly over-sized so adjacent wall cells merge into one
+    // continuous wall) so a floor reads as enclosed rooms + corridors you explore — not
+    // scattered rocks. A door cell is a shorter, browner block (a legible opening). The
+    // tight dungeon camera (see `hd2d_follow`) keeps the hero visible over the near
+    // walls. Themed: mossy/basalt/ice/sand stone per biome; a forest dungeon uses a
+    // deep-green mossy stone so its walls still read as walls under the canopy.
     if name == "dungeon_wall" || name == "dungeon_door" {
         let is_door = name == "dungeon_door";
-        if dungeon_theme == "forest" {
-            // Squat bush billboard — the SAME PixelLab foliage the world uses, scaled
-            // low so it reads as undergrowth and never hides the hero. A door cell gets
-            // a paler, slightly taller sprig so an opening is still legible.
-            const BUSH: [&str; 3] = ["obstacle_tree_bushy", "obstacle_tree_willow", "obstacle_tree"];
-            let pool: Vec<Handle<Image>> = BUSH
-                .iter()
-                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
-                .collect();
-            if !pool.is_empty() {
-                let tex = pool[hash_pick(id, pool.len())].clone();
-                let height = if is_door { 1.9 } else { 1.5 + (hash_pick(id, 40) as f32) * 0.01 };
-                let tint = if is_door { Color::srgb(0.75, 0.95, 0.7) } else { Color::WHITE };
-                let mat = mats.add(hd2d::sprite_material(tint, tex));
-                commands
-                    .spawn((
-                        WorldEntity(id.to_string()),
-                        Transform::from_translation(world_pos(e.x, e.y, 0.0)),
-                        Visibility::default(),
-                    ))
-                    .with_children(|p| {
-                        p.spawn((
-                            Mesh3d(wa.sprite_quad.clone()),
-                            MeshMaterial3d(mat),
-                            Transform::from_xyz(0.0, height * 0.5, 0.0)
-                                .with_scale(Vec3::splat(height / 2.2)),
-                            hd2d::Billboard,
-                        ));
-                    });
-                return;
-            }
-        }
-        let (base_color, height) = if is_door {
-            (Color::srgb(0.42, 0.26, 0.15), 2.3) // banded timber door
+        // Wear the tiling cobblestone masonry texture (so walls read as fitted stone,
+        // not flat blocks), multiplied by a per-biome tint. The texture repeats up the
+        // wall face so the stones stay ~square rather than stretching.
+        let tint = if is_door {
+            Color::srgb(0.60, 0.42, 0.26) // timber-brown door
         } else {
-            (Color::srgb(0.33, 0.31, 0.36), 2.9) // grey dungeon stone
+            match dungeon_theme {
+                "forest" => Color::srgb(0.56, 0.68, 0.50), // mossy stone
+                "desert" => Color::srgb(0.86, 0.75, 0.54), // sandstone
+                "ashfall" => Color::srgb(0.52, 0.44, 0.46), // basalt
+                "tundra" => Color::srgb(0.82, 0.88, 0.96), // ice-rimed stone
+                "mire" => Color::srgb(0.56, 0.66, 0.56),   // wet mossy stone
+                _ => Color::srgb(0.74, 0.74, 0.80),        // grey dungeon stone
+            }
         };
-        let mat = mats.add(StandardMaterial { base_color, perceptual_roughness: 1.0, ..default() });
+        let height: f32 = if is_door { 2.2 } else { 3.2 };
+        let mat = mats.add(StandardMaterial {
+            base_color: tint,
+            base_color_texture: Some(wa.wall_tex.clone()),
+            // Repeat the cobblestone ~once per world-unit up the wall.
+            uv_transform: bevy::math::Affine2::from_scale_angle_translation(
+                Vec2::new(1.0, height.round()),
+                0.0,
+                Vec2::ZERO,
+            ),
+            perceptual_roughness: 1.0,
+            ..default()
+        });
         commands.spawn((
             WorldEntity(id.to_string()),
-            Mesh3d(wa.rock_mesh.clone()),
+            Mesh3d(wa.wall_mesh.clone()),
             MeshMaterial3d(mat),
-            Transform::from_translation(world_pos(e.x, e.y, 0.0))
-                .with_scale(Vec3::new((r * 1.7).max(0.9), height, (r * 1.7).max(0.9))),
+            // Base on the ground (cube is centre-origin, so lift by half height); width
+            // 1.04 so neighbours overlap into a seamless wall.
+            Transform::from_translation(world_pos(e.x, e.y, height * 0.5))
+                .with_scale(Vec3::new(1.04, height, 1.04)),
         ));
+        let _ = r;
         return;
     }
     // Prefer the bespoke HD-2D pixel billboard for this obstacle (PixelLab art),
