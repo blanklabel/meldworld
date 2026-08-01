@@ -20,7 +20,7 @@ is the human table of contents.
 ## Spec — how it must behave
 
 - [`behaviors/`](behaviors/) — observable behavior: [world generation](behaviors/world-generation.md),
-  [verticality](behaviors/verticality.md),
+  [verticality](behaviors/verticality.md), [dungeons](behaviors/dungeons.md),
   [run lifecycle](behaviors/run-lifecycle.md), [combat/ATB](behaviors/combat-atb.md),
   [economy](behaviors/economy.md), [meta-progression](behaviors/meta-progression.md),
   [disconnect handling](behaviors/disconnect-handling.md),

@@ -313,7 +313,10 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     authored dungeon without running the game; `dungeon-preview` bin dumps the whole
     pool. The reference the in-game view will match. **Remaining — DG-6b:** the live
     Bevy render of a dungeon space (needs DG-3b's wire surface, pending SC-3).
-  - [ ] **DG-7** — CANON `D`-number + `behaviors/dungeons.md`; tick WG-1.
+  - [x] **DG-7** — spec: **CANON D25** (dungeons — hand-authored committed
+    sub-spaces) + `behaviors/dungeons.md` (full observable-behavior spec) + the
+    `run.enter_dungeon` interface entry. (WG-1's top box stays unticked until DG-6b's
+    in-game render is screenshot-verified — per the client-rendered-item rule above.)
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
   onboarding (fixed biome order + centred area-0), gated on the persistent
