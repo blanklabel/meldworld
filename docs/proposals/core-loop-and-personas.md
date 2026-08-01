@@ -31,16 +31,22 @@ first-class status.
 
 | Persona | The fantasy | Supported by | Its **apex** (win-state) | Its **income** |
 |---|---|---|---|---|
-| **Adventurer** | push deep, beat the bosses with friends, bring home rare loot | groups/raids ([SOC](parties-and-guilds.md), D5 merge), the anchor push (§W4), Gatekeepers/bosses (FS-4), distance loot, Vanguard board | **The boss ladder → Ometus** ([endgame-bosses.md](endgame-bosses.md)) | loot: gear, chits, materials from the deep |
+| **Adventurer** | push deep, beat the bosses with friends, bring home rare loot | groups/raids ([SOC](parties-and-guilds.md), D5 merge), the anchor push (§W4), Gatekeepers/bosses (FS-4), distance loot, Vanguard board | **The boss ladder → Ometus** ([endgame-bosses.md](endgame-bosses.md)) + the **leaderboard suite** ([AD](adventure-depth.md)) | loot: gear + **affixes**, chits, materials from the deep |
 | **Builder** | carve & hold a town in a hostile world; make it great | the whole [BD epic](building-and-sieges.md) — harvest→builder-mode→verticality→anchors→garrison→siege | **Terim** (hidden boss) + a famous, held town | **the gap** — see below |
 | **Gatherer / Crafter** | range for materials, master a craft, make the best loot | [MS](../behaviors/meta-progression.md) harvesting/crafting, ecology materials ([CR §G](living-ecology.md)), the durability sink + stalls/contracts | **All-Father** (gather) + **Terim** (craft) | selling gear/mats; repair fees |
 | **Merchant** | run a stall empire, work the market, get rich without a sword | [economy](../behaviors/economy.md) (stalls, contracts, tax), Mercantile skill, the guild vault | a **market empire** / Mercantile mastery | arbitrage + the trade spread |
 
-### Adventurer — strong loop, now with a climax
-Everything's there *except* the thing it all pointed at: CANON §W kept referencing "a
-seasonal push to a far end-world boss," but the boss was never specced. That's now
-[endgame-bosses.md](endgame-bosses.md) (three known bosses → the true end, Ometus). This
-is the persona that was already whole; it just needed its ending.
+### Adventurer — strong engine, needed its ending *and* its depth
+Two things were missing, not one. The **climax** — CANON §W's "seasonal push to a far
+end-world boss," never specced — is now [endgame-bosses.md](endgame-bosses.md) (three
+known bosses → Ometus). But the **retention depth** between the tutorial and that climax
+was also thin: no build-crafting, no loot *chase*, no directed goals, one lone
+leaderboard. That's [adventure-depth.md](adventure-depth.md) (epic **AD**) — and,
+critically, the "build" is **not** a stat/talent tree (a player runs *four* heroes;
+four talent pages is the wrong depth). It comes from **party composition + gear/affixes +
+synergies** — a *team-composition* ARPG. The affixed-gear chase is also the connective
+tissue that binds the personas: adventurers chase it, **crafters roll it**, merchants
+trade it, Terim drops the recipes.
 
 ### Builder — strong loop, missing income
 The BD epic gives Builders a rich activity and a hidden apex (**Terim**, the god of

@@ -603,6 +603,42 @@ spike that makes the whole economy cohere.
 
 ---
 
+## Epic AD — Adventure depth (gear, affixes, synergy & the chase)
+
+The Adventurer's retention layers — what turns "a working dive" into "one more dive."
+**Builds come from party composition + gear/affixes + synergies, NOT stat/talent trees**
+(a player runs *four* heroes — four talent pages is the wrong depth; attributes stay
+auto-gained). A **team-composition ARPG.** The affixed-gear chase is also the connective
+tissue between personas (adventurers chase it, crafters roll it via `MS-1`, merchants
+trade it, Terim drops the recipes). **Not gated on `SC-3`** — account/run-level, ships on
+the current build.
+
+> **Design doc:** [`proposals/adventure-depth.md`](proposals/adventure-depth.md) — the
+> affix system, party synergies, elemental affinities, the Hunt Board, keystone
+> modifiers, and the leaderboard suite. Refines the Adventurer section of
+> [`proposals/core-loop-and-personas.md`](proposals/core-loop-and-personas.md) (which
+> had overstated the persona as "whole").
+
+- [ ] **AD-1 — Gear affixes & the loot chase (the star).** Server-rolled affixes in three
+  classes — **stat / keyword (twist a class mechanic) / synergy (reference allies)** — from
+  distance-banded tiered pools; **uniques** (build-defining + a tradeoff) and **sets**
+  (party-wide bonuses). Extends `GR-1` + gear-item-models; rolled/rerolled by crafting
+  (`MS-1`). *Highest-leverage item — it's what "crazy grinding" runs on.*
+- [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
+  party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
+- [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on
+  creatures/biomes; resist/convert affixes; **telegraphed** (`UX-2`). Makes biomes a
+  combat *decision*. Extends [`behaviors/combat-atb.md`](behaviors/combat-atb.md).
+- [ ] **AD-4 — The Hunt Board.** Directed combat goals (named creatures/dungeons/depth) —
+  the mid-game spine; ties `CR-5` bestiary, `FS-4`, `DG`; co-op/guild hunts (`SOC`).
+- [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
+  `FS-4` champion affixes; feeds the keystone leaderboard.
+- [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /
+  hunt / guild** boards (seasonal, titles/cosmetics). Extends
+  [`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md).
+
+---
+
 ## Epic SOC — Multiplayer: parties & guilds
 
 > **Terminology:** in this codebase **"party"** already means one player's team of
