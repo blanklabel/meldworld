@@ -563,6 +563,22 @@ pub(crate) fn overworld_input(
     if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
         net.0.send(ClientCmd::JoinBattle);
     }
+    // Descend into a hand-designed dungeon (F): a deliberate action — the server
+    // pulls in teammates gathered at the entrance (WG-1/DG-6b).
+    if keys.just_pressed(KeyCode::KeyF) {
+        if let Some((mx, my)) = me {
+            if let Some((eid, _)) = world
+                .entities
+                .iter()
+                .filter(|(_, e)| e.kind == EntityKind::Entrance)
+                .map(|(id, e)| (id.clone(), (e.x - mx).powi(2) + (e.y - my).powi(2)))
+                .filter(|(_, d2)| *d2 <= 4.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+            {
+                net.0.send(ClientCmd::EnterDungeon { entity_id: eid });
+            }
+        }
+    }
 }
 
 /// Harvest resource nodes automatically the moment you walk within reach — so
@@ -1121,6 +1137,22 @@ pub(crate) fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+            EntityKind::Entrance => {
+                // A hand-designed dungeon entrance (WG-1/DG-6b): the stone gateway,
+                // but tinted a glowing violet (vs the exit portal's cool blue) so it
+                // reads as an ominous "descend here" doorway, distinct from a player.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    3.2,
+                    Color::srgb(0.85, 0.45, 1.25),
+                    0.45,
+                );
+            }
         }
     }
 }

@@ -286,10 +286,15 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       at the dungeon's stamped distance + authored contents), gated on the chest's
       `when` (the `boss_dead` vault unlocks on the kill) and openable once.
       `DungeonInstance::chest_openable`/`open_chest` unit-tested.
-    - *Remaining:* **DG-6b** the proper in-game client render (dungeons currently
-      ride existing entity tags), and **DG-7** CANON + `behaviors/dungeons.md`. With
-      3/n done, dungeons are **server-complete**: co-op entry, traverse, puzzles,
-      stairs, traps, death, boss combat, loot, and exit.
+    - *(client) DG-6b — entrances render ✅* — the client recognizes
+      `entrance:<dungeon>` and draws a distinct **glowing violet stone-archway
+      doorway** (vs the exit portal's blue), fixing the bug where unknown tags fell
+      through to a player avatar; press **F** by one to descend (`run.enter_dungeon`).
+      Native-screenshot verified. **Remaining DG-6b:** a proper *in-dungeon interior*
+      render (walls/floor/stairs/doors still ride the crude obstacle/portal tag-reuse).
+      DG-7 (CANON D25 + `behaviors/dungeons.md`) ✅ merged. With 3/n done, dungeons are
+      **server-complete** (co-op entry, traverse, puzzles, stairs, traps, death, boss
+      combat, loot, exit); WG-1's top box ticks once the interior render lands.
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),
