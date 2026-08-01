@@ -240,10 +240,12 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     `content/**/*.dungeon.toml` — **a malformed or unsolvable dungeon is a compile
     error** — and embeds the validated defs as a `&'static` registry (`all()` /
     `for_biome()` / `by_name()`). Content pool: `verdant_barrow` + `guardia_forest`
-    (forest), `sunken_vault` (desert) — `guardia_forest` is a 2-floor forest maze
-    (glades split by a gated tree-line: lever→vine-gate, forest-charm key→hollow,
-    guardian boss→vault, exit) authored purely in the glyph grid and rendered by the
-    DG-6b forest re-skin. Tests green; gate-failure verified.
+    (forest), `sunken_vault` (desert), `ocean_palace` (mire) — `guardia_forest` is a
+    2-floor forest maze (glades split by a gated tree-line: lever→vine-gate,
+    forest-charm key→hollow, guardian boss→vault, exit); `ocean_palace` is a 4-floor
+    recreation of Chrono Trigger's Ocean Palace (switch-gated hall + treasures →
+    lower vaults → winding descent → Twin Golems + Elixir vault). Both authored purely
+    in the glyph grid and rendered by the DG-6b re-skin. Tests green; gate-failure verified.
   - [x] **DG-3** — runtime subinstance. ✅ *DG-3a (the pure engine) shipped:*
     `meld-dungeon-run` — the `Location` model, a live `DungeonInstance` (barrier/
     emitter puzzle state that opens doors/gates as the group solves them, stairs
