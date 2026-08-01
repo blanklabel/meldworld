@@ -1,0 +1,155 @@
+# The World of Ruin — a LARGE hand-authored DESERT dungeon (~20 min), recreating
+# Final Fantasy VI's World of Ruin as an archipelago of mesa "islands" marooned in
+# impassable canyon/quicksand. Six of the location-islands are guarded by DRAGONS
+# (mandatory fights) each holding a switch; throwing all six opens the bridge to
+# KEFKA'S TOWER — a three-boss gauntlet behind boss-gated doors ending at Kefka, the
+# vault, and the exit. Nine mandatory boss fights + ~13 treasures. DG-6b desert re-skin.
+
+name  = "world_of_ruin"
+biome = "desert"
+
+[legend]
+a = "lever L1"
+b = "lever L2"
+c = "lever L3"
+d = "lever L4"
+f = "lever L5"
+g = "lever L6"
+Y = "gate G1"
+X = "door D1"
+Z = "door D2"
+"1" = "boss B1"
+"2" = "boss B2"
+"3" = "boss B3"
+"4" = "boss B4"
+"5" = "boss B5"
+"6" = "boss B6"
+"7" = "boss B7"
+"8" = "boss B8"
+"9" = "boss B9"
+A = "chest A"
+B = "chest B"
+C = "chest C"
+D = "chest D"
+E = "chest E"
+F = "chest F"
+G = "chest G"
+H = "chest H"
+I = "chest I"
+J = "chest J"
+K = "chest K"
+L = "chest L"
+N = "chest vault"
+
+[[floor]]
+grid = """
+##########################################################
+##########################################################
+#############..........#######..........##################
+#############..C.......#######....3.....######.........###
+#############...................c...............F......###
+#############.......D..#######.......E..######.........###
+######.................#######..........######......G..###
+######.#######################################.........###
+######.###########################################.#######
+######.###########################################.#######
+######.###########################################.#######
+######.###########################################.#######
+##.........#######################################.#######
+##....2....##################<################.........###
+##..b......################.....##############....4....###
+##......B..################....N##############..d......###
+##.........################..9..##############......H..###
+######.####################.....##############.........###
+######.######################.####################.#######
+######.######################Z####################.#######
+######.####################.....##################.#######
+######.####################..8..##################.#######
+######.####################.....##################.#######
+##.........##################.################.........###
+##....1....##################X################....5....###
+##..a......################.....##############..f......###
+##......A..################..7..##############......I..###
+##.........################.....##############.........###
+######.######################.####################.#######
+######.######################.####################.#######
+######.######################.####################.#######
+######.######################.####################.#######
+######.######################Y####################.#######
+##.........#############...............######...........##
+##.........#############...............######....6......##
+##....>....................K........L..........g........##
+##.........#############...............######........J..##
+##.........#############...............######...........##
+##########################################################
+##########################################################
+"""
+
+# All six dragon-switches open the tower bridge.
+[gate.G1]
+when = "all[L1,L2,L3,L4,L5,L6]"
+
+# The tower gauntlet: each guardian's fall opens the next door.
+[door.D1]
+when = "boss_dead(B7)"
+[door.D2]
+when = "boss_dead(B8)"
+
+# Six dragons (ring) + two tower guardians + Kefka.
+[boss.B1]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B2]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B3]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B4]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B5]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B6]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B7]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B8]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B9]
+sprite = "hollowbishop"
+on_enter_spawn = true
+
+[chest.A]
+loot = "rolled"
+[chest.B]
+loot = "rolled"
+[chest.C]
+loot = "rolled"
+[chest.D]
+loot = "rolled"
+[chest.E]
+loot = "rolled"
+[chest.F]
+loot = "rolled"
+[chest.G]
+loot = "rolled"
+[chest.H]
+loot = "rolled"
+[chest.I]
+loot = "rolled"
+[chest.J]
+loot = "rolled"
+[chest.K]
+loot = "rolled"
+[chest.L]
+loot = "rolled"
+
+# Kefka's vault — sealed until Kefka (B9) falls.
+[chest.vault]
+when = "boss_dead(B9)"
+loot = "rolled"
