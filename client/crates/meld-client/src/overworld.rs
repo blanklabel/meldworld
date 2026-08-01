@@ -520,6 +520,7 @@ pub(crate) fn overworld_input(
     session: Res<Session>,
     overlay: Res<Overlay>,
     backpack: Res<RunBackpack>,
+    mut entered: Local<HashSet<String>>,
 ) {
     // No actions while a screen is open or while channeling an extraction.
     if overlay.kind.is_some() || session.channeling {
@@ -563,20 +564,27 @@ pub(crate) fn overworld_input(
     if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
         net.0.send(ClientCmd::JoinBattle);
     }
-    // Descend into a hand-designed dungeon (F): a deliberate action — the server
-    // pulls in teammates gathered at the entrance (WG-1/DG-6b).
-    if keys.just_pressed(KeyCode::KeyF) {
-        if let Some((mx, my)) = me {
-            if let Some((eid, _)) = world
-                .entities
-                .iter()
-                .filter(|(_, e)| e.kind == EntityKind::Entrance)
-                .map(|(id, e)| (id.clone(), (e.x - mx).powi(2) + (e.y - my).powi(2)))
-                .filter(|(_, d2)| *d2 <= 4.0)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-            {
+    // Descend into a hand-designed dungeon by **walking into its entrance** — like
+    // harvesting a node, entry is collision-based (WG-1/DG-6b). Touching the doorway
+    // sends `run.enter_dungeon`; the server still pulls in teammates gathered at the
+    // entrance for a co-op descent. `F` remains as an explicit fallback. `entered`
+    // dedupes so we send once per entrance, not every frame while standing on it
+    // (the reach is generous so you don't have to pixel-hunt the doorway).
+    if let Some((mx, my)) = me {
+        let touch = world
+            .entities
+            .iter()
+            .filter(|(_, e)| e.kind == EntityKind::Entrance)
+            .map(|(id, e)| (id.clone(), (e.x - mx).powi(2) + (e.y - my).powi(2)))
+            .filter(|(_, d2)| *d2 <= 2.25) // ~1.5 tiles — collision reach
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        match touch {
+            // `insert` is true the first frame we touch this doorway → send once.
+            Some((eid, _)) if entered.insert(eid.clone()) || keys.just_pressed(KeyCode::KeyF) => {
                 net.0.send(ClientCmd::EnterDungeon { entity_id: eid });
             }
+            Some(_) => {} // still standing on an already-triggered doorway
+            None => entered.clear(), // walked clear of every entrance → re-arm
         }
     }
 }

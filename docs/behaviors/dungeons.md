@@ -18,11 +18,11 @@ A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole fr
 - The entrance is placed on the section's **guaranteed clear path** (a reachable, walkable spot) and streams to clients as a `entrance:<dungeon>` world entity.
 - Rolls are **deterministic** in the section seed: the same world re-rolls the same entrances.
 
-## Entry — deliberate, co-op, per-entry-fresh
+## Entry — collision-based, co-op, per-entry-fresh
 
 **Source:** CANON.md §D25; proposals/dungeons.md §3–§4.
 
-- Descent is a **deliberate action** — `run.enter_dungeon { entity_id }`, sent while standing within interaction range of an entrance. **Walking past an entrance never pulls you in.** Rejected (with an error) if you are already in a dungeon, in battle, or out of range.
+- Descent is **collision-based** — **walking into an entrance** descends, the same way touching a resource node harvests it. The client sends `run.enter_dungeon { entity_id }` on contact (a generous ~1.5-tile reach; `F` remains as an explicit fallback), deduped so it fires once per doorway. Because entry is decided **client-side**, only players who actually walk in descend — headless bots (which never run the client) are never pulled in, so the core loop is unaffected. The server rejects the descent (with an error) if the caller is already in a dungeon, in battle, or out of range.
 - On entry, a **fresh subinstance** of the authored dungeon is created and **stamped** with a difficulty: `effective_distance(floor) = entry_distance + floor × dungeon_depth_level_step` **[TUNABLE]**, where `entry_distance` is the entrance's overworld floored distance. Everything inside (boss, traps, rolled loot) scales off this stamp — **never** the meaningless dungeon-local position; deeper floors are harder *and* richer.
 - **Group entry:** every teammate gathered at the entrance (active, in the overworld, within `[ai] join_radius`) descends **together** into that one subinstance — a co-op group of up to 4. A dungeon already in progress is **not** joinable afterward.
 - Each entering player's overworld avatar is **frozen at the entry position** while they are inside; it is restored there on exit (you return exactly where you came in).

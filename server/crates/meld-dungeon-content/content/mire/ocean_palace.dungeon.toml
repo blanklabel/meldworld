@@ -1,0 +1,170 @@
+# Ocean Palace — a hand-authored MIRE dungeon recreating Chrono Trigger's Ocean
+# Palace layout (structure, not a pixel-copy) across four floors:
+#   Floor 0  Section One — the sunken hall (switch-gated central chamber, treasures)
+#   Floor 1  the lower vaults (four treasures)
+#   Floor 2  Section Two — the winding descent
+#   Floor 3  Section Three — the sanctum: the Twin Golems + the Elixir vault
+# Renders via the DG-6b re-skin as a dim, mossy mire.
+
+name  = "ocean_palace"
+biome = "mire"
+
+[legend]
+a = "lever L1"
+b = "lever L2"
+c = "lever L3"
+d = "lever L4"
+f = "lever L5"
+g = "lever L6"
+X = "door D1"
+Y = "gate G1"
+Z = "gate G2"
+p = "trap T1"
+s = "stair S1 down"
+w = "stair S1 up"
+t = "stair S2 down"
+u = "stair S2 up"
+m = "stair S3 down"
+n = "stair S3 up"
+A = "chest A"
+B = "chest B"
+C = "chest C"
+D = "chest D"
+E = "chest E"
+F = "chest F"
+G = "chest G"
+H = "chest H"
+I = "chest I"
+Q = "boss B1"
+
+[[floor]]
+grid = """
+#############################
+############..>..############
+############.....############
+############.....############
+#....#########.#########....#
+#.a..#########.#########..b.#
+#...........................#
+###.##.................##.###
+######....A............######
+#....#.................#....#
+#.D.......................C.#
+#....#............B....#....#
+######.................######
+######.................######
+#########Y#########X#########
+####............###.#########
+####...c................#####
+####................s...#####
+#############################
+"""
+
+[[floor]]
+grid = """
+#############################
+################....w...#####
+################........#####
+####################.########
+####.....................####
+####.....................####
+####...E....F....G.......####
+####..................H..####
+####.....................####
+####.....................####
+######.######################
+####......###################
+####..t...###################
+#############################
+#############################
+"""
+
+[[floor]]
+grid = """
+###############
+#########..u.##
+#########....##
+###########.###
+###....##....##
+###..........##
+####.##########
+####.##########
+###.p..########
+###..........##
+#########....##
+###########.###
+###########.###
+#########....##
+###..........##
+###....########
+####.##########
+###.m..########
+###....########
+###############
+###############
+"""
+
+[[floor]]
+grid = """
+#######################
+#########..n..#########
+#########.....#########
+#######.........#######
+#....##....g....##....#
+#.d.................f.#
+#....##.........##....#
+###########.###########
+###########Z###########
+####...............####
+####...............####
+####.......Q.......####
+####.............I.####
+####...............####
+####...............####
+###########.###########
+#########.....#########
+#########..<..#########
+#######################
+"""
+
+[trap.T1]
+kind = "thorns"
+disarmable = true
+
+# Section One: NW + NE levers reveal the south room; its lever opens the hall door.
+[gate.G1]
+when = "all[L1,L2]"
+
+[door.D1]
+when = "L3"
+
+# Section Three: both side switches AND the central switch open the sanctum gate.
+[gate.G2]
+when = "all[L4,L5,L6]"
+
+[boss.B1]
+sprite = "twingolem"
+on_enter_spawn = true
+
+# Treasures A–H: the Ocean Palace weapon/armour hoard (rolled at the stamped depth).
+[chest.A]
+loot = "rolled"
+[chest.B]
+loot = "rolled"
+[chest.C]
+loot = "rolled"
+[chest.D]
+loot = "rolled"
+[chest.E]
+loot = "rolled"
+[chest.F]
+loot = "rolled"
+[chest.G]
+loot = "rolled"
+[chest.H]
+loot = "rolled"
+
+# The Elixir vault — sealed until the Twin Golems fall.
+[chest.I]
+when = "boss_dead(B1)"
+loot = "rolled"
