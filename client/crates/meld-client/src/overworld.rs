@@ -1040,6 +1040,25 @@ pub(crate) fn sync_overworld_sprites(
                 );
             }
             EntityKind::Monster => {
+                // A boss with authored 8-direction animation frames (`bosses/<key>/`,
+                // e.g. a dungeon boss `mob:hollowbishop:hostile`) renders as an
+                // ANIMATED, camera-facing `CharSprite` — idle breathing + turning as
+                // the camera orbits — just like a hero, instead of a single frozen
+                // billboard. Regular creatures (single-PNG art) keep the billboard.
+                let kind = creature_kind(e.name.as_deref().unwrap_or(""));
+                if let Some(frames) = wa.boss_frames(&kind) {
+                    let scale = match e.encounter_class.as_deref() {
+                        Some("gatekeeper") => 2.6,
+                        _ => 2.0,
+                    };
+                    let tint = if e.battling {
+                        Color::srgb(1.5, 0.6, 0.5) // fighting → hot
+                    } else {
+                        Color::srgb(1.25, 1.12, 1.06) // looming, faintly warm
+                    };
+                    spawn_boss_char(&mut commands, &mut mats, &wa, &look, id, e, frames, scale, tint);
+                    continue;
+                }
                 // Pick the creature's billboard by normalized kind (shared with the
                 // battle arena so the same creature looks the same in both). Tinted
                 // faintly warm (like heroes) to stay vibrant under the cool ambient;
@@ -1612,6 +1631,48 @@ pub(crate) fn spawn_player_avatar(
                     Transform::from_xyz(0.0, 2.2, 0.0),
                 ));
             }
+        });
+}
+
+/// Spawn a boss as an animated, camera-facing [`CharSprite`] (its authored
+/// 8-direction idle/walk frames, driven by [`hd2d::animate_chars`]) instead of a
+/// single static billboard — so a dungeon boss breathes and turns like a hero. A
+/// bigger `scale` makes it loom; no lamp/glow (that's the local player's).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_boss_char(
+    commands: &mut Commands,
+    mats: &mut Assets<StandardMaterial>,
+    wa: &WorldAssets,
+    look: &hd2d::Look,
+    id: &str,
+    e: &OwEntity,
+    frames: &hd2d::CharacterFrames,
+    scale: f32,
+    tint: Color,
+) {
+    let mat = mats.add(hd2d::sprite_material(tint, frames.idle[0].clone()));
+    let root = world_pos(e.x, e.y, 0.0);
+    commands
+        .spawn((
+            WorldEntity(id.to_string()),
+            Transform::from_translation(root),
+            Visibility::default(),
+            CharSprite::new(frames.clone(), mat.clone(), root),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_xyz(0.0, look.sprite_y * scale, 0.0).with_scale(Vec3::splat(scale)),
+                hd2d::Billboard,
+            ));
+            p.spawn((
+                Mesh3d(wa.shadow_mesh.clone()),
+                MeshMaterial3d(wa.shadow_mat.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0)
+                    .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                    .with_scale(Vec3::new(scale, scale * 0.55, scale)),
+            ));
         });
 }
 
