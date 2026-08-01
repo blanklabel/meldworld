@@ -286,14 +286,18 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       at the dungeon's stamped distance + authored contents), gated on the chest's
       `when` (the `boss_dead` vault unlocks on the kill) and openable once.
       `DungeonInstance::chest_openable`/`open_chest` unit-tested.
-    - *(client) DG-6b — entrances + interior render ✅* — the client recognizes
-      `entrance:<dungeon>` and draws a distinct **glowing violet stone-archway
-      doorway** (vs the exit portal's blue), fixing the bug where unknown tags fell
-      through to a player avatar; press **F** by one to descend (`run.enter_dungeon`).
-      Inside, `dungeon_wall`/`dungeon_door` obstacles render as **tall grey stone
-      (timber for a door) masonry blocks**, so an in-dungeon floor reads as
-      stone-walled rooms — chest and exit-portal keep their tags. Native-screenshot
-      verified (both the entrance and the interior). DG-7 (CANON D25 +
+    - *(client) DG-6b — entrances + secluded-space interior render ✅* — the client
+      recognizes `entrance:<dungeon>` and draws a distinct **glowing violet
+      stone-archway doorway** (vs the exit portal's blue), fixing the bug where
+      unknown tags fell through to a player avatar; press **F** by one to descend
+      (`run.enter_dungeon`). Inside, a new **`world.dungeon_scene`** cue (theme +
+      bounds, emitted on descent/floor-change/exit) re-skins the whole environment as
+      a **secluded, themed space** — a `forest` dungeon renders as a Guardia-Forest
+      canopy: interior maze walls become **low foliage** (so the hero stays visible),
+      the play area is ringed by a deep collision-free forest bowl (low rim → towering
+      backdrop) that fills the frame so no overworld shows even zoomed out, the sky
+      dims, and overworld terraces/cliffs are hidden underground. Non-forest themes
+      keep tinted stone masonry. Native-screenshot verified. DG-7 (CANON D25 +
       `behaviors/dungeons.md`) ✅ merged. With 3/n + the client render done, dungeons
       are **complete end-to-end** (co-op entry, traverse, puzzles, stairs, traps,
       death, boss combat, loot, exit, rendered) — WG-1 ticks.

@@ -645,6 +645,10 @@ struct WorldActor {
     /// High-water mark: sections `0..entrances_scanned` have already been rolled for
     /// a dungeon entrance (covers the initial chain on the first tick + streamed ones).
     entrances_scanned: usize,
+    /// DG-6b: last `world.dungeon_scene` state sent to each player — `Some((active,
+    /// floor))` — so the per-tick loop emits the re-skin cue only on a transition
+    /// (descend / floor change / exit), not every tick. Purely presentational.
+    dungeon_scene_sent: HashMap<String, (bool, usize)>,
 }
 
 /// A placed dungeon entrance in the overworld (DG-3).
@@ -778,7 +782,7 @@ impl WorldActor {
         out
     }
 
-    fn snapshot_msgs(&self) -> Vec<Outgoing> {
+    fn snapshot_msgs(&mut self) -> Vec<Outgoing> {
         let mut entities: Vec<wm::SnapshotEntity> = self
             .arena
             .avatars
@@ -907,6 +911,23 @@ impl WorldActor {
         // is running, `in_battle` is empty so this sends to everyone.
         let in_battle = self.parties_in_battle();
         let mut out = Vec::new();
+        // DG-6b: emit the client re-skin cue (`world.dungeon_scene`) on a *transition*
+        // only — descend / floor-change / exit. Computed up front (a `&mut self` diff
+        // against the last-sent scene) so the snapshot loop below stays an immutable
+        // borrow of `self`. All scene deltas precede the snapshots, so a player is in
+        // dungeon mode before that space's floor geometry arrives. Purely cosmetic.
+        let scene_players: Vec<String> = self
+            .run
+            .runs
+            .iter()
+            .filter(|r| !in_battle.contains(&r.party_id))
+            .map(|r| r.player_id.clone())
+            .collect();
+        for pid in &scene_players {
+            if let Some(scene) = self.dungeon_scene_delta(pid) {
+                out.push(scene);
+            }
+        }
         for r in self
             .run
             .runs
@@ -1213,11 +1234,47 @@ impl WorldActor {
         Vec::new()
     }
 
-    /// Build the snapshot for a player inside a dungeon floor. DG-6b will give
-    /// dungeons a proper wire/render; for now the floor is mapped onto existing
-    /// entity tags so the current client shows a (crude) space: occupants as
-    /// avatars, walls + closed doors as obstacles, the end-exit as a portal, chests
-    /// and the boss as their usual tags. No interest cull (a floor is small).
+    /// DG-6b: the `world.dungeon_scene` re-skin cue for `pid`, emitted only when it
+    /// changed since we last told them — on descend (`active`, with the floor's biome
+    /// theme + grid bounds), on a floor change, and on exit/death (`!active`). Returns
+    /// `None` when unchanged (the common per-tick case). Purely presentational: it
+    /// lets the client swap ground/sky and ring the play area with a biome enclosure
+    /// so no overworld shows; the authoritative floor is still the `Snapshot` walls.
+    fn dungeon_scene_delta(&mut self, pid: &str) -> Option<Outgoing> {
+        let desired: (bool, usize) = match self.dungeon_of(pid) {
+            Some((_, floor)) => (true, floor),
+            None => (false, 0),
+        };
+        // First time we've seen this player AND they're in the overworld ⇒ the client
+        // already looks like the overworld; say nothing.
+        let last = self.dungeon_scene_sent.get(pid).copied();
+        if last == Some(desired) || (last.is_none() && !desired.0) {
+            return None;
+        }
+        self.dungeon_scene_sent.insert(pid.to_string(), desired);
+        let (theme, width, height) = if desired.0 {
+            self.dungeon_of(pid)
+                .and_then(|(key, floor)| {
+                    let def = self.dungeons.get(&key)?.def();
+                    let g = def.grids.get(floor)?;
+                    Some((def.biome.clone(), g.width as u32, g.height as u32))
+                })
+                .unwrap_or_default()
+        } else {
+            (String::new(), 0, 0)
+        };
+        Some(out_msg(
+            pid,
+            &ww::DungeonScene { active: desired.0, theme, floor: desired.1 as u32, width, height },
+        ))
+    }
+
+    /// Build the snapshot for a player inside a dungeon floor. The floor is mapped
+    /// onto existing entity tags so the client shows the space: occupants as avatars,
+    /// walls + closed doors as obstacles, the end-exit as a portal, chests and the
+    /// boss as their usual tags. The client re-skins the surround from the paired
+    /// `world.dungeon_scene` cue (see `dungeon_scene_delta`). No interest cull (a
+    /// floor is small).
     fn dungeon_snapshot(&self, pid: &str, key: u64, floor: usize, server_tick: i64) -> Outgoing {
         let mut entities: Vec<wm::SnapshotEntity> = Vec::new();
         if let Some(d) = self.dungeons.get(&key) {
@@ -2405,6 +2462,7 @@ impl GameState {
                 dungeons: HashMap::new(),
                 next_dungeon_key: 0,
                 entrances_scanned: 0,
+                dungeon_scene_sent: HashMap::new(),
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is

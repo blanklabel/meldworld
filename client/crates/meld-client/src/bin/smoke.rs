@@ -115,6 +115,7 @@ fn main() {
                 | ServerMsg::WorldPath { .. }
                 | ServerMsg::WorldWeb { .. }
                 | ServerMsg::TerrainSection { .. }
+                | ServerMsg::DungeonScene { .. }
                 | ServerMsg::WorldFrame { .. }
                 | ServerMsg::Snapshot { .. }
                 | ServerMsg::CombatantsJoined { .. }
