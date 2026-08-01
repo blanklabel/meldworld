@@ -573,6 +573,15 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   None` is wrong for a buildable/sieged world. Only a player's run/backpack stays
   ephemeral (level resets to 1 on death *or* extraction). Underpins MON-2 camps +
   pinned seeds. Add a two-world isolation QA test.
+  - 🟡 *In progress — PR-a + PR-b landed:* PR-a (#129) extracted the `WorldActor`
+    struct; PR-b then moved **all** world-touching client handlers (`move` / `submit` /
+    `join_battle` / `harvest` / `open_chest` / `equip_loot` / `rename_hero` /
+    `set_formation` / `begin_extraction`) from `impl GameState` onto `impl WorldActor`,
+    each returning `(Vec<Outgoing>, Vec<WorldEffect>)`; `GameState` is now the **Router**
+    (sessions / lobbies / routing) that applies the returned effects. Still one task
+    (single-owner/no-locks invariant intact). **Remaining:** the b1-B boundary (spawn
+    `WorldActor` as its own task so it never calls `GameState` methods), then multi-world
+    + hub handoff + Postgres hibernation, and the two-world isolation QA test.
 - [ ] **SC-4 — Cross-process sim + gateways (only when one box can't hold it).**
   Keep the sim central/authoritative; push per-client fan-out to horizontally-scaled
   gateway processes next to the sockets. Determinism makes live instance migration
