@@ -89,6 +89,13 @@ is the human table of contents.
 [`behaviors/world-generation.md`](behaviors/world-generation.md) +
 [`design-notes/worldgen-research.md`](design-notes/worldgen-research.md).*
 
+## Reference
+
+- [`asset-pipeline.md`](asset-pipeline.md) — **generating art for the HD-2D
+  renderer**: surfaces-vs-props, why we want *single seamless tiles* (not Wang/Godot
+  tilesets), side-view walls, PNG + 8-direction sprites, and which PixelLab
+  generator to use. Read before a tile/sprite generation session.
+
 ## What's built vs. next
 
 There's no static status snapshot — they rot. Trust the **code** for what's live
