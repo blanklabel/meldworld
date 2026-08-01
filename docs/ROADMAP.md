@@ -437,6 +437,23 @@ on top. **Hard constraint (the user's, and correct): keep it tightly instanced a
 budgeted so the creature sim never threatens the single-owner loop or the server**
 — see CR-4.
 
+> **Design doc:** [`proposals/living-ecology.md`](proposals/living-ecology.md) now
+> specs this whole epic end-to-end — the CR-4 sim budget (LOD/caps/determinism), turf
+> wars + ground loot (CR-2), diets/needs/sleep (CR-3 + FS-5), flora growth, breeding &
+> growth stages, herds/alphas/swarms/splitting, materials-for-crafting (MS-1), and the
+> bestiary (CR-5) — with a phased build plan (E0 first) and CANON deltas. Boxes stay
+> unchecked until code lands.
+>
+> **Build order & the `SC-3` dependency (doc §J).** Most of the ecology (E0–E2, E5)
+> pays off **within a single run** and builds on today's ephemeral world **now**
+> (E2 needs **FS-5** first). The *durable* payoff — the trophic **cascade** where an
+> over-farmed region stays thin **across sessions** (doc §I) — is gated on **SC-3**
+> world persistence: the ecology overlay is the writer of SC-3's *"population diffs"*
+> seed-delta line. Deterministic seed-gen (shipping) is **not** persistence; the
+> cascade needs SC-3's event log. Build the sim on the precursor, wire persistence when
+> SC-3 lands (no sim rework). A **wiped region always recovers** via a colonization
+> trickle seeded from the biome table (local extinction possible; global impossible).
+
 - [ ] **CR-1 — Per-creature distance modifiers + deep-biome palette & rarity.**
   Beyond the global `stat_mult(d)`, give each creature its own distance-scaled
   modifier table, so pushing *further out than usual* meaningfully changes what you
@@ -475,6 +492,110 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 
 ---
 
+## Epic BD — Building, towns & the anchor-defense loop
+
+Players **harvest** wood + stone, **build** structures, cluster them into **towns**,
+and plant **anchors** that pin ground against the Shift **while defended** — the
+"sim / world-builder / desperate roguelite" pillar (CANON §W). Graduates the canon
+foundation that already exists: the one `Structure` primitive + its `function` tag
+(**D21 / §W3**), the `Structure` model, and the world model that persists it (§W5).
+**Discipline (§W3):** one primitive, many functions — *do not build towns, anchors,
+portals, camps as separate systems.* **Shares the `CR-4` sim budget** (a siege is the
+same always-running-when-unwatched spatial workload as the ecology).
+
+> **Design doc:** [`proposals/building-and-sieges.md`](proposals/building-and-sieges.md)
+> — harvest→structures→towns→anchors→siege end-to-end, plus a **builder mode** (the
+> construction UX — BD-9), **building up** (buildable verticality extending D24 — BD-10),
+> and **hireable NPC garrisons** that defend while owners are offline (BD-11, the
+> mechanical layer under AX-3's smart agents). Phased plan (BD-0 first) + CANON deltas.
+> **The `SC-3` gate (doc §L):** this is the most persistence-dependent epic — a town
+> that dies at instance-close is pointless. Harvest (BD-1) + a within-run camp ship on
+> the precursor; **anchors + real towns need `SC-3` world persistence** (structures are
+> *the* content of the §W5 event log). Build the sim against the WorldActor now; wire
+> persistence when SC-3 lands (no sim rework).
+
+- [ ] **BD-0 — Siege/build sim inside the `CR-4` budget (guardrail).** Prove structures
+  are entities the ecology LOD/interest-index/freeze model covers and the siege step
+  fits the existing per-tick ceiling with **no new budget**. Build with `CR-4`/`E0` as
+  one budget effort.
+- [ ] **BD-1 — Harvest wood & stone.** Wood from ecology `Flora` trees (CR); new
+  `MineralNode`s (stone/ore/clay) + timed `MS-2` harvest + structural-material tables.
+  *Ships as gathering on the precursor.*
+- [ ] **BD-2 — The `Structure` primitive: place → build → HP → repair → demolish.**
+  One entity, `function` tag, server-validated placement, material cost, build progress,
+  upgrade tiers. *Within-run camp (FS-1) is the precursor taste; real towns need SC-3.*
+- [ ] **BD-3 — Anchors & the Shift-pin loop.** Anchor pins its region (`pin_radius`)
+  against the Shift (D20) while HP > 0; defend or lose it (§W5 `suppressed_by`). **The
+  headline loop; needs SC-3 + the Shift.**
+- [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
+  structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
+  attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).
+- [ ] **BD-5 — Towns: composition, guild ownership, forward-town stops.** A town = a
+  cluster of the primitive; **guild-owned** structures + permissions (**SOC**); forward
+  towns sustain Run Level across a deep push (§W4); `portal` = plantable extraction
+  (evolves D15).
+- [ ] **BD-6 — Field crafting & storage.** `stash` (siege-able field storage),
+  `workshop` (`MS-1` Forge/Alembic in the field), `hearth` (respawn/rally aura).
+- [ ] **BD-7 — Persistence wiring (rides `SC-3`).** Structures / anchor-altered Shifts /
+  harvest state into the §W5 event log; hibernate/reload; **season GC**. No sim rework.
+- [ ] **BD-8 — Sieges at scale & world bosses.** Mega-siege bounded by the realm cap;
+  world-boss town sieges; **AX-3** agent garrisons hold towns while owners are offline.
+  Endgame.
+- [ ] **BD-9 — Builder mode (the construction UX).** The client build sub-mode over the
+  overworld: a **palette** (greyed by affordability), a **ghost** that snaps to grid /
+  adjacency / level, **rotate** + **level-select**, confirm → `run.build` intent,
+  **server validation with reasons**, and an edit/upgrade/repair/demolish sub-mode
+  (permission-gated for guild builds). **Companion to BD-2** — you can't build without
+  it; build them together. Client UX + intents; ships on the precursor.
+- [ ] **BD-10 — Building up (buildable verticality).** `floor`/`platform`, `pillar`/
+  `stilt` support + buildable `stair`/`ladder`/`ramp` connectors; a **support rule** (no
+  floating floors) + `max_build_level`; collapse-on-support-loss; verticality as a
+  **defensive advantage** (creatures can't free-climb, must breach the base). **Extends
+  CANON D24** — same integer-level axis, no-free-climbing preserved. Follows BD-2/BD-4.
+- [ ] **BD-11 — NPC garrison hire (defend while offline).** `barracks` + a hire vendor
+  (**EC-2**/**CL-1**); `GarrisonUnit` tiers that **patrol + fight the siege on the shared
+  `CR-4` budget** (`garrison_cap`) **while owners are offline**; **upkeep** (new economy
+  sink) + permanent loss on death; guild towns pay from the guild vault (**SOC**).
+  **AX-3** is the smart-agent controller for the same unit. Follows BD-4.
+
+---
+
+## Epic EW — End-world bosses & the true end (Ometus)
+
+The keystone the whole loop points at (CANON §W's "seasonal push to a far end-world
+boss"). **Three known end-world bosses — Termina** (machine-devil), **Nestiph**
+(rebirth-goddess), **Slake** (desire-demon) — and defeating all three unlocks the
+**true end boss, Ometus**, the forgotten evil behind every Shift. Two **hidden** bosses
+give the non-combat personas their own apex: **All-Father** (mountain-slime origin — the
+Gatherer/ecology endgame) and **Terim** (god of crafting & building — the Builder/Crafter
+endgame). Apex of `FS-4`'s "unique boss mechanics"; the season's climax; the demand
+spike that makes the whole economy cohere.
+
+> **Design docs:** [`proposals/endgame-bosses.md`](proposals/endgame-bosses.md) (the
+> roster, mechanics, unlock ladder, scale, seasons, and the lore reconciliation) and
+> [`proposals/core-loop-and-personas.md`](proposals/core-loop-and-personas.md) (why
+> every persona's output feeds this, and how the hidden bosses close the loop).
+> **Lore note:** the bestiary already seeds **Nestiph** (the Chitin-Kilns "Nestiphian
+> Cradle") and **Ometus** — a call is needed on Slake inheriting Ometus's desire domain
+> so Ometus can be elevated to the meta-antagonist (see the doc's reconciliation).
+
+- [ ] **EW-0 — Boss framework (extends `FS-4`).** `WorldBoss` defs, raid-scale merge cap,
+  the three-boss unlock gate on `World`, the arena hook. The apex of FS-4's unique-boss
+  work.
+- [ ] **EW-1 — Termina** (Seized Engine/Brass Corpse arena; machine/rail/reassembly).
+- [ ] **EW-2 — Nestiph** (Chitin-Kilns arena; reanimation/spore-mind-control/rebirth).
+- [ ] **EW-3 — Slake** (Hearth-Plains/Lotus-Engine arena; temptation/gluttony/will-save).
+- [ ] **EW-4 — The unlock gate + Ometus.** All-three → the path opens; **Ometus** the true
+  end boss + its **Shift consequence** (quiet the Shift for the season? — doc §Open).
+- [ ] **EW-5 — Hidden: All-Father.** Ecology-discovery unlock (CR migration/swarm); the
+  Gatherer apex + rewards (rare mats, a slime companion, CR-5 completion).
+- [ ] **EW-6 — Hidden: Terim.** Craft/build-mastery unlock (MS/BD); the Builder-Crafter
+  apex + legendary recipes / blueprints / maker's-marks.
+- [ ] **EW-7 — Seasonal wiring.** Ladder reset per season, Vanguard boss-kill lines,
+  first-clear titles/prestige. Rides seasons (D8) + §W5 GC (needs `SC-3`).
+
+---
+
 ## Epic SOC — Multiplayer: parties & guilds
 
 > **Terminology:** in this codebase **"party"** already means one player's team of
@@ -484,18 +605,28 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 > (join code, `run.join_battle`, the Threshold) — `meld-server::game.rs` `Lobby` /
 > `LobbyMember`. These items make grouping durable and social.
 
+> **Design doc:** [`proposals/parties-and-guilds.md`](proposals/parties-and-guilds.md)
+> now specs both items end-to-end (models, HTTP + realtime surface, tunables, phased
+> build plan, CANON deltas). The boxes stay unchecked until code lands.
+
 - [ ] **SOC-1 — Co-op group system.** A real, managed player group that outlives a
   single dive: invite/accept, a named roster, group presence in Last City, dive
   together into one instance, and stay grouped across runs — built on the existing
   lobby rather than replacing it. Clarify how a group maps onto the 4-player
   instance cap and the expandable-party raid merge (GDD §5;
   [`behaviors/combat-atb.md`](behaviors/combat-atb.md)).
+  - Design: [`proposals/parties-and-guilds.md`](proposals/parties-and-guilds.md)
+    Part A — Phase 1 (group ≤4 = one instance) is the first ship; raid groups
+    (5–16 via merge) are Phase 2.
 - [ ] **SOC-2 — Guild system.** Persistent player organizations: membership +
   roles, a guild identity/tag, and a home in Last City. Later hooks (scope as it
   firms up): shared guild bank/stash (relates to SV-1), guild bounties (EC/economy),
   and a guild line on the Vanguard board
   ([`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md)). New persistent
   models + HTTP; fold into CANON when the design hardens.
+  - Design: [`proposals/parties-and-guilds.md`](proposals/parties-and-guilds.md)
+    Parts B–D — the Charterhouse (registration), ranks/permissions, guild vault +
+    immutable audit log, composed-heraldry flags, and guild chat.
 
 ---
 

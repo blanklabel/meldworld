@@ -45,6 +45,35 @@ is the human table of contents.
   authoritative server's concurrency ceiling (interest indexing → sim/IO split →
   world sharding) without breaking the single-owner/no-locks loop; includes a
   forward-compat analysis of overworld hazards, sieged player towns, and the Shift.
+- [`proposals/parties-and-guilds.md`](proposals/parties-and-guilds.md) — **Co-op
+  groups & guilds** (epic **SOC**): durable player groups (the Lobby made
+  persistent), guilds chartered in the Last City, ranks/permissions, a shared guild
+  vault with an immutable audit log, composed-heraldry flags displayed over avatars
+  and in chat, and guild chat — the full `SOC-1`/`SOC-2` design.
+- [`proposals/living-ecology.md`](proposals/living-ecology.md) — **The living
+  ecology** (epic **CR**): creatures that eat, sleep, roam territory, and **breed**;
+  herds with alphas that split and wage **turf wars** (wounds regenerate, deaths drop
+  loot on the ground); **flora that grows** to feed the food web; **materials** for
+  crafting; and the `CR-4` **sim budget** (LOD + caps + determinism) that keeps it
+  all off the authoritative loop.
+- [`proposals/building-and-sieges.md`](proposals/building-and-sieges.md) — **Building
+  & sieges** (epic **BD**): **harvest** wood + stone, enter a **builder mode** to place
+  the one `Structure` primitive (walls/stash/workshop/portal), **build upward**
+  (buildable verticality extending D24), cluster them into **towns**, and plant
+  **anchors** that pin ground against the Shift **while defended** — the "anchor and
+  defend" loop. Creatures **siege** what you build; **hire NPC garrisons** to hold it
+  while you're offline. Shares the `CR-4` budget; persists as the §W5 event log, so it's
+  the epic most gated on `SC-3`.
+- [`proposals/core-loop-and-personas.md`](proposals/core-loop-and-personas.md) — **Core
+  loop & personas** (design framing): do the specced systems compose into one loop for
+  four kinds of player — **Adventurer / Builder / Gatherer-Crafter / Merchant**? Maps the
+  interlock economy, fixes the two loops that don't close (the Crafter's fun, the
+  Builder's income), and shows how the hidden bosses give every persona an apex.
+- [`proposals/endgame-bosses.md`](proposals/endgame-bosses.md) — **Endgame bosses**
+  (epic **EW**): the seasonal ladder — **Termina / Nestiph / Slake** → the true end boss
+  **Ometus** (the forgotten evil behind the Shifts) — plus hidden bosses **All-Father**
+  and **Terim** that reward the non-combat personas. Maps the roster onto the bestiary
+  biomes; apex of `FS-4`.
 - [`proposals/dungeons.md`](proposals/dungeons.md) — **Designed dungeons** (WG-1
   full / DG epic): authored, separately-instanced set-piece dungeons (the
   `meld-dungeon` authoring + validation foundation shipped). Built as *content within
