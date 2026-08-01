@@ -24,7 +24,7 @@ use meld_proto::realtime::{
 };
 use meld_proto::RawEnvelope;
 use meld_dungeon_content::{ObjectKind, Tile};
-use meld_dungeon_run::{DungeonInstance, Location};
+use meld_dungeon_run::{DungeonInstance, Location, TrapHit};
 use meld_run::{build_battle, InstanceRun};
 use meld_world::{Arena, Area};
 use tokio::sync::mpsc;
@@ -1043,10 +1043,11 @@ impl WorldActor {
         };
         let step = self.dungeon_step(pid);
         // Move + activate + stair within one scoped borrow; capture the outcome.
-        let (final_floor, exiting) = {
+        let (final_floor, final_pos, exiting, cell_changed) = {
             let Some(dj) = self.dungeons.get_mut(&key) else {
                 return Vec::new();
             };
+            let pre = dj.occupant(pid).map(|o| o.pos);
             let Some(newpos) = dj.try_move(pid, intent.move_dir.x, intent.move_dir.y, step) else {
                 return Vec::new();
             };
@@ -1056,7 +1057,10 @@ impl WorldActor {
                 dj.set_pos(pid, df, dp);
             }
             let (ff, fp) = stair.unwrap_or((floor, newpos));
-            (ff, dj.at_exit(ff, fp))
+            // Fire an armed trap only on ENTERING a new cell (not while lingering).
+            let changed = stair.is_some()
+                || pre.is_none_or(|p| (p.x.floor() as i64, p.y.floor() as i64) != (fp.x.floor() as i64, fp.y.floor() as i64));
+            (ff, fp, dj.at_exit(ff, fp), changed)
         };
         if final_floor != floor {
             self.location.insert(pid.to_string(), Location::InDungeon { key, floor: final_floor });
@@ -1064,7 +1068,90 @@ impl WorldActor {
         if exiting {
             return self.exit_dungeon(pid, key);
         }
+        // DG-3b(3/n): an armed trap on the newly-entered cell fires (DG-4a). Damage is
+        // scaled to the dungeon's stamped distance and applied to the party; a wipe
+        // ends the run in death (back to town, backpack lost).
+        let trap_hit = if cell_changed {
+            self.dungeons.get(&key).and_then(|d| d.spring_trap(final_floor, final_pos))
+        } else {
+            None
+        };
+        if let Some(hit) = trap_hit {
+            return self.apply_trap_hit(pid, &hit);
+        }
         Vec::new()
+    }
+
+    /// Convert a sprung [`TrapHit`] to HP damage on the stepping player's party and
+    /// apply it; a full wipe kills the run (design §5). `severity` (the floor's
+    /// effective distance) scales the base `[worldgen] dungeon_trap_damage`.
+    fn apply_trap_hit(&mut self, pid: &str, hit: &TrapHit) -> Vec<Outgoing> {
+        let base = self.balance.worldgen.dungeon_trap_damage as f64;
+        let div = self.balance.world_scaling.stat_mult_base_divisor.max(1.0);
+        let dmg = (base * (1.0 + hit.severity as f64 / div)).round() as i32;
+        let wiped = match self.hero_hp.get_mut(pid) {
+            Some(hp) => {
+                for h in hp.iter_mut() {
+                    if *h > 0 {
+                        *h = (*h - dmg).max(0);
+                    }
+                }
+                hp.iter().all(|h| *h <= 0)
+            }
+            None => return Vec::new(),
+        };
+        if wiped {
+            self.dungeon_death(pid)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// End `pid`'s run in death from inside a dungeon (no battle): mirror the
+    /// battle-defeat arm for one player — drop them from the dungeon + overworld,
+    /// clear the run's haul, report `MemberResult { died }`, and queue the death
+    /// durability sink. The Router then releases the session (see `handle_move`).
+    fn dungeon_death(&mut self, pid: &str) -> Vec<Outgoing> {
+        if let Some((key, _)) = self.dungeon_of(pid) {
+            if let Some(d) = self.dungeons.get_mut(&key) {
+                d.remove(pid);
+                if d.is_empty() {
+                    self.dungeons.remove(&key);
+                }
+            }
+        }
+        self.location.remove(pid);
+        self.arena.avatars.retain(|a| a.player_id != pid);
+        let mut out = Vec::new();
+        if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
+            let (run_id, lost, lost_chits) = (r.run_id.clone(), r.backpack.clone(), r.chits);
+            r.result = Some(RunResult::Died);
+            r.backpack.clear();
+            r.looted_gear.clear();
+            r.chits = 0;
+            out.push(out_msg(
+                pid,
+                &wr::MemberResult {
+                    run_id,
+                    player_id: pid.to_string(),
+                    result: RunResult::Died,
+                    max_distance_reached: 0,
+                    banked: None,
+                    lost: Some(lost),
+                    chits: lost_chits,
+                    gear_banked: vec![],
+                    durability_loss_applied: true,
+                },
+            ));
+        }
+        let _ = self.db_writes.send(DbWrite::Death(pid.to_string()));
+        out
+    }
+
+    /// Whether `pid`'s run has ended (result recorded) — the Router uses this after
+    /// a dungeon move to release a player who just died to a trap.
+    fn run_ended(&self, pid: &str) -> bool {
+        self.run.runs.iter().any(|r| r.player_id == pid && r.result.is_some())
     }
 
     /// Leave a dungeon: drop the occupant (despawning the instance if now empty —
@@ -2430,7 +2517,13 @@ impl GameState {
         // DG-3b: a player inside a dungeon moves within that space (its own
         // walkability, stairs, exit) — never the overworld arena.
         if inst.dungeon_of(player_id).is_some() {
-            return inst.dungeon_move(player_id, &intent);
+            let out = inst.dungeon_move(player_id, &intent);
+            // A trap wipe inside the dungeon ends the run — release the session
+            // (world state was already updated by `dungeon_death`).
+            if self.world.as_ref().is_some_and(|w| w.run_ended(player_id)) {
+                self.release_from_run(player_id);
+            }
+            return out;
         }
         // Any movement interrupts an in-progress extraction channel (D15).
         if inst.extraction.remove(player_id).is_some() {

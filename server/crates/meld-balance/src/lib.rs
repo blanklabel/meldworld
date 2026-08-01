@@ -253,6 +253,8 @@ pub struct WorldGen {
     pub dungeon_spawn_chance: f64,
     /// DG-3/DG-5: effective-distance (difficulty + loot) added per dungeon floor.
     pub dungeon_depth_level_step: i64,
+    /// DG-3b/DG-4: base HP a sprung dungeon trap deals (scaled up by dungeon depth).
+    pub dungeon_trap_damage: i32,
     /// WG-4: crossing this far west of the hub returns the player to Last City.
     pub west_return_border: f64,
     /// WG-4: bend the generated corridor into a radial arc of this many degrees.
