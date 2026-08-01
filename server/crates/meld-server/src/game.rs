@@ -575,6 +575,17 @@ struct BattleSlot {
     /// Overworld position of this fight (the touched creature's spot), so a nearby
     /// teammate can opt in via `run.join_battle`.
     pos: Position,
+    /// `Some` for a DG-3b dungeon boss fight — the dungeon key + the boss object id.
+    /// Drives the post-battle fixups (victory ⇒ `boss_dead`, defeat ⇒ dungeon
+    /// cleanup) in `finish_dungeon_battle`. `None` for every overworld battle.
+    dungeon: Option<DungeonBattle>,
+}
+
+/// Dungeon context carried by a boss-fight [`BattleSlot`] (DG-3b).
+#[derive(Clone)]
+struct DungeonBattle {
+    key: u64,
+    boss_id: String,
 }
 
 /// One world's authoritative state — the nucleus that SC-3 will own on its own
@@ -1081,6 +1092,24 @@ impl WorldActor {
         if exiting {
             return self.exit_dungeon(pid, key);
         }
+        // DG-3b(3/n): entering the boss's cell starts the boss fight (once, until
+        // it's dead — its gated chest unlocks on victory). Guarded to cell-entry.
+        if cell_changed {
+            let boss = self.dungeons.get(&key).and_then(|d| {
+                let id = d.object_at(final_floor, final_pos)?.clone();
+                match d.def().objects.get(&id) {
+                    Some(ObjectKind::Boss { sprite, .. }) if !d.is_active(&id) => Some((id, sprite.clone())),
+                    _ => None,
+                }
+            });
+            if let Some((boss_id, sprite)) = boss {
+                let (biome, eff) = {
+                    let d = &self.dungeons[&key];
+                    (d.def().biome.to_string(), d.effective_distance(final_floor))
+                };
+                return self.start_dungeon_battle(pid, key, &boss_id, &sprite, &biome, eff);
+            }
+        }
         // DG-3b(3/n): an armed trap on the newly-entered cell fires (DG-4a). Damage is
         // scaled to the dungeon's stamped distance and applied to the party; a wipe
         // ends the run in death (back to town, backpack lost).
@@ -1551,6 +1580,7 @@ impl WorldActor {
                 .get(monster_idx)
                 .map(|m| m.position)
                 .unwrap_or_else(|| Position::new(0.0, 0.0)),
+            dungeon: None,
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
         inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
@@ -1595,6 +1625,159 @@ impl WorldActor {
         }
         inst.battles.push(slot);
         out
+    }
+
+    /// DG-3b(3/n): start a boss fight inside a dungeon. The triggering player's party
+    /// faces the authored boss (scaled to the dungeon's stamped distance, FS-4 boss
+    /// mechanics via `boss_kind`). Tagged with dungeon context so `finish_dungeon_battle`
+    /// unlocks the boss-gated chest on victory / cleans up on defeat.
+    fn start_dungeon_battle(
+        &mut self,
+        pid: &str,
+        key: u64,
+        boss_id: &str,
+        boss_kind: &str,
+        biome: &str,
+        eff_dist: i64,
+    ) -> Vec<Outgoing> {
+        let seed = now_ms();
+        let balance = self.balance.clone();
+        let bonuses = self.gear_bonuses.clone();
+        let Some(party_id) = self.party_id_of(pid) else {
+            return Vec::new();
+        };
+        let inst = &mut *self;
+        let battle_id = Uuid::now_v7().to_string();
+        let boss_cid = Uuid::now_v7().to_string();
+
+        let party_players: Vec<String> = inst
+            .run
+            .runs
+            .iter()
+            .filter(|r| r.party_id == party_id)
+            .map(|r| r.player_id.clone())
+            .collect();
+        let mut party: Vec<meld_run::PartyMember> = Vec::new();
+        let mut combatant_player: HashMap<String, String> = HashMap::new();
+        let mut player_combatants: HashMap<String, Vec<String>> = HashMap::new();
+        let mut hp_overrides: Vec<Option<i32>> = Vec::new();
+        let mut row_overrides: Vec<Option<bool>> = Vec::new();
+        for r in inst.run.runs.iter().filter(|r| r.party_id == party_id) {
+            let hero_bonuses = bonuses.get(&r.player_id);
+            let hp_vec = inst.hero_hp.get(&r.player_id).cloned().unwrap_or_default();
+            let row_vec = inst.hero_rows.get(&r.player_id).cloned().unwrap_or_default();
+            let comp = inst
+                .party_classes
+                .get(&r.player_id)
+                .cloned()
+                .unwrap_or_else(|| party_composition(r.character_class, hp_vec.len().max(1)));
+            let mut cids = Vec::new();
+            for (slot, cls) in comp.iter().enumerate() {
+                let cid = Uuid::now_v7().to_string();
+                combatant_player.insert(cid.clone(), r.player_id.clone());
+                let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
+                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
+                party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
+                hp_overrides.push(hp_vec.get(slot).copied());
+                row_overrides.push(row_vec.get(slot).copied());
+                cids.push(cid);
+            }
+            player_combatants.insert(r.player_id.clone(), cids);
+        }
+
+        let boss_entity = format!("dboss-{key}-{boss_id}");
+        let boss = meld_world::MonsterSpawn::dungeon_boss(&balance, boss_entity, biome, boss_kind, eff_dist, seed);
+        let enemies_ref: Vec<(&meld_world::MonsterSpawn, String)> = vec![(&boss, boss_cid.clone())];
+        let battle = build_battle(
+            battle_id.clone(),
+            &party,
+            &enemies_ref,
+            &inst.run,
+            &balance,
+            seed,
+            &hp_overrides,
+            &row_overrides,
+        );
+        let slot = BattleSlot {
+            battle,
+            battle_id: battle_id.clone(),
+            monster_ids: vec![],
+            combatant_player,
+            player_combatants,
+            parties: std::iter::once(party_id).collect(),
+            pos: Position::new(0.0, 0.0),
+            dungeon: Some(DungeonBattle { key, boss_id: boss_id.to_string() }),
+        };
+        let (mut allies, enemies) = slot.battle.wire_combatants();
+        inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
+        for p in &party_players {
+            if let Some(a) = inst.arena.avatar_mut(p) {
+                a.state = "in_battle".to_string();
+            }
+        }
+        let encounter_class = slot.battle.encounter_class;
+        let mut out = Vec::new();
+        for p in &party_players {
+            let yours = slot.player_combatants.get(p).cloned().unwrap_or_default();
+            out.push(out_msg(
+                p,
+                &wb::Started {
+                    battle_id: battle_id.clone(),
+                    encounter_class,
+                    allies: allies.clone(),
+                    enemies: enemies.clone(),
+                    your_combatant_id: yours.first().cloned().unwrap_or_default(),
+                    your_combatant_ids: yours,
+                    triggered_by: Some(pid.to_string()),
+                },
+            ));
+        }
+        inst.battles.push(slot);
+        out
+    }
+
+    /// DG-3b(3/n): fix up dungeon state after a boss battle ends. Victory marks the
+    /// boss dead (unlocking its gated chest) and returns survivors to the dungeon;
+    /// defeat (a wipe) — the run already ended in `handle_battle_end` — clears the
+    /// dead player's dungeon occupancy; fleeing drops them back into the dungeon.
+    fn finish_dungeon_battle(&mut self, members: &[String], outcome: BattleOutcome, d: DungeonBattle) -> Vec<Outgoing> {
+        match outcome {
+            BattleOutcome::Victory => {
+                if let Some(dj) = self.dungeons.get_mut(&d.key) {
+                    dj.activate(&d.boss_id); // boss_dead(<id>) → the vault unlocks
+                }
+                for pid in members {
+                    if self.dungeon_of(pid).is_some() {
+                        if let Some(a) = self.arena.avatar_mut(pid) {
+                            a.state = "in_dungeon".to_string();
+                        }
+                    }
+                }
+            }
+            BattleOutcome::Defeat => {
+                for pid in members {
+                    if let Some((key, _)) = self.dungeon_of(pid) {
+                        if let Some(dj) = self.dungeons.get_mut(&key) {
+                            dj.remove(pid);
+                            if dj.is_empty() {
+                                self.dungeons.remove(&key);
+                            }
+                        }
+                    }
+                    self.location.remove(pid);
+                }
+            }
+            BattleOutcome::Fled => {
+                for pid in members {
+                    if self.dungeon_of(pid).is_some() {
+                        if let Some(a) = self.arena.avatar_mut(pid) {
+                            a.state = "in_dungeon".to_string();
+                        }
+                    }
+                }
+            }
+        }
+        Vec::new()
     }
 }
 
@@ -4184,9 +4367,21 @@ impl WorldActor {
                     out.extend(broadcast(members.iter().map(String::as_str), &msg));
                 }
                 BattleEvent::Ended { outcome } => {
+                    // DG-3b(3/n): capture dungeon context + members BEFORE the slot is
+                    // torn down, so we can fix up dungeon state after (guarded — a
+                    // `None` dungeon tag leaves overworld battles byte-identical).
+                    let dctx = self.battle_by_id(battle_id).and_then(|s| s.dungeon.clone());
+                    let members = if dctx.is_some() {
+                        self.members_of_battle(battle_id)
+                    } else {
+                        Vec::new()
+                    };
                     let (bout, beff) = self.handle_battle_end(battle_id, outcome);
                     out.extend(bout);
                     effects.extend(beff);
+                    if let Some(d) = dctx {
+                        out.extend(self.finish_dungeon_battle(&members, outcome, d));
+                    }
                 }
             }
         }
