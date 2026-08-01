@@ -100,6 +100,7 @@ Driven by `world.dungeon_scene`, the client renders an in-dungeon floor as an en
 - **Floor** is the overworld biome ground tile showing through (sand in a desert dungeon, mossy stone in a mire, etc.), dimmed by the dungeon light — the same seamless per-biome ground art the overworld uses, so a desert dungeon stands on sand without any extra floor mesh.
 - **Enclosure:** beyond the walls, the play area is ringed by a deep, collision-free biome belt whose prop height ramps with distance — a low rim rising to a tall backdrop (a forest canopy / boulder ridge) — so the overworld never shows through an opening, even if you glance out.
 - **Mood:** the sky/light dim to a themed, enclosed half-light; overworld terraces and biome-edge cliff/treeline framing are hidden while underground and restored on exit.
+- **The boss** (a `mob:<boss-key>:hostile` cell whose sprite is an authored named boss, e.g. `hollowbishop`) renders as an **animated, camera-facing `CharSprite`** — its 8-direction idle/walk frames driven by `animate_chars`, looming larger than a hero — not the single frozen billboard the fallback creatures use. Regular single-art creatures keep the billboard.
 
 ## Tunables
 
