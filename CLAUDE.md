@@ -185,6 +185,9 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
 - **`MELD_BIOME=<forest|desert|ashfall|tundra|mire>`** pins *every* section to that
   biome (and forces the tutorial off), so you can inspect one biome's maze directly.
 - **`MELD_SEED=<u64>`** fixes the world layout for reproducible screenshots/repros.
+- **`MELD_DUNGEON=<name>`** forces which authored dungeon a descent loads (any
+  `[[floor]]` def in the content pool, e.g. `guardia_forest`), so you can screenshot
+  a *specific* dungeon instead of whichever the entrance rolled.
 
 Combine with `MELD_AUTOPLAY` + the file-channel screenshot request. The wrapper
 `client/scripts/view_biome.sh <biome> [seed] [frames]` boots the embedded binary with
