@@ -831,6 +831,30 @@ impl MonsterSpawn {
         }
     }
 
+    /// Build a **dungeon boss** (WG-1/DG-3b) scaled to a dungeon's stamped
+    /// `effective_distance` (not a world position): a biome creature's stats scaled
+    /// by `stat_mult(effective_distance)`, promoted to Gatekeeper tier, and tagged
+    /// with the authored `boss_kind` (one of the FS-4 named bosses — drives the
+    /// bespoke ability pool + display name + client sprite). `seed` drives its AI.
+    pub fn dungeon_boss(
+        balance: &Balance,
+        entity_id: Id,
+        biome: &str,
+        boss_kind: &str,
+        effective_distance: i64,
+        seed: u64,
+    ) -> Self {
+        // Stat base = the biome's toughest listed creature (last), scaled at the
+        // synthetic distance so the boss rides the dungeon's difficulty stamp.
+        let base_kind = creatures_for_biome(biome).last().copied().unwrap_or("forest_bloom_stalker");
+        let pos = Position::new(effective_distance.max(0) as f64, 0.0);
+        let mut m = Self::build(balance, entity_id, base_kind, pos, seed);
+        let e = &balance.encounters;
+        m.promote(e.gatekeeper_hp_mult, e.gatekeeper_atk_mult, e.gatekeeper_xp_mult, "gatekeeper");
+        m.boss_kind = boss_kind.to_string();
+        m
+    }
+
     /// Promote a fresh standard spawn to an Elite champion or a Gatekeeper boss
     /// (FS-4): scale its HP/atk/XP and tag the encounter class — which drives the
     /// loot multiplier on the kill, the battle merge cap, and the client's size +

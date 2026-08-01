@@ -273,8 +273,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       distance to the party; a wipe ends the run in death exactly like an overworld
       death (`run.member_result died`, backpack forfeited, durability sink), routed
       through the existing `release_from_run`. qa `dungeon_trap_death`.
-    - *Remaining (3/n):* dungeon chest loot (banking via DG-5), dungeon combat
-      (boss/mobs), and the proper client render (DG-6b).
+    - *(3/n) dungeon combat ✅* — entering the boss's cell starts a boss fight: the
+      authored boss (scaled to the dungeon's stamped distance, FS-4 named-boss
+      mechanics via its sprite/`boss_kind`) vs the party, through the existing ATB
+      battle engine. On **victory** the boss is marked dead (`boss_dead` — unlocking
+      its gated chest) and survivors return to the dungeon; on **defeat** the run
+      dies. Dungeon fixups run *after* the shared `handle_battle_end` (guarded by a
+      `BattleSlot.dungeon` tag — overworld battles byte-identical). qa
+      `dungeon_boss_battle` (descend → cross floors → kill the boss).
+    - *Remaining (3/n):* dungeon chest loot (bank `resolve_chest` on `run.open_chest`,
+      now unlockable via `boss_dead`), and the proper client render (DG-6b).
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),
