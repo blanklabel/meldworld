@@ -29,9 +29,61 @@
   `- [x]` done. IDs are permanent; don't renumber.
 
 Ordering below is roughly by dependency and value, not a hard sequence — several
-epics can run in parallel. The two highest-leverage epics are **Last City**
-(closes the social/economic loop) and **Gear & Items** (gives the extract-or-die
-loop real stakes).
+epics can run in parallel. **Phase 1 (right below) is the curated MVP cut — aim agents
+there first; the epics after it are the longer-term vision.**
+
+---
+
+## Phase 1 — Path to Playable (fun first)
+
+**The MVP cut. Aim agents here first.** The build already has the core loop (dive → ATB
+fights → extract-or-die → bank → dive again), five classes, biomes + verticality, co-op +
+raid-merge, and elites/gatekeepers. What it lacks — to be a game people *want to keep
+playing* — is a **reward loop that pays off** and **polish**, not more world-sim. Phase 1
+closes exactly that gap. **Everything under the CR / BD / SC / EW / SOC / MON epics below
+is the *vision*, deferred until Phase 1 proves the core is fun.**
+
+> **How to read this section:** items already defined in their epics are **referenced by
+> ID** (`→ **AD-1**`) — do the work there and **tick the box in its epic**, not here.
+> `P1-*` items are **net-new** and checked here. Ordered by leverage.
+
+**① Make loot a chase — the #1 retention lever.** Every dive should produce something
+exciting; today's drops are flat stat sticks.
+→ **AD-1** (gear affixes — the star) · **GR-1** (7 equipment slots — affixes need them) ·
+**GR-2** (durability & the wipe — the repair sink + "you lose what you didn't extract").
+
+**② Close the economy loop — make the Vault mean something.** dive → loot →
+craft/upgrade/spend → dive stronger. Without this the persistent half is inert.
+→ **MS-1** (crafting: Forging/Alchemy/Mercantile — turn your haul into gear + repairs) ·
+**LC-4** (manage/equip/craft inventory inside town — its home) ·
+**EC-1** (player stalls — sell your surplus; *may trail — crafting is the must-have, the
+market is the multiplier*).
+
+**③ A reason to dive beyond "deeper" — purpose + a scoreboard.**
+- [ ] **P1-1 — Turn on the Vanguard board (basic).** The seasonal deepest-distance
+  leaderboard is fully specced ([`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md))
+  but unbuilt — stand up the basic live board (real-time re-rank, per-season). `AD-6` later
+  generalizes it into the full board suite. The cheapest "why am I diving" win.
+- → **AD-4** (Hunt Board) at a **light first cut**: a handful of "kill X / reach depth Y /
+  clear this dungeon" hunts, not the full system.
+
+**④ Polish the feel — as important as any new system.** A slice becomes "want to play"
+through feel & clarity, not more mechanics.
+- [ ] **P1-2 — Combat & moment-to-moment feel pass.** Hit feedback/juice, damage/heal
+  readability, turn/telegraph clarity, pacing — make the ATB *feel* good, not just be
+  correct. Screenshot/video-verify (CLAUDE.md "Visual verification").
+- [ ] **P1-3 — New-player onboarding & progression legibility.** The first hour: teach the
+  loop, and make "am I getting stronger?" legible (gear power, level, what to do next).
+- → **LC-2** (fix the reversed-walk bug — a visible rough edge new players hit).
+
+**Definition of done (Phase 1):** a new player can — with a friend — dive, get *exciting*
+loot, come home to **craft/upgrade and spend**, chase a **scoreboard + a couple of
+goals**, and have the moment-to-moment **feel good**. An early-access-worthy loop standing
+entirely on today's build, **before** any ecology, building, persistence, bosses, or guilds.
+
+**Explicitly deferred (the vision — later phases):** `CR` (living ecology), `BD` (building
+& sieges), `SC-3` (world persistence), `EW` (end-world bosses), `SOC` (guilds), the Shift,
+`MON`. They layer on *after* Phase 1 proves the core is fun.
 
 ---
 
