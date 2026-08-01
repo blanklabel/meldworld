@@ -268,8 +268,13 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       teammate gathered at the entrance (within `[ai] join_radius`) into the same
       fresh subinstance — a co-op group of up to 4 enters together. qa
       `dungeon_group_enter` (two bots, one enter, both inside).
-    - *Remaining (3/n):* dungeon combat (boss/mobs, trap damage via DG-4a, chest
-      banking via DG-5), death-in-dungeon, and the proper client render (DG-6b).
+    - *(3/n) trap damage + death ✅* — stepping onto an armed trap fires it
+      (`spring_trap`), dealing `dungeon_trap_damage` scaled by the floor's stamped
+      distance to the party; a wipe ends the run in death exactly like an overworld
+      death (`run.member_result died`, backpack forfeited, durability sink), routed
+      through the existing `release_from_run`. qa `dungeon_trap_death`.
+    - *Remaining (3/n):* dungeon chest loot (banking via DG-5), dungeon combat
+      (boss/mobs), and the proper client render (DG-6b).
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),
