@@ -347,8 +347,13 @@ rather than new fields" convention (CLAUDE.md):
   - **DG-6b — in-game** *(pending)*. The live Bevy render of a dungeon space + the
     space transitions + the "you're committed" framing — needs DG-3b's wire surface
     (pending SC-3).
-- **DG-7 — CANON + spec**. `D`-number, `behaviors/dungeons.md`, `interfaces/`
-  updates; tick WG-1.
+- **DG-7 — CANON + spec** ✅ *(shipped)*. **CANON D25** (dungeons — hand-authored
+  committed sub-spaces) + [`behaviors/dungeons.md`](../behaviors/dungeons.md) (the
+  full observable-behavior spec: entrances, deliberate co-op entry, committed space,
+  traversal/puzzles/stairs, traps, boss combat, treasure, death/exit, wire surface,
+  tunables, edge cases) + the `run.enter_dungeon` interface entry. **WG-1 stays
+  unchecked** until DG-6b lands (the roadmap ticks a client-rendered item only once
+  it's screenshot-verified in-game).
 
 ## Explicitly deferred
 Hidden traps + a perception/detect layer; grammar/graph procedural dungeons (these
