@@ -3498,6 +3498,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "meld-dungeon"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+ "toml",
+]
+
+[[package]]
+name = "meld-dungeon-content"
+version = "0.1.0"
+dependencies = [
+ "meld-dungeon",
+ "serde_json",
+]
+
+[[package]]
+name = "meld-dungeon-run"
+version = "0.1.0"
+dependencies = [
+ "meld-balance",
+ "meld-dungeon-content",
+ "meld-proto",
+ "meld-world",
+]
+
+[[package]]
 name = "meld-proto"
 version = "0.1.0"
 dependencies = [
@@ -3528,6 +3555,8 @@ dependencies = [
  "meld-balance",
  "meld-battle",
  "meld-db",
+ "meld-dungeon-content",
+ "meld-dungeon-run",
  "meld-proto",
  "meld-run",
  "meld-world",

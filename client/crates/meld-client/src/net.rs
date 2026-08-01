@@ -50,6 +50,8 @@ pub enum ClientCmd {
     Harvest { entity_id: String },
     /// Open a treasure chest the avatar is standing next to.
     OpenChest { entity_id: String },
+    /// Descend into a hand-designed dungeon whose entrance the avatar is next to.
+    EnterDungeon { entity_id: String },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
@@ -128,6 +130,9 @@ pub enum EntityKind {
     Obstacle,
     /// A treasure chest (`opened` tells the client to draw it opened vs closed).
     Chest,
+    /// A hand-designed dungeon entrance (`monster_kind` carries the dungeon name).
+    /// Walk up and press F to descend (`run.enter_dungeon`).
+    Entrance,
 }
 
 /// A dynamic overworld entity.
@@ -920,6 +925,9 @@ impl Inner {
             ClientCmd::OpenChest { entity_id } => {
                 self.send_env(wr::OpenChest::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::EnterDungeon { entity_id } => {
+                self.send_env(wr::EnterDungeon::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
@@ -1284,6 +1292,9 @@ impl Inner {
                                     let (k, r) = rest.rsplit_once(':').unwrap_or((rest, "1"));
                                     radius = r.parse().unwrap_or(1.0);
                                     (EntityKind::Obstacle, Some(k.to_string()), None)
+                                }
+                                Some(s) if s.starts_with("entrance:") => {
+                                    (EntityKind::Entrance, Some(s["entrance:".len()..].to_string()), None)
                                 }
                                 _ => (EntityKind::Player, None, None),
                             };
