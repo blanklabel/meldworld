@@ -1598,10 +1598,190 @@ pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
 /// visibility, and cloud glow from the time of day + weather. Owns the sun light
 /// (so `hd2d_follow`/`battle_camera` no longer touch it).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+// -------------------------------------------------------------- dungeon scene ---
+
+/// DG-6b: the client-only "inside a dungeon" state, driven by the
+/// `world.dungeon_scene` cue. When `active`, the environment is re-skinned as a
+/// secluded biome enclosure (a forest wall for a `forest` dungeon, dim themed sky)
+/// so no overworld shows through; `dirty` tells [`manage_dungeon_scene`] to
+/// (re)build or tear down the decor on a change. Presentation only — the playable
+/// floor is still the server's dungeon `Snapshot` walls.
+#[derive(Resource, Default)]
+pub(crate) struct DungeonSceneRes {
+    pub(crate) active: bool,
+    pub(crate) theme: String,
+    pub(crate) floor: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Set by the net pump when a field changes; consumed by the builder.
+    pub(crate) dirty: bool,
+}
+
+/// Marks the client-only dungeon enclosure props (the tree/rock ring). Kept OFF
+/// `WorldEntity`/`WorldWall` so the snapshot reconciler never touches them; torn
+/// down explicitly by [`manage_dungeon_scene`] and by the `OnExit(Overworld)` sweep.
+#[derive(Component)]
+pub(crate) struct DungeonDecor;
+
+/// DG-6b: build or tear down the dungeon enclosure when the scene changes. On
+/// descent it rings the play area `[0,width] × [0,height]` with a DEEP, DENSE belt
+/// of biome props — for `forest`, a wall of the SAME PixelLab tree sprites the
+/// overworld uses, tall and several rows deep so the angled camera can't see past
+/// it to the open world — and hides stray overworld terraces; on exit it despawns
+/// the belt and restores them. Collision-free: the authoritative blocking line is
+/// the server's dungeon perimeter walls (§ WG-1/DG-6b, `docs/behaviors/dungeons.md`).
+pub(crate) fn manage_dungeon_scene(
+    mut commands: Commands,
+    mut scene: ResMut<DungeonSceneRes>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    decor: Query<Entity, With<DungeonDecor>>,
+    // Overworld framing (terraces + biome-edge cliff/treeline walls) is hidden
+    // underground so none of it leaks past the dungeon forest, restored on exit.
+    mut overworld_framing: Query<&mut Visibility, Or<(With<TerrainMesh>, With<WorldWall>)>>,
+) {
+    if !scene.dirty {
+        return;
+    }
+    // Assets not loaded yet — leave `dirty` set and retry on a later run.
+    let Some(wa) = wa else { return };
+    scene.dirty = false;
+    // Tear down any prior enclosure (floor change rebuilds it for the new bounds).
+    for e in &decor {
+        commands.entity(e).despawn_recursive();
+    }
+    // Overworld terraces/cliffs streamed before descent would poke through the forest
+    // — hide them underground, restore them on exit.
+    let tvis = if scene.active { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut overworld_framing {
+        *v = tvis;
+    }
+    if !scene.active {
+        return;
+    }
+
+    let w = scene.width.max(1) as f32;
+    let h = scene.height.max(1) as f32;
+    let bi = biome_ring_index(&scene.theme);
+    // A deep forest BOWL around the play box, not a thin ring: `margin` keeps the
+    // walkable floor clear, and the belt runs `depth` units out — deep + tall enough
+    // that when you zoom out the frame is forest to the horizon (no overworld shows).
+    // Prop HEIGHT ramps with distance from the clearing: a low shrub rim right by the
+    // play area (so the ~1.6-tall hero is always visible over it from any camera
+    // angle) rising to towering trees far out. Angle-independent — a natural clearing.
+    let margin = 1.3_f32;
+    let depth = 30.0_f32;
+    let step = 1.7_f32;
+    let (x0, x1) = (-margin - depth, w + margin + depth);
+    let (y0, y1) = (-margin - depth, h + margin + depth);
+    let mut i = 0usize;
+    let mut fx = x0;
+    while fx <= x1 {
+        let mut fy = y0;
+        while fy <= y1 {
+            // Plant only OUTSIDE the play box (+ inner margin) so the room stays clear.
+            let inside = fx > -margin && fx < w + margin && fy > -margin && fy < h + margin;
+            if !inside {
+                let jx = (hash_pick(&format!("dx{i}"), 100) as f32 / 100.0 - 0.5) * 1.0;
+                let jy = (hash_pick(&format!("dy{i}"), 100) as f32 / 100.0 - 0.5) * 1.0;
+                // Chebyshev-ish distance OUTSIDE the box → 0 at the rim, 1 at the edge.
+                let dx = (-fx).max(fx - w).max(0.0);
+                let dy = (-fy).max(fy - h).max(0.0);
+                let d = dx.hypot(dy);
+                let t = ((d - margin) / depth).clamp(0.0, 1.0);
+                // Thin the FAR field (its tall canopies overlap, so gaps don't show) to
+                // keep the billboard count sane while still filling the frame: full
+                // density at the rim ramping to ~45% at the edge.
+                let dens = 1.0 - t * 0.62;
+                if (hash_pick(&format!("dk{i}"), 100) as f32) < dens * 100.0 {
+                    spawn_enclosure_prop(&mut commands, &wa, &mut mats, bi, fx + jx, fy + jy, i, t);
+                }
+            }
+            fy += step;
+            i += 1;
+        }
+        fx += step;
+    }
+}
+
+/// One dungeon-enclosure prop, tagged [`DungeonDecor`]. `t` is the normalised
+/// distance from the clearing rim (0) to the far edge (1); prop height ramps with it
+/// — a low shrub rim you can see the hero over, rising to towering forest far out.
+/// Forest (biome 0) uses the world's tree sprites; other biomes use tinted boulders.
+fn spawn_enclosure_prop(
+    commands: &mut Commands,
+    wa: &WorldAssets,
+    mats: &mut Assets<StandardMaterial>,
+    bi: usize,
+    x: f32,
+    y: f32,
+    idx: usize,
+    t: f32,
+) {
+    let id = format!("denc-{idx}");
+    // Height ramps rim→far: ~1.6 (waist-high shrub) up to ~9 (canopy), with per-prop
+    // jitter so the treeline is layered, not a smooth wall.
+    let vf = 0.85 + (hash_pick(&id, 100) as f32 / 100.0) * 0.3;
+    let height = ((1.6 + t * 7.4) * vf).clamp(1.4, 9.5);
+    if bi == 0 {
+        // Near the rim, prefer the bushier sprites (reads as undergrowth); farther out,
+        // the full tree pool (a tall canopy).
+        const TREES: [&str; 6] = [
+            "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
+            "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
+        ];
+        const SHRUBS: [&str; 3] = ["obstacle_tree_bushy", "obstacle_tree_willow", "obstacle_tree"];
+        let keys: &[&str] = if t < 0.18 { &SHRUBS } else { &TREES };
+        let pool: Vec<Handle<Image>> = keys
+            .iter()
+            .filter_map(|k| wa.prop_sprites.get(*k).cloned())
+            .collect();
+        if !pool.is_empty() {
+            let tex = pool[hash_pick(&id, pool.len())].clone();
+            let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
+            commands
+                .spawn((
+                    DungeonDecor,
+                    Transform::from_translation(crate::overworld::world_pos(x, y, 0.0)),
+                    Visibility::default(),
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Mesh3d(wa.sprite_quad.clone()),
+                        MeshMaterial3d(mat),
+                        Transform::from_xyz(0.0, height * 0.5, 0.0)
+                            .with_scale(Vec3::splat(height / 2.2)),
+                        hd2d::Billboard,
+                    ));
+                });
+            return;
+        }
+    }
+    // Non-forest (or tree sprites missing) → a rugged biome-tinted boulder ridge, also
+    // ramping taller with distance.
+    let s = (1.4 + t * 3.2) + (hash_pick(&id, 24) as f32) * 0.04;
+    let col = match bi {
+        1 => Color::srgb(0.74, 0.60, 0.38), // desert sandstone
+        2 => Color::srgb(0.30, 0.26, 0.28), // ashfall basalt
+        3 => Color::srgb(0.80, 0.85, 0.92), // tundra ice-rock
+        4 => Color::srgb(0.28, 0.34, 0.28), // mire mossy stone
+        _ => Color::srgb(0.48, 0.48, 0.54),
+    };
+    let mat = mats.add(StandardMaterial { base_color: col, perceptual_roughness: 1.0, ..default() });
+    commands.spawn((
+        DungeonDecor,
+        Mesh3d(wa.rock_mesh.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_translation(crate::overworld::world_pos(x, y, 0.24 * s))
+            .with_scale(Vec3::splat(s * 0.9)),
+    ));
+}
+
 pub(crate) fn apply_sky(
     mut sky: ResMut<Sky>,
     skymats: Option<Res<SkyMats>>,
     ashfall: Res<Ashfall>,
+    dungeon: Res<DungeonSceneRes>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<AmbientLight>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -1689,6 +1869,35 @@ pub(crate) fn apply_sky(
             let g = (0.14 + day * 0.86) * (1.0 - rain * 0.25);
             m.emissive = LinearRgba::rgb(0.72 * g, 0.75 * g, 0.82 * g);
             m.base_color = Color::srgba(1.0, 1.0, 1.0, (0.72 + day * 0.28) * (1.0 - rain * 0.2));
+        }
+    }
+
+    // DG-6b: inside a dungeon, override the open-sky look with a dim, theme-tinted
+    // enclosure so a forest dungeon reads as a shadowed clearing, not the bright
+    // overworld. Layered LAST so it wins over the day/weather/ashfall sky, and it
+    // uses FIXED values (no day/night cycle underground — the space is enclosed).
+    if dungeon.active {
+        // (fog/clear, ambient colour, ambient brightness, sun colour, sun lux)
+        let (fogc, ambc, ambb, sunc, sunlux) = match dungeon.theme.as_str() {
+            "forest" => (Color::srgb(0.05, 0.11, 0.07), Color::srgb(0.34, 0.50, 0.36), 165.0, Color::srgb(0.72, 0.86, 0.66), 3400.0),
+            "desert" => (Color::srgb(0.12, 0.09, 0.06), Color::srgb(0.56, 0.44, 0.30), 180.0, Color::srgb(0.95, 0.82, 0.58), 3600.0),
+            "ashfall" => (Color::srgb(0.10, 0.06, 0.06), Color::srgb(0.50, 0.30, 0.26), 150.0, Color::srgb(0.90, 0.50, 0.40), 3000.0),
+            "tundra" => (Color::srgb(0.07, 0.09, 0.12), Color::srgb(0.42, 0.50, 0.62), 175.0, Color::srgb(0.72, 0.82, 0.98), 3400.0),
+            "mire" => (Color::srgb(0.05, 0.09, 0.07), Color::srgb(0.32, 0.44, 0.36), 150.0, Color::srgb(0.66, 0.82, 0.62), 3000.0),
+            _ => (Color::srgb(0.06, 0.06, 0.08), Color::srgb(0.42, 0.44, 0.52), 160.0, Color::srgb(0.80, 0.82, 0.90), 3300.0),
+        };
+        clear.0 = fogc;
+        if let Ok(mut fog) = fog_q.single_mut() {
+            fog.color = fogc;
+        }
+        ambient.color = ambc;
+        ambient.brightness = ambb;
+        if let Ok((_, mut light)) = sun_q.single_mut() {
+            light.color = sunc;
+            light.illuminance = sunlux;
+        }
+        for mut v in &mut stars {
+            *v = Visibility::Hidden;
         }
     }
 }

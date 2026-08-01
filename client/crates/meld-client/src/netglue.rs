@@ -79,13 +79,14 @@ pub(crate) fn pump_net(
         ResMut<AccountHeroNames>,
         ResMut<RunGearData>,
         ResMut<WorldWeb>,
+        ResMut<crate::world_render::DungeonSceneRes>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web, dungeon_scene) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -127,6 +128,22 @@ pub(crate) fn pump_net(
                     crate::world_render::append_peaks(&section.peaks);
                 }
                 terrain.sections.insert(section.index, section);
+            }
+            ServerMsg::DungeonScene { active, theme, floor, width, height } => {
+                // DG-6b: flip the client-only dungeon re-skin. Mark dirty only on a real
+                // change so the enclosure builder rebuilds on descent / floor-change /
+                // exit, not every message.
+                let changed = dungeon_scene.active != active
+                    || dungeon_scene.theme != theme
+                    || dungeon_scene.floor != floor
+                    || dungeon_scene.width != width
+                    || dungeon_scene.height != height;
+                dungeon_scene.active = active;
+                dungeon_scene.theme = theme;
+                dungeon_scene.floor = floor;
+                dungeon_scene.width = width;
+                dungeon_scene.height = height;
+                dungeon_scene.dirty |= changed;
             }
             ServerMsg::WorldFrame { x_min, x_max, lateral, west_return_border, radial_arc_degrees, seams } => {
                 world_frame.have = true;

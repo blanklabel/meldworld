@@ -348,6 +348,10 @@ pub enum ServerMsg {
     /// One overworld section's elevation grid + connectors (terraced verticality).
     /// Streamed at run start (initial chain) and as the frontier advances (endless).
     TerrainSection { section: TerrainSectionView },
+    /// DG-6b: the client's cue to re-skin the environment as a secluded dungeon
+    /// (`active`) — theme + play-area bounds drive the client-only enclosure — or to
+    /// restore the overworld look (`!active`). Purely presentational.
+    DungeonScene { active: bool, theme: String, floor: u32, width: u32, height: u32 },
     /// Walkable bounds + biome seams — the client frames the map with cliffs/water
     /// walls + gated chokepoints.
     WorldFrame {
@@ -1353,6 +1357,17 @@ impl Inner {
                         peaks: t.peaks,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
+                }
+            }
+            "world.dungeon_scene" => {
+                if let Ok(s) = serde_json::from_value::<ww::DungeonScene>(raw.payload) {
+                    self.out.push_back(ServerMsg::DungeonScene {
+                        active: s.active,
+                        theme: s.theme,
+                        floor: s.floor,
+                        width: s.width,
+                        height: s.height,
+                    });
                 }
             }
             "battle.started" => {

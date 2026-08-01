@@ -140,6 +140,7 @@ fn main() {
         .init_resource::<Session>()
         .init_resource::<Sky>()
         .init_resource::<Ashfall>()
+        .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
         .init_resource::<JoinFocus>()
         .init_resource::<LoginFocus>()
@@ -285,6 +286,10 @@ fn main() {
                 despawn::<CityScene>,
                 despawn::<WorldEntity>,
                 despawn::<PartyFollower>,
+                // Re-entering the overworld (e.g. after a dungeon boss battle) wipes
+                // decor via OnExit; if we're still inside a dungeon the server won't
+                // resend the (unchanged) scene, so force the enclosure to rebuild.
+                |mut s: ResMut<world_render::DungeonSceneRes>| s.dirty = true,
             ),
         )
         .add_systems(
@@ -297,6 +302,7 @@ fn main() {
                 despawn::<PathTrail>,
                 despawn::<TerrainMesh>,
                 despawn::<WorldWall>,
+                despawn::<world_render::DungeonDecor>,
                 despawn::<ChestEntity>,
                 despawn::<LootReportRoot>,
             ),
@@ -318,6 +324,7 @@ fn main() {
                 // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
                 // (draw_path_trail, draw_web_trail)
                 build_terrain_sections,
+                world_render::manage_dungeon_scene,
                 hd2d::animate_chars,
                 hd2d_follow,
                 hd2d::place_billboards,

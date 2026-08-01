@@ -86,7 +86,18 @@ A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole fr
 **Source:** CANON.md §I, §S; interfaces/realtime-protocol.
 
 - **C2S:** `run.enter_dungeon { entity_id }` (deliberate descent), `run.open_chest { entity_id }` (also loots dungeon chests), `movement.move_intent` (scoped to the dungeon while inside).
-- **S2C:** an in-dungeon player's `world.snapshot` is scoped to their dungeon floor. *(Interim: the dungeon is mapped onto existing entity tags — walls/closed doors as obstacles, the exit as a portal, chest/boss as their usual tags — pending the dedicated dungeon render, ROADMAP DG-6b. No new wire message is required for the interim render.)*
+- **S2C:** an in-dungeon player's `world.snapshot` is scoped to their dungeon floor — the floor is mapped onto existing entity tags (walls/closed doors as obstacles, the exit as a portal, chest/boss as their usual tags).
+- **S2C:** `world.dungeon_scene { active, theme, floor, width, height }` — the client's cue to re-skin the whole environment as a **secluded, themed space** rather than the open overworld. Sent on descent and on every floor change (`active = true`, with the floor's biome `theme` + grid bounds), and once on exit/death (`active = false`). It is **purely presentational**: the authoritative playable floor is still the `snapshot` walls. Given the theme + bounds, the client (client-side only) swaps the ground/sky mood and rings the play area with a dense, collision-free biome enclosure — for a `forest` dungeon, a Guardia-Forest-style canopy: low shrubs at the clearing rim (so the hero stays visible) rising to towering trees that fill the frame, so no overworld shows through. It is emitted only on a transition (diffed against the last-sent scene), never every tick.
+
+## Client rendering — the secluded space
+
+**Source:** ROADMAP WG-1/DG-6b; presentation only (no gameplay rides on it).
+
+Driven by `world.dungeon_scene`, the client renders an in-dungeon floor as an enclosed, themed space, not the open overworld:
+
+- **Interior maze walls** (the `dungeon_wall`/`dungeon_door` obstacle cells) render per theme — a `forest` dungeon plants **low foliage** (squat bushes kept below the hero's height, so you always see your character to steer); non-forest themes keep tinted stone/timber masonry (ruins suit desert/ashfall/tundra/mire).
+- **Enclosure:** the play area is ringed by a deep, collision-free biome belt whose prop height ramps with distance — a low rim by the clearing rising to a tall backdrop — so the frame reads as forest (or the biome's equivalent) to the horizon and the overworld never shows, even zoomed out.
+- **Mood:** the sky/light dim to a themed, enclosed half-light; overworld terraces and biome-edge cliff/treeline framing are hidden while underground and restored on exit.
 
 ## Tunables
 

@@ -899,6 +899,7 @@ pub(crate) fn sync_overworld_sprites(
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut interp: ResMut<OwInterp>,
+    dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
@@ -1132,7 +1133,8 @@ pub(crate) fn sync_overworld_sprites(
                     });
             }
             EntityKind::Obstacle => {
-                spawn_obstacle(&mut commands, &mut mats, &wa, id, e);
+                let theme = if dungeon.active { dungeon.theme.as_str() } else { "" };
+                spawn_obstacle(&mut commands, &mut mats, &wa, id, e, theme);
             }
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
@@ -2436,15 +2438,51 @@ pub(crate) fn spawn_obstacle(
     wa: &WorldAssets,
     id: &str,
     e: &OwEntity,
+    dungeon_theme: &str,
 ) {
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
     let col = obstacle_color(name);
-    // DG-6b: dungeon interior masonry — a closed door or a wall segment renders as a
-    // tall grey stone (or timber, for a door) block, so an in-dungeon floor reads as
-    // stone-walled rooms rather than an overworld strewn with rocks.
+    // DG-6b: dungeon interior maze walls. A forest dungeon reads as a forest — so a
+    // wall/closed-door cell is planted with LOW foliage (a squat bush, kept shorter
+    // than the ~1.6-tall hero so you always see your character to steer), not a stone
+    // block that would look out of place under the canopy. Non-forest themes (ruins in
+    // desert/ashfall/tundra/mire) keep tinted stone/timber masonry, which suits them.
     if name == "dungeon_wall" || name == "dungeon_door" {
-        let (base_color, height) = if name == "dungeon_door" {
+        let is_door = name == "dungeon_door";
+        if dungeon_theme == "forest" {
+            // Squat bush billboard — the SAME PixelLab foliage the world uses, scaled
+            // low so it reads as undergrowth and never hides the hero. A door cell gets
+            // a paler, slightly taller sprig so an opening is still legible.
+            const BUSH: [&str; 3] = ["obstacle_tree_bushy", "obstacle_tree_willow", "obstacle_tree"];
+            let pool: Vec<Handle<Image>> = BUSH
+                .iter()
+                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
+                .collect();
+            if !pool.is_empty() {
+                let tex = pool[hash_pick(id, pool.len())].clone();
+                let height = if is_door { 1.9 } else { 1.5 + (hash_pick(id, 40) as f32) * 0.01 };
+                let tint = if is_door { Color::srgb(0.75, 0.95, 0.7) } else { Color::WHITE };
+                let mat = mats.add(hd2d::sprite_material(tint, tex));
+                commands
+                    .spawn((
+                        WorldEntity(id.to_string()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                        Visibility::default(),
+                    ))
+                    .with_children(|p| {
+                        p.spawn((
+                            Mesh3d(wa.sprite_quad.clone()),
+                            MeshMaterial3d(mat),
+                            Transform::from_xyz(0.0, height * 0.5, 0.0)
+                                .with_scale(Vec3::splat(height / 2.2)),
+                            hd2d::Billboard,
+                        ));
+                    });
+                return;
+            }
+        }
+        let (base_color, height) = if is_door {
             (Color::srgb(0.42, 0.26, 0.15), 2.3) // banded timber door
         } else {
             (Color::srgb(0.33, 0.31, 0.36), 2.9) // grey dungeon stone

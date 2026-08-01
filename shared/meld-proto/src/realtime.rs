@@ -233,6 +233,37 @@ pub mod world {
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
     }
+
+    /// WG-1/DG-6b: the client's cue to re-skin the whole environment as a
+    /// **secluded dungeon** rather than the open overworld. The playable floor is
+    /// still just the server's `Snapshot` walls (a thin blocking perimeter); this
+    /// message tells the client the *theme* + *bounds* so it can, client-side only,
+    /// swap the ground, dim the sky, and ring the play area with a dense,
+    /// collision-free biome enclosure (a forest wall for a `forest` dungeon) so no
+    /// overworld shows through. Sent on descent and on every floor change with
+    /// `active = true`; sent once with `active = false` on exit/death to restore the
+    /// overworld look. Purely presentational — no gameplay rides on it.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct DungeonScene {
+        /// `true` while inside a dungeon floor; `false` once returned to the overworld.
+        pub active: bool,
+        /// The dungeon's biome theme (`forest`/`desert`/`ashfall`/`tundra`/`mire`),
+        /// keying the floor material + enclosure props. Empty when `active = false`.
+        #[serde(default)]
+        pub theme: String,
+        /// Current floor index (0-based), for a subtle depth cue.
+        #[serde(default)]
+        pub floor: u32,
+        /// Floor grid bounds in tiles — the client rings the enclosure just outside
+        /// `[0,width] × [0,height]` (tile = 1 world unit, matching `dungeon_snapshot`).
+        #[serde(default)]
+        pub width: u32,
+        #[serde(default)]
+        pub height: u32,
+    }
+    impl Message for DungeonScene {
+        const TYPE: &'static str = "world.dungeon_scene";
+    }
 }
 
 // ----------------------------------------------------------------- battle ---
@@ -941,6 +972,26 @@ mod tests {
         let back: world::TerrainSection = serde_json::from_str(&s).unwrap();
         assert_eq!(back.cols, 16);
         assert_eq!(back.connectors.len(), 1);
+    }
+
+    #[test]
+    fn dungeon_scene_round_trips() {
+        assert_eq!(world::DungeonScene::TYPE, "world.dungeon_scene");
+        let scene = world::DungeonScene {
+            active: true,
+            theme: "forest".to_string(),
+            floor: 1,
+            width: 24,
+            height: 18,
+        };
+        let s = serde_json::to_string(&scene).unwrap();
+        let back: world::DungeonScene = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, scene);
+        // Exit form: minimal wire (only `active`) still decodes, theme defaults empty.
+        let exit: world::DungeonScene =
+            serde_json::from_str(r#"{"active":false}"#).unwrap();
+        assert!(!exit.active);
+        assert_eq!(exit.theme, "");
     }
 
     #[test]
