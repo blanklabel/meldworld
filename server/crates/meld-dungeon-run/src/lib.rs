@@ -102,6 +102,8 @@ pub struct DungeonInstance<'a> {
     /// Trap id → armed/disarmed (DG-4). Every trap starts armed; disarming (or a
     /// future `trap.disarm` signal) makes it inert.
     traps: HashMap<Id, TrapState>,
+    /// Chest ids already looted (DG-5/C) — a chest opens once.
+    opened_chests: HashSet<Id>,
 }
 
 impl<'a> DungeonInstance<'a> {
@@ -124,7 +126,31 @@ impl<'a> DungeonInstance<'a> {
                 .filter(|(_, k)| matches!(k, ObjectKind::Trap { .. }))
                 .map(|(id, _)| (id.clone(), TrapState::Armed))
                 .collect(),
+            opened_chests: HashSet::new(),
         }
+    }
+
+    /// Whether chest `id` can be looted right now: it is a chest, its `when`
+    /// condition (if any) is satisfied by the active set (e.g. `boss_dead(...)`
+    /// after the boss falls), and it hasn't been opened yet (DG-5/C).
+    pub fn chest_openable(&self, id: &str) -> bool {
+        if self.opened_chests.contains(id) {
+            return false;
+        }
+        match self.def.objects.get(id) {
+            Some(ObjectKind::Chest { when, .. }) => when.as_ref().is_none_or(|c| c.eval(&self.active)),
+            _ => false,
+        }
+    }
+
+    /// Mark chest `id` looted; returns `false` if it wasn't openable (sealed /
+    /// already looted / not a chest).
+    pub fn open_chest(&mut self, id: &str) -> bool {
+        if !self.chest_openable(id) {
+            return false;
+        }
+        self.opened_chests.insert(id.to_string());
+        true
     }
 
     pub fn def(&self) -> &DungeonDef {
@@ -820,6 +846,18 @@ mod tests {
                 .sum()
         };
         assert!(sum(1500) > sum(100), "a deep barrow out-rewards a shallow one");
+    }
+
+    #[test]
+    fn a_boss_gated_chest_opens_only_after_the_boss_dies() {
+        let def = forest(); // vault chest is `when = boss_dead(B1)`
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        assert!(!d.chest_openable("vault"), "sealed until the boss falls");
+        d.activate("B1"); // boss defeated → boss_dead(B1)
+        assert!(d.chest_openable("vault"), "now lootable");
+        assert!(d.open_chest("vault"), "opens once");
+        assert!(!d.chest_openable("vault"), "and only once");
+        assert!(!d.open_chest("vault"));
     }
 
     #[test]
