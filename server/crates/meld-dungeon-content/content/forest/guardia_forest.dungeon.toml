@@ -1,0 +1,77 @@
+# Guardia Forest — a hand-authored forest dungeon (WG-1 / DG content).
+# A wooded maze of grassy glades: pull the vine-gate lever, take the forest
+# charm, descend to the deep grove, unlock the hollow, fell the forest guardian,
+# and loot the vault before you leave. Renders via the DG-6b forest re-skin —
+# `#` walls become undergrowth, `.` paths become grassy clearings, ringed by a
+# Guardia-Forest canopy.
+
+name  = "guardia_forest"
+biome = "forest"
+
+[legend]
+a = "lever L1"
+X = "door D1"
+k = "key K1"
+t = "trap T1"
+y = "trap T2"
+s = "stair S1 down"
+w = "stair S1 up"
+D = "door D2"
+B = "boss B1"
+C = "chest vault"
+
+[[floor]]
+grid = """
+#########################
+#>......................#
+#...###........###..a...#
+#...###..##....###......#
+#........##........##...#
+#.......................#
+############X############
+#.......................#
+#..##.........##.t......#
+#..k#...###...##........#
+#..##...###.......###...#
+#.....................s.#
+#########################
+"""
+
+[[floor]]
+grid = """
+#########################
+#.w.....................#
+#....##.........##......#
+#....##...###...##..##..#
+#.........###.......##..#
+#.......................#
+############D############
+#.......................#
+#.......##..............#
+#...##y.##..B....C..##..#
+#...##..##..........##..#
+#.....................<.#
+#########################
+"""
+
+[trap.T1]
+kind = "thorns"
+disarmable = true
+
+[trap.T2]
+kind = "thorns"
+disarmable = true
+
+[door.D1]
+when = "L1"                 # the vine gate opens once the lever is pulled
+
+[door.D2]
+when = "has_key(K1)"        # the hollow-door needs the forest charm
+
+[boss.B1]
+sprite = "hollowbishop"
+on_enter_spawn = true
+
+[chest.vault]
+when = "boss_dead(B1)"      # the vault unlocks only once the guardian falls
+loot = "rolled"

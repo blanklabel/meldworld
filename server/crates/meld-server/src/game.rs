@@ -1025,7 +1025,13 @@ impl WorldActor {
         else {
             return Vec::new();
         };
-        let Some(def) = meld_dungeon_content::by_name(name) else {
+        // `MELD_DUNGEON=<name>` forces which authored dungeon a descent loads (dev/QA
+        // screenshots of a specific dungeon), read only at the server boundary so
+        // `meld-world`/`meld-dungeon` stay pure — same spirit as `MELD_BIOME`/`MELD_SEED`.
+        let forced = std::env::var("MELD_DUNGEON")
+            .ok()
+            .and_then(|n| meld_dungeon_content::by_name(&n));
+        let Some(def) = forced.or_else(|| meld_dungeon_content::by_name(name)) else {
             return Vec::new();
         };
         let level = self.arena.avatar(pid).map(|a| a.position.distance_floor()).unwrap_or(0);
