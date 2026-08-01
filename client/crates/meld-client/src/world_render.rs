@@ -174,6 +174,13 @@ pub(crate) struct WorldAssets {
     // overworld uses creature billboards from `monster_sprites` instead.
     pub(crate) monster_mesh: Handle<Mesh>,
     pub(crate) rock_mesh: Handle<Mesh>,
+    /// Unit cube (origin at its base) for solid dungeon walls — adjacent wall tiles
+    /// stamped with this merge into a continuous masonry wall (DG-6b), unlike the
+    /// rounded `rock_mesh` which reads as scattered boulders.
+    pub(crate) wall_mesh: Handle<Mesh>,
+    /// Tiling cobblestone/masonry texture for dungeon walls (repeat-sampled), tinted
+    /// per biome — so walls read as fitted stone, not flat blocks.
+    pub(crate) wall_tex: Handle<Image>,
     pub(crate) water_mesh: Handle<Mesh>,
     /// Per-water-kind materials (`pond`/`bog_pool`/`frozen_pond`), each wearing a
     /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
@@ -600,6 +607,8 @@ pub(crate) fn setup(
         }),
         monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
+        wall_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), // unit cube for solid dungeon walls
+        wall_tex: load_tiled(&assets, "ground/tile_street.png"), // cobblestone masonry for walls
         water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
         // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
         // by `animate_water`. Replaces the old procedural `water_ripple_texture`.

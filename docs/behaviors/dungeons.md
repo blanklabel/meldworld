@@ -93,10 +93,12 @@ A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole fr
 
 **Source:** ROADMAP WG-1/DG-6b; presentation only (no gameplay rides on it).
 
-Driven by `world.dungeon_scene`, the client renders an in-dungeon floor as an enclosed, themed space, not the open overworld:
+Driven by `world.dungeon_scene`, the client renders an in-dungeon floor as an enclosed, themed space you explore room-by-room — a **Dragon-Quest-style dungeon**, not the open overworld:
 
-- **Interior maze walls** (the `dungeon_wall`/`dungeon_door` obstacle cells) render per theme — a `forest` dungeon plants **low foliage** (squat bushes kept below the hero's height, so you always see your character to steer); non-forest themes keep tinted stone/timber masonry (ruins suit desert/ashfall/tundra/mire).
-- **Enclosure:** the play area is ringed by a deep, collision-free biome belt whose prop height ramps with distance — a low rim by the clearing rising to a tall backdrop — so the frame reads as forest (or the biome's equivalent) to the horizon and the overworld never shows, even zoomed out.
+- **Tight camera.** Inside a dungeon the follow camera pulls in **close and steeper** (a tight rig, distinct from the pulled-back overworld survey) so you see only the room/corridor around you and must move to reveal what's around the corner — the sense of exploration. Close fog seals the far view. (Overworld framing is unchanged.)
+- **Interior maze walls** (the `dungeon_wall`/`dungeon_door` obstacle cells) render as **solid, tile-filling wall blocks wearing a tiling cobblestone-masonry texture** — a full cube slightly over-sized so adjacent wall cells merge into one continuous fitted-stone wall (a floor reads as enclosed rooms + corridors, not scattered rocks). The masonry is tinted per biome (mossy for `forest`/`mire`, sandstone for `desert`, basalt for `ashfall`, ice-rimed for `tundra`); doors are shorter, browner blocks (a legible opening). The tight camera keeps the hero visible over the near walls.
+- **Floor** is the overworld biome ground tile showing through (sand in a desert dungeon, mossy stone in a mire, etc.), dimmed by the dungeon light — the same seamless per-biome ground art the overworld uses, so a desert dungeon stands on sand without any extra floor mesh.
+- **Enclosure:** beyond the walls, the play area is ringed by a deep, collision-free biome belt whose prop height ramps with distance — a low rim rising to a tall backdrop (a forest canopy / boulder ridge) — so the overworld never shows through an opening, even if you glance out.
 - **Mood:** the sky/light dim to a themed, enclosed half-light; overworld terraces and biome-edge cliff/treeline framing are hidden while underground and restored on exit.
 
 ## Tunables
