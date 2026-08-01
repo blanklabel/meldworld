@@ -281,8 +281,15 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       dies. Dungeon fixups run *after* the shared `handle_battle_end` (guarded by a
       `BattleSlot.dungeon` tag — overworld battles byte-identical). qa
       `dungeon_boss_battle` (descend → cross floors → kill the boss).
-    - *Remaining (3/n):* dungeon chest loot (bank `resolve_chest` on `run.open_chest`,
-      now unlockable via `boss_dead`), and the proper client render (DG-6b).
+    - *(3/n) chest loot ✅* — `run.open_chest` on a dungeon chest (`dchest-<id>`)
+      banks `resolve_chest`'s reward into the run backpack (rolled material/chits/gear
+      at the dungeon's stamped distance + authored contents), gated on the chest's
+      `when` (the `boss_dead` vault unlocks on the kill) and openable once.
+      `DungeonInstance::chest_openable`/`open_chest` unit-tested.
+    - *Remaining:* **DG-6b** the proper in-game client render (dungeons currently
+      ride existing entity tags), and **DG-7** CANON + `behaviors/dungeons.md`. With
+      3/n done, dungeons are **server-complete**: co-op entry, traverse, puzzles,
+      stairs, traps, death, boss combat, loot, and exit.
   - [ ] **DG-4** — traps + puzzles live. 🟡 *DG-4a (the engine) shipped:* the
     puzzle emitter/barrier runtime already lives in `meld-dungeon-run` (DG-3a —
     reaching a lever/plate/key/boss opens the doors/gates whose condition holds),

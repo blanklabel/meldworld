@@ -3838,6 +3838,11 @@ impl WorldActor {
         if self.battle_of_player(player_id).is_some() {
             return (vec![error(player_id, ErrorCode::InvalidState, "Resolve the battle first.", Some(raw.seq))], Vec::new());
         }
+        // DG-3b(3/n) C: a dungeon chest (`dchest-<id>`) loots via the DungeonInstance
+        // (unlocked once its `when`, e.g. `boss_dead`, is satisfied) — not the arena.
+        if self.dungeon_of(player_id).is_some() {
+            return self.open_dungeon_chest(player_id, &req.entity_id, raw.seq);
+        }
         let Some((_tier, distance)) = self.arena.open_chest(player_id, &req.entity_id) else {
             return (vec![error(player_id, ErrorCode::OutOfRange, "No chest in reach.", Some(raw.seq))], Vec::new());
         };
@@ -3893,6 +3898,108 @@ impl WorldActor {
         )];
         if let Some(gear) = run_gear_snapshot {
             out.push(out_msg(player_id, &wr::RunGear { gear }));
+        }
+        (out, Vec::new())
+    }
+
+    /// DG-3b(3/n) C: loot a dungeon chest (`dchest-<id>`). Requires the player in the
+    /// dungeon, standing by the chest, and its `when` satisfied (e.g. the boss dead).
+    /// Rolled loot rides the dungeon's stamped distance (design §6); authored contents
+    /// are granted verbatim. Reuses the run-backpack banking of `handle_open_chest`.
+    fn open_dungeon_chest(&mut self, pid: &str, entity_id: &str, seq: u32) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        // Dungeons out-reward open-world chests at equal distance (the risk premium).
+        const DUNGEON_CHEST_RICHNESS: i32 = 6;
+        let chest_id = entity_id.strip_prefix("dchest-").unwrap_or(entity_id).to_string();
+        let balance = self.balance.clone();
+        let radius = self.balance.world.interaction_radius_tiles;
+        let Some((key, _floor)) = self.dungeon_of(pid) else {
+            return (vec![error(pid, ErrorCode::InvalidState, "Not in a dungeon.", Some(seq))], Vec::new());
+        };
+        let reward = {
+            let Some(d) = self.dungeons.get(&key) else {
+                return (vec![error(pid, ErrorCode::InvalidState, "Not in a dungeon.", Some(seq))], Vec::new());
+            };
+            let placement = d.def().placements.iter().find(|p| p.id == chest_id);
+            let near = match (placement, d.occupant(pid)) {
+                (Some(p), Some(o)) => {
+                    o.floor == p.floor
+                        && o.pos.distance_to(&meld_dungeon_run::cell_center(p.x, p.y)) <= radius
+                }
+                _ => false,
+            };
+            if !near {
+                return (vec![error(pid, ErrorCode::OutOfRange, "No chest in reach.", Some(seq))], Vec::new());
+            }
+            if !d.chest_openable(&chest_id) {
+                return (vec![error(pid, ErrorCode::InvalidState, "The vault is sealed — defeat the boss first.", Some(seq))], Vec::new());
+            }
+            let seed = d.key ^ hash_str(&chest_id) ^ hash_str(pid);
+            d.resolve_chest(&chest_id, &balance, DUNGEON_CHEST_RICHNESS, 1.0, seed)
+        };
+        let Some(reward) = reward else {
+            return (vec![error(pid, ErrorCode::NotFound, "No such dungeon chest.", Some(seq))], Vec::new());
+        };
+        if let Some(d) = self.dungeons.get_mut(&key) {
+            d.open_chest(&chest_id);
+        }
+        // Build the backpack additions: the rolled material/chits/gear + authored items.
+        let mut changes: Vec<wr::BackpackChange> = Vec::new();
+        let mut gear_added: Vec<LootGear> = Vec::new();
+        let mut chits_delta = 0i64;
+        if let Some(l) = &reward.rolled {
+            chits_delta += l.chits;
+            let item = ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: l.material.to_string(),
+                quantity: 1,
+                insurance: None,
+            };
+            changes.push(wr::BackpackChange { item, delta: "added".to_string(), cause: "chest".to_string() });
+            if let Some(g) = &l.gear {
+                gear_added.push(LootGear {
+                    gear_id: Uuid::now_v7().to_string(),
+                    name: g.name.clone(),
+                    rarity: g.rarity.clone(),
+                    slot: g.slot.clone(),
+                    class_key: g.class_key.clone(),
+                    insurance: Insurance::Red,
+                    tier: g.tier,
+                    atk_bonus: g.atk_bonus,
+                    def_bonus: g.def_bonus,
+                    spd_bonus: g.spd_bonus,
+                    base_max_durability: g.max_durability,
+                    max_durability: g.max_durability,
+                    equipped_hero_slot: None,
+                    damage_modifiers: g.damage_modifiers.clone(),
+                });
+            }
+        }
+        // Authored contents: granted as backpack items (authored gear-as-real-gear is
+        // a DG-5 refinement — it rides as a named item for now).
+        for it in &reward.authored {
+            let kind = it.gear.clone().or_else(|| it.item.clone()).unwrap_or_default();
+            let item = ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: kind,
+                quantity: it.quantity.max(1) as i32,
+                insurance: None,
+            };
+            changes.push(wr::BackpackChange { item, delta: "added".to_string(), cause: "chest".to_string() });
+        }
+        let mut run_gear_snapshot = None;
+        if let Some(r) = self.run.run_mut(pid) {
+            for c in &changes {
+                r.backpack.push(c.item.clone());
+            }
+            r.chits += chits_delta;
+            r.looted_gear.extend(gear_added.iter().cloned());
+            if !gear_added.is_empty() {
+                run_gear_snapshot = Some(r.looted_gear.clone());
+            }
+        }
+        let mut out = vec![out_msg(pid, &wr::BackpackUpdate { changes, chits_delta, gear_added })];
+        if let Some(gear) = run_gear_snapshot {
+            out.push(out_msg(pid, &wr::RunGear { gear }));
         }
         (out, Vec::new())
     }
