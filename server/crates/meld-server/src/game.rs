@@ -976,7 +976,8 @@ impl WorldActor {
     /// place the player at the entrance cell, and freeze their overworld avatar at
     /// the entry position (restored on exit — you return exactly where you came in).
     fn enter_dungeon(&mut self, pid: &str, entrance_idx: usize) -> Vec<Outgoing> {
-        let Some(name) = self.entrances.get(entrance_idx).map(|e| e.dungeon) else {
+        let Some((name, entrance_pos)) = self.entrances.get(entrance_idx).map(|e| (e.dungeon, e.position))
+        else {
             return Vec::new();
         };
         let Some(def) = meld_dungeon_content::by_name(name) else {
@@ -986,14 +987,43 @@ impl WorldActor {
         let depth_step = self.balance.worldgen.dungeon_depth_level_step;
         let key = self.next_dungeon_key;
         self.next_dungeon_key += 1;
-        let mut inst = DungeonInstance::new(key, def, level, depth_step);
-        inst.enter(pid);
-        self.dungeons.insert(key, inst);
+        self.dungeons.insert(key, DungeonInstance::new(key, def, level, depth_step));
+        // The initiator descends, plus any teammate gathered at the entrance — a co-op
+        // group of up to 4 enters *together* into one fresh subinstance (design §3;
+        // `[ai] join_radius`, same proximity rule as opting into a fight). A dungeon
+        // already in progress is not joinable later.
+        self.place_in_dungeon(pid, key);
+        let join_radius = self.balance.ai.join_radius;
+        let mates: Vec<String> = self
+            .arena
+            .avatars
+            .iter()
+            .filter(|a| a.player_id != pid && a.state == "active")
+            .map(|a| (a.player_id.clone(), a.position))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(id, pos)| {
+                self.dungeon_of(id).is_none() && pos.distance_to(&entrance_pos) <= join_radius
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for m in mates {
+            self.place_in_dungeon(&m, key);
+        }
+        Vec::new()
+    }
+
+    /// Put `pid` inside dungeon `key` at its entrance: add them as an occupant, set
+    /// their `Location`, and freeze their overworld avatar at the entry position
+    /// (restored on exit — you return exactly where you came in).
+    fn place_in_dungeon(&mut self, pid: &str, key: u64) {
+        if let Some(d) = self.dungeons.get_mut(&key) {
+            d.enter(pid);
+        }
         self.location.insert(pid.to_string(), Location::InDungeon { key, floor: 0 });
         if let Some(a) = self.arena.avatar_mut(pid) {
             a.state = "in_dungeon".to_string();
         }
-        Vec::new()
     }
 
     /// Per-intent step for dungeon movement — `speed × sim_dt`, matching the
