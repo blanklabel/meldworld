@@ -74,6 +74,11 @@ is the human table of contents.
   **Ometus** (the forgotten evil behind the Shifts) — plus hidden bosses **All-Father**
   and **Terim** that reward the non-combat personas. Maps the roster onto the bestiary
   biomes; apex of `FS-4`.
+- [`proposals/adventure-depth.md`](proposals/adventure-depth.md) — **Adventure depth**
+  (epic **AD**): the Adventurer's retention layers — a deep **gear/affix** loot chase,
+  **party-synergy** builds (composition + gear, *not* stat trees, since you run four
+  heroes), **elemental affinities**, a combat **Hunt Board**, **keystone** modifiers, and
+  a seasonal **leaderboard suite**.
 - [`proposals/dungeons.md`](proposals/dungeons.md) — **Designed dungeons** (WG-1
   full / DG epic): authored, separately-instanced set-piece dungeons (the
   `meld-dungeon` authoring + validation foundation shipped). Built as *content within
