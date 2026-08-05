@@ -1948,8 +1948,11 @@ mod tests {
     #[tokio::test]
     async fn vanguard_board_ranks_deepest_first_and_records_only_personal_bests() {
         let db = mem().await;
-        let deep = db.register("vg_deep", "password123").await.unwrap();
-        let shallow = db.register("vg_shallow", "password123").await.unwrap();
+        let deep_password = Uuid::new_v4().to_string();
+        let shallow_password = Uuid::new_v4().to_string();
+        let never_password = Uuid::new_v4().to_string();
+        let deep = db.register("vg_deep", &deep_password).await.unwrap();
+        let shallow = db.register("vg_shallow", &shallow_password).await.unwrap();
         let season = current_season();
 
         assert!(db.record_vanguard_distance(deep.player_id, season, 400).await.unwrap());
@@ -1958,7 +1961,7 @@ mod tests {
         assert!(!db.record_vanguard_distance(deep.player_id, season, 200).await.unwrap());
         assert!(db.record_vanguard_distance(deep.player_id, season, 900).await.unwrap());
         // Distance 0 (never left the hub) does not put you on the board at all.
-        let never = db.register("vg_never", "password123").await.unwrap();
+        let never = db.register("vg_never", &never_password).await.unwrap();
         assert!(!db.record_vanguard_distance(never.player_id, season, 0).await.unwrap());
 
         let board = db.vanguard_board(season, 100).await.unwrap();
