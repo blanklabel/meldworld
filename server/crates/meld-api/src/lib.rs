@@ -432,6 +432,23 @@ async fn set_equipped(
             "conflict",
             "Another item already occupies this slot; unequip it first.",
         )),
+        // GR-5: say WHICH rule refused the equip, so the UI can explain it.
+        Ok(EquipResult::ClassLocked(rule)) => {
+            use meld_proto::equipment::Legality;
+            let msg = match rule {
+                Legality::ClassFamily => "This hero's class cannot wield that kind of weapon.",
+                Legality::ClassWeight => "This hero's class cannot wear armor that heavy.",
+                Legality::ClassExclusive => "That piece belongs to another class.",
+                Legality::SlotMismatch => "That item does not go in this slot.",
+                Legality::Ok => "Cannot equip.",
+            };
+            Err(ApiReject::new(StatusCode::CONFLICT, "conflict", msg))
+        }
+        Ok(EquipResult::TwoHandedConflict) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "A two-handed weapon needs both hands; unequip the off-hand first.",
+        )),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }

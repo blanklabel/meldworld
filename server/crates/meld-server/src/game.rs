@@ -97,6 +97,10 @@ enum DbWrite {
     HeroRename(String, i16, String),
     /// Persist a hero's formation rank: (player, slot, back_row).
     HeroFormation(String, i16, bool),
+    /// Persist a hero slot's class (GR-7): (player, slot, class_key). Written when
+    /// a party dives, so the roster a player takes down becomes their roster in
+    /// town — which is what equip-time legality checks against.
+    HeroClass(String, i16, String),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
     /// Post a new deepest distance to the Vanguard Board: (player, distance).
@@ -150,6 +154,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_hero_row(uid, slot, back_row).await {
                         tracing::error!("hero formation persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::HeroClass(pid, slot, class_key) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_hero_class(uid, slot, &class_key).await {
+                        tracing::error!("hero class persist failed for {pid}: {e}");
                     }
                 }
             }
@@ -2601,6 +2612,16 @@ impl GameState {
                 }
                 None => party_composition(chosen, party_size),
             };
+            // GR-7: the party you take down is the roster you come home with — the
+            // RESOLVED comp, so a default mixed party is recorded too. Equip-time
+            // legality (GR-5) reads these rows while the player is in town.
+            for (i, class) in comp.iter().enumerate() {
+                let _ = self.db_writes.send(DbWrite::HeroClass(
+                    pid.to_string(),
+                    i as i16,
+                    meld_run::class_key(*class).to_string(),
+                ));
+            }
             // Hero names by slot: the builder's, normalized to party size and
             // defaulted to "Hero N" for any unnamed slot.
             let mut names = names.unwrap_or_default();
