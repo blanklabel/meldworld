@@ -33,6 +33,7 @@ use std::collections::HashMap;
 
 use meld_balance::Balance;
 use meld_proto::common::Position;
+use meld_proto::affixes as aff;
 use meld_proto::equipment as eq;
 use meld_proto::factions::creatures_hostile;
 use meld_proto::Id;
@@ -242,6 +243,9 @@ pub struct GearDrop {
     /// GR-5 armor weight wire word for head/chest/legs (`heavy`, `robe`, …);
     /// empty for weapons and accessories.
     pub armor_weight: String,
+    /// AD-1 rolled affixes — the qualities that make this drop a build rather
+    /// than a bigger number.
+    pub affixes: Vec<meld_proto::affixes::Affix>,
 }
 
 /// The loot a felled encounter yields to one participant.
@@ -551,6 +555,22 @@ pub fn roll_creature_loot(
         } else {
             gear_catalog_name(class_key, slot, tier, floor_tier)
         };
+        // AD-1: roll this drop's affixes before naming it, so the name can carry the
+        // suffix of whichever affix defines the piece.
+        let affixes = roll_affixes(
+            balance,
+            &mut rng,
+            tier,
+            rarity,
+            is_signature,
+            class_key,
+            slot,
+            biome_for_distance(distance),
+        );
+        let base_name = match aff::name_suffix(&affixes) {
+            Some(suffix) => format!("{base_name} {suffix}"),
+            None => base_name,
+        };
         let name = if rarity == "common" {
             base_name
         } else {
@@ -588,6 +608,7 @@ pub fn roll_creature_loot(
             damage_modifiers,
             family,
             armor_weight,
+            affixes,
         })
     } else {
         None
@@ -596,6 +617,95 @@ pub fn roll_creature_loot(
         chits,
         material,
         gear,
+    }
+}
+
+/// Roll a drop's affixes (AD-1, docs/proposals/gear-identity.md §3).
+///
+/// Deterministic from the caller's seeded `rng` like every other loot roll, and
+/// **tier-gated per affix class** (`[affix]` floors) so a shallow drop is still a
+/// plain stat stick a new player can read (P1-3) and depth is where builds appear.
+/// A Keyword affix only rolls for the class the item belongs to — its whole point
+/// is twisting *that* class's mechanic. A Synergy affix names a *different* class,
+/// so it can only pay off in a mixed party.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn roll_affixes(
+    balance: &Balance,
+    rng: &mut Rng,
+    tier: i32,
+    rarity: &str,
+    is_signature: bool,
+    class_key: &str,
+    slot: &str,
+    biome: &str,
+) -> Vec<aff::Affix> {
+    let a = &balance.affix;
+    let count = a.count_for(rarity, is_signature);
+    if count == 0 {
+        return Vec::new();
+    }
+    // The pool: every affix whose class has unlocked at this tier, minus keyword
+    // affixes belonging to another class.
+    let pool: Vec<&aff::AffixDef> = aff::AFFIXES
+        .iter()
+        .filter(|d| tier >= a.tier_floor(affix_class_word(d.class)))
+        .filter(|d| match d.only_class {
+            Some(c) => eq::class_key(c) == class_key,
+            None => true,
+        })
+        .collect();
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<aff::Affix> = Vec::new();
+    for _ in 0..count {
+        let d = pool[rng.below(pool.len())];
+        // One of each key: two "+atk" lines read as a bug, not a roll.
+        if out.iter().any(|o| o.key == d.key) {
+            continue;
+        }
+        let jitter = 1.0 + rng.signed() * a.magnitude_jitter;
+        let magnitude = match d.class {
+            aff::AffixClass::Element => (a.resist_pct_per_tier * tier).clamp(1, a.resist_pct_cap),
+            _ => ((a.magnitude_per_tier * tier.max(1) as f64 * d.scale * jitter).round() as i32)
+                .max(1),
+        };
+        out.push(aff::Affix {
+            key: d.key.to_string(),
+            magnitude,
+            element: matches!(d.class, aff::AffixClass::Element)
+                .then(|| biome_element(biome).to_string()),
+            ally_class: matches!(d.class, aff::AffixClass::Synergy).then(|| {
+                // Name a class that is NOT this item's own, so the affix always
+                // asks the player to build a mixed party.
+                let others: Vec<&&str> =
+                    CLASS_KEYS.iter().filter(|k| **k != class_key).collect();
+                others[rng.below(others.len())].to_string()
+            }),
+        });
+    }
+    let _ = slot;
+    out
+}
+
+/// The `[affix]` tunable key for an affix class.
+fn affix_class_word(class: aff::AffixClass) -> &'static str {
+    match class {
+        aff::AffixClass::Stat => "stat",
+        aff::AffixClass::Element => "element",
+        aff::AffixClass::Ward => "ward",
+        aff::AffixClass::Keyword => "keyword",
+        aff::AffixClass::Synergy => "synergy",
+    }
+}
+
+/// The element a biome's gear wards against.
+fn biome_element(biome: &str) -> &'static str {
+    match biome {
+        "desert" => "WIND",
+        "ashfall" => "FIRE",
+        "tundra" => "ICE",
+        _ => "POISON",
     }
 }
 
@@ -4458,6 +4568,70 @@ mod tests {
         }
         assert_eq!(twin.monsters.len(), arena.monsters.len(), "streaming is deterministic");
         assert_eq!(twin.areas.len(), arena.areas.len());
+    }
+
+    #[test]
+    fn affix_rolls_are_tier_gated_and_deterministic() {
+        use meld_proto::affixes::AffixClass;
+        let b = Balance::load_default().unwrap();
+        let class_of = |a: &meld_proto::affixes::Affix| a.class().unwrap();
+
+        // A shallow legendary rolls only stat affixes: the early game stays a
+        // legible ladder (P1-3).
+        let mut rng = Rng(42);
+        let shallow = roll_affixes(&b, &mut rng, 1, "legendary", false, "explorer", "main_hand", "forest");
+        assert!(!shallow.is_empty());
+        assert!(
+            shallow.iter().all(|a| class_of(a) == AffixClass::Stat),
+            "shallow roll leaked a non-stat affix: {shallow:?}"
+        );
+
+        // Deep rolls reach the build-forming classes.
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..400u64 {
+            let mut rng = Rng(seed);
+            for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", "chest", "ashfall") {
+                seen.insert(class_of(&a));
+            }
+        }
+        for want in [AffixClass::Ward, AffixClass::Keyword, AffixClass::Synergy, AffixClass::Element] {
+            assert!(seen.contains(&want), "deep rolls never produced {want:?}");
+        }
+
+        // Common drops stay plain, and the same seed always rolls the same affixes.
+        let mut rng = Rng(7);
+        assert!(roll_affixes(&b, &mut rng, 12, "common", false, "explorer", "main_hand", "forest").is_empty());
+        // Same seed, same affixes — loot stays reproducible from the world seed.
+        let a = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, "explorer", "chest", "ashfall");
+        let c = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, "explorer", "chest", "ashfall");
+        assert_eq!(a, c);
+    }
+
+    #[test]
+    fn a_keyword_affix_only_rolls_for_its_own_class() {
+        let b = Balance::load_default().unwrap();
+        for seed in 0..300u64 {
+            let mut rng = Rng(seed);
+            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, "resonant", "main_hand", "tundra") {
+                // "of Fury" is an Explorer twist; a Resonant drop must never carry it.
+                assert_ne!(a.key, "adrenaline_primed", "seed {seed}");
+                assert_ne!(a.key, "focus_slot", "seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_synergy_affix_always_names_another_class() {
+        let b = Balance::load_default().unwrap();
+        for seed in 0..300u64 {
+            let mut rng = Rng(seed);
+            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, "shifter", "chest", "mire") {
+                if let Some(ally) = &a.ally_class {
+                    assert_ne!(ally, "shifter", "a synergy affix asked for its own class");
+                    assert!(CLASS_KEYS.contains(&ally.as_str()));
+                }
+            }
+        }
     }
 }
 

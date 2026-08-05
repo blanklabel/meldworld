@@ -138,6 +138,11 @@ The chase can't be `+1 atk` forever. Past a distance band, drops start rolling
   Resonant is in the party"), which is how an *individual* drop becomes a **party
   build** decision.
 
+**Shipped in the first cut:** all five affix classes are live, tier-gated, and rolled
+server-side from the instance seed; wards/keywords reach the `Fighter` at battle
+assembly and synergies are resolved there against the actual party. Uniques and sets
+are the next tier up and are not built yet.
+
 **Tier gating.** Bands come from distance, as everything else does
 (`tier(d)=floor(d/100)`): stat affixes from tier 0, damage types and on-hit
 statuses from a `[TUNABLE]` tier floor, keyword affixes above that, synergy

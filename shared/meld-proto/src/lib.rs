@@ -6,12 +6,14 @@
 //! - [`envelope`] — the realtime `{type, seq, ts, payload}` frame.
 //! - [`enums`] — canonical enums (`CharacterClass`, error codes, …).
 //! - [`equipment`] — which gear each class may wear (GR-5).
+//! - [`affixes`] — the rolled qualities that make a drop a build (AD-1).
 //! - [`common`] — shared payload objects (`Position`, `ItemStack`, `Combatant`).
 //! - [`realtime`] — C2S/S2C message payloads by domain.
 //! - [`http`] — HTTP request/response DTOs.
 //! - [`limits`] — field bounds and validators (docs/edge-cases/limits.md).
 
 pub mod abilities;
+pub mod affixes;
 pub mod common;
 pub mod enums;
 pub mod envelope;

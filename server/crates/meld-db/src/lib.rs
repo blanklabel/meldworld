@@ -270,6 +270,11 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS armor_weight TEXT NOT NULL DEFAULT ''")
             .execute(pool)
             .await?;
+        // AD-1 affixes, as the JSON array `meld_proto::affixes` serializes. `[]`
+        // (or unreadable content) is simply no affixes, never a broken item.
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS affixes TEXT NOT NULL DEFAULT '[]'")
+            .execute(pool)
+            .await?;
         // The Vanguard Board (roadmap P1-1, behaviors/endgame-seasons.md): the
         // per-season deepest-distance leaderboard. One row per (season, player):
         // that player's deepest run in the season. `achieved_at` is the tie-break.
@@ -789,6 +794,7 @@ impl Db {
                         insurance: "blue".into(),
                         family: String::new(),
                         armor_weight: String::new(),
+                        affixes: "[]".into(),
                         tier: 0,
                         atk_bonus: 3,
                         def_bonus: 0,
@@ -1140,7 +1146,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight
+                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes
                      FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
@@ -1253,6 +1259,7 @@ impl Db {
                             insurance: "blue".to_string(),
                             family: String::new(),
                             armor_weight: String::new(),
+                            affixes: "[]".into(),
                             tier: 0,
                             atk_bonus: *atk,
                             def_bonus: *def,
@@ -1287,8 +1294,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight)
-                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes)
+                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -1305,6 +1312,7 @@ impl Db {
                     .bind(&g.damage_modifiers)
                     .bind(&g.family)
                     .bind(&g.armor_weight)
+                    .bind(&g.affixes)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -1323,6 +1331,7 @@ impl Db {
                         insurance: "red".into(),
                         family: g.family.clone(),
                         armor_weight: g.armor_weight.clone(),
+                        affixes: g.affixes.clone(),
                         tier: g.tier,
                         atk_bonus: g.atk_bonus,
                         def_bonus: g.def_bonus,
@@ -1406,6 +1415,7 @@ impl Db {
                         &row.get::<String, _>("family"),
                         &row.get::<String, _>("armor_weight"),
                     ) {
+                        let hero_class = hero_classes.get(slot as usize).cloned();
                         if let Some(b) = bonuses.get_mut(slot as usize) {
                             b.atk += row.get::<i32, _>("atk_bonus");
                             b.def += row.get::<i32, _>("def_bonus");
@@ -1413,6 +1423,11 @@ impl Db {
                             append_modifier_entries(
                                 &mut b.modifiers,
                                 &row.get::<String, _>("damage_modifiers"),
+                            );
+                            apply_affixes(
+                                b,
+                                &row.get::<String, _>("affixes"),
+                                hero_class.as_deref(),
                             );
                         }
                     }
@@ -1427,7 +1442,9 @@ impl Db {
                             continue;
                         }
                         if wearable(slot as usize, &g.class_key, &g.slot, &g.family, &g.armor_weight) {
+                            let hero_class = hero_classes.get(slot as usize).cloned();
                             if let Some(b) = bonuses.get_mut(slot as usize) {
+                                apply_affixes(b, &g.affixes, hero_class.as_deref());
                                 b.atk += g.atk_bonus;
                                 b.def += g.def_bonus;
                                 b.spd += g.spd_bonus;
@@ -1784,10 +1801,67 @@ pub struct GearBonus {
     pub atk: i32,
     pub def: i32,
     pub spd: i32,
+    /// AD-1 ward affixes: what the hero *starts each battle* holding.
+    pub barrier: i32,
+    pub regen: i32,
+    /// Evasion percentage points.
+    pub evasion: i32,
+    /// AD-1 keyword affixes (class-mechanic twists), already filtered to this
+    /// hero's class: banked Adrenaline at battle start, extra Focus slots.
+    pub adrenaline: i32,
+    pub focus_slots: i32,
+    /// Synergy affixes that have not been resolved yet: (ally class key, atk, def).
+    /// Battle assembly knows the party composition, so it decides which of these
+    /// actually pay out — a drop that asks for an ally is a *party* build decision.
+    pub synergies: Vec<(String, i32, i32)>,
     /// Raw per-item elemental entries (DamageType wire key → multiplier) from
     /// every equipped piece — folded (`1 + Σ(mᵢ−1)`) and clamped to 0.0–2.0 at
     /// battle assembly (spec §5 stat aggregation).
     pub modifiers: Vec<(String, f64)>,
+}
+
+/// Fold one item's AD-1 affixes into a hero's running bonus.
+///
+/// Stat and ward affixes apply immediately; a **keyword** affix only counts for
+/// the class whose mechanic it twists; a **synergy** affix is deferred to battle
+/// assembly, which is the only place that knows the party composition.
+fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
+    let class = hero_class.and_then(meld_proto::equipment::class_from_key);
+    for a in meld_proto::affixes::from_json(raw) {
+        if let Some(c) = class {
+            if !a.applies_to(c) {
+                continue;
+            }
+        } else if a.def().and_then(|d| d.only_class).is_some() {
+            continue;
+        }
+        let m = a.magnitude;
+        match a.key.as_str() {
+            "atk" => b.atk += m,
+            "def" => b.def += m,
+            "spd" => b.spd += m,
+            "barrier" => b.barrier += m,
+            "regen" => b.regen += m,
+            "evasion" => b.evasion += m,
+            "adrenaline_primed" => b.adrenaline += m,
+            "focus_slot" => b.focus_slots += m,
+            "resist" => {
+                if let Some(el) = &a.element {
+                    // A resist affix reads as a percentage; the modifier plumbing
+                    // wants a multiplier (25% resisted → 0.75).
+                    let mult = 1.0 - (m.clamp(0, 100) as f64 / 100.0);
+                    b.modifiers.push((el.clone(), mult));
+                }
+            }
+            "ally_atk" | "ally_def" => {
+                if let Some(ally) = &a.ally_class {
+                    let (atk, def) = if a.key == "ally_atk" { (m, 0) } else { (0, m) };
+                    b.synergies.push((ally.clone(), atk, def));
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A red-chest gear item to bank into the Vault on extraction.
@@ -1810,6 +1884,8 @@ pub struct LootedGear {
     pub family: String,
     /// GR-5 armor weight wire word; empty = unrestricted.
     pub armor_weight: String,
+    /// AD-1 affixes as JSON (`[]` for none).
+    pub affixes: String,
 }
 
 /// A gear row (blue-chest only, this slice).
@@ -1835,6 +1911,8 @@ pub struct GearRow {
     pub family: String,
     /// GR-5 armor weight wire word (`heavy`, `robe`, …); empty = unrestricted.
     pub armor_weight: String,
+    /// AD-1 affixes as stored JSON.
+    pub affixes: String,
 }
 
 /// How many items of one category a single hero can wear at once: two
@@ -1881,6 +1959,7 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         damage_modifiers: row.get("damage_modifiers"),
         family: row.get("family"),
         armor_weight: row.get("armor_weight"),
+        affixes: row.get("affixes"),
     }
 }
 
@@ -1960,6 +2039,7 @@ struct MemGear {
     damage_modifiers: String,
     family: String,
     armor_weight: String,
+    affixes: String,
 }
 
 impl MemGear {
@@ -1980,6 +2060,7 @@ impl MemGear {
             damage_modifiers: self.damage_modifiers.clone(),
             family: self.family.clone(),
             armor_weight: self.armor_weight.clone(),
+            affixes: self.affixes.clone(),
         }
     }
 }
@@ -2129,6 +2210,7 @@ mod tests {
                 damage_modifiers: "{}".into(),
                 family: String::new(),
                 armor_weight: String::new(),
+                affixes: "[]".into(),
             }],
         )
         .await
@@ -2196,6 +2278,7 @@ mod tests {
             damage_modifiers: "{\"FIRE\":0.75}".into(),
             family: String::new(),
             armor_weight: String::new(),
+            affixes: "[]".into(),
         };
         db.insert_looted_gear(p, &[ring("Ring A"), ring("Ring B")]).await.unwrap();
         let ids: Vec<Uuid> = db
@@ -2321,6 +2404,7 @@ mod tests {
             damage_modifiers: String::new(),
             family: "spear".into(),
             armor_weight: String::new(),
+            affixes: "[]".into(),
         };
         let spear_id = spear.gear_id;
         db.insert_looted_gear(p, &[spear]).await.unwrap();
@@ -2372,6 +2456,7 @@ mod tests {
             damage_modifiers: String::new(),
             family: family.into(),
             armor_weight: weight.into(),
+            affixes: "[]".into(),
         };
         let spear = piece("Warpike", "main_hand", "spear", "");
         let plate = piece("Battleplate", "chest", "", "heavy");
@@ -2432,6 +2517,7 @@ mod tests {
             damage_modifiers: String::new(),
             family: "staff".into(),
             armor_weight: String::new(),
+            affixes: "[]".into(),
         };
         let staff_id = staff.gear_id;
         db.insert_looted_gear(p, &[staff]).await.unwrap();
@@ -2443,6 +2529,74 @@ mod tests {
         // No class recorded for hero 0 → allowed; derivation is the backstop, so a
         // player is never locked out of their own Vault by missing data.
         assert_eq!(db.set_equipped(p, staff_id, Some(0)).await.unwrap(), EquipResult::Ok);
+    }
+
+    #[tokio::test]
+    async fn affixes_fold_by_kind_and_respect_the_wearer_s_class() {
+        use meld_proto::affixes::Affix;
+        let db = mem().await;
+        let test_password = Uuid::now_v7().to_string();
+        let p = db.register("ad1", &test_password).await.unwrap().player_id;
+        db.set_hero_class(p, 0, "explorer").await.unwrap();
+        db.set_hero_class(p, 1, "psyker").await.unwrap();
+        let aff = |key: &str, m: i32| Affix {
+            key: key.into(),
+            magnitude: m,
+            element: None,
+            ally_class: None,
+        };
+        let rolled = vec![
+            aff("atk", 4),
+            aff("barrier", 12),
+            aff("regen", 3),
+            aff("evasion", 7),
+            aff("adrenaline_primed", 5),
+            aff("focus_slot", 1),
+            Affix { key: "resist".into(), magnitude: 25, element: Some("FIRE".into()), ally_class: None },
+            Affix { key: "ally_atk".into(), magnitude: 6, element: None, ally_class: Some("resonant".into()) },
+        ];
+        let piece = LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: "Warblade of the Bulwark".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            tier: 9,
+            atk_bonus: 3,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: String::new(),
+            family: "sword".into(),
+            armor_weight: String::new(),
+            affixes: meld_proto::affixes::to_json(&rolled),
+        };
+        let gid = piece.gear_id;
+        db.insert_looted_gear(p, &[piece]).await.unwrap();
+        for g in db.get_gear(p).await.unwrap() {
+            if g.equipped_hero_slot == Some(0) && g.slot == "main_hand" {
+                db.set_equipped(p, g.gear_id, None).await.unwrap();
+            }
+        }
+        db.set_equipped(p, gid, Some(0)).await.unwrap();
+
+        let classes: Vec<String> = ["explorer", "psyker", "resonant", "explorer"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let b = &db.equipped_gear_bonuses(p, 4, &classes).await.unwrap()[0];
+        // Stat + ward affixes apply to anyone.
+        assert!(b.atk >= 4 + 3, "stat affix + base atk: {}", b.atk);
+        assert_eq!(b.barrier, 12);
+        assert_eq!(b.regen, 3);
+        assert_eq!(b.evasion, 7);
+        // The Explorer keyword lands; the Psyker one does not (wrong wearer).
+        assert_eq!(b.adrenaline, 5);
+        assert_eq!(b.focus_slots, 0, "a Psyker affix is inert on an Explorer");
+        // A resist affix becomes a damage multiplier (25% resisted -> 0.75).
+        assert!(b.modifiers.iter().any(|(el, m)| el == "FIRE" && (*m - 0.75).abs() < 1e-9));
+        // Synergy is deferred to battle assembly, which knows the party.
+        assert_eq!(b.synergies, vec![("resonant".to_string(), 6, 0)]);
     }
 }
 

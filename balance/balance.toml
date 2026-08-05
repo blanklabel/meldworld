@@ -236,6 +236,26 @@ gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pas
 # encounter's loot spike (elites/gatekeepers) multiplies the rare/epic/legendary
 # odds, so bosses drop the shiny stuff — capped so Common is always possible.
 # [TUNABLE]
+# Affixes — the loot chase (AD-1, docs/proposals/gear-identity.md §3). Past a tier
+# floor a drop rolls QUALITIES instead of only bigger numbers. Which affixes exist
+# is content (meld_proto::affixes::AFFIXES); these are the knobs.
+[affix]
+count_common = 0                 # affixes rolled on a Common drop [TUNABLE]
+count_rare = 1
+count_epic = 2
+count_legendary = 3
+count_signature_bonus = 1        # a class-signature piece rolls one extra [TUNABLE]
+magnitude_per_tier = 1.6         # base magnitude = this x tier x the affix's own scale [TUNABLE]
+magnitude_jitter = 0.25          # +/- fraction on each roll [TUNABLE]
+# Tier floors per affix class: the early game stays legible (P1-3), builds bloom deep.
+tier_floor_stat = 0              # +N atk/def/spd from the first drop
+tier_floor_element = 3           # elemental resistance
+tier_floor_ward = 4              # start-of-battle Barrier/Regen/Evasion
+tier_floor_keyword = 6           # class-mechanic twists
+tier_floor_synergy = 8           # ally-conditional bonuses (party builds)
+resist_pct_per_tier = 4          # elemental resist % per tier, capped [TUNABLE]
+resist_pct_cap = 40
+
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop
 epic_weight = 0.09

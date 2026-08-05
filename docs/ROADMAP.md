@@ -762,6 +762,23 @@ the current build.
   that twist a class mechanic, and synergy affixes that reference allies (→ party
   builds, `AD-2`). Early bands stay legible for new players (`P1-3`); builds bloom deep.
   Design: [`proposals/gear-identity.md`](proposals/gear-identity.md) §3.
+  - 🟡 *Shipped — the affix engine, all five classes live:* the registry
+    (`meld_proto::affixes` — keys, what each twists, the name suffix it lends) with the
+    numbers as `[affix]` `[TUNABLE]`s; the seeded roll in `meld-world::roll_affixes`,
+    **tier-gated per affix class** (stat 0 → element 3 → ward 4 → keyword 6 → synergy 8)
+    so the early game stays a legible ladder and builds bloom deep; a `gear.affixes`
+    column and the wire/`GearView` field; folding in `equipped_gear_bonuses`. What each
+    class *does*: **stat** → atk/def/spd; **element** → a resist, riding the
+    `damage_modifiers` plumbing; **ward** → the hero starts each battle already holding
+    Barrier/Regen/Evasion; **keyword** → twists one class's mechanic (Explorer banks
+    Adrenaline pre-fight, Psyker gains a Focus slot) and is inert on any other class;
+    **synergy** → pays out only when the ally it names is in *this* party, resolved at
+    battle assembly. Items are renamed by their defining affix ("… of the Bulwark"), and
+    the tooltip lists one line per affix.
+  - **Remains:** **uniques** (build-defining + a real tradeoff) and **sets** (party-wide
+    bonuses) — the two chase tiers above affixes; rerolling via crafting (`MS-1`); and
+    the monster side of damage types (`AD-3` — gear can resist an element, but creatures
+    do not yet deal typed damage).
 - [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
 - [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on

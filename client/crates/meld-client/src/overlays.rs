@@ -881,14 +881,19 @@ pub(crate) fn render_overlay(
                                         // in the list, labelled with the reason —
                                         // hiding it would teach the player nothing.
                                         let blocked = gear_block_reason(g, hero_class);
+                                        let affix_mark = if g.affixes.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("  *{}", g.affixes.len())
+                                        };
                                         let text = match &blocked {
                                             Some(why) => format!(
                                                 "  {} {}  [{}{}{} t{}]  -- {}",
                                                 gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, why
                                             ),
                                             None => format!(
-                                                "  {} {}  [{}{}{} t{}]  +{}{}{}",
-                                                gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, stat, arrow, tag
+                                                "  {} {}  [{}{}{} t{}]  +{}{}{}{}",
+                                                gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, stat, affix_mark, arrow, tag
                                             ),
                                         };
                                         let mut col = if worn_here {
@@ -1169,6 +1174,12 @@ pub(crate) fn render_gear_tooltip(
     let note = wearable_note(item);
     if !note.is_empty() {
         lines.push((note, dim));
+    }
+    // AD-1: the affixes ARE the item. One line each, in their own colour, so a
+    // drop is read for what it does rather than for its stat number.
+    let affix_color = Color::srgb(0.72, 0.86, 1.0);
+    for a in &item.affixes {
+        lines.push((format!("  {}", a.describe()), affix_color));
     }
     lines.push((format!("{stat_label}: +{}", gear_slot_stat(item)), good));
     lines.push((format!("Durability: {dur}"), dim));
@@ -1698,6 +1709,7 @@ mod gear_label_tests {
             atk_bonus: 1,
             def_bonus: 0,
             spd_bonus: 0,
+            affixes: Vec::new(),
         }
     }
 
@@ -1744,6 +1756,7 @@ mod equip_ux_tests {
             atk_bonus: 3,
             def_bonus: 3,
             spd_bonus: 0,
+            affixes: Vec::new(),
         }
     }
 
