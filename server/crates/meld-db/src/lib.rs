@@ -2535,7 +2535,8 @@ mod tests {
     async fn affixes_fold_by_kind_and_respect_the_wearer_s_class() {
         use meld_proto::affixes::Affix;
         let db = mem().await;
-        let p = db.register("ad1", "pw").await.unwrap().player_id;
+        let test_password = Uuid::now_v7().to_string();
+        let p = db.register("ad1", &test_password).await.unwrap().player_id;
         db.set_hero_class(p, 0, "explorer").await.unwrap();
         db.set_hero_class(p, 1, "psyker").await.unwrap();
         let aff = |key: &str, m: i32| Affix {
