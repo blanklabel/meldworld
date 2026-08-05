@@ -259,6 +259,18 @@ pub struct GearLine {
     pub spd_bonus: i32,
 }
 
+/// One active class-pair synergy or runnable combo (AD-2), as the party screen
+/// renders it — the server describes them so the words never drift from the rules.
+#[derive(Clone, Debug, Default)]
+pub struct DepthLine {
+    pub name: String,
+    /// The mechanical effect (synergy) or the sequence (combo).
+    pub detail: String,
+    pub description: String,
+    /// Combos only: the payoff bonus as a percentage.
+    pub bonus_pct: i32,
+}
+
 /// One row of the Vanguard Board as the city panel renders it.
 #[derive(Clone, Debug)]
 pub struct VanguardLine {
@@ -350,7 +362,12 @@ pub enum ServerMsg {
     /// shader + entity Y (the lib netcode can't reach the render module directly).
     RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]> },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
-    Party { heroes: Vec<HeroLine> },
+    Party {
+        heroes: Vec<HeroLine>,
+        /// AD-2 build feedback: what this comp has active and what it can run.
+        synergies: Vec<DepthLine>,
+        combos: Vec<DepthLine>,
+    },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
     Perks { perks: PerksLine },
     /// The party gained a level — play the classic stat-gain screen.
@@ -1310,7 +1327,24 @@ impl Inner {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.out.push_back(ServerMsg::Party { heroes });
+                let depth = |key: &str, detail_key: &str| -> Vec<DepthLine> {
+                    raw.payload[key]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|d| DepthLine {
+                                    name: d["name"].as_str().unwrap_or("").to_string(),
+                                    detail: d[detail_key].as_str().unwrap_or("").to_string(),
+                                    description: d["description"].as_str().unwrap_or("").to_string(),
+                                    bonus_pct: d["bonus_pct"].as_i64().unwrap_or(0) as i32,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let synergies = depth("synergies", "effect");
+                let combos = depth("combos", "sequence");
+                self.out.push_back(ServerMsg::Party { heroes, synergies, combos });
             }
             "run.perks" => {
                 let p = &raw.payload;

@@ -96,7 +96,15 @@ pub(crate) fn pump_net(
                 backpack.chits = chits;
                 backpack.gear = gear;
             }
-            ServerMsg::Party { heroes } => roster.heroes = heroes,
+            ServerMsg::Party { heroes, synergies, combos } => {
+                roster.heroes = heroes;
+                // A party message with an empty roster is a formation/rename echo;
+                // don't let it wipe the depth lines the full roster carried.
+                if !synergies.is_empty() || !combos.is_empty() || !roster.heroes.is_empty() {
+                    roster.synergies = synergies;
+                    roster.combos = combos;
+                }
+            }
             ServerMsg::Perks { perks: p } => perks.0 = p,
             ServerMsg::LevelUp { new_run_level, heroes, .. } => {
                 // Enqueue each leveled hero for the old-school stat screen.

@@ -754,6 +754,11 @@ struct ChestEntity {
 #[derive(Resource, Default)]
 struct PartyRoster {
     heroes: Vec<meld_client::net::HeroLine>,
+    /// AD-2: the class-pair synergies this comp has ACTIVE and the sequenced combos
+    /// it can run, as described by the server. Shown on the party screen — a build
+    /// system the player cannot see is a build system they will never plan around.
+    synergies: Vec<meld_client::net::DepthLine>,
+    combos: Vec<meld_client::net::DepthLine>,
 }
 
 /// The caller's earned overworld class perks ("party sense"), from `run.perks`.

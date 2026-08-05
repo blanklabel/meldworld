@@ -1368,6 +1368,55 @@ impl WorldActor {
 
     /// The caller's hero roster (name/class/level/attributes) for the party panel.
     /// Reuses `party_fighters` so the stats match combat exactly.
+    /// AD-2: the class-pair synergies this player's comp has active and the combos
+    /// it can run, described for the party screen. Empty when the comp is unknown
+    /// (no run in flight) — the client just shows nothing.
+    fn party_depth(&self, pid: &str) -> (Vec<wr::SynergyView>, Vec<wr::ComboView>) {
+        use meld_proto::synergies::{self as syn, SynergyEffect as E};
+        let Some(comp) = self.party_classes.get(pid) else {
+            return (Vec::new(), Vec::new());
+        };
+        let adv = &self.balance.adventure;
+        let synergies = syn::active_synergies(comp)
+            .into_iter()
+            .map(|s| wr::SynergyView {
+                key: s.key.to_string(),
+                name: s.name.to_string(),
+                description: s.description.to_string(),
+                effect: match s.effect {
+                    E::PartyBarrier => format!(
+                        "every hero opens each fight with {} Barrier",
+                        adv.synergy_party_barrier
+                    ),
+                    E::PartyRegen => {
+                        format!("every hero gains {} Regen", adv.synergy_party_regen)
+                    }
+                    E::BackRowEvasion => format!(
+                        "back-row heroes gain {}% Evasion",
+                        adv.synergy_back_row_evasion
+                    ),
+                },
+            })
+            .collect();
+        let combos = syn::available_combos(comp)
+            .into_iter()
+            .map(|c| wr::ComboView {
+                key: c.key.to_string(),
+                name: c.name.to_string(),
+                sequence: format!(
+                    "{} ({}) then {} ({})",
+                    meld_proto::skills::pretty_skill(c.setup),
+                    syn::pretty_class_name(c.setup_class),
+                    meld_proto::skills::pretty_skill(c.payoff),
+                    syn::pretty_class_name(c.payoff_class),
+                ),
+                description: c.description.to_string(),
+                bonus_pct: ((c.damage_mult - 1.0) * 100.0).round() as i32,
+            })
+            .collect();
+        (synergies, combos)
+    }
+
     fn party_views(&self, pid: &str) -> Vec<wr::HeroView> {
         let inst = self;
         let Some(comp) = inst.party_classes.get(pid).cloned() else {
@@ -2250,7 +2299,7 @@ impl GameState {
                                     name.clone(),
                                 ));
                                 (
-                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new() })],
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new() })],
                                     vec![WorldEffect::SetSessionHeroName {
                                         player_id: player_id.to_string(),
                                         slot,
@@ -2292,7 +2341,7 @@ impl GameState {
                                     back,
                                 ));
                                 (
-                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new() })],
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new() })],
                                     vec![WorldEffect::SetSessionHeroRow {
                                         player_id: player_id.to_string(),
                                         slot,
@@ -2754,8 +2803,13 @@ impl GameState {
             }
             out.push(out_msg(
                 pid,
-                &wr::Party {
-                    heroes: rosters.get(pid).cloned().unwrap_or_default(),
+                &{
+                    let (synergies, combos) = inst.party_depth(pid);
+                    wr::Party {
+                        heroes: rosters.get(pid).cloned().unwrap_or_default(),
+                        synergies,
+                        combos,
+                    }
                 },
             ));
             // The caller's earned overworld class perks ("party sense").
@@ -3213,8 +3267,9 @@ impl WorldActor {
         (
             vec![out_msg(
                 player_id,
-                &wr::Party {
-                    heroes: self.party_views(player_id),
+                &{
+                    let (synergies, combos) = self.party_depth(player_id);
+                    wr::Party { heroes: self.party_views(player_id), synergies, combos }
                 },
             )],
             effects,
@@ -3267,8 +3322,9 @@ impl WorldActor {
         (
             vec![out_msg(
                 player_id,
-                &wr::Party {
-                    heroes: self.party_views(player_id),
+                &{
+                    let (synergies, combos) = self.party_depth(player_id);
+                    wr::Party { heroes: self.party_views(player_id), synergies, combos }
                 },
             )],
             effects,
@@ -5113,7 +5169,8 @@ impl WorldActor {
         }
         for pid in &leveled {
             let heroes = self.party_views(pid);
-            out.push(out_msg(pid, &wr::Party { heroes }));
+            let (synergies, combos) = self.party_depth(pid);
+            out.push(out_msg(pid, &wr::Party { heroes, synergies, combos }));
             // Perk tiers scale with run level, so refresh them on level-up too.
             out.push(out_msg(pid, &self.perks_for(pid)));
         }

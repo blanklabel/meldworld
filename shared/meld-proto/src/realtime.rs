@@ -598,6 +598,36 @@ pub mod run {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Party {
         pub heroes: Vec<HeroView>,
+        /// AD-2: the class-pair synergies this composition has ACTIVE, and the
+        /// sequenced combos it can perform. The build feedback loop — a player has
+        /// to see what their comp enables to chase a better one. Additive; older
+        /// clients simply don't render them.
+        #[serde(default)]
+        pub synergies: Vec<SynergyView>,
+        #[serde(default)]
+        pub combos: Vec<ComboView>,
+    }
+
+    /// One active class-pair synergy, described for the party screen.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SynergyView {
+        pub key: String,
+        pub name: String,
+        pub description: String,
+        /// The one-line mechanical effect ("every hero opens with 10 Barrier").
+        pub effect: String,
+    }
+
+    /// One combo this comp can run, as setup -> payoff.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ComboView {
+        pub key: String,
+        pub name: String,
+        /// e.g. "Snare (Explorer) then Backstab (Shifter)".
+        pub sequence: String,
+        pub description: String,
+        /// Damage multiplier on the payoff, as a percentage bonus (60 = +60%).
+        pub bonus_pct: i32,
     }
     impl Message for Party {
         const TYPE: &'static str = "run.party";
