@@ -918,4 +918,5 @@ mod tests {
         let f = party_fighters(&sustained, &runs, &b, &[]);
         assert!(f[0].regen >= b.adventure.synergy_party_regen, "explorer regen {}", f[0].regen);
     }
+
 }
