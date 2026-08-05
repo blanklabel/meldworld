@@ -171,8 +171,9 @@ client/scripts/trunk-serve.sh --port 9080 --address 127.0.0.1 --no-autoreload &
 # → open http://127.0.0.1:9080 and screenshot the canvas
 ```
 
-`?party=…` / `?class=…` preset the party and `?autoplay` self-drives the loop — handy
-for deterministic screenshot states. The `meld-web` entry in `.claude/launch.json`
+`?party=…` / `?class=…` preset the party, `?autoplay` self-drives the loop, and `?city`
+(+ `?wall` to light the Vanguard Wall) parks in Last City — handy for deterministic
+screenshot states. The `meld-web` entry in `.claude/launch.json`
 runs the trunk step for the browser-preview tooling. Pre-build the wasm once
 (`trunk-build.sh`) so the preview server starts fast instead of timing out on the
 cold Bevy compile.

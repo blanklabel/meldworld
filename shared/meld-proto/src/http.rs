@@ -116,3 +116,27 @@ pub struct LoginResponse {
     pub realtime_ticket: String,
     pub player: Player,
 }
+
+/// One ranked row on the Vanguard Board (`GET /v1/vanguard[/:season]`) —
+/// the seasonal deepest-distance leaderboard (behaviors/endgame-seasons.md,
+/// roadmap P1-1). Rank is 1-based and assigned by the server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VanguardEntry {
+    pub rank: i32,
+    pub player_id: String,
+    pub username: String,
+    /// Deepest integer distance reached in a single run this season.
+    pub max_distance: i32,
+    /// Server time (unix millis) the record was first reached — the tie-break.
+    pub achieved_at: i64,
+}
+
+/// `GET /v1/vanguard` / `GET /v1/vanguard/:season` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VanguardBoardResponse {
+    /// Which season this board covers (0-based, 13-week windows).
+    pub season: i32,
+    /// True once the season has closed — archived boards never change again.
+    pub archived: bool,
+    pub data: Vec<VanguardEntry>,
+}

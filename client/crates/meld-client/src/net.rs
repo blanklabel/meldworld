@@ -249,6 +249,14 @@ pub struct GearLine {
     pub spd_bonus: i32,
 }
 
+/// One row of the Vanguard Board as the city panel renders it.
+#[derive(Clone, Debug)]
+pub struct VanguardLine {
+    pub rank: i32,
+    pub username: String,
+    pub max_distance: i32,
+}
+
 /// A meld-skill row for the level-up screen.
 pub struct SkillLine {
     pub kind: String,
@@ -433,6 +441,13 @@ pub enum ServerMsg {
         /// Backpack.
         pending: Vec<(String, i32)>,
     },
+    /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
+    /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
+    VanguardBoard {
+        season: i32,
+        entries: Vec<VanguardLine>,
+        you: Option<i32>,
+    },
     /// Persistent per-account hero names (`GET /v1/heroes`), for the Equip/Status
     /// tabs when there's no active run's `PartyRoster` to source names from
     /// (e.g. opening the storage chest from the City).
@@ -478,6 +493,7 @@ struct Inner {
     inv_rx: Option<mpsc::Receiver<InvPayload>>,
     prog_rx: Option<mpsc::Receiver<ProgPayload>>,
     heroes_rx: Option<mpsc::Receiver<Vec<String>>>,
+    vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -515,6 +531,7 @@ pub fn start(base: String) -> Net {
         inv_rx: None,
         prog_rx: None,
         heroes_rx: None,
+        vanguard_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -562,6 +579,12 @@ impl Net {
     /// active run (no `PartyRoster` to source names from).
     pub fn fetch_hero_names(&self) {
         self.0.borrow_mut().fetch_hero_names();
+    }
+
+    /// Kick off an authenticated GET of the live Vanguard Board
+    /// (→ `VanguardBoard`) — the Vanguard Wall in Last City.
+    pub fn fetch_vanguard(&self) {
+        self.0.borrow_mut().fetch_vanguard();
     }
 
     /// Advance the state machine: fire queued commands, pump HTTP + WS.
@@ -641,6 +664,13 @@ impl Inner {
             if let Ok(names) = rx.try_recv() {
                 self.heroes_rx = None;
                 self.out.push_back(ServerMsg::HeroNames { names });
+            }
+        }
+
+        if let Some(rx) = &self.vanguard_rx {
+            if let Ok((season, entries, you)) = rx.try_recv() {
+                self.vanguard_rx = None;
+                self.out.push_back(ServerMsg::VanguardBoard { season, entries, you });
             }
         }
 
@@ -737,6 +767,42 @@ impl Inner {
                 }
             }
             let _ = tx.send(names);
+        });
+    }
+
+    /// GET `/v1/leaderboards/vanguard` (Bearer auth) for the live seasonal board.
+    /// The caller's own rank is read off the same page rather than a second
+    /// `/me` round-trip — the board is the top 100, so an unlisted caller is
+    /// simply unranked as far as the wall is concerned.
+    fn fetch_vanguard(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.vanguard_rx = Some(rx);
+        let token = self.session_token.clone();
+        let me = self.player_id.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/leaderboards/vanguard", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let (mut season, mut entries, mut you) = (0, Vec::new(), None);
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    season = v["season"].as_i64().unwrap_or(0) as i32;
+                    for e in v["data"].as_array().into_iter().flatten() {
+                        let rank = e["rank"].as_i64().unwrap_or(0) as i32;
+                        if e["player_id"].as_str() == Some(me.as_str()) {
+                            you = Some(rank);
+                        }
+                        entries.push(VanguardLine {
+                            rank,
+                            username: e["username"].as_str().unwrap_or("?").to_string(),
+                            max_distance: e["max_distance"].as_i64().unwrap_or(0) as i32,
+                        });
+                    }
+                }
+            }
+            let _ = tx.send((season, entries, you));
         });
     }
 

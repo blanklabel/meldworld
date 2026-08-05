@@ -255,7 +255,133 @@ impl Db {
         sqlx::query("ALTER TABLE heroes ADD COLUMN IF NOT EXISTS back_row BOOLEAN NOT NULL DEFAULT false")
             .execute(pool)
             .await?;
+        // The Vanguard Board (roadmap P1-1, behaviors/endgame-seasons.md): the
+        // per-season deepest-distance leaderboard. One row per (season, player):
+        // that player's deepest run in the season. `achieved_at` is the tie-break.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS vanguard (
+                season       INTEGER NOT NULL,
+                player_id    UUID NOT NULL REFERENCES players(player_id),
+                max_distance INTEGER NOT NULL,
+                achieved_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (season, player_id)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        // Board reads are `ORDER BY max_distance DESC, achieved_at ASC` within one
+        // season — index that exact shape so the live board stays a cheap query.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_vanguard_rank ON vanguard(season, max_distance DESC, achieved_at ASC)",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
+    }
+
+    /// Post a run's deepest distance to the Vanguard Board for `season`.
+    ///
+    /// Monotonic: the stored record only ever grows, and `achieved_at` is stamped
+    /// only when the record improves, so the earliest-to-the-frontier tie-break
+    /// holds (spec "Ranking rules"). Returns `true` on a new personal best.
+    pub async fn record_vanguard_distance(
+        &self,
+        player_id: Uuid,
+        season: i32,
+        distance: i32,
+    ) -> Result<bool, DbError> {
+        if distance <= 0 {
+            return Ok(false);
+        }
+        match &self.backend {
+            Backend::Pg(pool) => {
+                // The `WHERE` makes a shallower post a true no-op: neither the
+                // distance nor the timestamp moves.
+                let res = sqlx::query(
+                    "INSERT INTO vanguard (season, player_id, max_distance) VALUES ($1, $2, $3)
+                     ON CONFLICT (season, player_id) DO UPDATE
+                       SET max_distance = $3, achieved_at = now()
+                       WHERE vanguard.max_distance < $3",
+                )
+                .bind(season)
+                .bind(player_id)
+                .bind(distance)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let e = m.vanguard.entry((season, player_id)).or_insert((0, Utc::now()));
+                if e.0 < distance {
+                    *e = (distance, Utc::now());
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// The Vanguard Board for one season, best-first, capped at `limit` rows.
+    ///
+    /// Ranking: `max_distance` DESC, then earliest `achieved_at` (first to the
+    /// frontier wins the tie), then `player_id` as the final deterministic key.
+    pub async fn vanguard_board(
+        &self,
+        season: i32,
+        limit: i64,
+    ) -> Result<Vec<VanguardRow>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT v.player_id, p.username, v.max_distance, v.achieved_at
+                       FROM vanguard v JOIN players p USING (player_id)
+                      WHERE v.season = $1
+                      ORDER BY v.max_distance DESC, v.achieved_at ASC, v.player_id ASC
+                      LIMIT $2",
+                )
+                .bind(season)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| VanguardRow {
+                        player_id: r.get("player_id"),
+                        username: r.get("username"),
+                        max_distance: r.get("max_distance"),
+                        achieved_at: r.get::<DateTime<Utc>, _>("achieved_at"),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut rows: Vec<VanguardRow> = m
+                    .vanguard
+                    .iter()
+                    .filter(|((s, _), _)| *s == season)
+                    .filter_map(|((_, pid), (dist, at))| {
+                        m.players.get(pid).map(|p| VanguardRow {
+                            player_id: *pid,
+                            username: p.username.clone(),
+                            max_distance: *dist,
+                            achieved_at: *at,
+                        })
+                    })
+                    .collect();
+                rows.sort_by(|a, b| {
+                    b.max_distance
+                        .cmp(&a.max_distance)
+                        .then(a.achieved_at.cmp(&b.achieved_at))
+                        .then(a.player_id.cmp(&b.player_id))
+                });
+                rows.truncate(limit.max(0) as usize);
+                Ok(rows)
+            }
+        }
     }
 
     /// The player's hero names by slot (0-based), ordered. Empty if never set.
@@ -1504,6 +1630,8 @@ struct Mem {
     heroes: HashMap<(Uuid, i16), String>,
     /// heroes.back_row, keyed by (player_id, slot); absent = false (front).
     hero_rows: HashMap<(Uuid, i16), bool>,
+    /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
+    vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
 }
 
 struct MemPlayer {
@@ -1816,4 +1944,74 @@ mod tests {
         db.set_hero_row(p, 2, false).await.unwrap();
         assert_eq!(db.get_hero_rows(p).await.unwrap()[2], false);
     }
+
+    #[tokio::test]
+    async fn vanguard_board_ranks_deepest_first_and_records_only_personal_bests() {
+        let db = mem().await;
+        let deep = db.register("vg_deep", "password123").await.unwrap();
+        let shallow = db.register("vg_shallow", "password123").await.unwrap();
+        let season = current_season();
+
+        assert!(db.record_vanguard_distance(deep.player_id, season, 400).await.unwrap());
+        assert!(db.record_vanguard_distance(shallow.player_id, season, 120).await.unwrap());
+        // A shallower run never replaces a deeper record, and reports no new best.
+        assert!(!db.record_vanguard_distance(deep.player_id, season, 200).await.unwrap());
+        assert!(db.record_vanguard_distance(deep.player_id, season, 900).await.unwrap());
+        // Distance 0 (never left the hub) does not put you on the board at all.
+        let never = db.register("vg_never", "password123").await.unwrap();
+        assert!(!db.record_vanguard_distance(never.player_id, season, 0).await.unwrap());
+
+        let board = db.vanguard_board(season, 100).await.unwrap();
+        assert_eq!(board.len(), 2);
+        assert_eq!(board[0].username, "vg_deep");
+        assert_eq!(board[0].max_distance, 900);
+        assert_eq!(board[1].username, "vg_shallow");
+        // Seasons are separate boards: last season's rows never leak into this one.
+        assert!(db.vanguard_board(season - 1, 100).await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn seasons_are_back_to_back_13_week_windows() {
+        assert_eq!(season_at(SEASON_EPOCH_UNIX), 0);
+        assert_eq!(season_at(SEASON_EPOCH_UNIX + SEASON_LEN_SECS - 1), 0);
+        assert_eq!(season_at(SEASON_EPOCH_UNIX + SEASON_LEN_SECS), 1);
+        assert_eq!(season_at(SEASON_EPOCH_UNIX + 2 * SEASON_LEN_SECS), 2);
+        // A clock skewed before the epoch clamps instead of minting season -1.
+        assert_eq!(season_at(0), 0);
+    }
+}
+
+// ------------------------------------------------------- the Vanguard Board ---
+
+/// One stored Vanguard Board record (roadmap P1-1). Unranked — rank is assigned
+/// by the reader from the query's order, so a slice of the board still ranks 1..n.
+#[derive(Debug, Clone)]
+pub struct VanguardRow {
+    pub player_id: Uuid,
+    pub username: String,
+    pub max_distance: i32,
+    pub achieved_at: DateTime<Utc>,
+}
+
+/// Seasons are back-to-back 13-week UTC epochs with no off-season gap
+/// (behaviors/endgame-seasons.md, CANON §B — structural). Season 0 opens at
+/// `SEASON_EPOCH_UNIX`; every board query resolves its season through here so
+/// the server never stores a wall-clock season id it would later disagree with.
+pub const SEASON_EPOCH_UNIX: i64 = 1_735_689_600;
+
+/// 13 weeks in seconds — the season length (structural, not a balance tunable).
+pub const SEASON_LEN_SECS: i64 = 13 * 7 * 24 * 60 * 60;
+
+/// Which season a unix-seconds instant falls in. Instants before the epoch clamp
+/// to season 0, so a clock skewed backwards can't mint a negative board.
+pub fn season_at(unix_secs: i64) -> i32 {
+    if unix_secs <= SEASON_EPOCH_UNIX {
+        return 0;
+    }
+    ((unix_secs - SEASON_EPOCH_UNIX) / SEASON_LEN_SECS) as i32
+}
+
+/// The season currently open.
+pub fn current_season() -> i32 {
+    season_at(Utc::now().timestamp())
 }

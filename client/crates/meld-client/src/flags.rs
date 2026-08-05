@@ -60,6 +60,18 @@ pub(crate) fn city_idle_flag() -> bool {
     query_has("city")
 }
 
+/// Light the Vanguard Wall on arrival (with `MELD_CITY`) — a stable frame for
+/// screenshotting the seasonal board without having to walk over and press [E].
+/// Native: `MELD_WALL`. Browser: `?wall`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn wall_preview_flag() -> bool {
+    std::env::var("MELD_WALL").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn wall_preview_flag() -> bool {
+    query_has("wall")
+}
+
 /// Preview a boss/elite sprite in The Last City plaza (with `MELD_CITY`) — a stable
 /// frame for eyeballing the encounter art. Native: `MELD_BOSS=ironmaw`. Browser:
 /// `?boss=ironmaw`. See `world_render::BOSS_KEYS` for valid ids.

@@ -107,6 +107,7 @@ fn main() {
                 ServerMsg::Gauge { .. }
                 | ServerMsg::ChestOpened { .. }
                 | ServerMsg::HeroNames { .. }
+                | ServerMsg::VanguardBoard { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }

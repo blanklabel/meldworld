@@ -80,13 +80,14 @@ pub(crate) fn pump_net(
         ResMut<RunGearData>,
         ResMut<WorldWeb>,
         ResMut<crate::world_render::DungeonSceneRes>,
+        ResMut<VanguardBoardData>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut levelup: ResMut<LevelUpQueue>,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web, dungeon_scene) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web, dungeon_scene, vanguard) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -410,6 +411,12 @@ pub(crate) fn pump_net(
                 prog.skills = skills;
                 prog.classes = classes;
                 prog.loaded = true;
+            }
+            ServerMsg::VanguardBoard { season, entries, you } => {
+                vanguard.season = season;
+                vanguard.entries = entries;
+                vanguard.you = you;
+                vanguard.loaded = true;
             }
             ServerMsg::HeroNames { names } => {
                 hero_names.names = names;
