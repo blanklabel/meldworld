@@ -256,6 +256,12 @@ fn effective_gear_bonus(
         def: vault.def,
         spd: vault.spd,
         modifiers: vault.modifiers,
+        barrier: vault.barrier,
+        regen: vault.regen,
+        evasion: vault.evasion,
+        adrenaline: vault.adrenaline,
+        focus_slots: vault.focus_slots,
+        synergies: vault.synergies,
     };
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {
@@ -4006,6 +4012,7 @@ impl WorldActor {
                 damage_modifiers: g.damage_modifiers.clone(),
                 family: g.family.clone(),
                 armor_weight: g.armor_weight.clone(),
+                affixes: g.affixes.clone(),
             })
             .collect();
         let mut run_gear_snapshot = None;
@@ -4106,6 +4113,7 @@ impl WorldActor {
                     damage_modifiers: g.damage_modifiers.clone(),
                     family: g.family.clone(),
                     armor_weight: g.armor_weight.clone(),
+                    affixes: g.affixes.clone(),
                 });
             }
         }
@@ -4240,6 +4248,7 @@ impl GameState {
                             damage_modifiers: modifiers_json(&g.damage_modifiers),
                             family: g.family.clone(),
                             armor_weight: g.armor_weight.clone(),
+                            affixes: meld_proto::affixes::to_json(&g.affixes),
                         })
                     })
                     .collect();
@@ -4826,6 +4835,7 @@ impl WorldActor {
                             damage_modifiers: g.damage_modifiers.clone(),
                             family: g.family.clone(),
                             armor_weight: g.armor_weight.clone(),
+                            affixes: g.affixes.clone(),
                         })
                         .collect();
                     // Record loot in the run so extraction can bank it.

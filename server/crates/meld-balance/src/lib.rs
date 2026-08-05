@@ -25,6 +25,7 @@ pub struct Balance {
     pub loot: Loot,
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
+    pub affix: Affix,
     pub meld: Meld,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -190,6 +191,51 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+}
+
+/// Affix knobs (AD-1). Which affixes exist is content
+/// (`meld_proto::affixes::AFFIXES`); these are the numbers here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Affix {
+    pub count_common: usize,
+    pub count_rare: usize,
+    pub count_epic: usize,
+    pub count_legendary: usize,
+    pub count_signature_bonus: usize,
+    pub magnitude_per_tier: f64,
+    pub magnitude_jitter: f64,
+    pub tier_floor_stat: i32,
+    pub tier_floor_element: i32,
+    pub tier_floor_ward: i32,
+    pub tier_floor_keyword: i32,
+    pub tier_floor_synergy: i32,
+    pub resist_pct_per_tier: i32,
+    pub resist_pct_cap: i32,
+}
+
+impl Affix {
+    /// How many affixes a drop of this rarity rolls.
+    pub fn count_for(&self, rarity: &str, signature: bool) -> usize {
+        let base = match rarity {
+            "legendary" => self.count_legendary,
+            "epic" => self.count_epic,
+            "rare" => self.count_rare,
+            _ => self.count_common,
+        };
+        base + if signature { self.count_signature_bonus } else { 0 }
+    }
+
+    /// The tier a given affix class unlocks at, keyed by its wire word — so this
+    /// crate stays a pure config loader with no proto dependency.
+    pub fn tier_floor(&self, class: &str) -> i32 {
+        match class {
+            "element" => self.tier_floor_element,
+            "ward" => self.tier_floor_ward,
+            "keyword" => self.tier_floor_keyword,
+            "synergy" => self.tier_floor_synergy,
+            _ => self.tier_floor_stat,
+        }
+    }
 }
 
 /// Gear-rarity tunables (loot excitement). See the `[gear_rarity]` block.

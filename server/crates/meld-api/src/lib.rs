@@ -378,6 +378,7 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     equipped_hero_slot: g.equipped_hero_slot,
                     family: g.family,
                     armor_weight: g.armor_weight,
+                    affixes: meld_proto::affixes::from_json(&g.affixes),
                 })
                 .collect();
             Ok((StatusCode::OK, Json(GearListResponse { data })).into_response())

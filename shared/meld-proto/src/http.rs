@@ -105,6 +105,9 @@ pub struct GearView {
     /// GR-5 armor weight wire word (`heavy`, `robe`, …); empty = unrestricted.
     #[serde(default)]
     pub armor_weight: String,
+    /// AD-1 rolled affixes — what makes this piece worth chasing.
+    #[serde(default)]
+    pub affixes: Vec<crate::affixes::Affix>,
 }
 
 /// `GET /v1/vault/gear` response.

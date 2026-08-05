@@ -89,6 +89,9 @@ pub struct LootGear {
     /// GR-5 armor weight wire word (`heavy`, `robe`, …) for head/chest/legs.
     #[serde(default)]
     pub armor_weight: String,
+    /// AD-1 rolled affixes — what makes this drop interesting.
+    #[serde(default)]
+    pub affixes: Vec<crate::affixes::Affix>,
 
 }
 

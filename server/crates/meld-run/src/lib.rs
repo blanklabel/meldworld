@@ -161,6 +161,17 @@ pub struct GearBonus {
     pub atk: i32,
     pub def: i32,
     pub spd: i32,
+    /// AD-1 ward affixes — what the hero starts each battle holding.
+    pub barrier: i32,
+    pub regen: i32,
+    /// Evasion in percentage points.
+    pub evasion: i32,
+    /// AD-1 keyword affixes, already filtered to this hero's class.
+    pub adrenaline: i32,
+    pub focus_slots: i32,
+    /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
+    /// where the party composition is known.
+    pub synergies: Vec<(String, i32, i32)>,
     /// Raw per-item elemental entries (DamageType wire key → multiplier) from
     /// every equipped piece; folded and clamped by [`fold_damage_modifiers`]
     /// at battle assembly (spec §5).
@@ -263,6 +274,26 @@ pub fn party_fighters(
             f.dodge = dodge;
             // Elemental wards from gear (spec §5): folded + clamped 0.0–2.0.
             f.damage_modifiers = fold_damage_modifiers(&bonus.modifiers);
+            // AD-1 ward affixes: the hero walks into the fight already holding
+            // these, which is what makes a ward roll a build rather than a stat.
+            f.barrier += bonus.barrier;
+            f.regen += bonus.regen;
+            if bonus.evasion > 0 {
+                f.evasion += bonus.evasion as f64 / 100.0;
+            }
+            // Synergy affixes pay out only if the ally they name is in THIS party —
+            // resolved here because battle assembly is the only place that knows the
+            // composition (AD-1 → party builds).
+            for (ally, atk, def) in &bonus.synergies {
+                if party
+                    .iter()
+                    .enumerate()
+                    .any(|(j, (_, _, c, _))| j != i && class_key(*c) == ally.as_str())
+                {
+                    f.atk += atk;
+                    f.def += def;
+                }
+            }
             // Surface the class to the client (drives the per-hero command menu).
             f.class_key = class_key(*class).to_string();
             match *class {
@@ -276,7 +307,9 @@ pub fn party_fighters(
                     } else {
                         0
                     };
-                    f.focus_max = (bb.psyker_focus_base as i32 + extra)
+                    // AD-1 "of the Open Mind": an extra Focus slot is a Psyker's
+                    // whole build, so it lands on top of the level curve.
+                    f.focus_max = (bb.psyker_focus_base as i32 + extra + bonus.focus_slots)
                         .clamp(bb.psyker_focus_base as i32, bb.psyker_focus_cap as i32)
                         as usize;
                     f.back_row = true;
@@ -291,6 +324,9 @@ pub fn party_fighters(
                 // and spends it on skills; it holds the front line. Starts at 0.
                 CharacterClass::Explorer => {
                     f.adrenaline_max = balance.battle.explorer_adrenaline_max;
+                    // AD-1 "of Fury": walk in with Adrenaline already banked, so the
+                    // first turn can be a skill instead of a wind-up attack.
+                    f.adrenaline = bonus.adrenaline.min(f.adrenaline_max);
                 }
                 // Other martial classes hold the front line with no special resource.
                 _ => {}
@@ -610,12 +646,70 @@ mod tests {
             "p".into(),
             "c".into(),
             CharacterClass::Explorer,
-            GearBonus { atk: 5, def: 3, spd: 2, modifiers: Vec::new() },
+            GearBonus { atk: 5, def: 3, spd: 2, ..Default::default() },
         )];
         let f0 = party_fighters(&bare, &runs, &b, &[]).pop().unwrap();
         let f1 = party_fighters(&geared, &runs, &b, &[]).pop().unwrap();
         assert_eq!(f1.atk, f0.atk + 5);
         assert_eq!(f1.def, f0.def + 3);
         assert_eq!(f1.speed_stat, f0.speed_stat + 2);
+    }
+
+    #[test]
+    fn ward_and_keyword_affixes_reach_the_fighter() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        let warded: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Explorer,
+            GearBonus {
+                barrier: 12,
+                regen: 3,
+                evasion: 10,
+                adrenaline: 4,
+                ..Default::default()
+            },
+        )];
+        let f = party_fighters(&warded, &runs, &b, &[]).pop().unwrap();
+        // The hero walks in already holding the wards — that is the build.
+        assert_eq!(f.barrier, 12);
+        assert!(f.regen >= 3);
+        assert!((f.evasion - 0.10).abs() < 1e-9, "evasion {}", f.evasion);
+        // "of Fury": Adrenaline banked before the first turn, capped by the max.
+        assert_eq!(f.adrenaline, 4.min(f.adrenaline_max));
+    }
+
+    #[test]
+    fn a_synergy_affix_pays_out_only_when_its_ally_is_in_the_party() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        let synergy = GearBonus {
+            synergies: vec![("resonant".to_string(), 6, 2)],
+            ..Default::default()
+        };
+        let hero = |class: CharacterClass, bonus: GearBonus| -> PartyMember {
+            ("p".into(), "c".into(), class, bonus)
+        };
+        // Alone, the affix is inert…
+        let solo = vec![hero(CharacterClass::Explorer, synergy.clone())];
+        let f_solo = party_fighters(&solo, &runs, &b, &[]).pop().unwrap();
+        // …with the named ally alongside, it pays.
+        let mixed = vec![
+            hero(CharacterClass::Explorer, synergy.clone()),
+            hero(CharacterClass::Resonant, GearBonus::default()),
+        ];
+        let f_mixed = party_fighters(&mixed, &runs, &b, &[]).remove(0);
+        assert_eq!(f_mixed.atk, f_solo.atk + 6);
+        assert_eq!(f_mixed.def, f_solo.def + 2);
+        // A different ally does not satisfy it.
+        let wrong = vec![
+            hero(CharacterClass::Explorer, synergy),
+            hero(CharacterClass::Shifter, GearBonus::default()),
+        ];
+        let f_wrong = party_fighters(&wrong, &runs, &b, &[]).remove(0);
+        assert_eq!(f_wrong.atk, f_solo.atk);
     }
 }
