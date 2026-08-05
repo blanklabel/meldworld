@@ -50,6 +50,8 @@ is the *vision*, deferred until Phase 1 proves the core is fun.**
 **① Make loot a chase — the #1 retention lever.** Every dive should produce something
 exciting; today's drops are flat stat sticks.
 → **AD-1** (gear affixes — the star) · **GR-1** (7 equipment slots — affixes need them) ·
+**GR-5** (class-locked kit + two-handed — gives affixes a *class* to twist) ·
+**GR-6** (Ephemeral instead of "red", with a tooltip — a trust fix) ·
 **GR-2** (durability & the wipe — the repair sink + "you lose what you didn't extract").
 
 **② Close the economy loop — make the Vault mean something.** dive → loot →
@@ -179,6 +181,55 @@ burns on death/leave; some is single-use. See
   (GR-1), max-durability loss on death, gear breaking, and the rule that **a wipe
   strips everything you didn't extract** (backpack lost; only insured Blue-Chest
   gear comes home). Ties to the crafter repair economy (MS-1) and GDD §7 "Durability Sink."
+- [ ] **GR-5 — Class-locked equipment & two-handed weapons.** Every equippable item
+  declares a **family** (sword/shield/spear/staff/globe/gauntlet/dagger/parry_blade)
+  and every class declares which families it may wear, so classes read as classes:
+  Explorer sword+shield *or* two-handed spear, Resonant staff (2H), Psyker globe (2H),
+  Iron Hull gauntlet+shield, Shifter dagger with **two** legal off-hands (second dagger
+  or parrying blade). A **two-handed** weapon occupies `main_hand` and reserves
+  `off_hand` (409 + offer-to-unequip, never a silent stat loss). Armor uses **weight
+  classes** (heavy/medium/light/robe) with a per-class allowed *set* so most drops fit
+  more than one hero, **plus rare class-exclusive signature pieces** that ignore the
+  weight table and carry a class-flavored keyword affix (the armor arm of `AD-1`
+  uniques). Enforced server-side at equip, in derivation, and at loot generation —
+  never client-side (CANON §S).
+  Design: [`proposals/gear-identity.md`](proposals/gear-identity.md) §1.
+  - 🟡 *Landed:* the shared legality table (`meld_proto::equipment` — families, hands,
+    weights, `check_equip` naming the rule that failed), `gear.family` /
+    `gear.armor_weight` columns (additive; an item with no descriptor stays
+    unrestricted, so no Vault breaks), the generator rolling a class-appropriate
+    family/weight per drop — and **never rolling an off-hand for a two-handed class**
+    (no dead drops) — plus the client tooltip line ("staff (two-handed)", "heavy
+    armor"). Enforcement is authoritative in **derivation**
+    (`equipped_gear_bonuses`): illegal gear grants nothing. Nouns that contradicted
+    the families were fixed (Psyker Focus Rod → Psi-Orb, Resonant Ward Scepter → Ward
+    Stave, Iron Hull Warhammer → Kinetic Gauntlet).
+  - **Remains:** an equip-time `409` (blocked on `GR-7` below — there is no persisted
+    hero class to check against in town), the two-handed *equip UX* (reserve the
+    off-hand + offer-to-unequip), greying illegal rows in the inventory grid, and
+    authoring signature pieces.
+- [ ] **GR-7 — Persist a hero's class per slot.** Today the party is chosen per dive and
+  gear equips to a *slot*, so in town the server cannot say what class hero 2 is — which
+  is why `GR-5` can only enforce at derivation. Persist a class per hero row (the
+  `heroes` table already holds name + `back_row`), so a hero becomes a character rather
+  than a slot. Unlocks: equip-time legality (`GR-5`), saved loadouts (`PT-2`), and
+  per-hero progression later. Party choice at dive time becomes *which* heroes you take.
+- [ ] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
+  **`Ephemeral`** and `Blue` → **`Insured`** on the wire (serde alias keeps old
+  payloads parsing) and in every player-facing string; the Blue-Chest/Red-Chest
+  *fiction* stays in CANON §G but stops being the label a player must decode. Every
+  gear row shows the word plus a hover / press-and-hold tooltip — Ephemeral:
+  "**Vanishes when the run ends** — win or lose." A player must never lose an item
+  they didn't know was temporary. Unblocks `GR-3`.
+  Design: [`proposals/gear-identity.md`](proposals/gear-identity.md) §2.
+  - 🟡 *Landed:* the enum rename with `blue`/`red` serde aliases, `Insurance::label()`
+    / `tooltip()` as the single source of player-facing copy, the API normalizing stored
+    chest colours to `insured`/`ephemeral` on the wire, and the gear tooltip showing
+    **Ephemeral — "Vanishes when the run ends - win or lose."** on its own amber line
+    (an unparseable word reads as Ephemeral: wrongly believing an item is safe costs the
+    player the item).
+  - **Remains:** the same wording in the run-loot/backpack HUD and the end-of-run
+    summary, and press-and-hold on touch.
 - [ ] **GR-3 — Ephemeral items/gear.** A distinct class of items (incl. Red-Chest
   gear) that **always** vanish on death *or* on voluntarily leaving Meldworld —
   they never bank to the Vault, only matter for the current dive. Model as an
@@ -690,7 +741,13 @@ the current build.
   classes — **stat / keyword (twist a class mechanic) / synergy (reference allies)** — from
   distance-banded tiered pools; **uniques** (build-defining + a tradeoff) and **sets**
   (party-wide bonuses). Extends `GR-1` + gear-item-models; rolled/rerolled by crafting
-  (`MS-1`). *Highest-leverage item — it's what "crazy grinding" runs on.*
+  (`MS-1`). *Highest-leverage item — it's what "crazy grinding" runs on.* Past a
+  `[TUNABLE]` tier floor, drops roll **qualities, not magnitudes** — damage types
+  (`AD-3`, riding the dormant `gear.damage_modifiers` column), on-hit statuses reusing
+  states the ATB already models (Barrier/Regen/Evasion/gauge-drain), keyword affixes
+  that twist a class mechanic, and synergy affixes that reference allies (→ party
+  builds, `AD-2`). Early bands stay legible for new players (`P1-3`); builds bloom deep.
+  Design: [`proposals/gear-identity.md`](proposals/gear-identity.md) §3.
 - [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
 - [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on

@@ -5,6 +5,7 @@
 //! Layout mirrors CANON.md §I:
 //! - [`envelope`] — the realtime `{type, seq, ts, payload}` frame.
 //! - [`enums`] — canonical enums (`CharacterClass`, error codes, …).
+//! - [`equipment`] — which gear each class may wear (GR-5).
 //! - [`common`] — shared payload objects (`Position`, `ItemStack`, `Combatant`).
 //! - [`realtime`] — C2S/S2C message payloads by domain.
 //! - [`http`] — HTTP request/response DTOs.
@@ -14,6 +15,7 @@ pub mod abilities;
 pub mod common;
 pub mod enums;
 pub mod envelope;
+pub mod equipment;
 pub mod factions;
 pub mod http;
 pub mod limits;

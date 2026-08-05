@@ -3974,7 +3974,7 @@ impl WorldActor {
                 rarity: g.rarity.clone(),
                 slot: g.slot.clone(),
                 class_key: g.class_key.clone(),
-                insurance: Insurance::Red,
+                insurance: Insurance::Ephemeral,
                 tier: g.tier,
                 atk_bonus: g.atk_bonus,
                 def_bonus: g.def_bonus,
@@ -3983,6 +3983,8 @@ impl WorldActor {
                 max_durability: g.max_durability,
                 equipped_hero_slot: None,
                 damage_modifiers: g.damage_modifiers.clone(),
+                family: g.family.clone(),
+                armor_weight: g.armor_weight.clone(),
             })
             .collect();
         let mut run_gear_snapshot = None;
@@ -4072,7 +4074,7 @@ impl WorldActor {
                     rarity: g.rarity.clone(),
                     slot: g.slot.clone(),
                     class_key: g.class_key.clone(),
-                    insurance: Insurance::Red,
+                    insurance: Insurance::Ephemeral,
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,
                     def_bonus: g.def_bonus,
@@ -4081,6 +4083,8 @@ impl WorldActor {
                     max_durability: g.max_durability,
                     equipped_hero_slot: None,
                     damage_modifiers: g.damage_modifiers.clone(),
+                    family: g.family.clone(),
+                    armor_weight: g.armor_weight.clone(),
                 });
             }
         }
@@ -4213,6 +4217,8 @@ impl GameState {
                             base_max_durability: g.base_max_durability,
                             max_durability: g.max_durability,
                             damage_modifiers: modifiers_json(&g.damage_modifiers),
+                            family: g.family.clone(),
+                            armor_weight: g.armor_weight.clone(),
                         })
                     })
                     .collect();
@@ -4788,7 +4794,7 @@ impl WorldActor {
                             rarity: g.rarity.clone(),
                             slot: g.slot.clone(),
                             class_key: g.class_key.clone(),
-                            insurance: Insurance::Red,
+                            insurance: Insurance::Ephemeral,
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
                             def_bonus: g.def_bonus,
@@ -4797,6 +4803,8 @@ impl WorldActor {
                             max_durability: g.max_durability,
                             equipped_hero_slot: None,
                             damage_modifiers: g.damage_modifiers.clone(),
+                            family: g.family.clone(),
+                            armor_weight: g.armor_weight.clone(),
                         })
                         .collect();
                     // Record loot in the run so extraction can bank it.

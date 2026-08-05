@@ -33,6 +33,7 @@ use std::collections::HashMap;
 
 use meld_balance::Balance;
 use meld_proto::common::Position;
+use meld_proto::equipment as eq;
 use meld_proto::factions::creatures_hostile;
 use meld_proto::Id;
 
@@ -235,6 +236,12 @@ pub struct GearDrop {
     /// key → multiplier (`0.75` = resists a quarter of that element). Empty for
     /// common/rare drops; epic+/signature pieces carry their biome's element.
     pub damage_modifiers: Vec<(String, f64)>,
+    /// GR-5 weapon family wire word for hand slots (`sword`, `staff`, `globe`, …);
+    /// empty for armor and accessories.
+    pub family: String,
+    /// GR-5 armor weight wire word for head/chest/legs (`heavy`, `robe`, …);
+    /// empty for weapons and accessories.
+    pub armor_weight: String,
 }
 
 /// The loot a felled encounter yields to one participant.
@@ -319,16 +326,16 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("bard", "main_hand") => "Songblade",
         ("bard", "chest") => "Minstrel's Coat",
         ("bard", "accessory") => "Lyre Pendant",
-        ("psyker", "main_hand") => "Focus Rod",
+        ("psyker", "main_hand") => "Psi-Orb",
         ("psyker", "chest") => "Psi-Ward",
         ("psyker", "accessory") => "Mindshard",
-        ("resonant", "main_hand") => "Ward Scepter",
+        ("resonant", "main_hand") => "Ward Stave",
         ("resonant", "chest") => "Resonant Vestments",
         ("resonant", "accessory") => "Harmony Bell",
         ("shifter", "main_hand") => "Glitchblade",
         ("shifter", "chest") => "Runner's Wrap",
         ("shifter", "accessory") => "Flicker Charm",
-        ("iron_hull", "main_hand") => "Warhammer",
+        ("iron_hull", "main_hand") => "Kinetic Gauntlet",
         ("iron_hull", "chest") => "Bulwark Plate",
         ("iron_hull", "accessory") => "Aggro Band",
         // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
@@ -452,13 +459,34 @@ pub fn roll_creature_loot(
         let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
         // The six item categories of the 7-slot loadout (Epic GR spec §5):
         // ACCESSORY_1/2 are two *equip* slots sharing the one accessory category.
-        let slot =
+        let mut slot =
             ["main_hand", "off_hand", "head", "chest", "legs", "accessory"][rng.below(6)];
         // Every drop belongs to one of the ten classes (no class-agnostic
         // gear) — picked independent of the party's actual composition, like
         // any other loot roll; a hero can only wear/benefit from gear that
         // matches their own class (enforced server-side at equip/battle time).
         let class_key = CLASS_KEYS[rng.below(CLASS_KEYS.len())];
+        // GR-5: the drop's family/weight come from the class it belongs to, so a
+        // Resonant drop is a stave and an Iron Hull drop is plate. A two-handed
+        // class has no off-hand to fill, so an off_hand roll becomes its main
+        // hand rather than an unwearable (dead) drop.
+        let drop_class = eq::class_from_key(class_key);
+        if slot == "off_hand" && drop_class.map(|c| !eq::has_off_hand(c)).unwrap_or(false) {
+            slot = "main_hand";
+        }
+        let (family, armor_weight) = match (drop_class, slot) {
+            (Some(c), "main_hand" | "off_hand") => {
+                let legal = eq::families_for_slot(c, slot);
+                let f = legal
+                    .get(if legal.len() > 1 { rng.below(legal.len()) } else { 0 })
+                    .copied();
+                (f.map(|f| f.wire().to_string()).unwrap_or_default(), String::new())
+            }
+            (Some(c), "head" | "chest" | "legs") => {
+                (String::new(), eq::drop_weight(c).wire().to_string())
+            }
+            _ => (String::new(), String::new()),
+        };
         let gjitter = 1.0 + rng.signed() * l.gear_atk_jitter;
         // Rarity: the encounter's loot spike multiplies the rare/epic/legendary
         // odds (so elites/gatekeepers drop the shiny stuff), capped so Common is
@@ -558,6 +586,8 @@ pub fn roll_creature_loot(
             spd_bonus,
             max_durability: l.gear_base_durability,
             damage_modifiers,
+            family,
+            armor_weight,
         })
     } else {
         None

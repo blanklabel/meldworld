@@ -255,6 +255,15 @@ impl Db {
         sqlx::query("ALTER TABLE heroes ADD COLUMN IF NOT EXISTS back_row BOOLEAN NOT NULL DEFAULT false")
             .execute(pool)
             .await?;
+        // GR-5 equipment identity: an item's weapon family (sword/staff/globe/…)
+        // and armor weight band. Nullable-as-empty: a row with neither descriptor
+        // is unrestricted, so nothing already in a Vault becomes unwearable.
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS family TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS armor_weight TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
         // The Vanguard Board (roadmap P1-1, behaviors/endgame-seasons.md): the
         // per-season deepest-distance leaderboard. One row per (season, player):
         // that player's deepest run in the season. `achieved_at` is the tie-break.
@@ -697,6 +706,8 @@ impl Db {
                         slot: "main_hand".into(),
                         class_key: String::new(),
                         insurance: "blue".into(),
+                        family: String::new(),
+                        armor_weight: String::new(),
                         tier: 0,
                         atk_bonus: 3,
                         def_bonus: 0,
@@ -1048,7 +1059,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers
+                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight
                      FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
@@ -1146,6 +1157,8 @@ impl Db {
                             slot: (*category).to_string(),
                             class_key: String::new(),
                             insurance: "blue".to_string(),
+                            family: String::new(),
+                            armor_weight: String::new(),
                             tier: 0,
                             atk_bonus: *atk,
                             def_bonus: *def,
@@ -1180,8 +1193,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers)
-                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight)
+                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -1196,6 +1209,8 @@ impl Db {
                     .bind(g.base_max_durability)
                     .bind(g.max_durability)
                     .bind(&g.damage_modifiers)
+                    .bind(&g.family)
+                    .bind(&g.armor_weight)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -1212,6 +1227,8 @@ impl Db {
                         slot: g.slot.clone(),
                         class_key: g.class_key.clone(),
                         insurance: "red".into(),
+                        family: g.family.clone(),
+                        armor_weight: g.armor_weight.clone(),
                         tier: g.tier,
                         atk_bonus: g.atk_bonus,
                         def_bonus: g.def_bonus,
@@ -1243,13 +1260,38 @@ impl Db {
         hero_classes: &[String],
     ) -> Result<Vec<GearBonus>, DbError> {
         let mut bonuses = vec![GearBonus::default(); party_size.max(0) as usize];
-        let class_ok = |slot: usize, class_key: &str| -> bool {
-            class_key.is_empty() || hero_classes.get(slot).map(|c| c.as_str()) == Some(class_key)
+        // GR-5: a hero only benefits from gear its class may actually wear — the
+        // authoritative check, since a hero's class is chosen per dive and gear is
+        // equipped to a *slot*. A signature piece names its class (`class_key`);
+        // ordinary pieces are judged by family / armor weight. An item carrying
+        // none of the three descriptors is unrestricted.
+        let wearable = |slot: usize,
+                        class_key: &str,
+                        item_slot: &str,
+                        family: &str,
+                        weight: &str|
+         -> bool {
+            let Some(hero_key) = hero_classes.get(slot) else {
+                return class_key.is_empty();
+            };
+            if !class_key.is_empty() && class_key != hero_key.as_str() {
+                return false;
+            }
+            let Some(class) = meld_proto::equipment::class_from_key(hero_key) else {
+                return true;
+            };
+            meld_proto::equipment::check_equip(
+                class,
+                class_key,
+                item_slot,
+                meld_proto::equipment::ItemFamily::from_wire(family),
+                meld_proto::equipment::ArmorWeight::from_wire(weight),
+            ) == meld_proto::equipment::Legality::Ok
         };
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key, max_durability, damage_modifiers FROM gear
+                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key, max_durability, damage_modifiers, slot, family, armor_weight FROM gear
                      WHERE owner_player_id = $1 AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
@@ -1263,7 +1305,13 @@ impl Db {
                     if row.get::<i32, _>("max_durability") == 0 {
                         continue;
                     }
-                    if class_ok(slot as usize, &class_key) {
+                    if wearable(
+                        slot as usize,
+                        &class_key,
+                        &row.get::<String, _>("slot"),
+                        &row.get::<String, _>("family"),
+                        &row.get::<String, _>("armor_weight"),
+                    ) {
                         if let Some(b) = bonuses.get_mut(slot as usize) {
                             b.atk += row.get::<i32, _>("atk_bonus");
                             b.def += row.get::<i32, _>("def_bonus");
@@ -1284,7 +1332,7 @@ impl Db {
                         if g.max_durability == 0 {
                             continue;
                         }
-                        if class_ok(slot as usize, &g.class_key) {
+                        if wearable(slot as usize, &g.class_key, &g.slot, &g.family, &g.armor_weight) {
                             if let Some(b) = bonuses.get_mut(slot as usize) {
                                 b.atk += g.atk_bonus;
                                 b.def += g.def_bonus;
@@ -1530,6 +1578,10 @@ pub struct LootedGear {
     pub max_durability: i32,
     /// JSON elemental profile ({"FIRE":0.75}); "{}"/empty for none.
     pub damage_modifiers: String,
+    /// GR-5 weapon family wire word; empty = unrestricted.
+    pub family: String,
+    /// GR-5 armor weight wire word; empty = unrestricted.
+    pub armor_weight: String,
 }
 
 /// A gear row (blue-chest only, this slice).
@@ -1551,6 +1603,10 @@ pub struct GearRow {
     pub equipped_hero_slot: Option<i32>,
     /// JSON elemental profile ({"FIRE":0.75}); "{}" for none.
     pub damage_modifiers: String,
+    /// GR-5 weapon family wire word (`sword`, `staff`, …); empty = unrestricted.
+    pub family: String,
+    /// GR-5 armor weight wire word (`heavy`, `robe`, …); empty = unrestricted.
+    pub armor_weight: String,
 }
 
 /// How many items of one category a single hero can wear at once: two
@@ -1595,6 +1651,8 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         max_durability: row.get("max_durability"),
         equipped_hero_slot: row.get("equipped_hero_slot"),
         damage_modifiers: row.get("damage_modifiers"),
+        family: row.get("family"),
+        armor_weight: row.get("armor_weight"),
     }
 }
 
@@ -1670,6 +1728,8 @@ struct MemGear {
     equipped_hero_slot: Option<i32>,
     /// JSON elemental profile ({"FIRE":0.75}); "{}" for none.
     damage_modifiers: String,
+    family: String,
+    armor_weight: String,
 }
 
 impl MemGear {
@@ -1688,6 +1748,8 @@ impl MemGear {
             max_durability: self.max_durability,
             equipped_hero_slot: self.equipped_hero_slot,
             damage_modifiers: self.damage_modifiers.clone(),
+            family: self.family.clone(),
+            armor_weight: self.armor_weight.clone(),
         }
     }
 }
@@ -1835,6 +1897,8 @@ mod tests {
                 base_max_durability: 80,
                 max_durability: 80,
                 damage_modifiers: "{}".into(),
+                family: String::new(),
+                armor_weight: String::new(),
             }],
         )
         .await
@@ -1900,6 +1964,8 @@ mod tests {
             base_max_durability: 80,
             max_durability: 80,
             damage_modifiers: "{\"FIRE\":0.75}".into(),
+            family: String::new(),
+            armor_weight: String::new(),
         };
         db.insert_looted_gear(p, &[ring("Ring A"), ring("Ring B")]).await.unwrap();
         let ids: Vec<Uuid> = db
@@ -1981,6 +2047,70 @@ mod tests {
         assert_eq!(season_at(SEASON_EPOCH_UNIX + 2 * SEASON_LEN_SECS), 2);
         // A clock skewed before the epoch clamps instead of minting season -1.
         assert_eq!(season_at(0), 0);
+    }
+
+    #[tokio::test]
+    async fn a_hero_gains_nothing_from_gear_its_class_cannot_wear() {
+        let db = mem().await;
+        let p = db.register("gr5", "pw").await.unwrap().player_id;
+        // Hero 0 is a Resonant (staff only); hero 3 an Explorer (spear is legal).
+        let classes: Vec<String> = ["resonant", "iron_hull", "psyker", "explorer"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // The starter kit fills every slot, so free the main hand of both heroes
+        // first — otherwise the equip is a no-op and the test proves nothing.
+        for hero in [0, 3] {
+            let starter = db
+                .get_gear(p)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|g| g.equipped_hero_slot == Some(hero) && g.slot == "main_hand")
+                .expect("starter main-hand");
+            assert_eq!(
+                db.set_equipped(p, starter.gear_id, None).await.unwrap(),
+                EquipResult::Ok
+            );
+        }
+        let base = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
+
+        let spear = LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: "Warpike".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            tier: 3,
+            atk_bonus: 9,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: String::new(),
+            family: "spear".into(),
+            armor_weight: String::new(),
+        };
+        let spear_id = spear.gear_id;
+        db.insert_looted_gear(p, &[spear]).await.unwrap();
+
+        // On the Resonant the spear equips (equip-time legality needs a persisted
+        // hero class — GR-7) but grants NOTHING: derivation is the authority.
+        assert_eq!(db.set_equipped(p, spear_id, Some(0)).await.unwrap(), EquipResult::Ok);
+        let with_resonant = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
+        assert_eq!(
+            with_resonant[0].atk, base[0].atk,
+            "a Resonant gains nothing from a spear"
+        );
+
+        // The same piece on an Explorer does apply.
+        assert_eq!(db.set_equipped(p, spear_id, None).await.unwrap(), EquipResult::Ok);
+        assert_eq!(db.set_equipped(p, spear_id, Some(3)).await.unwrap(), EquipResult::Ok);
+        let with_explorer = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
+        assert_eq!(
+            with_explorer[3].atk,
+            base[3].atk + 9,
+            "an Explorer may carry the spear"
+        );
     }
 }
 

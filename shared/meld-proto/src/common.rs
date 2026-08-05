@@ -82,7 +82,14 @@ pub struct LootGear {
     /// Elemental profile the piece grants its wearer (spec §5): DamageType wire
     /// key ("FIRE") → multiplier. Additive; old wire/clients default to empty.
     #[serde(default)]
-    pub damage_modifiers: Vec<(String, f64)>,
+    pub damage_modifiers: Vec<(String, f64)>,    /// GR-5 weapon family wire word (`sword`, `staff`, …) for hand slots; empty
+    /// for armor, accessories, and pieces that carry no family restriction.
+    #[serde(default)]
+    pub family: String,
+    /// GR-5 armor weight wire word (`heavy`, `robe`, …) for head/chest/legs.
+    #[serde(default)]
+    pub armor_weight: String,
+
 }
 
 /// A battle actor's public state (realtime-protocol.md Combatant).
