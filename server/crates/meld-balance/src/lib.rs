@@ -192,13 +192,6 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
-    pub pack_chance: f64,
-    pub pack_chance_per_tier: f64,
-    pub pack_chance_cap: f64,
-    pub pack_min_minions: usize,
-    pub pack_max_minions: usize,
-    pub pack_minions_per_tier: f64,
-    pub pack_mixed_chance: f64,
     pub pack_spread: f64,
     pub leader_hp_mult: f64,
     pub leader_atk_mult: f64,
@@ -206,18 +199,30 @@ pub struct Encounters {
     pub minion_hp_mult: f64,
     pub minion_atk_mult: f64,
     pub minion_xp_mult: f64,
+    /// The encounter-size ramp, in distance order (see `group_band_at`).
+    #[serde(default)]
+    pub group_ramp: Vec<GroupBand>,
+}
+
+/// One rung of the encounter-size ramp: from `from_distance` outward, a spawn has
+/// `chance` of forming a group of `size` creatures (leader + `size - 1` minions).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupBand {
+    pub from_distance: f64,
+    pub size: usize,
+    pub chance: f64,
+    pub mixed_chance: f64,
 }
 
 impl Encounters {
-    /// P(a spawn becomes a pack) at this tier, capped.
-    pub fn pack_chance_at(&self, tier: i32) -> f64 {
-        (self.pack_chance + self.pack_chance_per_tier * tier.max(0) as f64).min(self.pack_chance_cap)
-    }
-
-    /// How many minions a pack at this tier fields.
-    pub fn pack_minions_at(&self, tier: i32) -> usize {
-        let extra = (self.pack_minions_per_tier * tier.max(0) as f64).round() as usize;
-        (self.pack_min_minions + extra).min(self.pack_max_minions)
+    /// The ramp rung in force at `distance` — the LAST band whose `from_distance`
+    /// the spawn has passed. `None` inside the first band, where fights are duels
+    /// while a player is still learning the ATB.
+    pub fn group_band_at(&self, distance: f64) -> Option<&GroupBand> {
+        self.group_ramp
+            .iter()
+            .filter(|b| distance >= b.from_distance)
+            .max_by(|a, b| a.from_distance.total_cmp(&b.from_distance))
     }
 }
 

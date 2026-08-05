@@ -235,13 +235,6 @@ gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pas
 # `[ai] group_radius` — touch one and the whole pack joins. Minions are visibly
 # lesser (a big spider with four little ones); the leader is a step above a
 # standard creature but below an Elite. Never in the spawn section or the tutorial.
-pack_chance = 0.35               # P(a spawn becomes a pack) at tier 0 [TUNABLE]
-pack_chance_per_tier = 0.03      # +P per tier, so the deep world crowds [TUNABLE]
-pack_chance_cap = 0.75
-pack_min_minions = 2
-pack_max_minions = 5
-pack_minions_per_tier = 0.25     # average extra minions per tier [TUNABLE]
-pack_mixed_chance = 0.35         # P(a minion is a DIFFERENT kind than its leader) [TUNABLE]
 pack_spread = 3.4                # minions scatter within this of the leader (< group_radius)
 leader_hp_mult = 1.7             # the "one big spider" — under an Elite's 2.4
 leader_atk_mult = 1.2
@@ -249,6 +242,32 @@ leader_xp_mult = 1.8
 minion_hp_mult = 0.45            # the "four little ones": individually weak…
 minion_atk_mult = 0.6            # …but four of them act four times as often
 minion_xp_mult = 0.55
+# Encounter-size RAMP by distance. Group size is a deliberate curve, not a dice
+# roll: the first ~150 tiles are duels while a player learns the ATB, then pairs,
+# then mixed triples, then quads. `size` counts the WHOLE encounter (a leader plus
+# size-1 minions); `chance` is how often a spawn in that band forms a group at all
+# (the remainder stay solo, so a band still has texture); `mixed_chance` is the odds
+# a given minion is a different species than its leader.
+[[encounters.group_ramp]]
+from_distance = 150              # duos: one leader, one minion, same species
+size = 2
+chance = 0.55
+mixed_chance = 0.0
+[[encounters.group_ramp]]
+from_distance = 250              # triples, and species start mixing
+size = 3
+chance = 0.7
+mixed_chance = 0.4
+[[encounters.group_ramp]]
+from_distance = 350              # quads
+size = 4
+chance = 0.8
+mixed_chance = 0.45
+[[encounters.group_ramp]]
+from_distance = 500              # the deep world's baseline pack
+size = 5
+chance = 0.85
+mixed_chance = 0.5
 
 # Gear rarity (loot excitement). A dropped piece rolls Common → Rare → Epic →
 # Legendary; higher rarity scales the stat bonus (and flavours the name). The
