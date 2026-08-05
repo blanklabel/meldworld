@@ -172,6 +172,13 @@ pub struct GearBonus {
     /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
     /// where the party composition is known.
     pub synergies: Vec<(String, i32, i32)>,
+    /// AD-1 unique drawbacks — what this loadout costs.
+    pub penalty_atk: i32,
+    pub penalty_def: i32,
+    pub penalty_spd: i32,
+    pub penalty_max_hp: i32,
+    /// AD-1 set pieces worn: (set key, count).
+    pub set_pieces: Vec<(String, usize)>,
     /// Raw per-item elemental entries (DamageType wire key → multiplier) from
     /// every equipped piece; folded and clamped by [`fold_damage_modifiers`]
     /// at battle assembly (spec §5).
@@ -223,7 +230,7 @@ pub fn party_fighters(
         .iter()
         .map(|r| (r.player_id.as_str(), r.run_level))
         .collect();
-    party
+    let mut fighters = party
         .iter()
         .enumerate()
         .map(|(i, (player_id, combatant_id, class, bonus))| {
@@ -246,9 +253,17 @@ pub fn party_fighters(
             let (str_, mnd, dex, wll) = stats.attributes_at(level);
             let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
             let max_hp = max_hp_at_level(*class, level, balance);
-            let atk = stats.base_atk + grow(str_, stats.str, a.str_to_atk) + bonus.atk; // + gear
-            let def = stats.base_def + grow(wll, stats.wll, a.wll_to_def) + bonus.def; // + gear
-            let speed = stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed) + bonus.spd; // + gear
+            // AD-1: a unique's drawback bites here, and is floored at 1 so a
+            // build can be lopsided without becoming unplayable.
+            let atk = (stats.base_atk + grow(str_, stats.str, a.str_to_atk) + bonus.atk
+                - bonus.penalty_atk)
+                .max(1);
+            let def = (stats.base_def + grow(wll, stats.wll, a.wll_to_def) + bonus.def
+                - bonus.penalty_def)
+                .max(0);
+            let speed = (stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed) + bonus.spd
+                - bonus.penalty_spd)
+                .max(1);
             // Spell power keys off the class attack base (gear boosts physical, not
             // psychic) and scales with Mnd.
             let spell_power = stats.base_atk + grow(mnd, stats.mnd, a.mnd_to_power);
@@ -335,9 +350,33 @@ pub fn party_fighters(
             if let Some(Some(row)) = row_overrides.get(i) {
                 f.back_row = *row;
             }
+            // AD-1: a unique that costs max HP costs it here, floored so a hero is
+            // never assembled dead. Current HP follows the reduced maximum.
+            if bonus.penalty_max_hp > 0 {
+                f.max_hp = (f.max_hp - bonus.penalty_max_hp).max(1);
+                f.hp = f.hp.min(f.max_hp);
+            }
             f
         })
-        .collect()
+        .collect::<Vec<Fighter>>();
+    // AD-1 sets pay the WHOLE party, including other players' heroes in a merged
+    // raid — the only bonus in the game that reaches past its owner, which is what
+    // makes assembling a set a group project. Collected across every member first,
+    // because the payout does not care whose loadout completed it.
+    let party_bonus = party
+        .iter()
+        .flat_map(|(_, _, _, bonus)| meld_proto::uniques::completed_sets(&bonus.set_pieces))
+        .fold((0, 0, 0), |(atk, def, spd), s| {
+            (atk + s.party_atk, def + s.party_def, spd + s.party_spd)
+        });
+    if party_bonus != (0, 0, 0) {
+        for f in fighters.iter_mut() {
+            f.atk += party_bonus.0;
+            f.def += party_bonus.1;
+            f.speed_stat += party_bonus.2;
+        }
+    }
+    fighters
 }
 
 /// One creature joining a battle: its spawn + the combatant id to give it.
@@ -711,5 +750,79 @@ mod tests {
         ];
         let f_wrong = party_fighters(&wrong, &runs, &b, &[]).remove(0);
         assert_eq!(f_wrong.atk, f_solo.atk);
+    }
+
+    #[test]
+    fn a_unique_s_drawback_costs_what_it_says() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        let plain: Vec<PartyMember> =
+            vec![("p".into(), "c".into(), CharacterClass::Explorer, GearBonus::default())];
+        let f0 = party_fighters(&plain, &runs, &b, &[]).pop().unwrap();
+
+        // "Reaver's Edge": +22 atk, -12 def.
+        let reaver: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Explorer,
+            GearBonus { atk: 22, penalty_def: 12, ..Default::default() },
+        )];
+        let f1 = party_fighters(&reaver, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f1.atk, f0.atk + 22);
+        assert_eq!(f1.def, (f0.def - 12).max(0));
+
+        // A max-HP drawback never assembles a dead hero.
+        let brutal: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Explorer,
+            GearBonus { penalty_max_hp: 99_999, ..Default::default() },
+        )];
+        let f2 = party_fighters(&brutal, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f2.max_hp, 1);
+        assert!(f2.hp >= 1 && f2.hp <= f2.max_hp);
+    }
+
+    #[test]
+    fn a_completed_set_pays_every_hero_in_the_party() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        let member = |class: CharacterClass, bonus: GearBonus| -> PartyMember {
+            ("p".into(), "c".into(), class, bonus)
+        };
+        // Kiln Chorus: 2 pieces, +5 atk to the whole party.
+        let two_pieces = GearBonus {
+            set_pieces: vec![("kiln_chorus".to_string(), 2)],
+            ..Default::default()
+        };
+        let one_piece = GearBonus {
+            set_pieces: vec![("kiln_chorus".to_string(), 1)],
+            ..Default::default()
+        };
+        let bare = vec![
+            member(CharacterClass::Explorer, GearBonus::default()),
+            member(CharacterClass::Resonant, GearBonus::default()),
+        ];
+        let base = party_fighters(&bare, &runs, &b, &[]);
+
+        // One hero wears the set; BOTH heroes get the bonus.
+        let with_set = vec![
+            member(CharacterClass::Explorer, two_pieces),
+            member(CharacterClass::Resonant, GearBonus::default()),
+        ];
+        let paid = party_fighters(&with_set, &runs, &b, &[]);
+        assert_eq!(paid[0].atk, base[0].atk + 5);
+        assert_eq!(paid[1].atk, base[1].atk + 5, "the ally shares the set bonus");
+
+        // An incomplete set pays nobody.
+        let partial = vec![
+            member(CharacterClass::Explorer, one_piece),
+            member(CharacterClass::Resonant, GearBonus::default()),
+        ];
+        let unpaid = party_fighters(&partial, &runs, &b, &[]);
+        assert_eq!(unpaid[0].atk, base[0].atk);
+        assert_eq!(unpaid[1].atk, base[1].atk);
     }
 }

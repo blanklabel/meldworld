@@ -92,6 +92,12 @@ pub struct LootGear {
     /// AD-1 rolled affixes — what makes this drop interesting.
     #[serde(default)]
     pub affixes: Vec<crate::affixes::Affix>,
+    /// AD-1 unique key; empty for ordinary loot.
+    #[serde(default)]
+    pub unique_key: String,
+    /// AD-1 set key; empty when not part of a set.
+    #[serde(default)]
+    pub set_key: String,
 
 }
 

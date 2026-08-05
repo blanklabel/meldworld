@@ -775,10 +775,18 @@ the current build.
     **synergy** → pays out only when the ally it names is in *this* party, resolved at
     battle assembly. Items are renamed by their defining affix ("… of the Bulwark"), and
     the tooltip lists one line per affix.
-  - **Remains:** **uniques** (build-defining + a real tradeoff) and **sets** (party-wide
-    bonuses) — the two chase tiers above affixes; rerolling via crafting (`MS-1`); and
-    the monster side of damage types (`AD-3` — gear can resist an element, but creatures
-    do not yet deal typed damage).
+  - 🟡 *Also shipped — the two chase tiers:* **uniques** (`meld_proto::uniques` — five
+    authored named items, each with fixed affixes **and a drawback**, so equipping one is
+    a trade rather than an upgrade; they drop **only from a reward spike** — elite /
+    Gatekeeper / boss — because a chase item farmable from trash is not a chase) and
+    **sets** (a piece can belong to a set; completing one pays **every hero in the
+    party**, including other players' heroes in a merged raid — the only bonus in the
+    game that reaches past its owner, which is what makes assembling one a group
+    project). Drawbacks are floored so a build can be lopsided without being
+    unplayable, and the tooltip shows a unique's cost in red right under its upside.
+  - **Remains:** rerolling affixes via crafting (`MS-1`), and the monster side of damage
+    types (`AD-3` — gear can resist an element, but creatures do not yet deal typed
+    damage). With those two, AD-1 is complete.
 - [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
 - [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on

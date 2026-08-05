@@ -245,6 +245,10 @@ pub struct GearLine {
     pub armor_weight: String,
     /// AD-1 rolled affixes (already described by `meld_proto::affixes`).
     pub affixes: Vec<meld_proto::affixes::Affix>,
+    /// AD-1 unique key; empty for ordinary loot.
+    pub unique_key: String,
+    /// AD-1 set key; empty when not part of a set.
+    pub set_key: String,
     pub tier: i32,
     /// Which of the caller's heroes has this equipped, if any.
     pub equipped_hero_slot: Option<usize>,
@@ -1270,6 +1274,8 @@ impl Inner {
                         family: g["family"].as_str().unwrap_or("").to_string(),
                         armor_weight: g["armor_weight"].as_str().unwrap_or("").to_string(),
                         affixes: serde_json::from_value(g["affixes"].clone()).unwrap_or_default(),
+                        unique_key: g["unique_key"].as_str().unwrap_or("").to_string(),
+                        set_key: g["set_key"].as_str().unwrap_or("").to_string(),
                         tier: g["tier"].as_i64().unwrap_or(0) as i32,
                         equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),
                         max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,
@@ -1684,6 +1690,8 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
                                 family: g["family"].as_str().unwrap_or("").to_string(),
                                 armor_weight: g["armor_weight"].as_str().unwrap_or("").to_string(),
                                 affixes: serde_json::from_value(g["affixes"].clone()).unwrap_or_default(),
+                                unique_key: g["unique_key"].as_str().unwrap_or("").to_string(),
+                                set_key: g["set_key"].as_str().unwrap_or("").to_string(),
                                 tier: g["tier"].as_i64().unwrap_or(0) as i32,
                                 equipped_hero_slot: g["equipped_hero_slot"].as_i64().map(|s| s as usize),
                                 max_durability: g["max_durability"].as_i64().unwrap_or(0) as i32,

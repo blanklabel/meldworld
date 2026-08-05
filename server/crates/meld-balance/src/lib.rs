@@ -211,6 +211,11 @@ pub struct Affix {
     pub tier_floor_synergy: i32,
     pub resist_pct_per_tier: i32,
     pub resist_pct_cap: i32,
+    pub unique_chance: f64,
+    pub unique_min_tier: i32,
+    pub unique_requires_spike: bool,
+    pub set_chance: f64,
+    pub set_min_tier: i32,
 }
 
 impl Affix {

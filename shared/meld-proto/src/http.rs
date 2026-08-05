@@ -108,6 +108,10 @@ pub struct GearView {
     /// AD-1 rolled affixes — what makes this piece worth chasing.
     #[serde(default)]
     pub affixes: Vec<crate::affixes::Affix>,
+    #[serde(default)]
+    pub unique_key: String,
+    #[serde(default)]
+    pub set_key: String,
 }
 
 /// `GET /v1/vault/gear` response.

@@ -275,6 +275,14 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS affixes TEXT NOT NULL DEFAULT '[]'")
             .execute(pool)
             .await?;
+        // AD-1 chase tiers: which authored unique this is, and which set it belongs
+        // to. Empty for ordinary loot.
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS unique_key TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS set_key TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
         // The Vanguard Board (roadmap P1-1, behaviors/endgame-seasons.md): the
         // per-season deepest-distance leaderboard. One row per (season, player):
         // that player's deepest run in the season. `achieved_at` is the tie-break.
@@ -795,6 +803,8 @@ impl Db {
                         family: String::new(),
                         armor_weight: String::new(),
                         affixes: "[]".into(),
+                        unique_key: String::new(),
+                        set_key: String::new(),
                         tier: 0,
                         atk_bonus: 3,
                         def_bonus: 0,
@@ -1146,7 +1156,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes
+                    "SELECT gear_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key
                      FROM gear WHERE owner_player_id = $1 ORDER BY equipped_hero_slot IS NOT NULL DESC, name",
                 )
                 .bind(player_id)
@@ -1260,6 +1270,8 @@ impl Db {
                             family: String::new(),
                             armor_weight: String::new(),
                             affixes: "[]".into(),
+                            unique_key: String::new(),
+                            set_key: String::new(),
                             tier: 0,
                             atk_bonus: *atk,
                             def_bonus: *def,
@@ -1294,8 +1306,8 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 for g in gear {
                     sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes)
-                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15)
+                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key)
+                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, $16, $17)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -1313,6 +1325,8 @@ impl Db {
                     .bind(&g.family)
                     .bind(&g.armor_weight)
                     .bind(&g.affixes)
+                    .bind(&g.unique_key)
+                    .bind(&g.set_key)
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -1332,6 +1346,8 @@ impl Db {
                         family: g.family.clone(),
                         armor_weight: g.armor_weight.clone(),
                         affixes: g.affixes.clone(),
+                        unique_key: g.unique_key.clone(),
+                        set_key: g.set_key.clone(),
                         tier: g.tier,
                         atk_bonus: g.atk_bonus,
                         def_bonus: g.def_bonus,
@@ -1429,6 +1445,11 @@ impl Db {
                                 &row.get::<String, _>("affixes"),
                                 hero_class.as_deref(),
                             );
+                            apply_chase_tiers(
+                                b,
+                                &row.get::<String, _>("unique_key"),
+                                &row.get::<String, _>("set_key"),
+                            );
                         }
                     }
                 }
@@ -1445,6 +1466,7 @@ impl Db {
                             let hero_class = hero_classes.get(slot as usize).cloned();
                             if let Some(b) = bonuses.get_mut(slot as usize) {
                                 apply_affixes(b, &g.affixes, hero_class.as_deref());
+                                apply_chase_tiers(b, &g.unique_key, &g.set_key);
                                 b.atk += g.atk_bonus;
                                 b.def += g.def_bonus;
                                 b.spd += g.spd_bonus;
@@ -1810,6 +1832,14 @@ pub struct GearBonus {
     /// hero's class: banked Adrenaline at battle start, extra Focus slots.
     pub adrenaline: i32,
     pub focus_slots: i32,
+    /// AD-1 unique drawbacks, already summed: what this loadout *costs*.
+    pub penalty_atk: i32,
+    pub penalty_def: i32,
+    pub penalty_spd: i32,
+    pub penalty_max_hp: i32,
+    /// AD-1 set pieces worn by this hero: (set key, count). Battle assembly turns
+    /// the completed ones into a PARTY-wide bonus.
+    pub set_pieces: Vec<(String, usize)>,
     /// Synergy affixes that have not been resolved yet: (ally class key, atk, def).
     /// Battle assembly knows the party composition, so it decides which of these
     /// actually pay out — a drop that asks for an ally is a *party* build decision.
@@ -1864,6 +1894,30 @@ fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
     }
 }
 
+/// Fold one item's AD-1 chase-tier facts into a hero's running bonus: a unique's
+/// **drawback** (its affixes already came through `apply_affixes`, since they are
+/// stored on the row like any other) and its set membership.
+///
+/// Set *counting* happens per hero here; the payout is party-wide and therefore
+/// belongs to battle assembly, which is the only place that sees the whole party.
+fn apply_chase_tiers(b: &mut GearBonus, unique_key: &str, set_key: &str) {
+    use meld_proto::uniques::{self as uq, Drawback};
+    if let Some(u) = uq::unique(unique_key) {
+        match u.drawback {
+            Drawback::Atk(n) => b.penalty_atk += n,
+            Drawback::Def(n) => b.penalty_def += n,
+            Drawback::Spd(n) => b.penalty_spd += n,
+            Drawback::MaxHp(n) => b.penalty_max_hp += n,
+        }
+    }
+    if !set_key.is_empty() && uq::set(set_key).is_some() {
+        match b.set_pieces.iter_mut().find(|(k, _)| k == set_key) {
+            Some((_, count)) => *count += 1,
+            None => b.set_pieces.push((set_key.to_string(), 1)),
+        }
+    }
+}
+
 /// A red-chest gear item to bank into the Vault on extraction.
 #[derive(Debug, Clone)]
 pub struct LootedGear {
@@ -1886,6 +1940,10 @@ pub struct LootedGear {
     pub armor_weight: String,
     /// AD-1 affixes as JSON (`[]` for none).
     pub affixes: String,
+    /// AD-1 unique key; empty for ordinary loot.
+    pub unique_key: String,
+    /// AD-1 set key; empty when not part of a set.
+    pub set_key: String,
 }
 
 /// A gear row (blue-chest only, this slice).
@@ -1913,6 +1971,10 @@ pub struct GearRow {
     pub armor_weight: String,
     /// AD-1 affixes as stored JSON.
     pub affixes: String,
+    /// AD-1 unique key; empty for ordinary loot.
+    pub unique_key: String,
+    /// AD-1 set key; empty when not part of a set.
+    pub set_key: String,
 }
 
 /// How many items of one category a single hero can wear at once: two
@@ -1960,6 +2022,8 @@ fn row_to_gear(row: &sqlx::postgres::PgRow) -> GearRow {
         family: row.get("family"),
         armor_weight: row.get("armor_weight"),
         affixes: row.get("affixes"),
+        unique_key: row.get("unique_key"),
+        set_key: row.get("set_key"),
     }
 }
 
@@ -2040,6 +2104,8 @@ struct MemGear {
     family: String,
     armor_weight: String,
     affixes: String,
+    unique_key: String,
+    set_key: String,
 }
 
 impl MemGear {
@@ -2061,6 +2127,8 @@ impl MemGear {
             family: self.family.clone(),
             armor_weight: self.armor_weight.clone(),
             affixes: self.affixes.clone(),
+            unique_key: self.unique_key.clone(),
+            set_key: self.set_key.clone(),
         }
     }
 }
@@ -2211,6 +2279,8 @@ mod tests {
                 family: String::new(),
                 armor_weight: String::new(),
                 affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
             }],
         )
         .await
@@ -2279,6 +2349,8 @@ mod tests {
             family: String::new(),
             armor_weight: String::new(),
             affixes: "[]".into(),
+        unique_key: String::new(),
+        set_key: String::new(),
         };
         db.insert_looted_gear(p, &[ring("Ring A"), ring("Ring B")]).await.unwrap();
         let ids: Vec<Uuid> = db
@@ -2405,6 +2477,8 @@ mod tests {
             family: "spear".into(),
             armor_weight: String::new(),
             affixes: "[]".into(),
+        unique_key: String::new(),
+        set_key: String::new(),
         };
         let spear_id = spear.gear_id;
         db.insert_looted_gear(p, &[spear]).await.unwrap();
@@ -2457,6 +2531,8 @@ mod tests {
             family: family.into(),
             armor_weight: weight.into(),
             affixes: "[]".into(),
+        unique_key: String::new(),
+        set_key: String::new(),
         };
         let spear = piece("Warpike", "main_hand", "spear", "");
         let plate = piece("Battleplate", "chest", "", "heavy");
@@ -2518,6 +2594,8 @@ mod tests {
             family: "staff".into(),
             armor_weight: String::new(),
             affixes: "[]".into(),
+        unique_key: String::new(),
+        set_key: String::new(),
         };
         let staff_id = staff.gear_id;
         db.insert_looted_gear(p, &[staff]).await.unwrap();
@@ -2570,6 +2648,8 @@ mod tests {
             family: "sword".into(),
             armor_weight: String::new(),
             affixes: meld_proto::affixes::to_json(&rolled),
+        unique_key: String::new(),
+        set_key: String::new(),
         };
         let gid = piece.gear_id;
         db.insert_looted_gear(p, &[piece]).await.unwrap();
