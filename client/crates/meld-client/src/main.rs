@@ -1194,8 +1194,62 @@ fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Opt
 /// during an active run) carries class; browsing gear from the City with no
 /// dive in progress has no class to filter by (`category_gear` shows
 /// everything in that case rather than guessing).
-fn hero_class_at(roster: &PartyRoster, i: usize) -> Option<&str> {
-    roster.heroes.get(i).map(|h| h.class_key.as_str())
+/// The class of hero `i`: the live run's roster when there is one, else the
+/// account's persisted classes (GR-7) so the Equip tab knows the rules in town
+/// too. `None` only when neither source has ever recorded that slot.
+fn hero_class_at<'a>(
+    roster: &'a PartyRoster,
+    names: &'a AccountHeroNames,
+    i: usize,
+) -> Option<&'a str> {
+    roster
+        .heroes
+        .get(i)
+        .map(|h| h.class_key.as_str())
+        .or_else(|| names.classes.get(i).map(|c| c.as_str()))
+        .filter(|c| !c.is_empty())
+}
+
+/// Why this hero may not wear this item, in the words the player sees. `None`
+/// when the item is legal (or the rules cannot apply — unknown class). The same
+/// `meld_proto::equipment` table the server enforces, so the UI can never claim
+/// something the server would allow, or vice versa (GR-5).
+pub(crate) fn gear_block_reason(item: &GearLine, hero_class: Option<&str>) -> Option<String> {
+    use meld_proto::equipment::{self as eq, Legality};
+    let class = eq::class_from_key(hero_class?)?;
+    let verdict = eq::check_equip(
+        class,
+        &item.class_key,
+        &item.slot,
+        eq::ItemFamily::from_wire(&item.family),
+        eq::ArmorWeight::from_wire(&item.armor_weight),
+    );
+    match verdict {
+        Legality::Ok => None,
+        Legality::ClassFamily => Some("cannot wield".into()),
+        Legality::ClassWeight => Some("too heavy".into()),
+        Legality::ClassExclusive => Some("another class".into()),
+        Legality::SlotMismatch => Some("wrong slot".into()),
+    }
+}
+
+/// The off-hand item this hero would have to take off to hold `item` — `Some`
+/// only when `item` is two-handed and something is in the way. Equipping then
+/// clears it for the player instead of handing them a 409 (GR-5).
+pub(crate) fn off_hand_in_the_way(
+    gear: &[GearLine],
+    item: &GearLine,
+    hero_slot: usize,
+) -> Option<String> {
+    let two_handed = meld_proto::equipment::ItemFamily::from_wire(&item.family)
+        .map(|f| f.reserves_off_hand())
+        .unwrap_or(false);
+    if !two_handed {
+        return None;
+    }
+    gear.iter()
+        .find(|g| g.slot == "off_hand" && g.equipped_hero_slot == Some(hero_slot))
+        .map(|g| g.gear_id.clone())
 }
 
 /// Gear from one source, filtered to one category and `selected` — unequipped
@@ -1325,6 +1379,9 @@ struct ProgressData {
 struct AccountHeroNames {
     loaded: bool,
     names: Vec<String>,
+    /// Each slot's persisted class key (GR-7) — what the server will actually
+    /// enforce an equip against; empty for a slot that has never dived.
+    classes: Vec<String>,
 }
 
 /// Floating hit-feedback numbers (damage/heal) with a short lifetime, plus the
@@ -1696,6 +1753,12 @@ struct GearButton {
     target_hero_slot: usize,
     /// True if this hero already has this exact item equipped (highlight only).
     worn: bool,
+    /// Set when this hero's class may not wear the item (GR-5): the row renders
+    /// dim with the reason and a press does nothing, so the player is told the
+    /// rule instead of being handed a server refusal.
+    blocked: bool,
+    /// The off-hand item that has to come off first for this (two-handed) item.
+    free_first: Option<String>,
 }
 /// A category row on the Equip tab's main screen ("Weapon", "Armor",
 /// "Accessory"). Clicking opens the picker screen for that category.

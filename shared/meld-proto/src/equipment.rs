@@ -194,6 +194,12 @@ pub fn drop_weight(class: CharacterClass) -> ArmorWeight {
     armor_weights(class).first().copied().unwrap_or(ArmorWeight::Medium)
 }
 
+/// The slots that carry an [`ArmorWeight`]. Hands carry a family instead, and
+/// accessories are unrestricted so every loot table has a never-dead family.
+pub fn is_armor_slot(slot: &str) -> bool {
+    matches!(slot, "head" | "chest" | "legs")
+}
+
 /// Why an equip was refused. `Ok` is the only legal outcome; everything else maps
 /// to a `409` with a code naming the rule that failed, so the client can say
 /// *which* rule rather than "cannot equip".
@@ -235,9 +241,13 @@ pub fn check_equip(
             return Legality::ClassFamily;
         }
     }
-    if let Some(w) = weight {
-        if !allows_weight(class, w) {
-            return Legality::ClassWeight;
+    // A weight only means anything on armor: a stray descriptor on a weapon or an
+    // accessory must never lock a class out of a slot that has no weight rule.
+    if is_armor_slot(slot) {
+        if let Some(w) = weight {
+            if !allows_weight(class, w) {
+                return Legality::ClassWeight;
+            }
         }
     }
     Legality::Ok
@@ -374,6 +384,26 @@ mod tests {
         for c in [CharacterClass::IronHull, CharacterClass::Psyker, CharacterClass::Shifter] {
             assert!(allows_weight(c, drop_weight(c)), "{c:?}");
         }
+    }
+
+    #[test]
+    fn a_stray_weight_outside_armor_never_blocks() {
+        use CharacterClass::*;
+        // An accessory (or weapon) that happens to carry a weight string is still
+        // wearable — accessories are unrestricted by design.
+        assert_eq!(
+            check_equip(Explorer, "", "accessory", None, Some(ArmorWeight::Robe)),
+            Legality::Ok
+        );
+        assert_eq!(
+            check_equip(IronHull, "", "main_hand", Some(ItemFamily::Gauntlet), Some(ArmorWeight::Robe)),
+            Legality::Ok
+        );
+        // On real armor it bites.
+        assert_eq!(
+            check_equip(Explorer, "", "legs", None, Some(ArmorWeight::Heavy)),
+            Legality::ClassWeight
+        );
     }
 
     #[test]

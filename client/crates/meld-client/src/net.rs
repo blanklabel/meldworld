@@ -455,7 +455,11 @@ pub enum ServerMsg {
     /// Persistent per-account hero names (`GET /v1/heroes`), for the Equip/Status
     /// tabs when there's no active run's `PartyRoster` to source names from
     /// (e.g. opening the storage chest from the City).
-    HeroNames { names: Vec<String> },
+    HeroNames {
+        names: Vec<String>,
+        /// Each slot's persisted class key (GR-7); empty when never recorded.
+        classes: Vec<String>,
+    },
     /// Authoritative snapshot of this run's not-yet-banked loot gear (found
     /// this run; empty once a fresh dive starts). Sent whenever it changes —
     /// new loot, or an equip/unequip — so the Equip tab stays in sync.
@@ -496,7 +500,7 @@ struct Inner {
     http_rx: Option<mpsc::Receiver<LoginResult>>,
     inv_rx: Option<mpsc::Receiver<InvPayload>>,
     prog_rx: Option<mpsc::Receiver<ProgPayload>>,
-    heroes_rx: Option<mpsc::Receiver<Vec<String>>>,
+    heroes_rx: Option<mpsc::Receiver<(Vec<String>, Vec<String>)>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     ticket: String,
     player_id: String,
@@ -570,6 +574,13 @@ impl Net {
     /// HTTP, then refresh the inventory (→ a fresh `InventoryData`).
     pub fn equip_gear(&self, gear_id: String, hero_slot: Option<usize>) {
         self.0.borrow_mut().equip_gear(gear_id, hero_slot);
+    }
+
+    /// Unequip `free_first`, then equip `gear_id` to `hero_slot` — the two-handed
+    /// path (GR-5): a player who picks a spear meant "and put the shield away",
+    /// not "show me a 409".
+    pub fn equip_gear_freeing(&self, free_first: String, gear_id: String, hero_slot: usize) {
+        self.0.borrow_mut().equip_gear_freeing(free_first, gear_id, hero_slot);
     }
 
     /// Withdraw `qty` of a material from the Vault (storage chest) into the
@@ -665,9 +676,9 @@ impl Inner {
             }
         }
         if let Some(rx) = &self.heroes_rx {
-            if let Ok(names) = rx.try_recv() {
+            if let Ok((names, classes)) = rx.try_recv() {
                 self.heroes_rx = None;
-                self.out.push_back(ServerMsg::HeroNames { names });
+                self.out.push_back(ServerMsg::HeroNames { names, classes });
             }
         }
 
@@ -728,6 +739,34 @@ impl Inner {
         });
     }
 
+    /// Unequip one item and equip another in its place, sequentially so the
+    /// server sees the hand freed before the two-handed weapon arrives.
+    fn equip_gear_freeing(&mut self, free_first: String, gear_id: String, hero_slot: usize) {
+        if self.session_token.is_empty() || gear_id.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/vault/gear/{free_first}/unequip"),
+            Vec::new(),
+        );
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            let body = serde_json::to_vec(&json!({ "hero_slot": hero_slot })).unwrap_or_default();
+            let mut req =
+                ehttp::Request::post(format!("{base}/v1/vault/gear/{gear_id}/equip"), body);
+            req.headers.insert("Authorization", format!("Bearer {token}"));
+            req.headers.insert("Content-Type", "application/json");
+            ehttp::fetch(req, move |_res| {
+                spawn_inventory_fetch(base, token, tx);
+            });
+        });
+    }
+
     /// POST a Vault (storage chest) material withdrawal, then refresh the
     /// inventory so the overlay reflects the new pending-backpack queue (a 409
     /// — not enough in stock — leaves it unchanged).
@@ -762,15 +801,18 @@ impl Inner {
         let mut req = ehttp::Request::get(format!("{}/v1/heroes", self.base));
         req.headers.insert("Authorization", format!("Bearer {token}"));
         ehttp::fetch(req, move |res| {
-            let mut names = Vec::new();
+            let (mut names, mut classes) = (Vec::new(), Vec::new());
             if let Ok(resp) = &res {
                 if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
                     if let Some(arr) = v["names"].as_array() {
                         names = arr.iter().filter_map(|n| n.as_str().map(String::from)).collect();
                     }
+                    if let Some(arr) = v["classes"].as_array() {
+                        classes = arr.iter().filter_map(|c| c.as_str().map(String::from)).collect();
+                    }
                 }
             }
-            let _ = tx.send(names);
+            let _ = tx.send((names, classes));
         });
     }
 

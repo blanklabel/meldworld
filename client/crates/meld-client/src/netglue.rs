@@ -418,8 +418,9 @@ pub(crate) fn pump_net(
                 vanguard.you = you;
                 vanguard.loaded = true;
             }
-            ServerMsg::HeroNames { names } => {
+            ServerMsg::HeroNames { names, classes } => {
                 hero_names.names = names;
+                hero_names.classes = classes;
                 hero_names.loaded = true;
             }
             ServerMsg::RunGear { gear } => {
