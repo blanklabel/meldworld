@@ -3548,6 +3548,46 @@ mod tests {
     }
 
     #[test]
+    fn a_branded_attack_exploits_a_creature_s_weakness() {
+        let b = balance();
+        // Creature elemental profiles already existed; what AD-3 adds is a hero
+        // whose swing HAS a type, so the profile finally cuts both ways.
+        let mut fire_weak = monster("m1", 500, 1);
+        fire_weak.damage_modifiers.insert(DamageType::Fire, 2.0);
+        let mut fire_tough = monster("m2", 500, 1);
+        fire_tough.damage_modifiers.insert(DamageType::Fire, 0.5);
+
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![fire_weak, fire_tough],
+            &b,
+            42,
+        );
+        let raw = 60;
+        let weak_i = battle.idx("m1").unwrap();
+        let tough_i = battle.idx("m2").unwrap();
+
+        // The same blow, branded FIRE, against opposite profiles.
+        let hot = battle.apply_typed_damage(weak_i, raw, DamageType::Fire);
+        assert_eq!(hot[0].modifier_flag, Some(ModifierFlag::Weak));
+        let cold = battle.apply_typed_damage(tough_i, raw, DamageType::Fire);
+        assert_eq!(cold[0].modifier_flag, Some(ModifierFlag::Resist));
+        assert!(
+            hot[0].amount.unwrap() > cold[0].amount.unwrap(),
+            "a brand must matter: {:?} vs {:?}",
+            hot[0].amount,
+            cold[0].amount
+        );
+
+        // An UNBRANDED swing is untyped, so neither profile applies — which is
+        // exactly the gap AD-3 closes.
+        let plain = battle.apply_typed_damage(weak_i, raw, DamageType::None);
+        assert_eq!(plain[0].modifier_flag, None);
+    }
+
+    #[test]
     fn elemental_modifiers_flag_weak_resist_immune_and_absorb() {
         let b = balance();
         // Four players with distinct FIRE profiles; one fire-slinging monster.

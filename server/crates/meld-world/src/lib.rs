@@ -686,6 +686,7 @@ pub(crate) fn roll_affixes(
     }
     // The pool: every affix whose class has unlocked at this tier, minus keyword
     // affixes belonging to another class.
+    let hand = slot == "main_hand" || slot == "off_hand";
     let pool: Vec<&aff::AffixDef> = aff::AFFIXES
         .iter()
         .filter(|d| tier >= a.tier_floor(affix_class_word(d.class)))
@@ -693,6 +694,8 @@ pub(crate) fn roll_affixes(
             Some(c) => eq::class_key(c) == class_key,
             None => true,
         })
+        // A brand decides what your attacks ARE, so only a weapon may carry one.
+        .filter(|d| d.key != "brand" || hand)
         .collect();
     if pool.is_empty() {
         return Vec::new();
@@ -706,6 +709,8 @@ pub(crate) fn roll_affixes(
         }
         let jitter = 1.0 + rng.signed() * a.magnitude_jitter;
         let magnitude = match d.class {
+            // A brand has no magnitude; a resist does.
+            _ if d.key == "brand" => 1,
             aff::AffixClass::Element => (a.resist_pct_per_tier * tier).clamp(1, a.resist_pct_cap),
             _ => ((a.magnitude_per_tier * tier.max(1) as f64 * d.scale * jitter).round() as i32)
                 .max(1),
@@ -724,7 +729,6 @@ pub(crate) fn roll_affixes(
             }),
         });
     }
-    let _ = slot;
     out
 }
 
@@ -4731,6 +4735,31 @@ mod tests {
                 assert!(g.set_key.is_empty(), "a set piece dropped below its tier floor");
             }
         }
+    }
+
+    #[test]
+    fn only_a_weapon_can_brand_your_attacks() {
+        let b = Balance::load_default().unwrap();
+        let mut branded_hands = 0;
+        for seed in 0..600u64 {
+            for slot in ["main_hand", "off_hand"] {
+                let mut rng = Rng(seed);
+                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", slot, "ashfall") {
+                    if a.key == "brand" {
+                        branded_hands += 1;
+                        assert!(a.element.is_some(), "a brand with no element");
+                    }
+                }
+            }
+            // Armour and accessories never decide what your swing is.
+            for slot in ["head", "chest", "legs", "accessory"] {
+                let mut rng = Rng(seed);
+                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", slot, "ashfall") {
+                    assert_ne!(a.key, "brand", "{slot} rolled a brand");
+                }
+            }
+        }
+        assert!(branded_hands > 0, "no weapon ever rolled a brand");
     }
 }
 
