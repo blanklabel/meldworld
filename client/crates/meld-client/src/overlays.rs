@@ -152,7 +152,7 @@ pub(crate) fn overlay_nav_input(
                 &run_gear,
                 cat,
                 equip_sel.hero_slot,
-                hero_class_at(&roster, equip_sel.hero_slot),
+                hero_class_at(&roster, &hero_names, equip_sel.hero_slot),
             )
             .len(),
             None => equip_main_rows(hero_count(&roster, &hero_names)).len(),
@@ -176,7 +176,7 @@ pub(crate) fn overlay_nav_input(
                         &run_gear,
                         cat,
                         equip_sel.hero_slot,
-                        hero_class_at(&roster, equip_sel.hero_slot),
+                        hero_class_at(&roster, &hero_names, equip_sel.hero_slot),
                     );
                     match rows.get(cursor.index) {
                         Some(PickerRow::Unequip) => {
@@ -186,8 +186,33 @@ pub(crate) fn overlay_nav_input(
                         }
                         Some(PickerRow::Gear { gear_id, source }) => {
                             let target = Some(equip_sel.hero_slot);
+                            // Same two rules as the mouse path (GR-5): a row this
+                            // hero's class can't wear does nothing, and a
+                            // two-hander frees the off-hand on its way in.
+                            let line = inv
+                                .gear
+                                .iter()
+                                .chain(run_gear.gear.iter())
+                                .find(|g| &g.gear_id == gear_id);
+                            let hero_class =
+                                hero_class_at(&roster, &hero_names, equip_sel.hero_slot);
+                            if line
+                                .map(|l| gear_block_reason(l, hero_class).is_some())
+                                .unwrap_or(false)
+                            {
+                                return;
+                            }
+                            let free_first = line
+                                .and_then(|l| off_hand_in_the_way(&inv.gear, l, equip_sel.hero_slot));
                             match source {
-                                GearSource::Vault => net.0.equip_gear(gear_id.clone(), target),
+                                GearSource::Vault => match free_first {
+                                    Some(off) => net.0.equip_gear_freeing(
+                                        off,
+                                        gear_id.clone(),
+                                        equip_sel.hero_slot,
+                                    ),
+                                    None => net.0.equip_gear(gear_id.clone(), target),
+                                },
                                 GearSource::RunLoot => net.0.send(ClientCmd::EquipLoot {
                                     gear_id: gear_id.clone(),
                                     hero_slot: target.map(|s| s as i32),
@@ -797,7 +822,7 @@ pub(crate) fn render_overlay(
                                                 );
                                             });
                                     }
-                                    let hero_class = hero_class_at(&roster, selected);
+                                    let hero_class = hero_class_at(&roster, &hero_names, selected);
                                     let rows: Vec<(&GearLine, GearSource)> = category_gear(
                                         &inv.gear, category, selected, hero_class,
                                     )
@@ -852,10 +877,20 @@ pub(crate) fn render_overlay(
                                         } else {
                                             format!(" {}", class_display(&g.class_key))
                                         };
-                                        let text = format!(
-                                            "  {} {}  [{}{}{} t{}]  +{}{}{}",
-                                            gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, stat, arrow, tag
-                                        );
+                                        // GR-5: an item this hero may not wear stays
+                                        // in the list, labelled with the reason —
+                                        // hiding it would teach the player nothing.
+                                        let blocked = gear_block_reason(g, hero_class);
+                                        let text = match &blocked {
+                                            Some(why) => format!(
+                                                "  {} {}  [{}{}{} t{}]  -- {}",
+                                                gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, why
+                                            ),
+                                            None => format!(
+                                                "  {} {}  [{}{}{} t{}]  +{}{}{}",
+                                                gear_slot_icon(category), g.name, category, ins, class_tag, g.tier, stat, arrow, tag
+                                            ),
+                                        };
                                         let mut col = if worn_here {
                                             Color::srgb(0.6, 0.95, 0.7)
                                         } else if broken {
@@ -868,6 +903,9 @@ pub(crate) fn render_overlay(
                                         } else if !worn_here && arrow == " v" {
                                             col = red;
                                         }
+                                        if blocked.is_some() {
+                                            col = Color::srgb(0.48, 0.5, 0.58);
+                                        }
                                         content
                                             .spawn((
                                                 Button,
@@ -876,6 +914,10 @@ pub(crate) fn render_overlay(
                                                     source,
                                                     target_hero_slot: selected,
                                                     worn: worn_here,
+                                                    blocked: blocked.is_some(),
+                                                    free_first: off_hand_in_the_way(
+                                                        &inv.gear, g, selected,
+                                                    ),
                                                 },
                                                 Node {
                                                     width: Val::Percent(100.0),
@@ -1179,10 +1221,19 @@ pub(crate) fn gear_click(
     for (interaction, g, mut bg) in &mut rows {
         match *interaction {
             Interaction::Pressed => {
-                if !g.gear_id.is_empty() {
+                if !g.gear_id.is_empty() && !g.blocked {
                     let target = Some(g.target_hero_slot);
                     match g.source {
-                        GearSource::Vault => net.0.equip_gear(g.gear_id.clone(), target),
+                        GearSource::Vault => match &g.free_first {
+                            // Both hands: put the off-hand away first, rather than
+                            // bouncing the player off a 409 (GR-5).
+                            Some(off) => net.0.equip_gear_freeing(
+                                off.clone(),
+                                g.gear_id.clone(),
+                                g.target_hero_slot,
+                            ),
+                            None => net.0.equip_gear(g.gear_id.clone(), target),
+                        },
                         GearSource::RunLoot => net.0.send(ClientCmd::EquipLoot {
                             gear_id: g.gear_id.clone(),
                             hero_slot: target.map(|s| s as i32),
@@ -1670,5 +1721,60 @@ mod gear_label_tests {
         assert_eq!(wearable_note(&line("insured", "", "heavy")), "heavy armor");
         // A plain stat stick claims nothing.
         assert!(wearable_note(&line("insured", "", "")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod equip_ux_tests {
+    use super::*;
+
+    fn item(name: &str, slot: &str, family: &str, weight: &str) -> GearLine {
+        GearLine {
+            gear_id: name.into(),
+            name: name.into(),
+            slot: slot.into(),
+            class_key: String::new(),
+            insurance: "insured".into(),
+            family: family.into(),
+            armor_weight: weight.into(),
+            tier: 2,
+            equipped_hero_slot: None,
+            max_durability: 40,
+            base_max_durability: 40,
+            atk_bonus: 3,
+            def_bonus: 3,
+            spd_bonus: 0,
+        }
+    }
+
+    #[test]
+    fn blocked_rows_state_the_rule_in_the_player_s_words() {
+        let spear = item("Warpike", "main_hand", "spear", "");
+        let plate = item("Battleplate", "chest", "", "heavy");
+        assert_eq!(gear_block_reason(&spear, Some("resonant")).as_deref(), Some("cannot wield"));
+        assert_eq!(gear_block_reason(&plate, Some("psyker")).as_deref(), Some("too heavy"));
+        // Legal kit is not labelled.
+        assert!(gear_block_reason(&spear, Some("explorer")).is_none());
+        assert!(gear_block_reason(&plate, Some("iron_hull")).is_none());
+        // An unknown class never blocks: the server would allow it, so the UI must
+        // not claim otherwise.
+        assert!(gear_block_reason(&spear, None).is_none());
+        assert!(gear_block_reason(&spear, Some("")).is_none());
+    }
+
+    #[test]
+    fn a_two_hander_names_the_off_hand_it_displaces() {
+        let mut shield = item("Targe", "off_hand", "shield", "");
+        shield.equipped_hero_slot = Some(1);
+        let spear = item("Warpike", "main_hand", "spear", "");
+        let sword = item("Warblade", "main_hand", "sword", "");
+        let gear = vec![shield.clone()];
+        // Two-handed + a filled off-hand → free it first.
+        assert_eq!(off_hand_in_the_way(&gear, &spear, 1).as_deref(), Some("Targe"));
+        // One-handed displaces nothing, and neither does another hero's off-hand.
+        assert!(off_hand_in_the_way(&gear, &sword, 1).is_none());
+        assert!(off_hand_in_the_way(&gear, &spear, 0).is_none());
+        // Nothing in the way at all.
+        assert!(off_hand_in_the_way(&[], &spear, 1).is_none());
     }
 }

@@ -222,10 +222,19 @@ async fn vanguard_body(st: &ApiState, season: i32) -> Result<Response, ApiReject
 /// GET the caller's persistent hero names (by slot).
 async fn heroes(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
-    match st.db.get_hero_names(player_id).await {
-        Ok(names) => Ok((StatusCode::OK, Json(serde_json::json!({ "names": names }))).into_response()),
-        Err(e) => Err(ApiReject::internal(e)),
-    }
+    // Classes ride alongside the names (GR-7) so the inventory UI can grey what a
+    // hero may not wear using the same table the server enforces (GR-5), instead of
+    // guessing from the party builder and disagreeing with the server.
+    let (names, classes) = tokio::try_join!(
+        st.db.get_hero_names(player_id),
+        st.db.get_hero_classes(player_id),
+    )
+    .map_err(ApiReject::internal)?;
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "names": names, "classes": classes })),
+    )
+        .into_response())
 }
 
 #[derive(serde::Deserialize)]

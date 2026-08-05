@@ -182,6 +182,7 @@ pub(crate) fn mock_overlay_setup(
     mut roster: ResMut<PartyRoster>,
     mut stats: ResMut<RunStats>,
     mut backpack: ResMut<RunBackpack>,
+    mut picker: ResMut<EquipPicker>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if inventory_mockup_flag() {
@@ -219,6 +220,24 @@ pub(crate) fn mock_overlay_setup(
         ];
         inv.pending = vec![("bloom_herb".into(), 2)];
         inv.gear = vec![
+            // A heavy chest piece the demo's non-Iron-Hull lead cannot wear, so the
+            // Equip tab shows a class-blocked row (GR-5) in demo frames.
+            GearLine {
+                gear_id: "mock-plate".into(),
+                name: "Bulwark Plate".into(),
+                slot: "chest".into(),
+                class_key: String::new(),
+                insurance: "insured".into(),
+                family: String::new(),
+                armor_weight: "heavy".into(),
+                tier: 3,
+                equipped_hero_slot: None,
+                max_durability: 70,
+                base_max_durability: 70,
+                atk_bonus: 0,
+                def_bonus: 6,
+                spd_bonus: 0,
+            },
             GearLine {
                 gear_id: "mock-weapon".into(),
                 name: "Chipped Blade".into(),
@@ -242,7 +261,7 @@ pub(crate) fn mock_overlay_setup(
                 class_key: "explorer".into(),
                 insurance: "ephemeral".into(),
                 family: String::new(),
-                armor_weight: "robe".into(),
+                armor_weight: String::new(),
                 tier: 3,
                 equipped_hero_slot: None,
                 max_durability: 60,
@@ -266,6 +285,17 @@ pub(crate) fn mock_overlay_setup(
         backpack.gear = vec![("Duneglass Charm".into(), 0)];
         overlay.kind = Some(OverlayKind::Inventory);
         *tab = OverlayTab::Status;
+        // `MELD_INVENTORY_TAB=equip` lands on the Equip tab with a category picker
+        // already open, which is the only place gear rows (and their class-block
+        // labels) render.
+        match inventory_tab_flag().as_deref() {
+            Some("equip") => {
+                *tab = OverlayTab::Equip;
+                picker.category = Some("chest");
+            }
+            Some("items") => *tab = OverlayTab::Items,
+            _ => {}
+        }
     } else if levelup_mockup_flag() {
         prog.loaded = true;
         prog.skills = vec![

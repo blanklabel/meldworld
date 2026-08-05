@@ -204,10 +204,15 @@ burns on death/leave; some is single-use. See
     (`equipped_gear_bonuses`): illegal gear grants nothing. Nouns that contradicted
     the families were fixed (Psyker Focus Rod → Psi-Orb, Resonant Ward Scepter → Ward
     Stave, Iron Hull Warhammer → Kinetic Gauntlet).
-  - **Remains:** the two-handed *equip UX* (the server now says
-    `TwoHandedConflict`; the client should offer "unequip the off-hand and continue"
-    rather than surfacing a bare 409), greying illegal rows in the inventory grid, and
-    authoring signature pieces. Equip-time enforcement landed with `GR-7`.
+  - *Also shipped:* the equip **UX** — `GET /v1/heroes` returns each slot's class so the
+    Equip tab knows the rules in town too; a row this hero's class cannot wear renders
+    dim with the reason (`-- too heavy`, `-- cannot wield`) and a press does nothing,
+    reading the same `meld_proto::equipment` table the server enforces so the UI can
+    never disagree with it; and picking a two-handed weapon **puts the off-hand away for
+    you** instead of returning a 409. Screenshot-verifiable via
+    `MELD_INVENTORY_TAB=equip`.
+  - **Remains:** authoring signature pieces (the class-exclusive armor `AD-1` uniques
+    hang off), and a stray-descriptor audit once loot tables grow.
 - [x] **GR-7 — Persist a hero's class per slot.** Today the party is chosen per dive and
   gear equips to a *slot*, so in town the server cannot say what class hero 2 is — which
   is why `GR-5` can only enforce at derivation. Persist a class per hero row (the
