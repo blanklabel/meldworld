@@ -86,7 +86,10 @@ needs a family that is never a dead drop, and accessories are it.
 
 1. **Equip** (`PUT`/`POST` equip): illegal family, illegal weight, wrong
    `class_key`, or a two-handed conflict → `409 conflict` with a code that says
-   which rule failed.
+   which rule failed. The class rule is checked **before** the hands rule, so a
+   shield offered to a Resonant is answered "your class cannot wield that", not
+   "your hands are full" — the more specific answer wins. This needs a persisted
+   hero class (`GR-7`).
 2. **Derivation** (`meld-run::party_fighters`): already ignores gear whose
    `class_key` mismatches the hero — the guardrail exists; this widens it to
    family/weight so a legacy row can never silently buff the wrong hero.

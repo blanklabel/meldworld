@@ -204,16 +204,25 @@ burns on death/leave; some is single-use. See
     (`equipped_gear_bonuses`): illegal gear grants nothing. Nouns that contradicted
     the families were fixed (Psyker Focus Rod → Psi-Orb, Resonant Ward Scepter → Ward
     Stave, Iron Hull Warhammer → Kinetic Gauntlet).
-  - **Remains:** an equip-time `409` (blocked on `GR-7` below — there is no persisted
-    hero class to check against in town), the two-handed *equip UX* (reserve the
-    off-hand + offer-to-unequip), greying illegal rows in the inventory grid, and
-    authoring signature pieces.
-- [ ] **GR-7 — Persist a hero's class per slot.** Today the party is chosen per dive and
+  - **Remains:** the two-handed *equip UX* (the server now says
+    `TwoHandedConflict`; the client should offer "unequip the off-hand and continue"
+    rather than surfacing a bare 409), greying illegal rows in the inventory grid, and
+    authoring signature pieces. Equip-time enforcement landed with `GR-7`.
+- [x] **GR-7 — Persist a hero's class per slot.** Today the party is chosen per dive and
   gear equips to a *slot*, so in town the server cannot say what class hero 2 is — which
   is why `GR-5` can only enforce at derivation. Persist a class per hero row (the
   `heroes` table already holds name + `back_row`), so a hero becomes a character rather
   than a slot. Unlocks: equip-time legality (`GR-5`), saved loadouts (`PT-2`), and
   per-hero progression later. Party choice at dive time becomes *which* heroes you take.
+  - *Shipped:* `heroes.class_key` (additive), written from the **resolved** party in
+    `form_run` (so default mixed parties are recorded too) via `DbWrite::HeroClass` —
+    the party you take down is the roster you come home with. `set_equipped` now
+    refuses an illegal equip with the **rule that failed**
+    (`EquipResult::ClassLocked(Legality)` → a `409` that says "cannot wield that kind of
+    weapon" / "cannot wear armor that heavy" / "belongs to another class"), and
+    `TwoHandedConflict` enforces both-hands-or-neither in either equip order. A hero with
+    no recorded class is never locked out (derivation stays the backstop). The starter kit
+    no longer hands a buckler to a two-handed class.
 - [ ] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
   **`Ephemeral`** and `Blue` → **`Insured`** on the wire (serde alias keeps old
   payloads parsing) and in every player-facing string; the Blue-Chest/Red-Chest

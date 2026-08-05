@@ -255,6 +255,12 @@ impl Db {
         sqlx::query("ALTER TABLE heroes ADD COLUMN IF NOT EXISTS back_row BOOLEAN NOT NULL DEFAULT false")
             .execute(pool)
             .await?;
+        // GR-7: the hero's class, persisted per slot. A hero is a character, not a
+        // slot the next dive redefines — and equip-time legality (GR-5) needs a
+        // class to check against while the player is in town, outside any run.
+        sqlx::query("ALTER TABLE heroes ADD COLUMN IF NOT EXISTS class_key TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
         // GR-5 equipment identity: an item's weapon family (sword/staff/globe/…)
         // and armor weight band. Nullable-as-empty: a row with neither descriptor
         // is unrestricted, so nothing already in a Vault becomes unwearable.
@@ -495,6 +501,81 @@ impl Db {
 
     /// Has this account ever dived? Drives the WG-2 tutorial gate (false = the next
     /// dive is the deterministic Forest onboarding world).
+    /// The classes of a player's heroes by slot (GR-7). Empty string for a slot
+    /// whose class was never recorded.
+    pub async fn get_hero_classes(&self, player_id: Uuid) -> Result<Vec<String>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT slot, class_key FROM heroes WHERE player_id = $1 ORDER BY slot",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                let mut out = Vec::new();
+                for r in &rows {
+                    let slot: i16 = r.get("slot");
+                    let key: String = r.get("class_key");
+                    let idx = slot.max(0) as usize;
+                    if out.len() <= idx {
+                        out.resize(idx + 1, String::new());
+                    }
+                    out[idx] = key;
+                }
+                Ok(out)
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut rows: Vec<(i16, String)> = m
+                    .hero_classes
+                    .iter()
+                    .filter(|((p, _), _)| *p == player_id)
+                    .map(|((_, slot), key)| (*slot, key.clone()))
+                    .collect();
+                rows.sort_by_key(|(slot, _)| *slot);
+                let mut out = Vec::new();
+                for (slot, key) in rows {
+                    let idx = slot.max(0) as usize;
+                    if out.len() <= idx {
+                        out.resize(idx + 1, String::new());
+                    }
+                    out[idx] = key;
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// Record a hero slot's class (GR-7). Upsert, so the party a player takes on a
+    /// dive is what their roster becomes.
+    pub async fn set_hero_class(
+        &self,
+        player_id: Uuid,
+        slot: i16,
+        class_key: &str,
+    ) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "INSERT INTO heroes (player_id, slot, name, class_key) VALUES ($1, $2, '', $3)
+                     ON CONFLICT (player_id, slot) DO UPDATE SET class_key = $3",
+                )
+                .bind(player_id)
+                .bind(slot)
+                .bind(class_key)
+                .execute(pool)
+                .await?;
+            }
+            Backend::Mem(m) => {
+                m.lock()
+                    .unwrap()
+                    .hero_classes
+                    .insert((player_id, slot), class_key.to_string());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn get_has_dived(&self, player_id: Uuid) -> Result<bool, DbError> {
         match &self.backend {
             Backend::Pg(pool) => {
@@ -1095,6 +1176,16 @@ impl Db {
     /// an account's permanent kit.
     pub async fn ensure_starter_gear(&self, player_id: Uuid, party_size: i32) -> Result<(), DbError> {
         let existing = self.get_gear(player_id).await?;
+        // GR-7: a two-handed class has no off-hand, so don't hand it a buckler it
+        // would only have to take off to hold its own staff.
+        let classes = self.get_hero_classes(player_id).await?;
+        let has_off_hand = |slot: i32| -> bool {
+            classes
+                .get(slot.max(0) as usize)
+                .and_then(|k| meld_proto::equipment::class_from_key(k))
+                .map(meld_proto::equipment::has_off_hand)
+                .unwrap_or(true)
+        };
         let mut have: std::collections::HashSet<(i32, String)> = std::collections::HashSet::new();
         for g in &existing {
             if let Some(slot) = g.equipped_hero_slot {
@@ -1115,6 +1206,9 @@ impl Db {
         let mut to_insert = Vec::new();
         for slot in 0..party_size {
             for (category, name, atk, def, spd) in kit {
+                if category == "off_hand" && !has_off_hand(slot) {
+                    continue;
+                }
                 if !have.contains(&(slot, category.to_string())) {
                     to_insert.push((slot, category, name, atk, def, spd));
                 }
@@ -1415,6 +1509,28 @@ impl Db {
     /// the run-lock (the HTTP API has no view of in-memory run state) and — per
     /// vault-gear.md's own "this is the endpoint to relax" note — allows equipping
     /// extracted `red` loot, since red drops are the loop's main gear source.
+    /// The equip-time legality verdict for putting `gear` on `hero_slot` (GR-5 +
+    /// GR-7). `None` when the hero's class was never recorded — then the equip is
+    /// allowed and derivation stays the backstop, so a player is never locked out
+    /// of their own Vault by missing data.
+    fn equip_legality(
+        hero_class: Option<&str>,
+        item_slot: &str,
+        item_class_key: &str,
+        family: &str,
+        armor_weight: &str,
+    ) -> Option<meld_proto::equipment::Legality> {
+        use meld_proto::equipment as eq;
+        let class = eq::class_from_key(hero_class.unwrap_or(""))?;
+        Some(eq::check_equip(
+            class,
+            item_class_key,
+            item_slot,
+            eq::ItemFamily::from_wire(family),
+            eq::ArmorWeight::from_wire(armor_weight),
+        ))
+    }
+
     pub async fn set_equipped(
         &self,
         player_id: Uuid,
@@ -1426,7 +1542,7 @@ impl Db {
                 let mut tx = pool.begin().await?;
                 // Load the target (owner-scoped so existence isn't leaked cross-account).
                 let row = sqlx::query(
-                    "SELECT slot, max_durability, equipped_hero_slot FROM gear
+                    "SELECT slot, max_durability, equipped_hero_slot, class_key, family, armor_weight FROM gear
                      WHERE gear_id = $1 AND owner_player_id = $2",
                 )
                 .bind(gear_id)
@@ -1440,6 +1556,9 @@ impl Db {
                 let slot: String = row.get("slot");
                 let max_durability: i32 = row.get("max_durability");
                 let already: Option<i32> = row.get("equipped_hero_slot");
+                let item_class_key: String = row.get("class_key");
+                let family: String = row.get("family");
+                let armor_weight: String = row.get("armor_weight");
 
                 let Some(hero_slot) = target else {
                     // Unequip is idempotent; just clear it.
@@ -1460,6 +1579,64 @@ impl Db {
                 if max_durability == 0 {
                     tx.rollback().await?;
                     return Ok(EquipResult::Broken);
+                }
+                // GR-5 legality, now checkable because the hero's class is persisted
+                // (GR-7). Derivation still refuses to pay out illegal gear; this is
+                // what turns a silent no-benefit equip into an answer.
+                let hero_class: Option<String> = sqlx::query_scalar(
+                    "SELECT class_key FROM heroes WHERE player_id = $1 AND slot = $2",
+                )
+                .bind(player_id)
+                .bind(hero_slot as i16)
+                .fetch_optional(&mut *tx)
+                .await?
+                .filter(|k: &String| !k.is_empty());
+                if let Some(verdict) = Self::equip_legality(
+                    hero_class.as_deref(),
+                    &slot,
+                    &item_class_key,
+                    &family,
+                    &armor_weight,
+                ) {
+                    if verdict != meld_proto::equipment::Legality::Ok {
+                        tx.rollback().await?;
+                        return Ok(EquipResult::ClassLocked(verdict));
+                    }
+                }
+                // Both hands or neither: a 2H weapon cannot share the hero with an
+                // off-hand item, in either order of equipping.
+                let two_handed = meld_proto::equipment::ItemFamily::from_wire(&family)
+                    .map(|f| f.reserves_off_hand())
+                    .unwrap_or(false);
+                if two_handed || slot == "off_hand" {
+                    let blocking: i64 = if two_handed {
+                        sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM gear
+                             WHERE owner_player_id = $1 AND equipped_hero_slot = $2
+                               AND slot = 'off_hand' AND gear_id <> $3",
+                        )
+                        .bind(player_id)
+                        .bind(hero_slot)
+                        .bind(gear_id)
+                        .fetch_one(&mut *tx)
+                        .await?
+                    } else {
+                        sqlx::query_scalar(
+                            "SELECT COUNT(*) FROM gear
+                             WHERE owner_player_id = $1 AND equipped_hero_slot = $2
+                               AND slot = 'main_hand' AND family IN ('spear','staff','globe')
+                               AND gear_id <> $3",
+                        )
+                        .bind(player_id)
+                        .bind(hero_slot)
+                        .bind(gear_id)
+                        .fetch_one(&mut *tx)
+                        .await?
+                    };
+                    if blocking > 0 {
+                        tx.rollback().await?;
+                        return Ok(EquipResult::TwoHandedConflict);
+                    }
                 }
                 // Per-(hero, category) capacity: one item everywhere except
                 // accessories, which get TWO equip slots (ACCESSORY_1/2 of the
@@ -1489,11 +1666,20 @@ impl Db {
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
                 // Load the target (owner-scoped so existence isn't leaked cross-account).
-                let Some((slot, max_durability, already)) = m
+                let Some((slot, max_durability, already, item_class_key, family, armor_weight)) = m
                     .gear
                     .get(&gear_id)
                     .filter(|g| g.owner_player_id == player_id)
-                    .map(|g| (g.slot.clone(), g.max_durability, g.equipped_hero_slot))
+                    .map(|g| {
+                        (
+                            g.slot.clone(),
+                            g.max_durability,
+                            g.equipped_hero_slot,
+                            g.class_key.clone(),
+                            g.family.clone(),
+                            g.armor_weight.clone(),
+                        )
+                    })
                 else {
                     return Ok(EquipResult::NotFound);
                 };
@@ -1507,6 +1693,42 @@ impl Db {
                 }
                 if max_durability == 0 {
                     return Ok(EquipResult::Broken);
+                }
+                let hero_class = m
+                    .hero_classes
+                    .get(&(player_id, hero_slot as i16))
+                    .filter(|k| !k.is_empty())
+                    .cloned();
+                if let Some(verdict) = Self::equip_legality(
+                    hero_class.as_deref(),
+                    &slot,
+                    &item_class_key,
+                    &family,
+                    &armor_weight,
+                ) {
+                    if verdict != meld_proto::equipment::Legality::Ok {
+                        return Ok(EquipResult::ClassLocked(verdict));
+                    }
+                }
+                let two_handed = meld_proto::equipment::ItemFamily::from_wire(&family)
+                    .map(|f| f.reserves_off_hand())
+                    .unwrap_or(false);
+                let blocked = m.gear.values().any(|g| {
+                    g.owner_player_id == player_id
+                        && g.equipped_hero_slot == Some(hero_slot)
+                        && g.gear_id != gear_id
+                        && if two_handed {
+                            g.slot == "off_hand"
+                        } else {
+                            slot == "off_hand"
+                                && g.slot == "main_hand"
+                                && meld_proto::equipment::ItemFamily::from_wire(&g.family)
+                                    .map(|f| f.reserves_off_hand())
+                                    .unwrap_or(false)
+                        }
+                });
+                if blocked {
+                    return Ok(EquipResult::TwoHandedConflict);
                 }
                 let occupied = m
                     .gear
@@ -1539,6 +1761,12 @@ pub enum EquipResult {
     Broken,
     /// Another item already occupies this slot → 409 conflict.
     SlotOccupied,
+    /// The hero's class may not wear this item (GR-5) → 409 conflict. Carries the
+    /// rule that failed so the UI can say *why*, not just "cannot equip".
+    ClassLocked(meld_proto::equipment::Legality),
+    /// A two-handed weapon needs both hands: either this 2H weapon and a filled
+    /// off-hand, or an off-hand item while a 2H weapon is held → 409 conflict.
+    TwoHandedConflict,
 }
 
 /// Outcome of [`Db::withdraw_material`], mapped to HTTP status by the API layer.
@@ -1688,6 +1916,8 @@ struct Mem {
     heroes: HashMap<(Uuid, i16), String>,
     /// heroes.back_row, keyed by (player_id, slot); absent = false (front).
     hero_rows: HashMap<(Uuid, i16), bool>,
+    /// heroes.class_key, keyed by (player_id, slot); absent = not yet chosen.
+    hero_classes: HashMap<(Uuid, i16), String>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
 }
@@ -2061,17 +2291,19 @@ mod tests {
         // The starter kit fills every slot, so free the main hand of both heroes
         // first — otherwise the equip is a no-op and the test proves nothing.
         for hero in [0, 3] {
-            let starter = db
-                .get_gear(p)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|g| g.equipped_hero_slot == Some(hero) && g.slot == "main_hand")
-                .expect("starter main-hand");
-            assert_eq!(
-                db.set_equipped(p, starter.gear_id, None).await.unwrap(),
-                EquipResult::Ok
-            );
+            for hand in ["main_hand", "off_hand"] {
+                let starter = db
+                    .get_gear(p)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|g| g.equipped_hero_slot == Some(hero) && g.slot == hand)
+                    .expect("starter hand slot");
+                assert_eq!(
+                    db.set_equipped(p, starter.gear_id, None).await.unwrap(),
+                    EquipResult::Ok
+                );
+            }
         }
         let base = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
 
@@ -2111,6 +2343,106 @@ mod tests {
             base[3].atk + 9,
             "an Explorer may carry the spear"
         );
+    }
+
+    #[tokio::test]
+    async fn equip_is_refused_with_the_reason_once_a_hero_has_a_class() {
+        use meld_proto::equipment::Legality;
+        let db = mem().await;
+        let p = db.register("gr7", "pw").await.unwrap().player_id;
+        // Hero 0 is a Resonant (staff, robes); hero 1 an Explorer.
+        db.set_hero_class(p, 0, "resonant").await.unwrap();
+        db.set_hero_class(p, 1, "explorer").await.unwrap();
+        assert_eq!(
+            db.get_hero_classes(p).await.unwrap()[..2],
+            ["resonant".to_string(), "explorer".to_string()]
+        );
+
+        let piece = |name: &str, slot: &str, family: &str, weight: &str| LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: name.into(),
+            slot: slot.into(),
+            class_key: String::new(),
+            tier: 2,
+            atk_bonus: 5,
+            def_bonus: 5,
+            spd_bonus: 0,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: String::new(),
+            family: family.into(),
+            armor_weight: weight.into(),
+        };
+        let spear = piece("Warpike", "main_hand", "spear", "");
+        let plate = piece("Battleplate", "chest", "", "heavy");
+        let staff = piece("Ward Stave", "main_hand", "staff", "");
+        let shield = piece("Targe", "off_hand", "shield", "");
+        let (spear_id, plate_id, staff_id, shield_id) =
+            (spear.gear_id, plate.gear_id, staff.gear_id, shield.gear_id);
+        db.insert_looted_gear(p, &[spear, plate, staff, shield]).await.unwrap();
+        // Free both heroes' hands of the starter kit first.
+        for g in db.get_gear(p).await.unwrap() {
+            if g.equipped_hero_slot.is_some() && (g.slot == "main_hand" || g.slot == "off_hand" || g.slot == "chest") {
+                db.set_equipped(p, g.gear_id, None).await.unwrap();
+            }
+        }
+
+        // The Resonant is refused the spear and the plate, each naming its rule.
+        assert_eq!(
+            db.set_equipped(p, spear_id, Some(0)).await.unwrap(),
+            EquipResult::ClassLocked(Legality::ClassFamily)
+        );
+        assert_eq!(
+            db.set_equipped(p, plate_id, Some(0)).await.unwrap(),
+            EquipResult::ClassLocked(Legality::ClassWeight)
+        );
+        // Its own staff is fine.
+        assert_eq!(db.set_equipped(p, staff_id, Some(0)).await.unwrap(), EquipResult::Ok);
+        // A shield on the Resonant is refused by the CLASS rule, which is checked
+        // before the hands rule — the more specific answer wins.
+        assert_eq!(
+            db.set_equipped(p, shield_id, Some(0)).await.unwrap(),
+            EquipResult::ClassLocked(Legality::ClassFamily)
+        );
+        // The Explorer may hold either, but not both: sword+shield OR the spear.
+        assert_eq!(db.set_equipped(p, shield_id, Some(1)).await.unwrap(), EquipResult::Ok);
+        assert_eq!(
+            db.set_equipped(p, spear_id, Some(1)).await.unwrap(),
+            EquipResult::TwoHandedConflict
+        );
+        assert_eq!(db.set_equipped(p, shield_id, None).await.unwrap(), EquipResult::Ok);
+        assert_eq!(db.set_equipped(p, spear_id, Some(1)).await.unwrap(), EquipResult::Ok);
+    }
+
+    #[tokio::test]
+    async fn a_hero_with_no_recorded_class_is_never_locked_out() {
+        let db = mem().await;
+        let p = db.register("gr7b", "pw").await.unwrap().player_id;
+        let staff = LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: "Ward Stave".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            tier: 2,
+            atk_bonus: 5,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: String::new(),
+            family: "staff".into(),
+            armor_weight: String::new(),
+        };
+        let staff_id = staff.gear_id;
+        db.insert_looted_gear(p, &[staff]).await.unwrap();
+        for g in db.get_gear(p).await.unwrap() {
+            if g.equipped_hero_slot == Some(0) && (g.slot == "main_hand" || g.slot == "off_hand") {
+                db.set_equipped(p, g.gear_id, None).await.unwrap();
+            }
+        }
+        // No class recorded for hero 0 → allowed; derivation is the backstop, so a
+        // player is never locked out of their own Vault by missing data.
+        assert_eq!(db.set_equipped(p, staff_id, Some(0)).await.unwrap(), EquipResult::Ok);
     }
 }
 
