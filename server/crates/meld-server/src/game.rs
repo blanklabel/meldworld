@@ -99,6 +99,10 @@ enum DbWrite {
     HeroFormation(String, i16, bool),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
+    /// Post a new deepest distance to the Vanguard Board: (player, distance).
+    /// Sent only when the run's record actually grows, so the board write rate is
+    /// bounded by *progress*, not by movement (P1-1).
+    Vanguard(String, i32),
     /// Clear a player's pending-backpack queue: its contents were just drained
     /// into a freshly-formed run's live Backpack.
     ClearPendingBackpack(String),
@@ -153,6 +157,14 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_has_dived(uid).await {
                         tracing::error!("mark-dived persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::Vanguard(pid, distance) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    let season = meld_db::current_season();
+                    if let Err(e) = db.record_vanguard_distance(uid, season, distance).await {
+                        tracing::error!("vanguard post failed for {pid}: {e}");
                     }
                 }
             }
@@ -3001,6 +3013,8 @@ impl WorldActor {
             intent.input_seq,
         );
 
+        self.post_vanguard(player_id);
+
         // WG-4: crossing the western border behind the hub returns you to Last City
         // (an instant extraction home — you keep your backpack). `complete_extractions`
         // banks it this same tick and sends the result, so no touch/battle is resolved.
@@ -3013,6 +3027,38 @@ impl WorldActor {
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
         (self.resolve_touches(), Vec::new())
+    }
+
+    /// Post the player's current distance to the Vanguard Board when it beats
+    /// their run record (roadmap P1-1, behaviors/endgame-seasons.md).
+    ///
+    /// The run's `max_distance_reached` is the local high-water mark, so the DB
+    /// write fires once per *new* deepest tile rather than on every move — and the
+    /// number never comes from the client: it is read off the server-owned avatar
+    /// after movement was validated (CANON §S anti-forgery).
+    fn post_vanguard(&mut self, player_id: &str) {
+        let Some(d) = self
+            .arena
+            .avatar(player_id)
+            .map(|a| a.position.distance_floor().clamp(0, i32::MAX as i64) as i32)
+        else {
+            return;
+        };
+        let Some(run) = self
+            .run
+            .runs
+            .iter_mut()
+            .find(|r| r.player_id == player_id && r.result.is_none())
+        else {
+            return;
+        };
+        if d <= run.max_distance_reached {
+            return;
+        }
+        run.max_distance_reached = d;
+        let _ = self
+            .db_writes
+            .send(DbWrite::Vanguard(player_id.to_string(), d));
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),

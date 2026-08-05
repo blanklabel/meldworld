@@ -51,6 +51,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/heroes", get(heroes))
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
         .route("/v1/crafting/craft", post(craft))
+        .route("/v1/leaderboards/vanguard", get(vanguard_board))
+        .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
+        .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
         .with_state(state)
 }
 
@@ -140,6 +143,80 @@ async fn meld_skills(State(st): State<ApiState>, headers: HeaderMap) -> Result<R
         }
         Err(e) => Err(ApiReject::internal(e)),
     }
+}
+
+/// How many rows one Vanguard Board read returns. The spec's title grant covers
+/// the top 100 instances, so 100 is the meaningful board depth; the paginated
+/// envelope lands with AD-6's full board suite.
+const VANGUARD_BOARD_LIMIT: i64 = 100;
+
+/// `GET /v1/leaderboards/vanguard` — the live board for the open season
+/// (http-api/leaderboards.md; roadmap P1-1's basic cut).
+async fn vanguard_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    authenticate(&st, &headers)?;
+    vanguard_body(&st, meld_db::current_season()).await
+}
+
+/// `GET /v1/leaderboards/vanguard/:season` — an earlier season's archived standings.
+async fn vanguard_season(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(season): Path<i32>,
+) -> Result<Response, ApiReject> {
+    authenticate(&st, &headers)?;
+    if season < 0 || season > meld_db::current_season() {
+        return Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "No such season.",
+        ));
+    }
+    vanguard_body(&st, season).await
+}
+
+/// `GET /v1/leaderboards/vanguard/me` — the caller's own placement this season.
+/// A caller with no ranked run is a `200` with `entry: null` (the season exists;
+/// the placement doesn't) — spec http-api/leaderboards.md.
+async fn vanguard_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let season = meld_db::current_season();
+    let entry = vanguard_entries(&st, season)
+        .await?
+        .into_iter()
+        .find(|e| e.player_id == player_id.to_string());
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "season": season, "entry": entry })),
+    )
+        .into_response())
+}
+
+async fn vanguard_entries(st: &ApiState, season: i32) -> Result<Vec<VanguardEntry>, ApiReject> {
+    let rows = st
+        .db
+        .vanguard_board(season, VANGUARD_BOARD_LIMIT)
+        .await
+        .map_err(ApiReject::internal)?;
+    Ok(rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| VanguardEntry {
+            rank: i as i32 + 1,
+            player_id: r.player_id.to_string(),
+            username: r.username,
+            max_distance: r.max_distance,
+            achieved_at: r.achieved_at.timestamp_millis(),
+        })
+        .collect())
+}
+
+async fn vanguard_body(st: &ApiState, season: i32) -> Result<Response, ApiReject> {
+    let body = VanguardBoardResponse {
+        season,
+        archived: season < meld_db::current_season(),
+        data: vanguard_entries(st, season).await?,
+    };
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 /// GET the caller's persistent hero names (by slot).

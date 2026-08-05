@@ -60,10 +60,20 @@ craft/upgrade/spend → dive stronger. Without this the persistent half is inert
 market is the multiplier*).
 
 **③ A reason to dive beyond "deeper" — purpose + a scoreboard.**
-- [ ] **P1-1 — Turn on the Vanguard board (basic).** The seasonal deepest-distance
-  leaderboard is fully specced ([`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md))
-  but unbuilt — stand up the basic live board (real-time re-rank, per-season). `AD-6` later
-  generalizes it into the full board suite. The cheapest "why am I diving" win.
+- [x] **P1-1 — Turn on the Vanguard board (basic).** The seasonal deepest-distance
+  leaderboard ([`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md)) is live,
+  end to end: the `vanguard` table in `meld-db` (per-season best, monotonic, earliest-
+  `achieved_at` tie-break) with 13-week season math (`season_at`);
+  `WorldActor::post_vanguard` feeds it off **validated movement** via `DbWrite::Vanguard`
+  (a write only on a new deepest tile — never on the loop, no client-submitted score);
+  `GET /v1/leaderboards/vanguard[/:season|/me]` serve the live + archived boards; and the
+  **Vanguard Wall** in Last City lights with the season's top names ([E] at the wall, or
+  `MELD_WALL`/`?wall` for a screenshot frame). Verified by `qa/tests/vanguard_board.rs`
+  (real wire + HTTP, Postgres), `meld-db`/`city` unit tests, and a native city screenshot.
+  Deviations from the full designed surface — per-player rather than per-instance entries,
+  integer season index, unpaginated top 100 — are tabled in
+  [`interfaces/http-api/leaderboards.md`](interfaces/http-api/leaderboards.md) and close
+  with `AD-6`.
 - → **AD-4** (Hunt Board) at a **light first cut**: a handful of "kill X / reach depth Y /
   clear this dungeon" hunts, not the full system.
 

@@ -4,6 +4,34 @@
 
 The Vanguard Board is the seasonal global leaderboard ranking the highest **distance** reached by a MazeInstance during a single run (CANON.md §D3). Seasons are exactly 13 weeks on a rolling UTC boundary (CANON.md §D8). At season end the board is immortalized as a read-only archive, cosmetic titles go to the top 100 instances, and the infinite-zone leaderboard resets; Vaults, hubs, meld skills, and unlocks are never wiped (CANON.md §Sessions & seasons). Rankings are computed server-side from run results; there is no HTTP write surface here.
 
+## Implementation status — the P1-1 basic cut (shipped)
+
+The endpoints below are the **full** designed surface. What is live today is the
+roadmap **P1-1 basic board**, which differs in three ways; `AD-6` closes the gap when
+it generalizes this into the board suite.
+
+| Designed | Live today (P1-1) |
+|----------|-------------------|
+| One entry **per MazeInstance**, crediting all party members (`instance_id` + `players[]`) | One entry **per player** (`player_id` + `username`). Each player is their own battle party today, so per-player bests are the honest unit; instance grouping lands with `AD-6`. |
+| `season_id` (uuid) + a `Season` object (`number`, `starts_at`, `ends_at`, `status`, `title_reward`) | `season` as a 0-based integer index of the 13-week window (`meld_db::season_at`), and an `archived` boolean. Season rows (and end-of-season title grants) are not persisted yet. |
+| Paginated envelope (`next_cursor`) | Top 100, unpaginated (the depth the spec's title grant cares about). |
+
+Live shape: `GET /v1/leaderboards/vanguard` → `{season, archived, data: [{rank, player_id, username, max_distance, achieved_at}]}`
+(`achieved_at` is unix millis in this cut, not RFC-3339); `GET /v1/leaderboards/vanguard/:season` for a
+past season (404 for a season that hasn't happened); `GET /v1/leaderboards/vanguard/me` → `{season, entry}`
+with `entry: null` when unranked.
+
+Reading it in-game: the **Vanguard Wall** district in Last City ([E] at the wall) shows the
+season's top five plus the reader's own placement; `MELD_WALL` / `?wall` lights it on arrival
+for screenshot frames.
+
+Feeding it: `WorldActor::post_vanguard` reads the **server-owned** avatar after movement
+validation, and only when the distance beats the run's own high-water mark does it enqueue a
+`DbWrite::Vanguard` — so the write rate is bounded by progress, never by input, and the game
+loop never blocks on the board (CANON §S; the no-locks tick model).
+
+---
+
 ## Shared object: Vanguard entry
 
 **Source:** GDD.md §8 (The Vanguard Board); CANON.md §D3, §G (`VanguardBoard`, `MazeInstance`)

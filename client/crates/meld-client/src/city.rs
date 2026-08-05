@@ -25,6 +25,8 @@ pub(crate) enum CityAction {
     Dive,
     /// The Vault-Deep: toggle the banked chits/materials/gear panel.
     Vault,
+    /// The Vanguard Wall: light it with the live seasonal leaderboard (P1-1).
+    Vanguard,
     /// A not-yet-raised district: post its milestone notice.
     Notice(&'static str),
 }
@@ -91,7 +93,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
         x: -15.0,
         z: -14.0,
         radius: 5.0,
-        action: CityAction::Notice("The Vanguard Wall is unlit - leaderboards arrive in M3."),
+        action: CityAction::Vanguard,
     },
 ];
 
@@ -154,6 +156,12 @@ pub(crate) fn city_hud(
     net.0.fetch_inventory();
     city.notice.clear();
     city.near = None;
+    // `MELD_WALL`/`?wall` lights the board on arrival for screenshot frames; a
+    // real player toggles it with [E] at the wall.
+    city.board_open = crate::flags::wall_preview_flag();
+    if city.board_open {
+        net.0.fetch_vanguard();
+    }
     session.entered = false;
     session.status.clear();
 
@@ -602,6 +610,13 @@ pub(crate) fn city_input(
         if let Some(i) = city.near {
             match CITY_DISTRICTS[i].action {
                 CityAction::Dive | CityAction::Vault => {} // handled above
+                CityAction::Vanguard => {
+                    city.board_open = !city.board_open;
+                    if city.board_open {
+                        city.notice.clear();
+                        net.0.fetch_vanguard();
+                    }
+                }
                 CityAction::Notice(s) => city.notice = s.to_string(),
             }
         }
@@ -713,13 +728,21 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
             best = Some((i, dist));
         }
     }
-    city.near = best.map(|(i, _)| i);
+    let near = best.map(|(i, _)| i);
+    if city.board_open
+        && !crate::flags::wall_preview_flag()
+        && !near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Vanguard))
+    {
+        city.board_open = false;
+    }
+    city.near = near;
 }
 
 pub(crate) fn render_city(
     inv: Res<InventoryData>,
     session: Res<Session>,
     city: Res<CityUi>,
+    board: Res<VanguardBoardData>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
@@ -734,13 +757,16 @@ pub(crate) fn render_city(
             match d.action {
                 CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
                 CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
+                CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
-        **t = if city.notice.is_empty() {
+        **t = if city.board_open {
+            format!("{}\n{prompt}", vanguard_wall_text(&board))
+        } else if city.notice.is_empty() {
             prompt
         } else {
             format!("{}\n{prompt}", city.notice)
@@ -762,4 +788,69 @@ pub(crate) fn city_vault_text(inv: &InventoryData) -> String {
         mat_count,
         inv.gear.len()
     )
+}
+
+/// The lit Vanguard Wall: the season's deepest dives, best first, with the
+/// reader's own placement called out (P1-1 — behaviors/endgame-seasons.md).
+/// Trimmed to the top few rows because the wall shares the city's one status
+/// line; the full 100 belongs to `AD-6`'s board screen.
+pub(crate) fn vanguard_wall_text(board: &VanguardBoardData) -> String {
+    if !board.loaded {
+        return "The Vanguard Wall flickers awake...".to_string();
+    }
+    if board.entries.is_empty() {
+        return format!(
+            "The Vanguard Wall, season {}:  no name carved yet - the first to walk out and come back deep takes it.",
+            board.season
+        );
+    }
+    let rows: Vec<String> = board
+        .entries
+        .iter()
+        .take(5)
+        .map(|e| format!("{}. {} - d{}", e.rank, e.username, e.max_distance))
+        .collect();
+    let you = match board.you {
+        Some(rank) => format!("    (you: #{rank})"),
+        None => "    (you: uncarved)".to_string(),
+    };
+    format!(
+        "The Vanguard Wall, season {}:  {}{you}",
+        board.season,
+        rows.join("    ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use meld_client::net::VanguardLine;
+
+    fn line(rank: i32, name: &str, d: i32) -> VanguardLine {
+        VanguardLine { rank, username: name.to_string(), max_distance: d }
+    }
+
+    #[test]
+    fn wall_text_covers_flickering_empty_and_ranked() {
+        let mut board = VanguardBoardData::default();
+        assert!(vanguard_wall_text(&board).contains("flickers awake"));
+
+        board.loaded = true;
+        board.season = 2;
+        let empty = vanguard_wall_text(&board);
+        assert!(empty.contains("season 2"), "{empty}");
+        assert!(empty.contains("no name carved"), "{empty}");
+
+        board.entries = (1..=8).map(|i| line(i, &format!("digger{i}"), 900 - i * 10)).collect();
+        board.you = Some(4);
+        let lit = vanguard_wall_text(&board);
+        assert!(lit.contains("1. digger1 - d890"), "{lit}");
+        // Only the top five share the city's one status line.
+        assert!(lit.contains("5. digger5"), "{lit}");
+        assert!(!lit.contains("6. digger6"), "{lit}");
+        assert!(lit.contains("(you: #4)"), "{lit}");
+
+        board.you = None;
+        assert!(vanguard_wall_text(&board).contains("uncarved"));
+    }
 }

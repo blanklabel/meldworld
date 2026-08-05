@@ -160,6 +160,7 @@ fn main() {
         .init_resource::<RunGearData>()
         .init_resource::<ProgressData>()
         .init_resource::<AccountHeroNames>()
+        .init_resource::<VanguardBoardData>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -1391,6 +1392,20 @@ struct CityUi {
     /// Index into [`CITY_DISTRICTS`] the avatar is currently standing in (for the
     /// contextual interact prompt), or `None` when out in the open plaza.
     near: Option<usize>,
+    /// True while the Vanguard Wall is lit — the board replaces the notice line
+    /// until the player walks away or presses [E] again.
+    board_open: bool,
+}
+
+/// The live Vanguard Board as last read from `GET /v1/leaderboards/vanguard`
+/// (P1-1) — what the Vanguard Wall in Last City displays.
+#[derive(Resource, Default)]
+pub(crate) struct VanguardBoardData {
+    pub season: i32,
+    pub entries: Vec<meld_client::net::VanguardLine>,
+    /// The caller's own rank this season, when they are on the page.
+    pub you: Option<i32>,
+    pub loaded: bool,
 }
 
 #[derive(Resource, Default)]
