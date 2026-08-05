@@ -230,6 +230,25 @@ gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the p
 gatekeeper_atk_mult = 1.6
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
+# PACKS (CR/encounter composition): a lone creature versus a party of four is not a
+# fight, so a share of spawns come as a LEADER plus minions clustered inside
+# `[ai] group_radius` — touch one and the whole pack joins. Minions are visibly
+# lesser (a big spider with four little ones); the leader is a step above a
+# standard creature but below an Elite. Never in the spawn section or the tutorial.
+pack_chance = 0.35               # P(a spawn becomes a pack) at tier 0 [TUNABLE]
+pack_chance_per_tier = 0.03      # +P per tier, so the deep world crowds [TUNABLE]
+pack_chance_cap = 0.75
+pack_min_minions = 2
+pack_max_minions = 5
+pack_minions_per_tier = 0.25     # average extra minions per tier [TUNABLE]
+pack_mixed_chance = 0.35         # P(a minion is a DIFFERENT kind than its leader) [TUNABLE]
+pack_spread = 3.4                # minions scatter within this of the leader (< group_radius)
+leader_hp_mult = 1.7             # the "one big spider" — under an Elite's 2.4
+leader_atk_mult = 1.2
+leader_xp_mult = 1.8
+minion_hp_mult = 0.45            # the "four little ones": individually weak…
+minion_atk_mult = 0.6            # …but four of them act four times as often
+minion_xp_mult = 0.55
 
 # Gear rarity (loot excitement). A dropped piece rolls Common → Rare → Epic →
 # Legendary; higher rarity scales the stat bonus (and flavours the name). The

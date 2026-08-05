@@ -601,6 +601,23 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   drop **higher-rarity** gear (GR) and collectables (CR-5). Loot rarity scales with
   distance. *Accessibility: the palette is a bonus cue, never the only one — pair it
   with a redundant non-color signal (level tag / nameplate / icon), see UX-2.*
+- [x] **CR-6 — Encounter packs: a leader and its minions (fights stop being duels).**
+  Creatures were placed one at a time at `monster_spacing` gaps, so `group_around`
+  almost never caught a second one and every fight was a party-of-four versus **one**
+  creature — the root cause of "fights are too easy", of nobody needing heals, and of
+  thin per-fight XP (the battle already sums each creature's reward, so a duel pays for
+  one creature). A share of spawns now come as a **leader** (1.7× HP, 1.2× atk — a step
+  above standard, below an Elite) surrounded by 2–5 **minions** (0.45× HP, 0.6× atk:
+  the "one big spider with four little ones"), clustered inside `[ai] group_radius` so
+  touching any of them pulls the whole pack in. `pack_mixed_chance` makes some minions a
+  *different* species than their leader (mixed groups). Pack frequency and size scale
+  with tier; never in the spawn section or the tutorial, so onboarding stays calm.
+  Measured, same seeds: **1.08 → 2.07** creatures per fight at reach 500, **1.10 → 2.32**
+  at 3000, biggest encounter 3 → 5, solo encounters 192 → 65. All knobs are
+  `[encounters]` `[TUNABLE]`s, and `report_encounter_composition_by_depth` prints the
+  distribution for tuning (`cargo test -p meld-world report_encounter -- --nocapture`).
+  Feeds `P1-2` (combat feel) and is the placement half of the ecology epic's
+  herds/alphas line.
 - [ ] **CR-2 — Creatures fight each other, visibly, with consequences.** 🟡
   *Partial:* hostile factions already skirmish and lose `hp`. **Remaining:** show
   the **fighting state on the map** (so you can read "those two are clashing"),

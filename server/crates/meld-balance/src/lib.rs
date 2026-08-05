@@ -192,6 +192,33 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+    pub pack_chance: f64,
+    pub pack_chance_per_tier: f64,
+    pub pack_chance_cap: f64,
+    pub pack_min_minions: usize,
+    pub pack_max_minions: usize,
+    pub pack_minions_per_tier: f64,
+    pub pack_mixed_chance: f64,
+    pub pack_spread: f64,
+    pub leader_hp_mult: f64,
+    pub leader_atk_mult: f64,
+    pub leader_xp_mult: f64,
+    pub minion_hp_mult: f64,
+    pub minion_atk_mult: f64,
+    pub minion_xp_mult: f64,
+}
+
+impl Encounters {
+    /// P(a spawn becomes a pack) at this tier, capped.
+    pub fn pack_chance_at(&self, tier: i32) -> f64 {
+        (self.pack_chance + self.pack_chance_per_tier * tier.max(0) as f64).min(self.pack_chance_cap)
+    }
+
+    /// How many minions a pack at this tier fields.
+    pub fn pack_minions_at(&self, tier: i32) -> usize {
+        let extra = (self.pack_minions_per_tier * tier.max(0) as f64).round() as usize;
+        (self.pack_min_minions + extra).min(self.pack_max_minions)
+    }
 }
 
 /// Adventure-depth knobs (AD-2): the combo window and class-pair synergy

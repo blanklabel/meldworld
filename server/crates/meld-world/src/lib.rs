@@ -1923,6 +1923,63 @@ impl Arena {
                 self.monsters[idx].boss_kind = pick_elite_boss_kind(bseed ^ 0xB055).to_string();
             }
 
+            // PACKS: a lone creature against four heroes is not a fight. A share of
+            // spawns become a LEADER (bigger, but under an Elite) surrounded by
+            // visibly lesser minions, clustered inside `[ai] group_radius` so
+            // touching one pulls the whole pack in. Rolled on the elite stream so
+            // the main placement draws stay byte-identical (determinism tests).
+            // Never in the spawn section or the tutorial — onboarding stays calm.
+            let leader_idx = idx;
+            let tier = Scaling::new(balance).tier(pos.x.max(0.0) as i64) as i32;
+            if i > 0
+                && !self.tutorial
+                && self.monsters[leader_idx].encounter_class == "standard"
+                && erng.unit() < enc.pack_chance_at(tier)
+            {
+                self.monsters[leader_idx].promote(
+                    enc.leader_hp_mult,
+                    enc.leader_atk_mult,
+                    enc.leader_xp_mult,
+                    "leader",
+                );
+                let minions = enc.pack_minions_at(tier);
+                for _ in 0..minions {
+                    // Mixed groups: sometimes the littles are a different species
+                    // than what they follow.
+                    let mkind = if erng.unit() < enc.pack_mixed_chance {
+                        kinds[erng.below(kinds.len())]
+                    } else {
+                        kind
+                    };
+                    let angle = erng.unit() * std::f64::consts::TAU;
+                    let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
+                    let mpos = corridor_offset(
+                        pos,
+                        dist * angle.cos(),
+                        dist * angle.sin(),
+                        self.radial_half,
+                        self.corridor_lateral.max(1.0),
+                    );
+                    let midx = self.monsters.len();
+                    let mseed = erng.next_u64();
+                    self.monsters.push(MonsterSpawn::build(
+                        balance,
+                        format!("mob-{midx}"),
+                        mkind,
+                        mpos,
+                        mseed,
+                    ));
+                    self.monsters[midx].area_min_x = start_x;
+                    self.monsters[midx].area_max_x = end_x;
+                    self.monsters[midx].promote(
+                        enc.minion_hp_mult,
+                        enc.minion_atk_mult,
+                        enc.minion_xp_mult,
+                        "minion",
+                    );
+                }
+            }
+
             let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
             x += gap.max(2.0);
         }
@@ -3293,6 +3350,24 @@ fn nudge_to_walkable(p: Position, off: (f32, f32)) -> Position {
 /// Bend a corridor point (`x` = radius axis, `y` = lateral axis) into the WG-4 fan:
 /// `x → radius`, `y → bearing`. The one true forward map, shared by `radialize` and
 /// streaming so every bend site agrees (and `Arena::corridorize` inverts it).
+/// Place a companion `want` world-units from `anchor` in **corridor** space, so it
+/// still lands that far away *after* [`radial_tf`] bends the corridor into the fan.
+///
+/// The bend turns corridor `y` into an ANGLE: a lateral offset of `dy` becomes an
+/// arc of `r · (dy/lat) · half`, which grows with depth — a flat 3-unit offset is
+/// ~50 world units out at r=500, far outside `[ai] group_radius`. Inverting that is
+/// what keeps a pack a pack at any depth. `radial_half == 0` is corridor mode,
+/// where world and corridor space agree.
+fn corridor_offset(anchor: Position, radial: f64, tangential: f64, half: f64, lat: f64) -> Position {
+    let dy = if half > 0.0 {
+        let r = anchor.x.max(1.0);
+        tangential * lat / (half * r)
+    } else {
+        tangential
+    };
+    Position::new(anchor.x + radial, anchor.y + dy)
+}
+
 fn radial_tf(p: Position, half: f64, lat: f64) -> Position {
     let r = p.x.max(0.0);
     let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
@@ -4359,11 +4434,22 @@ mod tests {
         let known = ["Swift", "Brutal", "Armored", "Giant", "Vicious"];
         let mut champions = 0;
         for m in &a.monsters {
-            if m.encounter_class == "standard" {
-                assert!(m.affix.is_empty(), "standard creatures carry no affix");
-            } else {
-                assert!(known.contains(&m.affix.as_str()), "champion affix is known: {:?}", m.affix);
-                champions += 1;
+            match m.encounter_class.as_str() {
+                // Champions are the affix carriers.
+                "elite" | "gatekeeper" => {
+                    assert!(
+                        known.contains(&m.affix.as_str()),
+                        "champion affix is known: {:?}",
+                        m.affix
+                    );
+                    champions += 1;
+                }
+                // Pack roles are encounter COMPOSITION, not a champion tier: a
+                // leader is bigger than its minions but carries no champion affix.
+                "standard" | "leader" | "minion" => {
+                    assert!(m.affix.is_empty(), "{} carries no affix", m.encounter_class)
+                }
+                other => panic!("unknown encounter class {other:?}"),
             }
         }
         assert!(champions > 0, "some champions exist to carry affixes");
@@ -4760,6 +4846,159 @@ mod tests {
             }
         }
         assert!(branded_hands > 0, "no weapon ever rolled a brand");
+    }
+
+    #[test]
+    fn a_touched_leader_drags_its_whole_pack_into_the_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 4, false);
+        a.ensure_frontier(&b, 900.0);
+        let leaders: Vec<usize> = a
+            .monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.encounter_class == "leader")
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!leaders.is_empty(), "no packs were spawned at all");
+
+        // The whole point: touching the leader pulls the minions in, so a fight is
+        // a party-of-four versus a GROUP instead of versus one creature.
+        let mut biggest = 0;
+        for &li in &leaders {
+            let group = a.group_around(li);
+            biggest = biggest.max(group.len());
+            assert!(group.contains(&li));
+        }
+        assert!(
+            biggest >= 4,
+            "the largest pack pulled only {biggest} creatures into a fight"
+        );
+
+        // Minions exist, are visibly lesser, and sit near a leader.
+        let minions: Vec<&MonsterSpawn> = a
+            .monsters
+            .iter()
+            .filter(|m| m.encounter_class == "minion")
+            .collect();
+        assert!(!minions.is_empty(), "packs spawned no minions");
+        let leader_hp = a.monsters[leaders[0]].max_hp;
+        let worst_minion = minions.iter().map(|m| m.max_hp).min().unwrap();
+        assert!(
+            leader_hp > worst_minion,
+            "the big one should outclass the little ones: {leader_hp} vs {worst_minion}"
+        );
+
+        // And the fight is genuinely harder, not just longer: a pack brings more
+        // total HP *and* more total attack per round than the lone creature it
+        // replaced — the second is what makes a player reach for a heal.
+        let lone = a
+            .monsters
+            .iter()
+            .find(|m| m.encounter_class == "standard")
+            .expect("a lone creature exists");
+        let best = leaders
+            .iter()
+            .map(|&li| {
+                let g = a.group_around(li);
+                (
+                    g.iter().map(|&i| a.monsters[i].max_hp).sum::<i32>(),
+                    g.iter().map(|&i| a.monsters[i].atk).sum::<i32>(),
+                )
+            })
+            .max_by_key(|(hp, _)| *hp)
+            .unwrap();
+        assert!(best.0 > lone.max_hp, "pack hp {} vs lone {}", best.0, lone.max_hp);
+        assert!(
+            best.1 > lone.atk * 2,
+            "a pack should out-damage a lone creature by a wide margin: {} vs {}",
+            best.1,
+            lone.atk
+        );
+    }
+
+    #[test]
+    fn a_pack_pays_more_xp_than_the_lone_creature_it_replaced() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 4, false);
+        a.ensure_frontier(&b, 900.0);
+        let li = a
+            .monsters
+            .iter()
+            .position(|m| m.encounter_class == "leader")
+            .expect("a pack exists");
+        // The battle sums every creature's reward, so clearing a pack pays for the
+        // whole pack — which is what makes deep fights worth their risk.
+        let pack_xp: i64 = a
+            .group_around(li)
+            .iter()
+            .map(|&i| a.monsters[i].xp_reward)
+            .sum();
+        let lone = a
+            .monsters
+            .iter()
+            .find(|m| m.encounter_class == "standard")
+            .map(|m| m.xp_reward)
+            .unwrap_or(0);
+        assert!(
+            pack_xp > lone,
+            "a pack ({pack_xp}) should out-pay a lone creature ({lone})"
+        );
+    }
+
+    #[test]
+    fn onboarding_never_meets_a_pack() {
+        let b = Balance::load_default().unwrap();
+        // The tutorial world is calm everywhere…
+        let tut = Arena::generate(&b, 7, true);
+        assert!(
+            tut.monsters.iter().all(|m| m.encounter_class != "leader"
+                && m.encounter_class != "minion"),
+            "the tutorial spawned a pack"
+        );
+        // …and in a normal world the spawn section (i == 0) stays a safe first step.
+        let a = Arena::generate(&b, 7, false);
+        let section0_end = a.monsters
+            .iter()
+            .filter(|m| m.area_min_x == 0.0)
+            .all(|m| m.encounter_class != "leader" && m.encounter_class != "minion");
+        assert!(section0_end, "the spawn section spawned a pack");
+    }
+
+    #[test]
+    fn report_encounter_composition_by_depth() {
+        // Not an assertion so much as a readout: what a dive actually MEETS now,
+        // by depth band. Printed with `-- --nocapture` when tuning `[encounters]`.
+        let b = Balance::load_default().unwrap();
+        for &(seed, reach) in &[(4u64, 500.0f64), (11, 1500.0), (23, 3000.0)] {
+            let mut a = Arena::generate(&b, seed, false);
+            a.ensure_frontier(&b, reach);
+            let mut groups: Vec<usize> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for (i, m) in a.monsters.iter().enumerate() {
+                if seen.contains(&i) || m.defeated {
+                    continue;
+                }
+                let g = a.group_around(i);
+                for &j in &g {
+                    seen.insert(j);
+                }
+                groups.push(g.len());
+            }
+            let total: usize = groups.iter().sum();
+            let solo = groups.iter().filter(|&&n| n == 1).count();
+            let biggest = groups.iter().copied().max().unwrap_or(0);
+            let avg = total as f64 / groups.iter().len().max(1) as f64;
+            let leaders = a.monsters.iter().filter(|m| m.encounter_class == "leader").count();
+            println!(
+                "reach {reach:>6}: {} encounters, {total} creatures, avg {avg:.2}/fight, {solo} solo, biggest {biggest}, {leaders} packs",
+                groups.len()
+            );
+            // The floor this layer exists to clear: a dive must not be a string of
+            // duels. Deliberately loose — the shape is a `[encounters]` tuning call.
+            assert!(avg > 1.5, "fights are still nearly all duels at reach {reach}: avg {avg:.2}");
+            assert!(biggest >= 4, "no real pack ever formed at reach {reach}");
+        }
     }
 }
 
