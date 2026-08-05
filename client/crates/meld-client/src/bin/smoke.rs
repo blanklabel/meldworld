@@ -108,6 +108,7 @@ fn main() {
                 | ServerMsg::ChestOpened { .. }
                 | ServerMsg::HeroNames { .. }
                 | ServerMsg::VanguardBoard { .. }
+                | ServerMsg::ShopStock { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }

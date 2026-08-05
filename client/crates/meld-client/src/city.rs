@@ -27,6 +27,8 @@ pub(crate) enum CityAction {
     Vault,
     /// The Vanguard Wall: light it with the live seasonal leaderboard (P1-1).
     Vanguard,
+    /// The Apothecary: the one NPC who sells the lowest-tier basics for chits.
+    Shop,
     /// A not-yet-raised district: post its milestone notice.
     Notice(&'static str),
 }
@@ -65,7 +67,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
         x: 13.0,
         z: 0.0,
         radius: 6.0,
-        action: CityAction::Notice("The Market Tiers are still being raised - player stalls open in M1."),
+        action: CityAction::Shop,
     },
     District {
         label: "The Forge & Alembic",
@@ -161,6 +163,10 @@ pub(crate) fn city_hud(
     city.board_open = crate::flags::wall_preview_flag();
     if city.board_open {
         net.0.fetch_vanguard();
+    }
+    city.shop_open = crate::flags::shop_preview_flag();
+    if city.shop_open {
+        net.0.fetch_shop();
     }
     session.entered = false;
     session.status.clear();
@@ -553,6 +559,7 @@ pub(crate) fn city_input(
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
+    shop: Res<ShopData>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     // Dive: ENTER anywhere, E while standing at The Threshold, or autoplay (which
@@ -605,11 +612,34 @@ pub(crate) fn city_input(
         }
         return;
     }
+    // While the shelf is open, [1]-[4] buy one of that row. The server prices and
+    // refuses; the client only names the row.
+    if city.shop_open {
+        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
+            .iter()
+            .enumerate()
+        {
+            if keys.just_pressed(*key) {
+                if let Some(line) = shop.items.get(i) {
+                    net.0.buy_item(line.item_kind.clone(), 1);
+                    city.notice = format!("bought {}", line.name);
+                }
+                return;
+            }
+        }
+    }
     // E interacts with whichever other district the avatar is standing in.
     if keys.just_pressed(KeyCode::KeyE) {
         if let Some(i) = city.near {
             match CITY_DISTRICTS[i].action {
                 CityAction::Dive | CityAction::Vault => {} // handled above
+                CityAction::Shop => {
+                    city.shop_open = !city.shop_open;
+                    if city.shop_open {
+                        city.notice.clear();
+                        net.0.fetch_shop();
+                    }
+                }
                 CityAction::Vanguard => {
                     city.board_open = !city.board_open;
                     if city.board_open {
@@ -729,6 +759,12 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
         }
     }
     let near = best.map(|(i, _)| i);
+    if city.shop_open
+        && !crate::flags::shop_preview_flag()
+        && !near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Shop))
+    {
+        city.shop_open = false;
+    }
     if city.board_open
         && !crate::flags::wall_preview_flag()
         && !near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Vanguard))
@@ -743,6 +779,7 @@ pub(crate) fn render_city(
     session: Res<Session>,
     city: Res<CityUi>,
     board: Res<VanguardBoardData>,
+    shop: Res<ShopData>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
@@ -757,6 +794,7 @@ pub(crate) fn render_city(
             match d.action {
                 CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
                 CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
+                CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
                 CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
@@ -764,7 +802,9 @@ pub(crate) fn render_city(
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
-        **t = if city.board_open {
+        **t = if city.shop_open {
+            format!("{}\n{prompt}", shop_text(&shop, &inv))
+        } else if city.board_open {
             format!("{}\n{prompt}", vanguard_wall_text(&board))
         } else if city.notice.is_empty() {
             prompt
@@ -852,5 +892,70 @@ mod tests {
 
         board.you = None;
         assert!(vanguard_wall_text(&board).contains("uncarved"));
+    }
+}
+
+/// The Apothecary's shelf as the city's one status line can carry it: name, price,
+/// and what the player can currently afford (EC-2). Buying is `[1]`-`[4]`.
+pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData) -> String {
+    if !shop.loaded {
+        return "The Apothecary is unpacking crates...".to_string();
+    }
+    if shop.items.is_empty() {
+        return "The Apothecary has nothing on the shelf.".to_string();
+    }
+    let rows: Vec<String> = shop
+        .items
+        .iter()
+        .take(4)
+        .enumerate()
+        .map(|(i, s)| {
+            // Mark what the player cannot afford, so the price is a decision rather
+            // than a rejection they discover by pressing a key.
+            let mark = if inv.chits >= s.price_chits { "" } else { " (short)" };
+            format!("[{}] {} {}c{}", i + 1, s.name, s.price_chits, mark)
+        })
+        .collect();
+    format!(
+        "{} - {} chits    {}",
+        shop.vendor.clone(),
+        inv.chits,
+        rows.join("   ")
+    )
+}
+
+#[cfg(test)]
+mod shop_tests {
+    use super::*;
+
+    fn line(kind: &str, name: &str, price: i64) -> meld_client::net::ShopLine {
+        meld_client::net::ShopLine {
+            item_kind: kind.into(),
+            name: name.into(),
+            description: "…".into(),
+            price_chits: price,
+        }
+    }
+
+    #[test]
+    fn the_shelf_prices_every_row_and_flags_what_you_cannot_afford() {
+        let mut shop = ShopData::default();
+        let mut inv = InventoryData::default();
+        assert!(shop_text(&shop, &inv).contains("unpacking"));
+
+        shop.loaded = true;
+        assert!(shop_text(&shop, &inv).contains("nothing on the shelf"));
+
+        shop.vendor = "The Apothecary".into();
+        shop.items = vec![line("bloom_salve", "Bloom Salve", 25), line("town_portal", "Town Portal", 60)];
+        inv.chits = 30;
+        let text = shop_text(&shop, &inv);
+        assert!(text.contains("The Apothecary"), "{text}");
+        assert!(text.contains("[1] Bloom Salve 25c"), "{text}");
+        // 30 chits buys the salve but not the portal, and the row says so BEFORE the
+        // player spends a keypress on it.
+        assert!(!text.contains("Bloom Salve 25c (short)"), "{text}");
+        assert!(text.contains("Town Portal 60c (short)"), "{text}");
+        assert!(text.contains("30 chits"), "{text}");
     }
 }

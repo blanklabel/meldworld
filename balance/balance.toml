@@ -310,6 +310,22 @@ synergy_party_barrier = 10       # Fortress Front: Barrier every hero opens with
 synergy_party_regen = 3          # Blood and Balm: Regen for every hero [TUNABLE]
 synergy_back_row_evasion = 8     # Covering Blink: Evasion % for back-row heroes [TUNABLE]
 
+# Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
+# `meld_proto::consumables`; these are its numbers, plus the chit price of the
+# lowest-tier stock one NPC keeps on the shelf.
+[consumable]
+barrier_amount = 18             # Bulwark Tonic: Barrier granted [TUNABLE]
+regen_amount = 6                # Mending Draught: Regen per turn [TUNABLE]
+evasion_pct = 20                # Ghostdust: Evasion percentage points [TUNABLE]
+adrenaline_amount = 6           # Fury Philtre: Adrenaline banked [TUNABLE]
+# Apothecary shelf prices, in chits. Deliberately cheap: the point of the shop is
+# that a player who died with nothing can still walk back out equipped.
+price_bloom_salve = 25
+price_bulwark_tonic = 40
+price_mending_draught = 35
+price_town_portal = 60
+price_markup_per_tier = 2.5     # each shop tier above 0 costs this much more [TUNABLE]
+
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop
 epic_weight = 0.09

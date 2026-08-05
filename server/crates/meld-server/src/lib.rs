@@ -43,6 +43,12 @@ pub async fn build(config: &Config) -> Result<Built, String> {
         meld_xp_per_level: balance.meld.xp_per_level,
         meld_forging_xp: balance.meld.forging_xp_per_craft,
         party_size_per_player: balance.battle.party_size_per_player as i32,
+        // The Apothecary's shelf, in display order: a heal, a Barrier, a Regen, and
+        // a way home — the four things a player who died with nothing needs.
+        shop_prices: ["bloom_salve", "bulwark_tonic", "mending_draught", "town_portal"]
+            .iter()
+            .filter_map(|k| balance.consumable.price(k).map(|p| ((*k).to_string(), p)))
+            .collect(),
     });
 
     // Realtime gateway.

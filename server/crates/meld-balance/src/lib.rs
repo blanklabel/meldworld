@@ -25,6 +25,7 @@ pub struct Balance {
     pub loot: Loot,
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
+    pub consumable: Consumable,
     pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
@@ -223,6 +224,34 @@ impl Encounters {
             .iter()
             .filter(|b| distance >= b.from_distance)
             .max_by(|a, b| a.from_distance.total_cmp(&b.from_distance))
+    }
+}
+
+/// Potion magnitudes + Apothecary prices (GR-4 / EC-2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Consumable {
+    pub barrier_amount: i32,
+    pub regen_amount: i32,
+    pub evasion_pct: i32,
+    pub adrenaline_amount: i32,
+    pub price_bloom_salve: i64,
+    pub price_bulwark_tonic: i64,
+    pub price_mending_draught: i64,
+    pub price_town_portal: i64,
+    pub price_markup_per_tier: f64,
+}
+
+impl Consumable {
+    /// Shelf price of one unit, in chits. `None` for anything the Apothecary does
+    /// not stock — a shop that sells everything is not a shop.
+    pub fn price(&self, item_kind: &str) -> Option<i64> {
+        Some(match item_kind {
+            "bloom_salve" => self.price_bloom_salve,
+            "bulwark_tonic" => self.price_bulwark_tonic,
+            "mending_draught" => self.price_mending_draught,
+            "town_portal" => self.price_town_portal,
+            _ => return None,
+        })
     }
 }
 
