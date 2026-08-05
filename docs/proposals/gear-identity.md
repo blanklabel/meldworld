@@ -138,6 +138,11 @@ The chase can't be `+1 atk` forever. Past a distance band, drops start rolling
   Resonant is in the party"), which is how an *individual* drop becomes a **party
   build** decision.
 
+**Uniques and sets** are the two tiers above affixes and are now live: a unique is one
+authored named item with fixed affixes and a **drawback** (never a strict upgrade — that
+is the design), dropping only from a reward spike; a **set** spans pieces and pays the
+whole **party** once worn, which is the only bonus that reaches past its owner.
+
 **Shipped in the first cut:** all five affix classes are live, tier-gated, and rolled
 server-side from the instance seed; wards/keywords reach the `Fighter` at battle
 assembly and synergies are resolved there against the actual party. Uniques and sets

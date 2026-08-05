@@ -255,6 +255,14 @@ tier_floor_keyword = 6           # class-mechanic twists
 tier_floor_synergy = 8           # ally-conditional bonuses (party builds)
 resist_pct_per_tier = 4          # elemental resist % per tier, capped [TUNABLE]
 resist_pct_cap = 40
+# Uniques + sets: the two chase tiers above affixes. A unique only drops from a
+# reward spike (elite/gatekeeper/boss) — a chase item farmable from trash is not a
+# chase — and never below its tier floor.
+unique_chance = 0.06             # P(a spiked drop is a unique) [TUNABLE]
+unique_min_tier = 6
+unique_requires_spike = true     # structural: uniques come from elites/bosses only
+set_chance = 0.18                # P(a drop belongs to a set) [TUNABLE]
+set_min_tier = 4
 
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop

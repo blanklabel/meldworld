@@ -262,6 +262,11 @@ fn effective_gear_bonus(
         adrenaline: vault.adrenaline,
         focus_slots: vault.focus_slots,
         synergies: vault.synergies,
+        penalty_atk: vault.penalty_atk,
+        penalty_def: vault.penalty_def,
+        penalty_spd: vault.penalty_spd,
+        penalty_max_hp: vault.penalty_max_hp,
+        set_pieces: vault.set_pieces,
     };
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {
@@ -4013,6 +4018,8 @@ impl WorldActor {
                 family: g.family.clone(),
                 armor_weight: g.armor_weight.clone(),
                 affixes: g.affixes.clone(),
+                unique_key: g.unique_key.clone(),
+                set_key: g.set_key.clone(),
             })
             .collect();
         let mut run_gear_snapshot = None;
@@ -4114,6 +4121,8 @@ impl WorldActor {
                     family: g.family.clone(),
                     armor_weight: g.armor_weight.clone(),
                     affixes: g.affixes.clone(),
+                    unique_key: g.unique_key.clone(),
+                    set_key: g.set_key.clone(),
                 });
             }
         }
@@ -4249,6 +4258,8 @@ impl GameState {
                             family: g.family.clone(),
                             armor_weight: g.armor_weight.clone(),
                             affixes: meld_proto::affixes::to_json(&g.affixes),
+                            unique_key: g.unique_key.clone(),
+                            set_key: g.set_key.clone(),
                         })
                     })
                     .collect();
@@ -4836,6 +4847,8 @@ impl WorldActor {
                             family: g.family.clone(),
                             armor_weight: g.armor_weight.clone(),
                             affixes: g.affixes.clone(),
+                            unique_key: g.unique_key.clone(),
+                            set_key: g.set_key.clone(),
                         })
                         .collect();
                     // Record loot in the run so extraction can bank it.

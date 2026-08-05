@@ -1181,6 +1181,18 @@ pub(crate) fn render_gear_tooltip(
     for a in &item.affixes {
         lines.push((format!("  {}", a.describe()), affix_color));
     }
+    // AD-1 chase tiers: a unique's cost is shown in warning red right under its
+    // upside, because a unique is a trade and both halves have to be visible.
+    if let Some(u) = meld_proto::uniques::unique(&item.unique_key) {
+        lines.push((format!("  {}", u.drawback.describe()), Color::srgb(0.95, 0.45, 0.45)));
+        lines.push((format!("  \"{}\"", u.flavour), Color::srgb(0.7, 0.66, 0.58)));
+    }
+    if let Some(set) = meld_proto::uniques::set(&item.set_key) {
+        lines.push((
+            format!("  {} set ({} pieces)", set.name, set.pieces_required),
+            Color::srgb(0.85, 0.75, 0.95),
+        ));
+    }
     lines.push((format!("{stat_label}: +{}", gear_slot_stat(item)), good));
     lines.push((format!("Durability: {dur}"), dim));
     if let Some(slot) = item.equipped_hero_slot {
@@ -1710,6 +1722,8 @@ mod gear_label_tests {
             def_bonus: 0,
             spd_bonus: 0,
             affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
         }
     }
 
@@ -1757,6 +1771,8 @@ mod equip_ux_tests {
             def_bonus: 3,
             spd_bonus: 0,
             affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
         }
     }
 

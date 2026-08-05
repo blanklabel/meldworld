@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use meld_balance::Balance;
 use meld_proto::common::Position;
 use meld_proto::affixes as aff;
+use meld_proto::uniques as uq;
 use meld_proto::equipment as eq;
 use meld_proto::factions::creatures_hostile;
 use meld_proto::Id;
@@ -246,6 +247,10 @@ pub struct GearDrop {
     /// AD-1 rolled affixes — the qualities that make this drop a build rather
     /// than a bigger number.
     pub affixes: Vec<meld_proto::affixes::Affix>,
+    /// AD-1 unique key (`meld_proto::uniques::UNIQUES`); empty for ordinary loot.
+    pub unique_key: String,
+    /// AD-1 set key (`meld_proto::uniques::SETS`); empty when not part of a set.
+    pub set_key: String,
 }
 
 /// The loot a felled encounter yields to one participant.
@@ -460,6 +465,7 @@ pub fn roll_creature_loot(
         && rng.unit() < (l.gear_drop_chance * loot_mult.max(0.0)).min(1.0)
     {
         let tier = sc.tier(distance) as i32;
+        let a_cfg = &balance.affix;
         let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
         // The six item categories of the 7-slot loadout (Epic GR spec §5):
         // ACCESSORY_1/2 are two *equip* slots sharing the one accessory category.
@@ -555,6 +561,31 @@ pub fn roll_creature_loot(
         } else {
             gear_catalog_name(class_key, slot, tier, floor_tier)
         };
+        // AD-1 chase tiers. A unique replaces the drop wholesale — its slot, name,
+        // affixes and drawback are authored, not rolled — and only a reward spike
+        // (elite / Gatekeeper / boss, `loot_mult > 1`) can produce one.
+        let spiked = loot_mult > 1.0;
+        let unique_def = (tier >= a_cfg.unique_min_tier
+            && (spiked || !a_cfg.unique_requires_spike)
+            && rng.unit() < a_cfg.unique_chance)
+            .then(|| {
+                let pool: Vec<&uq::UniqueDef> = uq::UNIQUES
+                    .iter()
+                    .filter(|u| match u.only_class {
+                        Some(c) => eq::class_key(c) == class_key,
+                        None => true,
+                    })
+                    .collect();
+                (!pool.is_empty()).then(|| pool[rng.below(pool.len())])
+            })
+            .flatten();
+        // Set membership is independent of rarity: a plain-looking piece can be the
+        // third Warden's March you needed.
+        let set_key = if tier >= a_cfg.set_min_tier && rng.unit() < a_cfg.set_chance {
+            uq::SETS[rng.below(uq::SETS.len())].key.to_string()
+        } else {
+            String::new()
+        };
         // AD-1: roll this drop's affixes before naming it, so the name can carry the
         // suffix of whichever affix defines the piece.
         let affixes = roll_affixes(
@@ -567,11 +598,18 @@ pub fn roll_creature_loot(
             slot,
             biome_for_distance(distance),
         );
-        let base_name = match aff::name_suffix(&affixes) {
-            Some(suffix) => format!("{base_name} {suffix}"),
-            None => base_name,
+        let (slot, affixes, base_name) = match unique_def {
+            Some(u) => (u.slot, u.rolled(), u.name.to_string()),
+            None => {
+                let named = match aff::name_suffix(&affixes) {
+                    Some(suffix) => format!("{base_name} {suffix}"),
+                    None => base_name,
+                };
+                (slot, affixes, named)
+            }
         };
-        let name = if rarity == "common" {
+        // A unique keeps its own name — no rarity prefix, no suffix.
+        let name = if unique_def.is_some() || rarity == "common" {
             base_name
         } else {
             // Title-case the rarity for the name ("Legendary Frostforged Greatblade").
@@ -609,6 +647,8 @@ pub fn roll_creature_loot(
             family,
             armor_weight,
             affixes,
+            unique_key: unique_def.map(|u| u.key.to_string()).unwrap_or_default(),
+            set_key,
         })
     } else {
         None
@@ -4630,6 +4670,65 @@ mod tests {
                     assert_ne!(ally, "shifter", "a synergy affix asked for its own class");
                     assert!(CLASS_KEYS.contains(&ally.as_str()));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn uniques_only_drop_from_a_reward_spike() {
+        let b = Balance::load_default().unwrap();
+        // Deep, rich, but NOT spiked: thousands of drops and never a unique.
+        let mut plain_uniques = 0;
+        for seed in 0..1500u64 {
+            let loot = roll_creature_loot(&b, 4000, 3, 1.0, seed);
+            if let Some(g) = loot.gear {
+                if !g.unique_key.is_empty() {
+                    plain_uniques += 1;
+                }
+            }
+        }
+        assert_eq!(plain_uniques, 0, "a unique dropped without a reward spike");
+
+        // Spiked (elite / Gatekeeper / boss) drops do produce them.
+        let mut spiked_uniques = 0;
+        for seed in 0..1500u64 {
+            let loot = roll_creature_loot(&b, 4000, 3, 3.0, seed);
+            if let Some(g) = loot.gear {
+                if let Some(u) = meld_proto::uniques::unique(&g.unique_key) {
+                    spiked_uniques += 1;
+                    // A unique brings its authored identity, not a rolled one.
+                    assert_eq!(g.name, u.name);
+                    assert_eq!(g.slot, u.slot);
+                    assert_eq!(g.affixes, u.rolled());
+                    // A class-locked unique never lands on another class's drop.
+                    if let Some(only) = u.only_class {
+                        assert_eq!(g.class_key, meld_proto::equipment::class_key(only));
+                    }
+                }
+            }
+        }
+        assert!(spiked_uniques > 0, "spiked drops never produced a unique");
+    }
+
+    #[test]
+    fn set_pieces_appear_and_always_name_a_real_set() {
+        let b = Balance::load_default().unwrap();
+        let mut set_pieces = 0;
+        for seed in 0..1500u64 {
+            let loot = roll_creature_loot(&b, 2000, 3, 1.0, seed);
+            if let Some(g) = loot.gear {
+                if !g.set_key.is_empty() {
+                    set_pieces += 1;
+                    assert!(meld_proto::uniques::set(&g.set_key).is_some(), "{}", g.set_key);
+                }
+            }
+        }
+        assert!(set_pieces > 0, "no set pieces ever dropped");
+        // Shallow drops predate the set floor.
+        for seed in 0..400u64 {
+            let loot = roll_creature_loot(&b, 320, 3, 1.0, seed);
+            if let Some(g) = loot.gear {
+                assert!(g.set_key.is_empty(), "a set piece dropped below its tier floor");
             }
         }
     }
