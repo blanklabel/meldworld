@@ -420,6 +420,12 @@ pub struct Battle {
     timeout_ticks: u64,
     defend_reduction: f64,
     back_row_damage_mult: f64,
+    /// AD-2: how long a combo primer stays live on a target.
+    combo_window_ticks: u64,
+    /// The skill currently resolving, if any — set for the length of one player
+    /// skill so `apply_damage` can prime a combo or cash one in without every
+    /// skill arm having to know combos exist.
+    active_skill: Option<String>,
     back_row_target_weight: f64,
     skill_power_mult: f64,
     skill_heal_fraction: f64,
@@ -505,6 +511,8 @@ impl Battle {
             timeout_ticks: (balance.battle.turn_timeout_ms / tick_ms).max(1),
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
+            combo_window_ticks: balance.adventure.combo_window_ticks,
+            active_skill: None,
             back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
             skill_heal_fraction: balance.battle.skill_heal_fraction,
@@ -847,6 +855,12 @@ impl Battle {
         // reinforces/revokes one (encoded in skill_kind). Flee still works normally.
         let target = target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str());
         let is_psyker = self.fighters[i].focus_max > 0;
+        // AD-2: tell `apply_damage` which ability is landing, so combo primers and
+        // payoffs resolve in one place instead of in every skill arm.
+        self.active_skill = match action {
+            BattleActionKind::Skill => skill_kind.clone(),
+            _ => None,
+        };
         let mut res = if is_psyker && action != BattleActionKind::Flee {
             self.resolve_psyker(i, skill_kind.as_deref(), target, Some(action_id), false)
         } else {
@@ -867,6 +881,7 @@ impl Battle {
                 }
             }
         };
+        self.active_skill = None;
         // Prepend the upkeep effects so the client sees Regen/Barrier before the action.
         prepend_effects(&mut res, upkeep);
         let fled = res.flee_success == Some(true);
@@ -1277,7 +1292,12 @@ impl Battle {
             .map(|f| (f.kind.clone(), f.stacks, f.target_id.clone()))
             .collect();
         for (kind, stacks, target_id) in &active {
+            // A Focus tick IS that ability landing, so Gravity Well can prime its
+            // combo on the turns it fires, not only on the turn it was cast.
+            let outer = self.active_skill.take();
+            self.active_skill = Some(kind.clone());
             effects.extend(self.tick_manifest(actor_i, kind, *stacks, target_id.as_deref()));
+            self.active_skill = outer;
             if !self.any_enemy_alive() {
                 break;
             }
@@ -2154,6 +2174,9 @@ impl Battle {
     }
 
     fn apply_damage(&mut self, target_i: usize, dmg: i32) -> Vec<ResolvedEffect> {
+        // AD-2 combos: the skill resolving right now may be cashing in a primer
+        // another hero left on this target, and may leave one of its own.
+        let (dmg, combo_hit) = self.resolve_combo(target_i, dmg);
         // Back-row formation softens every incoming blow (before Barrier/HP).
         let dmg = if self.fighters[target_i].back_row {
             (dmg as f64 * self.back_row_damage_mult).round() as i32
@@ -2187,7 +2210,63 @@ impl Battle {
                 hp_after: 0,
             });
         }
+        // A cashed-in combo is announced so the client can call it out; a player who
+        // cannot see the sequence land will never learn to build for it.
+        if let Some(key) = combo_hit {
+            effects.insert(
+                0,
+                ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[target_i].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some(format!("combo:{key}")),
+                    hp_after: self.fighters[target_i].hp,
+                },
+            );
+        }
         effects
+    }
+
+    /// AD-2: apply the combo layer to one incoming hit.
+    ///
+    /// Returns the (possibly amplified) damage and the combo key that fired. The
+    /// payoff is checked BEFORE priming so an ability that is both a setup and a
+    /// payoff can never prime itself into its own bonus.
+    fn resolve_combo(&mut self, target_i: usize, dmg: i32) -> (i32, Option<&'static str>) {
+        use meld_proto::synergies as syn;
+        let Some(skill) = self.active_skill.clone() else {
+            return (dmg, None);
+        };
+        let mut out = dmg;
+        let mut fired = None;
+        if let Some(c) = syn::combo_for_payoff(&skill) {
+            let token = syn::primer_status(c.key);
+            let primed = self.fighters[target_i]
+                .timed_statuses
+                .iter()
+                .any(|(n, until)| *n == token && *until > self.tick_count);
+            if primed {
+                out = (dmg as f64 * c.damage_mult).round() as i32;
+                // Consumed: a primer pays once, or a party could bank one and cash
+                // it repeatedly off a single setup turn.
+                self.fighters[target_i].timed_statuses.retain(|(n, _)| *n != token);
+                fired = Some(c.key);
+            }
+        }
+        if let Some(c) = syn::combo_for_setup(&skill) {
+            let token = syn::primer_status(c.key);
+            let until = self.tick_count + self.combo_window_ticks;
+            match self.fighters[target_i]
+                .timed_statuses
+                .iter_mut()
+                .find(|(n, _)| *n == token)
+            {
+                Some(s) => s.1 = s.1.max(until),
+                None => self.fighters[target_i].timed_statuses.push((token, until)),
+            }
+        }
+        (out, fired)
     }
 
     fn reset_gauge(&mut self, i: usize) {
@@ -3545,6 +3624,133 @@ mod tests {
         assert_eq!(l, executes_at_tick, "cast lands exactly at executes_at_tick");
         assert!(l >= t + 10, "channel took the full telegraph window");
         assert!(player_hp(&battle, "a") < 40, "the channeled blow landed");
+    }
+
+    #[test]
+    fn a_backstab_after_a_snare_hits_harder_than_one_without() {
+        let b = balance();
+        // Two identical fights. In one, the Explorer Snares first; in the other the
+        // Shifter opens with Backstab cold. Same target, same stats.
+        let setup = |snare_first: bool| -> i32 {
+            let mut explorer = player("ex", 5);
+            explorer.level = 3;
+            explorer.adrenaline = 99;
+            explorer.adrenaline_max = 99;
+            let mut shifter = player("sh", 5);
+            shifter.level = 3;
+            let mut mob = monster("m1", 4000, 1);
+            mob.def = 0;
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![explorer, shifter],
+                vec![mob],
+                &b,
+                42,
+            );
+            let mi = battle.idx("m1").unwrap();
+            if snare_first {
+                battle.active_skill = Some("snare".into());
+                let _ = battle.apply_damage(mi, 1);
+                battle.active_skill = None;
+            }
+            let before = battle.fighters[mi].hp;
+            battle.active_skill = Some("backstab".into());
+            let fx = battle.apply_damage(mi, 100);
+            battle.active_skill = None;
+            let dealt = before - battle.fighters[mi].hp;
+            // The combo announces itself so the client can call it out.
+            let announced = fx
+                .iter()
+                .any(|e| e.status.as_deref() == Some("combo:cut_the_snare"));
+            assert_eq!(announced, snare_first, "combo announcement mismatch");
+            dealt
+        };
+        let cold = setup(false);
+        let comboed = setup(true);
+        assert!(
+            comboed > cold,
+            "Cut the Snare must reward the sequence: {comboed} vs {cold}"
+        );
+        // 1.6x on the payoff, minus the 1 point the Snare itself did.
+        assert_eq!(comboed, (cold as f64 * 1.6).round() as i32);
+    }
+
+    #[test]
+    fn a_primer_expires_and_pays_only_once() {
+        let b = balance();
+        let mut shifter = player("sh", 5);
+        shifter.level = 3;
+        let mut mob = monster("m1", 9000, 1);
+        mob.def = 0;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![shifter],
+            vec![mob],
+            &b,
+            42,
+        );
+        let mi = battle.idx("m1").unwrap();
+        let hit = |bt: &mut Battle, skill: &str| -> i32 {
+            let before = bt.fighters[mi].hp;
+            bt.active_skill = Some(skill.to_string());
+            let _ = bt.apply_damage(mi, 100);
+            bt.active_skill = None;
+            before - bt.fighters[mi].hp
+        };
+
+        // Prime, then cash in twice: the second Backstab is unamplified, because a
+        // primer that paid repeatedly would make one setup turn worth infinite ones.
+        battle.active_skill = Some("snare".into());
+        let _ = battle.apply_damage(mi, 0);
+        battle.active_skill = None;
+        let first = hit(&mut battle, "backstab");
+        let second = hit(&mut battle, "backstab");
+        assert!(first > second, "the primer was not consumed: {first} vs {second}");
+
+        // Prime again, then let the window lapse — a stale primer pays nothing.
+        battle.active_skill = Some("snare".into());
+        let _ = battle.apply_damage(mi, 0);
+        battle.active_skill = None;
+        battle.tick_count += b.adventure.combo_window_ticks + 1;
+        let expired = hit(&mut battle, "backstab");
+        assert_eq!(expired, second, "an expired primer still paid out");
+    }
+
+    #[test]
+    fn the_wrong_follow_up_does_not_cash_a_primer() {
+        let b = balance();
+        let mut hero = player("h", 5);
+        hero.level = 5;
+        let mut mob = monster("m1", 9000, 1);
+        mob.def = 0;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hero],
+            vec![mob],
+            &b,
+            42,
+        );
+        let mi = battle.idx("m1").unwrap();
+        battle.active_skill = Some("snare".into());
+        let _ = battle.apply_damage(mi, 0);
+        battle.active_skill = None;
+
+        // Snare primes Backstab, not Frenzy — a different payoff finds nothing.
+        let before = battle.fighters[mi].hp;
+        battle.active_skill = Some("frenzy".into());
+        let fx = battle.apply_damage(mi, 100);
+        battle.active_skill = None;
+        assert_eq!(before - battle.fighters[mi].hp, 100);
+        assert!(fx.iter().all(|e| e.status.as_deref() != Some("combo:cut_the_snare")));
+
+        // …and the primer is still there for the right one.
+        let before = battle.fighters[mi].hp;
+        battle.active_skill = Some("backstab".into());
+        let _ = battle.apply_damage(mi, 100);
+        assert_eq!(before - battle.fighters[mi].hp, 160);
     }
 
     #[test]

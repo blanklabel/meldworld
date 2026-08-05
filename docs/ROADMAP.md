@@ -786,8 +786,26 @@ the current build.
     unplayable, and the tooltip shows a unique's cost in red right under its upside.
   - **Remains:** rerolling affixes via crafting (`MS-1`). The elemental half landed with
     the `brand` affix under `AD-3` below.
-- [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
+- [x] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
+  Three layers, all live (`meld_proto::synergies`; magnitudes in `[adventure]`):
+  - **Class-pair synergies** — passive while both classes are in the party: *Fortress
+    Front* (Iron Hull + Psyker → every hero opens each fight warded), *Blood and Balm*
+    (Resonant + Explorer → party Regen), *Covering Blink* (Shifter + Resonant → back-row
+    Evasion). Applied at battle assembly, the only place that sees the whole comp.
+  - **Sequenced combos** — one hero's ability primes a target and a *specific* follow-up
+    cashes it in inside a `combo_window_ticks` window: **Cut the Snare** (Explorer Snare →
+    Shifter Backstab, +60%), **Crush the Pinned** (Psyker Gravity Well → Iron Hull Kinetic
+    Shock, +50%), **Follow the Stagger** (Iron Hull Swell Strike → Explorer Frenzy, +50%),
+    **Press the Slowed** (Shifter Ransack → Explorer Power Strike, +40%). Three of the four
+    need *two different heroes*, so turn order becomes a party decision instead of four
+    independent menus. Primers ride the existing `timed_statuses`, are consumed on payoff,
+    and expire; the payoff is checked before priming so nothing primes itself.
+  - **Surfacing** — `run.party` carries the active synergies and runnable combos (server
+    describes them, so the words can never drift from the rules) and the party screen lists
+    them: "Cut the Snare : Snare (Explorer) then Backstab (Shifter) (+60% on the payoff)".
+  - Note: `PT-1` was *not* a real dependency for surfacing; back-row placement already
+    exists and `Covering Blink` reads it.
 - [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on
   creatures/biomes; resist/convert affixes; **telegraphed** (`UX-2`). Makes biomes a
   combat *decision*. Extends [`behaviors/combat-atb.md`](behaviors/combat-atb.md).

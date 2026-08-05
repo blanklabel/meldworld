@@ -102,6 +102,13 @@ assembles:
 - **Affix-driven synergies** (Part A.2) — the reconfigurable layer that lets *any* comp
   find a combo.
 
+**Sequenced combos (shipped addition to this part).** Beyond passive pairings, one hero's
+ability *primes* a target and a specific follow-up cashes it in for amplified damage inside
+a short window — Snare then Backstab, Gravity Well then Kinetic Shock. Three of the four
+combos require two different classes, which is what turns a turn order into a party
+decision rather than four independent menus. Primers are consumed on payoff and expire, so
+a single setup turn cannot be banked.
+
 **Surface them.** The party screen (inventory overlay) shows **active synergies** so a
 player can *see* what their comp+gear enables and *chase* new ones — the build feedback
 loop. This is the "aha, these four + this affix = a combo" moment that replaces a talent

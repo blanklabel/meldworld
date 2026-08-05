@@ -25,6 +25,7 @@ pub struct Balance {
     pub loot: Loot,
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
+    pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
     pub combat_math: CombatMath,
@@ -191,6 +192,16 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+}
+
+/// Adventure-depth knobs (AD-2): the combo window and class-pair synergy
+/// magnitudes. Which combos/synergies exist is content in `meld_proto::synergies`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Adventure {
+    pub combo_window_ticks: u64,
+    pub synergy_party_barrier: i32,
+    pub synergy_party_regen: i32,
+    pub synergy_back_row_evasion: i32,
 }
 
 /// Affix knobs (AD-1). Which affixes exist is content

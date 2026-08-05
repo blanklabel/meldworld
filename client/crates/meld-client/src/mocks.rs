@@ -187,6 +187,20 @@ pub(crate) fn mock_overlay_setup(
 ) {
     if inventory_mockup_flag() {
         inv.loaded = true;
+        // AD-2 depth lines, so the party screen's synergy/combo block is visible in
+        // mock frames the way the server would describe it.
+        roster.synergies = vec![meld_client::net::DepthLine {
+            name: "Blood and Balm".into(),
+            detail: "every hero gains 3 Regen".into(),
+            description: "A kit that pays in blood pairs with one that gives it back.".into(),
+            bonus_pct: 0,
+        }];
+        roster.combos = vec![meld_client::net::DepthLine {
+            name: "Cut the Snare".into(),
+            detail: "Snare (Explorer) then Backstab (Shifter)".into(),
+            description: "Snare a foe, then Backstab it.".into(),
+            bonus_pct: 60,
+        }];
         // Seed a party roster so the party screen (+ formation toggle) is visible.
         let hero = |name: &str, class: &str, back_row| meld_client::net::HeroLine {
             name: name.into(),

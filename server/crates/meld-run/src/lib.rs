@@ -368,6 +368,25 @@ pub fn party_fighters(
             f
         })
         .collect::<Vec<Fighter>>();
+    // AD-2 class-pair synergies: passive, always-on while both classes are in the
+    // party. Applied here for the same reason set bonuses are — this is the only
+    // place that knows the whole composition.
+    let comp: Vec<CharacterClass> = party.iter().map(|(_, _, c, _)| *c).collect();
+    let adv = &balance.adventure;
+    for syn in meld_proto::synergies::active_synergies(&comp) {
+        use meld_proto::synergies::SynergyEffect as E;
+        for f in fighters.iter_mut() {
+            match syn.effect {
+                E::PartyBarrier => f.barrier += adv.synergy_party_barrier,
+                E::PartyRegen => f.regen += adv.synergy_party_regen,
+                E::BackRowEvasion => {
+                    if f.back_row {
+                        f.evasion += adv.synergy_back_row_evasion as f64 / 100.0;
+                    }
+                }
+            }
+        }
+    }
     // AD-1 sets pay the WHOLE party, including other players' heroes in a merged
     // raid — the only bonus in the game that reaches past its owner, which is what
     // makes assembling a set a group project. Collected across every member first,
@@ -865,5 +884,38 @@ mod tests {
         )];
         let f2 = party_fighters(&junk, &runs, &b, &[]).pop().unwrap();
         assert_eq!(f2.basic_attack_type, DamageType::None);
+    }
+
+    #[test]
+    fn a_class_pair_synergy_arms_the_whole_party() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::IronHull, "r".into())]);
+        let member = |class: CharacterClass| -> PartyMember {
+            ("p".into(), "c".into(), class, GearBonus::default())
+        };
+        // No Psyker: no Fortress Front, so nobody opens warded.
+        let no_pair = vec![member(CharacterClass::IronHull), member(CharacterClass::Shifter)];
+        let bare = party_fighters(&no_pair, &runs, &b, &[]);
+        assert!(bare.iter().all(|f| f.barrier == 0), "unpaired party opened warded");
+
+        // Iron Hull + Psyker: EVERY hero opens with the synergy's Barrier, not just
+        // the two that formed the pair.
+        let paired = vec![
+            member(CharacterClass::IronHull),
+            member(CharacterClass::Psyker),
+            member(CharacterClass::Shifter),
+        ];
+        let armed = party_fighters(&paired, &runs, &b, &[]);
+        let want = b.adventure.synergy_party_barrier;
+        for f in &armed {
+            assert!(f.barrier >= want, "{} opened with {}", f.combatant_id, f.barrier);
+        }
+
+        // Blood and Balm (Resonant + Explorer) gives the party Regen — and the
+        // Resonant's innate Regen is on top, not replaced.
+        let sustained = vec![member(CharacterClass::Explorer), member(CharacterClass::Resonant)];
+        let f = party_fighters(&sustained, &runs, &b, &[]);
+        assert!(f[0].regen >= b.adventure.synergy_party_regen, "explorer regen {}", f[0].regen);
     }
 }

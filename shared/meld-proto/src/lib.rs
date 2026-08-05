@@ -8,6 +8,7 @@
 //! - [`equipment`] — which gear each class may wear (GR-5).
 //! - [`affixes`] — the rolled qualities that make a drop a build (AD-1).
 //! - [`uniques`] — named uniques (with a drawback) and party-wide sets (AD-1).
+//! - [`synergies`] — class-pair synergies and sequenced ability combos (AD-2).
 //! - [`common`] — shared payload objects (`Position`, `ItemStack`, `Combatant`).
 //! - [`realtime`] — C2S/S2C message payloads by domain.
 //! - [`http`] — HTTP request/response DTOs.
@@ -24,6 +25,7 @@ pub mod http;
 pub mod limits;
 pub mod realtime;
 pub mod skills;
+pub mod synergies;
 pub mod terrain;
 pub mod uniques;
 

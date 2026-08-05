@@ -736,6 +736,31 @@ pub(crate) fn render_overlay(
                                             });
                                         });
                                 }
+                                // AD-2: what this comp ENABLES — the build feedback
+                                // loop. Without this the synergies and combos are
+                                // invisible mechanics nobody plans around.
+                                if !roster.synergies.is_empty() {
+                                    label(content, "Party synergies (active)".into(), 15.0, gold);
+                                    for s in &roster.synergies {
+                                        label(
+                                            content,
+                                            format!("  {} - {}", s.name, s.detail),
+                                            13.0,
+                                            Color::srgb(0.6, 0.95, 0.7),
+                                        );
+                                    }
+                                }
+                                if !roster.combos.is_empty() {
+                                    label(content, "Combos this party can run".into(), 15.0, gold);
+                                    for c in &roster.combos {
+                                        label(
+                                            content,
+                                            format!("  {} : {}  (+{}% on the payoff)", c.name, c.detail, c.bonus_pct),
+                                            13.0,
+                                            Color::srgb(0.75, 0.85, 1.0),
+                                        );
+                                    }
+                                }
                                 if !roster.heroes.is_empty() {
                                     label(
                                         content,
