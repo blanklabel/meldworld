@@ -114,12 +114,54 @@ pub enum EncounterClass {
     Gatekeeper,
 }
 
-/// Gear insurance tier (CANON.md §G).
+/// Gear insurance tier (CANON.md §G). The Blue-Chest / Red-Chest *fiction* stays
+/// in canon; the enum and every player-facing string say what the tier actually
+/// does, because "red" is not something a player can decode (GR-6). The `blue` /
+/// `red` wire aliases keep older payloads parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Insurance {
-    Blue,
-    Red,
+    /// Blue-Chest: comes home with you, degrading on death.
+    #[serde(alias = "blue")]
+    Insured,
+    /// Red-Chest: vanishes when the run ends, win or lose.
+    #[serde(alias = "red")]
+    Ephemeral,
+}
+
+impl Insurance {
+    /// The player-facing label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Insurance::Insured => "Insured",
+            Insurance::Ephemeral => "Ephemeral",
+        }
+    }
+
+    /// The canonical wire word.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Insurance::Insured => "insured",
+            Insurance::Ephemeral => "ephemeral",
+        }
+    }
+
+    /// Parse either the canonical word or the stored chest colour.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        Some(match s {
+            "insured" | "blue" => Insurance::Insured,
+            "ephemeral" | "red" => Insurance::Ephemeral,
+            _ => return None,
+        })
+    }
+
+    /// The one sentence a player must be able to read before they risk the item.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Insurance::Insured => "Comes home with you. Degrades on death.",
+            Insurance::Ephemeral => "Vanishes when the run ends - win or lose. Use it now.",
+        }
+    }
 }
 
 /// A battle action a player may submit (realtime battle.md).

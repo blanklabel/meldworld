@@ -99,6 +99,12 @@ pub struct GearView {
     pub max_durability: i32,
     /// Which of the owner's heroes has this equipped, if any.
     pub equipped_hero_slot: Option<i32>,
+    /// GR-5 weapon family wire word (`sword`, `staff`, …); empty = unrestricted.
+    #[serde(default)]
+    pub family: String,
+    /// GR-5 armor weight wire word (`heavy`, `robe`, …); empty = unrestricted.
+    #[serde(default)]
+    pub armor_weight: String,
 }
 
 /// `GET /v1/vault/gear` response.

@@ -355,7 +355,11 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     name: g.name,
                     slot: g.slot,
                     class_key: g.class_key,
-                    insurance: g.insurance,
+                    // Stored rows keep the chest-colour words; the wire speaks the
+                    // player-facing tier so no client has to decode "red" (GR-6).
+                    insurance: meld_proto::enums::Insurance::from_wire(&g.insurance)
+                        .map(|i| i.wire().to_string())
+                        .unwrap_or(g.insurance),
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,
                     def_bonus: g.def_bonus,
@@ -363,6 +367,8 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     base_max_durability: g.base_max_durability,
                     max_durability: g.max_durability,
                     equipped_hero_slot: g.equipped_hero_slot,
+                    family: g.family,
+                    armor_weight: g.armor_weight,
                 })
                 .collect();
             Ok((StatusCode::OK, Json(GearListResponse { data })).into_response())

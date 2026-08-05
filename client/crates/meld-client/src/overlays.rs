@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 
 use meld_client::net::{ClientCmd, GearLine};
+use meld_proto::enums::Insurance;
 
 use super::*;
 
@@ -839,7 +840,13 @@ pub(crate) fn render_overlay(
                                                 GearSource::Vault => "",
                                             }
                                         };
-                                        let ins = if g.insurance == "red" { " red" } else { "" };
+                                        // The tier is spelled out, never colour-coded
+                                        // alone: a player must be able to read that
+                                        // an item is temporary (GR-6).
+                                        let ins = match insurance_of(&g.insurance) {
+                                            Insurance::Ephemeral => " ephemeral",
+                                            Insurance::Insured => "",
+                                        };
                                         let class_tag = if g.class_key.is_empty() {
                                             String::new()
                                         } else {
@@ -1093,11 +1100,8 @@ pub(crate) fn render_gear_tooltip(
         "accessory" => "Speed",
         _ => "Defense",
     };
-    let ins_label = if item.insurance == "red" {
-        "red - run loot, lost on death"
-    } else {
-        "blue - insured, survives death"
-    };
+    let ins = insurance_of(&item.insurance);
+    let ins_label = format!("{} - {}", ins.label(), ins.tooltip());
     let dur = if item.max_durability <= 0 {
         "BROKEN".to_string()
     } else {
@@ -1108,13 +1112,24 @@ pub(crate) fn render_gear_tooltip(
     } else {
         class_display(&item.class_key)
     };
+    // Ephemeral gets its own amber line rather than a word buried in a header:
+    // a player must never lose an item without having been told it was temporary.
+    let ins_color = match ins {
+        Insurance::Ephemeral => Color::srgb(0.98, 0.62, 0.35),
+        Insurance::Insured => dim,
+    };
     let mut lines: Vec<(String, Color)> = vec![
         (item.name.clone(), gold),
-        (format!("{} | Tier {} | {}", class_display(&item.slot), item.tier, ins_label), dim),
+        (format!("{} | Tier {}", class_display(&item.slot), item.tier), dim),
+        (ins_label, ins_color),
         (format!("Class: {class_label}"), dim),
-        (format!("{stat_label}: +{}", gear_slot_stat(item)), good),
-        (format!("Durability: {dur}"), dim),
     ];
+    let note = wearable_note(item);
+    if !note.is_empty() {
+        lines.push((note, dim));
+    }
+    lines.push((format!("{stat_label}: +{}", gear_slot_stat(item)), good));
+    lines.push((format!("Durability: {dur}"), dim));
     if let Some(slot) = item.equipped_hero_slot {
         let who = hero_name_at(&roster, &hero_names, slot).unwrap_or_else(|| format!("Hero {}", slot + 1));
         lines.push((format!("Equipped - {who}"), good));
@@ -1582,4 +1597,78 @@ pub(crate) fn level_up_screen(
                 label(p, footer.into(), 12.0, dim);
             });
         });
+}
+
+/// Parse a gear row's insurance word, tolerating the stored chest colours.
+/// Anything unrecognized reads as Ephemeral — the cautious default, since the
+/// cost of wrongly believing an item is safe is losing it (GR-6).
+fn insurance_of(word: &str) -> Insurance {
+    Insurance::from_wire(word).unwrap_or(Insurance::Ephemeral)
+}
+
+/// The one-line "who can wear this, and how many hands" note for the detail card
+/// (GR-5). Empty when the item carries no restriction.
+pub(crate) fn wearable_note(item: &GearLine) -> String {
+    use meld_proto::equipment as eq;
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(f) = eq::ItemFamily::from_wire(&item.family) {
+        parts.push(if f.hands() == 2 {
+            format!("{} (two-handed)", f.wire())
+        } else {
+            f.wire().to_string()
+        });
+    }
+    if let Some(w) = eq::ArmorWeight::from_wire(&item.armor_weight) {
+        parts.push(format!("{} armor", w.wire()));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    parts.join(" | ")
+}
+
+#[cfg(test)]
+mod gear_label_tests {
+    use super::*;
+
+    fn line(insurance: &str, family: &str, weight: &str) -> GearLine {
+        GearLine {
+            gear_id: "g".into(),
+            name: "Test".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            insurance: insurance.into(),
+            family: family.into(),
+            armor_weight: weight.into(),
+            tier: 1,
+            equipped_hero_slot: None,
+            max_durability: 10,
+            base_max_durability: 10,
+            atk_bonus: 1,
+            def_bonus: 0,
+            spd_bonus: 0,
+        }
+    }
+
+    #[test]
+    fn ephemeral_says_what_it_does_in_words() {
+        let e = insurance_of("ephemeral");
+        assert_eq!(e.label(), "Ephemeral");
+        assert!(e.tooltip().contains("Vanishes when the run ends"));
+        // The stored chest colours still parse to the right tier.
+        assert_eq!(insurance_of("red"), Insurance::Ephemeral);
+        assert_eq!(insurance_of("blue"), Insurance::Insured);
+        // An unreadable word is treated as ephemeral: wrongly believing an item is
+        // safe costs the player the item.
+        assert_eq!(insurance_of("???"), Insurance::Ephemeral);
+    }
+
+    #[test]
+    fn wearable_note_calls_out_two_handed_and_weight() {
+        assert_eq!(wearable_note(&line("insured", "staff", "")), "staff (two-handed)");
+        assert_eq!(wearable_note(&line("insured", "dagger", "")), "dagger");
+        assert_eq!(wearable_note(&line("insured", "", "heavy")), "heavy armor");
+        // A plain stat stick claims nothing.
+        assert!(wearable_note(&line("insured", "", "")).is_empty());
+    }
 }
