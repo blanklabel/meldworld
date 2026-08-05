@@ -83,6 +83,7 @@ pub const AFFIXES: &[AffixDef] = &[
     def("def", AffixClass::Stat, 1.0, None, "of Plating"),
     def("spd", AffixClass::Stat, 0.6, None, "of Quickness"),
     def("resist", AffixClass::Element, 1.0, None, "of Warding"),
+    def("brand", AffixClass::Element, 1.0, None, "of the Kiln"),
     def("barrier", AffixClass::Ward, 2.0, None, "of the Bulwark"),
     def("regen", AffixClass::Ward, 0.5, None, "of Mending"),
     def("evasion", AffixClass::Ward, 0.5, None, "of the Ghost"),
@@ -138,6 +139,10 @@ impl Affix {
             "resist" => {
                 let el = self.element.clone().unwrap_or_else(|| "all".into());
                 format!("resists {}% {}", m.clamp(0, 100), el.to_lowercase())
+            }
+            "brand" => {
+                let el = self.element.clone().unwrap_or_else(|| "none".into());
+                format!("attacks deal {} damage", el.to_lowercase())
             }
             "barrier" => format!("+{m} Barrier at battle start"),
             "regen" => format!("+{m} Regen"),
@@ -214,7 +219,11 @@ mod tests {
             assert!(find(d.key).is_some(), "{} not findable", d.key);
             let line = affix(d.key, 7).describe();
             assert!(!line.is_empty());
-            assert!(line.contains('7'), "{}: {line}", d.key);
+            // A brand has no magnitude — it changes WHAT your attacks are, not how
+            // much. Everything else must show its number so drops can be compared.
+            if d.key != "brand" {
+                assert!(line.contains('7'), "{}: {line}", d.key);
+            }
             assert!(!d.suffix.is_empty());
         }
     }
@@ -230,6 +239,18 @@ mod tests {
         for key in ["atk", "def", "spd", "barrier", "regen", "evasion", "ally_atk"] {
             assert!(affix(key, 1).applies_to(CharacterClass::Shifter), "{key}");
         }
+    }
+
+    #[test]
+    fn a_brand_names_the_element_it_deals() {
+        let a = Affix {
+            key: "brand".into(),
+            magnitude: 1,
+            element: Some("FIRE".into()),
+            ally_class: None,
+        };
+        assert_eq!(a.describe(), "attacks deal fire damage");
+        assert_eq!(a.class(), Some(AffixClass::Element));
     }
 
     #[test]

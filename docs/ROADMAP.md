@@ -784,14 +784,25 @@ the current build.
     game that reaches past its owner, which is what makes assembling one a group
     project). Drawbacks are floored so a build can be lopsided without being
     unplayable, and the tooltip shows a unique's cost in red right under its upside.
-  - **Remains:** rerolling affixes via crafting (`MS-1`), and the monster side of damage
-    types (`AD-3` — gear can resist an element, but creatures do not yet deal typed
-    damage). With those two, AD-1 is complete.
+  - **Remains:** rerolling affixes via crafting (`MS-1`). The elemental half landed with
+    the `brand` affix under `AD-3` below.
 - [ ] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
 - [ ] **AD-3 — Elemental affinities & resistances.** Damage-type weak/resist/immune on
   creatures/biomes; resist/convert affixes; **telegraphed** (`UX-2`). Makes biomes a
   combat *decision*. Extends [`behaviors/combat-atb.md`](behaviors/combat-atb.md).
+  - 🟡 *Mostly already built, and now two-way:* creature kinds already had typed basic
+    attacks (`creature_basic_attack_type`) and elemental profiles
+    (`creature_damage_modifiers`), the engine already applied weak/resist/immune/absorb
+    (`apply_typed_damage` → `ModifierFlag`), and the flag already reached the client. The
+    missing half was that **heroes' attacks were untyped**, so a party could only ever
+    *resist* an element, never exploit one. The `brand` affix (AD-1 Element class, weapons
+    only — armour does not decide what your swing is) types a hero's basic attack, so a
+    creature's profile now cuts both ways and the `resist` affix has an offensive
+    counterpart.
+  - **Remains:** biome-level affinities beyond per-kind profiles, convert affixes
+    (turn damage from one element into another), and the `UX-2` telegraphing pass so a
+    player can *see* the matchup before committing a turn.
 - [ ] **AD-4 — The Hunt Board.** Directed combat goals (named creatures/dungeons/depth) —
   the mid-game spine; ties `CR-5` bestiary, `FS-4`, `DG`; co-op/guild hunts (`SOC`).
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from

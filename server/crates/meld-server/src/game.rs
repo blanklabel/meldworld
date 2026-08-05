@@ -267,6 +267,7 @@ fn effective_gear_bonus(
         penalty_spd: vault.penalty_spd,
         penalty_max_hp: vault.penalty_max_hp,
         set_pieces: vault.set_pieces,
+        brand: vault.brand,
     };
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {

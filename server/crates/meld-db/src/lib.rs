@@ -1832,6 +1832,10 @@ pub struct GearBonus {
     /// hero's class: banked Adrenaline at battle start, extra Focus slots.
     pub adrenaline: i32,
     pub focus_slots: i32,
+    /// AD-3 brand: the element this hero's attacks deal. The first branded weapon
+    /// wins — two brands would mean an attack with two types, which the engine's
+    /// one-type-per-effect model has no answer for.
+    pub brand: Option<String>,
     /// AD-1 unique drawbacks, already summed: what this loadout *costs*.
     pub penalty_atk: i32,
     pub penalty_def: i32,
@@ -1875,6 +1879,7 @@ fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
             "evasion" => b.evasion += m,
             "adrenaline_primed" => b.adrenaline += m,
             "focus_slot" => b.focus_slots += m,
+            "brand" if b.brand.is_none() => b.brand = a.element.clone(),
             "resist" => {
                 if let Some(el) = &a.element {
                     // A resist affix reads as a percentage; the modifier plumbing

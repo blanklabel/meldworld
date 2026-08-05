@@ -172,6 +172,8 @@ pub struct GearBonus {
     /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
     /// where the party composition is known.
     pub synergies: Vec<(String, i32, i32)>,
+    /// AD-3 brand: the element this hero's attacks deal.
+    pub brand: Option<String>,
     /// AD-1 unique drawbacks — what this loadout costs.
     pub penalty_atk: i32,
     pub penalty_def: i32,
@@ -289,6 +291,13 @@ pub fn party_fighters(
             f.dodge = dodge;
             // Elemental wards from gear (spec §5): folded + clamped 0.0–2.0.
             f.damage_modifiers = fold_damage_modifiers(&bonus.modifiers);
+            // AD-3: a branded weapon types the hero's basic swing, so a party can
+            // finally exploit a creature's elemental weakness instead of only
+            // resisting its attacks. Creature profiles already existed; heroes had
+            // no way to answer them.
+            if let Some(el) = bonus.brand.as_deref().and_then(meld_proto::enums::DamageType::from_wire) {
+                f.basic_attack_type = el;
+            }
             // AD-1 ward affixes: the hero walks into the fight already holding
             // these, which is what makes a ward roll a build rather than a stat.
             f.barrier += bonus.barrier;
@@ -824,5 +833,37 @@ mod tests {
         let unpaid = party_fighters(&partial, &runs, &b, &[]);
         assert_eq!(unpaid[0].atk, base[0].atk);
         assert_eq!(unpaid[1].atk, base[1].atk);
+    }
+
+    #[test]
+    fn a_branded_weapon_types_the_hero_s_swing() {
+        use meld_proto::enums::DamageType;
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        // Unbranded, a hero's swing is untyped — it can never hit a weakness.
+        let plain: Vec<PartyMember> =
+            vec![("p".into(), "c".into(), CharacterClass::Explorer, GearBonus::default())];
+        let f0 = party_fighters(&plain, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f0.basic_attack_type, DamageType::None);
+
+        let branded: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Explorer,
+            GearBonus { brand: Some("FIRE".into()), ..Default::default() },
+        )];
+        let f1 = party_fighters(&branded, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f1.basic_attack_type, DamageType::Fire);
+
+        // Nonsense on the wire leaves the swing untyped rather than panicking.
+        let junk: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::Explorer,
+            GearBonus { brand: Some("NOT_AN_ELEMENT".into()), ..Default::default() },
+        )];
+        let f2 = party_fighters(&junk, &runs, &b, &[]).pop().unwrap();
+        assert_eq!(f2.basic_attack_type, DamageType::None);
     }
 }
