@@ -241,7 +241,6 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
-    pub boss_target_rounds: f64,
     pub undead_rite_loot_mult: f64,
     pub pack_spread: f64,
     pub undead_rite_chance: f64,
@@ -461,6 +460,7 @@ pub struct WorldScaling {
     pub stat_mult_base_divisor: f64,
     pub stat_mult_exp: f64,
     pub def_mult_exp: f64,
+    pub hp_per_tier: f64,
     /// XP curve exponent (spec §4): `xp = floor(base_xp × (1 + d/divisor)^exp)`
     /// — steeper than the stat curve so deep kills out-reward the grind.
     pub xp_distance_exp: f64,
