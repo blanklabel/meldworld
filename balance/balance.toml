@@ -319,6 +319,23 @@ synergy_party_barrier = 10       # Fortress Front: Barrier every hero opens with
 synergy_party_regen = 3          # Blood and Balm: Regen for every hero [TUNABLE]
 synergy_back_row_evasion = 8     # Covering Blink: Evasion % for back-row heroes [TUNABLE]
 
+# THE FORGE (MS-1): crafting gear, rerolling its affixes, and repairing what a
+# death chewed. Forging level is the lever — a better smith wastes less material and
+# rolls closer to the top of the band.
+[forge]
+gear_material_cost = 4          # materials consumed to forge one piece [TUNABLE]
+gear_chit_cost = 60
+gear_tier_per_forging_level = 0.5  # the tier a smith can forge at, per Forging level [TUNABLE]
+gear_variance = 0.35            # +/- fraction on a forged stat at Forging level 1 [TUNABLE]
+gear_variance_floor = 0.08      # …shrinking to this as Forging level climbs: a master smith is consistent
+gear_variance_per_level = 0.03
+reroll_material_cost = 3        # materials to reroll a piece's affixes [TUNABLE]
+reroll_chit_cost = 90
+reroll_min_forging_level = 3    # rerolling is a smith's trick, not a beginner's
+repair_chit_cost_per_point = 4  # chits per point of max durability restored [TUNABLE]
+repair_points_per_forging_level = 6  # how much one repair can restore, per Forging level
+forge_xp_per_craft = 30         # Forging XP for a forge/reroll/repair [TUNABLE]
+
 # Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
 # `meld_proto::consumables`; these are its numbers, plus the chit price of the
 # lowest-tier stock one NPC keeps on the shelf.

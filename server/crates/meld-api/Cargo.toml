@@ -15,4 +15,6 @@ chrono.workspace = true
 tracing.workspace = true
 rand.workspace = true
 meld-proto.workspace = true
+meld-world.workspace = true
+meld-balance.workspace = true
 meld-db.workspace = true

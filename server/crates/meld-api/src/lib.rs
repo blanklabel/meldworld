@@ -34,6 +34,8 @@ pub struct ApiState {
     pub meld_forging_xp: i64,
     /// Bounds-checks the `hero_slot` an equip request targets.
     pub party_size_per_player: i32,
+    /// The tuned balance table, for the Forge's own maths (MS-1).
+    pub balance: std::sync::Arc<meld_balance::Balance>,
     /// The Apothecary's shelf: item kind -> chit price. The map IS the stock list,
     /// so a client cannot buy something the vendor does not sell by naming it.
     /// Injected by the server from `[consumable]` balance.
@@ -56,6 +58,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
         .route("/v1/crafting/craft", post(craft))
         .route("/v1/crafting/recipes", get(recipes))
+        .route("/v1/crafting/forge", post(forge))
+        .route("/v1/vault/gear/:gear_id/reroll", post(reroll))
+        .route("/v1/vault/gear/:gear_id/repair", post(repair))
         .route("/v1/vendors/apothecary", get(vendor_stock))
         .route("/v1/vendors/apothecary/buy", post(vendor_buy))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
@@ -336,6 +341,246 @@ async fn craft(
         }
         Err(e) => Err(ApiReject::internal(e)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ForgeReq {
+    slot: String,
+    /// Which class's kit to forge for; defaults to the martial baseline.
+    #[serde(default)]
+    class_key: Option<String>,
+    /// Which material to spend. Any Vault material works — a smith uses what they
+    /// have — so the client names it rather than the server guessing.
+    material: String,
+}
+
+/// `POST /v1/crafting/forge` — forge one piece of gear (MS-1). Forging level sets
+/// both the tier a smith can reach and how tightly the stats roll, so levelling the
+/// skill is what makes the Forge worth visiting.
+async fn forge(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<ForgeReq>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if !meld_proto::equipment::SLOT_CATEGORIES.contains(&req.slot.as_str()) {
+        return Err(ApiReject::validation("Unknown equipment slot."));
+    }
+    let class_key = req.class_key.unwrap_or_else(|| "explorer".to_string());
+    if meld_proto::equipment::class_from_key(&class_key).is_none() {
+        return Err(ApiReject::validation("Unknown class."));
+    }
+    let level = forging_level(&st, player_id).await?;
+    let drop = meld_world::forge_gear(
+        &st.balance,
+        level,
+        &req.slot,
+        &class_key,
+        "forest",
+        seed_now(),
+    );
+    let piece = crafted_row(&drop);
+    let materials = [(req.material.clone(), st.balance.forge.gear_material_cost)];
+    match st
+        .db
+        .forge_gear(player_id, &materials, st.balance.forge.gear_chit_cost, &piece)
+        .await
+    {
+        Ok(true) => {
+            let _ = st
+                .db
+                .add_skill_xp(player_id, "forging", st.balance.forge.forge_xp_per_craft)
+                .await;
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "forged": piece.name,
+                    "slot": piece.slot,
+                    "tier": piece.tier,
+                    "forging_level": level,
+                })),
+            )
+                .into_response())
+        }
+        Ok(false) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "The forge needs {} {} and {} chits.",
+                st.balance.forge.gear_material_cost, req.material, st.balance.forge.gear_chit_cost
+            ),
+        )),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RerollReq {
+    material: String,
+}
+
+/// `POST /v1/vault/gear/:gear_id/reroll` — buy another draw on a piece's affixes
+/// (MS-1, and the last open thread of AD-1). The stats are untouched: what a smith
+/// sells is a fresh roll, not a better item.
+async fn reroll(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(gear_id): Path<String>,
+    Json(req): Json<RerollReq>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let gid = Uuid::parse_str(&gear_id)
+        .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
+    let level = forging_level(&st, player_id).await?;
+    if level < st.balance.forge.reroll_min_forging_level {
+        return Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "Rerolling needs Forging level {}.",
+                st.balance.forge.reroll_min_forging_level
+            ),
+        ));
+    }
+    let Some(row) = st
+        .db
+        .get_gear_by_id(player_id, gid)
+        .await
+        .map_err(ApiReject::internal)?
+    else {
+        return Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Gear not owned by caller.",
+        ));
+    };
+    let class_key = if row.class_key.is_empty() {
+        "explorer".to_string()
+    } else {
+        row.class_key.clone()
+    };
+    let rolled = meld_world::reroll_affixes(
+        &st.balance,
+        row.tier,
+        &class_key,
+        &row.slot,
+        "forest",
+        seed_now(),
+    );
+    let json = meld_proto::affixes::to_json(&rolled);
+    let materials = [(req.material.clone(), st.balance.forge.reroll_material_cost)];
+    match st
+        .db
+        .reroll_gear_affixes(player_id, gid, &materials, st.balance.forge.reroll_chit_cost, &json)
+        .await
+    {
+        Ok(true) => {
+            let _ = st
+                .db
+                .add_skill_xp(player_id, "forging", st.balance.forge.forge_xp_per_craft)
+                .await;
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "gear_id": gear_id,
+                    "affixes": rolled,
+                })),
+            )
+                .into_response())
+        }
+        Ok(false) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "A reroll needs {} {} and {} chits.",
+                st.balance.forge.reroll_material_cost, req.material, st.balance.forge.reroll_chit_cost
+            ),
+        )),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+/// `POST /v1/vault/gear/:gear_id/repair` — buy back max durability a death chewed
+/// off (MS-1 / GR-2's repair sink). How much one repair restores scales with Forging
+/// level, so a smith's own skill is the sink's efficiency.
+async fn repair(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(gear_id): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let gid = Uuid::parse_str(&gear_id)
+        .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
+    let level = forging_level(&st, player_id).await?;
+    let points = st.balance.forge.repair_points(level);
+    match st
+        .db
+        .repair_gear(player_id, gid, points, st.balance.forge.repair_chit_cost_per_point)
+        .await
+    {
+        Ok(0) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Nothing to repair, or not enough chits.",
+        )),
+        Ok(restored) => {
+            let _ = st
+                .db
+                .add_skill_xp(player_id, "forging", st.balance.forge.forge_xp_per_craft)
+                .await;
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "gear_id": gear_id,
+                    "restored": restored,
+                    "spent_chits": restored as i64 * st.balance.forge.repair_chit_cost_per_point,
+                })),
+            )
+                .into_response())
+        }
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+/// A forged drop as the gear table wants it.
+fn crafted_row(d: &meld_world::GearDrop) -> meld_db::LootedGear {
+    meld_db::LootedGear {
+        gear_id: Uuid::now_v7(),
+        name: d.name.clone(),
+        slot: d.slot.clone(),
+        class_key: d.class_key.clone(),
+        tier: d.tier,
+        atk_bonus: d.atk_bonus,
+        def_bonus: d.def_bonus,
+        spd_bonus: d.spd_bonus,
+        base_max_durability: d.max_durability,
+        max_durability: d.max_durability,
+        damage_modifiers: "{}".to_string(),
+        family: d.family.clone(),
+        armor_weight: d.armor_weight.clone(),
+        affixes: meld_proto::affixes::to_json(&d.affixes),
+        unique_key: String::new(),
+        set_key: String::new(),
+    }
+}
+
+/// The caller's Forging level, derived from banked XP like every other Meld skill.
+async fn forging_level(st: &ApiState, player_id: Uuid) -> Result<i32, ApiReject> {
+    let skills = st.db.get_skills(player_id).await.map_err(ApiReject::internal)?;
+    Ok(skill_entries(skills, st.meld_xp_per_level)
+        .into_iter()
+        .find(|s| s.skill_kind == "forging")
+        .map(|s| s.level)
+        .unwrap_or(1))
+}
+
+/// A seed for a craft. Crafting is not replayed, so wall-clock entropy is fine here
+/// — unlike world generation, which must stay reproducible from its instance seed.
+fn seed_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5EED)
 }
 
 /// `GET /v1/crafting/recipes` — every recipe, so the Forge & Alembic UI can list

@@ -194,6 +194,11 @@ pub fn drop_weight(class: CharacterClass) -> ArmorWeight {
     armor_weights(class).first().copied().unwrap_or(ArmorWeight::Medium)
 }
 
+/// The six equipment categories of the 7-slot loadout, in display order (two
+/// accessory equip slots share the one `accessory` category).
+pub const SLOT_CATEGORIES: [&str; 6] =
+    ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
+
 /// The slots that carry an [`ArmorWeight`]. Hands carry a family instead, and
 /// accessories are unrestricted so every loot table has a never-dead family.
 pub fn is_armor_slot(slot: &str) -> bool {

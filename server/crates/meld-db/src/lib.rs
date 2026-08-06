@@ -975,6 +975,310 @@ impl Db {
         }
     }
 
+    /// Spend `materials` + `chits` and insert one crafted (insured) gear row (MS-1).
+    /// Atomic: a smith who cannot pay keeps their materials and gets nothing.
+    /// Returns `false` when the cost cannot be met.
+    pub async fn forge_gear(
+        &self,
+        player_id: Uuid,
+        materials: &[(String, i32)],
+        chits: i64,
+        piece: &LootedGear,
+    ) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                for (kind, need) in materials {
+                    let spent = sqlx::query(
+                        "UPDATE vault_items SET quantity = quantity - $3
+                         WHERE player_id = $1 AND item_kind = $2 AND quantity >= $3",
+                    )
+                    .bind(player_id)
+                    .bind(kind)
+                    .bind(need)
+                    .execute(&mut *tx)
+                    .await?;
+                    if spent.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                if chits > 0 {
+                    let paid = sqlx::query(
+                        "UPDATE vaults SET chits = chits - $2 WHERE player_id = $1 AND chits >= $2",
+                    )
+                    .bind(player_id)
+                    .bind(chits)
+                    .execute(&mut *tx)
+                    .await?;
+                    if paid.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                sqlx::query("DELETE FROM vault_items WHERE player_id = $1 AND quantity <= 0")
+                    .bind(player_id)
+                    .execute(&mut *tx)
+                    .await?;
+                // Crafted gear is INSURED: a smith's work survives a death the way
+                // anything else bought with the Vault's own resources does.
+                sqlx::query(
+                    "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key)
+                     VALUES ($1, $2, $3, $4, $5, 'blue', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, '', '')",
+                )
+                .bind(piece.gear_id)
+                .bind(player_id)
+                .bind(&piece.name)
+                .bind(&piece.slot)
+                .bind(&piece.class_key)
+                .bind(piece.tier)
+                .bind(piece.atk_bonus)
+                .bind(piece.def_bonus)
+                .bind(piece.spd_bonus)
+                .bind(piece.base_max_durability)
+                .bind(piece.max_durability)
+                .bind(&piece.damage_modifiers)
+                .bind(&piece.family)
+                .bind(&piece.armor_weight)
+                .bind(&piece.affixes)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(true)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                for (kind, need) in materials {
+                    let have = m
+                        .vault_items
+                        .get(&(player_id, kind.clone()))
+                        .copied()
+                        .unwrap_or(0);
+                    if have < *need {
+                        return Ok(false);
+                    }
+                }
+                if chits > 0 && m.chits.get(&player_id).copied().unwrap_or(0) < chits {
+                    return Ok(false);
+                }
+                for (kind, need) in materials {
+                    let key = (player_id, kind.clone());
+                    if let Some(q) = m.vault_items.get_mut(&key) {
+                        *q -= *need;
+                        if *q <= 0 {
+                            m.vault_items.remove(&key);
+                        }
+                    }
+                }
+                if chits > 0 {
+                    *m.chits.entry(player_id).or_insert(0) -= chits;
+                }
+                m.gear.insert(
+                    piece.gear_id,
+                    MemGear {
+                        gear_id: piece.gear_id,
+                        owner_player_id: player_id,
+                        name: piece.name.clone(),
+                        slot: piece.slot.clone(),
+                        class_key: piece.class_key.clone(),
+                        insurance: "blue".into(),
+                        tier: piece.tier,
+                        atk_bonus: piece.atk_bonus,
+                        def_bonus: piece.def_bonus,
+                        spd_bonus: piece.spd_bonus,
+                        base_max_durability: piece.base_max_durability,
+                        max_durability: piece.max_durability,
+                        equipped_hero_slot: None,
+                        damage_modifiers: piece.damage_modifiers.clone(),
+                        family: piece.family.clone(),
+                        armor_weight: piece.armor_weight.clone(),
+                        affixes: piece.affixes.clone(),
+                        unique_key: String::new(),
+                        set_key: String::new(),
+                    },
+                );
+                Ok(true)
+            }
+        }
+    }
+
+    /// Read one owned gear row (for a reroll/repair that has to know what it is
+    /// working on). `None` when the caller does not own it.
+    pub async fn get_gear_by_id(
+        &self,
+        player_id: Uuid,
+        gear_id: Uuid,
+    ) -> Result<Option<GearRow>, DbError> {
+        Ok(self
+            .get_gear(player_id)
+            .await?
+            .into_iter()
+            .find(|g| g.gear_id == gear_id))
+    }
+
+    /// Replace one piece's affixes for `materials` + `chits` (MS-1). Atomic, and a
+    /// no-op that reports `false` when the smith cannot pay.
+    pub async fn reroll_gear_affixes(
+        &self,
+        player_id: Uuid,
+        gear_id: Uuid,
+        materials: &[(String, i32)],
+        chits: i64,
+        affixes_json: &str,
+    ) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                for (kind, need) in materials {
+                    let spent = sqlx::query(
+                        "UPDATE vault_items SET quantity = quantity - $3
+                         WHERE player_id = $1 AND item_kind = $2 AND quantity >= $3",
+                    )
+                    .bind(player_id)
+                    .bind(kind)
+                    .bind(need)
+                    .execute(&mut *tx)
+                    .await?;
+                    if spent.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                if chits > 0 {
+                    let paid = sqlx::query(
+                        "UPDATE vaults SET chits = chits - $2 WHERE player_id = $1 AND chits >= $2",
+                    )
+                    .bind(player_id)
+                    .bind(chits)
+                    .execute(&mut *tx)
+                    .await?;
+                    if paid.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                let hit = sqlx::query(
+                    "UPDATE gear SET affixes = $3 WHERE gear_id = $1 AND owner_player_id = $2",
+                )
+                .bind(gear_id)
+                .bind(player_id)
+                .bind(affixes_json)
+                .execute(&mut *tx)
+                .await?;
+                if hit.rows_affected() == 0 {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+                tx.commit().await?;
+                Ok(true)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                if !m
+                    .gear
+                    .get(&gear_id)
+                    .map(|g| g.owner_player_id == player_id)
+                    .unwrap_or(false)
+                {
+                    return Ok(false);
+                }
+                for (kind, need) in materials {
+                    if m.vault_items
+                        .get(&(player_id, kind.clone()))
+                        .copied()
+                        .unwrap_or(0)
+                        < *need
+                    {
+                        return Ok(false);
+                    }
+                }
+                if chits > 0 && m.chits.get(&player_id).copied().unwrap_or(0) < chits {
+                    return Ok(false);
+                }
+                for (kind, need) in materials {
+                    let key = (player_id, kind.clone());
+                    if let Some(q) = m.vault_items.get_mut(&key) {
+                        *q -= *need;
+                        if *q <= 0 {
+                            m.vault_items.remove(&key);
+                        }
+                    }
+                }
+                if chits > 0 {
+                    *m.chits.entry(player_id).or_insert(0) -= chits;
+                }
+                if let Some(g) = m.gear.get_mut(&gear_id) {
+                    g.affixes = affixes_json.to_string();
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// Repair up to `points` of a piece's lost max durability for `chits` (MS-1 /
+    /// GR-2's repair sink). Never exceeds the piece's original
+    /// `base_max_durability`. Returns the points actually restored (0 = nothing to
+    /// repair, or the smith could not pay).
+    pub async fn repair_gear(
+        &self,
+        player_id: Uuid,
+        gear_id: Uuid,
+        points: i32,
+        chits_per_point: i64,
+    ) -> Result<i32, DbError> {
+        let Some(row) = self.get_gear_by_id(player_id, gear_id).await? else {
+            return Ok(0);
+        };
+        let missing = (row.base_max_durability - row.max_durability).max(0);
+        let restore = missing.min(points.max(0));
+        if restore == 0 {
+            return Ok(0);
+        }
+        let cost = chits_per_point * restore as i64;
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                if cost > 0 {
+                    let paid = sqlx::query(
+                        "UPDATE vaults SET chits = chits - $2 WHERE player_id = $1 AND chits >= $2",
+                    )
+                    .bind(player_id)
+                    .bind(cost)
+                    .execute(&mut *tx)
+                    .await?;
+                    if paid.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(0);
+                    }
+                }
+                sqlx::query(
+                    "UPDATE gear SET max_durability = LEAST(max_durability + $3, base_max_durability)
+                     WHERE gear_id = $1 AND owner_player_id = $2",
+                )
+                .bind(gear_id)
+                .bind(player_id)
+                .bind(restore)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(restore)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                if cost > 0 && m.chits.get(&player_id).copied().unwrap_or(0) < cost {
+                    return Ok(0);
+                }
+                if cost > 0 {
+                    *m.chits.entry(player_id).or_insert(0) -= cost;
+                }
+                if let Some(g) = m.gear.get_mut(&gear_id) {
+                    g.max_durability = (g.max_durability + restore).min(g.base_max_durability);
+                }
+                Ok(restore)
+            }
+        }
+    }
+
     /// Buy `qty` of `item_kind` from a town vendor for `unit_price` chits each
     /// (EC-2). Atomic: the chits leave the Vault and the goods arrive in the same
     /// transaction, so a failed purchase can never bill a player for nothing.
@@ -2820,6 +3124,94 @@ mod tests {
             .unwrap());
         assert_eq!(skill_xp(&db, p, "forging").await, 10);
         assert_eq!(skill_xp(&db, p, "alchemy").await, 10, "forging leaked into alchemy");
+    }
+
+    #[tokio::test]
+    async fn the_forge_charges_atomically_and_repair_never_overshoots() {
+        let db = mem().await;
+        let p = db.register("smith", "pw").await.unwrap().player_id;
+        db.bank_extraction(p, &[("dune_iron".into(), 10)], 500).await.unwrap();
+        let piece = LootedGear {
+            gear_id: Uuid::now_v7(),
+            name: "Forged Warblade".into(),
+            slot: "main_hand".into(),
+            class_key: "explorer".into(),
+            tier: 3,
+            atk_bonus: 9,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 100,
+            max_durability: 100,
+            damage_modifiers: "{}".into(),
+            family: "sword".into(),
+            armor_weight: String::new(),
+            affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        let gid = piece.gear_id;
+
+        // Too expensive: nothing moves — not the chits, not the materials, no gear.
+        assert!(!db
+            .forge_gear(p, &[("dune_iron".into(), 4)], 99_999, &piece)
+            .await
+            .unwrap());
+        let (chits, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(chits, 500, "a failed forge billed the smith");
+        assert_eq!(items.iter().find(|(k, _)| k == "dune_iron").map(|(_, q)| *q), Some(10));
+        assert!(db.get_gear_by_id(p, gid).await.unwrap().is_none());
+
+        // Affordable: materials and chits leave, the piece arrives, and it is INSURED
+        // (a smith's own work survives a death).
+        assert!(db
+            .forge_gear(p, &[("dune_iron".into(), 4)], 60, &piece)
+            .await
+            .unwrap());
+        let (chits, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(chits, 440);
+        assert_eq!(items.iter().find(|(k, _)| k == "dune_iron").map(|(_, q)| *q), Some(6));
+        let row = db.get_gear_by_id(p, gid).await.unwrap().expect("forged piece");
+        assert_eq!(row.insurance, "blue");
+        assert_eq!(row.family, "sword");
+
+        // A reroll swaps the affixes for a price and leaves the STATS alone.
+        assert!(db
+            .reroll_gear_affixes(p, gid, &[("dune_iron".into(), 3)], 90, "[{\"key\":\"barrier\",\"magnitude\":11}]")
+            .await
+            .unwrap());
+        let row = db.get_gear_by_id(p, gid).await.unwrap().unwrap();
+        assert!(row.affixes.contains("barrier"));
+        assert_eq!(row.atk_bonus, 9, "a reroll changed the stats");
+        assert_eq!(db.get_vault(p).await.unwrap().0, 350);
+
+        // Repair: chew the durability the way a death does, then buy it back. It
+        // never exceeds the piece's original maximum, and it only bills for what it
+        // actually restored.
+        // Only EQUIPPED insured gear takes the death penalty, and hero 0's hand is
+        // full of starter kit — free it, or the equip silently no-ops.
+        let starter = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|g| g.equipped_hero_slot == Some(0) && g.slot == "main_hand")
+            .expect("starter main-hand");
+        assert_eq!(db.set_equipped(p, starter.gear_id, None).await.unwrap(), EquipResult::Ok);
+        assert_eq!(db.set_equipped(p, gid, Some(0)).await.unwrap(), EquipResult::Ok);
+        db.apply_death_durability(p).await.unwrap();
+        let chewed = db.get_gear_by_id(p, gid).await.unwrap().unwrap();
+        assert!(chewed.max_durability < chewed.base_max_durability, "nothing was chewed");
+        let missing = chewed.base_max_durability - chewed.max_durability;
+
+        let before = db.get_vault(p).await.unwrap().0;
+        let restored = db.repair_gear(p, gid, 9_999, 4).await.unwrap();
+        assert_eq!(restored, missing, "repair restored {restored} of {missing}");
+        let row = db.get_gear_by_id(p, gid).await.unwrap().unwrap();
+        assert_eq!(row.max_durability, row.base_max_durability);
+        assert_eq!(db.get_vault(p).await.unwrap().0, before - restored as i64 * 4);
+
+        // Nothing left to repair → nothing charged.
+        assert_eq!(db.repair_gear(p, gid, 50, 4).await.unwrap(), 0);
     }
 }
 

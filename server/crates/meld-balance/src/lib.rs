@@ -26,6 +26,7 @@ pub struct Balance {
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
     pub consumable: Consumable,
+    pub forge: Forge,
     pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
@@ -229,6 +230,42 @@ impl Encounters {
             .iter()
             .filter(|b| distance >= b.from_distance)
             .max_by(|a, b| a.from_distance.total_cmp(&b.from_distance))
+    }
+}
+
+/// Forge knobs (MS-1): crafting gear, rerolling affixes, repairing durability.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Forge {
+    pub gear_material_cost: i32,
+    pub gear_chit_cost: i64,
+    pub gear_tier_per_forging_level: f64,
+    pub gear_variance: f64,
+    pub gear_variance_floor: f64,
+    pub gear_variance_per_level: f64,
+    pub reroll_material_cost: i32,
+    pub reroll_chit_cost: i64,
+    pub reroll_min_forging_level: i32,
+    pub repair_chit_cost_per_point: i64,
+    pub repair_points_per_forging_level: i32,
+    pub forge_xp_per_craft: i64,
+}
+
+impl Forge {
+    /// The highest tier a smith of this Forging level can forge at.
+    pub fn forgeable_tier(&self, forging_level: i32) -> i32 {
+        ((forging_level.max(1) as f64) * self.gear_tier_per_forging_level).floor() as i32
+    }
+
+    /// How wide a forged stat's roll is at this Forging level — a master smith is
+    /// consistent, an apprentice is not.
+    pub fn variance_at(&self, forging_level: i32) -> f64 {
+        (self.gear_variance - self.gear_variance_per_level * (forging_level.max(1) - 1) as f64)
+            .max(self.gear_variance_floor)
+    }
+
+    /// How many points of max durability one repair restores.
+    pub fn repair_points(&self, forging_level: i32) -> i32 {
+        self.repair_points_per_forging_level * forging_level.max(1)
     }
 }
 
