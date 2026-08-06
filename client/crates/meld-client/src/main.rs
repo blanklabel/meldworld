@@ -1632,9 +1632,8 @@ struct MenuEntry {
 /// straight from the shared registry: the name, the order, the unlock level and the
 /// tooltip are all one definition (`meld_proto::skills`).
 fn skill_entries(class: &str, hero_level: i32) -> Vec<MenuEntry> {
-    meld_proto::skills::skills_for_class(class)
+    meld_proto::skills::skills_for_class_at(class, hero_level)
         .into_iter()
-        .filter(|d| hero_level >= d.unlock)
         .map(|d| MenuEntry {
             label: d.name.to_string(),
             action: EntryAction::Skill(d.key),

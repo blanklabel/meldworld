@@ -383,9 +383,19 @@ burns on death/leave; some is single-use. See
     Bloom (100). Seven abilities of one shape (heal / Regen / Barrier, on one ally or
     all, paid out of the healer's own HP), so they resolve from a table rather than
     seven near-identical engine arms.
-  - **Remains:** the Psyker's deep Foci (its ladder is authored to 100 in principle
-    but still has four manifestations — new ones need focus-kind machinery, not just a
-    table row), and the Explorer/Shifter overworld role swap.
+  - *Also shipped:* **upgrade chains** — how a martial class progresses without its
+    menu growing. `SkillDef.upgrades` marks an ability as REPLACING an earlier one, and
+    `skills_for_class_at` drops anything superseded, so a Shifter with **Mug** no
+    longer carries **Steal**: the row improved rather than multiplied. Shifter
+    Steal (4) → Mug (25, the same theft with a hit on the way past); Hunter
+    Power Strike (1) → Crushing Blow (16) and Snare (9) → Pin the Prey (25). Tests
+    hold the invariants: an upgrade unlocks later than what it replaces, belongs to the
+    same class, hits harder, and the menu's row count does not change.
+  - **Remains:** the Psyker's deep manifestation ladder — the canonical class doc has
+    Kinetic Wave, Thermal Flux, Phase Shift, Matter Dissolution, Gravity Vortex and
+    Reality Collapse to add, plus Psi Points as a real cost and the Psychic Strain
+    (damage threatening to break a Focus). Each is a focus-kind arm in the engine
+    rather than a table row. Also: the Explorer/Shifter overworld role swap.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

@@ -499,6 +499,12 @@ pub struct Battle {
     explorer_safe_passage_regen: i32,
     explorer_world_known_gauge: f64,
     resonant_deep: ResonantDeep,
+    shifter_steal_drain: f64,
+    shifter_mug_mult: f64,
+    shifter_mug_drain: f64,
+    hunter_crushing_blow_mult: f64,
+    pin_the_prey_mult: f64,
+    pin_the_prey_drain: f64,
     status_slow_mult: f64,
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
@@ -722,6 +728,12 @@ impl Battle {
             explorer_safe_passage_regen: balance.battle.explorer_safe_passage_regen,
             explorer_world_known_gauge: balance.battle.explorer_world_known_gauge,
             resonant_deep: ResonantDeep::from(&balance.battle),
+            shifter_steal_drain: balance.battle.shifter_steal_drain,
+            shifter_mug_mult: balance.battle.shifter_mug_mult,
+            shifter_mug_drain: balance.battle.shifter_mug_drain,
+            hunter_crushing_blow_mult: balance.battle.hunter_crushing_blow_mult,
+            pin_the_prey_mult: balance.battle.pin_the_prey_mult,
+            pin_the_prey_drain: balance.battle.pin_the_prey_drain,
             status_slow_mult: balance.battle.status_slow_mult,
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
@@ -1182,9 +1194,11 @@ impl Battle {
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
         let cost = match skill {
-            "power_strike" => self.explorer_power_strike_cost,
+            // An upgrade costs what the ability it replaced cost: the Hunter's rows get
+            // better, its Adrenaline economy does not change.
+            "power_strike" | "crushing_blow" => self.explorer_power_strike_cost,
             "second_wind" => self.explorer_second_wind_cost,
-            "snare" => self.explorer_snare_cost,
+            "snare" | "pin_the_prey" => self.explorer_snare_cost,
             "frenzy" => self.explorer_frenzy_cost,
             _ => return Err(Reject::ValidationError("unknown hunter skill")),
         };
@@ -1204,7 +1218,9 @@ impl Battle {
         // Enemy strikes. Power Strike reuses the generic heavy-hit multiplier.
         let (mult, drain) = match skill {
             "power_strike" => (self.skill_power_mult, 0.0),
+            "crushing_blow" => (self.hunter_crushing_blow_mult, 0.0),
             "snare" => (self.explorer_snare_mult, self.explorer_snare_drain),
+            "pin_the_prey" => (self.pin_the_prey_mult, self.pin_the_prey_drain),
             "frenzy" => (self.explorer_frenzy_mult, 0.0),
             _ => unreachable!("cost match already rejected other skills"),
         };
@@ -1506,7 +1522,12 @@ impl Battle {
         // first so the affordability check runs before any other path.
         if matches!(
             skill_kind,
-            Some("power_strike") | Some("second_wind") | Some("snare") | Some("frenzy")
+            Some("power_strike")
+                | Some("crushing_blow")
+                | Some("second_wind")
+                | Some("snare")
+                | Some("pin_the_prey")
+                | Some("frenzy")
         ) {
             return self.resolve_explorer(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
@@ -1545,6 +1566,51 @@ impl Battle {
                 .ally_target(target_id)
                 .unwrap_or_else(|| self.most_wounded_ally(actor_i));
             let effects = self.resolve_resonant(actor_i, skill_kind.unwrap(), target_i);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Shifter Steal → Mug. Steal takes the foe's tempo (its ATB gauge); Mug is
+        // the same theft with a hit on the way past. The upgrade shares the arm, so
+        // the two can never drift apart.
+        if matches!(skill_kind, Some("steal") | Some("mug")) {
+            let mug = skill_kind == Some("mug");
+            let (mult, drain) = if mug {
+                (self.shifter_mug_mult, self.shifter_mug_drain)
+            } else {
+                (0.0, self.shifter_steal_drain)
+            };
+            let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+            let target_i = match self.idx(target) {
+                Some(t) if self.fighters[t].alive => t,
+                _ => self
+                    .fighters
+                    .iter()
+                    .position(|f| f.alive && f.kind != CombatantKind::Player)
+                    .ok_or(Reject::NotFound)?,
+            };
+            let mut effects = Vec::new();
+            if mult > 0.0 {
+                let scaled = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                let def = self.fighters[target_i].def;
+                let defending = self.fighters[target_i].defending;
+                effects = match self.roll_dodge(target_i) {
+                    Some(dodge) => dodge,
+                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
+                };
+            }
+            if self.fighters[target_i].alive {
+                self.fighters[target_i].gauge =
+                    (self.fighters[target_i].gauge - drain).max(0.0);
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[target_i].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("slowed".to_string()),
+                    hp_after: self.fighters[target_i].hp,
+                });
+            }
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
@@ -4281,6 +4347,81 @@ mod tests {
         assert_eq!(battle.fighters[i].hp, before);
     }
 
+
+
+    #[test]
+    fn mug_is_steal_with_a_hit_on_the_way_past() {
+        let b = balance();
+        let make = |level: i32| {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![leveled_player("s", 400, level)],
+                vec![monster("m", 500, 1)],
+                &b,
+                7,
+            )
+        };
+        // Steal takes tempo and nothing else — the foe keeps every hit point.
+        let mut early = make(4);
+        tick_to_ready(&mut early, "s");
+        let mi = early.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        early.fighters[mi].gauge = 0.9;
+        early
+            .submit("s", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("steal".into()), None)
+            .unwrap();
+        assert!(gauge_of(&early, "m") < 0.9, "Steal took no tempo");
+        assert_eq!(player_hp(&early, "m"), 500, "Steal drew blood; it should not");
+
+        // Mug takes MORE tempo and draws blood: the same ability, grown up.
+        let mut late = make(25);
+        tick_to_ready(&mut late, "s");
+        let mi = late.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        late.fighters[mi].gauge = 0.9;
+        late.fighters[mi].dodge = 0.0;
+        late
+            .submit("s", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("mug".into()), None)
+            .unwrap();
+        assert!(player_hp(&late, "m") < 500, "Mug did not hit");
+        assert!(
+            gauge_of(&late, "m") <= gauge_of(&early, "m"),
+            "Mug stole less tempo than plain Steal"
+        );
+    }
+
+    #[test]
+    fn an_upgraded_row_hits_harder_than_the_one_it_replaced() {
+        let b = balance();
+        let hit = |skill: &str, level: i32| {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![explorer("h", 400, level)],
+                vec![monster("m", 4000, 1)],
+                &b,
+                7,
+            );
+            let hi = battle.fighters.iter().position(|f| f.combatant_id == "h").unwrap();
+            battle.fighters[hi].adrenaline = 100;
+            let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+            battle.fighters[mi].dodge = 0.0;
+            tick_to_ready(&mut battle, "h");
+            battle
+                .submit("h", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some(skill.into()), None)
+                .unwrap();
+            4000 - player_hp(&battle, "m")
+        };
+        // Crushing Blow replaces Power Strike, and must actually be an upgrade.
+        assert!(
+            hit("crushing_blow", 16) > hit("power_strike", 1),
+            "Crushing Blow is not an upgrade on Power Strike"
+        );
+        // Pin the Prey replaces Snare the same way.
+        assert!(
+            hit("pin_the_prey", 25) > hit("snare", 9),
+            "Pin the Prey is not an upgrade on Snare"
+        );
+    }
 
     #[test]
     fn a_casters_deep_kit_mends_the_whole_party_and_costs_the_caster() {

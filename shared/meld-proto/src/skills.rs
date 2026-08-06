@@ -78,6 +78,11 @@ pub struct SkillDef {
     /// What it does, for the battle menu tooltip and the abilities view. Written for
     /// the player: the effect, and the cost or catch.
     pub description: &'static str,
+    /// The ability this one REPLACES when it unlocks (`mug` upgrades `steal`). This
+    /// is how a martial class progresses without its menu growing: the row improves
+    /// in place instead of a fifth button appearing. Only the best owned version of a
+    /// chain is ever offered — see [`skills_for_class_at`].
+    pub upgrades: Option<&'static str>,
     /// The rank the order associates with this ability, kept as flavour. The rank a
     /// hero actually *holds* comes from their level via [`rank_title`] and rides next
     /// to the class name — abilities now run well past the top rank, so this is a
@@ -96,6 +101,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 1,
         description: "Cut a line through the fight: a solid strike that costs nothing to make.",
+        upgrades: None,
         rank: "Walker",
     },
     SkillDef {
@@ -104,6 +110,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 4,
         description: "Patch up an ally — or yourself. What a Guide carries instead of a spell.",
+        upgrades: None,
         rank: "Traveler",
     },
     SkillDef {
@@ -112,6 +119,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 9,
         description: "You know this terrain and it does not: damage plus a steal from the foe's ATB gauge.",
+        upgrades: None,
         rank: "Scout",
     },
     SkillDef {
@@ -120,6 +128,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 16,
         description: "Fix a point of stability in the chaos: Barrier for the WHOLE party.",
+        upgrades: None,
         rank: "Pioneer",
     },
     SkillDef {
@@ -128,6 +137,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 25,
         description: "Nobody walks it alone: Regen for the whole party, turn after turn.",
+        upgrades: None,
         rank: "Discoverer",
     },
     SkillDef {
@@ -136,6 +146,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "explorer",
         unlock: 36,
         description: "The order's whole vision, for one moment: every ally's ATB gauge surges. The party goes first.",
+        upgrades: None,
         rank: "Globemaster",
     },
     // ---- Hunter: martial. Attacks bank Adrenaline, every skill spends it —
@@ -147,6 +158,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "hunter",
         unlock: 1,
         description: "A heavy blow to one foe. Spends banked Adrenaline.",
+        upgrades: None,
         rank: "Wisker",
     },
     SkillDef {
@@ -155,6 +167,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "hunter",
         unlock: 4,
         description: "Heal yourself. Spends banked Adrenaline — no potion needed.",
+        upgrades: None,
         rank: "Stalker",
     },
     SkillDef {
@@ -163,6 +176,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "hunter",
         unlock: 9,
         description: "Damage a foe and drain its ATB gauge, stealing the turn it was about to take. A capture starts here. Primes it for a Shifter's Backstab.",
+        upgrades: None,
         rank: "Stalker",
     },
     SkillDef {
@@ -171,7 +185,26 @@ pub const SKILLS: &[SkillDef] = &[
         class: "hunter",
         unlock: 16,
         description: "Your biggest hit, for your biggest Adrenaline cost. It's a victory when the hunt is over.",
+        upgrades: None,
         rank: "Shikari",
+    },
+    SkillDef {
+        key: "crushing_blow",
+        name: "Crushing Blow",
+        class: "hunter",
+        unlock: 16,
+        description: "Power Strike, grown up: the same Adrenaline, considerably more of the foe's blood.",
+        upgrades: Some("power_strike"),
+        rank: "Predator",
+    },
+    SkillDef {
+        key: "pin_the_prey",
+        name: "Pin the Prey",
+        class: "hunter",
+        unlock: 25,
+        description: "Snare that keeps working: it loses its turn AND bleeds while it tries to get up. A capture starts like this.",
+        upgrades: Some("snare"),
+        rank: "Master Hunter",
     },
     // ---- Psyker: Foci persist and fire every turn ----
     SkillDef {
@@ -180,6 +213,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "psyker",
         unlock: 1,
         description: "A Focus that crushes one foe every turn, ignoring armour. Holds it in place for a Phoenix Guard's Kinetic Shock.",
+        upgrades: None,
         rank: "Initiate",
     },
     SkillDef {
@@ -188,6 +222,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "psyker",
         unlock: 1,
         description: "A Focus that plates an ally in Barrier — temporary HP that absorbs damage before their own.",
+        upgrades: None,
         rank: "Initiate",
     },
     SkillDef {
@@ -196,6 +231,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "psyker",
         unlock: 9,
         description: "A stronger damage Focus. Costs a Focus slot, like every manifestation.",
+        upgrades: None,
         rank: "Tracer",
     },
     SkillDef {
@@ -204,6 +240,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "psyker",
         unlock: 16,
         description: "A Focus that drains a foe's ATB gauge every turn. It acts, and acts, and never gets there.",
+        upgrades: None,
         rank: "Field Marshal",
     },
     // ---- Resonant: a caster, so its ladder runs the whole way. It has no order and
@@ -214,6 +251,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 1,
         description: "Heal an ally with your own HP. The only heal that costs you something.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -222,6 +260,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 4,
         description: "Grant an ally Regen: HP back at the start of each of their turns.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -230,6 +269,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 9,
         description: "Grant an ally Barrier. Cheaper than healing the damage afterwards.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -238,6 +278,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 16,
         description: "A little healing for everyone still standing. Costs you a little for each.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -246,6 +287,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 25,
         description: "Regen for the whole party. Lay it down before the fight turns.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -254,6 +296,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 36,
         description: "A serious heal on one ally — enough to bring someone back from the edge.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -262,6 +305,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 49,
         description: "Heal the party and leave Regen behind, so the mending keeps going.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -270,6 +314,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 64,
         description: "Bind an ally to you: a heavy heal, Regen and Barrier at once, paid in your own blood.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -278,6 +323,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 81,
         description: "Give almost everything you have left to the party. They will need it more than you.",
+        upgrades: None,
         rank: "",
     },
     SkillDef {
@@ -286,6 +332,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 100,
         description: "Everyone whole, warded and mending. The fight starts again from here.",
+        upgrades: None,
         rank: "",
     },
     // ---- Shifter: martial. Three tricks, learned early, then it lives on daggers
@@ -297,6 +344,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "shifter",
         unlock: 1,
         description: "A strike that pierces most armour. Devastating on a Snared foe.",
+        upgrades: None,
         rank: "Flicker Foot",
     },
     SkillDef {
@@ -305,6 +353,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "shifter",
         unlock: 4,
         description: "Blink out of the way: self Evasion, which decays each turn.",
+        upgrades: None,
         rank: "Shift Rat",
     },
     SkillDef {
@@ -313,7 +362,26 @@ pub const SKILLS: &[SkillDef] = &[
         class: "shifter",
         unlock: 9,
         description: "Damage a foe and rob it of its tempo (ATB gauge). Sets up a Power Strike.",
+        upgrades: None,
         rank: "Shift Rat",
+    },
+    SkillDef {
+        key: "steal",
+        name: "Steal",
+        class: "shifter",
+        unlock: 4,
+        description: "Take what it was about to do: strip the foe's ATB gauge and keep the tempo for yourself. Finders, keepers.",
+        upgrades: None,
+        rank: "Shift Rat",
+    },
+    SkillDef {
+        key: "mug",
+        name: "Mug",
+        class: "shifter",
+        unlock: 25,
+        description: "Steal, but you hit it on the way past. Same theft, and it bleeds for it.",
+        upgrades: Some("steal"),
+        rank: "Void-Dancer",
     },
     // ---- Phoenix Guard: the Last City's anti-undead order (docs/lore/factions.md).
     // The ladder IS their rank ladder — Initiate 1, Purifier 2, Exemplar 5,
@@ -324,6 +392,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 1,
         description: "Standard-issue silvered steel, swung to stagger. Bites far deeper into undead. Primes a foe for a Frenzy.",
+        upgrades: None,
         rank: "Initiate",
     },
     SkillDef {
@@ -332,6 +401,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 4,
         description: "Set your feet and speak the rite: a Barrier sized off your own max HP. Nobody gets turned behind you.",
+        upgrades: None,
         rank: "Purifier",
     },
     SkillDef {
@@ -340,6 +410,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 9,
         description: "Advanced anti-undead discipline: a heavy condemnation that zeroes the foe's gauge outright. It loses its turn, not part of it.",
+        upgrades: None,
         rank: "Exemplar",
     },
     SkillDef {
@@ -348,6 +419,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 16,
         description: "Light on EVERY enemy at once — the answer to a pack, and to a rite. Undead burn worst.",
+        upgrades: None,
         rank: "Luminary",
     },
     SkillDef {
@@ -356,6 +428,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 25,
         description: "Barrier for the WHOLE party. No one is left behind to be turned.",
+        upgrades: None,
         rank: "Redeemer",
     },
     SkillDef {
@@ -364,6 +437,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 36,
         description: "All strikes must be completed to the point of eradication: the more hurt the foe, the harder this lands. Undead do not get back up.",
+        upgrades: None,
         rank: "Apotheosis",
     },
 ];
@@ -464,9 +538,33 @@ pub fn skill_owner(skill: &str) -> Option<&'static str> {
     self::skill(skill).map(|s| s.class)
 }
 
-/// A class's kit, in registry (level) order.
+/// A class's whole kit, including superseded versions. Callers showing a menu want
+/// [`skills_for_class_at`] instead.
 pub fn skills_for_class(class: &str) -> Vec<&'static SkillDef> {
     SKILLS.iter().filter(|s| s.class == class).collect()
+}
+
+/// What a hero of `class` at `level` can actually do: unlocked abilities, with any
+/// ability that has been SUPERSEDED dropped. A Shifter with Mug does not also carry
+/// Steal — the row improved, it did not multiply.
+pub fn skills_for_class_at(class: &str, level: i32) -> Vec<&'static SkillDef> {
+    let owned: Vec<&SkillDef> =
+        SKILLS.iter().filter(|s| s.class == class && level >= s.unlock).collect();
+    let superseded: Vec<&str> = owned.iter().filter_map(|s| s.upgrades).collect();
+    owned.into_iter().filter(|s| !superseded.contains(&s.key)).collect()
+}
+
+/// The chain an ability belongs to, base first — for a tooltip that wants to say
+/// what this grew out of.
+pub fn upgrade_chain(key: &str) -> Vec<&'static SkillDef> {
+    let mut chain = Vec::new();
+    let mut cur = skill(key);
+    while let Some(d) = cur {
+        chain.push(d);
+        cur = d.upgrades.and_then(skill);
+    }
+    chain.reverse();
+    chain
 }
 
 /// The level at which `skill` unlocks. Returns 1 for always-available actions
@@ -591,6 +689,53 @@ mod tests {
         assert!(!is_hero_skill("toll_of_the_deep"));
         assert_eq!(skill_owner("backstab"), Some("shifter"));
         assert_eq!(skill_owner("nope"), None);
+    }
+
+
+    #[test]
+    fn an_upgrade_replaces_its_base_rather_than_joining_it() {
+        // A Shifter at 4 has Steal. At 25 it has Mug INSTEAD — the martial answer to
+        // progression is a better row, not a fifth button.
+        let early: Vec<&str> = skills_for_class_at("shifter", 4).iter().map(|s| s.key).collect();
+        assert!(early.contains(&"steal"), "{early:?}");
+        assert!(!early.contains(&"mug"), "{early:?}");
+
+        let late: Vec<&str> = skills_for_class_at("shifter", 25).iter().map(|s| s.key).collect();
+        assert!(late.contains(&"mug"), "{late:?}");
+        assert!(!late.contains(&"steal"), "Steal survived its own upgrade: {late:?}");
+
+        // So the menu does not grow: same row count, better rows.
+        assert_eq!(
+            skills_for_class_at("shifter", 9).len(),
+            skills_for_class_at("shifter", 25).len(),
+            "the Shifter's menu grew instead of improving"
+        );
+
+        // The Hunter upgrades twice and still fields four rows.
+        let hunter: Vec<&str> = skills_for_class_at("hunter", 25).iter().map(|s| s.key).collect();
+        assert!(hunter.contains(&"crushing_blow") && hunter.contains(&"pin_the_prey"), "{hunter:?}");
+        assert!(!hunter.contains(&"power_strike") && !hunter.contains(&"snare"), "{hunter:?}");
+        assert_eq!(hunter.len(), 4, "{hunter:?}");
+    }
+
+    #[test]
+    fn an_upgrade_chain_is_well_formed() {
+        for s in SKILLS {
+            let Some(base) = s.upgrades else { continue };
+            let b = skill(base).unwrap_or_else(|| panic!("{} upgrades unknown {base}", s.key));
+            assert_eq!(b.class, s.class, "{} upgrades another class's ability", s.key);
+            assert!(
+                b.unlock < s.unlock,
+                "{} unlocks at or before the {base} it replaces",
+                s.key
+            );
+            // The chain reads base-first, so a tooltip can say where it came from.
+            let chain: Vec<&str> = upgrade_chain(s.key).iter().map(|d| d.key).collect();
+            assert_eq!(chain.first(), Some(&base));
+            assert_eq!(chain.last(), Some(&s.key));
+        }
+        assert_eq!(upgrade_chain("mug").len(), 2);
+        assert_eq!(upgrade_chain("backstab").len(), 1, "an unchained ability is its own chain");
     }
 
     #[test]

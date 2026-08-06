@@ -156,10 +156,7 @@ pub(crate) fn column_len(
             heroes
                 .get(menu.member)
                 .map(|h| {
-                    meld_proto::skills::skills_for_class(&h.class_key)
-                        .into_iter()
-                        .filter(|d| h.level >= d.unlock)
-                        .count()
+                    meld_proto::skills::skills_for_class_at(&h.class_key, h.level).len()
                 })
                 .unwrap_or(0)
         }
@@ -482,10 +479,10 @@ pub(crate) fn render_main_menu(
                         col.spawn(glass::divider());
                         // ONLY what the hero has. What comes later, and what it takes,
                         // is theirs to discover.
-                        let owned: Vec<_> = meld_proto::skills::skills_for_class(&hero.class_key)
-                            .into_iter()
-                            .filter(|d| hero.level >= d.unlock)
-                            .collect();
+                        let owned = meld_proto::skills::skills_for_class_at(
+                            &hero.class_key,
+                            hero.level,
+                        );
                         if owned.is_empty() {
                             col.spawn(glass::text("(none yet)", 16.0, glass::DIM));
                         }

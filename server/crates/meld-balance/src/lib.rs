@@ -186,6 +186,12 @@ pub struct Battle {
     pub resonant_bloom_fraction: f64,
     pub resonant_bloom_barrier_fraction: f64,
     pub resonant_bloom_self_cost: f64,
+    pub shifter_steal_drain: f64,
+    pub shifter_mug_mult: f64,
+    pub shifter_mug_drain: f64,
+    pub hunter_crushing_blow_mult: f64,
+    pub pin_the_prey_mult: f64,
+    pub pin_the_prey_drain: f64,
     // Monster-ability system (Creature AI spec §2).
     /// ATB fill multiplier while a slowing status (web/chill/bind/…) is active.
     pub status_slow_mult: f64,
