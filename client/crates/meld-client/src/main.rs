@@ -171,6 +171,7 @@ fn main() {
         .init_resource::<PartyRoster>()
         .init_resource::<PerksRes>()
         .init_resource::<LevelUpQueue>()
+        .init_resource::<UnlocksRes>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
         .init_resource::<Steer>()
@@ -349,6 +350,7 @@ fn main() {
                 withdraw_click,
                 render_loot_report,
                 level_up_screen,
+                unlock_banner,
                 build_world_walls,
                 sync_chests,
                 auto_open_chest,
@@ -760,6 +762,12 @@ struct PartyRoster {
     /// system the player cannot see is a build system they will never plan around.
     synergies: Vec<meld_client::net::DepthLine>,
     combos: Vec<meld_client::net::DepthLine>,
+    /// CL-1: the roster this account is working TOWARD — `(name, how to earn it)`
+    /// per still-locked unlock, and how many party slots are open. Lives on the
+    /// roster rather than its own overlay param because the party screen is the
+    /// only place that shows it, and `render_overlay` is at Bevy's param ceiling.
+    locked: Vec<(String, String)>,
+    party_slots: i32,
 }
 
 /// The caller's earned overworld class perks ("party sense"), from `run.perks`.
@@ -792,6 +800,33 @@ struct LevelUpQueue {
 /// Marker for the immediate-mode level-up screen root.
 #[derive(Component)]
 struct LevelUpRoot;
+
+/// CL-1: what the account owns, plus a queue of unlocks still to announce.
+/// `owned` is the server's full set on every message, so the client never has to
+/// accumulate deltas to know what it can field.
+#[derive(Resource, Default)]
+struct UnlocksRes {
+    owned: Vec<String>,
+    party_slots: i32,
+    pending: std::collections::VecDeque<meld_client::net::UnlockLine>,
+    current: Option<meld_client::net::UnlockLine>,
+    elapsed: f32,
+    /// Offline demo/screenshot: hold the banner until [Space] instead of letting it
+    /// time out, the same way the level-up screen does.
+    hold: bool,
+}
+
+/// Marker for the immediate-mode unlock-banner root.
+#[derive(Component)]
+struct UnlockBannerRoot;
+
+/// The two "announce this to the player" queues, bundled: `pump_net` is already at
+/// Bevy's system-param ceiling, and these two always travel together anyway.
+#[derive(bevy::ecs::system::SystemParam)]
+struct Announce<'w> {
+    levelup: ResMut<'w, LevelUpQueue>,
+    unlocks: ResMut<'w, UnlocksRes>,
+}
 
 /// Marker for spawned path-trail dots (despawned when the path changes).
 #[derive(Component)]

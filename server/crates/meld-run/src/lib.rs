@@ -593,7 +593,9 @@ pub fn build_battle(
         .iter()
         .map(|(m, _)| match m.encounter_class.as_str() {
             "gatekeeper" => EncounterClass::Gatekeeper,
-            "elite" => EncounterClass::Elite,
+            // The undead rite is champion-tier: reporting it as Standard would let
+            // it be fled like trash and read as trash on the wire.
+            "elite" | "undead_rite" => EncounterClass::Elite,
             _ => EncounterClass::Standard,
         })
         .max_by_key(|c| match c {

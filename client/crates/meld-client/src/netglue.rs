@@ -84,7 +84,7 @@ pub(crate) fn pump_net(
         ResMut<ShopData>,
     ),
     mut roster: ResMut<PartyRoster>,
-    mut levelup: ResMut<LevelUpQueue>,
+    mut announce: Announce,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -107,10 +107,21 @@ pub(crate) fn pump_net(
                 }
             }
             ServerMsg::Perks { perks: p } => perks.0 = p,
+            ServerMsg::Unlocked { newly, owned, party_slots, banner } => {
+                // `owned` is the server's full set every time, so this is a
+                // replace, never a merge.
+                roster.locked = crate::overlays::locked_roster_lines(&owned);
+                roster.party_slots = party_slots;
+                announce.unlocks.owned = owned;
+                announce.unlocks.party_slots = party_slots;
+                if banner {
+                    announce.unlocks.pending.extend(newly);
+                }
+            }
             ServerMsg::LevelUp { new_run_level, heroes, .. } => {
                 // Enqueue each leveled hero for the old-school stat screen.
-                levelup.run_level = new_run_level;
-                levelup.pending.extend(heroes);
+                announce.levelup.run_level = new_run_level;
+                announce.levelup.pending.extend(heroes);
             }
             ServerMsg::WorldPath { points } => {
                 world_path.points = points.iter().map(|(x, y)| (*x as f32, *y as f32)).collect();

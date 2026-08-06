@@ -295,6 +295,19 @@ pub struct SkillLine {
     pub xp: i64,
 }
 
+/// One unlock, as the banner and the locked party-builder row need it.
+#[derive(Debug, Clone)]
+pub struct UnlockLine {
+    pub key: String,
+    pub name: String,
+    /// `party_slot` or `class`.
+    pub kind: String,
+    pub class_key: Option<String>,
+    pub slot: Option<i32>,
+    pub trigger_text: String,
+    pub banner: String,
+}
+
 /// One hero's stat gains for the classic "LEVEL UP!" screen (before, after).
 #[derive(Clone)]
 pub struct HeroLevelUpLine {
@@ -379,6 +392,13 @@ pub enum ServerMsg {
     },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
     Perks { perks: PerksLine },
+    /// CL-1: what the account owns, plus anything just earned to announce.
+    Unlocked {
+        newly: Vec<UnlockLine>,
+        owned: Vec<String>,
+        party_slots: i32,
+        banner: bool,
+    },
     /// The party gained a level — play the classic stat-gain screen.
     LevelUp {
         new_run_level: i32,
@@ -1442,6 +1462,35 @@ impl Inner {
                     phoenix_guard_aggro_mult: p["phoenix_guard_aggro_mult"].as_f64().unwrap_or(1.0) as f32,
                 };
                 self.out.push_back(ServerMsg::Perks { perks });
+            }
+            "run.unlocked" => {
+                let newly = raw.payload["unlocks"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|u| UnlockLine {
+                                key: u["key"].as_str().unwrap_or_default().to_string(),
+                                name: u["name"].as_str().unwrap_or("Unlocked").to_string(),
+                                kind: u["kind"].as_str().unwrap_or("class").to_string(),
+                                class_key: u["class_key"].as_str().map(str::to_string),
+                                slot: u["slot"].as_i64().map(|n| n as i32),
+                                trigger_text: u["trigger_text"].as_str().unwrap_or_default().to_string(),
+                                banner: u["banner"].as_str().unwrap_or_default().to_string(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::Unlocked {
+                    newly,
+                    owned: raw.payload["owned"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter().filter_map(|v| v.as_str()).map(str::to_string).collect()
+                        })
+                        .unwrap_or_default(),
+                    party_slots: raw.payload["party_slots"].as_i64().unwrap_or(1) as i32,
+                    banner: raw.payload["banner"].as_bool().unwrap_or(false),
+                });
             }
             "run.level_up" => {
                 let pair = |h: &Value, key: &str| {

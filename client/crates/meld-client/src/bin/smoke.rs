@@ -114,6 +114,7 @@ fn main() {
                 | ServerMsg::Party { .. }
                 | ServerMsg::Perks { .. }
                 | ServerMsg::LevelUp { .. }
+                | ServerMsg::Unlocked { .. }
                 | ServerMsg::WorldPath { .. }
                 | ServerMsg::WorldWeb { .. }
                 | ServerMsg::TerrainSection { .. }

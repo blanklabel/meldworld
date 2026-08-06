@@ -318,9 +318,25 @@ burns on death/leave; some is single-use. See
     surviving the undead rite. Key is `phoenix_guard` everywhere (wire, balance,
     sprites); `iron_hull` stays a serde alias so heroes persisted under the old key
     keep their class rather than silently falling back.
-  - **Remains:** the unlock registry + party-slot/class gating + banners (`CL-1`),
-    the ability ladder and tooltips, the Explorer/Shifter role swap, and the
-    frosted-glass menu pass.
+  - *Also shipped:* the **unlock system** (`CL-1`). `meld_proto::unlocks` is the
+    registry both sides read — eight unlocks, each carrying its trigger, the line a
+    locked party-builder row shows, and the line its banner shows. A new account
+    starts with ONE slot and the Explorer; slots open at 1×L10 / 2×L20 / 3×L30
+    (counted *simultaneously* in a dive), and the four earned classes each wait on
+    the slot that seats them. `WorldEffect::Milestone` reports the fact, the Router
+    grants it against the session's in-memory set (so a milestone fired every tick
+    still only grants once), `DbWrite::Unlocks` persists it off the tick, and
+    `run.enter_maze` CLAMPS a requested party to what the account owns rather than
+    rejecting it. Client: a `run.unlocked` banner in the house style and a "Still to
+    earn" block on the party screen.
+  - *Also shipped:* **one menu look** — `meld_client::glass`, the single definition
+    of the frosted-glass menu surface (fill, edge, radius, scrim, selected/hover),
+    replacing sixteen hand-rolled panel colours across five files. Every menu now
+    imports it: inventory/equip/status, the battle command cross, the level-up
+    screen, the unlock banner, the city title + Apothecary shelf, Join and Lobby,
+    and the overworld HUD. Selection is one gold wash everywhere.
+  - **Remains:** the ability ladder and tooltips, and the Explorer/Shifter role
+    swap.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

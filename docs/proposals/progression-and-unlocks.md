@@ -107,8 +107,10 @@ and stay dismissable — a banner that traps a player is worse than no banner.
 
 ## Build order
 
-1. **Foundation** — polynomial XP curve to 255; persistent per-hero XP/levels; the unlock
-   registry + persistence; slot/class gating enforced server-side; unlock banners.
+1. **Foundation** ✅ — the fights-per-level XP curve to 255; per-hero levels inside the
+   run; the unlock registry (`meld_proto::unlocks`) + the `unlocks` table; slot/class
+   gating enforced server-side (`run.enter_maze` clamps rather than rejects); unlock
+   banners.
 2. **Abilities** — the ladder to 255 (new abilities + ranks) and the descriptions, in both
    surfaces.
 3. **Class roles** — the Explorer/Shifter perk swap and the Shifter's dungeon senses.
@@ -116,7 +118,9 @@ and stay dismissable — a banner that traps a player is worse than no banner.
    rite**, a boss with four undead minions, built on `CR-7`'s pack machinery. Bosses
    carry their own faction (so an undead boss is undead wherever it is met), gain a
    deep-gated ability past level 45, and wear a palette band that darkens with depth.
-5. **Presentation** — frosted glass, dismissable menus.
+5. **Presentation** ✅ (menus) — `meld_client::glass` is the one definition of the
+   frosted-glass menu surface, imported by every menu; banners dismiss on
+   [Space]/[Enter]/[Esc] and time out on their own.
 
 Onboarding (`P1-3`) sits on top of all five and is deliberately **not** part of this
 proposal: it can only teach a first hour that exists.

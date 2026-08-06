@@ -17,7 +17,7 @@ use bcrypt::{hash, verify};
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -294,6 +294,21 @@ impl Db {
                 class_key TEXT NOT NULL,
                 best_level INTEGER NOT NULL,
                 PRIMARY KEY (player_id, class_key)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        // Account-permanent unlocks (roadmap CL-1): the party slots and classes a
+        // player has EARNED. Additive-only and never deleted — an unlock is a
+        // promise, so there is deliberately no revoke path.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS unlocks (
+                player_id UUID NOT NULL REFERENCES players(player_id),
+                unlock_key TEXT NOT NULL,
+                unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (player_id, unlock_key)
             )
             "#,
         )
@@ -637,6 +652,72 @@ impl Db {
                 .collect(),
         };
         rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(rows)
+    }
+
+    /// Grant unlocks, returning the keys that were actually NEW. Idempotent: a
+    /// milestone reported twice grants nothing the second time, which is what lets
+    /// the game loop fire it freely without tracking whether it already has.
+    pub async fn grant_unlocks(
+        &self,
+        player_id: Uuid,
+        keys: &[String],
+    ) -> Result<Vec<String>, DbError> {
+        let mut granted = Vec::new();
+        for key in keys.iter().filter(|k| !k.is_empty()) {
+            let is_new = match &self.backend {
+                Backend::Pg(pool) => {
+                    sqlx::query(
+                        "INSERT INTO unlocks (player_id, unlock_key) VALUES ($1, $2)
+                         ON CONFLICT (player_id, unlock_key) DO NOTHING",
+                    )
+                    .bind(player_id)
+                    .bind(key)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+                        > 0
+                }
+                Backend::Mem(m) => {
+                    m.lock().unwrap().unlocks.insert((player_id, key.clone()))
+                }
+            };
+            if is_new {
+                granted.push(key.clone());
+            }
+        }
+        Ok(granted)
+    }
+
+    /// Everything an account owns. A player with no rows at all still has the
+    /// starting set: the registry's `Start` unlocks are implicit, so an account
+    /// created before unlocks existed is not locked out of its own Explorer.
+    pub async fn get_unlocks(&self, player_id: Uuid) -> Result<Vec<String>, DbError> {
+        let mut rows = match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("SELECT unlock_key FROM unlocks WHERE player_id = $1")
+                    .bind(player_id)
+                    .fetch_all(pool)
+                    .await?
+                    .iter()
+                    .map(|r| r.get::<String, _>("unlock_key"))
+                    .collect::<Vec<_>>()
+            }
+            Backend::Mem(m) => m
+                .lock()
+                .unwrap()
+                .unlocks
+                .iter()
+                .filter(|(p, _)| *p == player_id)
+                .map(|(_, k)| k.clone())
+                .collect(),
+        };
+        for k in meld_proto::unlocks::starting_unlocks() {
+            if !rows.iter().any(|r| r == k) {
+                rows.push(k.to_string());
+            }
+        }
+        rows.sort();
         Ok(rows)
     }
 
@@ -2514,6 +2595,8 @@ struct Mem {
     hero_classes: HashMap<(Uuid, i16), String>,
     /// class_bests.best_level, keyed by (player_id, class_key).
     class_bests: HashMap<(Uuid, String), i32>,
+    /// unlocks: the (player, unlock_key) pairs an account owns.
+    unlocks: HashSet<(Uuid, String)>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
 }
@@ -3319,6 +3402,35 @@ mod tests {
         assert!(!db.record_class_best(p, "explorer", 0).await.unwrap());
         assert!(!db.record_class_best(p, "", 40).await.unwrap());
         assert_eq!(db.get_class_bests(p).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unlocks_are_permanent_idempotent_and_start_with_the_explorer() {
+        let db = mem().await;
+        let p = db.register("orla", "pw").await.unwrap().player_id;
+        // A brand-new account owns the starting set even with no rows written —
+        // an account made before unlocks existed must not be locked out.
+        assert_eq!(db.get_unlocks(p).await.unwrap(), vec!["class_explorer".to_string()]);
+
+        let granted = db
+            .grant_unlocks(p, &["party_slot_2".to_string(), "class_resonant".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(granted, vec!["party_slot_2", "class_resonant"]);
+        // Re-granting the same milestone gives nothing, so the loop can fire it
+        // freely without remembering whether it already did.
+        assert!(db
+            .grant_unlocks(p, &["party_slot_2".to_string(), "class_resonant".to_string()])
+            .await
+            .unwrap()
+            .is_empty());
+        let owned = db.get_unlocks(p).await.unwrap();
+        assert_eq!(owned, vec!["class_explorer", "class_resonant", "party_slot_2"]);
+        assert_eq!(meld_proto::unlocks::party_slots(&owned), 2);
+
+        // And they are per account: another player's night is not yours.
+        let q = db.register("bel", "pw").await.unwrap().player_id;
+        assert_eq!(db.get_unlocks(q).await.unwrap(), vec!["class_explorer".to_string()]);
     }
 }
 

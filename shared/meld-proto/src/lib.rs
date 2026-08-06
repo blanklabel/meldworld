@@ -29,6 +29,7 @@ pub mod realtime;
 pub mod skills;
 pub mod synergies;
 pub mod terrain;
+pub mod unlocks;
 pub mod uniques;
 
 pub use enums::*;
