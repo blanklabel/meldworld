@@ -68,6 +68,27 @@ impl<'a> Scaling<'a> {
         base.powf(self.b.world_scaling.stat_mult_exp)
     }
 
+    /// Creature HEALTH: `1 + hp_per_tier * tier(d)` — linear in the same `tier(d)`
+    /// that gear power is linear in.
+    ///
+    /// Every creature stat is scaled against the hero stat that opposes it, and they
+    /// do not share a curve because they are not opposed by the same thing:
+    ///
+    /// - **HP** is opposed by the party's DAMAGE, which is dominated by gear
+    ///   (`gear_atk_per_tier` x 7 slots ~= 21 x tier — linear in tier). So HP is linear
+    ///   in tier too, and the rounds-per-fight ratio holds at every depth by
+    ///   construction rather than by tuning.
+    /// - **Attack** is opposed by hero HP and defence, which grow with LEVEL. That is
+    ///   [`Self::stat_mult`], still exponential in distance.
+    /// - **Armour** is opposed by hero attack, gently — [`Self::def_mult`].
+    ///
+    /// Before this split, HP rode `stat_mult` while gear rode tier: different shapes,
+    /// so no exponent could make them track, and a geared hero one-shot ordinary
+    /// creatures at every distance while an ungeared one did fine.
+    pub fn hp_mult(&self, d: i64) -> f64 {
+        1.0 + self.b.world_scaling.hp_per_tier * self.tier(d) as f64
+    }
+
     /// Armour's own curve: `(1 + d/500)^def_mult_exp`, deliberately gentler than
     /// [`Self::stat_mult`]. Defence SUBTRACTS from damage instead of scaling it, so
     /// armour that grew as fast as HP would floor every physical hit at `min_damage`
@@ -1100,8 +1121,8 @@ impl MonsterSpawn {
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
             flees: stats.flees,
-            hp: ((stats.base_hp as f64) * mult).round() as i32,
-            max_hp: ((stats.base_hp as f64) * mult).round() as i32,
+            hp: ((stats.base_hp as f64) * scaling.hp_mult(d)).round() as i32,
+            max_hp: ((stats.base_hp as f64) * scaling.hp_mult(d)).round() as i32,
             atk: ((stats.base_atk as f64) * mult).round() as i32,
             def: ((stats.base_def as f64) * scaling.def_mult(d)).round() as i32,
             speed_stat: stats.speed_stat,

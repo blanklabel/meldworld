@@ -335,27 +335,22 @@ elite_hp_mult = 2.4              # Elite HP vs a standard creature at the same d
 elite_atk_mult = 1.35
 elite_xp_mult = 3.0
 elite_loot_mult = 3.0            # chits ×, and boosts the gear-drop chance
-gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the party over a merge
+gatekeeper_hp_mult = 10.0         # a wall of HP — a real fight, sized to the party over a merge
 gatekeeper_atk_mult = 1.6
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
-# A boss is measured in TIME, not in a health multiplier.
+# A boss is a multiple of an ordinary creature's health — and now that health rides
+# the same `tier(d)` basis gear power does, a fixed multiple actually HOLDS a fight
+# length instead of drifting.
 #
-# A multiplier cannot hold a fight length: party damage scales with gear (linear in
-# distance) while creature HP scales with `stat_mult` (a different curve), so any
-# fixed multiple drifts. Measured at the old 7.5x, a geared party of four beat a
-# gatekeeper in 14-67 seconds depending on depth — nowhere near a boss fight.
+# Sized so a party geared for that depth spends roughly 45 rounds (~3.6 minutes of
+# pure attacking, past five once a third of turns go to healing and reviving).
 #
-# So a boss's HP is derived at battle assembly from what the party facing it can
-# actually put out: enough for `boss_target_rounds` rounds of full-damage attacking.
-# The rest of the five minutes comes from the turns a party spends NOT attacking —
-# healing, reviving, re-warding — which is what the lethality curve now forces.
-# A boss is never made WEAKER than its own stat line.
-#
-# 45 rounds x 4.8s per round is 3.6 minutes of pure attacking; once roughly a third
-# of the party's turns go to healing, reviving and re-warding — which the lethality
-# curve now forces — that lands past the five-minute mark. [TUNABLE]
-boss_target_rounds = 45
+# Deliberately NOT derived from the party in front of it. Deriving it would guarantee
+# the five minutes, but it would also mean a boss never dies faster no matter how
+# over-levelled or over-geared you are — and stomping something you have genuinely
+# outgrown is the reward the whole gear chase is for. A party carrying tier-40 gear
+# into a tier-10 boss should walk through it, and with a fixed multiple they do.
 # The undead rite (a risen boss + its dead) is harder than an elite and short of a
 # gatekeeper, so it pays between them. Without its own entry it fell through to the
 # standard 1.0 and paid trash loot for the hardest fight most players will meet.
@@ -541,6 +536,19 @@ damage_floor_fraction = 0.25
 tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
+# HP rides the SAME basis gear power does — `tier(d)` — so the two cannot drift.
+#
+# Gear attack is linear in tier (`gear_atk_per_tier` x 7 slots ~= 21 x tier), while
+# every exponential curve either undershoots early or explodes late. Putting creature
+# HP on `1 + hp_per_tier x tier` makes the ratio of party damage to creature health
+# constant BY CONSTRUCTION: a correctly geared party spends roughly the same number of
+# rounds per fight at every depth, and an under-geared one does not.
+#
+# This is the CANON §B change: `stat_mult` no longer drives HP. It still drives
+# ATTACK, because attack is opposed by hero HP and defence, which grow with LEVEL —
+# a different thing, wanting a different curve. [TUNABLE]
+hp_per_tier = 5.4
+
 # MELDWORLD is meant to kill you until you have the right gear. At the old 1.25 an
 # ungeared level-25 hero needed 42 hits to die at distance 1000 and 14 at 2000 —
 # the tutorial-easy phase never ended, so nothing ever made you want to come back

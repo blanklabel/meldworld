@@ -578,43 +578,6 @@ fn is_boss_tier(m: &meld_world::MonsterSpawn) -> bool {
         || matches!(m.encounter_class.as_str(), "gatekeeper" | "undead_rite")
 }
 
-/// The HP a boss needs so that a party attacking flat out spends
-/// `[encounters] boss_target_rounds` rounds killing it.
-///
-/// Derived from the party in front of it rather than from a multiplier, because
-/// party damage scales with gear (roughly linear in distance) while creature HP
-/// scales with `stat_mult` (a different curve) — any fixed multiple drifts, and
-/// measured at the old 7.5x a geared party beat a gatekeeper in 14-67 seconds.
-/// Returns 0 when the encounter holds no boss, which leaves ordinary creatures alone.
-fn boss_hp_for_target_rounds(
-    allies: &[Fighter],
-    enemies: &[EnemyMember],
-    balance: &Balance,
-) -> i32 {
-    if !enemies.iter().any(|(m, _)| is_boss_tier(m)) {
-        return 0;
-    }
-    let armour = enemies
-        .iter()
-        .filter(|(m, _)| is_boss_tier(m))
-        .map(|(m, _)| m.def)
-        .max()
-        .unwrap_or(0);
-    // What the party puts out in one round, at the multiplier of a routine heavy hit.
-    let per_round: i64 = allies
-        .iter()
-        .map(|f| {
-            let scaled = (f.atk as f64 * balance.battle.skill_power_mult).round() as i32;
-            let floored = ((scaled - armour) as f64)
-                .max(scaled as f64 * balance.combat_math.damage_floor_fraction)
-                .round() as i32;
-            floored.max(balance.combat_math.min_damage) as i64
-        })
-        .sum();
-    (per_round * balance.encounters.boss_target_rounds.max(1.0) as i64)
-        .clamp(0, i32::MAX as i64) as i32
-}
-
 pub fn build_battle(
     battle_id: Id,
     party: &[PartyMember],
@@ -634,11 +597,6 @@ pub fn build_battle(
     // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
     // the intended way — quick solo fights early, long ones once the party is full.
     let party_scale = encounter_party_scale(allies.len(), balance);
-    // A BOSS is measured in time, not in a health multiplier. Party damage scales
-    // with gear and creature HP with distance — different curves, so a fixed multiple
-    // drifts into 14-second "boss" fights. Size it here instead, where what the party
-    // can actually put out is known.
-    let boss_floor_hp = boss_hp_for_target_rounds(&allies, enemies, balance);
     for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
         if let Some(h) = hp {
             f.hp = (*h).clamp(0, f.max_hp);
@@ -670,16 +628,7 @@ pub fn build_battle(
                 None,
                 Some(name),
                 m.level,
-                {
-                    let scaled = ((m.hp as f64) * party_scale).round() as i32;
-                    // Only a BOSS gets the time budget, and only ever upward: a boss
-                    // is never made weaker than its own stat line.
-                    if is_boss_tier(m) {
-                        scaled.max(boss_floor_hp)
-                    } else {
-                        scaled
-                    }
-                },
+                ((m.hp as f64) * party_scale).round() as i32,
                 ((m.atk as f64) * party_scale).round() as i32,
                 m.def,
                 m.speed_stat,
@@ -1404,7 +1353,7 @@ mod tests {
 
 
     #[test]
-    fn a_boss_is_measured_in_minutes_and_an_ordinary_creature_is_not() {
+    fn outgrowing_a_fight_lets_you_stomp_it() {
         let b = Balance::load_default().unwrap();
         let party_of = |gear: i32| -> Vec<PartyMember> {
             (0..4)
@@ -1429,11 +1378,14 @@ mod tests {
         };
         let rounds = |gear: i32, boss: bool, d: i64| -> f64 {
             let party = party_of(gear);
-            let m = if boss {
-                meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "choirmother", d, 7)
-            } else {
-                meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "", d, 7)
-            };
+            let m = meld_world::MonsterSpawn::dungeon_boss(
+                &b,
+                "m".into(),
+                "forest",
+                if boss { "choirmother" } else { "" },
+                d,
+                7,
+            );
             let battle = build_battle(
                 "b".into(),
                 &party,
@@ -1449,24 +1401,30 @@ mod tests {
             let per = (f.atk as f64 * b.battle.skill_power_mult).round().max(1.0) * 4.0;
             (hp / per).ceil()
         };
-        // A boss lasts long enough to BE a boss, at any gear level — that is the whole
-        // point of sizing it off the party instead of off a multiplier.
-        for gear in [0i32, 210, 840] {
-            let r = rounds(gear, true, 1000);
-            assert!(
-                r >= b.encounters.boss_target_rounds * 0.75,
-                "a boss fell in {r} rounds with {gear} gear attack"
-            );
-        }
-        // An ordinary creature is emphatically NOT a boss. Taken from a real arena,
-        // because `dungeon_boss` promotes whatever it builds to gatekeeper tier.
+        // Tier-appropriate gear for distance 1000 is about +210 attack; tier-40 gear
+        // is +840. Carrying the deep loadout into a shallow boss should STOMP it —
+        // that is the reward the whole gear chase pays out, and it is why boss health
+        // is a fixed multiple of the encounter rather than derived from the party.
+        let fair = rounds(210, true, 1000);
+        let overgeared = rounds(840, true, 1000);
+        assert!(
+            overgeared * 2.0 < fair,
+            "over-gearing barely helped: {overgeared} rounds vs {fair} at parity"
+        );
+        // And the under-geared party is punished at the same boss.
+        let bare = rounds(0, true, 1000);
+        assert!(bare > fair, "gear made no difference to a boss: {bare} vs {fair}");
+
+        // A boss is still a real fight at parity, and an ordinary creature is not.
+        assert!(fair >= 20.0, "a boss at parity folds in {fair} rounds");
+        // An ordinary creature is not a boss. Taken from a real arena, because
+        // `dungeon_boss` promotes whatever it builds to gatekeeper tier.
         let arena = meld_world::Arena::generate(&b, 7, false);
         let ordinary = arena
             .monsters
             .iter()
             .find(|m| m.encounter_class == "standard" && m.boss_kind.is_empty())
             .expect("a standard creature exists");
-        assert!(!is_boss_tier(ordinary), "a standard creature reads as boss-tier");
         let party = party_of(210);
         let battle = build_battle(
             "b".into(),
@@ -1482,8 +1440,8 @@ mod tests {
         let f = &party_fighters(&party, &runs, &b, &[])[0];
         let per = (f.atk as f64 * b.battle.skill_power_mult).round().max(1.0) * 4.0;
         assert!(
-            (hp / per).ceil() < b.encounters.boss_target_rounds * 0.5,
-            "an ordinary creature is being treated as a boss"
+            (hp / per).ceil() < fair / 4.0,
+            "an ordinary creature fights like a boss"
         );
     }
 
@@ -1517,4 +1475,6 @@ mod tests {
         // hero does not quadruple what you can haul out.
         assert!(cap(4) < cap(1) * 2, "a full party carries too much more than a solo");
     }
+
+
 }

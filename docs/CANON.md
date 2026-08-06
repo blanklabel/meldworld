@@ -235,3 +235,20 @@ A world stores only its **delta from the seed baseline**, event-sourced:
 - **Seasons are the GC:** at a season boundary worlds are archived / reset, bounding
   the event log. Account-tier state is **not** wiped (consistent with §B "Sessions &
   seasons").
+
+
+> **Amended (creature scaling).** `stat_mult(d)` no longer drives creature
+> **health**. Each creature stat is scaled against the hero stat that OPPOSES it,
+> and those do not share a curve:
+>
+> - **HP** is opposed by party *damage*, which is dominated by gear — and gear power
+>   is linear in `tier(d)` (`gear_atk_per_tier` x 7 slots). So HP is
+>   `1 + hp_per_tier x tier(d)`, linear in the same basis, and the rounds-per-fight
+>   ratio holds at every depth by construction rather than by tuning.
+> - **Attack** is opposed by hero HP and defence, which grow with *level*. That stays
+>   `stat_mult(d) = (1 + d/500)^stat_mult_exp`.
+> - **Armour** is opposed by hero attack, gently: `def_mult(d) = (1 + d/500)^0.7`.
+>
+> Before the split, HP rode `stat_mult` while gear rode `tier` — different shapes, so
+> no exponent could make them track. A geared hero one-shot ordinary creatures at
+> every distance while an ungeared one was fine.
