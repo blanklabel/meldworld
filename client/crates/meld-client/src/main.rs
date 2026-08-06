@@ -1621,17 +1621,23 @@ struct MenuEntry {
     /// Owned, because an item row carries its count ("Bloom Salve x2").
     label: String,
     action: EntryAction,
+    /// What this row DOES, shown under the menu while it is selected. Comes from
+    /// the shared registry, so the tooltip cannot drift from what the server
+    /// resolves. Empty for rows that need no explanation (Back, Flee).
+    tooltip: String,
 }
 
-/// Build skill menu rows from `(label, skill_kind)` pairs, keeping only those the
-/// hero has leveled into (per `meld_proto::skills`).
-fn skill_entries(skills: &[(&'static str, &'static str)], hero_level: i32) -> Vec<MenuEntry> {
-    skills
-        .iter()
-        .filter(|(_, kind)| meld_proto::skills::is_unlocked(kind, hero_level))
-        .map(|(label, kind)| MenuEntry {
-            label: (*label).to_string(),
-            action: EntryAction::Skill(kind),
+/// The class's kit as menu rows, keeping only what the hero has leveled into. Read
+/// straight from the shared registry: the name, the order, the unlock level and the
+/// tooltip are all one definition (`meld_proto::skills`).
+fn skill_entries(class: &str, hero_level: i32) -> Vec<MenuEntry> {
+    meld_proto::skills::skills_for_class(class)
+        .into_iter()
+        .filter(|d| hero_level >= d.unlock)
+        .map(|d| MenuEntry {
+            label: d.name.to_string(),
+            action: EntryAction::Skill(d.key),
+            tooltip: d.description.to_string(),
         })
         .collect()
 }
@@ -1649,7 +1655,11 @@ fn menu_entries(
     hero_level: i32,
     held: &[(String, i32)],
 ) -> Vec<MenuEntry> {
-    let e = |label: &str, action| MenuEntry { label: label.to_string(), action };
+    let e = |label: &str, action| MenuEntry {
+        label: label.to_string(),
+        action,
+        tooltip: String::new(),
+    };
     match level {
         MenuLevel::Root if class == "psyker" => vec![
             e("Focus", EntryAction::OpenManifest),
@@ -1668,57 +1678,11 @@ fn menu_entries(
             e("Flee", EntryAction::Flee),
         ],
         // Skills unlock as the hero levels; a locked one is simply hidden (the
-        // server would reject it anyway). Levels come from `meld_proto::skills`.
-        MenuLevel::Skills if class == "resonant" => {
-            let mut v = skill_entries(
-                &[
-                    ("Transfuse", "transfuse"),
-                    ("Regen Boon", "regen_boon"),
-                    ("Ward", "ward"),
-                ],
-                hero_level,
-            );
-            v.push(e("Back", EntryAction::Back));
-            v
-        }
-        MenuLevel::Skills if class == "shifter" => {
-            let mut v = skill_entries(
-                &[
-                    ("Backstab", "backstab"),
-                    ("Flicker", "flicker"),
-                    ("Ransack", "ransack"),
-                ],
-                hero_level,
-            );
-            v.push(e("Back", EntryAction::Back));
-            v
-        }
-        MenuLevel::Skills if class == "phoenix_guard" => {
-            let mut v = skill_entries(
-                &[
-                    ("Swell Strike", "swell_strike"),
-                    ("Root", "root"),
-                    ("Kinetic Shock", "kinetic_shock"),
-                    ("Toll of the Deep", "toll_of_the_deep"),
-                ],
-                hero_level,
-            );
-            v.push(e("Back", EntryAction::Back));
-            v
-        }
-        // Explorer (the martial baseline / default). Its skills spend banked Adrenaline;
-        // the row is shown once unlocked by level, and the server rejects it if the
-        // Explorer can't yet afford the cost (the Adrenaline bar shows the running total).
+        // server would reject it anyway). The rows — names, order, unlock levels and
+        // tooltips — all come from `meld_proto::skills`, so a class's kit is defined
+        // in exactly one place instead of once per surface.
         MenuLevel::Skills => {
-            let mut v = skill_entries(
-                &[
-                    ("Power Strike", "power_strike"),
-                    ("Second Wind", "second_wind"),
-                    ("Snare", "snare"),
-                    ("Frenzy", "frenzy"),
-                ],
-                hero_level,
-            );
+            let mut v = skill_entries(class, hero_level);
             v.push(e("Back", EntryAction::Back));
             v
         }
@@ -1737,6 +1701,7 @@ fn menu_entries(
                     (qty > 0).then(|| MenuEntry {
                         label: format!("{} x{qty}", def.name),
                         action: EntryAction::Item(def.key),
+                        tooltip: def.description.to_string(),
                     })
                 })
                 .collect();

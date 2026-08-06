@@ -8,10 +8,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CharacterClass {
-    /// Martial baseline / default. Basic attacks bank Adrenaline; skills (Power
-    /// Strike, Second Wind, Snare, Frenzy) spend it. The
-    /// disposal-of-dangerous-creatures guild.
+    /// The Explorers: mapping and reclaiming the unstable world, and the only order
+    /// that can set Anchors (docs/lore/factions.md). The class a new account starts
+    /// with. Currently fights with the martial kit; its own tempo/stability kit is
+    /// designed but not yet built.
     Explorer,
+    /// The Hunters' guild: disposal of dangerous non-civilian creatures — the game's
+    /// core loop, so this is the martial baseline. Basic attacks bank Adrenaline;
+    /// every skill (Power Strike, Second Wind, Snare, Frenzy) spends it.
+    Hunter,
     Dragoon,
     Sage,
     Ranger,
@@ -30,8 +35,9 @@ pub enum CharacterClass {
     /// order walks out of fires nothing else survives, which is why the class is
     /// earned by surviving the undead rite.
     ///
-    /// Was `iron_hull`; the alias keeps rows persisted under the old key loading.
-    #[serde(alias = "iron_hull")]
+    /// The `iron_hull` key is deliberately NOT aliased here: the Order of the Iron
+    /// Hull is a separate monastic order whose own kit is already authored
+    /// (docs/lore/factions.md), and it will claim that key when it lands.
     PhoenixGuard,
 }
 
@@ -267,21 +273,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_hero_persisted_as_an_iron_hull_is_a_phoenix_guard() {
-        // The class was renamed after accounts existed. A row (or a saved party)
-        // written under the old key must still resolve, or a player's tank
-        // silently becomes something else.
-        let from_wire: CharacterClass = serde_json::from_str("\"iron_hull\"").unwrap();
-        assert_eq!(from_wire, CharacterClass::PhoenixGuard);
-        assert_eq!(
-            crate::equipment::class_from_key("iron_hull"),
-            Some(CharacterClass::PhoenixGuard)
-        );
-        // …and we only ever WRITE the new key.
+    fn iron_hull_is_reserved_for_its_own_order_not_an_alias() {
+        // The Order of the Iron Hull is a separate monastic order with its own
+        // authored kit (docs/lore/factions.md). If `iron_hull` still deserialised to
+        // the Phoenix Guard, the day that class lands every one of its heroes would
+        // silently be the wrong class.
+        assert!(serde_json::from_str::<CharacterClass>("\"iron_hull\"").is_err());
+        assert_eq!(crate::equipment::class_from_key("iron_hull"), None);
         assert_eq!(
             serde_json::to_string(&CharacterClass::PhoenixGuard).unwrap(),
             "\"phoenix_guard\""
         );
         assert_eq!(crate::equipment::class_key(CharacterClass::PhoenixGuard), "phoenix_guard");
+        // And the Hunter, reintroduced, round-trips on its own key.
+        assert_eq!(
+            serde_json::from_str::<CharacterClass>("\"hunter\"").unwrap(),
+            CharacterClass::Hunter
+        );
+        assert_eq!(crate::equipment::class_key(CharacterClass::Hunter), "hunter");
     }
 }

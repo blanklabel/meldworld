@@ -1395,6 +1395,16 @@ pub(crate) fn rebuild_command_menu(
             .map(|e| e.label.to_string())
             .collect(),
     };
+    // The selected row's tooltip. An ability nobody can read is an ability nobody
+    // presses, so the description rides under the list — from the shared registry,
+    // which is also what the server gates on.
+    let tooltip: String = match level {
+        MenuLevel::Target | MenuLevel::Revoke => String::new(),
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack))
+            .get(menu.cursor)
+            .map(|e| e.tooltip.clone())
+            .unwrap_or_default(),
+    };
 
     // A single glass panel (header + body) centred above the party HUD row (which
     // sits at bottom:10, height 92 → top ≈ 102). Anchoring the panel at bottom:112
@@ -1535,6 +1545,18 @@ pub(crate) fn rebuild_command_menu(
                                         TextColor(Color::srgb(0.9, 0.93, 1.0)),
                                     ));
                                 });
+                            }
+                            if !tooltip.is_empty() {
+                                list.spawn((
+                                    Text::new(tooltip.clone()),
+                                    TextFont { font_size: 12.0, ..default() },
+                                    TextColor(glass::DIM),
+                                    Node {
+                                        margin: UiRect::top(Val::Px(6.0)),
+                                        max_width: Val::Px(230.0),
+                                        ..default()
+                                    },
+                                ));
                             }
                         });
                 }

@@ -44,6 +44,8 @@ pub enum Trigger {
     DungeonEntered,
     /// The party survives an undead rite (an undead boss and its minions).
     SurvivedUndeadRite,
+    /// A dive is extracted successfully — you came back, and you brought the proof.
+    Extracted,
     /// A full party wipe with at least `heroes` heroes in the party. The
     /// consolation prize for the worst night.
     PartyWipe { heroes: i32 },
@@ -85,6 +87,15 @@ pub const UNLOCKS: &[UnlockDef] = &[
         trigger_text: "Bring any hero to level 10.",
         banner: "You have carried enough alone. Someone else can carry the rest.",
         requires: None,
+    },
+    UnlockDef {
+        key: "class_hunter",
+        name: "Hunter",
+        kind: UnlockKind::Class(CharacterClass::Hunter),
+        trigger: Trigger::Extracted,
+        trigger_text: "Extract from a dive — the hall pays on evidence, not stories.",
+        banner: "The Den has a board, a pit, and a marker with your callsign on it.",
+        requires: Some("party_slot_2"),
     },
     UnlockDef {
         key: "class_resonant",
@@ -220,6 +231,7 @@ pub enum Milestone {
     EliteFelled,
     DungeonEntered,
     SurvivedUndeadRite,
+    Extracted,
     PartyWiped { heroes: i32 },
 }
 
@@ -239,6 +251,7 @@ pub fn granted_by(milestone: Milestone, owned: &[String]) -> Vec<&'static Unlock
             (Trigger::EliteFelled, Milestone::EliteFelled) => true,
             (Trigger::DungeonEntered, Milestone::DungeonEntered) => true,
             (Trigger::SurvivedUndeadRite, Milestone::SurvivedUndeadRite) => true,
+            (Trigger::Extracted, Milestone::Extracted) => true,
             (Trigger::PartyWipe { heroes }, Milestone::PartyWiped { heroes: got }) => got >= heroes,
             _ => false,
         })
@@ -291,7 +304,7 @@ mod tests {
         assert_eq!(slots, vec![2, 3, 4], "slot 1 needs no unlock");
         assert_eq!(
             UNLOCKS.iter().filter(|u| matches!(u.kind, UnlockKind::Class(_))).count(),
-            5
+            6
         );
     }
 
@@ -305,6 +318,8 @@ mod tests {
         // Earn the slot, fell another elite, and now it lands.
         let owned = vec!["class_explorer".to_string(), "party_slot_2".to_string()];
         assert_eq!(keys(granted_by(Milestone::EliteFelled, &owned)), vec!["class_resonant"]);
+        // And coming home with the proof is what the Hunters' hall recruits on.
+        assert_eq!(keys(granted_by(Milestone::Extracted, &owned)), vec!["class_hunter"]);
     }
 
     #[test]
@@ -361,9 +376,10 @@ mod tests {
         let all: Vec<String> = UNLOCKS.iter().map(|u| u.key.to_string()).collect();
         assert_eq!(party_slots(&all), 4);
         let classes = owned_classes(&all);
-        assert_eq!(classes.len(), 5, "{classes:?}");
+        assert_eq!(classes.len(), 6, "{classes:?}");
         for c in [
             CharacterClass::Explorer,
+            CharacterClass::Hunter,
             CharacterClass::Resonant,
             CharacterClass::Shifter,
             CharacterClass::PhoenixGuard,

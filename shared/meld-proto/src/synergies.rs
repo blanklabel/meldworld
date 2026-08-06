@@ -45,7 +45,7 @@ pub const COMBOS: &[ComboDef] = &[
         key: "cut_the_snare",
         name: "Cut the Snare",
         setup: "snare",
-        setup_class: CharacterClass::Explorer,
+        setup_class: CharacterClass::Hunter,
         payoff: "backstab",
         payoff_class: CharacterClass::Shifter,
         damage_mult: 1.6,
@@ -56,20 +56,20 @@ pub const COMBOS: &[ComboDef] = &[
         name: "Crush the Pinned",
         setup: "gravity_well",
         setup_class: CharacterClass::Psyker,
-        payoff: "kinetic_shock",
+        payoff: "holy_censure",
         payoff_class: CharacterClass::PhoenixGuard,
         damage_mult: 1.5,
-        description: "A foe held in a Gravity Well has nowhere to go when the hull hits it.",
+        description: "A foe held in a Gravity Well has nowhere to go when the censure lands.",
     },
     ComboDef {
         key: "follow_the_stagger",
         name: "Follow the Stagger",
-        setup: "swell_strike",
+        setup: "silvered_strike",
         setup_class: CharacterClass::PhoenixGuard,
         payoff: "frenzy",
-        payoff_class: CharacterClass::Explorer,
+        payoff_class: CharacterClass::Hunter,
         damage_mult: 1.5,
-        description: "Swell Strike staggers; Frenzy arrives before it recovers.",
+        description: "A Silvered Strike staggers; Frenzy arrives before it recovers.",
     },
     ComboDef {
         key: "press_the_slowed",
@@ -77,7 +77,7 @@ pub const COMBOS: &[ComboDef] = &[
         setup: "ransack",
         setup_class: CharacterClass::Shifter,
         payoff: "power_strike",
-        payoff_class: CharacterClass::Explorer,
+        payoff_class: CharacterClass::Hunter,
         damage_mult: 1.4,
         description: "Ransack robs a foe of its tempo. Power Strike takes the turn it lost.",
     },
@@ -148,7 +148,7 @@ pub const SYNERGIES: &[SynergyDef] = &[
         key: "blood_and_balm",
         name: "Blood and Balm",
         a: CharacterClass::Resonant,
-        b: CharacterClass::Explorer,
+        b: CharacterClass::Hunter,
         effect: SynergyEffect::PartyRegen,
         description: "A kit that pays in blood pairs with one that gives it back.",
     },
@@ -247,19 +247,19 @@ mod tests {
 
     #[test]
     fn a_comp_only_gets_the_synergies_and_combos_it_can_field() {
-        let default = [Explorer, Psyker, Resonant, Explorer];
+        let default = [Hunter, Psyker, Resonant, Hunter];
         let names: Vec<&str> = active_synergies(&default).iter().map(|s| s.name).collect();
         assert!(names.contains(&"Blood and Balm"), "{names:?}");
         assert!(!names.contains(&"Fortress Front"), "{names:?}");
         assert!(!names.contains(&"Covering Blink"), "{names:?}");
 
-        let tanky = [PhoenixGuard, Psyker, Resonant, Explorer];
+        let tanky = [PhoenixGuard, Psyker, Resonant, Hunter];
         let names: Vec<&str> = active_synergies(&tanky).iter().map(|s| s.name).collect();
         assert!(names.contains(&"Fortress Front"), "{names:?}");
 
         let combos: Vec<&str> = available_combos(&default).iter().map(|c| c.name).collect();
         assert!(!combos.contains(&"Cut the Snare"), "{combos:?}");
-        let rogueish = [Explorer, Shifter, Resonant, Psyker];
+        let rogueish = [Hunter, Shifter, Resonant, Psyker];
         let combos: Vec<&str> = available_combos(&rogueish).iter().map(|c| c.name).collect();
         assert!(combos.contains(&"Cut the Snare"), "{combos:?}");
         assert!(combos.contains(&"Press the Slowed"), "{combos:?}");
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_solo_class_party_fields_nothing() {
-        let mono = [Explorer, Explorer, Explorer, Explorer];
+        let mono = [Hunter, Hunter, Hunter, Hunter];
         assert!(active_synergies(&mono).is_empty());
         assert!(available_combos(&mono).is_empty(), "a mono party has no cross-class sequence");
     }

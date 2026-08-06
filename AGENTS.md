@@ -313,12 +313,17 @@ Use these terms consistently in code, comments, and UI.
 
 **Classes** (per-hero; stats in `[player.<key>]`, kit in `meld-battle`):
 
-- **Explorer** — the martial baseline / **default** class (disposal-of-dangerous-creatures guild).
+- **Explorer** — the **default** class: the Explorers map and anchor the unstable world
+  ([`docs/lore/factions.md`](docs/lore/factions.md)). Its kit is **tempo and stability**
+  rather than burst — Trailblaze, Field Dressing (L2), Read the Ground (L5), Set Anchor
+  (L9, party Barrier), Safe Passage (L13, party Regen), A World Known (L17, fills every
+  ally's gauge). See `Battle::resolve_explorer_kit`.
+- **Hunter** — the martial baseline (disposal-of-dangerous-creatures guild).
   Front-line bruiser with the standard Attack / Defend / Item / Skill menu. It has no resource
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —
   Power Strike (heavy hit), Second Wind (L2, self-heal), Snare (L2, damage + ATB-gauge drain),
   Frenzy (L3, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
-  See `Battle::resolve_explorer`.
+  See `Battle::resolve_explorer` (the Adrenaline resolver, shared with nothing else).
 - **Psyker** — psychic channeler. Instead of the martial kit it manages **Foci**: Gravity Well
   (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L3, stronger),
   Temporal Anchor (L5, drains the enemy's ATB gauge). See `Battle::resolve_psyker`.
@@ -328,11 +333,22 @@ Use these terms consistently in code, comments, and UI.
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
   that pierces most armour), Flicker (L2, self **Evasion** blink), Ransack (L3, damage + drains the
   enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
-- **Phoenix Guard** — Order of the Phoenix Guard monk. The tankiest, slowest class (most HP + armour, no dodge):
-  a dense front-line wall that channels kinetic momentum into blunt-force. Level-gated kit: Swell Strike
-  (heavy blow + gauge-drain stagger), Root (L2, self **Barrier** stance), Kinetic Shock (L3, heavier blow
-  that fully zeroes the target's gauge), Toll of the Deep (L5, an **all-enemy** shockwave). See
-  `Battle::resolve_phoenix_guard`.
+- **Phoenix Guard** — the Last City's **anti-undead** order. The tankiest, slowest class
+  (most HP + armour, no dodge), and every damaging ability of theirs hits **undead**
+  `phoenix_guard_undead_mult` harder. Its ladder is the order's rank ladder: Silvered
+  Strike (Initiate), Rite of Rest (Purifier L2, self **Barrier**), Holy Censure
+  (Exemplar L5, zeroes the gauge), Purging Light (Luminary L9, **all-enemy**), Unbroken
+  Vigil (Redeemer L13, **party** Barrier), Eradication (Apotheosis L17, an execute that
+  scales with the target's missing HP). See `Battle::resolve_phoenix_guard`.
+  *The kinetic/oar kit it used to carry belongs to the **Order of the Iron Hull**, a
+  future monk class whose `iron_hull` key is reserved.*
+
+**Abilities are one registry.** [`meld_proto::skills`](shared/meld-proto/src/skills.rs)
+owns every ability's key, name, owning class, unlock level, **org rank** and
+**description**. The server gates on it, the battle menu builds its rows and tooltips
+from it, and the party screen lists each hero's ladder from it — so a kit is defined
+once. Unlock levels follow the orders' rank ladders (1 / 2 / 5 / 9 / 13 / 17), which is
+what makes levelling read as promotion.
 
 New classes: add the enum variant (`meld-proto` `CharacterClass`), `[player.<key>]` stats +
 any `[battle]` tunables, the `class_key` mapping (`meld-run`), the kit in `meld-battle`, and the

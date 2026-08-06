@@ -12,6 +12,11 @@
 /// The player's battle faction.
 pub const PLAYER: &str = "player";
 
+/// The risen. Named because it is not just another roster entry: the Phoenix Guard
+/// exists to eradicate it, so the engine checks this exact string when applying
+/// their standing bonus (docs/lore/factions.md).
+pub const UNDEAD: &str = "undead";
+
 /// Unordered creature-faction pairs that don't get along. Tuned so **every**
 /// biome roster (`creatures_for_biome`) pairs two mutually-hostile factions, so
 /// overworld skirmishes are visible everywhere — not just tundra/mire.
