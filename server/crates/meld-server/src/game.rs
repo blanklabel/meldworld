@@ -876,30 +876,43 @@ impl WorldActor {
         let lvl = run_level.max(1);
         let above = |floor: i32| (lvl - floor).max(0) as f32;
         let mut out = wr::Perks::default();
-        // Explorer — night glow + "predator's eye" monster intel.
+        // Explorer — the lantern, and the MAP. The order whose vision is "a world
+        // known" is the one that carries the minimap (docs/lore/factions.md).
         if has(CharacterClass::Explorer) {
             out.explorer_glow = p.explorer_glow_base + p.explorer_glow_per_level * (lvl - 1) as f32;
-            out.explorer_intel = if lvl >= p.explorer_intel_atb_at {
+            if lvl >= p.explorer_map_at {
+                out.explorer_map = if lvl >= p.explorer_map_harvest_at {
+                    3
+                } else if lvl >= p.explorer_map_chests_at {
+                    2
+                } else {
+                    1
+                };
+                out.explorer_map_radius = p.explorer_map_radius_base
+                    + p.explorer_map_radius_per_level * above(p.explorer_map_at);
+            }
+        }
+        // Hunter — the predator's eye. Sizing up prey before committing is the guild's
+        // trade, so creature intel belongs to it rather than to the mapmakers.
+        if has(CharacterClass::Hunter) {
+            out.hunter_intel = if lvl >= p.hunter_intel_atb_at {
                 3
-            } else if lvl >= p.explorer_intel_hp_at {
+            } else if lvl >= p.hunter_intel_hp_at {
                 2
-            } else if lvl >= p.explorer_intel_level_at {
+            } else if lvl >= p.hunter_intel_level_at {
                 1
             } else {
                 0
             };
         }
-        // Shifter — corner minimap.
-        if has(CharacterClass::Shifter) && lvl >= p.shifter_map_at {
-            out.shifter_map = if lvl >= p.shifter_map_harvest_at {
-                3
-            } else if lvl >= p.shifter_map_chests_at {
-                2
-            } else {
-                1
-            };
-            out.shifter_map_radius =
-                p.shifter_map_radius_base + p.shifter_map_radius_per_level * above(p.shifter_map_at);
+        // Shifter — Shift-sense. Not a map: a Runner reads the instability a door
+        // leaks, and can tell what is worth carrying out before touching it.
+        if has(CharacterClass::Shifter) {
+            if lvl >= p.shifter_dungeon_at {
+                out.shifter_dungeon_radius = p.shifter_dungeon_radius_base
+                    + p.shifter_dungeon_radius_per_level * above(p.shifter_dungeon_at);
+            }
+            out.shifter_item_sense = lvl >= p.shifter_item_sense_at;
         }
         // Psyker — threat sense.
         if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {

@@ -413,7 +413,17 @@ burns on death/leave; some is single-use. See
   - **Remains from the Psyker doc:** Psi Points as a real cost, the Psychic Strain save
     that threatens a Focus when the Psyker is hit, and per-Manifestation aspects with
     prerequisites (Pressure → Gravity → Anchor).
-  - **Remains:** the Explorer/Shifter overworld role swap.
+  - *Also shipped:* **the overworld perk swap** (`CL-2`) — each perk now sits with the
+    class whose fantasy it is. The **minimap** moved to the **Explorer** ("a world
+    known" — the order that maps the world carries the map). The **predator's eye**
+    (mob level → HP → battle ATB reveal) moved to the **Hunter**, whose entire trade is
+    sizing up prey. The **Shifter** got Shift-sense instead: it reveals **dungeon
+    entrances** within its own radius (plotted on the minimap in the Runner's colour,
+    limited by the Runner's sense rather than the map's reach) and, from level 2, reads
+    an item's **permanence** before it is picked up — "check the weight".
+  - **Remains (Shifter):** the world-space entrance beacon and the in-world
+    permanence tell. The perk rides the wire and gates the minimap; the extra
+    presentation is client rendering, not a rule.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

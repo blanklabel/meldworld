@@ -643,18 +643,25 @@ loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within
 # run_level. Per-hero level is uniform, so thresholds are run-level values.
 # [TUNABLE] — see meld-balance::Perks and the CANON class taxonomy.
 [perks]
-# Explorer — night glow + "predator's eye" monster intel.
+# Explorer — the lantern, and the MAP. "A world known": the order that maps and
+# reclaims the world is the one that carries the minimap (docs/lore/factions.md).
 explorer_glow_base = 180000.0       # avatar PointLight intensity at run level 1
 explorer_glow_per_level = 30000.0   # brighter (and, client-side, wider) per run level
-explorer_intel_level_at = 1         # run level to reveal a mob's LEVEL over its head
-explorer_intel_hp_at = 3            # run level to also reveal a mob's HP bar
-explorer_intel_atb_at = 6           # run level to reveal enemy ATB gauges in battle
-# Shifter — corner minimap.
-shifter_map_at = 1                # run level that unlocks the minimap (+ mob/portal dots)
-shifter_map_chests_at = 3         # + treasure-chest dots
-shifter_map_harvest_at = 5        # + harvestable (resource-node) dots
-shifter_map_radius_base = 30.0    # world-units the minimap covers at unlock
-shifter_map_radius_per_level = 2.0
+explorer_map_at = 1                 # run level that unlocks the minimap (+ mob/portal dots)
+explorer_map_chests_at = 3          # + treasure-chest dots
+explorer_map_harvest_at = 5         # + harvestable (resource-node) dots
+explorer_map_radius_base = 30.0     # world-units the minimap covers at unlock
+explorer_map_radius_per_level = 2.0
+# Hunter — the predator's eye. Knowing your prey before you commit is the guild's
+# entire trade, so the creature intel is theirs.
+hunter_intel_level_at = 1           # run level to reveal a mob's LEVEL over its head
+hunter_intel_hp_at = 3              # run level to also reveal a mob's HP bar
+hunter_intel_atb_at = 6             # run level to reveal enemy ATB gauges in battle
+# Shifter — Shift-sense: where the doors are, and which loot is worth carrying.
+shifter_dungeon_at = 1              # run level that starts revealing dungeon entrances
+shifter_dungeon_radius_base = 45.0  # world-units at which an entrance shows itself
+shifter_dungeon_radius_per_level = 3.0
+shifter_item_sense_at = 2           # run level to tell insured loot from ephemeral
 # Psyker — threat sense.
 psyker_threat_elites_at = 1       # run level to mark elite/gatekeeper mobs
 psyker_threat_aggro_at = 3        # + mark aggressive mobs

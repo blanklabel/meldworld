@@ -147,7 +147,10 @@ buyers who don't ask. The public: tragic gamblers, respected and feared.
 
 **Why it senses items and dungeons.** Shift-sense is the class fantasy, so the Shifter
 is the one who knows where the doors are and which loot is permanent — see
-[`progression-and-unlocks.md`](../proposals/progression-and-unlocks.md).
+[`progression-and-unlocks.md`](../proposals/progression-and-unlocks.md). Live as of
+`CL-2`: `shifter_dungeon_radius` reveals entrances, `shifter_item_sense` reads
+permanence. The *map* is the Explorers' and the *prey-sense* is the Hunters'; a Runner
+contributes the doors.
 
 Ranks: Flicker Foot 1 · Shift Rat 2 · Runner **5** · Shifter **9** · Void-Dancer
 **13** · The Named **17**.

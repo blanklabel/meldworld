@@ -1826,7 +1826,7 @@ pub(crate) fn render_enemy_panel(
                     meter(e, frac, 10.0, hp_fill);
                     // Explorer "Predator's Eye" top tier: reveal the enemy's ATB gauge
                     // (otherwise hidden — you only see foe HP). ATB shows in battle only.
-                    if perks.0.explorer_intel >= 3 {
+                    if perks.0.hunter_intel >= 3 {
                         meter(e, c.gauge as f32, 5.0, Color::srgb(0.5, 0.72, 1.0));
                     }
                 });
