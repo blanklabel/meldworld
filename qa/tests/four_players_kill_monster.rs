@@ -85,6 +85,12 @@ struct Bot {
     battle_id: String,
     in_battle: bool,
     members_at_start: usize,
+    /// Where we are, and the nearest creature we can see. The bot STEERS at prey
+    /// rather than marching east: the CR-6 encounter ramp deliberately leaves the
+    /// shallow ring sparse, so a straight line out of the hub can miss every fight
+    /// in the run and time out having never found one.
+    pos: (f64, f64),
+    prey: Option<(f64, f64)>,
 }
 
 impl Bot {
@@ -101,6 +107,8 @@ impl Bot {
             battle_id: String::new(),
             in_battle: false,
             members_at_start: 0,
+            pos: (0.0, 0.0),
+            prey: None,
         };
         // seq 1: authenticate.
         bot.send(
@@ -140,13 +148,18 @@ impl Bot {
         self.send("run.enter_maze", json!({})).await;
     }
 
-    async fn move_east(&mut self) {
+    /// Head for the nearest creature; failing that, keep walking east to find one.
+    async fn move_toward_prey(&mut self) {
+        let (dx, dy) = match self.prey {
+            Some((tx, ty)) => (tx - self.pos.0, ty - self.pos.1),
+            None => (1.0, 0.0),
+        };
         self.input_seq += 1;
         self.send(
             "movement.move_intent",
             json!({
                 "input_seq": self.input_seq,
-                "move_dir": { "x": 1.0, "y": 0.0 },
+                "move_dir": { "x": dx, "y": dy },
                 "client_pos": { "x": 0.0, "y": 0.0 }
             }),
         )
@@ -199,13 +212,37 @@ impl Bot {
                     // Walk east toward the monster; the first to touch it starts the
                     // fight, and everyone else opts in (players are no longer
                     // auto-pulled into each other's battles).
-                    self.move_east().await;
+                    self.move_toward_prey().await;
                     self.try_join().await;
                 }
                 msg = self.ws.next() => {
                     let Some(Ok(Message::Text(t))) = msg else { return Outcome::Closed };
                     let v: Value = serde_json::from_str(&t).unwrap();
                     match v["type"].as_str().unwrap_or("") {
+                        "world.snapshot" => {
+                            let ents = v["payload"]["entities"].as_array().cloned().unwrap_or_default();
+                            for e in &ents {
+                                let state = e["avatar_state"].as_str().unwrap_or("");
+                                if state == "active" && e["position"]["x"].is_number() {
+                                    self.pos = (
+                                        e["position"]["x"].as_f64().unwrap_or(self.pos.0),
+                                        e["position"]["y"].as_f64().unwrap_or(self.pos.1),
+                                    );
+                                }
+                            }
+                            self.prey = ents
+                                .iter()
+                                .filter(|e| {
+                                    e["avatar_state"].as_str().is_some_and(|s| s.starts_with("mob:"))
+                                })
+                                .map(|e| {
+                                    let x = e["position"]["x"].as_f64().unwrap_or(0.0);
+                                    let y = e["position"]["y"].as_f64().unwrap_or(0.0);
+                                    (x, y, (x - self.pos.0).powi(2) + (y - self.pos.1).powi(2))
+                                })
+                                .min_by(|a, b| a.2.total_cmp(&b.2))
+                                .map(|(x, y, _)| (x, y));
+                        }
                         "run.started" => {
                             self.members_at_start = v["payload"]["members"].as_array().map(|a| a.len()).unwrap_or(0);
                         }

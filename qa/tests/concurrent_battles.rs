@@ -39,7 +39,7 @@ async fn start_server() -> String {
     format!("{addr}")
 }
 
-async fn login(addr: &str, username: &str) -> String {
+async fn login(addr: &str, username: &str) -> (String, String) {
     let http = reqwest::Client::new();
     let base = format!("http://{addr}");
     let body = json!({ "username": username, "password": "correct-horse-battery" });
@@ -53,7 +53,10 @@ async fn login(addr: &str, username: &str) -> String {
         .json()
         .await
         .unwrap();
-    v["realtime_ticket"].as_str().unwrap().to_string()
+    (
+        v["realtime_ticket"].as_str().unwrap().to_string(),
+        v["player"]["player_id"].as_str().unwrap().to_string(),
+    )
 }
 
 struct Report {
@@ -76,7 +79,7 @@ async fn run_bot(
         // Let the anchor claim the tutorial creature before we set out.
         a_live.notified().await;
     }
-    let ticket = login(&addr, &username).await;
+    let (ticket, my_pid) = login(&addr, &username).await;
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;
     let mut input_seq = 0u32;
@@ -90,11 +93,18 @@ async fn run_bot(
     let mut walking = false;
     let mut in_battle = false;
     let mut second_started = false; // anchor: has the second party's battle begun?
+    let mut stalled = 0u32;
+    const MAX_STALL_TURNS: u32 = 4;
     let mut my_c = String::new();
     let mut mon_c = String::new();
     let mut bid = String::new();
     let mut outcome = String::new();
 
+    // Steer at the nearest creature rather than marching east: the CR-6 encounter
+    // ramp leaves the shallow ring sparse, so a straight line out of the hub can
+    // miss every fight in the run.
+    let mut pos = (0.0f64, 0.0f64);
+    let mut prey: Option<(f64, f64)> = None;
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(75);
@@ -107,9 +117,13 @@ async fn run_bot(
                 second_started = true;
             }
             _ = mover.tick(), if walking && !in_battle => {
+                let (dx, dy) = match prey {
+                    Some((tx, ty)) => (tx - pos.0, ty - pos.1),
+                    None => (1.0, 0.0),
+                };
                 input_seq += 1;
                 ws.send(Message::Text(json!({"type":"movement.move_intent","seq":seq,"ts":0,
-                    "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
+                    "payload":{"input_seq":input_seq,"move_dir":{"x":dx,"y":dy},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
                 seq += 1;
             }
             msg = ws.next() => {
@@ -118,6 +132,49 @@ async fn run_bot(
                 match v["type"].as_str().unwrap_or("") {
                     "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => walking = true,
+                    "world.snapshot" => {
+                        let ents = v["payload"]["entities"].as_array().cloned().unwrap_or_default();
+                        for e in &ents {
+                            if e["entity_id"].as_str() == Some(my_pid.as_str())
+                                && e["position"]["x"].is_number()
+                            {
+                                pos = (
+                                    e["position"]["x"].as_f64().unwrap_or(pos.0),
+                                    e["position"]["y"].as_f64().unwrap_or(pos.1),
+                                );
+                            }
+                        }
+                        // The two bots must fight SEPARATE creatures, so they cannot
+                        // both walk at the nearest one — that lands them in a single
+                        // battle and the anchor waits forever for a second that never
+                        // starts. Both see the same world, so a stable ordering lets
+                        // them split deterministically without talking to each other.
+                        let mut mobs: Vec<(String, f64, f64)> = ents
+                            .iter()
+                            .filter(|e| {
+                                e["avatar_state"].as_str().is_some_and(|s| s.starts_with("mob:"))
+                            })
+                            .map(|e| {
+                                (
+                                    e["entity_id"].as_str().unwrap_or_default().to_string(),
+                                    e["position"]["x"].as_f64().unwrap_or(0.0),
+                                    e["position"]["y"].as_f64().unwrap_or(0.0),
+                                )
+                            })
+                            .collect();
+                        mobs.sort_by(|a, b| {
+                            let da = (a.1 - pos.0).powi(2) + (a.2 - pos.1).powi(2);
+                            let db = (b.1 - pos.0).powi(2) + (b.2 - pos.1).powi(2);
+                            da.total_cmp(&db).then(a.0.cmp(&b.0))
+                        });
+                        // Each bot walks at the creature nearest ITSELF — the anchor
+                        // gets into its fight fast, which matters because it defends
+                        // (and now takes real damage) until the second battle starts.
+                        // The other bot yields its first choice so the two never
+                        // converge on one creature and collapse into a single battle.
+                        let want = if anchor { 0 } else { 1.min(mobs.len().saturating_sub(1)) };
+                        prey = mobs.get(want).map(|(_, x, y)| (*x, *y));
+                    }
                     "battle.started" => {
                         in_battle = true;
                         my_c = v["payload"]["your_combatant_id"].as_str().unwrap().to_string();
@@ -132,7 +189,17 @@ async fn run_bot(
                     "battle.turn_ready" if v["payload"]["combatant_id"].as_str() == Some(my_c.as_str()) => {
                         // Anchor stalls (defends) until the second battle is live, so the
                         // two fights genuinely overlap; then everyone attacks to win.
-                        let action = if anchor && !second_started { "defend" } else { "attack" };
+                        // The anchor stalls so the two fights overlap — but only for a
+                        // bounded number of turns. Defending forever used to be free;
+                        // creatures hit hard enough now that an indefinite stall is a
+                        // death sentence, and the anchor would lose a fight the test
+                        // needs it to win.
+                        stalled += 1;
+                        let action = if anchor && !second_started && stalled <= MAX_STALL_TURNS {
+                            "defend"
+                        } else {
+                            "attack"
+                        };
                         let targets = if action == "attack" { json!([mon_c]) } else { json!(null) };
                         ws.send(Message::Text(json!({"type":"battle.submit_action","seq":seq,"ts":0,
                             "payload":{"battle_id":bid,"action_id":uuid::Uuid::new_v4().to_string(),"action":action,"skill_kind":null,"item_id":null,"target_ids":targets}}).to_string())).await.unwrap();

@@ -86,6 +86,7 @@ async fn a_bot_fights_and_kills_the_dungeon_boss() {
     let mut k = 1usize;
     let mut entrance: Option<(String, f64, f64)> = None;
     let mut entered = false;
+    let mut boss_at: Option<(f64, f64)> = None;
     let mut in_battle = false;
     let mut my_cid: Option<String> = None;
     let mut boss_cid: Option<String> = None;
@@ -100,7 +101,17 @@ async fn a_bot_fights_and_kills_the_dungeon_boss() {
             _ = ticker.tick(), if !in_battle => {
                 input_seq += 1;
                 let (dx, dy) = if entered {
-                    (1.0, 0.0) // march east: crosses floors (stairs) + opens doors (levers/keys) to the boss
+                    match boss_at {
+                        // Head for the boss once it is visible.
+                        Some((bx, by)) => {
+                            let (dx, dy) = (bx - my.0, by - my.1);
+                            let d = (dx * dx + dy * dy).sqrt();
+                            (dx / d.max(1e-6), dy / d.max(1e-6))
+                        }
+                        // Until then, east — which crosses floors (stairs) and trips
+                        // the levers and keys that open the way.
+                        None => (1.0, 0.0),
+                    }
                 } else if let Some((id, ex, ey)) = &entrance {
                     let (dx, dy) = (ex - my.0, ey - my.1);
                     let d = (dx*dx+dy*dy).sqrt();
@@ -132,6 +143,10 @@ async fn a_bot_fights_and_kills_the_dungeon_boss() {
                             if e["entity_id"].as_str() == Some(pid.as_str()) { my = (ex, ey); }
                             if state.starts_with("entrance:") { entrance = Some((e["entity_id"].as_str().unwrap().to_string(), ex, ey)); }
                             if state.starts_with("obstacle:dungeon_wall") { entered = true; }
+                            // The boss is a `mob:` prop on the floor. Walking east and
+                            // hoping only works when it happens to be due east with
+                            // nothing in the way; steer at it once it is on screen.
+                            if state.starts_with("mob:") { boss_at = Some((ex, ey)); }
                         }
                     }
                     "battle.started" => {
