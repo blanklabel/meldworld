@@ -2846,7 +2846,7 @@ mod tests {
         assert_eq!(db.get_hero_rows(p).await.unwrap(), vec![false, false, true, false]);
         // Toggling back to the front is remembered too.
         db.set_hero_row(p, 2, false).await.unwrap();
-        assert_eq!(db.get_hero_rows(p).await.unwrap()[2], false);
+        assert!(!db.get_hero_rows(p).await.unwrap()[2]);
     }
 
     #[tokio::test]

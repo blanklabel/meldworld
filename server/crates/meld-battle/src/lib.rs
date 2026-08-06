@@ -85,6 +85,11 @@ pub struct Fighter {
     pub faction: String,
     /// Whether this (creature) fighter flees a losing battle.
     pub flees: bool,
+    /// PG-2 palette band (0-3) for a named boss, from the level it is met at: the
+    /// same boss further out is the same boss in a worse mood. Rides the wire as a
+    /// `boss_band:<n>` status token (the additive convention) so the client can tint
+    /// it without a proto change.
+    pub boss_band: u8,
     /// CR-6 pack role. A leader is shielded by its living minions and lends them
     /// its presence; killing it routs them. `None` for anything not in a pack.
     pub pack_role: PackRole,
@@ -185,6 +190,7 @@ impl Fighter {
                 String::new()
             },
             flees: false,
+            boss_band: 0,
             pack_role: PackRole::None,
             back_row: false,
             focus_max: 0,
@@ -238,6 +244,9 @@ impl Fighter {
         }
         if self.back_row {
             v.push("row:back".to_string());
+        }
+        if self.boss_band > 0 {
+            v.push(format!("boss_band:{}", self.boss_band));
         }
         if self.focus_max > 0 {
             v.push(format!("focus_slots:{}", self.focus_max));
@@ -694,12 +703,6 @@ impl Battle {
         self.fighters
             .iter()
             .any(|f| f.alive && f.kind == CombatantKind::Player)
-    }
-
-    fn first_living_player(&self) -> Option<usize> {
-        self.fighters
-            .iter()
-            .position(|f| f.alive && f.kind == CombatantKind::Player)
     }
 
     /// Advance the battle one 100 ms tick. Fills gauges, fires monster turns and
@@ -3878,6 +3881,26 @@ mod tests {
         let res = battle.resolve_item(i, Some("waking_salt"), None, None);
         assert!(res.effects.is_empty(), "{:?}", res.effects);
         assert_eq!(battle.fighters[i].hp, before);
+    }
+
+    #[test]
+    fn a_boss_band_rides_the_wire_and_only_when_it_has_one() {
+        let mut boss = monster("deep", 900, 1);
+        boss.boss_band = 3;
+        let plain = monster("plain", 900, 1);
+        // The band rides the additive `statuses` convention, so the client can tint a
+        // deep boss without a proto change…
+        assert!(
+            boss.build_wire_statuses().iter().any(|s| s == "boss_band:3"),
+            "{:?}",
+            boss.build_wire_statuses()
+        );
+        // …and an ordinary creature says nothing about a palette it does not have.
+        assert!(
+            plain.build_wire_statuses().iter().all(|s| !s.starts_with("boss_band:")),
+            "{:?}",
+            plain.build_wire_statuses()
+        );
     }
 
     #[test]

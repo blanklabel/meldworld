@@ -253,6 +253,20 @@ leader_xp_mult = 1.8
 minion_hp_mult = 0.45            # the "four little ones": individually weak…
 minion_atk_mult = 0.6            # …but four of them act four times as often
 minion_xp_mult = 0.55
+# THE UNDEAD RITE (PG-2): a named UNDEAD boss with a retinue of undead minions —
+# the encounter that teaches a player they want a wall, and the one that unlocks the
+# Phoenix Guard for surviving it. Rarer and harder than a pack, and it only appears
+# once the world is dangerous enough for it to read as a set-piece rather than an
+# ambush.
+undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [TUNABLE]
+undead_rite_min_tier = 4         # never shallower than this
+undead_rite_minions = 4          # the retinue [TUNABLE]
+undead_rite_boss_hp_mult = 3.2   # above an Elite (2.4), below a Gatekeeper (7.5)
+undead_rite_boss_atk_mult = 1.45
+undead_rite_boss_xp_mult = 4.0
+undead_rite_minion_hp_mult = 0.6 # a rite's minions are tougher than a pack's 0.45
+undead_rite_minion_atk_mult = 0.75
+
 # PACK AI: a pack should fight like a pack, which also makes clearing one a
 # DECISION — break the leader and the littles rout, or clear the littles first and
 # the leader stops being shielded.

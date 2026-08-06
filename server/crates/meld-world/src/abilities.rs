@@ -258,6 +258,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![status("chill", 50, SingleEnemy), atb(-0.2, SingleEnemy)]),
             ability("umbral_pounce", "Umbral Pounce!", 2, 180, 12, 16, None,
                 vec![dmg(Magic, 1.6, Shadow, SingleEnemy)]),
+            ability("umbral_pack", "UMBRAL PACK!", 2, 300, 30, 45, None,
+                vec![dmg(Attack, 1.45, Shadow, AllEnemies), status("dread", 80, AllEnemies)]),
         ],
         "rustfang" => vec![
             ability("rust_gnash", "Rust Gnash!", 3, 40, 0, 1, None,
@@ -266,6 +268,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.8, Lightning, SingleEnemy), atb(0.2, SelfCast)]),
             ability("overdrive_maul", "Overdrive Maul!", 2, 200, 14, 16, Some(0.5),
                 vec![dmg(Attack, 1.7, Lightning, SingleEnemy)]),
+            ability("corrosion_bloom", "CORROSION BLOOM!", 2, 300, 30, 45, None,
+                vec![dmg(Magic, 1.35, Water, AllEnemies), status("corrode", 90, AllEnemies)]),
         ],
         "choirmother" => vec![
             ability("discordant_note", "Discordant Note!", 3, 40, 0, 1, None,
@@ -274,6 +278,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![heal(MaxHp, 0.2, SelfCast), status("resolve", 80, SelfCast)]),
             ability("choir_of_the_lost", "CHOIR OF THE LOST!", 2, 260, 24, 12, None,
                 vec![dmg(Magic, 1.1, Mind, AllEnemies), status("dread", 60, AllEnemies)]),
+            ability("requiem_unending", "REQUIEM UNENDING!", 2, 300, 30, 45, None,
+                vec![dmg(Magic, 1.4, Mind, AllEnemies), status("dread", 90, AllEnemies), atb(-0.2, AllEnemies)]),
         ],
         "pyrewarden" => vec![
             ability("cinder_lash", "Cinder Lash!", 3, 40, 0, 1, None,
@@ -282,6 +288,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![heal(MaxHp, 0.15, SelfCast), status("burn_ward", 80, SelfCast)]),
             ability("pyre_eruption", "PYRE ERUPTION!", 2, 260, 24, 12, None,
                 vec![dmg(Magic, 1.2, Fire, AllEnemies), status("burn", 60, AllEnemies)]),
+            ability("second_kindling", "SECOND KINDLING!", 2, 300, 30, 45, Some(0.5),
+                vec![heal(MaxHp, 0.25, SelfCast), dmg(Magic, 1.3, Fire, AllEnemies)]),
         ],
         "sepulcher" => vec![
             ability("tomb_claw", "Tomb Claw!", 3, 40, 0, 1, None,
@@ -290,6 +298,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.9, Shadow, SingleEnemy), heal(MaxHp, 0.12, SelfCast)]),
             ability("epitaph_of_ruin", "EPITAPH OF RUIN!", 1, 300, 28, 14, Some(0.45),
                 vec![dmg(Magic, 1.5, Ethereal, SingleEnemy), status("dread", 70, SingleEnemy)]),
+            ability("mausoleum_collapse", "MAUSOLEUM COLLAPSE!", 2, 330, 34, 45, None,
+                vec![dmg(Attack, 1.6, Earth, AllEnemies), status("dread", 90, AllEnemies)]),
         ],
         "hollowbishop" => vec![
             ability("hollow_gaze", "Hollow Gaze!", 3, 40, 0, 1, None,
@@ -298,6 +308,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![status("curse", 90, SingleEnemy), atb(-0.25, SingleEnemy)]),
             ability("sermon_of_silence", "SERMON OF SILENCE!", 1, 280, 26, 14, None,
                 vec![dmg(Magic, 1.0, Mind, AllEnemies), status("numb", 60, AllEnemies)]),
+            ability("excommunication", "EXCOMMUNICATION!", 2, 320, 32, 45, None,
+                vec![dmg(Magic, 1.5, Ethereal, AllEnemies), status("curse", 120, AllEnemies)]),
         ],
         "ironmaw" => vec![
             ability("crush_bite", "Crush Bite!", 3, 40, 0, 1, None,
@@ -308,6 +320,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![atb(-0.35, AllEnemies)]),
             ability("ironmaw_rampage", "IRONMAW RAMPAGE!", 1, 320, 30, 20, Some(0.4),
                 vec![dmg(Attack, 1.6, Lightning, AllEnemies)]),
+            ability("scrap_avalanche", "SCRAP AVALANCHE!", 2, 320, 32, 45, None,
+                vec![dmg(Attack, 1.6, Blunt, AllEnemies), status("stagger", 80, AllEnemies)]),
         ],
         "weepingcolossus" => vec![
             ability("tremor_step", "Tremor Step!", 3, 50, 0, 1, None,
@@ -318,6 +332,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![atb(-0.3, SingleEnemy), dmg(Attack, 0.7, Earth, SingleEnemy)]),
             ability("collapsing_sorrow", "COLLAPSING SORROW!", 1, 340, 32, 22, Some(0.4),
                 vec![dmg(Attack, 1.7, Earth, AllEnemies)]),
+            ability("flood_of_years", "FLOOD OF YEARS!", 2, 340, 34, 45, None,
+                vec![dmg(Magic, 1.5, Water, AllEnemies), atb(-0.3, AllEnemies)]),
         ],
         "miredrowned" => vec![
             ability("silt_claw", "Silt Claw!", 3, 40, 0, 1, None,
@@ -328,6 +344,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![status("poison", 100, AllEnemies)]),
             ability("depths_reclaim", "THE DEPTHS RECLAIM!", 1, 340, 30, 24, Some(0.4),
                 vec![dmg(Magic, 1.4, Poison, AllEnemies), status("poison", 80, AllEnemies)]),
+            ability("drowning_procession", "DROWNING PROCESSION!", 2, 300, 30, 45, None,
+                vec![dmg(Magic, 1.4, Water, AllEnemies), status("numb", 90, AllEnemies)]),
         ],
         "ashenleviathan" => vec![
             ability("ash_maw", "Ash Maw!", 3, 40, 0, 1, None,
@@ -341,6 +359,54 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
         ],
         // Unknown kinds fight with basic attacks only (still a full combatant).
         _ => vec![],
+    }
+}
+
+/// What a named boss actually IS (FS-4). A boss overlays a host creature, and used
+/// to inherit that host's faction — so a Choirmother riding a forest beast fought as
+/// a beast. Lineage is the boss's own: it drives overworld skirmishing, battle
+/// targeting, and (with `PG-2`) which unlock an encounter can grant.
+pub fn boss_faction(boss_kind: &str) -> Option<&'static str> {
+    Some(match boss_kind {
+        // The dead: a choir, a bishop, a drowned congregation, a tomb.
+        "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" => "undead",
+        // The made: jaws, teeth, hounds, colossi and wardens of metal and fire.
+        "ironmaw" | "rustfang" | "gloamhound" | "weepingcolossus" | "pyrewarden" => "construct",
+        // The leviathan is neither built nor buried.
+        "ashenleviathan" => "wyrm",
+        _ => return None,
+    })
+}
+
+/// Every boss whose lineage is `faction`.
+pub fn bosses_of_faction(faction: &str) -> Vec<&'static str> {
+    [
+        "choirmother",
+        "hollowbishop",
+        "miredrowned",
+        "sepulcher",
+        "ironmaw",
+        "rustfang",
+        "gloamhound",
+        "weepingcolossus",
+        "pyrewarden",
+        "ashenleviathan",
+    ]
+    .into_iter()
+    .filter(|k| boss_faction(k) == Some(faction))
+    .collect()
+}
+
+/// A boss's PALETTE band, from the monster level it is met at. A boss encountered
+/// deep is the same boss wearing a worse mood: the client tints it by band, and the
+/// deep-gated abilities in its pool come online around the same thresholds, so the
+/// look and the fight escalate together.
+pub fn boss_palette_band(monster_level: i32) -> u8 {
+    match monster_level {
+        l if l >= 120 => 3,
+        l if l >= 80 => 2,
+        l if l >= 40 => 1,
+        _ => 0,
     }
 }
 

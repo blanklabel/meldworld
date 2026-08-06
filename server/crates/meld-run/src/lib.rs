@@ -565,6 +565,12 @@ pub fn build_battle(
             // CR-6: carry the creature's pack role into the fight, so the engine can
             // shield a leader with its minions and rout them when it falls.
             f.pack_role = meld_proto::enums::PackRole::from_encounter_class(&m.encounter_class);
+            // PG-2: a named boss met deeper wears a darker palette. The band comes
+            // from the level it is met at, which is the same axis its deep-gated
+            // abilities come online on — so look and kit escalate together.
+            if !m.boss_kind.is_empty() {
+                f.boss_band = meld_world::abilities::boss_palette_band(m.level);
+            }
             // Creature AI content (spec §1/§2): the kind's permanent ability
             // pool (level-gated at selection time), its elemental profile,
             // and its typed basic swing. Keyed by the BASE kind — a champion
@@ -1123,4 +1129,5 @@ mod tests {
         let _ = r.award_hero_xp(2, 4, i64::MAX / 4, &b);
         assert_eq!(r.hero_level(2), b.runs.max_hero_level);
     }
+
 }
