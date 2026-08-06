@@ -498,6 +498,13 @@ pub struct Battle {
     explorer_anchor_barrier_fraction: f64,
     explorer_safe_passage_regen: i32,
     explorer_world_known_gauge: f64,
+    resonant_deep: ResonantDeep,
+    shifter_steal_drain: f64,
+    shifter_mug_mult: f64,
+    shifter_mug_drain: f64,
+    hunter_crushing_blow_mult: f64,
+    pin_the_prey_mult: f64,
+    pin_the_prey_drain: f64,
     status_slow_mult: f64,
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
@@ -512,6 +519,118 @@ pub struct Battle {
     seen_actions: HashSet<Id>,
     /// Tiny deterministic LCG for flee rolls (no global RNG — determinism).
     rng: u64,
+}
+
+
+/// The Resonant's deep kit as a table: heal fraction, Regen, Barrier fraction, what
+/// it costs the caster, and whether it lands on one ally or all of them. Seven
+/// abilities that are all the same shape want one resolver, not seven arms.
+#[derive(Debug, Clone, Copy)]
+struct AllyBoon {
+    /// Fraction of the target's max HP healed.
+    heal: f64,
+    /// Flat Regen granted.
+    regen: i32,
+    /// Fraction of the target's max HP granted as Barrier.
+    barrier: f64,
+    /// Fraction of the healing paid out of the caster's own HP.
+    self_cost: f64,
+    /// Whether it lands on the whole party.
+    party: bool,
+}
+
+/// Every deep Resonant ability, keyed by its registry key.
+#[derive(Debug, Clone, Copy)]
+struct ResonantDeep {
+    mend_all: AllyBoon,
+    sanctuary: AllyBoon,
+    revitalize: AllyBoon,
+    lifewell: AllyBoon,
+    bloodbond: AllyBoon,
+    martyr: AllyBoon,
+    bloom: AllyBoon,
+}
+
+impl ResonantDeep {
+    fn from(b: &meld_balance::Battle) -> Self {
+        Self {
+            mend_all: AllyBoon {
+                heal: b.resonant_mend_all_fraction,
+                regen: 0,
+                barrier: 0.0,
+                self_cost: b.resonant_mend_all_self_cost,
+                party: true,
+            },
+            sanctuary: AllyBoon {
+                heal: 0.0,
+                regen: b.resonant_sanctuary_regen,
+                barrier: 0.0,
+                self_cost: 0.0,
+                party: true,
+            },
+            revitalize: AllyBoon {
+                heal: b.resonant_revitalize_fraction,
+                regen: 0,
+                barrier: 0.0,
+                self_cost: b.resonant_revitalize_self_cost,
+                party: false,
+            },
+            lifewell: AllyBoon {
+                heal: b.resonant_lifewell_fraction,
+                regen: b.resonant_lifewell_regen,
+                barrier: 0.0,
+                self_cost: b.resonant_lifewell_self_cost,
+                party: true,
+            },
+            bloodbond: AllyBoon {
+                heal: b.resonant_bloodbond_fraction,
+                regen: b.resonant_bloodbond_regen,
+                barrier: b.resonant_bloodbond_barrier_fraction,
+                self_cost: b.resonant_bloodbond_self_cost,
+                party: false,
+            },
+            martyr: AllyBoon {
+                heal: b.resonant_martyr_fraction,
+                regen: 0,
+                barrier: 0.0,
+                self_cost: b.resonant_martyr_self_cost,
+                party: true,
+            },
+            bloom: AllyBoon {
+                heal: b.resonant_bloom_fraction,
+                regen: 0,
+                barrier: b.resonant_bloom_barrier_fraction,
+                self_cost: b.resonant_bloom_self_cost,
+                party: true,
+            },
+        }
+    }
+
+    /// Every deep-kit key, for the dispatch check.
+    fn names() -> [&'static str; 7] {
+        [
+            "mend_all",
+            "sanctuary",
+            "revitalize",
+            "lifewell",
+            "bloodbond",
+            "martyr",
+            "eternal_bloom",
+        ]
+    }
+
+    fn get(&self, skill: &str) -> Option<AllyBoon> {
+        Some(match skill {
+            "mend_all" => self.mend_all,
+            "sanctuary" => self.sanctuary,
+            "revitalize" => self.revitalize,
+            "lifewell" => self.lifewell,
+            "bloodbond" => self.bloodbond,
+            "martyr" => self.martyr,
+            "eternal_bloom" => self.bloom,
+            _ => return None,
+        })
+    }
 }
 
 impl Battle {
@@ -608,6 +727,13 @@ impl Battle {
             explorer_anchor_barrier_fraction: balance.battle.explorer_anchor_barrier_fraction,
             explorer_safe_passage_regen: balance.battle.explorer_safe_passage_regen,
             explorer_world_known_gauge: balance.battle.explorer_world_known_gauge,
+            resonant_deep: ResonantDeep::from(&balance.battle),
+            shifter_steal_drain: balance.battle.shifter_steal_drain,
+            shifter_mug_mult: balance.battle.shifter_mug_mult,
+            shifter_mug_drain: balance.battle.shifter_mug_drain,
+            hunter_crushing_blow_mult: balance.battle.hunter_crushing_blow_mult,
+            pin_the_prey_mult: balance.battle.pin_the_prey_mult,
+            pin_the_prey_drain: balance.battle.pin_the_prey_drain,
             status_slow_mult: balance.battle.status_slow_mult,
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
@@ -1068,9 +1194,11 @@ impl Battle {
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
         let cost = match skill {
-            "power_strike" => self.explorer_power_strike_cost,
+            // An upgrade costs what the ability it replaced cost: the Hunter's rows get
+            // better, its Adrenaline economy does not change.
+            "power_strike" | "crushing_blow" => self.explorer_power_strike_cost,
             "second_wind" => self.explorer_second_wind_cost,
-            "snare" => self.explorer_snare_cost,
+            "snare" | "pin_the_prey" => self.explorer_snare_cost,
             "frenzy" => self.explorer_frenzy_cost,
             _ => return Err(Reject::ValidationError("unknown hunter skill")),
         };
@@ -1090,7 +1218,9 @@ impl Battle {
         // Enemy strikes. Power Strike reuses the generic heavy-hit multiplier.
         let (mult, drain) = match skill {
             "power_strike" => (self.skill_power_mult, 0.0),
+            "crushing_blow" => (self.hunter_crushing_blow_mult, 0.0),
             "snare" => (self.explorer_snare_mult, self.explorer_snare_drain),
+            "pin_the_prey" => (self.pin_the_prey_mult, self.pin_the_prey_drain),
             "frenzy" => (self.explorer_frenzy_mult, 0.0),
             _ => unreachable!("cost match already rejected other skills"),
         };
@@ -1392,7 +1522,12 @@ impl Battle {
         // first so the affordability check runs before any other path.
         if matches!(
             skill_kind,
-            Some("power_strike") | Some("second_wind") | Some("snare") | Some("frenzy")
+            Some("power_strike")
+                | Some("crushing_blow")
+                | Some("second_wind")
+                | Some("snare")
+                | Some("pin_the_prey")
+                | Some("frenzy")
         ) {
             return self.resolve_explorer(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
@@ -1424,11 +1559,58 @@ impl Battle {
         }
         // Resonant healer skills. Aim at the chosen living ally if the player picked
         // one, else auto-target the most-wounded living ally (the classic default).
-        if matches!(skill_kind, Some("transfuse") | Some("regen_boon") | Some("ward")) {
+        if matches!(skill_kind, Some("transfuse") | Some("regen_boon") | Some("ward"))
+            || skill_kind.is_some_and(|k| ResonantDeep::names().contains(&k))
+        {
             let target_i = self
                 .ally_target(target_id)
                 .unwrap_or_else(|| self.most_wounded_ally(actor_i));
             let effects = self.resolve_resonant(actor_i, skill_kind.unwrap(), target_i);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Shifter Steal → Mug. Steal takes the foe's tempo (its ATB gauge); Mug is
+        // the same theft with a hit on the way past. The upgrade shares the arm, so
+        // the two can never drift apart.
+        if matches!(skill_kind, Some("steal") | Some("mug")) {
+            let mug = skill_kind == Some("mug");
+            let (mult, drain) = if mug {
+                (self.shifter_mug_mult, self.shifter_mug_drain)
+            } else {
+                (0.0, self.shifter_steal_drain)
+            };
+            let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+            let target_i = match self.idx(target) {
+                Some(t) if self.fighters[t].alive => t,
+                _ => self
+                    .fighters
+                    .iter()
+                    .position(|f| f.alive && f.kind != CombatantKind::Player)
+                    .ok_or(Reject::NotFound)?,
+            };
+            let mut effects = Vec::new();
+            if mult > 0.0 {
+                let scaled = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                let def = self.fighters[target_i].def;
+                let defending = self.fighters[target_i].defending;
+                effects = match self.roll_dodge(target_i) {
+                    Some(dodge) => dodge,
+                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
+                };
+            }
+            if self.fighters[target_i].alive {
+                self.fighters[target_i].gauge =
+                    (self.fighters[target_i].gauge - drain).max(0.0);
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[target_i].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("slowed".to_string()),
+                    hp_after: self.fighters[target_i].hp,
+                });
+            }
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
@@ -1647,6 +1829,68 @@ impl Battle {
     }
 
     /// Grant `amount` Barrier (temp HP) to a fighter, reported as a status effect.
+    /// Apply one [`AllyBoon`]: heal, Regen and Barrier to one ally or the whole
+    /// party, with the caster paying a fraction of the healing out of its own HP.
+    /// The Resonant never drops itself below 1 — it mends, it does not martyr itself
+    /// literally.
+    fn apply_ally_boon(
+        &mut self,
+        caster_i: usize,
+        target_i: usize,
+        boon: AllyBoon,
+    ) -> Vec<ResolvedEffect> {
+        let targets: Vec<usize> = if boon.party {
+            self.fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            vec![target_i]
+        };
+        let mut effects = Vec::new();
+        let mut healed_total = 0i32;
+        for t in targets {
+            if boon.heal > 0.0 {
+                let raw = ((self.fighters[t].max_hp as f64) * boon.heal).round() as i32;
+                healed_total += raw;
+                effects.extend(self.apply_heal(t, raw));
+            }
+            if boon.regen > 0 {
+                self.fighters[t].regen += boon.regen;
+                let regen = self.fighters[t].regen;
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: Some(regen),
+                    status: Some("regen".to_string()),
+                    hp_after: self.fighters[t].hp,
+                });
+            }
+            if boon.barrier > 0.0 {
+                let raw = ((self.fighters[t].max_hp as f64) * boon.barrier).round() as i32;
+                effects.extend(self.grant_barrier(t, raw));
+            }
+        }
+        let cost = ((healed_total as f64) * boon.self_cost).round() as i32;
+        if cost > 0 {
+            let before = self.fighters[caster_i].hp;
+            let after = (before - cost).max(1);
+            self.fighters[caster_i].hp = after;
+            effects.push(ResolvedEffect {
+                modifier_flag: None,
+                target_id: self.fighters[caster_i].combatant_id.clone(),
+                kind: EffectKind::Damage,
+                amount: Some(before - after),
+                status: Some("transfuse".to_string()),
+                hp_after: after,
+            });
+        }
+        effects
+    }
+
     /// The Phoenix Guard's standing bonus against the risen. Reads the target's
     /// battle faction, which a boss now carries in its own right
     /// (`meld_world::abilities::boss_faction`) rather than inheriting from whatever
@@ -1705,6 +1949,12 @@ impl Battle {
     /// - `regen_boon` — grant the ally the Regen status.
     /// - `ward`       — grant the ally Barrier.
     fn resolve_resonant(&mut self, caster_i: usize, skill: &str, target_i: usize) -> Vec<ResolvedEffect> {
+        // The deep kit (L16+) is seven abilities of one shape — heal, Regen, Barrier,
+        // paid in the caster's own HP, on one ally or all of them — so it resolves
+        // from the table rather than seven near-identical arms.
+        if let Some(boon) = self.resonant_deep.get(skill) {
+            return self.apply_ally_boon(caster_i, target_i, boon);
+        }
         match skill {
             "transfuse" => {
                 let heal = ((self.fighters[caster_i].max_hp as f64)
@@ -3436,12 +3686,12 @@ mod tests {
     #[test]
     fn second_wind_skill_heals_a_fraction_of_max_hp() {
         let b = balance();
-        // Second Wind is now a Explorer Adrenaline spender: heal = 0.3 * 40 = 12;
-        // wounded to 18 → 30. It costs 35 Adrenaline, so the Explorer must have it.
+        // Second Wind is a Hunter Adrenaline spender: heal = 0.3 * 40 = 12; wounded to
+        // 18 → 30. It costs 35 Adrenaline, so the Hunter must have it banked.
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![explorer("a", 400, 2)], // Second Wind unlocks at L2
+            vec![explorer("a", 400, 4)], // Second Wind unlocks at L4
             vec![monster("m", 1000, 1)],
             &b,
             7,
@@ -3648,7 +3898,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("s", 400, 2)], // Flicker unlocks at L2
+            vec![leveled_player("s", 400, 4)], // Flicker unlocks at L4
             vec![monster("m", 500, 1)], // slow, harmless punching bag
             &b,
             7,
@@ -3682,7 +3932,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("s", 400, 3)], // Ransack unlocks at L3
+            vec![leveled_player("s", 400, 9)], // Ransack unlocks at L9
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -3850,7 +4100,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("k", 400, 2)], // Root unlocks at L2; max_hp 40
+            vec![leveled_player("k", 400, 4)], // Rite of Rest unlocks at L4; max_hp 40
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -3874,8 +4124,8 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            // Holy Censure is the Exemplar's tool — the order's rank 3, level 5.
-            vec![leveled_player("k", 400, 5)],
+            // Holy Censure sits at level 9 on the squares ladder.
+            vec![leveled_player("k", 400, 9)],
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -3897,8 +4147,8 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            // Purging Light is the Luminary's, at level 9.
-            vec![leveled_player("k", 400, 9)],
+            // Purging Light sits at level 16.
+            vec![leveled_player("k", 400, 16)],
             vec![monster("m1", 500, 1), monster("m2", 500, 1)],
             &b,
             7,
@@ -4095,6 +4345,165 @@ mod tests {
         let res = battle.resolve_item(i, Some("waking_salt"), None, None);
         assert!(res.effects.is_empty(), "{:?}", res.effects);
         assert_eq!(battle.fighters[i].hp, before);
+    }
+
+
+
+    #[test]
+    fn mug_is_steal_with_a_hit_on_the_way_past() {
+        let b = balance();
+        let make = |level: i32| {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![leveled_player("s", 400, level)],
+                vec![monster("m", 500, 1)],
+                &b,
+                7,
+            )
+        };
+        // Steal takes tempo and nothing else — the foe keeps every hit point.
+        let mut early = make(4);
+        tick_to_ready(&mut early, "s");
+        let mi = early.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        early.fighters[mi].gauge = 0.9;
+        early
+            .submit("s", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("steal".into()), None)
+            .unwrap();
+        assert!(gauge_of(&early, "m") < 0.9, "Steal took no tempo");
+        assert_eq!(player_hp(&early, "m"), 500, "Steal drew blood; it should not");
+
+        // Mug takes MORE tempo and draws blood: the same ability, grown up.
+        let mut late = make(25);
+        tick_to_ready(&mut late, "s");
+        let mi = late.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+        late.fighters[mi].gauge = 0.9;
+        late.fighters[mi].dodge = 0.0;
+        late
+            .submit("s", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("mug".into()), None)
+            .unwrap();
+        assert!(player_hp(&late, "m") < 500, "Mug did not hit");
+        assert!(
+            gauge_of(&late, "m") <= gauge_of(&early, "m"),
+            "Mug stole less tempo than plain Steal"
+        );
+    }
+
+    #[test]
+    fn an_upgraded_row_hits_harder_than_the_one_it_replaced() {
+        let b = balance();
+        let hit = |skill: &str, level: i32| {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![explorer("h", 400, level)],
+                vec![monster("m", 4000, 1)],
+                &b,
+                7,
+            );
+            let hi = battle.fighters.iter().position(|f| f.combatant_id == "h").unwrap();
+            battle.fighters[hi].adrenaline = 100;
+            let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+            battle.fighters[mi].dodge = 0.0;
+            tick_to_ready(&mut battle, "h");
+            battle
+                .submit("h", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some(skill.into()), None)
+                .unwrap();
+            4000 - player_hp(&battle, "m")
+        };
+        // Crushing Blow replaces Power Strike, and must actually be an upgrade.
+        assert!(
+            hit("crushing_blow", 16) > hit("power_strike", 1),
+            "Crushing Blow is not an upgrade on Power Strike"
+        );
+        // Pin the Prey replaces Snare the same way.
+        assert!(
+            hit("pin_the_prey", 25) > hit("snare", 9),
+            "Pin the Prey is not an upgrade on Snare"
+        );
+    }
+
+    #[test]
+    fn a_casters_deep_kit_mends_the_whole_party_and_costs_the_caster() {
+        let b = balance();
+        // Eternal Bloom is the Resonant's level-100 capstone: the party whole and
+        // warded, paid for out of the healer.
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![
+                leveled_player("r", 400, 100),
+                leveled_player("a", 400, 100),
+                leveled_player("c", 400, 100),
+            ],
+            vec![monster("m", 900, 1)],
+            &b,
+            7,
+        );
+        // Hurt the party, and the healer with them.
+        let wounded = {
+            let i = battle.fighters.iter().position(|f| f.combatant_id == "r").unwrap();
+            battle.fighters[i].max_hp / 4
+        };
+        for id in ["r", "a", "c"] {
+            let i = battle.fighters.iter().position(|f| f.combatant_id == id).unwrap();
+            battle.fighters[i].hp = wounded;
+        }
+        tick_to_ready(&mut battle, "r");
+        let healer_before = player_hp(&battle, "r");
+        battle
+            .submit(
+                "r",
+                "a1".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("eternal_bloom".into()),
+                None,
+            )
+            .unwrap();
+        // Everyone mended, including allies the caster never targeted…
+        for id in ["a", "c"] {
+            assert!(player_hp(&battle, id) > wounded, "{id} was not healed");
+        }
+        // …everyone warded…
+        for id in ["r", "a", "c"] {
+            let i = battle.fighters.iter().position(|f| f.combatant_id == id).unwrap();
+            assert!(battle.fighters[i].barrier > 0, "{id} got no Barrier");
+        }
+        // …and the healer paid for it out of its own HP (net of its own healing).
+        let healer_after = player_hp(&battle, "r");
+        let full = battle.fighters[0].max_hp;
+        assert!(
+            healer_after < full,
+            "the Resonant healed the party for free: {healer_before} -> {healer_after} of {full}"
+        );
+        assert!(healer_after >= 1, "the Resonant killed itself healing");
+    }
+
+    #[test]
+    fn a_deep_ability_is_locked_until_the_caster_is_deep() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![leveled_player("r", 400, 20)],
+            vec![monster("m", 900, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "r");
+        // Level 20 is nowhere near the L100 capstone: the server refuses it even
+        // though the client would never offer the row.
+        assert!(battle
+            .submit(
+                "r",
+                "a1".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("eternal_bloom".into()),
+                None,
+            )
+            .is_err());
     }
 
     #[test]

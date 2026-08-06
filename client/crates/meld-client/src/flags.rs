@@ -182,6 +182,20 @@ pub(crate) fn inventory_tab_flag() -> Option<String> {
 /// `MELD_UNLOCK=<key>` / `?unlock=<key>` — queue that unlock's banner (and the
 /// locked-roster rows) with no server, so the CL-1 presentation can be
 /// screenshot-verified. Any key from `meld_proto::unlocks::UNLOCKS`.
+/// `MELD_MENU=party|party.abilities|party.equipment|items|materials|map` /
+/// `?menu=` — open the three-column cascade at that column with no server, so each
+/// depth can be screenshot-verified.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn menu_flag() -> Option<String> {
+    std::env::var("MELD_MENU").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn menu_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("menu").filter(|s| !s.is_empty())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn unlock_mockup_flag() -> Option<String> {
     std::env::var("MELD_UNLOCK").ok().filter(|s| !s.is_empty())

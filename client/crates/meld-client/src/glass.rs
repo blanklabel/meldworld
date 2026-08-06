@@ -78,13 +78,15 @@ pub fn panel(width: Val) -> impl Bundle {
     (
         Node {
             width,
-            // Never taller than the window: a menu that runs off the top of the
-            // screen hides its own title. Long content scrolls instead.
-            max_height: Val::Percent(94.0),
+            // Never taller than the window. Measured in VIEWPORT height, not percent:
+            // a percentage resolves against the parent, and the parent here is an
+            // auto-height row whose own height is this panel — which resolves to
+            // something arbitrary and clips the last row off.
+            max_height: Val::Vh(92.0),
             overflow: Overflow::scroll_y(),
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(6.0),
-            padding: UiRect::all(Val::Px(18.0)),
+            row_gap: Val::Px(8.0),
+            padding: UiRect::all(Val::Px(22.0)),
             border: UiRect::all(Val::Px(BORDER)),
             ..default()
         },
@@ -132,28 +134,38 @@ pub fn hud(width: Val) -> impl Bundle {
     )
 }
 
-/// A box nested inside a panel — a hero cell, a shop row, a stat block.
-pub fn inset() -> impl Bundle {
+/// A box nested inside a panel — a hero cell, a shop row, a stat block. `focused`
+/// brightens its edge; it is a parameter rather than a component the caller adds on
+/// top, because a second `BorderColor` in the same bundle is a runtime panic.
+pub fn inset(focused: bool) -> impl Bundle {
     (
         Node {
             width: Val::Percent(100.0),
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(2.0),
-            padding: UiRect::all(Val::Px(6.0)),
+            row_gap: Val::Px(3.0),
+            padding: UiRect::all(Val::Px(9.0)),
             border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
         BackgroundColor(GLASS_DEEP),
-        BorderColor(EDGE_SOFT),
+        BorderColor(if focused { EDGE } else { EDGE_SOFT }),
         BorderRadius::all(Val::Px(5.0)),
     )
 }
 
 /// A selectable pill: a tab, a menu row, a toggle. `on` is the selected state.
 pub fn chip(on: bool) -> impl Bundle {
+    chip_sized(on, Val::Auto)
+}
+
+/// A chip with a floor on its width, for a label that must not wrap onto two lines
+/// (`Row: Front` in a hero cell, where a second line costs real vertical space).
+pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
     (
         Node {
-            padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
+            min_width,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
             border: UiRect::all(Val::Px(1.0)),
             ..default()
         },

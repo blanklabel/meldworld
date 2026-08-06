@@ -29,6 +29,7 @@ mod ambient; // client-side decorative life: world-snapped grass scatter + biome
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Last City hub: districts, plaza, HUD
 mod flags; // launch-time `MELD_*` / `?query` toggles
+mod menu; // the three-column cascading main menu (nav -> section -> pane)
 mod mocks; // offline screenshot/demo seeds
 mod music; // one looping background track per screen (assets/music/*.mp3)
 mod netglue; // server messages → state, demo driver, despawn + font install
@@ -41,6 +42,7 @@ pub(crate) use city::*;
 pub(crate) use flags::*;
 pub(crate) use mocks::*;
 pub(crate) use netglue::*;
+pub(crate) use menu::*;
 pub(crate) use overlays::*;
 pub(crate) use overworld::*;
 pub(crate) use screens::*;
@@ -153,6 +155,7 @@ fn main() {
         .init_resource::<Overlay>()
         .init_resource::<OwInterp>()
         .init_resource::<OverlayTab>()
+        .init_resource::<MainMenu>()
         .init_resource::<EquipSelection>()
         .init_resource::<EquipPicker>()
         .init_resource::<OverlayCursor>()
@@ -344,13 +347,13 @@ fn main() {
             (
                 gear_click,
                 formation_click,
-                overlay_tab_click,
-                equip_hero_switch_click,
-                overlay_nav_input,
+                main_menu_input,
                 withdraw_click,
                 render_loot_report,
                 level_up_screen,
                 unlock_banner,
+                menu::render_main_menu,
+                main_menu_click,
                 build_world_walls,
                 sync_chests,
                 auto_open_chest,
@@ -391,9 +394,7 @@ fn main() {
                 overlay_input,
                 render_overlay,
                 gear_click,
-                overlay_tab_click,
-                equip_hero_switch_click,
-                overlay_nav_input,
+
                 withdraw_click,
                 category_button_click,
                 picker_unequip_click,
@@ -1631,9 +1632,8 @@ struct MenuEntry {
 /// straight from the shared registry: the name, the order, the unlock level and the
 /// tooltip are all one definition (`meld_proto::skills`).
 fn skill_entries(class: &str, hero_level: i32) -> Vec<MenuEntry> {
-    meld_proto::skills::skills_for_class(class)
+    meld_proto::skills::skills_for_class_at(class, hero_level)
         .into_iter()
-        .filter(|d| hero_level >= d.unlock)
         .map(|d| MenuEntry {
             label: d.name.to_string(),
             action: EntryAction::Skill(d.key),

@@ -356,8 +356,56 @@ burns on death/leave; some is single-use. See
     what makes it a counter rather than a re-skin. Its old kinetic kit is **reserved
     for the Order of the Iron Hull**, a future monk class; `iron_hull` is no longer a
     deserialization alias, so that class can claim its own key.
-  - **Remains:** the Explorer/Shifter overworld role swap (the Shifter's dungeon and
-    item senses), and ability *ranks* (an owned ability growing stronger at depth).
+  - *Also shipped:* **the three-column menu** (`menu.rs`) — a Dragon-Quest-remake
+    cascade. Column one is the nav (*Items / Materials / Party / Map*); choosing one
+    opens column two to its right; from Party, a hero's **Equipment** or
+    **Abilities** button opens column three. The nav never leaves, so Back steps out
+    one column at a time. Party shows HP, the class's own resource (this ATB
+    adaptation has no MP), EXP and stats, with the formation toggle on the hero's own
+    cell. **The org rank rides beside the class name** — `Explorer - Pioneer` — scaled
+    from the lore's D&D levels (cap 20) to ours (cap 255): ranks at 1/25/65/115/165/215.
+  - *Also shipped:* **unlock hints removed everywhere.** No locked ability rows, no
+    "reach level N", no trigger text — the Abilities pane lists only what a hero has.
+    Discovery is the fun.
+  - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
+    16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
+    cost a step up in commitment rather than an ever-flatter trickle.
+  - *Also shipped:* **ability distribution by archetype** — the Dragon Quest lesson
+    that not every class should keep learning. `meld_proto::skills::Archetype` splits
+    the roster: **martial** (Hunter, Shifter) gets a short front-loaded kit and scales
+    on *gear* — its ceiling is level 25, because a new button at 80 would make it a
+    caster; **hybrid** (Explorer, Phoenix Guard) reaches 49; **caster** (Psyker,
+    Resonant) runs the whole way to 100, since the kit *is* its progression. A unit
+    test holds each class to its ceiling, so "more abilities" can never quietly become
+    "ten each".
+  - *Also shipped:* the **Resonant's full caster ladder** — Mend All (16), Sanctuary
+    (25), Revitalize (36), Lifewell (49), Bloodbond (64), Martyr (81) and Eternal
+    Bloom (100). Seven abilities of one shape (heal / Regen / Barrier, on one ally or
+    all, paid out of the healer's own HP), so they resolve from a table rather than
+    seven near-identical engine arms.
+  - *Also shipped:* **upgrade chains** — how a martial class progresses without its
+    menu growing. `SkillDef.upgrades` marks an ability as REPLACING an earlier one, and
+    `skills_for_class_at` drops anything superseded, so a Shifter with **Mug** no
+    longer carries **Steal**: the row improved rather than multiplied. Shifter
+    Steal (4) → Mug (25, the same theft with a hit on the way past); Hunter
+    Power Strike (1) → Crushing Blow (16) and Snare (9) → Pin the Prey (25). Tests
+    hold the invariants: an upgrade unlocks later than what it replaces, belongs to the
+    same class, hits harder, and the menu's row count does not change.
+  - ⚠️ **The deep ladder is authored ahead of what is reachable, on purpose.** XP is
+    dive-scoped, and `departure_hub_distance` is hard-coded to the Center Hub in
+    `game.rs`, so `base_run_level` is always 1 and every hero starts every dive at
+    level 1. On the `L + 1` fights-per-level curve that puts level 16 at ~152 fights
+    *in one dive* and level 100 out of reach entirely. **Deeper departure hubs are the
+    unblocker** (a hub at distance D starts every hero at `1 + 0.078 × D`), and they
+    are a later feature. The persistence they need is already in place: `class_bests`
+    holds the best level ever reached per class and the Vanguard board holds the
+    deepest distance banked. Until hubs land, the ladder past ~16 is content waiting
+    on a system — not a mis-tuned curve to be rescaled.
+  - **Remains:** the Psyker's deep manifestation ladder — the canonical class doc has
+    Kinetic Wave, Thermal Flux, Phase Shift, Matter Dissolution, Gravity Vortex and
+    Reality Collapse to add, plus Psi Points as a real cost and the Psychic Strain
+    (damage threatening to break a Focus). Each is a focus-kind arm in the engine
+    rather than a table row. Also: the Explorer/Shifter overworld role swap.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
