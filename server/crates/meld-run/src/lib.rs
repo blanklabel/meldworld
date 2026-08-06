@@ -154,6 +154,14 @@ impl PlayerRun {
     /// with an unbounded pack you never choose between the heavy thing and the
     /// valuable thing, and you never turn back early because you are full.
     /// Same-kind stacks merge and do not consume a slot.
+    /// Total slots this run can carry: the party's shared bag plus a pouch per hero.
+    /// A bigger party carries more, but never enough to stop choosing.
+    pub fn carry_capacity(&self, balance: &Balance) -> usize {
+        let heroes = self.hero_levels.len().max(1);
+        (balance.runs.backpack_slots.max(0) as usize)
+            + heroes * (balance.runs.hero_pouch_slots.max(0) as usize)
+    }
+
     pub fn try_carry(&mut self, item: ItemStack, balance: &Balance) -> bool {
         if let Some(stack) = self
             .backpack
@@ -163,7 +171,7 @@ impl PlayerRun {
             stack.quantity += item.quantity;
             return true;
         }
-        if self.backpack.len() >= balance.runs.backpack_slots.max(1) as usize {
+        if self.backpack.len() >= self.carry_capacity(balance).max(1) {
             return false;
         }
         self.backpack.push(item);
@@ -172,7 +180,7 @@ impl PlayerRun {
 
     /// Whether the pack has no room for a NEW kind of item.
     pub fn pack_full(&self, balance: &Balance) -> bool {
-        self.backpack.len() >= balance.runs.backpack_slots.max(1) as usize
+        self.backpack.len() >= self.carry_capacity(balance).max(1)
     }
 
     pub fn hero_level(&self, slot: usize) -> i32 {
@@ -563,6 +571,50 @@ pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
     table[idx].max(0.1)
 }
 
+/// Whether this creature is boss-tier — the encounters that should be measured in
+/// minutes rather than seconds.
+fn is_boss_tier(m: &meld_world::MonsterSpawn) -> bool {
+    !m.boss_kind.is_empty()
+        || matches!(m.encounter_class.as_str(), "gatekeeper" | "undead_rite")
+}
+
+/// The HP a boss needs so that a party attacking flat out spends
+/// `[encounters] boss_target_rounds` rounds killing it.
+///
+/// Derived from the party in front of it rather than from a multiplier, because
+/// party damage scales with gear (roughly linear in distance) while creature HP
+/// scales with `stat_mult` (a different curve) — any fixed multiple drifts, and
+/// measured at the old 7.5x a geared party beat a gatekeeper in 14-67 seconds.
+/// Returns 0 when the encounter holds no boss, which leaves ordinary creatures alone.
+fn boss_hp_for_target_rounds(
+    allies: &[Fighter],
+    enemies: &[EnemyMember],
+    balance: &Balance,
+) -> i32 {
+    if !enemies.iter().any(|(m, _)| is_boss_tier(m)) {
+        return 0;
+    }
+    let armour = enemies
+        .iter()
+        .filter(|(m, _)| is_boss_tier(m))
+        .map(|(m, _)| m.def)
+        .max()
+        .unwrap_or(0);
+    // What the party puts out in one round, at the multiplier of a routine heavy hit.
+    let per_round: i64 = allies
+        .iter()
+        .map(|f| {
+            let scaled = (f.atk as f64 * balance.battle.skill_power_mult).round() as i32;
+            let floored = ((scaled - armour) as f64)
+                .max(scaled as f64 * balance.combat_math.damage_floor_fraction)
+                .round() as i32;
+            floored.max(balance.combat_math.min_damage) as i64
+        })
+        .sum();
+    (per_round * balance.encounters.boss_target_rounds.max(1.0) as i64)
+        .clamp(0, i32::MAX as i64) as i32
+}
+
 pub fn build_battle(
     battle_id: Id,
     party: &[PartyMember],
@@ -582,6 +634,11 @@ pub fn build_battle(
     // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
     // the intended way — quick solo fights early, long ones once the party is full.
     let party_scale = encounter_party_scale(allies.len(), balance);
+    // A BOSS is measured in time, not in a health multiplier. Party damage scales
+    // with gear and creature HP with distance — different curves, so a fixed multiple
+    // drifts into 14-second "boss" fights. Size it here instead, where what the party
+    // can actually put out is known.
+    let boss_floor_hp = boss_hp_for_target_rounds(&allies, enemies, balance);
     for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
         if let Some(h) = hp {
             f.hp = (*h).clamp(0, f.max_hp);
@@ -613,7 +670,16 @@ pub fn build_battle(
                 None,
                 Some(name),
                 m.level,
-                ((m.hp as f64) * party_scale).round() as i32,
+                {
+                    let scaled = ((m.hp as f64) * party_scale).round() as i32;
+                    // Only a BOSS gets the time budget, and only ever upward: a boss
+                    // is never made weaker than its own stat line.
+                    if is_boss_tier(m) {
+                        scaled.max(boss_floor_hp)
+                    } else {
+                        scaled
+                    }
+                },
                 ((m.atk as f64) * party_scale).round() as i32,
                 m.def,
                 m.speed_stat,
@@ -1318,7 +1384,7 @@ mod tests {
             quantity: 1,
             insurance: None,
         };
-        let slots = b.runs.backpack_slots as usize;
+        let slots = r.carry_capacity(&b);
         for n in 0..slots {
             assert!(r.try_carry(item(&format!("kind{n}")), &b), "slot {n} refused early");
         }
@@ -1334,5 +1400,121 @@ mod tests {
             r.backpack.iter().find(|s| s.item_kind == "kind0").unwrap().quantity,
             2
         );
+    }
+
+
+    #[test]
+    fn a_boss_is_measured_in_minutes_and_an_ordinary_creature_is_not() {
+        let b = Balance::load_default().unwrap();
+        let party_of = |gear: i32| -> Vec<PartyMember> {
+            (0..4)
+                .map(|i| {
+                    (
+                        format!("p{i}"),
+                        format!("c{i}"),
+                        CharacterClass::Hunter,
+                        GearBonus { atk: gear, ..Default::default() },
+                    )
+                })
+                .collect()
+        };
+        let runs = {
+            let mut r = InstanceRun::new("i".into(), 0, &b);
+            r.add_party(
+                (0..4)
+                    .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
+                    .collect(),
+            );
+            r
+        };
+        let rounds = |gear: i32, boss: bool, d: i64| -> f64 {
+            let party = party_of(gear);
+            let m = if boss {
+                meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "choirmother", d, 7)
+            } else {
+                meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "", d, 7)
+            };
+            let battle = build_battle(
+                "b".into(),
+                &party,
+                &[(&m, "e0".to_string())],
+                &runs,
+                &b,
+                1,
+                &[],
+                &[],
+            );
+            let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
+            let f = &party_fighters(&party, &runs, &b, &[])[0];
+            let per = (f.atk as f64 * b.battle.skill_power_mult).round().max(1.0) * 4.0;
+            (hp / per).ceil()
+        };
+        // A boss lasts long enough to BE a boss, at any gear level — that is the whole
+        // point of sizing it off the party instead of off a multiplier.
+        for gear in [0i32, 210, 840] {
+            let r = rounds(gear, true, 1000);
+            assert!(
+                r >= b.encounters.boss_target_rounds * 0.75,
+                "a boss fell in {r} rounds with {gear} gear attack"
+            );
+        }
+        // An ordinary creature is emphatically NOT a boss. Taken from a real arena,
+        // because `dungeon_boss` promotes whatever it builds to gatekeeper tier.
+        let arena = meld_world::Arena::generate(&b, 7, false);
+        let ordinary = arena
+            .monsters
+            .iter()
+            .find(|m| m.encounter_class == "standard" && m.boss_kind.is_empty())
+            .expect("a standard creature exists");
+        assert!(!is_boss_tier(ordinary), "a standard creature reads as boss-tier");
+        let party = party_of(210);
+        let battle = build_battle(
+            "b".into(),
+            &party,
+            &[(ordinary, "e0".to_string())],
+            &runs,
+            &b,
+            1,
+            &[],
+            &[],
+        );
+        let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
+        let f = &party_fighters(&party, &runs, &b, &[])[0];
+        let per = (f.atk as f64 * b.battle.skill_power_mult).round().max(1.0) * 4.0;
+        assert!(
+            (hp / per).ceil() < b.encounters.boss_target_rounds * 0.5,
+            "an ordinary creature is being treated as a boss"
+        );
+    }
+
+    #[test]
+    fn capacity_is_the_shared_bag_plus_a_pouch_per_hero() {
+        let b = Balance::load_default().unwrap();
+        let cap = |heroes: usize| {
+            let r = PlayerRun {
+                run_id: "r".into(),
+                player_id: "p".into(),
+                username: "u".into(),
+                character_class: CharacterClass::Hunter,
+                run_level: 1,
+                xp: 0,
+                backpack: vec![],
+                chits: 0,
+                looted_gear: vec![],
+                max_distance_reached: 0,
+                result: None,
+                party_id: 0,
+                hero_levels: vec![1; heroes],
+                hero_xp: vec![0; heroes],
+            };
+            r.carry_capacity(&b)
+        };
+        let bag = b.runs.backpack_slots as usize;
+        let pouch = b.runs.hero_pouch_slots as usize;
+        assert_eq!(cap(1), bag + pouch);
+        assert_eq!(cap(4), bag + 4 * pouch);
+        // A bigger party carries more — but the bag is the bulk of it, so a fourth
+        // hero does not quadruple what you can haul out.
+        assert!(cap(4) < cap(1) * 2, "a full party carries too much more than a solo");
     }
 }

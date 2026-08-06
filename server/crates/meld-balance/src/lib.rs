@@ -72,6 +72,7 @@ pub struct Runs {
     pub encounter_party_scale: Vec<f64>,
     pub xp_split_across_party: bool,
     pub backpack_slots: i32,
+    pub hero_pouch_slots: i32,
     pub extraction_channel_ms: u64,
 
     pub fights_per_level_offset: i32,
@@ -240,6 +241,7 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+    pub boss_target_rounds: f64,
     pub undead_rite_loot_mult: f64,
     pub pack_spread: f64,
     pub undead_rite_chance: f64,
