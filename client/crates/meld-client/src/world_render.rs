@@ -204,6 +204,11 @@ impl WorldAssets {
     }
 
     /// The sprite set for a boss id (see [`BOSS_KEYS`]), or `None` if unknown.
+    /// The palette a boss wears at a given depth band (`boss_band:<n>` on the wire,
+    /// server-assigned from the level it is met at). Band 0 is the sprite's own
+    /// colours; deeper bands push it hotter and darker, so meeting the Choirmother
+    /// at distance 2000 reads as a worse Choirmother before it takes a turn.
+    /// Applied as a material tint rather than new art — one boss, four moods.
     pub(crate) fn boss_frames(&self, key: &str) -> Option<&CharacterFrames> {
         self.boss_chars.get(key)
     }
@@ -1994,5 +1999,17 @@ pub(crate) fn animate_water(
         if let Some(m) = mats.get_mut(handle) {
             m.uv_transform = xf;
         }
+    }
+}
+
+/// Tint for a boss's depth band (`boss_band:<n>`; 0 = the sprite's own colours).
+/// Deeper bands run hotter and darker — the same named boss in a worse mood —
+/// so escalation is visible without four sets of art per boss.
+pub(crate) fn boss_band_tint(band: u8) -> Color {
+    match band {
+        0 => Color::srgb(1.2, 1.15, 1.1),
+        1 => Color::srgb(1.25, 1.0, 0.85),
+        2 => Color::srgb(1.05, 0.82, 1.2),
+        _ => Color::srgb(1.35, 0.72, 0.72),
     }
 }

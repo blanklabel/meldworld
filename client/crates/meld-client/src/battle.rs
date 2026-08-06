@@ -201,7 +201,16 @@ pub(crate) fn spawn_enemy_actor(
     let boss_key = c.statuses.iter().find_map(|s| s.strip_prefix("boss:"));
     let boss_frames = boss_key.and_then(|k| wa.boss_frames(k));
     let h = if boss_frames.is_some() { h * 1.5 } else { h };
-    let base_tint = Color::srgb(1.2, 1.15, 1.1);
+    // PG-2: the same boss met deeper wears a darker palette (`boss_band:<n>`,
+    // server-assigned from the level it is met at). Only a named boss has a band,
+    // so an ordinary creature keeps the neutral tint.
+    let base_tint = crate::world_render::boss_band_tint(
+        c.statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("boss_band:"))
+            .and_then(|n| n.parse::<u8>().ok())
+            .unwrap_or(0),
+    );
     // The diamond marker hovers just above the sprite's head (its tip reaches down
     // toward the head, so keep a small gap above `h`).
     let marker_y = h + 0.45;

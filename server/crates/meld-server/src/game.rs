@@ -30,6 +30,19 @@ use meld_world::{Arena, Area};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// What one player forfeits when the party flees a fight: rolled per stack, so the
+/// mutable borrow of the runs ends before the messages go out.
+struct FleeLoss {
+    pid: String,
+    dropped: Vec<ItemStack>,
+    lost_chits: i64,
+    /// The gear still in the pack AFTER the drop roll (what the client should show).
+    gear: Vec<LootGear>,
+    /// Whether the roll actually took a piece, so we only persist when it did.
+    gear_changed: bool,
+}
+
+
 /// Events fed into the game loop from connection tasks.
 pub enum ServerEvent {
     /// A socket completed the `session.authenticate` handshake.
@@ -5133,9 +5146,7 @@ impl WorldActor {
                         a.state = "active".to_string();
                     }
                 }
-                // (player_id, run_id, dropped items, chits lost, gear snapshot, gear changed)
-                let mut losses: Vec<(String, Vec<ItemStack>, i64, Vec<LootGear>, bool)> =
-                    Vec::new();
+                let mut losses: Vec<FleeLoss> = Vec::new();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     let base = seed ^ hash_str(&r.player_id);
                     let lost_chits = ((r.chits.max(0) as f64) * frac).floor() as i64;
@@ -5156,15 +5167,15 @@ impl WorldActor {
                     r.looted_gear
                         .retain(|g| roll_unit(base ^ hash_str(&g.gear_id)) >= drop_chance);
                     let gear_changed = r.looted_gear.len() != before_gear;
-                    losses.push((
-                        r.player_id.clone(),
+                    losses.push(FleeLoss {
+                        pid: r.player_id.clone(),
                         dropped,
                         lost_chits,
-                        r.looted_gear.clone(),
+                        gear: r.looted_gear.clone(),
                         gear_changed,
-                    ));
+                    });
                 }
-                for (pid, dropped, lost_chits, gear, gear_changed) in losses {
+                for FleeLoss { pid, dropped, lost_chits, gear, gear_changed } in losses {
                     // `battle.ended`/Fled takes the client out of the battle screen and
                     // back to the overworld (see the client's `BattleEnded` handler).
                     // For the Fled outcome these fields report what was DROPPED (not

@@ -1128,7 +1128,7 @@ impl MonsterSpawn {
         let mut m = Self::build(balance, entity_id, base_kind, pos, seed);
         let e = &balance.encounters;
         m.promote(e.gatekeeper_hp_mult, e.gatekeeper_atk_mult, e.gatekeeper_xp_mult, "gatekeeper");
-        m.boss_kind = boss_kind.to_string();
+        m.become_boss(boss_kind);
         m
     }
 
@@ -1142,6 +1142,17 @@ impl MonsterSpawn {
         self.atk = ((self.atk as f64) * atk_mult).round().max(1.0) as i32;
         self.xp_reward = ((self.xp_reward as f64) * xp_mult).round().max(0.0) as i64;
         self.encounter_class = class.to_string();
+    }
+
+    /// Give this spawn a named boss identity, and with it the boss's OWN lineage
+    /// (FS-4 + PG-2). A boss used to inherit whatever creature it rode in on, so a
+    /// Choirmother fought as a beast; the dead are undead and the made are constructs
+    /// regardless of host.
+    fn become_boss(&mut self, boss_kind: &str) {
+        self.boss_kind = boss_kind.to_string();
+        if let Some(faction) = abilities::boss_faction(boss_kind) {
+            self.faction = faction.to_string();
+        }
     }
 
     /// Roll and apply one champion AFFIX (FS-4) — a stat-twist that makes every
@@ -2013,9 +2024,66 @@ impl Arena {
                 self.monsters[idx].apply_affix(bseed);
                 // FS-4: unique boss mechanics — an Elite fights as one of the
                 // "elite" tier's two named bosses instead of a plain reskin.
-                self.monsters[idx].boss_kind = pick_elite_boss_kind(bseed ^ 0xB055).to_string();
+                self.monsters[idx].become_boss(pick_elite_boss_kind(bseed ^ 0xB055));
             }
 
+            // THE UNDEAD RITE (PG-2): rarely, and never shallow, a spawn becomes a
+            // named UNDEAD boss with a retinue of undead minions — the set-piece that
+            // teaches a party it wants a wall. Uses CR-7's pack machinery (leader +
+            // minions) so it fights as a unit, and is checked BEFORE the ordinary pack
+            // roll so a rite is never demoted into one.
+            let leader_idx = idx;
+            let mut became_rite = false;
+            if i > 0
+                && !self.tutorial
+                && tier_at_distance(balance, pos.x) >= enc.undead_rite_min_tier
+                && self.monsters[leader_idx].encounter_class == "standard"
+                && erng.unit() < enc.undead_rite_chance
+            {
+                became_rite = true;
+                let undead = abilities::bosses_of_faction("undead");
+                let boss = undead[erng.below(undead.len().max(1)).min(undead.len() - 1)];
+                self.monsters[leader_idx].promote(
+                    enc.undead_rite_boss_hp_mult,
+                    enc.undead_rite_boss_atk_mult,
+                    enc.undead_rite_boss_xp_mult,
+                    "undead_rite",
+                );
+                self.monsters[leader_idx].become_boss(boss);
+                self.monsters[leader_idx].apply_affix(erng.next_u64());
+                for _ in 0..enc.undead_rite_minions {
+                    let angle = erng.unit() * std::f64::consts::TAU;
+                    let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
+                    let mpos = corridor_offset(
+                        pos,
+                        dist * angle.cos(),
+                        dist * angle.sin(),
+                        self.radial_half,
+                        self.corridor_lateral.max(1.0),
+                    );
+                    let midx = self.monsters.len();
+                    let mseed = erng.next_u64();
+                    self.monsters.push(MonsterSpawn::build(
+                        balance,
+                        format!("mob-{midx}"),
+                        kind,
+                        mpos,
+                        mseed,
+                    ));
+                    self.monsters[midx].area_min_x = start_x;
+                    self.monsters[midx].area_max_x = end_x;
+                    self.monsters[midx].promote(
+                        enc.undead_rite_minion_hp_mult,
+                        enc.undead_rite_minion_atk_mult,
+                        enc.minion_xp_mult,
+                        "minion",
+                    );
+                    // A rite's retinue is its own dead, whatever the local wildlife is.
+                    self.monsters[midx].faction = "undead".to_string();
+                }
+                // Keep the rite a rite: nothing else groups into it.
+                x += balance.ai.group_radius;
+            }
             // PACKS, on a distance RAMP (`[[encounters.group_ramp]]`): duels while a
             // player learns the ATB, then duos, then mixed triples, then quads. The
             // band is chosen by the spawn's hub distance — which in corridor space is
@@ -2023,10 +2091,10 @@ impl Arena {
             // Rolled on the elite stream so the main placement draws stay
             // byte-identical (determinism tests). Never in the spawn section or the
             // tutorial: onboarding stays calm regardless of the table.
-            let leader_idx = idx;
             let band = enc.group_band_at(pos.x.max(0.0));
             if let Some(band) = band {
                 if i > 0
+                    && !became_rite
                     && !self.tutorial
                     && band.size > 1
                     && self.monsters[leader_idx].encounter_class == "standard"
@@ -3450,6 +3518,11 @@ fn nudge_to_walkable(p: Position, off: (f32, f32)) -> Position {
 /// Bend a corridor point (`x` = radius axis, `y` = lateral axis) into the WG-4 fan:
 /// `x → radius`, `y → bearing`. The one true forward map, shared by `radialize` and
 /// streaming so every bend site agrees (and `Arena::corridorize` inverts it).
+/// The difficulty tier at a corridor x (its hub distance).
+fn tier_at_distance(balance: &Balance, x: f64) -> i32 {
+    Scaling::new(balance).tier(x.max(0.0) as i64) as i32
+}
+
 /// Place a companion `want` world-units from `anchor` in **corridor** space, so it
 /// still lands that far away *after* [`radial_tf`] bends the corridor into the fan.
 ///
@@ -3539,6 +3612,20 @@ fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8)
         }
     }
 }
+
+#[cfg(test)]
+const BOSS_KEYS_FOR_TEST: [&str; 10] = [
+    "gloamhound",
+    "rustfang",
+    "choirmother",
+    "pyrewarden",
+    "sepulcher",
+    "hollowbishop",
+    "ironmaw",
+    "weepingcolossus",
+    "miredrowned",
+    "ashenleviathan",
+];
 
 #[cfg(test)]
 mod tests {
@@ -4535,8 +4622,9 @@ mod tests {
         let mut champions = 0;
         for m in &a.monsters {
             match m.encounter_class.as_str() {
-                // Champions are the affix carriers.
-                "elite" | "gatekeeper" => {
+                // Champions are the affix carriers — and an undead rite's boss is a
+                // champion tier of its own.
+                "elite" | "gatekeeper" | "undead_rite" => {
                     assert!(
                         known.contains(&m.affix.as_str()),
                         "champion affix is known: {:?}",
@@ -5257,6 +5345,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_boss_is_what_it_is_not_what_it_rode_in_on() {
+        // Lineage is the boss's own: the dead are undead wherever they appear, and
+        // the made are constructs. A Choirmother riding a forest beast used to fight
+        // as a beast.
+        for dead in ["choirmother", "hollowbishop", "miredrowned", "sepulcher"] {
+            assert_eq!(abilities::boss_faction(dead), Some("undead"), "{dead}");
+        }
+        for made in ["ironmaw", "rustfang", "gloamhound", "weepingcolossus", "pyrewarden"] {
+            assert_eq!(abilities::boss_faction(made), Some("construct"), "{made}");
+        }
+        assert_eq!(abilities::boss_faction("ashenleviathan"), Some("wyrm"));
+        assert_eq!(abilities::boss_faction("not_a_boss"), None);
+
+        // Every named boss has a lineage, or it would silently keep its host's.
+        for key in BOSS_KEYS_FOR_TEST {
+            assert!(
+                abilities::boss_faction(key).is_some(),
+                "{key} has no lineage"
+            );
+        }
+        assert_eq!(abilities::bosses_of_faction("undead").len(), 4);
+        assert_eq!(abilities::bosses_of_faction("construct").len(), 5);
+    }
+
+    #[test]
+    fn a_boss_grows_a_deeper_kit_and_a_darker_palette() {
+        let b = Balance::load_default().unwrap();
+        // Deep-gated abilities: the same boss, met further out, has more to throw.
+        for boss in ["choirmother", "hollowbishop", "ironmaw", "weepingcolossus"] {
+            let shallow = abilities::creature_abilities(boss)
+                .iter()
+                .filter(|a| a.min_level <= 10)
+                .count();
+            let deep = abilities::creature_abilities(boss)
+                .iter()
+                .filter(|a| a.min_level <= 60)
+                .count();
+            assert!(
+                deep > shallow,
+                "{boss} fights the same at level 60 as at level 10 ({shallow} vs {deep})"
+            );
+        }
+
+        // Palette bands escalate with the level a boss is met at, and the deepest
+        // band lines up with where the deep abilities come online.
+        assert_eq!(abilities::boss_palette_band(1), 0);
+        assert_eq!(abilities::boss_palette_band(45), 1);
+        assert_eq!(abilities::boss_palette_band(90), 2);
+        assert_eq!(abilities::boss_palette_band(200), 3);
+        let _ = &b;
+    }
+
+    #[test]
+    fn the_undead_rite_is_a_boss_with_its_own_dead() {
+        let b = Balance::load_default().unwrap();
+        let mut found = 0;
+        for seed in 0..8u64 {
+            let mut a = Arena::generate(&b, 300 + seed, false);
+            a.ensure_frontier(&b, 1400.0);
+            let rites: Vec<usize> = a
+                .monsters
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.encounter_class == "undead_rite")
+                .map(|(i, _)| i)
+                .collect();
+            for &ri in &rites {
+                found += 1;
+                let boss = &a.monsters[ri];
+                // It IS undead, and it is one of the named dead.
+                assert_eq!(boss.faction, "undead", "a rite led by the living");
+                assert_eq!(abilities::boss_faction(&boss.boss_kind), Some("undead"));
+                // Never shallow: the rite is a set-piece, not an ambush.
+                let d = boss.position.x.hypot(boss.position.y);
+                assert!(
+                    Scaling::new(&b).tier(d as i64) as i32 >= b.encounters.undead_rite_min_tier,
+                    "a rite appeared at distance {d}"
+                );
+                // Its retinue joins the fight, and the retinue is its own dead.
+                let group = a.group_around(ri);
+                assert!(
+                    group.len() >= 3,
+                    "a rite pulled only {} into the fight",
+                    group.len()
+                );
+                for &gi in &group {
+                    if gi != ri {
+                        assert_eq!(a.monsters[gi].faction, "undead", "a living retainer");
+                    }
+                }
+                // Harder than a pack leader, softer than a Gatekeeper.
+                assert!(boss.max_hp > 0 && !boss.affix.is_empty(), "a rite boss with no affix");
+            }
+        }
+        assert!(found > 0, "no undead rite ever spawned across eight worlds");
+
+        // And onboarding never meets one.
+        let tut = Arena::generate(&b, 5, true);
+        assert!(tut.monsters.iter().all(|m| m.encounter_class != "undead_rite"));
     }
 }
 

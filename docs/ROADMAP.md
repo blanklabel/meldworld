@@ -302,9 +302,20 @@ burns on death/leave; some is single-use. See
     `PlayerRun::heroes_at_level` is what the slot rules will count. And the one thing that
     *does* persist: **`class_bests`**, the best level ever reached per class — monotonic, so
     a shallow dive never lowers a record earned deep.
+  - *Also shipped:* the **undead rite** — the encounter the Phoenix Guard unlock will
+    hang off. Bosses now have a **lineage of their own** (`abilities::boss_faction`:
+    Choirmother/Hollowbishop/Miredrowned/Sepulcher are *undead*; Ironmaw/Rustfang/
+    Gloamhound/Weeping Colossus/Pyrewarden are *constructs*) instead of inheriting the
+    faction of whatever creature they were promoted from. Past tier 4 a spawn can become
+    an **undead boss with four undead minions** (`[encounters] undead_rite_*`) — a pack
+    with a champion at its head, harder than an Elite and short of a Gatekeeper, and
+    fenced off so no ordinary pack merges into it. Every boss also gained a **deep-gated
+    ability** (level 45+) and a **palette band** that darkens with the level it is met at
+    (`boss_palette_band` → `boss_band:<n>` on the wire → the client's material tint), so
+    the same named boss escalates in both kit and look.
   - **Remains:** the unlock registry + party-slot/class gating + banners (`CL-1`),
-    the ability ladder and tooltips, the Explorer/Shifter role swap, the undead-boss
-    encounter, and the frosted-glass menu pass.
+    the ability ladder and tooltips, the Explorer/Shifter role swap, and the
+    frosted-glass menu pass.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
