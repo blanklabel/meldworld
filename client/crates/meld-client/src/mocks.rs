@@ -185,8 +185,22 @@ pub(crate) fn mock_overlay_setup(
     mut backpack: ResMut<RunBackpack>,
     mut picker: ResMut<EquipPicker>,
     mut unlocks: ResMut<UnlocksRes>,
+    mut main_menu: ResMut<MainMenu>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    // Open the cascade at a given depth for screenshots.
+    if let Some(spec) = menu_flag() {
+        let (section, pane) = match spec.as_str() {
+            "items" => (Some(MenuSection::Items), None),
+            "materials" => (Some(MenuSection::Materials), None),
+            "map" => (Some(MenuSection::Map), None),
+            "party.abilities" => (Some(MenuSection::Party), Some(MenuPane::Abilities)),
+            "party.equipment" => (Some(MenuSection::Party), Some(MenuPane::Equipment)),
+            _ => (Some(MenuSection::Party), None),
+        };
+        main_menu.section = section;
+        main_menu.pane = pane;
+    }
     // CL-1: queue an unlock banner with no server behind it, and show the roster
     // with only what a fresh account owns, so both surfaces are screenshottable.
     if let Some(key) = unlock_mockup_flag() {

@@ -356,8 +356,23 @@ burns on death/leave; some is single-use. See
     what makes it a counter rather than a re-skin. Its old kinetic kit is **reserved
     for the Order of the Iron Hull**, a future monk class; `iron_hull` is no longer a
     deserialization alias, so that class can claim its own key.
-  - **Remains:** the Explorer/Shifter overworld role swap (the Shifter's dungeon and
-    item senses), and ability *ranks* (an owned ability growing stronger at depth).
+  - *Also shipped:* **the three-column menu** (`menu.rs`) — a Dragon-Quest-remake
+    cascade. Column one is the nav (*Items / Materials / Party / Map*); choosing one
+    opens column two to its right; from Party, a hero's **Equipment** or
+    **Abilities** button opens column three. The nav never leaves, so Back steps out
+    one column at a time. Party shows HP, the class's own resource (this ATB
+    adaptation has no MP), EXP and stats, with the formation toggle on the hero's own
+    cell. **The org rank rides beside the class name** — `Explorer - Pioneer` — scaled
+    from the lore's D&D levels (cap 20) to ours (cap 255): ranks at 1/25/65/115/165/215.
+  - *Also shipped:* **unlock hints removed everywhere.** No locked ability rows, no
+    "reach level N", no trigger text — the Abilities pane lists only what a hero has.
+    Discovery is the fun.
+  - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
+    16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
+    cost a step up in commitment rather than an ever-flatter trickle.
+  - **Remains:** *more* abilities per class to fill the ladder out to 100 (the spacing
+    is in place; the content is 4–6 per class), the Explorer/Shifter overworld role
+    swap, and ability ranks (an owned ability growing stronger at depth).
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

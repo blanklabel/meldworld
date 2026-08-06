@@ -10,6 +10,12 @@
 //! in one row means the battle menu, the abilities view and the server's gate all
 //! read the same line.
 //!
+//! **Unlock levels are square numbers** — 1, 4, 9, 16, 25, 36, … out to about 100.
+//! The XP curve costs `L + 1` fights per level, so cumulative effort grows with the
+//! square of the level; spacing unlocks on squares therefore makes each new ability
+//! cost a *step up* in commitment rather than an ever-flatter trickle, while still
+//! putting several in reach of a new player's first hours.
+//!
 //! **Ranks** are the other half of the ladder ([`docs/proposals/progression-and-unlocks.md`]).
 //! An ability a hero already owns gets stronger at intervals all the way to the
 //! level cap, so level 200 still means something when the last *new* button arrived
@@ -31,10 +37,10 @@ pub struct SkillDef {
     /// What it does, for the battle menu tooltip and the abilities view. Written for
     /// the player: the effect, and the cost or catch.
     pub description: &'static str,
-    /// The rank within the hero's ORGANISATION that this ability comes with (see
-    /// `docs/lore/factions.md`). Levelling is promotion, not just bigger numbers —
-    /// a Phoenix Guard at level 9 is a Luminary, and the ability she just learned is
-    /// what a Luminary is trusted with.
+    /// The rank the order associates with this ability, kept as flavour. The rank a
+    /// hero actually *holds* comes from their level via [`rank_title`] and rides next
+    /// to the class name — abilities now run well past the top rank, so this is a
+    /// note about the ability's station, not the hero's.
     pub rank: &'static str,
 }
 
@@ -55,7 +61,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "field_dressing",
         name: "Field Dressing",
         class: "explorer",
-        unlock: 2,
+        unlock: 4,
         description: "Patch up an ally — or yourself. What a Guide carries instead of a spell.",
         rank: "Traveler",
     },
@@ -63,7 +69,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "read_the_ground",
         name: "Read the Ground",
         class: "explorer",
-        unlock: 5,
+        unlock: 9,
         description: "You know this terrain and it does not: damage plus a steal from the foe's ATB gauge.",
         rank: "Scout",
     },
@@ -71,7 +77,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "set_anchor",
         name: "Set Anchor",
         class: "explorer",
-        unlock: 9,
+        unlock: 16,
         description: "Fix a point of stability in the chaos: Barrier for the WHOLE party.",
         rank: "Pioneer",
     },
@@ -79,7 +85,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "safe_passage",
         name: "Safe Passage",
         class: "explorer",
-        unlock: 13,
+        unlock: 25,
         description: "Nobody walks it alone: Regen for the whole party, turn after turn.",
         rank: "Discoverer",
     },
@@ -87,7 +93,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "a_world_known",
         name: "A World Known",
         class: "explorer",
-        unlock: 17,
+        unlock: 36,
         description: "The order's whole vision, for one moment: every ally's ATB gauge surges. The party goes first.",
         rank: "Globemaster",
     },
@@ -106,7 +112,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "second_wind",
         name: "Second Wind",
         class: "hunter",
-        unlock: 2,
+        unlock: 4,
         description: "Heal yourself. Spends banked Adrenaline — no potion needed.",
         rank: "Stalker",
     },
@@ -114,7 +120,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "snare",
         name: "Snare",
         class: "hunter",
-        unlock: 2,
+        unlock: 9,
         description: "Damage a foe and drain its ATB gauge, stealing the turn it was about to take. A capture starts here. Primes it for a Shifter's Backstab.",
         rank: "Stalker",
     },
@@ -122,7 +128,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "frenzy",
         name: "Frenzy",
         class: "hunter",
-        unlock: 5,
+        unlock: 16,
         description: "Your biggest hit, for your biggest Adrenaline cost. It's a victory when the hunt is over.",
         rank: "Shikari",
     },
@@ -139,7 +145,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "kinetic_aegis",
         name: "Kinetic Aegis",
         class: "psyker",
-        unlock: 1,
+        unlock: 4,
         description: "A Focus that plates an ally in Barrier — temporary HP that absorbs damage before their own.",
         rank: "Initiate",
     },
@@ -147,7 +153,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "mind_spike",
         name: "Mind Spike",
         class: "psyker",
-        unlock: 3,
+        unlock: 9,
         description: "A stronger damage Focus. Costs a Focus slot, like every manifestation.",
         rank: "Tracer",
     },
@@ -155,7 +161,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "temporal_anchor",
         name: "Temporal Anchor",
         class: "psyker",
-        unlock: 5,
+        unlock: 16,
         description: "A Focus that drains a foe's ATB gauge every turn. It acts, and acts, and never gets there.",
         rank: "Field Marshal",
     },
@@ -172,7 +178,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "regen_boon",
         name: "Regen Boon",
         class: "resonant",
-        unlock: 2,
+        unlock: 4,
         description: "Grant an ally Regen: HP back at the start of each of their turns.",
         rank: "",
     },
@@ -180,7 +186,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "ward",
         name: "Ward",
         class: "resonant",
-        unlock: 3,
+        unlock: 9,
         description: "Grant an ally Barrier. Cheaper than healing the damage afterwards.",
         rank: "",
     },
@@ -197,7 +203,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "flicker",
         name: "Flicker",
         class: "shifter",
-        unlock: 2,
+        unlock: 4,
         description: "Blink out of the way: self Evasion, which decays each turn.",
         rank: "Shift Rat",
     },
@@ -205,7 +211,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "ransack",
         name: "Ransack",
         class: "shifter",
-        unlock: 3,
+        unlock: 9,
         description: "Damage a foe and rob it of its tempo (ATB gauge). Sets up a Power Strike.",
         rank: "Shift Rat",
     },
@@ -224,7 +230,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "rite_of_rest",
         name: "Rite of Rest",
         class: "phoenix_guard",
-        unlock: 2,
+        unlock: 4,
         description: "Set your feet and speak the rite: a Barrier sized off your own max HP. Nobody gets turned behind you.",
         rank: "Purifier",
     },
@@ -232,7 +238,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "holy_censure",
         name: "Holy Censure",
         class: "phoenix_guard",
-        unlock: 5,
+        unlock: 9,
         description: "Advanced anti-undead discipline: a heavy condemnation that zeroes the foe's gauge outright. It loses its turn, not part of it.",
         rank: "Exemplar",
     },
@@ -240,7 +246,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "purging_light",
         name: "Purging Light",
         class: "phoenix_guard",
-        unlock: 9,
+        unlock: 16,
         description: "Light on EVERY enemy at once — the answer to a pack, and to a rite. Undead burn worst.",
         rank: "Luminary",
     },
@@ -248,7 +254,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "unbroken_vigil",
         name: "Unbroken Vigil",
         class: "phoenix_guard",
-        unlock: 13,
+        unlock: 25,
         description: "Barrier for the WHOLE party. No one is left behind to be turned.",
         rank: "Redeemer",
     },
@@ -256,11 +262,94 @@ pub const SKILLS: &[SkillDef] = &[
         key: "eradication",
         name: "Eradication",
         class: "phoenix_guard",
-        unlock: 17,
+        unlock: 36,
         description: "All strikes must be completed to the point of eradication: the more hurt the foe, the harder this lands. Undead do not get back up.",
         rank: "Apotheosis",
     },
 ];
+
+/// Each order's six-rank ladder, and the character level each rank is gated on.
+///
+/// The lore (docs/lore/factions.md) comes from a **D&D campaign capped at level
+/// 20**, where the senior ranks sit at 5/9/13/17. MELDWORLD caps at 255, so those
+/// are scaled by the same ratio (≈ ×12.75) and rounded to legible numbers —
+/// **1 / 25 / 65 / 115 / 165 / 215**. Unscaled, every rank would be earned in the
+/// first afternoon and the remaining 238 levels would carry no standing at all.
+///
+/// Rank 1 stays at level 1: you hold it the moment the order accepts you.
+///
+/// A rank is **standing, not power** — it gates nothing, and rides next to the
+/// class name because it is fun.
+pub const RANK_LADDERS: &[(&str, &[(&str, i32)])] = &[
+    (
+        "hunter",
+        &[
+            ("Wisker", 1),
+            ("Stalker", 25),
+            ("Shikari", 65),
+            ("Predator", 115),
+            ("Master Hunter", 165),
+            ("Apex", 215),
+        ],
+    ),
+    (
+        "explorer",
+        &[
+            ("Walker", 1),
+            ("Traveler", 25),
+            ("Scout", 65),
+            ("Pioneer", 115),
+            ("Discoverer", 165),
+            ("Globemaster", 215),
+        ],
+    ),
+    (
+        "phoenix_guard",
+        &[
+            ("Initiate", 1),
+            ("Purifier", 25),
+            ("Exemplar", 65),
+            ("Luminary", 115),
+            ("Redeemer", 165),
+            ("Apotheosis", 215),
+        ],
+    ),
+    (
+        "shifter",
+        &[
+            ("Flicker Foot", 1),
+            ("Shift Rat", 25),
+            ("Runner", 65),
+            ("Shifter", 115),
+            ("Void-Dancer", 165),
+            ("The Named", 215),
+        ],
+    ),
+    (
+        "psyker",
+        &[
+            ("Initiate", 1),
+            ("Tracer", 25),
+            ("Field Marshal", 65),
+            ("Lead Investigator", 115),
+            ("Bureau Chief", 165),
+            ("Director", 215),
+        ],
+    ),
+];
+
+/// The org rank a hero of `class` holds at `level` — the highest rank whose level
+/// they have reached. `None` for a class with no order yet (the Resonant).
+pub fn rank_title(class: &str, level: i32) -> Option<&'static str> {
+    RANK_LADDERS
+        .iter()
+        .find(|(c, _)| *c == class)?
+        .1
+        .iter()
+        .filter(|(_, at)| level >= *at)
+        .next_back()
+        .map(|(title, _)| *title)
+}
 
 pub fn skill(key: &str) -> Option<&'static SkillDef> {
     SKILLS.iter().find(|s| s.key == key)
@@ -406,26 +495,52 @@ mod tests {
     }
 
     #[test]
-    fn the_ladder_reaches_the_orders_senior_ranks() {
-        // Every order gates its late ranks on character level 5/9/13/17
-        // (docs/lore/factions.md). A class whose kit stops at level 3 stops
-        // mattering at level 3, which is the whole reason for the deep ranks.
-        let pg = skills_for_class("phoenix_guard");
-        let deepest = pg.iter().map(|s| s.unlock).max().unwrap();
-        assert_eq!(deepest, 17, "the Phoenix Guard's Apotheosis rank is level 17");
-        for want in [1, 2, 5, 9, 13, 17] {
-            assert!(
-                pg.iter().any(|s| s.unlock == want),
-                "no Phoenix Guard ability at rank level {want}: {:?}",
-                pg.iter().map(|s| (s.rank, s.unlock)).collect::<Vec<_>>()
-            );
+    fn abilities_are_spaced_out_to_about_a_hundred_not_bunched_under_ten() {
+        // The point of the ladder is that levelling keeps paying. A kit whose last
+        // ability lands at level 5 stops mattering at level 5.
+        for class in ["hunter", "explorer", "psyker", "resonant", "shifter", "phoenix_guard"] {
+            let kit = skills_for_class(class);
+            let mut levels: Vec<i32> = kit.iter().map(|s| s.unlock).collect();
+            levels.sort();
+            assert_eq!(levels[0], 1, "{class} can do nothing at level 1");
+            // Every unlock is a square number, so each new ability costs a step up in
+            // commitment on the `L + 1` fights-per-level curve.
+            for lv in &levels {
+                let r = (*lv as f64).sqrt().round() as i32;
+                assert_eq!(r * r, *lv, "{class}: level {lv} is not a square");
+            }
+            assert!(*levels.last().unwrap() <= 100, "{class} reaches past 100");
         }
-        // And its ranks are named in ladder order, so a promotion reads as one.
-        let names: Vec<&str> = pg.iter().map(|s| s.rank).collect();
-        assert_eq!(
-            names,
-            vec!["Initiate", "Purifier", "Exemplar", "Luminary", "Redeemer", "Apotheosis"]
+        // The two biggest kits reach deep; nothing is bunched at the bottom.
+        assert!(
+            skills_for_class("phoenix_guard").iter().map(|s| s.unlock).max().unwrap() >= 36,
+            "the Phoenix Guard's ladder is too shallow"
         );
+    }
+
+    #[test]
+    fn a_rank_is_standing_scaled_to_our_level_cap_not_dnds() {
+        // The lore's ranks are D&D levels (cap 20); ours cap at 255, so they are
+        // scaled. Unscaled, every rank would be held by the first afternoon.
+        assert_eq!(rank_title("phoenix_guard", 1), Some("Initiate"));
+        assert_eq!(rank_title("phoenix_guard", 24), Some("Initiate"));
+        assert_eq!(rank_title("phoenix_guard", 25), Some("Purifier"));
+        assert_eq!(rank_title("phoenix_guard", 214), Some("Redeemer"));
+        assert_eq!(rank_title("phoenix_guard", 255), Some("Apotheosis"));
+        assert_eq!(rank_title("hunter", 65), Some("Shikari"));
+        assert_eq!(rank_title("explorer", 115), Some("Pioneer"));
+        // The Resonant has no order, so it holds no rank — and that must not panic.
+        assert_eq!(rank_title("resonant", 200), None);
+        assert_eq!(rank_title("nonsense", 9), None);
+        // Every ladder is six ranks, in ascending level order.
+        for (class, ladder) in RANK_LADDERS {
+            assert_eq!(ladder.len(), 6, "{class} has {} ranks", ladder.len());
+            assert_eq!(ladder[0].1, 1, "{class}'s first rank is not held on joining");
+            for w in ladder.windows(2) {
+                assert!(w[0].1 < w[1].1, "{class}'s ladder is out of order");
+            }
+            assert!(ladder[5].1 <= 255, "{class}'s top rank is unreachable");
+        }
     }
 
     #[test]

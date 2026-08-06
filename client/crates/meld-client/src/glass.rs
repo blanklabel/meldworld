@@ -132,8 +132,10 @@ pub fn hud(width: Val) -> impl Bundle {
     )
 }
 
-/// A box nested inside a panel — a hero cell, a shop row, a stat block.
-pub fn inset() -> impl Bundle {
+/// A box nested inside a panel — a hero cell, a shop row, a stat block. `focused`
+/// brightens its edge; it is a parameter rather than a component the caller adds on
+/// top, because a second `BorderColor` in the same bundle is a runtime panic.
+pub fn inset(focused: bool) -> impl Bundle {
     (
         Node {
             width: Val::Percent(100.0),
@@ -144,7 +146,7 @@ pub fn inset() -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS_DEEP),
-        BorderColor(EDGE_SOFT),
+        BorderColor(if focused { EDGE } else { EDGE_SOFT }),
         BorderRadius::all(Val::Px(5.0)),
     )
 }
