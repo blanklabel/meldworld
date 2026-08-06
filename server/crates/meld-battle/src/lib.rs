@@ -883,7 +883,8 @@ impl Battle {
                 BattleActionKind::Skill => {
                     self.resolve_skill(i, target, skill_kind.as_deref(), Some(action_id))?
                 }
-                // Slice items are always available (no inventory depletion yet).
+                // Inventory-backed: the game loop checks the run backpack before this
+                // and spends one after (see `game.rs`'s Item handling).
                 BattleActionKind::Item => {
                     self.resolve_item(i, item_id.as_deref(), target, Some(action_id))
                 }

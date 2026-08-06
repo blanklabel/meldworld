@@ -326,7 +326,7 @@ pub(crate) fn render_overlay(
         } else {
             let glyph = match kind {
                 "town_portal" => "\u{f0f10}", // portal
-                "salve" | "elixir" => "\u{f0f04}", // flask
+                k if meld_proto::consumables::is_consumable(k) => "\u{f0f04}", // flask
                 "chits" => "\u{f0114}",       // coin
                 _ => "\u{f0a7d}",              // generic cube
             };

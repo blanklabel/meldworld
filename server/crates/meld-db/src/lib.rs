@@ -1471,7 +1471,7 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key, max_durability, damage_modifiers, slot, family, armor_weight FROM gear
+                    "SELECT equipped_hero_slot, atk_bonus, def_bonus, spd_bonus, class_key, max_durability, damage_modifiers, slot, family, armor_weight, affixes, unique_key, set_key FROM gear
                      WHERE owner_player_id = $1 AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)

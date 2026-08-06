@@ -1583,7 +1583,8 @@ enum EntryAction {
 
 /// One selectable row in the command window.
 struct MenuEntry {
-    label: &'static str,
+    /// Owned, because an item row carries its count ("Bloom Salve x2").
+    label: String,
     action: EntryAction,
 }
 
@@ -1594,7 +1595,7 @@ fn skill_entries(skills: &[(&'static str, &'static str)], hero_level: i32) -> Ve
         .iter()
         .filter(|(_, kind)| meld_proto::skills::is_unlocked(kind, hero_level))
         .map(|(label, kind)| MenuEntry {
-            label,
+            label: (*label).to_string(),
             action: EntryAction::Skill(kind),
         })
         .collect()
@@ -1604,8 +1605,16 @@ fn skill_entries(skills: &[(&'static str, &'static str)], hero_level: i32) -> Ve
 /// Hold` and the Manifest page lists the manifestations unlocked at `hero_level`. The
 /// dynamic pages (Target, Revoke) draw their rows from live battle state instead
 /// ([`BattleMenu::rows`]), so they return empty here.
-fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry> {
-    let e = |label, action| MenuEntry { label, action };
+/// Build the command menu for one page. `held` is the run backpack as
+/// `(item_kind, quantity)` — the Items page is built from what the party ACTUALLY
+/// carries, so it can never offer a potion the server will refuse.
+fn menu_entries(
+    level: MenuLevel,
+    class: &str,
+    hero_level: i32,
+    held: &[(String, i32)],
+) -> Vec<MenuEntry> {
+    let e = |label: &str, action| MenuEntry { label: label.to_string(), action };
     match level {
         MenuLevel::Root if class == "psyker" => vec![
             e("Focus", EntryAction::OpenManifest),
@@ -1678,11 +1687,30 @@ fn menu_entries(level: MenuLevel, class: &str, hero_level: i32) -> Vec<MenuEntry
             v.push(e("Back", EntryAction::Back));
             v
         }
-        MenuLevel::Items => vec![
-            e("Salve", EntryAction::Item("salve")),
-            e("Elixir", EntryAction::Item("elixir")),
-            e("Back", EntryAction::Back),
-        ],
+        // GR-4: only the potions the party is carrying, with counts. The old page
+        // offered a fixed "Salve"/"Elixir" pair — and "salve" is not even a real item
+        // kind, so that row could only ever come back "Out of salve".
+        MenuLevel::Items => {
+            let mut v: Vec<MenuEntry> = meld_proto::consumables::CONSUMABLES
+                .iter()
+                .filter_map(|def| {
+                    let qty = held
+                        .iter()
+                        .find(|(kind, _)| kind == def.key)
+                        .map(|(_, q)| *q)
+                        .unwrap_or(0);
+                    (qty > 0).then(|| MenuEntry {
+                        label: format!("{} x{qty}", def.name),
+                        action: EntryAction::Item(def.key),
+                    })
+                })
+                .collect();
+            if v.is_empty() {
+                v.push(e("(no potions)", EntryAction::Back));
+            }
+            v.push(e("Back", EntryAction::Back));
+            v
+        }
         MenuLevel::Manifest => {
             let mut v: Vec<MenuEntry> = MANIFESTS
                 .iter()
@@ -1975,5 +2003,48 @@ mod tests {
         b.combatants[0].statuses = vec!["class:psyker".into(), "focus:gravity_well:1".into()];
         assert_eq!(manifest_verb(&b, "h1", "gravity_well"), "reinforce");
         assert_eq!(manifest_verb(&b, "h1", "mind_spike"), "cast");
+    }
+}
+
+#[cfg(test)]
+mod potion_menu_tests {
+    use super::*;
+
+    fn held(pairs: &[(&str, i32)]) -> Vec<(String, i32)> {
+        pairs.iter().map(|(k, q)| ((*k).to_string(), *q)).collect()
+    }
+
+    #[test]
+    fn the_items_page_offers_only_potions_the_party_carries() {
+        // Nothing held: one dead row plus Back, so the page cannot offer a potion
+        // the server would refuse with "Out of …".
+        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[]);
+        assert_eq!(empty.len(), 2, "{:?}", empty.iter().map(|e| &e.label).collect::<Vec<_>>());
+        assert!(empty[0].label.contains("no potions"));
+
+        // Held potions appear with counts, in registry order.
+        let rows = menu_entries(
+            MenuLevel::Items,
+            "explorer",
+            5,
+            &held(&[("bloom_salve", 3), ("bulwark_tonic", 1)]),
+        );
+        let labels: Vec<&str> = rows.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, vec!["Bloom Salve x3", "Bulwark Tonic x1", "Back"]);
+        // The row carries the REGISTRY key, so the server recognises what it is sent.
+        assert!(matches!(rows[0].action, EntryAction::Item("bloom_salve")));
+
+        // Materials and the Town Portal are not drinkable, so they never appear.
+        let rows = menu_entries(
+            MenuLevel::Items,
+            "explorer",
+            5,
+            &held(&[("bloom_herb", 9), ("town_portal", 2)]),
+        );
+        assert!(rows[0].label.contains("no potions"), "{:?}", rows[0].label);
+
+        // A zero stack is not an offer.
+        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]));
+        assert!(rows[0].label.contains("no potions"));
     }
 }
