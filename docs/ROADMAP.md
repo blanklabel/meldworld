@@ -612,10 +612,16 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   touching any of them pulls the whole pack in. `pack_mixed_chance` makes some minions a
   *different* species than their leader (mixed groups). Pack frequency and size scale
   with tier; never in the spawn section or the tutorial, so onboarding stays calm.
-  Measured, same seeds: **1.08 → 2.07** creatures per fight at reach 500, **1.10 → 2.32**
-  at 3000, biggest encounter 3 → 5, solo encounters 192 → 65. All knobs are
-  `[encounters]` `[TUNABLE]`s, and `report_encounter_composition_by_depth` prints the
-  distribution for tuning (`cargo test -p meld-world report_encounter -- --nocapture`).
+  Group size follows an explicit **distance ramp** (`[[encounters.group_ramp]]`), not a
+  dice roll, so progression is a readable curve: **duels to 150** (learn the ATB one
+  creature at a time) → **duos 150–250** (same species) → **mixed triples 250–350** →
+  **quads 350–500** → **fives past 500**. Each band carries its own `chance` (some spawns
+  stay solo, so a band has texture) and `mixed_chance` (species mixing ramps too). A pack
+  also clears `[ai] group_radius` behind it, so two adjacent packs can't merge into an
+  accidental eight-creature fight. Measured per band: 1.01 / 1.57 / 2.04 / 2.96 / 3.75
+  creatures per fight, biggest 2 / 2 / 3 / 4 / 5 — up from a flat ~1.08 everywhere.
+  `the_encounter_ramp_climbs_band_by_band` prints the table for tuning
+  (`cargo test -p meld-world the_encounter_ramp -- --nocapture`).
   Feeds `P1-2` (combat feel) and is the placement half of the ecology epic's
   herds/alphas line.
 - [ ] **CR-2 — Creatures fight each other, visibly, with consequences.** 🟡

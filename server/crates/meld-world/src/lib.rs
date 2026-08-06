@@ -1923,60 +1923,67 @@ impl Arena {
                 self.monsters[idx].boss_kind = pick_elite_boss_kind(bseed ^ 0xB055).to_string();
             }
 
-            // PACKS: a lone creature against four heroes is not a fight. A share of
-            // spawns become a LEADER (bigger, but under an Elite) surrounded by
-            // visibly lesser minions, clustered inside `[ai] group_radius` so
-            // touching one pulls the whole pack in. Rolled on the elite stream so
-            // the main placement draws stay byte-identical (determinism tests).
-            // Never in the spawn section or the tutorial — onboarding stays calm.
+            // PACKS, on a distance RAMP (`[[encounters.group_ramp]]`): duels while a
+            // player learns the ATB, then duos, then mixed triples, then quads. The
+            // band is chosen by the spawn's hub distance — which in corridor space is
+            // simply its x — so the ramp is a readable curve rather than a dice roll.
+            // Rolled on the elite stream so the main placement draws stay
+            // byte-identical (determinism tests). Never in the spawn section or the
+            // tutorial: onboarding stays calm regardless of the table.
             let leader_idx = idx;
-            let tier = Scaling::new(balance).tier(pos.x.max(0.0) as i64) as i32;
-            if i > 0
-                && !self.tutorial
-                && self.monsters[leader_idx].encounter_class == "standard"
-                && erng.unit() < enc.pack_chance_at(tier)
-            {
-                self.monsters[leader_idx].promote(
-                    enc.leader_hp_mult,
-                    enc.leader_atk_mult,
-                    enc.leader_xp_mult,
-                    "leader",
-                );
-                let minions = enc.pack_minions_at(tier);
-                for _ in 0..minions {
-                    // Mixed groups: sometimes the littles are a different species
-                    // than what they follow.
-                    let mkind = if erng.unit() < enc.pack_mixed_chance {
-                        kinds[erng.below(kinds.len())]
-                    } else {
-                        kind
-                    };
-                    let angle = erng.unit() * std::f64::consts::TAU;
-                    let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
-                    let mpos = corridor_offset(
-                        pos,
-                        dist * angle.cos(),
-                        dist * angle.sin(),
-                        self.radial_half,
-                        self.corridor_lateral.max(1.0),
+            let band = enc.group_band_at(pos.x.max(0.0));
+            if let Some(band) = band {
+                if i > 0
+                    && !self.tutorial
+                    && band.size > 1
+                    && self.monsters[leader_idx].encounter_class == "standard"
+                    && erng.unit() < band.chance
+                {
+                    self.monsters[leader_idx].promote(
+                        enc.leader_hp_mult,
+                        enc.leader_atk_mult,
+                        enc.leader_xp_mult,
+                        "leader",
                     );
-                    let midx = self.monsters.len();
-                    let mseed = erng.next_u64();
-                    self.monsters.push(MonsterSpawn::build(
-                        balance,
-                        format!("mob-{midx}"),
-                        mkind,
-                        mpos,
-                        mseed,
-                    ));
-                    self.monsters[midx].area_min_x = start_x;
-                    self.monsters[midx].area_max_x = end_x;
-                    self.monsters[midx].promote(
-                        enc.minion_hp_mult,
-                        enc.minion_atk_mult,
-                        enc.minion_xp_mult,
-                        "minion",
-                    );
+                    for _ in 0..band.size - 1 {
+                        // Mixed groups: past the duo band, some of the littles are a
+                        // different species than what they follow.
+                        let mkind = if erng.unit() < band.mixed_chance {
+                            kinds[erng.below(kinds.len())]
+                        } else {
+                            kind
+                        };
+                        let angle = erng.unit() * std::f64::consts::TAU;
+                        let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
+                        let mpos = corridor_offset(
+                            pos,
+                            dist * angle.cos(),
+                            dist * angle.sin(),
+                            self.radial_half,
+                            self.corridor_lateral.max(1.0),
+                        );
+                        let midx = self.monsters.len();
+                        let mseed = erng.next_u64();
+                        self.monsters.push(MonsterSpawn::build(
+                            balance,
+                            format!("mob-{midx}"),
+                            mkind,
+                            mpos,
+                            mseed,
+                        ));
+                        self.monsters[midx].area_min_x = start_x;
+                        self.monsters[midx].area_max_x = end_x;
+                        self.monsters[midx].promote(
+                            enc.minion_hp_mult,
+                            enc.minion_atk_mult,
+                            enc.minion_xp_mult,
+                            "minion",
+                        );
+                    }
+                    // Clear the grouping radius before the next spawn, or two packs
+                    // placed a normal gap apart merge into one oversized fight — the
+                    // ramp promises a quad, not an accidental eight.
+                    x += balance.ai.group_radius;
                 }
             }
 
@@ -4966,39 +4973,95 @@ mod tests {
     }
 
     #[test]
-    fn report_encounter_composition_by_depth() {
-        // Not an assertion so much as a readout: what a dive actually MEETS now,
-        // by depth band. Printed with `-- --nocapture` when tuning `[encounters]`.
+    fn the_encounter_ramp_climbs_band_by_band() {
+        // The readout Don asked for: average encounter size per distance band, so the
+        // ramp is visible rather than asserted. Run with
+        // `cargo test -p meld-world the_encounter_ramp -- --nocapture`.
         let b = Balance::load_default().unwrap();
-        for &(seed, reach) in &[(4u64, 500.0f64), (11, 1500.0), (23, 3000.0)] {
-            let mut a = Arena::generate(&b, seed, false);
-            a.ensure_frontier(&b, reach);
-            let mut groups: Vec<usize> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for (i, m) in a.monsters.iter().enumerate() {
-                if seen.contains(&i) || m.defeated {
-                    continue;
+        let bands: [(f64, f64, &str); 5] = [
+            (0.0, 150.0, "0-150   duels"),
+            (150.0, 250.0, "150-250 duos"),
+            (250.0, 350.0, "250-350 triples"),
+            (350.0, 500.0, "350-500 quads"),
+            (500.0, 1200.0, "500+    deep"),
+        ];
+        // Pool several seeds per band so one unlucky world does not read as the curve.
+        let mut avg_by_band = Vec::new();
+        for (lo, hi, label) in bands {
+            let (mut creatures, mut fights, mut biggest, mut mixed_fights) = (0usize, 0usize, 0usize, 0usize);
+            for seed in 0..6u64 {
+                let mut a = Arena::generate(&b, 40 + seed, false);
+                a.ensure_frontier(&b, hi + 200.0);
+                let mut seen = std::collections::HashSet::new();
+                for (i, m) in a.monsters.iter().enumerate() {
+                    if seen.contains(&i) || m.defeated {
+                        continue;
+                    }
+                    let d = m.position.x.hypot(m.position.y);
+                    let g = a.group_around(i);
+                    for &j in &g {
+                        seen.insert(j);
+                    }
+                    if d < lo || d >= hi {
+                        continue;
+                    }
+                    let kinds: std::collections::HashSet<&str> =
+                        g.iter().map(|&j| a.monsters[j].monster_kind.as_str()).collect();
+                    if kinds.len() > 1 {
+                        mixed_fights += 1;
+                    }
+                    creatures += g.len();
+                    fights += 1;
+                    biggest = biggest.max(g.len());
                 }
-                let g = a.group_around(i);
-                for &j in &g {
-                    seen.insert(j);
-                }
-                groups.push(g.len());
             }
-            let total: usize = groups.iter().sum();
-            let solo = groups.iter().filter(|&&n| n == 1).count();
-            let biggest = groups.iter().copied().max().unwrap_or(0);
-            let avg = total as f64 / groups.iter().len().max(1) as f64;
-            let leaders = a.monsters.iter().filter(|m| m.encounter_class == "leader").count();
+            let avg = creatures as f64 / fights.max(1) as f64;
             println!(
-                "reach {reach:>6}: {} encounters, {total} creatures, avg {avg:.2}/fight, {solo} solo, biggest {biggest}, {leaders} packs",
-                groups.len()
+                "{label:<16} {fights:>4} fights, avg {avg:.2} creatures, biggest {biggest}, {mixed_fights} mixed"
             );
-            // The floor this layer exists to clear: a dive must not be a string of
-            // duels. Deliberately loose — the shape is a `[encounters]` tuning call.
-            assert!(avg > 1.5, "fights are still nearly all duels at reach {reach}: avg {avg:.2}");
-            assert!(biggest >= 4, "no real pack ever formed at reach {reach}");
+            avg_by_band.push((label, avg, biggest, mixed_fights, fights));
         }
+
+        // The shallow band stays a duel — a new player learns the ATB one creature at
+        // a time (the `[[encounters.group_ramp]]` table starts at 150).
+        assert!(
+            avg_by_band[0].1 < 1.35,
+            "the first 150 tiles should be near-duels: avg {:.2}",
+            avg_by_band[0].1
+        );
+        // And it climbs from there, band by band, without needing every band to be
+        // strictly bigger than the last (bands overlap as sections straddle a border).
+        assert!(
+            avg_by_band[1].1 > avg_by_band[0].1,
+            "duos did not exceed duels: {:.2} vs {:.2}",
+            avg_by_band[1].1,
+            avg_by_band[0].1
+        );
+        assert!(
+            avg_by_band[3].1 > avg_by_band[1].1,
+            "quads did not exceed duos: {:.2} vs {:.2}",
+            avg_by_band[3].1,
+            avg_by_band[1].1
+        );
+        // Group SIZE ceiling climbs with the table.
+        assert!(avg_by_band[1].2 >= 2, "no duo ever formed");
+        assert!(avg_by_band[3].2 >= 4, "no quad ever formed");
+        // Mixing ramps too. A duo band fight can still READ as mixed when an
+        // unrelated neighbour falls inside the grouping radius — that is proximity,
+        // not the pack's own `mixed_chance` — so compare shares rather than assert an
+        // absolute zero.
+        let mixed_share = |i: usize| avg_by_band[i].3 as f64 / avg_by_band[i].4.max(1) as f64;
+        assert!(
+            mixed_share(1) < 0.10,
+            "duos should be near-uniform species: {:.0}% mixed",
+            mixed_share(1) * 100.0
+        );
+        assert!(
+            mixed_share(2) > mixed_share(1) * 2.0,
+            "species mixing did not ramp at the triple band: {:.0}% vs {:.0}%",
+            mixed_share(2) * 100.0,
+            mixed_share(1) * 100.0
+        );
     }
 }
 
