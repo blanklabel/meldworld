@@ -42,11 +42,12 @@ encounter_party_scale = [1.0, 1.9, 3.0, 4.4]
 # lone hero absorbs the whole lesson, four share it. This is what makes the early
 # solo era level fast and the late four-hero era long, using the same encounters.
 xp_split_across_party = true
-# A dive's carrying capacity — and the pressure that makes extraction a DECISION.
-# Declared but never enforced until now, so the pack was effectively infinite and
-# you never had to choose between the heavy thing and the valuable thing, or turn
-# back early because you were full. Same-kind stacks merge and cost no slot. [TUNABLE]
-backpack_slots = 16                   # limits.md
+# Carrying capacity, and the pressure that makes extraction a DECISION. Two pools:
+# the party's shared BAG, plus a personal pouch per hero — so a bigger party carries
+# more, but never enough to stop choosing. Same-kind stacks merge and cost no slot.
+# [TUNABLE]
+backpack_slots = 40                   # the shared bag (limits.md)
+hero_pouch_slots = 10                 # per hero, on top of the bag
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]
 extraction_channel_ms = 2500
@@ -338,6 +339,23 @@ gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the p
 gatekeeper_atk_mult = 1.6
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
+# A boss is measured in TIME, not in a health multiplier.
+#
+# A multiplier cannot hold a fight length: party damage scales with gear (linear in
+# distance) while creature HP scales with `stat_mult` (a different curve), so any
+# fixed multiple drifts. Measured at the old 7.5x, a geared party of four beat a
+# gatekeeper in 14-67 seconds depending on depth — nowhere near a boss fight.
+#
+# So a boss's HP is derived at battle assembly from what the party facing it can
+# actually put out: enough for `boss_target_rounds` rounds of full-damage attacking.
+# The rest of the five minutes comes from the turns a party spends NOT attacking —
+# healing, reviving, re-warding — which is what the lethality curve now forces.
+# A boss is never made WEAKER than its own stat line.
+#
+# 45 rounds x 4.8s per round is 3.6 minutes of pure attacking; once roughly a third
+# of the party's turns go to healing, reviving and re-warding — which the lethality
+# curve now forces — that lands past the five-minute mark. [TUNABLE]
+boss_target_rounds = 45
 # The undead rite (a risen boss + its dead) is harder than an elite and short of a
 # gatekeeper, so it pays between them. Without its own entry it fell through to the
 # standard 1.0 and paid trash loot for the hardest fight most players will meet.
