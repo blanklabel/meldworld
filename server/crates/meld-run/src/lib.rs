@@ -23,8 +23,35 @@ pub fn base_run_level(distance: i32, balance: &Balance) -> i32 {
 /// XP needed to advance from level `L`: `xp_base × xp_growth_factor^(L-1)`
 /// (CANON.md §B) — the classic "double the requirement each level" curve.
 pub fn xp_to_next(level: i32, balance: &Balance) -> i64 {
-    let steps = (level - 1).max(0) as f64;
-    (balance.runs.xp_base as f64 * balance.runs.xp_growth_factor.powf(steps)).round() as i64
+    // The curve IS its design statement: level L takes (L + offset) fights against a
+    // same-level encounter. Two fights clear level 1, three clear level 2, four clear
+    // level 3. The XP number is derived from the encounter tables rather than tuned
+    // separately, so creature XP and the ladder cannot drift apart.
+    let fights = (level.max(1) + balance.runs.fights_per_level_offset).max(1) as f64;
+    (fights * same_level_encounter_xp(level, balance) as f64).round().max(1.0) as i64
+}
+
+/// What one encounter AT a hero's own level pays. A same-level encounter sits at
+/// `d = 12.5 × level` because `mlevel(d) = round(d / 12.5)` (CANON §B), so the
+/// distance scaling gives its XP directly.
+pub fn same_level_encounter_xp(level: i32, balance: &Balance) -> i64 {
+    let r = &balance.runs;
+    let sc = &balance.world_scaling;
+    let distance = 12.5 * level.max(1) as f64;
+    let mult = (1.0 + distance / sc.stat_mult_base_divisor).powf(sc.xp_distance_exp);
+    (r.xp_reference_creature * mult * r.xp_reference_group)
+        .round()
+        .max(1.0) as i64
+}
+
+/// How many same-level fights level `level` costs — the design statement itself.
+pub fn fights_per_level(level: i32, balance: &Balance) -> i32 {
+    (level.max(1) + balance.runs.fights_per_level_offset).max(1)
+}
+
+/// Total XP to climb from level 1 to `level`.
+pub fn xp_total_to_level(level: i32, balance: &Balance) -> i64 {
+    (1..level.max(1)).map(|l| xp_to_next(l, balance)).sum()
 }
 
 /// One player's ephemeral run state.
@@ -34,7 +61,16 @@ pub struct PlayerRun {
     pub player_id: Id,
     pub username: String,
     pub character_class: CharacterClass,
+    /// The player's headline level — the highest of their heroes'. Kept as one
+    /// number because messages, the loot report and `base_run_level` all want one;
+    /// the per-hero ladders in `hero_levels` are the source of truth.
     pub run_level: i32,
+    /// Per-hero level inside this dive, aligned with the party's slots. Levels are
+    /// dive-scoped (XP never persists); what survives is the account's best-per-class
+    /// record.
+    pub hero_levels: Vec<i32>,
+    /// Per-hero banked XP toward each hero's own next level.
+    pub hero_xp: Vec<i64>,
     pub xp: i64,
     pub backpack: Vec<ItemStack>,
     /// Chits found this run (economy.md S1). Lives in the backpack conceptually;
@@ -57,6 +93,58 @@ impl PlayerRun {
 
     /// Apply victory XP, leveling up as thresholds are crossed. Returns the
     /// number of levels gained.
+    /// Bank `xp` on ONE hero (by party slot) and settle the levels it buys. Only
+    /// living heroes are ever passed here — a hero that fell earns nothing from the
+    /// fight it did not finish. Returns the levels that hero gained.
+    ///
+    /// `party_size` grows the per-hero vectors on first use, seeded at the run's
+    /// `base_run_level`, so a dive from a deeper hub starts every hero deeper.
+    pub fn award_hero_xp(
+        &mut self,
+        slot: usize,
+        party_size: usize,
+        xp: i64,
+        balance: &Balance,
+    ) -> i32 {
+        let size = party_size.max(slot + 1);
+        if self.hero_levels.len() < size {
+            let base = self.run_level;
+            self.hero_levels.resize(size, base);
+            self.hero_xp.resize(size, 0);
+        }
+        if xp <= 0 {
+            return 0;
+        }
+        let cap = balance.runs.max_hero_level;
+        let mut gained = 0;
+        self.hero_xp[slot] += xp;
+        while self.hero_levels[slot] < cap {
+            let need = xp_to_next(self.hero_levels[slot], balance);
+            if need <= 0 || self.hero_xp[slot] < need {
+                break;
+            }
+            self.hero_xp[slot] -= need;
+            self.hero_levels[slot] += 1;
+            gained += 1;
+        }
+        // The headline level follows the best hero, so every message that wants one
+        // number keeps telling the truth.
+        self.run_level = self.hero_levels.iter().copied().max().unwrap_or(self.run_level);
+        gained
+    }
+
+    /// This hero's level inside the dive; the run's headline level until the hero has
+    /// earned anything of its own.
+    pub fn hero_level(&self, slot: usize) -> i32 {
+        self.hero_levels.get(slot).copied().unwrap_or(self.run_level)
+    }
+
+    /// How many of the player's heroes are at or above `level` — what the party-slot
+    /// unlock rules count ("two heroes at 20").
+    pub fn heroes_at_level(&self, level: i32) -> usize {
+        self.hero_levels.iter().filter(|l| **l >= level).count()
+    }
+
     pub fn award_xp(&mut self, xp: i64, balance: &Balance) -> i32 {
         self.xp += xp;
         let mut gained = 0;
@@ -103,6 +191,8 @@ impl InstanceRun {
                 username,
                 character_class,
                 run_level: self.base_run_level,
+                hero_levels: Vec::new(),
+                hero_xp: Vec::new(),
                 xp: 0,
                 backpack: Vec::new(),
                 chits: 0,
@@ -227,6 +317,11 @@ pub fn party_fighters(
 ) -> Vec<Fighter> {
     // Index run level by player once so the per-member lookup is O(1) rather than
     // scanning every run per member (O(party × runs) — both grow with raid size).
+    let run_by_player: HashMap<&str, &PlayerRun> = runs
+        .runs
+        .iter()
+        .map(|r| (r.player_id.as_str(), r))
+        .collect();
     let level_by_player: HashMap<&str, i32> = runs
         .runs
         .iter()
@@ -240,9 +335,13 @@ pub fn party_fighters(
                 .player
                 .get(class_key(*class))
                 .unwrap_or_else(|| balance.player.get("explorer").expect("explorer stats"));
-            let level = level_by_player
+            // Each hero fights at ITS OWN level (dive-scoped): the hero that has been
+            // doing the killing is the hero that got stronger. Falls back to the
+            // player's headline level for a hero that has not earned anything yet.
+            let level = run_by_player
                 .get(player_id.as_str())
-                .copied()
+                .map(|r| r.hero_level(i))
+                .or_else(|| level_by_player.get(player_id.as_str()).copied())
                 .unwrap_or(1);
 
             // Attributes at this level, and the combat stats derived from them.
@@ -528,23 +627,79 @@ mod tests {
             max_distance_reached: 0,
             result: None,
             party_id: 0,
+            hero_levels: Vec::new(),
+            hero_xp: Vec::new(),
         };
-        // xp_to_next(1) = xp_base = 80; xp_to_next(2) = 160 (doubling).
-        let gained = r.award_xp(200, &b);
-        assert!(gained >= 1);
-        assert!(r.run_level >= 2);
-        // 200 XP clears level 1 (80) but not level 1+2 (80+160=240): exactly one level.
-        assert_eq!(gained, 1);
-        assert_eq!(r.xp, 120);
+        // Award exactly the first two levels' cost, then one XP short of the third:
+        // two levels gained, and the remainder carries.
+        let l1 = xp_to_next(1, &b);
+        let l2 = xp_to_next(2, &b);
+        let gained = r.award_xp(l1 + l2 + 3, &b);
+        assert_eq!(gained, 2, "l1={l1} l2={l2}");
+        assert_eq!(r.run_level, 3);
+        assert_eq!(r.xp, 3, "the remainder should carry toward the next level");
     }
 
     #[test]
-    fn xp_curve_doubles_each_level() {
+    fn a_level_costs_exactly_its_number_of_same_level_fights() {
         let b = Balance::load_default().unwrap();
-        assert_eq!(xp_to_next(1, &b), 80);
-        assert_eq!(xp_to_next(2, &b), 160);
-        assert_eq!(xp_to_next(3, &b), 320);
-        assert_eq!(xp_to_next(4, &b), 640);
+        // The design statement, asserted directly: two fights clear level 1, three
+        // clear level 2, four clear level 3.
+        assert_eq!(fights_per_level(1, &b), 2);
+        assert_eq!(fights_per_level(2, &b), 3);
+        assert_eq!(fights_per_level(3, &b), 4);
+        assert_eq!(fights_per_level(30, &b), 31);
+
+        // And the XP cost is exactly that many same-level encounters — so a player
+        // who fights at their own level advances on schedule rather than on a curve
+        // nobody can feel.
+        for level in [1, 2, 5, 20, 100] {
+            let one_fight = same_level_encounter_xp(level, &b);
+            let expected = one_fight * fights_per_level(level, &b) as i64;
+            assert_eq!(
+                xp_to_next(level, &b),
+                expected,
+                "level {level}: {} per fight",
+                one_fight
+            );
+        }
+
+        // A same-level encounter pays more the deeper it is (a level-20 fight is a
+        // level-20 fight, wherever the ladder sits), so the curve rises with it.
+        assert!(same_level_encounter_xp(1, &b) < same_level_encounter_xp(20, &b));
+        assert!(xp_to_next(1, &b) < xp_to_next(20, &b));
+        assert!(xp_to_next(20, &b) < xp_to_next(255, &b));
+    }
+
+    #[test]
+    fn fighting_over_your_level_advances_you_faster() {
+        let b = Balance::load_default().unwrap();
+        // Ten same-level fights at level 1 should carry a hero several levels, since
+        // each of the early levels only wants two or three of them. This is the
+        // player-facing promise: punch up and you climb quicker.
+        let mut r = PlayerRun {
+            run_id: "r".into(),
+            player_id: "p".into(),
+            username: "u".into(),
+            character_class: CharacterClass::Explorer,
+            run_level: 1,
+            xp: 0,
+            backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
+            max_distance_reached: 0,
+            result: None,
+            party_id: 0,
+            hero_levels: Vec::new(),
+            hero_xp: Vec::new(),
+        };
+        let one = same_level_encounter_xp(1, &b);
+        let gained = r.award_xp(one * 10, &b);
+        assert!(
+            gained >= 3,
+            "ten level-1 fights bought only {gained} levels ({one} XP each)"
+        );
+        assert!(r.run_level > 3);
     }
 
     /// A one-hero party at a given level, for attribute-derivation assertions.
@@ -922,4 +1077,50 @@ mod tests {
         assert!(f[0].regen >= b.adventure.synergy_party_regen, "explorer regen {}", f[0].regen);
     }
 
+
+    #[test]
+    fn each_hero_climbs_its_own_ladder_and_the_fallen_climb_nothing() {
+        let b = Balance::load_default().unwrap();
+        let mut r = PlayerRun {
+            run_id: "r".into(),
+            player_id: "p".into(),
+            username: "u".into(),
+            character_class: CharacterClass::Explorer,
+            run_level: 1,
+            xp: 0,
+            backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
+            max_distance_reached: 0,
+            result: None,
+            party_id: 0,
+            hero_levels: Vec::new(),
+            hero_xp: Vec::new(),
+        };
+        let one = same_level_encounter_xp(1, &b);
+
+        // Hero 0 fights; heroes 1-3 do not (or fell). Only hero 0 climbs.
+        let gained = r.award_hero_xp(0, 4, one * 6, &b);
+        assert!(gained >= 2, "six level-1 fights bought {gained} levels");
+        assert!(r.hero_level(0) > r.hero_level(1), "the idle hero climbed too");
+        assert_eq!(r.hero_level(1), 1, "an unearned hero should sit at the base level");
+
+        // The headline level follows the BEST hero, so one-number messages stay true.
+        assert_eq!(r.run_level, r.hero_level(0));
+
+        // Zero XP is a no-op — a dead hero is simply never passed here.
+        let before = r.hero_level(0);
+        assert_eq!(r.award_hero_xp(0, 4, 0, &b), 0);
+        assert_eq!(r.hero_level(0), before);
+
+        // The slot-unlock rules count heroes at a level.
+        assert_eq!(r.heroes_at_level(before), 1);
+        assert_eq!(r.heroes_at_level(1), 4);
+        let _ = r.award_hero_xp(1, 4, one * 6, &b);
+        assert_eq!(r.heroes_at_level(before), 2, "two heroes should now be there");
+
+        // The cap holds per hero.
+        let _ = r.award_hero_xp(2, 4, i64::MAX / 4, &b);
+        assert_eq!(r.hero_level(2), b.runs.max_hero_level);
+    }
 }

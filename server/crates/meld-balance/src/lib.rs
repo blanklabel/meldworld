@@ -71,9 +71,11 @@ pub struct Runs {
     pub base_run_level_per_distance: f64,
     pub backpack_slots: i32,
     pub extraction_channel_ms: u64,
-    /// Level curve: `xp_to_next(L) = xp_base * xp_growth_factor^(L-1)`.
-    pub xp_base: i64,
-    pub xp_growth_factor: f64,
+
+    pub fights_per_level_offset: i32,
+    pub xp_reference_creature: f64,
+    pub xp_reference_group: f64,
+    pub max_hero_level: i32,
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
     pub town_portal_drop_chance: f64,
@@ -276,6 +278,10 @@ pub struct Consumable {
     pub regen_amount: i32,
     pub evasion_pct: i32,
     pub adrenaline_amount: i32,
+    pub revive_hp_fraction: f64,
+    pub insight_mote_xp: i64,
+    pub world_xp_item_chance: f64,
+    pub world_revive_item_chance: f64,
     pub price_bloom_salve: i64,
     pub price_bulwark_tonic: i64,
     pub price_mending_draught: i64,

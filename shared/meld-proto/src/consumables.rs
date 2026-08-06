@@ -32,6 +32,12 @@ pub enum ConsumableEffect {
     Evasion,
     /// Bank Adrenaline (Explorer only; inert on anyone else, like the affix).
     Adrenaline,
+    /// Bring a FALLEN hero back. The only way back up — a level-up no longer
+    /// revives anyone, so a wipe has to be answered with an item.
+    Revive,
+    /// Grant XP to the hero who drinks it. The world's XP is mostly earned; this is
+    /// the part of it you can carry home and choose who to spend on.
+    Experience,
 }
 
 /// One potion.
@@ -48,6 +54,20 @@ pub struct ConsumableDef {
 }
 
 pub const CONSUMABLES: &[ConsumableDef] = &[
+    ConsumableDef {
+        key: "waking_salt",
+        name: "Waking Salt",
+        effect: ConsumableEffect::Revive,
+        tier: 1,
+        description: "Held under the nose of the fallen. Not pleasant. Effective.",
+    },
+    ConsumableDef {
+        key: "insight_mote",
+        name: "Insight Mote",
+        effect: ConsumableEffect::Experience,
+        tier: 1,
+        description: "Someone else's hard-won lesson, bottled. Drink and know it.",
+    },
     ConsumableDef {
         key: "bloom_salve",
         name: "Bloom Salve",
@@ -153,6 +173,14 @@ pub const RECIPES: &[RecipeDef] = &[
         name: "Fury Philtre",
         inputs: &[("ember_ash", 2), ("bog_myrrh", 1)],
         output: "fury_philtre",
+        output_qty: 1,
+        skill: "alchemy",
+    },
+    RecipeDef {
+        key: "waking_salt",
+        name: "Waking Salt",
+        inputs: &[("rime_ore", 1), ("bog_myrrh", 2)],
+        output: "waking_salt",
         output_qty: 1,
         skill: "alchemy",
     },

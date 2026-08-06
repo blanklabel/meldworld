@@ -285,6 +285,26 @@ burns on death/leave; some is single-use. See
 
 ## Epic CL — Classes
 
+- [ ] **PG-1 — Progression foundation: a ladder that reaches 255, and dead heroes earn
+  nothing.** Design: [`proposals/progression-and-unlocks.md`](proposals/progression-and-unlocks.md).
+  - *Shipped:* the level curve **is its design statement** — level L takes `L + 1` fights
+    against a same-level encounter (two clear level 1, three clear level 2, four clear
+    level 3), with the XP number **derived** from the encounter tables rather than tuned
+    separately, so creature XP and the ladder cannot drift apart. The old curve doubled
+    every level, which made the 255 cap unreachable by construction. XP stays
+    **dive-scoped** (depth is the meta-progression: a deeper hub starts a run at a higher
+    `base_run_level`). **A level-up raises nobody** — it tops up the living, and the fallen
+    come back on a **Waking Salt**; the world also sprinkles **Insight Motes** (bankable
+    XP). `[runs] max_hero_level = 255`.
+  - *Also shipped:* **per-hero levels inside the run** — each hero climbs its own ladder
+    from `base_run_level`, so the hero doing the killing is the one that gets stronger, and
+    **a fallen hero earns nothing**; the player's headline level follows their best hero.
+    `PlayerRun::heroes_at_level` is what the slot rules will count. And the one thing that
+    *does* persist: **`class_bests`**, the best level ever reached per class — monotonic, so
+    a shallow dive never lowers a record earned deep.
+  - **Remains:** the unlock registry + party-slot/class gating + banners (`CL-1`),
+    the ability ladder and tooltips, the Explorer/Shifter role swap, the undead-boss
+    encounter, and the frosted-glass menu pass.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
