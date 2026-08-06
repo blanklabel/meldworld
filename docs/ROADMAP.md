@@ -401,11 +401,19 @@ burns on death/leave; some is single-use. See
     holds the best level ever reached per class and the Vanguard board holds the
     deepest distance banked. Until hubs land, the ladder past ~16 is content waiting
     on a system — not a mis-tuned curve to be rescaled.
-  - **Remains:** the Psyker's deep manifestation ladder — the canonical class doc has
-    Kinetic Wave, Thermal Flux, Phase Shift, Matter Dissolution, Gravity Vortex and
-    Reality Collapse to add, plus Psi Points as a real cost and the Psychic Strain
-    (damage threatening to break a Focus). Each is a focus-kind arm in the engine
-    rather than a table row. Also: the Explorer/Shifter overworld role swap.
+  - *Also shipped:* **the Psyker's manifestation ladder to 100**, taken from the
+    canonical class doc and scaled off its D&D tiers: **Kinetic Wave** (25, grinds the
+    whole line), **Thermal Flux** (36, fire-typed so elemental profiles decide),
+    **Matter Dissolution** (49, damage *and* permanent armour corrosion), **Phase
+    Shift** (64, Evasion it keeps topping up), **Dominate Mind** (81, takes the turn
+    outright rather than slowing it) and **Reality Collapse** (100, the line, harder,
+    armour irrelevant). Focus slots now grow 2 → 5 across the same span. The client's
+    hand-kept four-entry manifest list is gone — every surface reads the registry, so
+    it cannot silently stop offering what the engine learned to resolve.
+  - **Remains from the Psyker doc:** Psi Points as a real cost, the Psychic Strain save
+    that threatens a Focus when the Psyker is hit, and per-Manifestation aspects with
+    prerequisites (Pressure → Gravity → Anchor).
+  - **Remains:** the Explorer/Shifter overworld role swap.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

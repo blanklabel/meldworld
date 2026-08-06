@@ -121,8 +121,21 @@ crit_mult = 1.8                  # damage multiplier on a crit
 # casts/reinforces/revokes one. Focus slots and which manifestations are unlocked
 # scale with level. All [TUNABLE].
 psyker_focus_base = 2             # focus slots at level 1
-psyker_focus_per_level = 4        # +1 slot every this many levels
+# +1 slot every this many levels. Scaled from the class doc's ladder (Focus 2 at
+# D&D 1 → 5 at D&D 17), which on our 255 cap puts the 5th slot around level 85.
+psyker_focus_per_level = 28
 psyker_focus_cap = 5             # hard cap on focus slots
+
+# The deep Manifestations (meld_proto::skills; the Psyker is a CASTER archetype, so
+# its ladder runs to level 100). Each multiplier is applied to the Psyker's
+# spell_power on every tick the Focus is held. AoE manifestations are tuned BELOW the
+# single-target ones per target, because they hit the whole line. [TUNABLE]
+psyker_wave_tick_mult = 0.32          # Kinetic Wave (L25): all enemies
+psyker_thermal_tick_mult = 0.62       # Thermal Flux (L36): one foe, fire-typed
+psyker_dissolution_tick_mult = 0.5    # Matter Dissolution (L49): one foe...
+psyker_dissolution_armour_shred = 2   # ...and its armour corrodes this much per tick
+psyker_phase_evasion = 0.06           # Phase Shift (L64): Evasion granted per tick
+psyker_collapse_tick_mult = 0.55      # Reality Collapse (L100): all enemies, armour-ignoring
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
 psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick

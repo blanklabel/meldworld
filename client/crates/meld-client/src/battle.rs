@@ -980,7 +980,7 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
 /// The `&'static str` manifestation kind matching a dynamic `kind` string (from a
 /// combatant's parsed foci), or `None` if it isn't a known manifestation.
 pub(crate) fn manifest_static(kind: &str) -> Option<&'static str> {
-    MANIFESTS.iter().find(|(k, _, _)| *k == kind).map(|(k, _, _)| *k)
+    manifests().into_iter().find(|d| d.key == kind).map(|d| d.key)
 }
 
 /// Cast vs reinforce for a Psyker picking `kind`: reinforce if that manifestation is
@@ -1070,10 +1070,10 @@ pub(crate) fn open_revoke_page(menu: &mut BattleMenu, battle: &BattleData, hero:
     menu.rows = foci
         .iter()
         .filter_map(|(kind, stacks)| {
-            MANIFESTS
-                .iter()
-                .find(|(k, _, _)| *k == kind.as_str())
-                .map(|(k, name, _)| (format!("{name}  x{stacks}"), (*k).to_string()))
+            manifests()
+                .into_iter()
+                .find(|d| d.key == kind.as_str())
+                .map(|d| (format!("{}  x{stacks}", d.name), d.key.to_string()))
         })
         .collect();
     if menu.rows.is_empty() {

@@ -354,7 +354,16 @@ pub fn manifest_unlock_level(kind: &str) -> Option<i32> {
     match kind {
         // The unlock numbers live in one place (meld_proto::skills); this just
         // gates "is a real manifestation" so unknown kinds return None.
-        "gravity_well" | "kinetic_aegis" | "mind_spike" | "temporal_anchor" => {
+        "gravity_well"
+        | "kinetic_aegis"
+        | "mind_spike"
+        | "temporal_anchor"
+        | "kinetic_wave"
+        | "thermal_flux"
+        | "matter_dissolution"
+        | "phase_shift"
+        | "dominate_mind"
+        | "reality_collapse" => {
             Some(meld_proto::skills::unlock_level(kind))
         }
         _ => None,
@@ -505,6 +514,12 @@ pub struct Battle {
     hunter_crushing_blow_mult: f64,
     pin_the_prey_mult: f64,
     pin_the_prey_drain: f64,
+    psyker_wave_tick_mult: f64,
+    psyker_thermal_tick_mult: f64,
+    psyker_dissolution_tick_mult: f64,
+    psyker_dissolution_armour_shred: i32,
+    psyker_phase_evasion: f64,
+    psyker_collapse_tick_mult: f64,
     status_slow_mult: f64,
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
@@ -734,6 +749,12 @@ impl Battle {
             hunter_crushing_blow_mult: balance.battle.hunter_crushing_blow_mult,
             pin_the_prey_mult: balance.battle.pin_the_prey_mult,
             pin_the_prey_drain: balance.battle.pin_the_prey_drain,
+            psyker_wave_tick_mult: balance.battle.psyker_wave_tick_mult,
+            psyker_thermal_tick_mult: balance.battle.psyker_thermal_tick_mult,
+            psyker_dissolution_tick_mult: balance.battle.psyker_dissolution_tick_mult,
+            psyker_dissolution_armour_shred: balance.battle.psyker_dissolution_armour_shred,
+            psyker_phase_evasion: balance.battle.psyker_phase_evasion,
+            psyker_collapse_tick_mult: balance.battle.psyker_collapse_tick_mult,
             status_slow_mult: balance.battle.status_slow_mult,
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
@@ -1797,7 +1818,94 @@ impl Battle {
                     .round() as i32;
                 self.grant_barrier(psyker_i, raw)
             }
+            // Dominate Mind is Temporal Anchor's senior: it does not slow the foe's
+            // gauge, it takes the turn outright, every turn it is held.
             "temporal_anchor" => self.tick_control(psyker_i, kind, stacks, target_id),
+            "dominate_mind" => {
+                let mut effects = self.tick_control(psyker_i, kind, stacks, target_id);
+                if let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) {
+                    self.fighters[t].gauge = 0.0;
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[t].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("dominated".to_string()),
+                        hp_after: self.fighters[t].hp,
+                    });
+                }
+                effects
+            }
+            // Thermal Flux is FIRE-typed, so a creature's elemental profile decides
+            // how much it hurts — unlike the mind-typed Foci.
+            "thermal_flux" => {
+                let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
+                    return Vec::new();
+                };
+                let power = self.fighters[psyker_i].spell_power as f64;
+                let dmg = (power * self.psyker_thermal_tick_mult * stacks as f64).round() as i32;
+                self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Fire)
+            }
+            // Matter Dissolution corrodes: damage, and the target's armour is worn
+            // down permanently for as long as the Focus is held. Armour scales with
+            // distance now, so this is a real contribution to the party's damage and
+            // not just the Psyker's own.
+            "matter_dissolution" => {
+                let mut effects =
+                    self.tick_offense(psyker_i, kind, self.psyker_dissolution_tick_mult, stacks, target_id);
+                if let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) {
+                    let shred = self.psyker_dissolution_armour_shred * stacks as i32;
+                    self.fighters[t].def = (self.fighters[t].def - shred).max(0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[t].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: Some(self.fighters[t].def),
+                        status: Some("corroded".to_string()),
+                        hp_after: self.fighters[t].hp,
+                    });
+                }
+                effects
+            }
+            // Phase Shift holds the Psyker slightly out of true: Evasion that tops up
+            // every turn the Focus is held, instead of decaying away like Flicker's.
+            "phase_shift" => {
+                self.fighters[psyker_i].evasion += self.psyker_phase_evasion * stacks as f64;
+                let pct = (self.fighters[psyker_i].evasion * 100.0).round() as i32;
+                vec![ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[psyker_i].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: Some(pct),
+                    status: Some("evasion".to_string()),
+                    hp_after: self.fighters[psyker_i].hp,
+                }]
+            }
+            // The two area Manifestations: Kinetic Wave grinds the line, and Reality
+            // Collapse does it harder and ignores armour entirely.
+            "kinetic_wave" | "reality_collapse" => {
+                let mult = if kind == "reality_collapse" {
+                    self.psyker_collapse_tick_mult
+                } else {
+                    self.psyker_wave_tick_mult
+                };
+                let power = self.fighters[psyker_i].spell_power as f64;
+                let dmg = (power * mult * stacks as f64).round() as i32;
+                let enemies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut effects = Vec::new();
+                for t in enemies {
+                    effects.extend(
+                        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
+                    );
+                }
+                effects
+            }
             _ => Vec::new(),
         }
     }
@@ -3262,6 +3370,93 @@ mod tests {
             .sum();
         assert_eq!(dmg, 14, "existing tick (7) + reinforced stack tick (7)");
         assert!(foci_of(&battle, "p").iter().any(|s| s == "focus:gravity_well:2"));
+    }
+
+
+    #[test]
+    fn the_deep_manifestations_each_do_their_own_thing() {
+        let b = balance();
+        // A Director-rank Psyker with slots to spare.
+        let mk = || {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![psyker("p", 400, 100, 5)],
+                vec![monster("m1", 100000, 1), monster("m2", 100000, 1)],
+                &b,
+                7,
+            )
+        };
+        let cast = |battle: &mut Battle, kind: &str| {
+            tick_to_ready(battle, "p");
+            battle
+                .submit(
+                    "p",
+                    format!("op:{kind}"),
+                    BattleActionKind::Skill,
+                    Some(vec!["m1".into()]),
+                    Some(format!("cast:{kind}")),
+                    None,
+                )
+                .unwrap_or_else(|e| panic!("{kind} rejected: {e:?}"));
+        };
+
+        // Kinetic Wave grinds the WHOLE line, not one target.
+        let mut wave = mk();
+        cast(&mut wave, "kinetic_wave");
+        for id in ["m1", "m2"] {
+            assert!(player_hp(&wave, id) < 100000, "kinetic_wave missed {id}");
+        }
+
+        // Matter Dissolution corrodes: damage AND the target's armour worn down.
+        let mut diss = mk();
+        let armour_before = {
+            let i = diss.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+            diss.fighters[i].def = 40;
+            40
+        };
+        cast(&mut diss, "matter_dissolution");
+        let i = diss.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        assert!(diss.fighters[i].def < armour_before, "armour was not corroded");
+        assert!(player_hp(&diss, "m1") < 100000, "matter_dissolution dealt no damage");
+
+        // Dominate Mind takes the turn outright, rather than merely slowing it.
+        let mut dom = mk();
+        let i = dom.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        dom.fighters[i].gauge = 0.95;
+        cast(&mut dom, "dominate_mind");
+        assert_eq!(gauge_of(&dom, "m1"), 0.0, "dominate_mind left it a turn");
+
+        // Phase Shift is the Psyker's own defence: Evasion it keeps topping up.
+        let mut phase = mk();
+        cast(&mut phase, "phase_shift");
+        let pi = phase.fighters.iter().position(|f| f.combatant_id == "p").unwrap();
+        assert!(phase.fighters[pi].evasion > 0.0, "phase_shift granted no Evasion");
+
+        // Reality Collapse is the capstone: the whole line, harder than the Wave.
+        let mut collapse = mk();
+        cast(&mut collapse, "reality_collapse");
+        let collapse_dmg = 100000 - player_hp(&collapse, "m1");
+        let wave_dmg = 100000 - player_hp(&wave, "m1");
+        assert!(
+            collapse_dmg > wave_dmg,
+            "the level-100 capstone ({collapse_dmg}) hits softer than the L25 Wave ({wave_dmg})"
+        );
+    }
+
+    #[test]
+    fn a_manifestation_is_gated_by_the_registry_not_by_a_hand_kept_list() {
+        // The client used to carry its own four-entry copy of this list. Anything the
+        // registry knows and the engine can resolve must be castable at its level.
+        for def in meld_proto::skills::skills_for_class("psyker") {
+            assert!(
+                manifest_unlock_level(def.key).is_some(),
+                "{} is a registered manifestation the engine will not accept",
+                def.key
+            );
+            assert_eq!(manifest_unlock_level(def.key), Some(def.unlock));
+        }
+        assert!(manifest_unlock_level("not_a_manifestation").is_none());
     }
 
     #[test]
