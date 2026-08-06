@@ -40,7 +40,7 @@ Use these exact terms (snake_case in wire/DB contexts, PascalCase for models).
 |------|-----------|------------|
 | Player / account | `Player` | The persistent account (username + bcrypt-hashed password, D17). Owns Vault, Meld Skills, class unlocks, cosmetics. |
 | Chits | `chits` | The currency (D10). 64-bit integer, symbol `c`. Replaces every "Gold"/"G" reference. |
-| Character class | `CharacterClass` | Enum: `explorer`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Spike additions (implemented kits): `psyker`, `resonant`, `shifter`, `iron_hull`. |
+| Character class | `CharacterClass` | Enum: `explorer`, `dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`. Spike additions (implemented kits): `psyker`, `resonant`, `shifter`, `phoenix_guard`. |
 | Run | `Run` | One ephemeral maze excursion by an instance. Ends in `extracted`, `died`, or `abandoned`. |
 | Instance | `MazeInstance` | The 1–4 player shared maze world for a run set. Has its own world seed. **Precursor**: D19/§W1 evolve this into the persistent, player-seeded `World`. |
 | Party | `Party` | The 1–4 players inside one MazeInstance. |

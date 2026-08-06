@@ -639,7 +639,7 @@ pub mod run {
     /// start and every level-up (alongside `run.party`). Each field is 0/absent
     /// when the gating class isn't in the party. The client gates all client-side
     /// perk rendering (avatar glow, mob nameplates, minimap, battle ATB reveal) by
-    /// these values; `resonant_regen`/`ironhull_aggro_mult` are enforced
+    /// these values; `resonant_regen`/`phoenix_guard_aggro_mult` are enforced
     /// server-side and mirrored here only for a HUD hint. See CANON class taxonomy.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Perks {
@@ -664,14 +664,14 @@ pub mod run {
         /// Resonant overworld regen applied server-side, in HP/sec (display hint).
         #[serde(default)]
         pub resonant_regen: f32,
-        /// Iron Hull skirmish/aggro radius multiplier (≤1; 1 = no Iron Hull).
+        /// Phoenix Guard skirmish/aggro radius multiplier (≤1; 1 = no Phoenix Guard).
         #[serde(default = "one_f32")]
-        pub ironhull_aggro_mult: f32,
+        pub phoenix_guard_aggro_mult: f32,
     }
     fn one_f32() -> f32 {
         1.0
     }
-    /// Neutral perks (no gating class in the party). Note `ironhull_aggro_mult`
+    /// Neutral perks (no gating class in the party). Note `phoenix_guard_aggro_mult`
     /// defaults to 1.0 (no aggro reduction), NOT 0.0 — so a derived `Default`
     /// would be wrong; this is hand-written to match the serde `default`.
     impl Default for Perks {
@@ -684,7 +684,7 @@ pub mod run {
                 psyker_threat: 0,
                 psyker_reveal_radius: 0.0,
                 resonant_regen: 0.0,
-                ironhull_aggro_mult: 1.0,
+                phoenix_guard_aggro_mult: 1.0,
             }
         }
     }
@@ -1065,15 +1065,15 @@ mod tests {
     #[test]
     fn perks_round_trips_and_defaults_sanely() {
         assert_eq!(run::Perks::TYPE, "run.perks");
-        // Old/empty wire: aggro mult defaults to 1.0 (no Iron Hull), rest to 0.
+        // Old/empty wire: aggro mult defaults to 1.0 (no Phoenix Guard), rest to 0.
         let empty: run::Perks = serde_json::from_str("{}").unwrap();
-        assert_eq!(empty.ironhull_aggro_mult, 1.0);
+        assert_eq!(empty.phoenix_guard_aggro_mult, 1.0);
         assert_eq!(empty.explorer_intel, 0);
         assert_eq!(empty.shifter_map, 0);
-        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"explorer_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"ironhull_aggro_mult":0.6}}"#;
+        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"explorer_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"phoenix_guard_aggro_mult":0.6}}"#;
         let env: Envelope<run::Perks> = serde_json::from_str(env_json).unwrap();
         assert_eq!(env.payload.explorer_intel, 3);
-        assert_eq!(env.payload.ironhull_aggro_mult, 0.6);
+        assert_eq!(env.payload.phoenix_guard_aggro_mult, 0.6);
         let s = serde_json::to_string(&env.payload).unwrap();
         let back: run::Perks = serde_json::from_str(&s).unwrap();
         assert_eq!(back.shifter_map, 2);

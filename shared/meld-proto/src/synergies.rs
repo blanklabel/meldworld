@@ -5,7 +5,7 @@
 //! to live in explicit interactions the player can see and assemble. Two kinds:
 //!
 //! - **Class-pair synergies** — passive, always-on while both classes are in the
-//!   party (Iron Hull + Psyker stack into a fortress front; Resonant + Explorer
+//!   party (Phoenix Guard + Psyker stack into a fortress front; Resonant + Explorer
 //!   turn a self-damaging kit into sustain; Shifter covers a fragile back line).
 //!   Applied at battle assembly.
 //! - **Combos** — *sequenced*: one hero's ability primes a target, and a specific
@@ -57,7 +57,7 @@ pub const COMBOS: &[ComboDef] = &[
         setup: "gravity_well",
         setup_class: CharacterClass::Psyker,
         payoff: "kinetic_shock",
-        payoff_class: CharacterClass::IronHull,
+        payoff_class: CharacterClass::PhoenixGuard,
         damage_mult: 1.5,
         description: "A foe held in a Gravity Well has nowhere to go when the hull hits it.",
     },
@@ -65,7 +65,7 @@ pub const COMBOS: &[ComboDef] = &[
         key: "follow_the_stagger",
         name: "Follow the Stagger",
         setup: "swell_strike",
-        setup_class: CharacterClass::IronHull,
+        setup_class: CharacterClass::PhoenixGuard,
         payoff: "frenzy",
         payoff_class: CharacterClass::Explorer,
         damage_mult: 1.5,
@@ -139,7 +139,7 @@ pub const SYNERGIES: &[SynergyDef] = &[
     SynergyDef {
         key: "fortress_front",
         name: "Fortress Front",
-        a: CharacterClass::IronHull,
+        a: CharacterClass::PhoenixGuard,
         b: CharacterClass::Psyker,
         effect: SynergyEffect::PartyBarrier,
         description: "The hull holds the line while the Psyker plates it: the party opens each fight warded.",
@@ -253,7 +253,7 @@ mod tests {
         assert!(!names.contains(&"Fortress Front"), "{names:?}");
         assert!(!names.contains(&"Covering Blink"), "{names:?}");
 
-        let tanky = [IronHull, Psyker, Resonant, Explorer];
+        let tanky = [PhoenixGuard, Psyker, Resonant, Explorer];
         let names: Vec<&str> = active_synergies(&tanky).iter().map(|s| s.name).collect();
         assert!(names.contains(&"Fortress Front"), "{names:?}");
 

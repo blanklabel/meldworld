@@ -132,7 +132,7 @@ pub(crate) const BOSS_KEYS: [&str; 10] = [
 pub(crate) struct WorldAssets {
     /// Per-class hero sprite sets (bespoke PixelLab art, one folder per class under
     /// `characters/<class>/`), keyed by `CharacterClass` wire key ("explorer", "psyker",
-    /// "resonant", "shifter", "iron_hull"). Look up via [`Self::class_frames`], which
+    /// "resonant", "shifter", "phoenix_guard"). Look up via [`Self::class_frames`], which
     /// falls back to the Explorer for any unknown key.
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
     /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
@@ -511,14 +511,14 @@ pub(crate) fn setup(
             "resonant" => &[
                 ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
             ],
-            "iron_hull" => &[
+            "phoenix_guard" => &[
                 ("walk", 8), ("attack", 8), ("swell_strike", 8), ("root", 8),
                 ("kinetic_shock", 8), ("toll_of_the_deep", 8),
             ],
             _ => &[("walk", 8)],
         }
     }
-    let class_chars: HashMap<String, CharacterFrames> = ["explorer", "psyker", "resonant", "shifter", "iron_hull"]
+    let class_chars: HashMap<String, CharacterFrames> = ["explorer", "psyker", "resonant", "shifter", "phoenix_guard"]
         .iter()
         .map(|&class| {
             (
@@ -1608,10 +1608,6 @@ pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
     sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
 }
 
-/// Drive the sun (angle/colour/brightness), ambient, sky + fog colour, star
-/// visibility, and cloud glow from the time of day + weather. Owns the sun light
-/// (so `hd2d_follow`/`battle_camera` no longer touch it).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 // -------------------------------------------------------------- dungeon scene ---
 
 /// DG-6b: the client-only "inside a dungeon" state, driven by the

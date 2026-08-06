@@ -41,7 +41,7 @@ Your party is up to four heroes of mixed classes, each commanded by its own menu
   (paid from its own HP), hand out barriers, and keep the party standing.
 - **Shifter** — the fast, fragile rogue. The only class that dodges by default;
   armor-piercing backstabs and evasive blinks.
-- **Iron Hull** — the wall. Slowest and tankiest, trading momentum for
+- **Phoenix Guard** — the wall. Slowest and tankiest, trading momentum for
   blunt-force strikes that stagger and an all-enemy shockwave.
 
 ### The world beneath the fights

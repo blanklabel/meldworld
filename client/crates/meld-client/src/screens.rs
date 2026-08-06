@@ -51,7 +51,7 @@ pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
         ("Flicker", "blink for self Evasion (Lv2)"),
         ("Ransack", "hit + drain the enemy's ATB (Lv3)"),
     ] },
-    ClassInfo { key: "iron_hull", name: "Iron Hull", role: "Order of the Iron Hull monk \u{2014} the tankiest, slowest wall.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
+    ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "Order of the Phoenix Guard monk \u{2014} the tankiest, slowest wall.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
         ("Swell Strike", "a heavy blow that staggers (gauge drain)"),
         ("Root", "a self Barrier stance (Lv2)"),
         ("Kinetic Shock", "heavy blow, zeroes the foe's gauge (Lv3)"),

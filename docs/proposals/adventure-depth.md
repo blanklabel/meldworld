@@ -94,7 +94,7 @@ unlocked roster as the first build axis.
 Where the depth lives without stats. Explicit, legible mechanical interactions the player
 assembles:
 
-- **Class-pair synergies** — e.g. Iron Hull's **wall/stance** + Psyker's **Barrier**
+- **Class-pair synergies** — e.g. Phoenix Guard's **wall/stance** + Psyker's **Barrier**
   stack into a fortress front; Resonant's **Regen** amplified when paired with a
   high-HP-cost kit; Shifter's **Evasion** blink covering a fragile back line.
 - **Row/position synergies** (`PT-1`) — front/back placement changes reach, target

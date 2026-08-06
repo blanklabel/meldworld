@@ -24,10 +24,15 @@ pub enum CharacterClass {
     /// Rogue / fortune-explorer ("Runner"): fast, fragile, evasive. Armour-piercing
     /// Backstab, a Flicker evasion blink, and Ransack (damage + ATB-gauge steal).
     Shifter,
-    /// Order of the Iron Hull monk: a dense, slow front-line tank. Blunt kinetic
-    /// strikes that stagger (drain the enemy's ATB gauge), a Root stance that
-    /// grants Barrier, and Toll of the Deep — an all-enemy shockwave.
-    IronHull,
+    /// Order of the Phoenix Guard monk: a dense, slow front-line tank. Blunt
+    /// kinetic strikes that stagger (drain the enemy's ATB gauge), a Root stance
+    /// that grants Barrier, and Toll of the Deep — an all-enemy shockwave. The
+    /// order walks out of fires nothing else survives, which is why the class is
+    /// earned by surviving the undead rite.
+    ///
+    /// Was `iron_hull`; the alias keeps rows persisted under the old key loading.
+    #[serde(alias = "iron_hull")]
+    PhoenixGuard,
 }
 
 /// Damage typing (Creature AI/Combat/Gear spec §1). Every damaging effect
@@ -255,4 +260,28 @@ pub enum TerminateReason {
     IdleTimeout,
     ServerShutdown,
     ProtocolViolation,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hero_persisted_as_an_iron_hull_is_a_phoenix_guard() {
+        // The class was renamed after accounts existed. A row (or a saved party)
+        // written under the old key must still resolve, or a player's tank
+        // silently becomes something else.
+        let from_wire: CharacterClass = serde_json::from_str("\"iron_hull\"").unwrap();
+        assert_eq!(from_wire, CharacterClass::PhoenixGuard);
+        assert_eq!(
+            crate::equipment::class_from_key("iron_hull"),
+            Some(CharacterClass::PhoenixGuard)
+        );
+        // …and we only ever WRITE the new key.
+        assert_eq!(
+            serde_json::to_string(&CharacterClass::PhoenixGuard).unwrap(),
+            "\"phoenix_guard\""
+        );
+        assert_eq!(crate::equipment::class_key(CharacterClass::PhoenixGuard), "phoenix_guard");
+    }
 }

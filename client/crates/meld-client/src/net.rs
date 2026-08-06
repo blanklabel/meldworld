@@ -320,7 +320,7 @@ pub struct PerksLine {
     pub psyker_threat: u8,
     pub psyker_reveal_radius: f32,
     pub resonant_regen: f32,
-    pub ironhull_aggro_mult: f32,
+    pub phoenix_guard_aggro_mult: f32,
 }
 
 impl Default for PerksLine {
@@ -333,7 +333,7 @@ impl Default for PerksLine {
             psyker_threat: 0,
             psyker_reveal_radius: 0.0,
             resonant_regen: 0.0,
-            ironhull_aggro_mult: 1.0,
+            phoenix_guard_aggro_mult: 1.0,
         }
     }
 }
@@ -1438,8 +1438,8 @@ impl Inner {
                     psyker_threat: u("psyker_threat"),
                     psyker_reveal_radius: f("psyker_reveal_radius"),
                     resonant_regen: f("resonant_regen"),
-                    // Neutral default is 1.0 (no Iron Hull), not 0.0.
-                    ironhull_aggro_mult: p["ironhull_aggro_mult"].as_f64().unwrap_or(1.0) as f32,
+                    // Neutral default is 1.0 (no Phoenix Guard), not 0.0.
+                    phoenix_guard_aggro_mult: p["phoenix_guard_aggro_mult"].as_f64().unwrap_or(1.0) as f32,
                 };
                 self.out.push_back(ServerMsg::Perks { perks });
             }

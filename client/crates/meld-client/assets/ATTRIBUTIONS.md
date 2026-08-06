@@ -56,7 +56,7 @@ DCSS/RLTiles gateway tile (same license as above), billboarded as the exit porta
 ## `characters/` — per-class hero sprites  (AI-generated, PixelLab)
 
 AI-generated for MELDWORLD with **PixelLab** (https://pixellab.ai). One folder per
-class (`hunter`, `psyker`, `resonant`, `shifter`, `iron_hull`); each has 8-directional
+class (`hunter`, `psyker`, `resonant`, `shifter`, `phoenix_guard`); each has 8-directional
 `rotations/` plus animation clips (`walk`, `attack`, and one per special ability),
 generated in PixelLab "v3 custom" mode so weapons/appearance are preserved. The
 generation prompt is recorded in each folder's `metadata.json`. Not third-party art.

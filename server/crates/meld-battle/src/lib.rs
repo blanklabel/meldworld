@@ -331,7 +331,7 @@ pub fn hero_attack_type(class_key: &str) -> DamageType {
     match class_key {
         "explorer" | "ranger" | "dragoon" => DamageType::Pierce,
         "shifter" | "alchemist_knight" | "bard" => DamageType::Slash,
-        "iron_hull" | "sage" | "resonant" => DamageType::Blunt,
+        "phoenix_guard" | "sage" | "resonant" => DamageType::Blunt,
         "psyker" => DamageType::Mind,
         _ => DamageType::None,
     }
@@ -482,11 +482,11 @@ pub struct Battle {
     explorer_snare_drain: f64,
     explorer_frenzy_cost: i32,
     explorer_frenzy_mult: f64,
-    ironhull_swell_mult: f64,
-    ironhull_swell_drain: f64,
-    ironhull_root_barrier_fraction: f64,
-    ironhull_shock_mult: f64,
-    ironhull_toll_mult: f64,
+    phoenix_guard_swell_mult: f64,
+    phoenix_guard_swell_drain: f64,
+    phoenix_guard_root_barrier_fraction: f64,
+    phoenix_guard_shock_mult: f64,
+    phoenix_guard_toll_mult: f64,
     status_slow_mult: f64,
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
@@ -577,11 +577,11 @@ impl Battle {
             explorer_snare_drain: balance.battle.explorer_snare_drain,
             explorer_frenzy_cost: balance.battle.explorer_frenzy_cost,
             explorer_frenzy_mult: balance.battle.explorer_frenzy_mult,
-            ironhull_swell_mult: balance.battle.ironhull_swell_mult,
-            ironhull_swell_drain: balance.battle.ironhull_swell_drain,
-            ironhull_root_barrier_fraction: balance.battle.ironhull_root_barrier_fraction,
-            ironhull_shock_mult: balance.battle.ironhull_shock_mult,
-            ironhull_toll_mult: balance.battle.ironhull_toll_mult,
+            phoenix_guard_swell_mult: balance.battle.phoenix_guard_swell_mult,
+            phoenix_guard_swell_drain: balance.battle.phoenix_guard_swell_drain,
+            phoenix_guard_root_barrier_fraction: balance.battle.phoenix_guard_root_barrier_fraction,
+            phoenix_guard_shock_mult: balance.battle.phoenix_guard_shock_mult,
+            phoenix_guard_toll_mult: balance.battle.phoenix_guard_toll_mult,
             status_slow_mult: balance.battle.status_slow_mult,
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
@@ -1101,12 +1101,12 @@ impl Battle {
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
     }
 
-    /// Resolve an Iron Hull (monk) skill:
+    /// Resolve an Phoenix Guard (monk) skill:
     /// - `root`             — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
     /// - `swell_strike`     — a heavy blow that also drains the target's ATB gauge.
     /// - `kinetic_shock`    — a heavier blow that fully resets the target's gauge (hard stagger).
     /// - `toll_of_the_deep` — an AoE shockwave hitting EVERY living enemy.
-    fn resolve_ironhull(
+    fn resolve_phoenix_guard(
         &mut self,
         actor_i: usize,
         skill: &str,
@@ -1116,7 +1116,7 @@ impl Battle {
         // Root is a self-cast stance — no target needed.
         if skill == "root" {
             let raw = ((self.fighters[actor_i].max_hp as f64)
-                * self.ironhull_root_barrier_fraction)
+                * self.phoenix_guard_root_barrier_fraction)
                 .round() as i32;
             let effects = self.grant_barrier(actor_i, raw);
             self.fighters[actor_i].defending = false;
@@ -1136,7 +1136,7 @@ impl Battle {
                 .collect();
             let mut effects = Vec::new();
             for t in enemies {
-                let scaled = (atk as f64 * self.ironhull_toll_mult).round() as i32;
+                let scaled = (atk as f64 * self.phoenix_guard_toll_mult).round() as i32;
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
             }
@@ -1146,9 +1146,9 @@ impl Battle {
         }
         // Single-target kinetic strikes: Swell Strike (drain) and Kinetic Shock (full stagger).
         let mult = if skill == "kinetic_shock" {
-            self.ironhull_shock_mult
+            self.phoenix_guard_shock_mult
         } else {
-            self.ironhull_swell_mult
+            self.phoenix_guard_swell_mult
         };
         let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
         let target_i = match self.idx(target) {
@@ -1173,7 +1173,7 @@ impl Battle {
                 self.fighters[target_i].gauge = 0.0;
             } else {
                 self.fighters[target_i].gauge =
-                    (self.fighters[target_i].gauge - self.ironhull_swell_drain).max(0.0);
+                    (self.fighters[target_i].gauge - self.phoenix_guard_swell_drain).max(0.0);
             }
             effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
@@ -1190,7 +1190,7 @@ impl Battle {
 
     /// Class skills (slice content). The Explorer's `power_strike`/`second_wind`/
     /// `snare`/`frenzy` all spend banked Adrenaline (see [`Battle::resolve_explorer`]);
-    /// the Iron Hull, Shifter, and Resonant arms handle their own kits. An unknown
+    /// the Phoenix Guard, Shifter, and Resonant arms handle their own kits. An unknown
     /// skill is rejected. (The Psyker does not use this path — it channels Foci via
     /// [`Battle::resolve_psyker`].)
     fn resolve_skill(
@@ -1215,12 +1215,12 @@ impl Battle {
         ) {
             return self.resolve_explorer(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
-        // Iron Hull (monk / tank): kinetic strikes, the Root stance, and the AoE toll.
+        // Phoenix Guard (monk / tank): kinetic strikes, the Root stance, and the AoE toll.
         if matches!(
             skill_kind,
             Some("swell_strike") | Some("root") | Some("kinetic_shock") | Some("toll_of_the_deep")
         ) {
-            return self.resolve_ironhull(actor_i, skill_kind.unwrap(), target_id, action_id);
+            return self.resolve_phoenix_guard(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
         // Resonant healer skills. Aim at the chosen living ally if the player picked
         // one, else auto-target the most-wounded living ally (the classic default).
@@ -3606,9 +3606,9 @@ mod tests {
         assert_eq!(hp_before - player_hp(&battle, "m"), 17, "Power Strike lands atk×1.75 − def");
     }
 
-    /// Iron Hull Swell Strike hits hard and staggers (drains the target's gauge).
+    /// Phoenix Guard Swell Strike hits hard and staggers (drains the target's gauge).
     #[test]
-    fn ironhull_swell_strike_hits_and_staggers() {
+    fn phoenix_guard_swell_strike_hits_and_staggers() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
@@ -3627,13 +3627,13 @@ mod tests {
             .unwrap();
         // atk 12 × 1.4 = 16.8 → 17, − def 4 = 13.
         assert_eq!(hp0 - player_hp(&battle, "m"), 13, "Swell Strike lands atk×1.4 − def");
-        // ironhull_swell_drain = 0.3 → 0.5 − 0.3 = 0.2.
+        // phoenix_guard_swell_drain = 0.3 → 0.5 − 0.3 = 0.2.
         assert!((gauge_of(&battle, "m") - 0.2).abs() < 1e-9, "Swell Strike drains the gauge");
     }
 
-    /// Iron Hull Root grants the monk Barrier equal to a fraction of its max HP.
+    /// Phoenix Guard Root grants the monk Barrier equal to a fraction of its max HP.
     #[test]
-    fn ironhull_root_grants_barrier() {
+    fn phoenix_guard_root_grants_barrier() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
@@ -3647,7 +3647,7 @@ mod tests {
         battle
             .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("root".into()), None)
             .unwrap();
-        // ironhull_root_barrier_fraction = 0.25 → 40 × 0.25 = 10.
+        // phoenix_guard_root_barrier_fraction = 0.25 → 40 × 0.25 = 10.
         assert!(
             statuses_of(&battle, "k").iter().any(|x| x == "barrier:10"),
             "Root grants Barrier: {:?}",
@@ -3655,9 +3655,9 @@ mod tests {
         );
     }
 
-    /// Iron Hull Kinetic Shock fully resets the target's ATB gauge (hard stagger).
+    /// Phoenix Guard Kinetic Shock fully resets the target's ATB gauge (hard stagger).
     #[test]
-    fn ironhull_kinetic_shock_zeroes_gauge() {
+    fn phoenix_guard_kinetic_shock_zeroes_gauge() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
@@ -3677,9 +3677,9 @@ mod tests {
         assert!(player_hp(&battle, "m") < 500, "Kinetic Shock also deals damage");
     }
 
-    /// Iron Hull Toll of the Deep strikes every living enemy at once.
+    /// Phoenix Guard Toll of the Deep strikes every living enemy at once.
     #[test]
-    fn ironhull_toll_hits_all_enemies() {
+    fn phoenix_guard_toll_hits_all_enemies() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
