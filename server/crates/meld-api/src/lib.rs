@@ -34,6 +34,10 @@ pub struct ApiState {
     pub meld_forging_xp: i64,
     /// Bounds-checks the `hero_slot` an equip request targets.
     pub party_size_per_player: i32,
+    /// The Apothecary's shelf: item kind -> chit price. The map IS the stock list,
+    /// so a client cannot buy something the vendor does not sell by naming it.
+    /// Injected by the server from `[consumable]` balance.
+    pub shop_prices: Vec<(String, i64)>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -51,6 +55,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/heroes", get(heroes))
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
         .route("/v1/crafting/craft", post(craft))
+        .route("/v1/crafting/recipes", get(recipes))
+        .route("/v1/vendors/apothecary", get(vendor_stock))
+        .route("/v1/vendors/apothecary/buy", post(vendor_buy))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -263,30 +270,189 @@ async fn rename_hero(
     }
 }
 
-async fn craft(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+#[derive(serde::Deserialize)]
+struct CraftReq {
+    /// Which recipe to run (`meld_proto::consumables::RECIPES`). Absent keeps the
+    /// slice's single recipe, so an older client still crafts a Bloom Salve.
+    #[serde(default)]
+    recipe: Option<String>,
+}
+
+/// `POST /v1/crafting/craft` — run one recipe (MS-1). The recipe decides its own
+/// inputs, output and which Meld skill the craft credits: a potion is Alchemy.
+async fn craft(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    body: Option<Json<CraftReq>>,
+) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
-    // v0.1 recipe set: 1 forest_bloom_petal -> 1 bloom_salve (Forging).
-    let inputs = [("forest_bloom_petal".to_string(), 1)];
+    let key = body
+        .and_then(|Json(b)| b.recipe)
+        .unwrap_or_else(|| "bloom_salve".to_string());
+    let Some(r) = meld_proto::consumables::recipe(&key) else {
+        return Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "No such recipe.",
+        ));
+    };
+    let inputs: Vec<(String, i32)> = r
+        .inputs
+        .iter()
+        .map(|(k, q)| ((*k).to_string(), *q))
+        .collect();
     match st
         .db
-        .craft(player_id, &inputs, ("bloom_salve", 1), st.meld_forging_xp)
+        .craft(
+            player_id,
+            &inputs,
+            (r.output, r.output_qty),
+            r.skill,
+            st.meld_forging_xp,
+        )
         .await
     {
         Ok(true) => Ok((
             StatusCode::OK,
-            Json(serde_json::json!({ "crafted": "bloom_salve", "quantity": 1 })),
+            Json(serde_json::json!({
+                "crafted": r.output,
+                "quantity": r.output_qty,
+                "skill": r.skill,
+            })),
+        )
+            .into_response()),
+        Ok(false) => {
+            let needed = r
+                .inputs
+                .iter()
+                .map(|(k, q)| format!("{q} {k}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ApiReject::new(
+                StatusCode::CONFLICT,
+                "conflict",
+                format!("Insufficient materials (need {needed})."),
+            ))
+        }
+        Err(e) => Err(ApiReject::internal(e)),
+    }
+}
+
+/// `GET /v1/crafting/recipes` — every recipe, so the Forge & Alembic UI can list
+/// them instead of hard-coding a copy that drifts.
+async fn recipes(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    authenticate(&st, &headers)?;
+    let data: Vec<serde_json::Value> = meld_proto::consumables::RECIPES
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "recipe": r.key,
+                "name": r.name,
+                "skill": r.skill,
+                "output": r.output,
+                "output_quantity": r.output_qty,
+                "inputs": r.inputs.iter().map(|(k, q)| serde_json::json!({
+                    "item_kind": k, "quantity": q
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response())
+}
+
+/// The one NPC every new player needs: the Apothecary's shelf (EC-2). Lowest-tier
+/// basics only — a heal, a Barrier, a Regen, and a way home — so a player who died
+/// with nothing can walk back out equipped for chits alone.
+fn apothecary_stock(st: &ApiState) -> Vec<serde_json::Value> {
+    st.shop_prices
+        .iter()
+        .map(|(kind, price)| {
+            let def = meld_proto::consumables::consumable(kind);
+            serde_json::json!({
+                "item_kind": kind,
+                "name": def.map(|d| d.name).unwrap_or("Town Portal"),
+                "description": def.map(|d| d.description).unwrap_or("Opens the way home."),
+                "price_chits": price,
+            })
+        })
+        .collect()
+}
+
+/// The shelf price of one unit, or `None` when the Apothecary does not stock it.
+fn shelf_price(st: &ApiState, item_kind: &str) -> Option<i64> {
+    st.shop_prices
+        .iter()
+        .find(|(k, _)| k == item_kind)
+        .map(|(_, p)| *p)
+}
+
+/// `GET /v1/vendors/apothecary` — what the Apothecary has on the shelf today.
+async fn vendor_stock(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    authenticate(&st, &headers)?;
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "vendor": "apothecary",
+            "name": "The Apothecary",
+            "data": apothecary_stock(&st),
+        })),
+    )
+        .into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct BuyReq {
+    item_kind: String,
+    #[serde(default = "one")]
+    quantity: i32,
+}
+
+fn one() -> i32 {
+    1
+}
+
+/// `POST /v1/vendors/apothecary/buy` — chits for goods, atomically.
+async fn vendor_buy(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<BuyReq>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if req.quantity <= 0 || req.quantity > 99 {
+        return Err(ApiReject::validation("Quantity must be 1-99."));
+    }
+    // Only what is actually on the shelf: the price table IS the stock list, so a
+    // client cannot buy something the vendor does not sell by naming it.
+    let Some(unit) = shelf_price(&st, &req.item_kind) else {
+        return Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "The Apothecary does not stock that.",
+        ));
+    };
+    match st
+        .db
+        .buy_from_vendor(player_id, &req.item_kind, req.quantity, unit)
+        .await
+    {
+        Ok(true) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "bought": req.item_kind,
+                "quantity": req.quantity,
+                "spent_chits": unit * req.quantity as i64,
+            })),
         )
             .into_response()),
         Ok(false) => Err(ApiReject::new(
             StatusCode::CONFLICT,
             "conflict",
-            "Insufficient materials (need 1 forest_bloom_petal).",
+            "Not enough chits.",
         )),
         Err(e) => Err(ApiReject::internal(e)),
     }
 }
 
-/// Derive a skill level from total xp: `1 + xp/xp_per_level`, capped at 99.
 fn skill_entries(skills: Vec<(String, i64)>, xp_per_level: i64) -> Vec<MeldSkillEntry> {
     let per = xp_per_level.max(1);
     skills

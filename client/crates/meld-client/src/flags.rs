@@ -60,6 +60,18 @@ pub(crate) fn city_idle_flag() -> bool {
     query_has("city")
 }
 
+/// Open the Apothecary's shelf on arrival (with `MELD_CITY`) — a stable frame for
+/// screenshotting the shop without walking to the district. Native: `MELD_SHOP`.
+/// Browser: `?shop`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn shop_preview_flag() -> bool {
+    std::env::var("MELD_SHOP").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn shop_preview_flag() -> bool {
+    query_has("shop")
+}
+
 /// Light the Vanguard Wall on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the seasonal board without having to walk over and press [E].
 /// Native: `MELD_WALL`. Browser: `?wall`.

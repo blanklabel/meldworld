@@ -249,7 +249,18 @@ burns on death/leave; some is single-use. See
   they never bank to the Vault, only matter for the current dive. Model as an
   ephemeral flag on the item / backpack-only class; enforce at extraction banking
   (they don't transfer) and on run end. Contrast with insured Blue-Chest (GR-2).
-- [ ] **GR-4 — Consumable healing items.** Field/battle-usable heal items that are
+- [x] **GR-4 — Consumable potions that do more than heal.** Six potions
+  (`meld_proto::consumables`), each reusing a state the ATB engine already models so a
+  potion is content rather than new machinery: **Bloom Salve** (part heal), **Elixir**
+  (full heal), **Bulwark Tonic** (Barrier — drink *before* the blow), **Mending Draught**
+  (Regen), **Ghostdust** (Evasion), **Fury Philtre** (banked Adrenaline; inert on any
+  class without it, exactly like the matching affix). Magnitudes are `[consumable]`
+  `[TUNABLE]`s. `resolve_item` reads the registry instead of treating every item as a
+  heal, and an unknown item id still heals so an older client is never stranded.
+  - **Remains:** potions are not yet *consumed* from the backpack on use (the slice's
+    "items are always available"), and the battle menu does not show counts. That is the
+    inventory half of `GR-4`.
+- [ ] **GR-4b — Consumable healing items (legacy line).** Field/battle-usable heal items that are
   **consumed on use** (decrement + destroy at zero). Wire into the existing async
   battle-injection path (GDD §6; [`behaviors/async-interaction.md`](behaviors/async-interaction.md))
   and direct self-use. Stackable in the backpack; add `[TUNABLE]` heal amounts.
@@ -303,7 +314,16 @@ conservation invariants).
   end-to-end per [`behaviors/economy.md`](behaviors/economy.md) "Stall Lifecycle,"
   surfaced in Last City's Market district. All trades escrowed + atomic (no
   free-form trade window). This is the M1 economy half of Last City.
-- [ ] **EC-2 — Town vendors: power goods + class hires (the chit sink).** NPC
+- [ ] **EC-2 — Town vendors: power goods + class hires (the chit sink).**
+  - 🟡 *The first vendor is open:* **The Apothecary** (the Market Tiers district, which was
+    a "stalls open in M1" notice) stocks the lowest-tier basics for chits — a heal, a
+    Barrier, a Regen, and a way home — over `GET /v1/vendors/apothecary` +
+    `POST /v1/vendors/apothecary/buy`. The purchase is atomic (chits leave and goods
+    arrive in one transaction, so a failed buy can never bill for nothing), the price
+    table **is** the stock list (a client cannot buy off-menu by naming an item), and the
+    shelf shows what you cannot afford *before* you spend the keypress. Deliberately
+    cheap: a player who died with nothing can walk back out equipped.
+    `MELD_SHOP`/`?shop` opens it for screenshots. NPC
   vendors in Last City that sell genuinely powerful things — the deliberate
   **chit sink** that makes chits worth chasing — and that **sell class unlocks**
   (you "hire" a recruit to unlock a class, feeding CL-1). Distinct from player
@@ -317,7 +337,13 @@ conservation invariants).
 The persistent non-combat progression (GDD §4.1). Three skills exist and persist
 XP; harvesting exists but is instant.
 
-- [ ] **MS-1 — Finish & flesh out the Meld skills.** Bring **Forging/Smithing,
+- [ ] **MS-1 — Finish & flesh out the Meld skills.**
+  - 🟡 *Recipes are real:* crafting was ONE hardcoded recipe that credited every craft to
+    Forging regardless of what it made. There is now a recipe registry (seven recipes:
+    six potions + the Town Portal), `POST /v1/crafting/craft {recipe}` runs any of them,
+    `GET /v1/crafting/recipes` lists them with inputs, and each credits the skill it
+    actually belongs to — **a potion credits Alchemy**. Gear crafting, stat variance,
+    gems/socketing and repair scaling are still open. Bring **Forging/Smithing,
   Alchemy, and Mercantile** to real depth: recipes, gear crafting with stat
   variance, gem/materia synthesis + socketing, durability repair scaling with
   Forging level, and the mercantile tax/stall-gate effects. UIs live in Last

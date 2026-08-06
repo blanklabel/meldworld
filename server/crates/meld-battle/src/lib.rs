@@ -422,6 +422,10 @@ pub struct Battle {
     back_row_damage_mult: f64,
     /// AD-2: how long a combo primer stays live on a target.
     combo_window_ticks: u64,
+    consumable_barrier: i32,
+    consumable_regen: i32,
+    consumable_evasion_pct: i32,
+    consumable_adrenaline: i32,
     /// The skill currently resolving, if any — set for the length of one player
     /// skill so `apply_damage` can prime a combo or cash one in without every
     /// skill arm having to know combos exist.
@@ -512,6 +516,10 @@ impl Battle {
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
             combo_window_ticks: balance.adventure.combo_window_ticks,
+            consumable_barrier: balance.consumable.barrier_amount,
+            consumable_regen: balance.consumable.regen_amount,
+            consumable_evasion_pct: balance.consumable.evasion_pct,
+            consumable_adrenaline: balance.consumable.adrenaline_amount,
             active_skill: None,
             back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
@@ -1604,19 +1612,63 @@ impl Battle {
         target_id: Option<&str>,
         action_id: Option<Id>,
     ) -> Resolution {
-        let heal_i = self.ally_target(target_id).unwrap_or(actor_i);
-        let max_hp = self.fighters[heal_i].max_hp;
-        let raw = if item_id == Some("elixir") {
-            max_hp // full heal
-        } else {
-            ((max_hp as f64) * self.item_heal_fraction).round() as i32
+        use meld_proto::consumables::{self as con, ConsumableEffect as E};
+        let target_i = self.ally_target(target_id).unwrap_or(actor_i);
+        let max_hp = self.fighters[target_i].max_hp;
+        // GR-4: a potion does what its registry entry says. An unknown item id keeps
+        // the old fraction-heal behaviour, so an older client cannot be stranded.
+        let effect = con::consumable(item_id.unwrap_or("bloom_salve"))
+            .map(|c| c.effect)
+            .unwrap_or(E::Heal);
+        let effects = match effect {
+            E::FullHeal => self.apply_heal(target_i, max_hp),
+            E::Heal => {
+                let raw = ((max_hp as f64) * self.item_heal_fraction).round() as i32;
+                self.apply_heal(target_i, raw)
+            }
+            E::Barrier => {
+                let amount = self.consumable_barrier;
+                self.fighters[target_i].barrier += amount;
+                self.status_effect(target_i, "barrier", amount)
+            }
+            E::Regen => {
+                let amount = self.consumable_regen;
+                self.fighters[target_i].regen += amount;
+                self.status_effect(target_i, "regen", amount)
+            }
+            E::Evasion => {
+                let pct = self.consumable_evasion_pct;
+                self.fighters[target_i].evasion += pct as f64 / 100.0;
+                self.status_effect(target_i, "evasion", pct)
+            }
+            E::Adrenaline => {
+                // Inert on a class with no Adrenaline to bank, exactly like the
+                // matching keyword affix — the bottle is not wasted, it just does
+                // nothing, and the client greys it for non-Explorers.
+                let max = self.fighters[target_i].adrenaline_max;
+                let amount = self.consumable_adrenaline.min(max);
+                self.fighters[target_i].adrenaline =
+                    (self.fighters[target_i].adrenaline + amount).min(max);
+                self.status_effect(target_i, "adrenaline", amount)
+            }
         };
-        let effects = self.apply_heal(heal_i, raw);
         // The action still belongs to the actor (its gauge/stance reset), even when
         // the heal lands on an ally.
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
         self.resolution(actor_i, BattleActionKind::Item, action_id, effects)
+    }
+
+    /// One `StatusApplied` effect, for a potion that grants a state rather than HP.
+    fn status_effect(&self, i: usize, status: &str, amount: i32) -> Vec<ResolvedEffect> {
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: Some(amount),
+            status: Some(status.to_string()),
+            hp_after: self.fighters[i].hp,
+        }]
     }
 
     /// Heal the actor by `raw` (min 1), capped at max HP; report the actual gain.
@@ -3751,6 +3803,65 @@ mod tests {
         battle.active_skill = Some("backstab".into());
         let _ = battle.apply_damage(mi, 100);
         assert_eq!(before - battle.fighters[mi].hp, 160);
+    }
+
+    #[test]
+    fn each_potion_does_its_own_thing_not_just_healing() {
+        let b = balance();
+        let drink = |item: &str| -> Fighter {
+            let mut hero = player("a", 5);
+            hero.hp = 20;
+            hero.max_hp = 100;
+            hero.adrenaline_max = 20;
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![hero],
+                vec![monster("m1", 500, 1)],
+                &b,
+                42,
+            );
+            let i = battle.idx("a").unwrap();
+            let _ = battle.resolve_item(i, Some(item), None, None);
+            battle.fighters[i].clone()
+        };
+
+        // A salve heals a fraction; an elixir fills the bar.
+        let salve = drink("bloom_salve");
+        assert!(salve.hp > 20 && salve.hp < 100, "salve hp {}", salve.hp);
+        assert_eq!(drink("elixir").hp, 100);
+
+        // The others grant STATES, and leave HP alone — that is the point: a potion
+        // you drink before the blow, not after.
+        let tonic = drink("bulwark_tonic");
+        assert_eq!(tonic.barrier, b.consumable.barrier_amount);
+        assert_eq!(tonic.hp, 20, "a tonic is not a heal");
+        assert_eq!(drink("mending_draught").regen, b.consumable.regen_amount);
+        let dust = drink("ghostdust");
+        assert!((dust.evasion - b.consumable.evasion_pct as f64 / 100.0).abs() < 1e-9);
+        let philtre = drink("fury_philtre");
+        assert_eq!(philtre.adrenaline, b.consumable.adrenaline_amount.min(20));
+
+        // An unknown id still heals, so an older client is never stranded.
+        assert!(drink("mystery_bottle").hp > 20);
+    }
+
+    #[test]
+    fn a_fury_philtre_is_inert_on_a_class_with_no_adrenaline() {
+        let b = balance();
+        let mut caster = player("psy", 5);
+        caster.adrenaline_max = 0;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![caster],
+            vec![monster("m1", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("psy").unwrap();
+        let _ = battle.resolve_item(i, Some("fury_philtre"), None, None);
+        assert_eq!(battle.fighters[i].adrenaline, 0, "banked rage it cannot hold");
     }
 
     #[test]

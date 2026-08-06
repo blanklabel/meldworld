@@ -259,6 +259,15 @@ pub struct GearLine {
     pub spd_bonus: i32,
 }
 
+/// One row on a town vendor's shelf (EC-2) — the server prices and describes it.
+#[derive(Clone, Debug, Default)]
+pub struct ShopLine {
+    pub item_kind: String,
+    pub name: String,
+    pub description: String,
+    pub price_chits: i64,
+}
+
 /// One active class-pair synergy or runnable combo (AD-2), as the party screen
 /// renders it — the server describes them so the words never drift from the rules.
 #[derive(Clone, Debug, Default)]
@@ -468,6 +477,8 @@ pub enum ServerMsg {
         /// Backpack.
         pending: Vec<(String, i32)>,
     },
+    /// The Apothecary's shelf (`GET /v1/vendors/apothecary`), for the shop panel.
+    ShopStock { vendor: String, items: Vec<ShopLine> },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     VanguardBoard {
@@ -525,6 +536,7 @@ struct Inner {
     prog_rx: Option<mpsc::Receiver<ProgPayload>>,
     heroes_rx: Option<mpsc::Receiver<(Vec<String>, Vec<String>)>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
+    shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -563,6 +575,7 @@ pub fn start(base: String) -> Net {
         prog_rx: None,
         heroes_rx: None,
         vanguard_rx: None,
+        shop_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -617,6 +630,17 @@ impl Net {
     /// active run (no `PartyRoster` to source names from).
     pub fn fetch_hero_names(&self) {
         self.0.borrow_mut().fetch_hero_names();
+    }
+
+    /// Kick off an authenticated GET of a town vendor's shelf (→ `ShopStock`).
+    pub fn fetch_shop(&self) {
+        self.0.borrow_mut().fetch_shop();
+    }
+
+    /// Buy `qty` of an item from the Apothecary, then refresh the shelf and the
+    /// Vault so the chit balance the player sees is the server's, not a guess.
+    pub fn buy_item(&self, item_kind: String, qty: i32) {
+        self.0.borrow_mut().buy_item(item_kind, qty);
     }
 
     /// Kick off an authenticated GET of the live Vanguard Board
@@ -705,6 +729,12 @@ impl Inner {
             }
         }
 
+        if let Some(rx) = &self.shop_rx {
+            if let Ok((vendor, items)) = rx.try_recv() {
+                self.shop_rx = None;
+                self.out.push_back(ServerMsg::ShopStock { vendor, items });
+            }
+        }
         if let Some(rx) = &self.vanguard_rx {
             if let Ok((season, entries, you)) = rx.try_recv() {
                 self.vanguard_rx = None;
@@ -836,6 +866,56 @@ impl Inner {
                 }
             }
             let _ = tx.send((names, classes));
+        });
+    }
+
+    /// GET `/v1/vendors/apothecary` (Bearer auth) for the shop panel.
+    fn fetch_shop(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.shop_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/vendors/apothecary", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let (mut vendor, mut items) = (String::new(), Vec::new());
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    vendor = v["name"].as_str().unwrap_or("Vendor").to_string();
+                    for s in v["data"].as_array().into_iter().flatten() {
+                        items.push(ShopLine {
+                            item_kind: s["item_kind"].as_str().unwrap_or("").to_string(),
+                            name: s["name"].as_str().unwrap_or("").to_string(),
+                            description: s["description"].as_str().unwrap_or("").to_string(),
+                            price_chits: s["price_chits"].as_i64().unwrap_or(0),
+                        });
+                    }
+                }
+            }
+            let _ = tx.send((vendor, items));
+        });
+    }
+
+    /// POST a purchase, then re-read the Vault: the chit balance a player sees must
+    /// be the server's, never the client's arithmetic.
+    fn buy_item(&mut self, item_kind: String, qty: i32) {
+        if self.session_token.is_empty() || item_kind.is_empty() || qty <= 0 {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "item_kind": item_kind, "quantity": qty }))
+            .unwrap_or_default();
+        let mut req =
+            ehttp::Request::post(format!("{base}/v1/vendors/apothecary/buy"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            spawn_inventory_fetch(base, token, tx);
         });
     }
 

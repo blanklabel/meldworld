@@ -890,12 +890,15 @@ impl Db {
 
     /// Craft: atomically consume `inputs` from the Vault, add `output`, and
     /// credit Forging XP. Returns `false` if materials are insufficient.
+    /// Run one recipe: consume `inputs`, add `output`, and credit `skill_xp` to the
+    /// Meld skill the RECIPE names — a potion is Alchemy, metalwork is Forging.
     pub async fn craft(
         &self,
         player_id: Uuid,
         inputs: &[(String, i32)],
         output: (&str, i32),
-        forging_xp: i64,
+        skill: &str,
+        skill_xp: i64,
     ) -> Result<bool, DbError> {
         match &self.backend {
             Backend::Pg(pool) => {
@@ -929,11 +932,12 @@ impl Db {
                 .execute(&mut *tx)
                 .await?;
                 sqlx::query(
-                    "INSERT INTO meld_skills (player_id, skill_kind, xp) VALUES ($1, 'forging', $2)
+                    "INSERT INTO meld_skills (player_id, skill_kind, xp) VALUES ($1, $3, $2)
                      ON CONFLICT (player_id, skill_kind) DO UPDATE SET xp = meld_skills.xp + $2",
                 )
                 .bind(player_id)
-                .bind(forging_xp)
+                .bind(skill_xp)
+                .bind(skill)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -964,8 +968,65 @@ impl Db {
                     .entry((player_id, output.0.to_string()))
                     .or_insert(0) += output.1;
                 *m.skills
-                    .entry((player_id, "forging".to_string()))
-                    .or_insert(0) += forging_xp;
+                    .entry((player_id, skill.to_string()))
+                    .or_insert(0) += skill_xp;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Buy `qty` of `item_kind` from a town vendor for `unit_price` chits each
+    /// (EC-2). Atomic: the chits leave the Vault and the goods arrive in the same
+    /// transaction, so a failed purchase can never bill a player for nothing.
+    /// Returns `false` when they cannot afford it.
+    pub async fn buy_from_vendor(
+        &self,
+        player_id: Uuid,
+        item_kind: &str,
+        qty: i32,
+        unit_price: i64,
+    ) -> Result<bool, DbError> {
+        if qty <= 0 || unit_price < 0 {
+            return Ok(false);
+        }
+        let cost = unit_price * qty as i64;
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let paid = sqlx::query(
+                    "UPDATE vaults SET chits = chits - $2 WHERE player_id = $1 AND chits >= $2",
+                )
+                .bind(player_id)
+                .bind(cost)
+                .execute(&mut *tx)
+                .await?;
+                if paid.rows_affected() == 0 {
+                    tx.rollback().await?;
+                    return Ok(false);
+                }
+                sqlx::query(
+                    "INSERT INTO vault_items (player_id, item_kind, quantity) VALUES ($1, $2, $3)
+                     ON CONFLICT (player_id, item_kind)
+                     DO UPDATE SET quantity = vault_items.quantity + $3",
+                )
+                .bind(player_id)
+                .bind(item_kind)
+                .bind(qty)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(true)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let chits = m.chits.entry(player_id).or_insert(0);
+                if *chits < cost {
+                    return Ok(false);
+                }
+                *chits -= cost;
+                *m.vault_items
+                    .entry((player_id, item_kind.to_string()))
+                    .or_insert(0) += qty;
                 Ok(true)
             }
         }
@@ -2194,7 +2255,7 @@ mod tests {
         assert_eq!(items, vec![("iron".to_string(), 4), ("wood".to_string(), 2)]);
 
         // Craft consumes inputs, adds output, credits forging xp.
-        assert!(db.craft(p, &[("iron".into(), 4)], ("blade", 1), 5).await.unwrap());
+        assert!(db.craft(p, &[("iron".into(), 4)], ("blade", 1), "forging", 5).await.unwrap());
         let (_, items) = db.get_vault(p).await.unwrap();
         assert_eq!(items, vec![("blade".to_string(), 1), ("wood".to_string(), 2)]);
         let forging = db
@@ -2208,7 +2269,7 @@ mod tests {
         assert_eq!(forging, 5);
 
         // Insufficient materials → false, and nothing is consumed.
-        assert!(!db.craft(p, &[("wood".into(), 99)], ("plank", 1), 5).await.unwrap());
+        assert!(!db.craft(p, &[("wood".into(), 99)], ("plank", 1), "forging", 5).await.unwrap());
         let (_, items) = db.get_vault(p).await.unwrap();
         assert_eq!(items, vec![("blade".to_string(), 1), ("wood".to_string(), 2)]);
     }
@@ -2682,6 +2743,83 @@ mod tests {
         assert!(b.modifiers.iter().any(|(el, m)| el == "FIRE" && (*m - 0.75).abs() < 1e-9));
         // Synergy is deferred to battle assembly, which knows the party.
         assert_eq!(b.synergies, vec![("resonant".to_string(), 6, 0)]);
+    }
+
+    #[tokio::test]
+    async fn the_apothecary_takes_chits_and_never_bills_for_nothing() {
+        let db = mem().await;
+        let p = db.register("shopper", "pw").await.unwrap().player_id;
+        // Bank some chits the way an extraction would.
+        db.bank_extraction(p, &[], 100).await.unwrap();
+        assert_eq!(db.get_vault(p).await.unwrap().0, 100);
+
+        // Two salves at 25 each.
+        assert!(db.buy_from_vendor(p, "bloom_salve", 2, 25).await.unwrap());
+        assert_eq!(db.get_vault(p).await.unwrap().0, 50);
+        let (_, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(
+            items.iter().find(|(k, _)| k == "bloom_salve").map(|(_, q)| *q),
+            Some(2)
+        );
+
+        // Too expensive: refused, and NOTHING moves — not the chits, not the goods.
+        assert!(!db.buy_from_vendor(p, "elixir", 10, 999).await.unwrap());
+        assert_eq!(
+            db.get_vault(p).await.unwrap().0,
+            50,
+            "a failed purchase billed the player"
+        );
+        let (_, items) = db.get_vault(p).await.unwrap();
+        assert!(items.iter().all(|(k, _)| k != "elixir"), "goods arrived unpaid");
+
+        // Nonsense quantities are refused rather than interpreted.
+        assert!(!db.buy_from_vendor(p, "bloom_salve", 0, 25).await.unwrap());
+        assert!(!db.buy_from_vendor(p, "bloom_salve", -3, 25).await.unwrap());
+        assert_eq!(db.get_vault(p).await.unwrap().0, 50);
+    }
+
+    #[tokio::test]
+    async fn a_potion_craft_credits_alchemy_and_a_forge_craft_credits_forging() {
+        let db = mem().await;
+        let p = db.register("brewer", "pw").await.unwrap().player_id;
+        db.bank_extraction(
+            p,
+            &[("bloom_herb".into(), 4), ("dune_iron".into(), 1), ("sun_salts".into(), 1)],
+            0,
+        )
+        .await
+        .unwrap();
+        async fn skill_xp(db: &Db, p: Uuid, want: &str) -> i64 {
+            db.get_skills(p)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|(k, _)| k == want)
+                .map(|(_, xp)| xp)
+                .unwrap_or(0)
+        }
+
+        // A potion is Alchemy's business.
+        let r = meld_proto::consumables::recipe("bloom_salve").unwrap();
+        let inputs: Vec<(String, i32)> =
+            r.inputs.iter().map(|(k, q)| ((*k).to_string(), *q)).collect();
+        assert!(db
+            .craft(p, &inputs, (r.output, r.output_qty), r.skill, 10)
+            .await
+            .unwrap());
+        assert_eq!(skill_xp(&db, p, "alchemy").await, 10);
+        assert_eq!(skill_xp(&db, p, "forging").await, 0, "a potion credited Forging");
+
+        // Metalwork is Forging's.
+        let r = meld_proto::consumables::recipe("town_portal").unwrap();
+        let inputs: Vec<(String, i32)> =
+            r.inputs.iter().map(|(k, q)| ((*k).to_string(), *q)).collect();
+        assert!(db
+            .craft(p, &inputs, (r.output, r.output_qty), r.skill, 10)
+            .await
+            .unwrap());
+        assert_eq!(skill_xp(&db, p, "forging").await, 10);
+        assert_eq!(skill_xp(&db, p, "alchemy").await, 10, "forging leaked into alchemy");
     }
 }
 
