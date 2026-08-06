@@ -421,6 +421,14 @@ burns on death/leave; some is single-use. See
     entrances** within its own radius (plotted on the minimap in the Runner's colour,
     limited by the Runner's sense rather than the map's reach) and, from level 2, reads
     an item's **permanence** before it is picked up — "check the weight".
+  - *Also shipped:* **the Shifter actually steals.** Steal/Mug reported only tempo
+    before; the engine now raises `Event::Pilfered` — the mirror of the `Stolen` event a
+    creature raises when it robs a hero — and the server settles it: chits scaled off
+    the creature's tier (a deep theft is worth the trip) plus a rolled chance at the
+    biome's combat material. The engine stays pure: it reports that a pocket was
+    picked and never learns what was in it. `submit` drains a small pending-events
+    buffer so a resolver deep in the call tree can report a fact without threading a
+    return value through every signature.
   - **Remains (Shifter):** the world-space entrance beacon and the in-world
     permanence tell. The perk rides the wire and gates the minimap; the extra
     presentation is client rendering, not a rule.

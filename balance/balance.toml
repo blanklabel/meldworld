@@ -264,6 +264,10 @@ resonant_bloom_self_cost = 0.35
 # by its rows getting better, not by growing more of them, so each of these replaces
 # an earlier ability and is tuned above it. [TUNABLE]
 shifter_steal_drain = 0.5          # Steal: strip this much of the foe's ATB gauge
+# What comes off the body. Chits scale with the creature's distance so a deep theft
+# is worth the trip; the material chance is the "finders, keepers" roll. [TUNABLE]
+shifter_steal_chits_per_tier = 6
+shifter_steal_material_chance = 0.35
 shifter_mug_mult = 1.35            # Mug: Steal, plus a hit on the way past
 shifter_mug_drain = 0.6
 hunter_crushing_blow_mult = 2.1    # Crushing Blow: replaces Power Strike (1.5)

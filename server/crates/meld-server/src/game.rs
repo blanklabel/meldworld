@@ -4864,6 +4864,15 @@ impl WorldActor {
                 } => {
                     self.apply_steal(&victim_player_id, kind);
                 }
+                // A Shifter picked a creature's pocket. The engine reported the theft;
+                // deciding what a creature was carrying is this side's job (economy
+                // and loot live here, and the engine stays pure).
+                BattleEvent::Pilfered {
+                    thief_player_id,
+                    victim_combatant_id,
+                } => {
+                    out.extend(self.apply_pilfer(&thief_player_id, &victim_combatant_id));
+                }
                 BattleEvent::Resolved(res) => {
                     let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
@@ -4915,6 +4924,55 @@ impl WorldActor {
     /// chits lose `steal_chits_fraction`; a consumable/material steal takes one
     /// unit of the first matching backpack stack. Silently a no-op when the
     /// pockets are empty — the shout still happened.
+    /// The Shifter's side of a theft: chits scaled off where the creature was met,
+    /// and a chance at whatever it was carrying. The engine reports that a pocket was
+    /// picked; what was in it is decided here, next to the rest of the economy.
+    fn apply_pilfer(&mut self, thief: &str, victim_combatant: &str) -> Vec<Outgoing> {
+        let b = &self.balance;
+        // Size the haul off the creature's own tier — a deep theft is worth the trip.
+        let dist = self
+            .arena
+            .monsters
+            .iter()
+            .find(|m| m.entity_id == victim_combatant)
+            .map(|m| m.position.distance_floor())
+            .unwrap_or(0);
+        let tier = meld_world::Scaling::new(b).tier(dist);
+        let chits = b.battle.shifter_steal_chits_per_tier * (tier + 1);
+        let roll = roll_unit(self.arena.seed ^ hash_str(thief) ^ hash_str(victim_combatant));
+        let take_material = roll < b.battle.shifter_steal_material_chance;
+        let material = take_material
+            .then(|| meld_world::combat_material_for_biome(dist))
+            .map(|m| m.to_string());
+        let Some(r) = self.run.run_mut(thief) else {
+            return Vec::new();
+        };
+        r.chits += chits;
+        let mut added = Vec::new();
+        if let Some(kind) = material {
+            let item = ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: kind,
+                quantity: 1,
+                insurance: None,
+            };
+            r.backpack.push(item.clone());
+            added.push(wr::BackpackChange {
+                item,
+                delta: "added".to_string(),
+                cause: "pilfered".to_string(),
+            });
+        }
+        vec![out_msg(
+            thief,
+            &wr::BackpackUpdate {
+                changes: added,
+                chits_delta: chits,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
     fn apply_steal(&mut self, victim: &str, kind: meld_proto::abilities::StealTargetKind) {
         use meld_proto::abilities::StealTargetKind as K;
         let frac = self.balance.battle.steal_chits_fraction;

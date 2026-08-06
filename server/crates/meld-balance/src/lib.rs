@@ -193,6 +193,8 @@ pub struct Battle {
     pub resonant_bloom_barrier_fraction: f64,
     pub resonant_bloom_self_cost: f64,
     pub shifter_steal_drain: f64,
+    pub shifter_steal_chits_per_tier: i64,
+    pub shifter_steal_material_chance: f64,
     pub shifter_mug_mult: f64,
     pub shifter_mug_drain: f64,
     pub hunter_crushing_blow_mult: f64,

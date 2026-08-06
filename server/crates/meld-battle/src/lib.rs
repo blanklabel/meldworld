@@ -416,6 +416,14 @@ pub enum Event {
         victim_player_id: Id,
         kind: StealTargetKind,
     },
+    /// A Shifter's `steal`/`mug` connected — the MIRROR of `Stolen`. The engine has
+    /// no idea what a creature is carrying or where a run's backpack lives, so it
+    /// reports the theft and the server decides what came off the body.
+    Pilfered {
+        thief_player_id: Id,
+        /// The creature robbed, so the server can size the haul off its tier.
+        victim_combatant_id: Id,
+    },
     /// An action resolved (player, monster AI, or auto-defend).
     Resolved(Resolution),
     /// The battle reached a terminal state (spike: single party vs enemies).
@@ -432,6 +440,11 @@ pub enum Reject {
 }
 
 pub struct Battle {
+    /// Events a resolver raised that are not the resolution itself — a Shifter's
+    /// theft, say, which only the server can settle. `submit` drains this, so a
+    /// resolver deep in the call tree can report a fact without threading a return
+    /// value through every signature between here and there.
+    pending_events: Vec<Event>,
     pub battle_id: Id,
     pub encounter_class: EncounterClass,
     fighters: Vec<Fighter>,
@@ -672,6 +685,7 @@ impl Battle {
         Battle {
             battle_id,
             encounter_class,
+            pending_events: Vec::new(),
             fighters,
             tick_count: 0,
             ended: false,
@@ -1087,6 +1101,9 @@ impl Battle {
         prepend_effects(&mut res, upkeep);
         let fled = res.flee_success == Some(true);
         events.push(Event::Resolved(res));
+        // A resolver may have reported something only the server can settle (a
+        // Shifter picking a pocket); hand it up alongside the resolution.
+        events.extend(std::mem::take(&mut self.pending_events));
         if fled {
             self.ended = true;
             events.push(Event::Ended {
@@ -1630,6 +1647,15 @@ impl Battle {
                     amount: None,
                     status: Some("slowed".to_string()),
                     hp_after: self.fighters[target_i].hp,
+                });
+            }
+            // Report the theft: the run's backpack is the server's business. A hero
+            // with no player behind it (a headless test fighter) steals nothing.
+            if let Some(thief) = self.fighters[actor_i].player_id.clone() {
+                let victim = self.fighters[target_i].combatant_id.clone();
+                self.pending_events.push(Event::Pilfered {
+                    thief_player_id: thief,
+                    victim_combatant_id: victim,
                 });
             }
             self.fighters[actor_i].defending = false;
@@ -4543,6 +4569,52 @@ mod tests {
     }
 
 
+
+
+    #[test]
+    fn a_theft_is_reported_for_the_server_to_settle() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![{
+                let mut f = leveled_player("s", 400, 25);
+                // A hero with a player behind it: the engine reports the theft, and
+                // the server decides what came off the body (it owns the economy).
+                f.player_id = Some("p1".into());
+                f
+            }],
+            vec![monster("m", 500, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "s");
+        let events = battle
+            .submit(
+                "s",
+                "a1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m".into()]),
+                Some("mug".into()),
+                None,
+            )
+            .unwrap();
+        let pilfered = events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Pilfered { thief_player_id, victim_combatant_id }
+                    if thief_player_id == "p1" && victim_combatant_id == "m"
+            )
+        });
+        assert!(pilfered, "Mug reported no theft: {events:?}");
+
+        // A plain attack steals nothing — only the Shifter's own kit picks pockets.
+        tick_to_ready(&mut battle, "s");
+        let events = battle
+            .submit("s", "a2".into(), BattleActionKind::Attack, Some(vec!["m".into()]), None, None)
+            .unwrap();
+        assert!(!events.iter().any(|e| matches!(e, Event::Pilfered { .. })));
+    }
 
     #[test]
     fn mug_is_steal_with_a_hit_on_the_way_past() {
