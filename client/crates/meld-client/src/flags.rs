@@ -179,6 +179,20 @@ pub(crate) fn inventory_tab_flag() -> Option<String> {
     params.get("inventory_tab").filter(|s| !s.is_empty())
 }
 
+/// `MELD_UNLOCK=<key>` / `?unlock=<key>` — queue that unlock's banner (and the
+/// locked-roster rows) with no server, so the CL-1 presentation can be
+/// screenshot-verified. Any key from `meld_proto::unlocks::UNLOCKS`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn unlock_mockup_flag() -> Option<String> {
+    std::env::var("MELD_UNLOCK").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn unlock_mockup_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("unlock").filter(|s| !s.is_empty())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn levelup_mockup_flag() -> bool {
     std::env::var("MELD_LEVELUP").is_ok()

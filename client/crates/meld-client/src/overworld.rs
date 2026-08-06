@@ -5,6 +5,8 @@
 use std::collections::HashSet;
 
 use bevy::prelude::*;
+
+use meld_client::glass;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::gltf::GltfAssetLabel;
 
@@ -139,7 +141,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
                 BorderColor(Color::srgba(0.6, 0.8, 1.0, 0.5)),
                 BorderRadius::all(Val::Px(6.0)),
-                BackgroundColor(Color::srgba(0.05, 0.08, 0.14, 0.65)),
+                BackgroundColor(glass::GLASS_THIN),
             ));
         });
 }
@@ -184,7 +186,7 @@ pub(crate) fn action_button(parent: &mut ChildSpawnerCommands, act: OverworldAct
             },
             BorderColor(Color::srgb(0.4, 0.5, 0.8)),
             BorderRadius::all(Val::Px(8.0)),
-            BackgroundColor(Color::srgba(0.08, 0.11, 0.22, 0.9)),
+            BackgroundColor(glass::GLASS),
         ))
         .with_children(|b| {
             b.spawn((
@@ -1975,7 +1977,7 @@ pub(crate) fn update_mob_nameplates(
                                 ..default()
                             },
                             BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
-                            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+                            BackgroundColor(glass::SCRIM),
                         ))
                         .with_children(|bar| {
                             bar.spawn((

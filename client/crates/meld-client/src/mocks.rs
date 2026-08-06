@@ -183,8 +183,43 @@ pub(crate) fn mock_overlay_setup(
     mut stats: ResMut<RunStats>,
     mut backpack: ResMut<RunBackpack>,
     mut picker: ResMut<EquipPicker>,
+    mut unlocks: ResMut<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    // CL-1: queue an unlock banner with no server behind it, and show the roster
+    // with only what a fresh account owns, so both surfaces are screenshottable.
+    if let Some(key) = unlock_mockup_flag() {
+        if let Some(def) = meld_proto::unlocks::unlock(&key) {
+            let owned: Vec<String> = meld_proto::unlocks::starting_unlocks()
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            unlocks.pending.push_back(crate::net::UnlockLine {
+                key: def.key.to_string(),
+                name: def.name.to_string(),
+                kind: match def.kind {
+                    meld_proto::unlocks::UnlockKind::PartySlot(_) => "party_slot".into(),
+                    meld_proto::unlocks::UnlockKind::Class(_) => "class".into(),
+                },
+                class_key: match def.kind {
+                    meld_proto::unlocks::UnlockKind::Class(c) => {
+                        Some(meld_proto::equipment::class_key(c).to_string())
+                    }
+                    _ => None,
+                },
+                slot: match def.kind {
+                    meld_proto::unlocks::UnlockKind::PartySlot(n) => Some(n),
+                    _ => None,
+                },
+                trigger_text: def.trigger_text.to_string(),
+                banner: def.banner.to_string(),
+            });
+            roster.locked = crate::overlays::locked_roster_lines(&owned);
+            roster.party_slots = meld_proto::unlocks::party_slots(&owned);
+            unlocks.owned = owned;
+            unlocks.hold = true;
+        }
+    }
     if inventory_mockup_flag() {
         inv.loaded = true;
         // AD-2 depth lines, so the party screen's synergy/combo block is visible in

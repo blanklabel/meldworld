@@ -5,6 +5,8 @@
 
 use bevy::prelude::*;
 
+use meld_client::glass;
+
 use meld_client::net::{self, ClientCmd};
 
 use super::*;
@@ -257,7 +259,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             },
             // A dark scrim over the (bright) 3D overworld behind the menu so the text
             // and cards read clearly instead of washing out against the grass.
-            BackgroundColor(Color::srgba(0.03, 0.04, 0.08, 0.66)),
+            BackgroundColor(glass::SCRIM),
         ))
         .with_children(|p| {
             p.spawn((
@@ -403,7 +405,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                                             r.spawn((
                                                 JoinStatFill { stat: si as u8, seg },
                                                 Node { width: Val::Px(20.0), height: Val::Px(9.0), ..default() },
-                                                BackgroundColor(Color::srgb(0.2, 0.22, 0.3)),
+                                                BackgroundColor(glass::CHIP_OFF),
                                                 BorderRadius::all(Val::Px(2.0)),
                                             ));
                                         }
@@ -773,9 +775,9 @@ fn lobby_button(parent: &mut ChildSpawnerCommands, act: LobbyAct, label: &str) {
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.5, 0.6, 0.85)),
+            BorderColor(glass::EDGE_SOFT),
             BorderRadius::all(Val::Px(8.0)),
-            BackgroundColor(Color::srgba(0.1, 0.14, 0.28, 0.92)),
+            BackgroundColor(glass::GLASS),
         ))
         .with_children(|b| {
             b.spawn((

@@ -5,6 +5,7 @@
 
 use bevy::prelude::*;
 
+use meld_client::glass;
 use meld_client::net::{ClientCmd, GearLine};
 use meld_proto::enums::Insurance;
 
@@ -347,30 +348,10 @@ pub(crate) fn render_overlay(
     commands
         .spawn((
             OverlayRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
+            glass::scrim(),
         ))
         .with_children(|root| {
-            root.spawn((
-                Node {
-                    width: Val::Px(660.0),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(10.0),
-                    padding: UiRect::all(Val::Px(18.0)),
-                    border: UiRect::all(Val::Px(2.0)),
-                    ..default()
-                },
-                BorderColor(Color::srgb(0.45, 0.55, 0.85)),
-                BackgroundColor(Color::srgb(0.055, 0.075, 0.17)),
-                BorderRadius::all(Val::Px(8.0)),
-            ))
+            root.spawn(glass::panel(Val::Px(660.0)))
             .with_children(|p| match kind {
                 OverlayKind::Inventory => {
                     label(p, "INVENTORY".into(), 24.0, gold);
@@ -469,7 +450,7 @@ pub(crate) fn render_overlay(
                                                     padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
                                                     ..default()
                                                 },
-                                                BackgroundColor(Color::srgba(0.18, 0.28, 0.5, 0.6)),
+                                                BackgroundColor(glass::CHIP_ON),
                                                 BorderRadius::all(Val::Px(4.0)),
                                             ))
                                             .with_children(|b| {
@@ -576,7 +557,7 @@ pub(crate) fn render_overlay(
                                                     },
                                                     BorderColor(if on { Color::srgb(0.5, 0.6, 0.85) } else { Color::srgb(0.34, 0.37, 0.48) }),
                                                     BorderRadius::all(Val::Px(6.0)),
-                                                    BackgroundColor(Color::srgba(0.12, 0.16, 0.3, if on { 0.9 } else { 0.4 })),
+                                                    BackgroundColor(if on { glass::CHIP_ON } else { glass::CHIP_OFF }),
                                                 ))
                                                 .with_children(|b| {
                                                     b.spawn((
@@ -735,6 +716,30 @@ pub(crate) fn render_overlay(
                                                 });
                                             });
                                         });
+                                }
+                                // CL-1: the roster you are working TOWARD. Locked
+                                // rows name their own trigger, so the party screen
+                                // is also the "what's next" screen.
+                                let locked = roster.locked.clone();
+                                if !locked.is_empty() {
+                                    label(content, String::new(), 6.0, dim);
+                                    label(
+                                        content,
+                                        format!(
+                                            "Still to earn  ({} party slots open)",
+                                            roster.party_slots.max(1)
+                                        ),
+                                        14.0,
+                                        Color::srgb(0.98, 0.86, 0.42),
+                                    );
+                                    for (name, how) in locked {
+                                        label(
+                                            content,
+                                            format!("   {name} - {how}"),
+                                            12.0,
+                                            Color::srgb(0.62, 0.68, 0.8),
+                                        );
+                                    }
                                 }
                                 // AD-2: what this comp ENABLES — the build feedback
                                 // loop. Without this the synergies and combos are
@@ -1240,7 +1245,7 @@ pub(crate) fn render_gear_tooltip(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.05, 0.06, 0.12, 0.95)),
+            BackgroundColor(glass::GLASS),
             BorderColor(Color::srgb(0.45, 0.55, 0.85)),
             BorderRadius::all(Val::Px(6.0)),
         ))
@@ -1292,7 +1297,7 @@ pub(crate) fn gear_click(
                 }
             }
             Interaction::Hovered => {
-                *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7));
+                *bg = BackgroundColor(glass::CHIP_HOVER);
             }
             Interaction::None => {
                 *bg = BackgroundColor(if g.worn {
@@ -1318,7 +1323,7 @@ pub(crate) fn category_button_click(
                 picker.category = Some(c.category);
                 cursor.index = 0;
             }
-            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7)),
+            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER),
             Interaction::None => *bg = BackgroundColor(Color::NONE),
         }
     }
@@ -1342,7 +1347,7 @@ pub(crate) fn picker_unequip_click(
                 picker.category = None;
                 cursor.index = 0;
             }
-            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.4, 0.2, 0.22, 0.7)),
+            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER_WARN),
             Interaction::None => *bg = BackgroundColor(Color::NONE),
         }
     }
@@ -1360,7 +1365,7 @@ pub(crate) fn picker_back_click(
                 picker.category = None;
                 cursor.index = 0;
             }
-            Interaction::Hovered => *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7)),
+            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER),
             Interaction::None => *bg = BackgroundColor(Color::NONE),
         }
     }
@@ -1378,7 +1383,7 @@ pub(crate) fn formation_click(
                 net.0.send(ClientCmd::SetFormation { slot: f.slot, back_row: !f.back_row });
             }
             Interaction::Hovered => {
-                *bg = BackgroundColor(Color::srgba(0.2, 0.24, 0.4, 0.7));
+                *bg = BackgroundColor(glass::CHIP_HOVER);
             }
             Interaction::None => {
                 *bg = BackgroundColor(Color::NONE);
@@ -1501,8 +1506,8 @@ pub(crate) fn render_loot_report(
                     border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
-                BorderColor(glass_edge()),
-                BackgroundColor(glass_fill()),
+                BorderColor(glass::EDGE_SOFT),
+                BackgroundColor(glass::GLASS_THIN),
                 BorderRadius::all(Val::Px(10.0)),
             ))
             .with_children(|p| {
@@ -1613,30 +1618,10 @@ pub(crate) fn level_up_screen(
     commands
         .spawn((
             LevelUpRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+            glass::scrim(),
         ))
         .with_children(|root| {
-            root.spawn((
-                Node {
-                    width: Val::Px(420.0),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(6.0),
-                    padding: UiRect::all(Val::Px(20.0)),
-                    border: UiRect::all(Val::Px(3.0)),
-                    ..default()
-                },
-                BorderColor(gold),
-                BackgroundColor(Color::srgb(0.06, 0.05, 0.14)),
-                BorderRadius::all(Val::Px(6.0)),
-            ))
+            root.spawn(glass::panel(Val::Px(420.0)))
             .with_children(|p| {
                 let label = |p: &mut ChildSpawnerCommands, text: String, size: f32, color: Color| {
                     p.spawn((
@@ -1654,15 +1639,7 @@ pub(crate) fn level_up_screen(
                     dim,
                 );
                 // Divider.
-                p.spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(2.0),
-                        margin: UiRect::vertical(Val::Px(4.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.4, 0.34, 0.14)),
-                ));
+                p.spawn(glass::divider());
                 for (i, (name, (before, after))) in lines.iter().enumerate() {
                     if i >= reveal {
                         break;
@@ -1831,4 +1808,116 @@ mod equip_ux_tests {
         // Nothing in the way at all.
         assert!(off_hand_in_the_way(&[], &spear, 1).is_none());
     }
+}
+
+/// How long an unlock banner holds before it dismisses itself. Longer than the
+/// level-up hold: an unlock is rarer and its line is worth reading.
+pub(crate) const UNLOCK_HOLD: f32 = 4.0;
+
+/// CL-1 unlock banner, in the same shape as the level-up screen: one at a time,
+/// centred, dismissable with [Space]/[Enter]. Frosted glass rather than the
+/// level-up screen's solid panel — a banner should let you see the world it just
+/// changed.
+pub(crate) fn unlock_banner(
+    mut commands: Commands,
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut un: ResMut<UnlocksRes>,
+    wa: Option<Res<crate::world_render::WorldAssets>>,
+    existing: Query<Entity, With<UnlockBannerRoot>>,
+) {
+    if un.current.is_none() {
+        match un.pending.pop_front() {
+            Some(u) => {
+                un.current = Some(u);
+                un.elapsed = 0.0;
+            }
+            None => {
+                for e in &existing {
+                    commands.entity(e).despawn();
+                }
+                return;
+            }
+        }
+    }
+    un.elapsed += time.delta_secs();
+    let dismiss = keys.just_pressed(KeyCode::Space)
+        || keys.just_pressed(KeyCode::Enter)
+        || keys.just_pressed(KeyCode::Escape)
+        || (!un.hold && un.elapsed >= UNLOCK_HOLD);
+    if dismiss {
+        un.current = None;
+        for e in &existing {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+
+    let u = un.current.clone().unwrap();
+    let more = un.pending.len();
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let gold = Color::srgb(0.98, 0.86, 0.42);
+    let dim = Color::srgb(0.78, 0.84, 0.95);
+    // A class unlock shows the class's own portrait; a slot unlock has no face.
+    let portrait = u
+        .class_key
+        .as_ref()
+        .zip(wa.as_ref())
+        .map(|(k, w)| w.class_frames(k).idle[0].clone());
+    let title = match u.kind.as_str() {
+        "party_slot" => "*  PARTY SLOT UNLOCKED  *".to_string(),
+        _ => "*  CLASS UNLOCKED  *".to_string(),
+    };
+    commands
+        .spawn((
+            UnlockBannerRoot,
+            glass::scrim(),
+        ))
+        .with_children(|root| {
+            root.spawn(glass::panel_row(Val::Px(560.0)))
+            .with_children(|p| {
+                if let Some(tex) = portrait {
+                    p.spawn((
+                        ImageNode::new(tex),
+                        Node { width: Val::Px(76.0), height: Val::Px(104.0), ..default() },
+                    ));
+                }
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(4.0),
+                    flex_grow: 1.0,
+                    ..default()
+                })
+                .with_children(|col| {
+                    let label = |c: &mut ChildSpawnerCommands, t: String, s: f32, col: Color| {
+                        c.spawn((
+                            Text::new(t),
+                            TextFont { font_size: s, ..default() },
+                            TextColor(col),
+                        ));
+                    };
+                    label(col, title, 17.0, gold);
+                    label(col, u.name.clone(), 30.0, Color::srgb(0.92, 0.96, 1.0));
+                    label(col, u.banner.clone(), 15.0, dim);
+                    let footer = if more > 0 {
+                        format!("[Space] next  ({more} more)")
+                    } else {
+                        "[Space] dismiss".to_string()
+                    };
+                    label(col, footer, 13.0, Color::srgb(0.62, 0.68, 0.82));
+                });
+            });
+        });
+}
+
+/// The locked half of the roster: what this account has yet to earn, and how. A
+/// player should see the party they're working toward, not just a shorter list.
+pub(crate) fn locked_roster_lines(owned: &[String]) -> Vec<(String, String)> {
+    meld_proto::unlocks::UNLOCKS
+        .iter()
+        .filter(|u| !owned.iter().any(|o| o == u.key))
+        .map(|u| (u.name.to_string(), u.trigger_text.to_string()))
+        .collect()
 }

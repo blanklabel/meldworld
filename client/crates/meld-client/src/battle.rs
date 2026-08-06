@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
 
+use meld_client::glass;
 use meld_client::hd2d::{self, CharSprite};
 use meld_client::net::{ClientCmd, CombatantView, HitEffect, Net};
 
@@ -1298,27 +1299,6 @@ pub(crate) fn party_select_click(
 }
 
 /// One command tile in the cross, tagged with its menu-entry index.
-// Frosted-glass battle-HUD palette (Dragon Quest HD-2D remake vibe): translucent
-// fills + hairline light edges so panels read as glass floating over the 3D arena
-// instead of opaque bordered boxes. Bevy UI has no true backdrop blur, so the low
-// alpha over the busy scene carries the effect.
-/// Default glass panel fill.
-pub(crate) fn glass_fill() -> Color {
-    Color::srgba(0.06, 0.09, 0.17, 0.5)
-}
-/// Hairline light edge for a glass panel.
-pub(crate) fn glass_edge() -> Color {
-    Color::srgba(0.78, 0.86, 1.0, 0.32)
-}
-/// Translucent gold wash for the active/selected element.
-pub(crate) fn glass_active() -> Color {
-    Color::srgba(0.85, 0.68, 0.28, 0.5)
-}
-/// Bright edge for the active/selected element.
-pub(crate) fn glass_active_edge() -> Color {
-    Color::srgba(1.0, 0.9, 0.5, 0.8)
-}
-
 pub(crate) fn cmd_tile(
     parent: &mut ChildSpawnerCommands,
     index: usize,
@@ -1340,7 +1320,7 @@ pub(crate) fn cmd_tile(
                 ..default()
             },
             BorderColor(border),
-            BackgroundColor(glass_fill()),
+            BackgroundColor(glass::GLASS_THIN),
             BorderRadius::all(Val::Px(8.0)),
         ))
         .with_children(|t| {
@@ -1396,7 +1376,7 @@ pub(crate) fn rebuild_command_menu(
 
     // Palette for the d-pad tiles: neutral for Item/Defend/Skill, gold for the
     // primary Attack, red for Flee — so the two "big" choices read at a glance.
-    let neutral_edge = glass_edge();
+    let neutral_edge = glass::EDGE_SOFT;
     let neutral_text = Color::srgb(0.92, 0.94, 1.0);
     let gold = Color::srgb(1.0, 0.85, 0.45);
     let red = Color::srgb(1.0, 0.55, 0.5);
@@ -1442,8 +1422,8 @@ pub(crate) fn rebuild_command_menu(
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor(glass_edge()),
-                BackgroundColor(glass_fill()),
+                BorderColor(glass::EDGE_SOFT),
+                BackgroundColor(glass::GLASS_THIN),
                 BorderRadius::all(Val::Px(12.0)),
             ))
             .with_children(|panel| {
@@ -1577,8 +1557,8 @@ pub(crate) fn rebuild_command_menu(
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BorderColor(glass_edge()),
-                            BackgroundColor(glass_fill()),
+                            BorderColor(glass::EDGE_SOFT),
+                            BackgroundColor(glass::GLASS_THIN),
                             BorderRadius::all(Val::Px(6.0)),
                         ))
                         .with_children(|b| {
@@ -1617,14 +1597,14 @@ pub(crate) fn style_command_menu(
     // Cross tiles keep a faint glass base so they read as buttons; list rows are
     // transparent until hovered/selected.
     let base = if menu.level == MenuLevel::Root {
-        glass_fill()
+        glass::GLASS_THIN
     } else {
         Color::NONE
     };
     for (row, interaction, mut bg) in &mut rows {
         let selected = row.index == menu.cursor;
         *bg = BackgroundColor(if *interaction == Interaction::Pressed || selected {
-            glass_active() // translucent gold selection
+            glass::ACTIVE // translucent gold selection
         } else if *interaction == Interaction::Hovered {
             Color::srgba(0.5, 0.6, 0.9, 0.25)
         } else {
@@ -1924,7 +1904,7 @@ pub(crate) fn render_status_icons(
                     },
                     BorderColor(color),
                     BorderRadius::all(Val::Px(15.0)),
-                    BackgroundColor(Color::srgba(0.05, 0.06, 0.1, 0.82)),
+                    BackgroundColor(glass::GLASS),
                 ))
                 .with_children(|b| {
                     b.spawn((
@@ -2010,8 +1990,8 @@ pub(crate) fn render_ally_parties(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(glass_edge()),
-            BackgroundColor(glass_fill()),
+            BorderColor(glass::EDGE_SOFT),
+            BackgroundColor(glass::GLASS_THIN),
             // Flat top edge (against the screen), rounded bottom.
             BorderRadius {
                 top_left: Val::Px(0.0),
@@ -2042,8 +2022,8 @@ pub(crate) fn render_ally_parties(
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(glass_edge()),
-                    BackgroundColor(glass_fill()),
+                    BorderColor(glass::EDGE_SOFT),
+                    BackgroundColor(glass::GLASS_THIN),
                     BorderRadius::all(Val::Px(5.0)),
                 ))
                 .with_children(|b| {
@@ -2121,7 +2101,7 @@ pub(crate) fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &Co
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(glass_edge()),
+            BorderColor(glass::EDGE_SOFT),
             BackgroundColor(if hurt {
                 Color::srgba(0.4, 0.12, 0.14, 0.5)
             } else {
@@ -2176,9 +2156,9 @@ pub(crate) fn party_cell(
     // Frosted glass: hairline edge normally, a brighter gold edge for the active /
     // target hero so it still stands out without a heavy border.
     let base_border = if is_target_cursor || active {
-        glass_active_edge()
+        glass::ACTIVE_EDGE
     } else {
-        glass_edge()
+        glass::EDGE_SOFT
     };
     parent
         .spawn((
@@ -2206,9 +2186,9 @@ pub(crate) fn party_cell(
             } else if is_target_cursor {
                 Color::srgba(0.28, 0.26, 0.1, 0.5)
             } else if active {
-                glass_active()
+                glass::ACTIVE
             } else {
-                glass_fill()
+                glass::GLASS_THIN
             }),
             BorderRadius::all(Val::Px(10.0)),
         ))
@@ -2531,7 +2511,8 @@ pub(crate) fn render_hit_fx(
                         border: UiRect::all(Val::Px(2.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.05, 0.04, 0.1, 0.85 * alpha)),
+                    // The cue fades out, so the shared glass carries the fade.
+                    BackgroundColor(glass::GLASS.with_alpha(glass::GLASS.alpha() * alpha)),
                     BorderColor(Color::srgba(1.0, 0.9, 0.4, alpha)),
                     BorderRadius::all(Val::Px(6.0)),
                 ))

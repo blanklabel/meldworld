@@ -3,6 +3,8 @@
 
 
 use bevy::prelude::*;
+
+use meld_client::glass;
 use bevy::gltf::GltfAssetLabel;
 
 use meld_client::hd2d::{self, CharSprite};
@@ -188,12 +190,7 @@ pub(crate) fn city_hud(
             },
         ))
         .with_children(|p| {
-            p.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                row_gap: Val::Px(4.0),
-                ..default()
-            })
+            p.spawn(glass::hud(Val::Auto))
             .with_children(|t| {
                 t.spawn((
                     Text::new("THE LAST CITY"),
@@ -207,12 +204,17 @@ pub(crate) fn city_hud(
                     TextColor(teal),
                 ));
             });
-            p.spawn((
-                CityStatusText,
-                Text::new(""),
-                TextFont { font_size: 18.0, ..default() },
-                TextColor(Color::srgb(0.95, 0.88, 0.62)),
-            ));
+            // The status line doubles as the Apothecary's shelf and the Vanguard
+            // board, so it is a menu: it gets the shared glass rather than bare
+            // text washing out against the plaza.
+            p.spawn(glass::hud(Val::Auto)).with_children(|panel| {
+                panel.spawn((
+                    CityStatusText,
+                    Text::new(""),
+                    TextFont { font_size: 18.0, ..default() },
+                    TextColor(glass::TITLE),
+                ));
+            });
             // Always-available tap actions (bottom-right). Mirror the keyboard: Dive
             // (Enter), Vault (V), Co-op (C) — so the hub is fully click/tap driven
             // without having to walk to each district first.
@@ -252,9 +254,9 @@ fn city_button(parent: &mut ChildSpawnerCommands, act: CityAct, label: &str) {
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.5, 0.42, 0.2)),
+            BorderColor(glass::EDGE),
             BorderRadius::all(Val::Px(8.0)),
-            BackgroundColor(Color::srgba(0.16, 0.12, 0.05, 0.9)),
+            BackgroundColor(glass::ACTIVE),
         ))
         .with_children(|b| {
             b.spawn((
