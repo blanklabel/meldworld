@@ -2669,7 +2669,16 @@ impl GameState {
         client_seq: Option<u32>,
         wants_tutorial: bool,
     ) -> Vec<Outgoing> {
-        let departure_hub_distance = 0; // Center Hub
+        // Every dive departs from the Center Hub, so `base_run_level` is always 1 and
+        // every hero starts every dive at level 1 (XP is dive-scoped by design — see
+        // docs/proposals/progression-and-unlocks.md).
+        //
+        // THIS is the one line that makes the deep ability ladder reachable. Deeper
+        // departure hubs are a later feature; when they land, this becomes the chosen
+        // hub's distance and `meld_run::base_run_level` does the rest. Until then,
+        // abilities above roughly level 16 are authored ahead of the system that
+        // reaches them — do NOT "fix" that by rescaling the ladder down.
+        let departure_hub_distance = 0;
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
         // Create the shared instance on the first entry.

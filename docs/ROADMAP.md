@@ -391,6 +391,16 @@ burns on death/leave; some is single-use. See
     Power Strike (1) → Crushing Blow (16) and Snare (9) → Pin the Prey (25). Tests
     hold the invariants: an upgrade unlocks later than what it replaces, belongs to the
     same class, hits harder, and the menu's row count does not change.
+  - ⚠️ **The deep ladder is authored ahead of what is reachable, on purpose.** XP is
+    dive-scoped, and `departure_hub_distance` is hard-coded to the Center Hub in
+    `game.rs`, so `base_run_level` is always 1 and every hero starts every dive at
+    level 1. On the `L + 1` fights-per-level curve that puts level 16 at ~152 fights
+    *in one dive* and level 100 out of reach entirely. **Deeper departure hubs are the
+    unblocker** (a hub at distance D starts every hero at `1 + 0.078 × D`), and they
+    are a later feature. The persistence they need is already in place: `class_bests`
+    holds the best level ever reached per class and the Vanguard board holds the
+    deepest distance banked. Until hubs land, the ladder past ~16 is content waiting
+    on a system — not a mis-tuned curve to be rescaled.
   - **Remains:** the Psyker's deep manifestation ladder — the canonical class doc has
     Kinetic Wave, Thermal Flux, Phase Shift, Matter Dissolution, Gravity Vortex and
     Reality Collapse to add, plus Psi Points as a real cost and the Psychic Strain

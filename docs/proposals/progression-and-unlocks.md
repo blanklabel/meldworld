@@ -25,6 +25,14 @@ number is **derived** from the encounter tables (a same-level encounter sits at
 ladder with it instead of letting the two drift apart. Punch above your level and you
 climb faster; that falls out of the same maths rather than needing a rule.
 
+**What is reachable today, and what waits on hubs.** `departure_hub_distance` is
+hard-coded to the Center Hub, so `base_run_level` is always 1: a dive starts at level
+1 and climbs only as far as that dive's fighting takes it (~level 5–10 in a good run).
+Abilities above roughly level 16 — and every rank past the first — are therefore
+**authored ahead of the system that reaches them**. Deeper departure hubs are that
+system, and they are future work. The record they will read from already persists
+(`class_bests`, the Vanguard board). This is a deliberate ordering, not a tuning bug.
+
 **XP is not persistent.** Levels live inside a dive (`PlayerRun::run_level`), and a deeper
 departure hub starts a run at a higher `base_run_level` — the **world** is the progression,
 not a character sheet. Level 255 is therefore something a deep run reaches, not something
