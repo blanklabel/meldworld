@@ -666,6 +666,11 @@ pub mod run {
         /// up — "check the weight", in the crew's own cant.
         #[serde(default)]
         pub shifter_item_sense: bool,
+        /// Dungeon CELLS within which a Shifter reveals armed traps (0 = none). The
+        /// class was already the best at disarming; this is what lets it find one
+        /// before somebody stands on it.
+        #[serde(default)]
+        pub shifter_trap_radius: f32,
         /// Psyker threat tier: 0 none · 1 elites/gatekeepers · 2 +aggressive mobs.
         #[serde(default)]
         pub psyker_threat: u8,
@@ -694,6 +699,7 @@ pub mod run {
                 hunter_intel: 0,
                 shifter_dungeon_radius: 0.0,
                 shifter_item_sense: false,
+                shifter_trap_radius: 0.0,
                 psyker_threat: 0,
                 psyker_reveal_radius: 0.0,
                 resonant_regen: 0.0,
@@ -1119,11 +1125,12 @@ mod tests {
         assert_eq!(empty.hunter_intel, 0);
         assert_eq!(empty.explorer_map, 0);
         assert!(!empty.shifter_item_sense);
-        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"hunter_intel":3,"explorer_map":2,"explorer_map_radius":40.0,"shifter_dungeon_radius":55.0,"shifter_item_sense":true,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"phoenix_guard_aggro_mult":0.6}}"#;
+        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"hunter_intel":3,"explorer_map":2,"explorer_map_radius":40.0,"shifter_dungeon_radius":55.0,"shifter_item_sense":true,"shifter_trap_radius":4.5,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"phoenix_guard_aggro_mult":0.6}}"#;
         let env: Envelope<run::Perks> = serde_json::from_str(env_json).unwrap();
         assert_eq!(env.payload.hunter_intel, 3);
         assert_eq!(env.payload.shifter_dungeon_radius, 55.0);
         assert!(env.payload.shifter_item_sense);
+        assert_eq!(env.payload.shifter_trap_radius, 4.5);
         assert_eq!(env.payload.phoenix_guard_aggro_mult, 0.6);
         let s = serde_json::to_string(&env.payload).unwrap();
         let back: run::Perks = serde_json::from_str(&s).unwrap();

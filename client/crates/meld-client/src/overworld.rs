@@ -1183,6 +1183,25 @@ pub(crate) fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+            EntityKind::Trap => {
+                // A trap the party's Shifter has read. Drawn low and hot-red so it
+                // reads as "do not stand here" without hiding the floor — the server
+                // only ever sends the armed ones inside the Runner's sense.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.prop_sprites
+                        .get("marker_target_marker")
+                        .cloned()
+                        .unwrap_or_default(),
+                    0.9,
+                    Color::srgb(1.4, 0.35, 0.3),
+                    0.2,
+                );
+            }
             EntityKind::Entrance => {
                 // A hand-designed dungeon entrance (WG-1/DG-6b): the stone gateway,
                 // but tinted a glowing violet (vs the exit portal's cool blue) so it
