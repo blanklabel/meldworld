@@ -114,6 +114,30 @@ pub enum EncounterClass {
     Gatekeeper,
 }
 
+/// A creature's role in its encounter (CR-6 packs). Drives pack AI: a leader is
+/// shielded by its living minions and buffs them, and its death routs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackRole {
+    /// Not part of a pack (a lone creature, an elite, a gatekeeper, a hero).
+    #[default]
+    None,
+    /// The big one the pack forms around.
+    Leader,
+    /// One of the littles.
+    Minion,
+}
+
+impl PackRole {
+    pub fn from_encounter_class(class: &str) -> PackRole {
+        match class {
+            "leader" => PackRole::Leader,
+            "minion" => PackRole::Minion,
+            _ => PackRole::None,
+        }
+    }
+}
+
 /// Gear insurance tier (CANON.md §G). The Blue-Chest / Red-Chest *fiction* stays
 /// in canon; the enum and every player-facing string say what the tier actually
 /// does, because "red" is not something a player can decode (GR-6). The `blue` /

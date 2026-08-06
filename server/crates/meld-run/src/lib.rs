@@ -463,6 +463,9 @@ pub fn build_battle(
             );
             f.faction = m.faction.clone();
             f.flees = m.flees;
+            // CR-6: carry the creature's pack role into the fight, so the engine can
+            // shield a leader with its minions and rout them when it falls.
+            f.pack_role = meld_proto::enums::PackRole::from_encounter_class(&m.encounter_class);
             // Creature AI content (spec §1/§2): the kind's permanent ability
             // pool (level-gated at selection time), its elemental profile,
             // and its typed basic swing. Keyed by the BASE kind — a champion

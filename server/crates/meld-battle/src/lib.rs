@@ -15,7 +15,7 @@ use meld_proto::abilities::{
 use meld_proto::common::Combatant as WireCombatant;
 use meld_proto::enums::{
     BattleActionKind, BattleOutcome, CombatantKind, DamageType, EffectKind, EncounterClass,
-    ModifierFlag,
+    ModifierFlag, PackRole,
 };
 use meld_proto::Id;
 
@@ -85,6 +85,9 @@ pub struct Fighter {
     pub faction: String,
     /// Whether this (creature) fighter flees a losing battle.
     pub flees: bool,
+    /// CR-6 pack role. A leader is shielded by its living minions and lends them
+    /// its presence; killing it routs them. `None` for anything not in a pack.
+    pub pack_role: PackRole,
     /// Back-row formation: takes reduced damage and is targeted less often (see
     /// `Battle::apply_damage` / `resolve_monster_turn`). Set for caster heroes in
     /// `meld-run`; false for front-row heroes and creatures.
@@ -182,6 +185,7 @@ impl Fighter {
                 String::new()
             },
             flees: false,
+            pack_role: PackRole::None,
             back_row: false,
             focus_max: 0,
             foci: Vec::new(),
@@ -422,6 +426,11 @@ pub struct Battle {
     back_row_damage_mult: f64,
     /// AD-2: how long a combo primer stays live on a target.
     combo_window_ticks: u64,
+    pack_aura_atk_mult: f64,
+    pack_guard_per_minion: f64,
+    pack_guard_cap: f64,
+    pack_rout_atk_mult: f64,
+    pack_rout_flees: bool,
     consumable_barrier: i32,
     consumable_regen: i32,
     consumable_evasion_pct: i32,
@@ -516,6 +525,11 @@ impl Battle {
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
             combo_window_ticks: balance.adventure.combo_window_ticks,
+            pack_aura_atk_mult: balance.encounters.pack_aura_atk_mult,
+            pack_guard_per_minion: balance.encounters.pack_guard_per_minion,
+            pack_guard_cap: balance.encounters.pack_guard_cap,
+            pack_rout_atk_mult: balance.encounters.pack_rout_atk_mult,
+            pack_rout_flees: balance.encounters.pack_rout_flees,
             consumable_barrier: balance.consumable.barrier_amount,
             consumable_regen: balance.consumable.regen_amount,
             consumable_evasion_pct: balance.consumable.evasion_pct,
@@ -944,7 +958,11 @@ impl Battle {
                 .position(|f| f.alive && f.kind != CombatantKind::Player)
                 .ok_or(Reject::NotFound)?,
         };
-        let atk = self.fighters[actor_i].atk;
+        // CR-6: a minion fights above its weight while its leader lives, and below it
+        // once the pack has routed.
+        let atk = ((self.fighters[actor_i].atk as f64) * self.pack_attack_mult(actor_i))
+            .round()
+            .max(1.0) as i32;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
         let attack_type = self.fighters[actor_i].basic_attack_type;
@@ -2230,6 +2248,13 @@ impl Battle {
         // AD-2 combos: the skill resolving right now may be cashing in a primer
         // another hero left on this target, and may leave one of its own.
         let (dmg, combo_hit) = self.resolve_combo(target_i, dmg);
+        // CR-6: a pack leader's living minions soak part of every blow aimed at it.
+        let guard = self.pack_guard_fraction(target_i);
+        let dmg = if guard > 0.0 {
+            ((dmg as f64) * (1.0 - guard)).round() as i32
+        } else {
+            dmg
+        };
         // Back-row formation softens every incoming blow (before Barrier/HP).
         let dmg = if self.fighters[target_i].back_row {
             (dmg as f64 * self.back_row_damage_mult).round() as i32
@@ -2262,6 +2287,34 @@ impl Battle {
                 status: None,
                 hp_after: 0,
             });
+            // CR-6: killing the big one BREAKS the pack — the littles hit softer (via
+            // `pack_attack_mult`) and, if the rules say so, bolt when they drop low.
+            // Announced per minion so the client can show the moment the fight turns.
+            if self.fighters[target_i].pack_role == PackRole::Leader {
+                let faction = self.fighters[target_i].faction.clone();
+                let routed: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| {
+                        f.alive && f.pack_role == PackRole::Minion && f.faction == faction
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in routed {
+                    if self.pack_rout_flees {
+                        self.fighters[i].flees = true;
+                    }
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("routed".to_string()),
+                        hp_after: self.fighters[i].hp,
+                    });
+                }
+            }
         }
         // A cashed-in combo is announced so the client can call it out; a player who
         // cannot see the sequence land will never learn to build for it.
@@ -2279,6 +2332,50 @@ impl Battle {
             );
         }
         effects
+    }
+
+    /// CR-6 pack AI: how a pack's state bends one blow.
+    ///
+    /// - A **minion** hits harder while its leader lives (`pack_aura_atk_mult`) and
+    ///   softer once it has routed (`pack_rout_atk_mult`) — so breaking the big one
+    ///   is felt immediately.
+    /// - A **leader** takes less damage for every living minion
+    ///   (`pack_guard_per_minion`, capped) — so clearing the littles first is the
+    ///   other valid line. Which order is better depends on the pack, which is the
+    ///   whole point of a pack fight.
+    fn pack_attack_mult(&self, actor_i: usize) -> f64 {
+        match self.fighters[actor_i].pack_role {
+            PackRole::Minion => {
+                if self.pack_leader_alive(&self.fighters[actor_i].faction) {
+                    self.pack_aura_atk_mult
+                } else {
+                    self.pack_rout_atk_mult
+                }
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// The fraction of a leader's incoming damage its living minions soak.
+    fn pack_guard_fraction(&self, target_i: usize) -> f64 {
+        if self.fighters[target_i].pack_role != PackRole::Leader {
+            return 0.0;
+        }
+        let faction = &self.fighters[target_i].faction;
+        let minions = self
+            .fighters
+            .iter()
+            .filter(|f| {
+                f.alive && f.pack_role == PackRole::Minion && &f.faction == faction
+            })
+            .count();
+        (self.pack_guard_per_minion * minions as f64).min(self.pack_guard_cap)
+    }
+
+    fn pack_leader_alive(&self, faction: &str) -> bool {
+        self.fighters
+            .iter()
+            .any(|f| f.alive && f.pack_role == PackRole::Leader && f.faction == faction)
     }
 
     /// AD-2: apply the combo layer to one incoming hit.
@@ -3677,6 +3774,130 @@ mod tests {
         assert_eq!(l, executes_at_tick, "cast lands exactly at executes_at_tick");
         assert!(l >= t + 10, "channel took the full telegraph window");
         assert!(player_hp(&battle, "a") < 40, "the channeled blow landed");
+    }
+
+    #[test]
+    fn a_leader_is_shielded_by_its_living_minions() {
+        let b = balance();
+        let pack = |minions: usize| -> (Battle, usize) {
+            let mut leader = monster("boss", 4000, 1);
+            leader.pack_role = PackRole::Leader;
+            leader.def = 0;
+            let mut enemies = vec![leader];
+            for i in 0..minions {
+                let mut m = monster(&format!("min{i}"), 200, 1);
+                m.pack_role = PackRole::Minion;
+                enemies.push(m);
+            }
+            let battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("a", 5)],
+                enemies,
+                &b,
+                42,
+            );
+            let li = battle.idx("boss").unwrap();
+            (battle, li)
+        };
+
+        let hit = |bt: &mut Battle, i: usize| -> i32 {
+            let before = bt.fighters[i].hp;
+            let _ = bt.apply_damage(i, 100);
+            before - bt.fighters[i].hp
+        };
+
+        // Alone, the leader eats the whole blow.
+        let (mut solo, li) = pack(0);
+        assert_eq!(hit(&mut solo, li), 100);
+
+        // Two minions soak part of it; four soak more, up to the cap.
+        let (mut two, li2) = pack(2);
+        let with_two = hit(&mut two, li2);
+        let (mut four, li4) = pack(4);
+        let with_four = hit(&mut four, li4);
+        assert!(with_two < 100, "minions did not shield the leader: {with_two}");
+        assert!(with_four < with_two, "more minions should shield more: {with_four} vs {with_two}");
+        // …but the cap means a pack is never immune.
+        let (mut many, lim) = pack(9);
+        let capped = hit(&mut many, lim);
+        assert!(
+            capped as f64 >= 100.0 * (1.0 - b.encounters.pack_guard_cap) - 1.0,
+            "the guard cap did not hold: {capped}"
+        );
+
+        // Kill the minions and the leader is exposed again — the other valid line.
+        for i in 0..four.fighters.len() {
+            if four.fighters[i].pack_role == PackRole::Minion {
+                four.fighters[i].alive = false;
+            }
+        }
+        assert_eq!(hit(&mut four, li4), 100, "a leaderless guard still applied");
+    }
+
+    #[test]
+    fn breaking_the_leader_routs_the_littles() {
+        let b = balance();
+        let mut leader = monster("boss", 30, 1);
+        leader.pack_role = PackRole::Leader;
+        leader.def = 0;
+        let mut minion = monster("min0", 400, 1);
+        minion.pack_role = PackRole::Minion;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 5)],
+            vec![leader, minion],
+            &b,
+            42,
+        );
+        let li = battle.idx("boss").unwrap();
+        let mi = battle.idx("min0").unwrap();
+
+        // While the leader lives the minion fights above its weight.
+        assert!(
+            (battle.pack_attack_mult(mi) - b.encounters.pack_aura_atk_mult).abs() < 1e-9,
+            "no leader aura"
+        );
+        assert!(!battle.fighters[mi].flees, "a minion does not start skittish");
+
+        // Break the leader: the fight turns, and the client is told so.
+        let fx = battle.apply_damage(li, 9999);
+        assert!(!battle.fighters[li].alive);
+        assert!(
+            fx.iter().any(|e| e.status.as_deref() == Some("routed")),
+            "the rout was not announced: {fx:?}"
+        );
+        assert!(battle.fighters[mi].flees, "a routed minion should bolt when low");
+        assert!(
+            (battle.pack_attack_mult(mi) - b.encounters.pack_rout_atk_mult).abs() < 1e-9,
+            "a routed minion still hits at full strength"
+        );
+        assert!(
+            b.encounters.pack_rout_atk_mult < b.encounters.pack_aura_atk_mult,
+            "routing must be a downgrade"
+        );
+    }
+
+    #[test]
+    fn pack_rules_leave_lone_creatures_and_heroes_alone() {
+        let b = balance();
+        let lone = monster("m1", 500, 1);
+        assert_eq!(lone.pack_role, PackRole::None);
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 5)],
+            vec![lone],
+            &b,
+            42,
+        );
+        let i = battle.idx("m1").unwrap();
+        assert_eq!(battle.pack_attack_mult(i), 1.0);
+        assert_eq!(battle.pack_guard_fraction(i), 0.0);
+        let hero = battle.idx("a").unwrap();
+        assert_eq!(battle.pack_attack_mult(hero), 1.0);
+        assert_eq!(battle.pack_guard_fraction(hero), 0.0);
     }
 
     #[test]
