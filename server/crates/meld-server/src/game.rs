@@ -4461,6 +4461,10 @@ impl GameState {
         // banking so they can dive again from the hub (see `release_from_run`).
         let banked_pids: Vec<String> = banks.iter().map(|b| b.player_id.clone()).collect();
         for b in banks {
+            // CL-1: you came back, and you brought the proof. That is what the
+            // Hunters' hall recruits on ("hunts are only rewarded with evidence of
+            // kills"), so a completed extraction is the Hunter's trigger.
+            self.grant_milestone(&b.player_id, meld_proto::unlocks::Milestone::Extracted);
             let items_kv: Vec<(String, i32)> = b
                 .items
                 .iter()

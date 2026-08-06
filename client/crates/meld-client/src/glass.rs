@@ -78,6 +78,10 @@ pub fn panel(width: Val) -> impl Bundle {
     (
         Node {
             width,
+            // Never taller than the window: a menu that runs off the top of the
+            // screen hides its own title. Long content scrolls instead.
+            max_height: Val::Percent(94.0),
+            overflow: Overflow::scroll_y(),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(6.0),
             padding: UiRect::all(Val::Px(18.0)),

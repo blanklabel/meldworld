@@ -219,6 +219,7 @@ impl InstanceRun {
 pub fn class_key(class: CharacterClass) -> &'static str {
     match class {
         CharacterClass::Explorer => "explorer",
+        CharacterClass::Hunter => "hunter",
         CharacterClass::Dragoon => "dragoon",
         CharacterClass::Sage => "sage",
         CharacterClass::Ranger => "ranger",
@@ -1078,11 +1079,12 @@ mod tests {
             assert!(f.barrier >= want, "{} opened with {}", f.combatant_id, f.barrier);
         }
 
-        // Blood and Balm (Resonant + Explorer) gives the party Regen — and the
-        // Resonant's innate Regen is on top, not replaced.
-        let sustained = vec![member(CharacterClass::Explorer), member(CharacterClass::Resonant)];
+        // Blood and Balm (Resonant + Hunter) gives the party Regen — a kit that pays
+        // in Adrenaline and blood beside one that gives it back. The Resonant's
+        // innate Regen is on top, not replaced.
+        let sustained = vec![member(CharacterClass::Hunter), member(CharacterClass::Resonant)];
         let f = party_fighters(&sustained, &runs, &b, &[]);
-        assert!(f[0].regen >= b.adventure.synergy_party_regen, "explorer regen {}", f[0].regen);
+        assert!(f[0].regen >= b.adventure.synergy_party_regen, "hunter regen {}", f[0].regen);
     }
 
 

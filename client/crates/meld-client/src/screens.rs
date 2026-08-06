@@ -30,12 +30,18 @@ pub(crate) struct ClassInfo {
     pub kit: &'static [(&'static str, &'static str)],
 }
 
-pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
-    ClassInfo { key: "explorer", name: "Explorer", role: "Rugged front-line trailblazer. Basic attacks bank Adrenaline; every skill spends it.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
-        ("Power Strike", "a heavy hit"),
-        ("Second Wind", "heal yourself (Lv2)"),
-        ("Snare", "hit + drain the foe's turn gauge (Lv2)"),
-        ("Frenzy", "biggest hit, biggest cost (Lv3)"),
+pub(crate) const CLASS_INFO: [ClassInfo; 6] = [
+    ClassInfo { key: "explorer", name: "Explorer", role: "The order that maps and anchors the world \u{2014} tempo and stability, not burst.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3, kit: &[
+        ("Trailblaze", "a solid strike that costs nothing"),
+        ("Field Dressing", "patch up an ally or yourself (Lv2)"),
+        ("Read the Ground", "damage + steal the foe's tempo (Lv5)"),
+        ("Set Anchor", "Barrier for the WHOLE party (Lv9)"),
+    ] },
+    ClassInfo { key: "hunter", name: "Hunter", role: "The guild that disposes of dangerous creatures \u{2014} the martial baseline.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
+        ("Power Strike", "a heavy blow; spends Adrenaline"),
+        ("Second Wind", "heal yourself for Adrenaline (Lv2)"),
+        ("Snare", "damage + steal the foe's turn (Lv2)"),
+        ("Frenzy", "your biggest hit, biggest cost (Lv5)"),
     ] },
     ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2, kit: &[
         ("Gravity Well", "armour-ignoring damage every turn"),
@@ -53,11 +59,11 @@ pub(crate) const CLASS_INFO: [ClassInfo; 5] = [
         ("Flicker", "blink for self Evasion (Lv2)"),
         ("Ransack", "hit + drain the enemy's ATB (Lv3)"),
     ] },
-    ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "Order of the Phoenix Guard monk \u{2014} the tankiest, slowest wall.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
-        ("Swell Strike", "a heavy blow that staggers (gauge drain)"),
-        ("Root", "a self Barrier stance (Lv2)"),
-        ("Kinetic Shock", "heavy blow, zeroes the foe's gauge (Lv3)"),
-        ("Toll of the Deep", "a shockwave hitting ALL enemies (Lv5)"),
+    ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "The Last City's anti-undead order \u{2014} a wall that hits the risen hardest.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
+        ("Silvered Strike", "a staggering blow; far worse for undead"),
+        ("Rite of Rest", "a self Barrier stance (Lv2)"),
+        ("Holy Censure", "heavy blow, zeroes the foe's gauge (Lv5)"),
+        ("Purging Light", "light on ALL enemies (Lv9)"),
     ] },
 ];
 

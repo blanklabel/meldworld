@@ -196,6 +196,34 @@ phoenix_guard_swell_drain = 0.3          # Swell Strike: enemy ATB gauge -= this
 phoenix_guard_root_barrier_fraction = 0.25 # Root: Barrier granted = max_hp * fraction
 phoenix_guard_shock_mult = 1.6           # Kinetic Shock: dmg = atk*mult - def (then gauge → 0)
 phoenix_guard_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to EVERY enemy
+# Phoenix Guard, the anti-undead order (docs/lore/factions.md). Their whole reason
+# to exist is undead, so every damaging ability of theirs hits undead this much
+# harder — the one number that makes them a counter rather than a re-skin. [TUNABLE]
+phoenix_guard_undead_mult = 1.6
+# Unbroken Vigil (Redeemer, L13): Barrier for the WHOLE party, as a fraction of each
+# ally's own max HP — smaller than the self-only Rite of Rest, because it lands on
+# four heroes instead of one.
+phoenix_guard_vigil_barrier_fraction = 0.14
+# Eradication (Apotheosis, L17): an execute. Damage scales with how hurt the target
+# already is — `mult + bonus * missing_hp_fraction` — so it finishes rather than opens.
+phoenix_guard_eradication_mult = 1.2
+phoenix_guard_eradication_missing_bonus = 2.2
+
+# Explorer, the mapping order. Its kit is tempo and stability rather than burst: it
+# keeps the party moving and standing. No Adrenaline — nothing here has a resource
+# cost, so the multipliers sit below the Hunter's paid strikes. [TUNABLE]
+explorer_trailblaze_mult = 1.15
+# Field Dressing (Traveler, L2): a modest self/ally heal as a fraction of max HP.
+explorer_field_dressing_fraction = 0.2
+# Read the Ground (Scout, L5): damage plus an ATB-gauge steal.
+explorer_read_ground_mult = 1.1
+explorer_read_ground_drain = 0.35
+# Set Anchor (Pioneer, L9): party-wide Barrier, per ally's own max HP.
+explorer_anchor_barrier_fraction = 0.12
+# Safe Passage (Discoverer, L13): party-wide Regen, flat HP per turn.
+explorer_safe_passage_regen = 6
+# A World Known (Globemaster, L17): fill every living ally's ATB gauge by this much.
+explorer_world_known_gauge = 0.5
 
 # Monster-ability system (Creature AI spec §2). All [TUNABLE].
 status_slow_mult = 0.5               # ATB fill mult while webbed/chilled/bound/…
@@ -853,6 +881,23 @@ wll_per_level = 2
 # its Mind Spike ignores enemy defence (so it shines where raw attacks stall,
 # against armoured deep creatures) and its Psychic Barrier self-ward buys it
 # survivability under the new no-free-heal attrition. [TUNABLE]
+# Hunter: the martial baseline (the Hunters' guild — disposal of dangerous
+# creatures, docs/lore/factions.md). Identical footing to the Explorer it inherits
+# the kit from, so the switch changes who swings, not how hard. [TUNABLE]
+[player.hunter]
+base_hp = 40
+base_atk = 12
+base_def = 3
+speed_stat = 110
+str = 12
+mnd = 4
+dex = 8
+wll = 12
+str_per_level = 3
+mnd_per_level = 0
+dex_per_level = 1
+wll_per_level = 2
+
 [player.psyker]
 base_hp = 34
 base_atk = 13

@@ -158,6 +158,17 @@ pub struct Battle {
     pub phoenix_guard_root_barrier_fraction: f64,
     pub phoenix_guard_shock_mult: f64,
     pub phoenix_guard_toll_mult: f64,
+    pub phoenix_guard_undead_mult: f64,
+    pub phoenix_guard_vigil_barrier_fraction: f64,
+    pub phoenix_guard_eradication_mult: f64,
+    pub phoenix_guard_eradication_missing_bonus: f64,
+    pub explorer_trailblaze_mult: f64,
+    pub explorer_field_dressing_fraction: f64,
+    pub explorer_read_ground_mult: f64,
+    pub explorer_read_ground_drain: f64,
+    pub explorer_anchor_barrier_fraction: f64,
+    pub explorer_safe_passage_regen: i32,
+    pub explorer_world_known_gauge: f64,
     // Monster-ability system (Creature AI spec §2).
     /// ATB fill multiplier while a slowing status (web/chill/bind/…) is active.
     pub status_slow_mult: f64,

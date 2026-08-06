@@ -500,7 +500,11 @@ pub(crate) fn setup(
             "shifter" => &[
                 ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
             ],
-            "explorer" => &[
+            // The Explorer's own kit has no bespoke art yet, so its abilities fall
+            // back to the attack clip; the martial animations moved with the kit to
+            // the Hunter.
+            "explorer" => &[("walk", 8), ("attack", 8)],
+            "hunter" => &[
                 ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
                 ("snare", 8), ("frenzy", 8),
             ],
@@ -512,13 +516,14 @@ pub(crate) fn setup(
                 ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
             ],
             "phoenix_guard" => &[
-                ("walk", 8), ("attack", 8), ("swell_strike", 8), ("root", 8),
-                ("kinetic_shock", 8), ("toll_of_the_deep", 8),
+                ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
+                ("holy_censure", 8), ("purging_light", 8),
             ],
             _ => &[("walk", 8)],
         }
     }
-    let class_chars: HashMap<String, CharacterFrames> = ["explorer", "psyker", "resonant", "shifter", "phoenix_guard"]
+    let class_chars: HashMap<String, CharacterFrames> =
+        ["explorer", "hunter", "psyker", "resonant", "shifter", "phoenix_guard"]
         .iter()
         .map(|&class| {
             (

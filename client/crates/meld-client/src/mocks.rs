@@ -9,7 +9,8 @@ use meld_client::net::{CombatantView, GearLine, SkillLine};
 use super::*;
 
 /// The classes the party builder cycles through.
-pub(crate) const PARTY_CLASSES: [&str; 5] = ["explorer", "psyker", "resonant", "shifter", "phoenix_guard"];
+pub(crate) const PARTY_CLASSES: [&str; 6] =
+    ["explorer", "hunter", "psyker", "resonant", "shifter", "phoenix_guard"];
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
@@ -232,7 +233,7 @@ pub(crate) fn mock_overlay_setup(
         }];
         roster.combos = vec![meld_client::net::DepthLine {
             name: "Cut the Snare".into(),
-            detail: "Snare (Explorer) then Backstab (Shifter)".into(),
+            detail: "Snare (Hunter) then Backstab (Shifter)".into(),
             description: "Snare a foe, then Backstab it.".into(),
             bonus_pct: 60,
         }];

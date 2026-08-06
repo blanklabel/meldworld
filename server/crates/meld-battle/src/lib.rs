@@ -487,6 +487,17 @@ pub struct Battle {
     phoenix_guard_root_barrier_fraction: f64,
     phoenix_guard_shock_mult: f64,
     phoenix_guard_toll_mult: f64,
+    phoenix_guard_undead_mult: f64,
+    phoenix_guard_vigil_barrier_fraction: f64,
+    phoenix_guard_eradication_mult: f64,
+    phoenix_guard_eradication_missing_bonus: f64,
+    explorer_trailblaze_mult: f64,
+    explorer_field_dressing_fraction: f64,
+    explorer_read_ground_mult: f64,
+    explorer_read_ground_drain: f64,
+    explorer_anchor_barrier_fraction: f64,
+    explorer_safe_passage_regen: i32,
+    explorer_world_known_gauge: f64,
     status_slow_mult: f64,
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
@@ -582,6 +593,21 @@ impl Battle {
             phoenix_guard_root_barrier_fraction: balance.battle.phoenix_guard_root_barrier_fraction,
             phoenix_guard_shock_mult: balance.battle.phoenix_guard_shock_mult,
             phoenix_guard_toll_mult: balance.battle.phoenix_guard_toll_mult,
+            phoenix_guard_undead_mult: balance.battle.phoenix_guard_undead_mult,
+            phoenix_guard_vigil_barrier_fraction: balance
+                .battle
+                .phoenix_guard_vigil_barrier_fraction,
+            phoenix_guard_eradication_mult: balance.battle.phoenix_guard_eradication_mult,
+            phoenix_guard_eradication_missing_bonus: balance
+                .battle
+                .phoenix_guard_eradication_missing_bonus,
+            explorer_trailblaze_mult: balance.battle.explorer_trailblaze_mult,
+            explorer_field_dressing_fraction: balance.battle.explorer_field_dressing_fraction,
+            explorer_read_ground_mult: balance.battle.explorer_read_ground_mult,
+            explorer_read_ground_drain: balance.battle.explorer_read_ground_drain,
+            explorer_anchor_barrier_fraction: balance.battle.explorer_anchor_barrier_fraction,
+            explorer_safe_passage_regen: balance.battle.explorer_safe_passage_regen,
+            explorer_world_known_gauge: balance.battle.explorer_world_known_gauge,
             status_slow_mult: balance.battle.status_slow_mult,
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
@@ -1046,7 +1072,7 @@ impl Battle {
             "second_wind" => self.explorer_second_wind_cost,
             "snare" => self.explorer_snare_cost,
             "frenzy" => self.explorer_frenzy_cost,
-            _ => return Err(Reject::ValidationError("unknown explorer skill")),
+            _ => return Err(Reject::ValidationError("unknown hunter skill")),
         };
         if self.fighters[actor_i].adrenaline < cost {
             return Err(Reject::ValidationError("not enough adrenaline"));
@@ -1101,7 +1127,128 @@ impl Battle {
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
     }
 
-    /// Resolve an Phoenix Guard (monk) skill:
+
+    /// Resolve an Explorer ability. The order maps and anchors rather than kills, so
+    /// its kit keeps the party *moving* (gauge) and *standing* (Barrier/Regen) — a
+    /// different axis from the Hunter's burst and the Resonant's healing.
+    ///
+    /// - `trailblaze`      — Walker (L1): a plain strike, no resource to spend.
+    /// - `field_dressing`  — Traveler (L2): a modest heal for an ally, or yourself.
+    /// - `read_the_ground` — Scout (L5): damage plus an ATB-gauge steal.
+    /// - `set_anchor`      — Pioneer (L9): Barrier for the whole party.
+    /// - `safe_passage`    — Discoverer (L13): Regen for the whole party.
+    /// - `a_world_known`   — Globemaster (L17): fill every living ally's gauge.
+    fn resolve_explorer_kit(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        let living_allies = |b: &Self| -> Vec<usize> {
+            b.fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let mut effects = Vec::new();
+        match skill {
+            "field_dressing" => {
+                // Aim at the chosen ally, else the most wounded — the classic default.
+                let t = self
+                    .ally_target(target_id)
+                    .unwrap_or_else(|| self.most_wounded_ally(actor_i));
+                let raw = ((self.fighters[t].max_hp as f64)
+                    * self.explorer_field_dressing_fraction)
+                    .round() as i32;
+                effects.extend(self.apply_heal(t, raw));
+            }
+            "set_anchor" => {
+                for a in living_allies(self) {
+                    let raw = ((self.fighters[a].max_hp as f64)
+                        * self.explorer_anchor_barrier_fraction)
+                        .round() as i32;
+                    effects.extend(self.grant_barrier(a, raw));
+                }
+            }
+            "safe_passage" => {
+                for a in living_allies(self) {
+                    self.fighters[a].regen += self.explorer_safe_passage_regen;
+                    let regen = self.fighters[a].regen;
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[a].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: Some(regen),
+                        status: Some("regen".to_string()),
+                        hp_after: self.fighters[a].hp,
+                    });
+                }
+            }
+            "a_world_known" => {
+                // The capstone: the party goes first. A gauge already at 1.0 stays
+                // there — this buys turns, it does not stack them.
+                for a in living_allies(self) {
+                    if a == actor_i {
+                        continue; // the caster's own gauge resets below, as always
+                    }
+                    self.fighters[a].gauge =
+                        (self.fighters[a].gauge + self.explorer_world_known_gauge).min(1.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[a].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("hastened".to_string()),
+                        hp_after: self.fighters[a].hp,
+                    });
+                }
+            }
+            "trailblaze" | "read_the_ground" => {
+                let (mult, drain) = if skill == "read_the_ground" {
+                    (self.explorer_read_ground_mult, self.explorer_read_ground_drain)
+                } else {
+                    (self.explorer_trailblaze_mult, 0.0)
+                };
+                let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+                let target_i = match self.idx(target) {
+                    Some(t) if self.fighters[t].alive => t,
+                    _ => self
+                        .fighters
+                        .iter()
+                        .position(|f| f.alive && f.kind != CombatantKind::Player)
+                        .ok_or(Reject::NotFound)?,
+                };
+                let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                let def = self.fighters[target_i].def;
+                let defending = self.fighters[target_i].defending;
+                effects = match self.roll_dodge(target_i) {
+                    Some(dodge) => dodge,
+                    None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+                };
+                if drain > 0.0 && self.fighters[target_i].alive {
+                    self.fighters[target_i].gauge =
+                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[target_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[target_i].hp,
+                    });
+                }
+            }
+            _ => return Err(Reject::ValidationError("unknown explorer skill")),
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// Resolve a Phoenix Guard skill:
     /// - `root`             — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
     /// - `swell_strike`     — a heavy blow that also drains the target's ATB gauge.
     /// - `kinetic_shock`    — a heavier blow that fully resets the target's gauge (hard stagger).
@@ -1113,8 +1260,8 @@ impl Battle {
         target_id: Option<&str>,
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
-        // Root is a self-cast stance — no target needed.
-        if skill == "root" {
+        // Rite of Rest is a self-cast stance — no target needed.
+        if skill == "rite_of_rest" {
             let raw = ((self.fighters[actor_i].max_hp as f64)
                 * self.phoenix_guard_root_barrier_fraction)
                 .round() as i32;
@@ -1123,9 +1270,29 @@ impl Battle {
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
         }
-        // Toll of the Deep — the ocean's swell through the floorboards: strike every
-        // living enemy for `atk * toll_mult - def` (no single target).
-        if skill == "toll_of_the_deep" {
+        // Unbroken Vigil (Redeemer, L13) — Barrier for the WHOLE party. "No one is
+        // left behind to be turned."
+        if skill == "unbroken_vigil" {
+            let allies: Vec<usize> = self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect();
+            let mut effects = Vec::new();
+            for a in allies {
+                let raw = ((self.fighters[a].max_hp as f64)
+                    * self.phoenix_guard_vigil_barrier_fraction)
+                    .round() as i32;
+                effects.extend(self.grant_barrier(a, raw));
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Purging Light (Luminary, L9) — light on every living enemy at once.
+        if skill == "purging_light" {
             let atk = self.fighters[actor_i].atk;
             let enemies: Vec<usize> = self
                 .fighters
@@ -1137,6 +1304,7 @@ impl Battle {
             let mut effects = Vec::new();
             for t in enemies {
                 let scaled = (atk as f64 * self.phoenix_guard_toll_mult).round() as i32;
+                let scaled = (scaled as f64 * self.undead_bonus(t)).round() as i32;
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
             }
@@ -1144,11 +1312,21 @@ impl Battle {
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
         }
-        // Single-target kinetic strikes: Swell Strike (drain) and Kinetic Shock (full stagger).
-        let mult = if skill == "kinetic_shock" {
-            self.phoenix_guard_shock_mult
-        } else {
-            self.phoenix_guard_swell_mult
+        // Single-target: Silvered Strike (drain), Holy Censure (full stagger), and
+        // Eradication (an execute — the more hurt the foe, the harder it lands).
+        let mult = match skill {
+            "holy_censure" => self.phoenix_guard_shock_mult,
+            "eradication" => {
+                let f = &self.fighters[self.idx(target_id.unwrap_or_default()).unwrap_or(actor_i)];
+                let missing = if f.max_hp > 0 {
+                    1.0 - (f.hp as f64 / f.max_hp as f64)
+                } else {
+                    0.0
+                };
+                self.phoenix_guard_eradication_mult
+                    + self.phoenix_guard_eradication_missing_bonus * missing.clamp(0.0, 1.0)
+            }
+            _ => self.phoenix_guard_swell_mult,
         };
         let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
         let target_i = match self.idx(target) {
@@ -1159,6 +1337,9 @@ impl Battle {
                 .position(|f| f.alive && f.kind != CombatantKind::Player)
                 .ok_or(Reject::NotFound)?,
         };
+        // The order's whole purpose: silvered and holy tools bite far deeper into
+        // the risen than into anything else alive.
+        let mult = mult * self.undead_bonus(target_i);
         let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
@@ -1166,10 +1347,10 @@ impl Battle {
             Some(dodge) => dodge,
             None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
         };
-        // The kinetic shock staggers a surviving target: Kinetic Shock zeroes its
-        // gauge outright, Swell Strike knocks a fixed amount off.
+        // A surviving target is staggered: Holy Censure zeroes its gauge outright,
+        // a Silvered Strike knocks a fixed amount off.
         if self.fighters[target_i].alive {
-            if skill == "kinetic_shock" {
+            if skill == "holy_censure" {
                 self.fighters[target_i].gauge = 0.0;
             } else {
                 self.fighters[target_i].gauge =
@@ -1215,10 +1396,29 @@ impl Battle {
         ) {
             return self.resolve_explorer(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
-        // Phoenix Guard (monk / tank): kinetic strikes, the Root stance, and the AoE toll.
+        // Explorer (the mapping order): tempo and stability rather than burst. Nothing
+        // here costs a resource, so the multipliers sit below the Hunter's paid strikes.
         if matches!(
             skill_kind,
-            Some("swell_strike") | Some("root") | Some("kinetic_shock") | Some("toll_of_the_deep")
+            Some("trailblaze")
+                | Some("field_dressing")
+                | Some("read_the_ground")
+                | Some("set_anchor")
+                | Some("safe_passage")
+                | Some("a_world_known")
+        ) {
+            return self.resolve_explorer_kit(actor_i, skill_kind.unwrap(), target_id, action_id);
+        }
+        // Phoenix Guard: silvered/holy strikes, the Rite of Rest stance, the party
+        // Vigil, and the AoE Purging Light.
+        if matches!(
+            skill_kind,
+            Some("silvered_strike")
+                | Some("rite_of_rest")
+                | Some("holy_censure")
+                | Some("purging_light")
+                | Some("unbroken_vigil")
+                | Some("eradication")
         ) {
             return self.resolve_phoenix_guard(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
@@ -1447,6 +1647,18 @@ impl Battle {
     }
 
     /// Grant `amount` Barrier (temp HP) to a fighter, reported as a status effect.
+    /// The Phoenix Guard's standing bonus against the risen. Reads the target's
+    /// battle faction, which a boss now carries in its own right
+    /// (`meld_world::abilities::boss_faction`) rather than inheriting from whatever
+    /// creature it was promoted from — so "undead" here means undead.
+    fn undead_bonus(&self, target_i: usize) -> f64 {
+        if self.fighters[target_i].faction == meld_proto::factions::UNDEAD {
+            self.phoenix_guard_undead_mult
+        } else {
+            1.0
+        }
+    }
+
     fn grant_barrier(&mut self, i: usize, amount: i32) -> Vec<ResolvedEffect> {
         if amount <= 0 {
             return Vec::new();
@@ -3608,7 +3820,7 @@ mod tests {
 
     /// Phoenix Guard Swell Strike hits hard and staggers (drains the target's gauge).
     #[test]
-    fn phoenix_guard_swell_strike_hits_and_staggers() {
+    fn a_silvered_strike_hits_and_staggers() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
@@ -3623,7 +3835,7 @@ mod tests {
         battle.fighters[mi].gauge = 0.5;
         let hp0 = player_hp(&battle, "m");
         battle
-            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("swell_strike".into()), None)
+            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("silvered_strike".into()), None)
             .unwrap();
         // atk 12 × 1.4 = 16.8 → 17, − def 4 = 13.
         assert_eq!(hp0 - player_hp(&battle, "m"), 13, "Swell Strike lands atk×1.4 − def");
@@ -3633,7 +3845,7 @@ mod tests {
 
     /// Phoenix Guard Root grants the monk Barrier equal to a fraction of its max HP.
     #[test]
-    fn phoenix_guard_root_grants_barrier() {
+    fn the_rite_of_rest_grants_barrier() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
@@ -3645,7 +3857,7 @@ mod tests {
         );
         tick_to_ready(&mut battle, "k");
         battle
-            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("root".into()), None)
+            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("rite_of_rest".into()), None)
             .unwrap();
         // phoenix_guard_root_barrier_fraction = 0.25 → 40 × 0.25 = 10.
         assert!(
@@ -3657,12 +3869,13 @@ mod tests {
 
     /// Phoenix Guard Kinetic Shock fully resets the target's ATB gauge (hard stagger).
     #[test]
-    fn phoenix_guard_kinetic_shock_zeroes_gauge() {
+    fn holy_censure_zeroes_the_gauge() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("k", 400, 3)], // Kinetic Shock unlocks at L3
+            // Holy Censure is the Exemplar's tool — the order's rank 3, level 5.
+            vec![leveled_player("k", 400, 5)],
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -3671,27 +3884,28 @@ mod tests {
         let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
         battle.fighters[mi].gauge = 0.9;
         battle
-            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("kinetic_shock".into()), None)
+            .submit("k", "a1".into(), BattleActionKind::Skill, Some(vec!["m".into()]), Some("holy_censure".into()), None)
             .unwrap();
-        assert_eq!(gauge_of(&battle, "m"), 0.0, "Kinetic Shock zeroes the gauge");
-        assert!(player_hp(&battle, "m") < 500, "Kinetic Shock also deals damage");
+        assert_eq!(gauge_of(&battle, "m"), 0.0, "Holy Censure zeroes the gauge");
+        assert!(player_hp(&battle, "m") < 500, "Holy Censure also deals damage");
     }
 
-    /// Phoenix Guard Toll of the Deep strikes every living enemy at once.
+    /// Purging Light strikes every living enemy at once.
     #[test]
-    fn phoenix_guard_toll_hits_all_enemies() {
+    fn purging_light_hits_all_enemies() {
         let b = balance();
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("k", 400, 5)], // Toll unlocks at L5
+            // Purging Light is the Luminary's, at level 9.
+            vec![leveled_player("k", 400, 9)],
             vec![monster("m1", 500, 1), monster("m2", 500, 1)],
             &b,
             7,
         );
         tick_to_ready(&mut battle, "k");
         battle
-            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("toll_of_the_deep".into()), None)
+            .submit("k", "a1".into(), BattleActionKind::Skill, None, Some("purging_light".into()), None)
             .unwrap();
         assert!(player_hp(&battle, "m1") < 500, "Toll hit the first enemy");
         assert!(player_hp(&battle, "m2") < 500, "Toll hit the second enemy too");

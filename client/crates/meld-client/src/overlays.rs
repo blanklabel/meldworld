@@ -690,6 +690,46 @@ pub(crate) fn render_overlay(
                                                 13.0,
                                                 dim,
                                             );
+                                            // The hero's ability ladder — owned and
+                                            // still-to-come — each with the rank it
+                                            // arrives at and what it does. This is the
+                                            // between-fights half of the tooltip ask;
+                                            // the battle menu shows the same text from
+                                            // the same registry.
+                                            for def in meld_proto::skills::skills_for_class(&h.class_key) {
+                                                let owned = h.level >= def.unlock;
+                                                let head = if owned {
+                                                    format!("   {} - {}", def.name, def.rank)
+                                                } else {
+                                                    format!(
+                                                        "   {} - {} (Lv {})",
+                                                        def.name, def.rank, def.unlock
+                                                    )
+                                                };
+                                                label(
+                                                    hero_box,
+                                                    head,
+                                                    12.0,
+                                                    if owned { glass::TITLE } else { glass::DIM },
+                                                );
+                                                // Full descriptions only for the hero
+                                                // under the cursor: four heroes ×
+                                                // six abilities × two lines does not
+                                                // fit a screen, and a wall of text
+                                                // reads as none.
+                                                if focused {
+                                                    label(
+                                                        hero_box,
+                                                        format!("      {}", def.description),
+                                                        11.0,
+                                                        if owned {
+                                                            glass::DIM
+                                                        } else {
+                                                            Color::srgb(0.5, 0.55, 0.66)
+                                                        },
+                                                    );
+                                                }
+                                            }
                                             // Clickable front/back-row toggle (handled by `formation_click`).
                                             let (row_text, row_col) = if h.back_row {
                                                 ("   [ Back row ]  (half dmg, targeted less) - click to move up", Color::srgb(0.7, 0.8, 1.0))

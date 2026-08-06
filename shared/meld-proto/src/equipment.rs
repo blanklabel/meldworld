@@ -157,6 +157,7 @@ pub fn allows_weight(class: CharacterClass, weight: ArmorWeight) -> bool {
 pub fn class_from_key(key: &str) -> Option<CharacterClass> {
     Some(match key {
         "explorer" => CharacterClass::Explorer,
+        "hunter" => CharacterClass::Hunter,
         "dragoon" => CharacterClass::Dragoon,
         "sage" => CharacterClass::Sage,
         "ranger" => CharacterClass::Ranger,
@@ -165,9 +166,7 @@ pub fn class_from_key(key: &str) -> Option<CharacterClass> {
         "psyker" => CharacterClass::Psyker,
         "resonant" => CharacterClass::Resonant,
         "shifter" => CharacterClass::Shifter,
-        // `iron_hull` is the pre-rename key; still accepted so a hero persisted
-        // under it keeps its class instead of silently falling back.
-        "phoenix_guard" | "iron_hull" => CharacterClass::PhoenixGuard,
+        "phoenix_guard" => CharacterClass::PhoenixGuard,
         _ => return None,
     })
 }
@@ -265,6 +264,7 @@ pub fn check_equip(
 pub fn class_key(class: CharacterClass) -> &'static str {
     match class {
         CharacterClass::Explorer => "explorer",
+        CharacterClass::Hunter => "hunter",
         CharacterClass::Dragoon => "dragoon",
         CharacterClass::Sage => "sage",
         CharacterClass::Ranger => "ranger",

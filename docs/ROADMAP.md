@@ -335,8 +335,29 @@ burns on death/leave; some is single-use. See
     imports it: inventory/equip/status, the battle command cross, the level-up
     screen, the unlock banner, the city title + Apothecary shelf, Join and Lobby,
     and the overworld HUD. Selection is one gold wash everywhere.
-  - **Remains:** the ability ladder and tooltips, and the Explorer/Shifter role
-    swap.
+  - *Also shipped:* **the ability ladder + tooltips, and the faction canon behind
+    them.** [`docs/lore/factions.md`](lore/factions.md) is now the source of truth for
+    the nine orders and their six-rank ladders; every order gates its senior ranks at
+    character level **5 / 9 / 13 / 17**, and that IS the ability ladder — an ability
+    arrives as a promotion. `meld_proto::skills` became a real registry (key, name,
+    class, unlock, **rank**, **description**), so the server's gate, the battle menu's
+    rows *and tooltips*, and the party screen's per-hero ladder are one definition
+    instead of four hand-maintained lists.
+  - *Also shipped:* **the Hunter, reintroduced** — the guild whose mission ("disposal
+    of dangerous non-civilian creatures", "adrenaline junkies") is the game's core
+    loop, so it carries the martial Adrenaline kit. Unlocked by **extracting** (the
+    hall pays on evidence, not stories). The **Explorer** keeps the starting slot and
+    gains its own order-true kit: tempo and stability (Trailblaze → Field Dressing →
+    Read the Ground → Set Anchor → Safe Passage → **A World Known**, which fills every
+    ally's gauge).
+  - *Also shipped:* the **Phoenix Guard's anti-undead kit** — Silvered Strike, Rite of
+    Rest, Holy Censure, Purging Light, Unbroken Vigil (party Barrier), Eradication (an
+    execute) — plus a standing `phoenix_guard_undead_mult` against the risen, which is
+    what makes it a counter rather than a re-skin. Its old kinetic kit is **reserved
+    for the Order of the Iron Hull**, a future monk class; `iron_hull` is no longer a
+    deserialization alias, so that class can claim its own key.
+  - **Remains:** the Explorer/Shifter overworld role swap (the Shifter's dungeon and
+    item senses), and ability *ranks* (an owned ability growing stronger at depth).
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
