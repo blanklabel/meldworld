@@ -110,8 +110,10 @@ and stay dismissable — a banner that traps a player is worse than no banner.
 2. **Abilities** — the ladder to 255 (new abilities + ranks) and the descriptions, in both
    surfaces.
 3. **Class roles** — the Explorer/Shifter perk swap and the Shifter's dungeon senses.
-4. **The undead boss** — the encounter that unlocks the Phoenix Guard (a harder pack:
-   a boss with minions), which `CR-7`'s pack AI already has the machinery for.
+4. **The undead boss** ✅ — the encounter that unlocks the Phoenix Guard: the **undead
+   rite**, a boss with four undead minions, built on `CR-7`'s pack machinery. Bosses
+   carry their own faction (so an undead boss is undead wherever it is met), gain a
+   deep-gated ability past level 45, and wear a palette band that darkens with depth.
 5. **Presentation** — frosted glass, dismissable menus.
 
 Onboarding (`P1-3`) sits on top of all five and is deliberately **not** part of this
