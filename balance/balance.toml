@@ -477,6 +477,13 @@ tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 stat_mult_exp = 1.25
+# Armour rides its OWN, gentler curve. Defence subtracts from damage rather than
+# multiplying it, so scaling it as fast as attack/HP makes deep creatures immune to
+# physical hits (damage floors at `min_damage`) — while leaving it flat, as it was,
+# means nothing out there wears armour and every armour-piercing ability (Backstab,
+# the Psyker's armour-ignoring Foci) is a selling point with nothing to sell against.
+# [TUNABLE]
+def_mult_exp = 0.7
 xp_distance_exp = 1.5            # spec §4: xp = floor(base_xp * (1 + d/500)^1.5) [TUNABLE]
 red_chest_floor_distance = 300  # spec §4: no gear drops shallower than d=300 [TUNABLE]
 

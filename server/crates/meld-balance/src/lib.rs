@@ -447,6 +447,7 @@ pub struct WorldScaling {
     pub mlevel_divisor: f64,
     pub stat_mult_base_divisor: f64,
     pub stat_mult_exp: f64,
+    pub def_mult_exp: f64,
     /// XP curve exponent (spec §4): `xp = floor(base_xp × (1 + d/divisor)^exp)`
     /// — steeper than the stat curve so deep kills out-reward the grind.
     pub xp_distance_exp: f64,
