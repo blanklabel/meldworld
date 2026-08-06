@@ -370,9 +370,22 @@ burns on death/leave; some is single-use. See
   - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
     16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
     cost a step up in commitment rather than an ever-flatter trickle.
-  - **Remains:** *more* abilities per class to fill the ladder out to 100 (the spacing
-    is in place; the content is 4–6 per class), the Explorer/Shifter overworld role
-    swap, and ability ranks (an owned ability growing stronger at depth).
+  - *Also shipped:* **ability distribution by archetype** — the Dragon Quest lesson
+    that not every class should keep learning. `meld_proto::skills::Archetype` splits
+    the roster: **martial** (Hunter, Shifter) gets a short front-loaded kit and scales
+    on *gear* — its ceiling is level 25, because a new button at 80 would make it a
+    caster; **hybrid** (Explorer, Phoenix Guard) reaches 49; **caster** (Psyker,
+    Resonant) runs the whole way to 100, since the kit *is* its progression. A unit
+    test holds each class to its ceiling, so "more abilities" can never quietly become
+    "ten each".
+  - *Also shipped:* the **Resonant's full caster ladder** — Mend All (16), Sanctuary
+    (25), Revitalize (36), Lifewell (49), Bloodbond (64), Martyr (81) and Eternal
+    Bloom (100). Seven abilities of one shape (heal / Regen / Barrier, on one ally or
+    all, paid out of the healer's own HP), so they resolve from a table rather than
+    seven near-identical engine arms.
+  - **Remains:** the Psyker's deep Foci (its ladder is authored to 100 in principle
+    but still has four manifestations — new ones need focus-kind machinery, not just a
+    table row), and the Explorer/Shifter overworld role swap.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

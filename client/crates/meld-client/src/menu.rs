@@ -222,14 +222,14 @@ pub(crate) fn render_main_menu(
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::FlexStart,
-                column_gap: Val::Px(10.0),
+                column_gap: Val::Px(14.0),
                 ..default()
             })
             .with_children(|cols| {
                 // ---- column one: the nav. Always present, so you can always see
                 // where you are and step back out.
-                cols.spawn(glass::panel(Val::Px(150.0))).with_children(|nav| {
-                    nav.spawn(glass::text("MENU", 18.0, glass::TITLE));
+                cols.spawn(glass::panel(Val::Px(240.0))).with_children(|nav| {
+                    nav.spawn(glass::text("MENU", 26.0, glass::TITLE));
                     nav.spawn(glass::divider());
                     for (i, s) in MenuSection::ALL.iter().enumerate() {
                         let open = menu.section == Some(*s);
@@ -238,23 +238,23 @@ pub(crate) fn render_main_menu(
                             .with_children(|b| {
                                 b.spawn(glass::text(
                                     s.label(),
-                                    16.0,
+                                    22.0,
                                     if open || focused { glass::TITLE } else { glass::TEXT },
                                 ));
                             });
                     }
-                    nav.spawn(glass::text("[Esc] close", 11.0, glass::DIM));
+                    nav.spawn(glass::text("[Esc] close", 14.0, glass::DIM));
                 });
 
                 // ---- column two: whatever the nav opened.
                 let Some(section) = menu.section else { return };
-                cols.spawn(glass::panel(Val::Px(330.0))).with_children(|col| {
-                    col.spawn(glass::text(section.label().to_uppercase(), 18.0, glass::TITLE));
+                cols.spawn(glass::panel(Val::Px(520.0))).with_children(|col| {
+                    col.spawn(glass::text(section.label().to_uppercase(), 26.0, glass::TITLE));
                     col.spawn(glass::divider());
                     match section {
                         MenuSection::Items => {
                             if backpack.items.is_empty() {
-                                col.spawn(glass::text("(carrying nothing)", 13.0, glass::DIM));
+                                col.spawn(glass::text("(carrying nothing)", 16.0, glass::DIM));
                             }
                             for (kind, qty) in held_potions(&backpack) {
                                 let name = meld_proto::consumables::consumable(&kind)
@@ -262,13 +262,13 @@ pub(crate) fn render_main_menu(
                                     .unwrap_or_else(|| kind.clone());
                                 col.spawn(glass::text(
                                     format!("{name}  x{qty}"),
-                                    14.0,
+                                    18.0,
                                     glass::TEXT,
                                 ));
                                 if let Some(def) = meld_proto::consumables::consumable(&kind) {
                                     col.spawn(glass::text(
                                         format!("   {}", def.description),
-                                        11.0,
+                                        14.0,
                                         glass::DIM,
                                     ));
                                 }
@@ -276,7 +276,7 @@ pub(crate) fn render_main_menu(
                         }
                         MenuSection::Materials => {
                             if inv.materials.is_empty() {
-                                col.spawn(glass::text("(nothing banked)", 13.0, glass::DIM));
+                                col.spawn(glass::text("(nothing banked)", 16.0, glass::DIM));
                             }
                             for (kind, n) in &inv.materials {
                                 col.spawn((
@@ -287,20 +287,20 @@ pub(crate) fn render_main_menu(
                                 .with_children(|b| {
                                     b.spawn(glass::text(
                                         format!("{kind}  x{n}"),
-                                        14.0,
+                                        18.0,
                                         glass::TEXT,
                                     ));
                                 });
                             }
                             col.spawn(glass::text(
                                 "click a material to take it on your next dive",
-                                11.0,
+                                14.0,
                                 glass::DIM,
                             ));
                             col.spawn(glass::divider());
                             col.spawn(glass::text(
                                 format!("{} chits", inv.chits),
-                                13.0,
+                                18.0,
                                 glass::WARN,
                             ));
                         }
@@ -319,7 +319,7 @@ pub(crate) fn render_main_menu(
                                         .sum::<i32>()
                                 ),
                             ] {
-                                col.spawn(glass::text(line, 14.0, glass::TEXT));
+                                col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
                         }
                         MenuSection::Party => {
@@ -328,104 +328,139 @@ pub(crate) fn render_main_menu(
                                 let selected = menu.member == i;
                                 col.spawn(glass::inset(focused || selected))
                                 .with_children(|cell| {
+                                    // Sprite on the left half, everything else on the
+                                    // right: sharing the vertical space is what keeps
+                                    // four heroes on one screen.
                                     cell.spawn(Node {
                                         flex_direction: FlexDirection::Row,
-                                        column_gap: Val::Px(8.0),
+                                        column_gap: Val::Px(10.0),
                                         align_items: AlignItems::Center,
                                         ..default()
                                     })
                                     .with_children(|row| {
+                                        // The portrait takes the left of the cell. Kept
+                                        // square, because the class sheets are square
+                                        // and a rectangle would stretch the figure.
                                         if let Some(w) = wa.as_ref() {
+                                            // The class sheets are 188² canvases with a
+                                            // lot of transparent margin, so the
+                                            // portrait draws a SUB-RECT of the source
+                                            // rather than the whole square: the figure
+                                            // fills its half of the cell instead of
+                                            // floating in a box of nothing, and the
+                                            // cell's height stays the text's business.
                                             row.spawn((
-                                                ImageNode::new(
-                                                    w.class_frames(&h.class_key).idle[0].clone(),
-                                                ),
+                                                ImageNode {
+                                                    image: w
+                                                        .class_frames(&h.class_key)
+                                                        .idle[0]
+                                                        .clone(),
+                                                    rect: Some(Rect::new(
+                                                        44.0, 16.0, 144.0, 172.0,
+                                                    )),
+                                                    ..default()
+                                                },
                                                 Node {
-                                                    width: Val::Px(34.0),
-                                                    height: Val::Px(46.0),
+                                                    width: Val::Px(96.0),
+                                                    height: Val::Px(150.0),
+                                                    flex_shrink: 0.0,
                                                     ..default()
                                                 },
                                             ));
                                         }
                                         row.spawn(Node {
                                             flex_direction: FlexDirection::Column,
+                                            row_gap: Val::Px(2.0),
                                             flex_grow: 1.0,
                                             ..default()
                                         })
                                         .with_children(|txt| {
                                             txt.spawn(glass::text(
                                                 format!("{}   Lv {}", h.name, h.level),
-                                                15.0,
+                                                21.0,
                                                 glass::TEXT,
                                             ));
                                             txt.spawn(glass::text(
                                                 class_and_rank(&h.class_key, h.level),
-                                                12.0,
+                                                15.0,
                                                 glass::TITLE,
                                             ));
-                                        });
-                                    });
-                                    // HP / the class's own resource where MP would be
-                                    // (this ATB adaptation has no cast pool) / EXP.
-                                    cell.spawn(glass::text(
-                                        format!("HP {}/{}", h.hp, h.max_hp),
-                                        13.0,
-                                        glass::TEXT,
-                                    ));
-                                    if let Some(res) = hero_resource(&h.class_key) {
-                                        cell.spawn(glass::text(res, 12.0, glass::DIM));
-                                    }
-                                    cell.spawn(glass::text(
-                                        format!("EXP {} / {}", h.xp, h.xp_to_next.max(1)),
-                                        12.0,
-                                        glass::DIM,
-                                    ));
-                                    cell.spawn(glass::text(
-                                        format!(
-                                            "STR {}  MND {}  DEX {}  WLL {}",
-                                            h.str_, h.mnd, h.dex, h.wll
-                                        ),
-                                        12.0,
-                                        glass::DIM,
-                                    ));
-                                    // Formation stays a click on the hero's own cell —
-                                    // it is a property of the hero, not a pane.
-                                    cell.spawn((
-                                        Button,
-                                        FormationButton { slot: i as i32, back_row: h.back_row },
-                                        glass::chip(h.back_row),
-                                    ))
-                                    .with_children(|b| {
-                                        b.spawn(glass::text(
-                                            if h.back_row { "Back row" } else { "Front row" },
-                                            11.0,
-                                            glass::DIM,
-                                        ));
-                                    });
-                                    cell.spawn(Node {
-                                        flex_direction: FlexDirection::Row,
-                                        column_gap: Val::Px(6.0),
-                                        ..default()
-                                    })
-                                    .with_children(|btns| {
-                                        for (pane, label) in [
-                                            (MenuPane::Equipment, "Equipment"),
-                                            (MenuPane::Abilities, "Abilities"),
-                                        ] {
-                                            let on = selected && menu.pane == Some(pane);
-                                            btns.spawn((
-                                                Button,
-                                                PaneButton { member: i, pane },
-                                                glass::chip(on),
-                                            ))
-                                            .with_children(|b| {
-                                                b.spawn(glass::text(
-                                                    label,
-                                                    12.0,
-                                                    if on { glass::TITLE } else { glass::TEXT },
-                                                ));
+                                            txt.spawn(glass::text(
+                                                format!("HP  {}/{}", h.hp, h.max_hp),
+                                                17.0,
+                                                glass::TEXT,
+                                            ));
+                                            if let Some(res) = hero_resource(&h.class_key) {
+                                                txt.spawn(glass::text(res, 15.0, glass::DIM));
+                                            }
+                                            txt.spawn(glass::text(
+                                                format!("EXP {} / {}", h.xp, h.xp_to_next.max(1)),
+                                                15.0,
+                                                glass::DIM,
+                                            ));
+                                            txt.spawn(glass::text(
+                                                format!(
+                                                    "STR {}  MND {}  DEX {}  WLL {}",
+                                                    h.str_, h.mnd, h.dex, h.wll
+                                                ),
+                                                15.0,
+                                                glass::DIM,
+                                            ));
+                                            // Row, Equipment and Abilities share one
+                                            // line — three buttons, one row of height.
+                                            txt.spawn(Node {
+                                                flex_direction: FlexDirection::Row,
+                                                column_gap: Val::Px(5.0),
+                                                margin: UiRect::top(Val::Px(3.0)),
+                                                ..default()
+                                            })
+                                            .with_children(|btns| {
+                                                btns.spawn((
+                                                    Button,
+                                                    FormationButton {
+                                                        slot: i as i32,
+                                                        back_row: h.back_row,
+                                                    },
+                                                    glass::chip_sized(
+                                                        h.back_row,
+                                                        Val::Px(108.0),
+                                                    ),
+                                                ))
+                                                .with_children(|b| {
+                                                    b.spawn(glass::text(
+                                                        if h.back_row {
+                                                            "Row: Back"
+                                                        } else {
+                                                            "Row: Front"
+                                                        },
+                                                        15.0,
+                                                        glass::TEXT,
+                                                    ));
+                                                });
+                                                for (pane, label) in [
+                                                    (MenuPane::Equipment, "Equipment"),
+                                                    (MenuPane::Abilities, "Abilities"),
+                                                ] {
+                                                    let on = selected && menu.pane == Some(pane);
+                                                    btns.spawn((
+                                                        Button,
+                                                        PaneButton { member: i, pane },
+                                                        glass::chip(on),
+                                                    ))
+                                                    .with_children(|b| {
+                                                        b.spawn(glass::text(
+                                                            label,
+                                                            15.0,
+                                                            if on {
+                                                                glass::TITLE
+                                                            } else {
+                                                                glass::TEXT
+                                                            },
+                                                        ));
+                                                    });
+                                                }
                                             });
-                                        }
+                                        });
                                     });
                                 });
                             }
@@ -436,12 +471,12 @@ pub(crate) fn render_main_menu(
                 // ---- column three: a hero's gear, or a hero's abilities.
                 let Some(pane) = menu.pane else { return };
                 let Some(hero) = heroes.get(menu.member) else { return };
-                cols.spawn(glass::panel(Val::Px(330.0))).with_children(|col| match pane {
+                cols.spawn(glass::panel(Val::Px(520.0))).with_children(|col| match pane {
                     MenuPane::Abilities => {
-                        col.spawn(glass::text("ABILITIES", 18.0, glass::TITLE));
+                        col.spawn(glass::text("ABILITIES", 26.0, glass::TITLE));
                         col.spawn(glass::text(
                             class_and_rank(&hero.class_key, hero.level),
-                            12.0,
+                            16.0,
                             glass::DIM,
                         ));
                         col.spawn(glass::divider());
@@ -452,25 +487,25 @@ pub(crate) fn render_main_menu(
                             .filter(|d| hero.level >= d.unlock)
                             .collect();
                         if owned.is_empty() {
-                            col.spawn(glass::text("(none yet)", 13.0, glass::DIM));
+                            col.spawn(glass::text("(none yet)", 16.0, glass::DIM));
                         }
                         for (i, def) in owned.iter().enumerate() {
                             let focused = depth == 2 && menu.cursor == i;
                             col.spawn(glass::text(
                                 def.name,
-                                15.0,
+                                21.0,
                                 if focused { glass::TITLE } else { glass::TEXT },
                             ));
                             col.spawn(glass::text(
                                 format!("   {}", def.description),
-                                11.0,
+                                15.0,
                                 glass::DIM,
                             ));
                         }
                     }
                     MenuPane::Equipment => {
-                        col.spawn(glass::text("EQUIPMENT", 18.0, glass::TITLE));
-                        col.spawn(glass::text(hero.name.clone(), 12.0, glass::DIM));
+                        col.spawn(glass::text("EQUIPMENT", 26.0, glass::TITLE));
+                        col.spawn(glass::text(hero.name.clone(), 16.0, glass::DIM));
                         col.spawn(glass::divider());
                         equipment_pane(
                             col,
@@ -493,8 +528,10 @@ pub(crate) fn render_main_menu(
 /// gets the bar it actually spends instead.
 fn hero_resource(class_key: &str) -> Option<String> {
     match class_key {
-        "hunter" => Some("Adrenaline  banked by attacking, spent on skills".to_string()),
-        "psyker" => Some("Focus  slots holding your manifestations".to_string()),
+        // One line each: a wrapped label costs a whole row of cell height, and four
+        // cells have to fit one screen.
+        "hunter" => Some("Adrenaline".to_string()),
+        "psyker" => Some("Focus slots".to_string()),
         "resonant" => Some("Pays in its own HP".to_string()),
         _ => None,
     }
@@ -535,18 +572,18 @@ fn equipment_pane(
                                 gear_category_label(cat),
                                 worn.map(|g| g.name.clone()).unwrap_or_else(|| "-".into())
                             ),
-                            13.0,
+                            18.0,
                             if focused { glass::TITLE } else { glass::TEXT },
                         ));
                     });
             }
-            col.spawn(glass::text("[Enter] change  [Esc] back", 11.0, glass::DIM));
+            col.spawn(glass::text("[Enter] change  [Esc] back", 14.0, glass::DIM));
         }
         Some(cat) => {
-            col.spawn(glass::text(gear_category_label(cat), 14.0, glass::WARN));
+            col.spawn(glass::text(gear_category_label(cat), 19.0, glass::WARN));
             col.spawn((Button, PickerUnequipButton { category: cat }, glass::chip(false)))
                 .with_children(|b| {
-                    b.spawn(glass::text("Remove", 13.0, glass::TEXT));
+                    b.spawn(glass::text("Remove", 18.0, glass::TEXT));
                 });
             for g in category_gear(&inv.gear, cat, member, class) {
                 gear_row(col, g, member, GearSource::Vault, class);
@@ -555,7 +592,7 @@ fn equipment_pane(
                 gear_row(col, g, member, GearSource::RunLoot, class);
             }
             col.spawn((Button, PickerBackButton, glass::chip(false))).with_children(|b| {
-                b.spawn(glass::text("Back", 13.0, glass::DIM));
+                b.spawn(glass::text("Back", 18.0, glass::DIM));
             });
         }
     }
@@ -587,7 +624,7 @@ fn gear_row(
     .with_children(|b| {
         b.spawn(glass::text(
             format!("{}  +{}", g.name, gear_slot_stat(g)),
-            13.0,
+            18.0,
             if blocked.is_some() {
                 Color::srgb(0.55, 0.5, 0.5)
             } else {
@@ -595,7 +632,7 @@ fn gear_row(
             },
         ));
         if let Some(why) = blocked {
-            b.spawn(glass::text(format!("   {why}"), 10.0, glass::WARN));
+            b.spawn(glass::text(format!("   {why}"), 14.0, glass::WARN));
         }
     });
 }

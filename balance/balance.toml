@@ -225,6 +225,28 @@ explorer_safe_passage_regen = 6
 # A World Known (Globemaster, L17): fill every living ally's ATB gauge by this much.
 explorer_world_known_gauge = 0.5
 
+# The Resonant's deep kit. It is a CASTER (meld_proto::skills::Archetype): almost no
+# gear curve, so the ladder runs to level 100 and these are its late game. Every
+# fraction is of the TARGET's max HP unless noted; `*_self_cost` is a fraction of the
+# heal, paid out of the Resonant's own HP — it never drops itself below 1. [TUNABLE]
+resonant_mend_all_fraction = 0.1        # Mend All (L16): a little for everyone
+resonant_mend_all_self_cost = 0.25
+resonant_sanctuary_regen = 5            # Sanctuary (L25): party Regen, flat per turn
+resonant_revitalize_fraction = 0.45     # Revitalize (L36): one ally, serious
+resonant_revitalize_self_cost = 0.3
+resonant_lifewell_fraction = 0.18       # Lifewell (L49): party heal + Regen
+resonant_lifewell_regen = 4
+resonant_lifewell_self_cost = 0.2
+resonant_bloodbond_fraction = 0.55      # Bloodbond (L64): heal + Regen + Barrier, one ally
+resonant_bloodbond_regen = 8
+resonant_bloodbond_barrier_fraction = 0.2
+resonant_bloodbond_self_cost = 0.45
+resonant_martyr_fraction = 0.6          # Martyr (L81): party heal, most of your own HP
+resonant_martyr_self_cost = 0.8
+resonant_bloom_fraction = 0.85          # Eternal Bloom (L100): party heal + Barrier
+resonant_bloom_barrier_fraction = 0.25
+resonant_bloom_self_cost = 0.35
+
 # Monster-ability system (Creature AI spec §2). All [TUNABLE].
 status_slow_mult = 0.5               # ATB fill mult while webbed/chilled/bound/…
 poison_dot_fraction = 0.05           # poison: max_hp fraction lost per victim turn

@@ -24,6 +24,47 @@
 //! from balance rather than from a hand-authored table per ability — see
 //! `meld_run::ability_rank`.
 
+/// How long a class's ability ladder runs — the Dragon Quest lesson that not every
+/// class should keep learning forever.
+///
+/// A **martial** class gets a short, front-loaded kit and then scales on *gear and
+/// stats*: its power curve is the weapon in its hand, so handing it a new button at
+/// level 80 would be inventing a caster. A **caster** has almost no gear scaling by
+/// comparison, so its ladder is the progression and runs the whole way. A **hybrid**
+/// sits between the two.
+///
+/// This is what stops "more abilities" from meaning "every class gets ten": it says
+/// *which* classes should, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archetype {
+    /// Short kit, done early. Scales on gear. (Hunter, Shifter.)
+    Martial,
+    /// Medium kit. Some gear scaling, some utility. (Explorer, Phoenix Guard.)
+    Hybrid,
+    /// Long kit, arriving all the way out. (Psyker, Resonant.)
+    Caster,
+}
+
+/// The deepest level a class's ladder should reach, by archetype. A martial class's
+/// last ability lands while the numbers still matter; a caster's arrives at the cap
+/// of the authored range.
+pub fn archetype(class: &str) -> Archetype {
+    match class {
+        "hunter" | "shifter" => Archetype::Martial,
+        "psyker" | "resonant" => Archetype::Caster,
+        _ => Archetype::Hybrid,
+    }
+}
+
+/// The level band an archetype's last ability is expected to fall in.
+pub fn ladder_ceiling(a: Archetype) -> i32 {
+    match a {
+        Archetype::Martial => 25,
+        Archetype::Hybrid => 49,
+        Archetype::Caster => 100,
+    }
+}
+
 /// One ability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkillDef {
@@ -97,9 +138,9 @@ pub const SKILLS: &[SkillDef] = &[
         description: "The order's whole vision, for one moment: every ally's ATB gauge surges. The party goes first.",
         rank: "Globemaster",
     },
-    // ---- Hunter: the martial baseline. Attacks bank Adrenaline, every skill
-    // spends it — "adrenaline junkies", in the guild's own words. Ranks are the
-    // Hunters' armband ladder (docs/lore/factions.md).
+    // ---- Hunter: martial. Attacks bank Adrenaline, every skill spends it —
+    // "adrenaline junkies", in the guild's own words. A short kit on purpose: the
+    // Hunter's late game is the weapon, not a longer menu.
     SkillDef {
         key: "power_strike",
         name: "Power Strike",
@@ -145,7 +186,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "kinetic_aegis",
         name: "Kinetic Aegis",
         class: "psyker",
-        unlock: 4,
+        unlock: 1,
         description: "A Focus that plates an ally in Barrier — temporary HP that absorbs damage before their own.",
         rank: "Initiate",
     },
@@ -165,7 +206,8 @@ pub const SKILLS: &[SkillDef] = &[
         description: "A Focus that drains a foe's ATB gauge every turn. It acts, and acts, and never gets there.",
         rank: "Field Marshal",
     },
-    // ---- Resonant: pays in its own blood ----
+    // ---- Resonant: a caster, so its ladder runs the whole way. It has no order and
+    // no gear curve to speak of; the kit IS its progression.
     SkillDef {
         key: "transfuse",
         name: "Transfuse",
@@ -190,7 +232,65 @@ pub const SKILLS: &[SkillDef] = &[
         description: "Grant an ally Barrier. Cheaper than healing the damage afterwards.",
         rank: "",
     },
-    // ---- Shifter: fast, fragile, evasive ----
+    SkillDef {
+        key: "mend_all",
+        name: "Mend All",
+        class: "resonant",
+        unlock: 16,
+        description: "A little healing for everyone still standing. Costs you a little for each.",
+        rank: "",
+    },
+    SkillDef {
+        key: "sanctuary",
+        name: "Sanctuary",
+        class: "resonant",
+        unlock: 25,
+        description: "Regen for the whole party. Lay it down before the fight turns.",
+        rank: "",
+    },
+    SkillDef {
+        key: "revitalize",
+        name: "Revitalize",
+        class: "resonant",
+        unlock: 36,
+        description: "A serious heal on one ally — enough to bring someone back from the edge.",
+        rank: "",
+    },
+    SkillDef {
+        key: "lifewell",
+        name: "Lifewell",
+        class: "resonant",
+        unlock: 49,
+        description: "Heal the party and leave Regen behind, so the mending keeps going.",
+        rank: "",
+    },
+    SkillDef {
+        key: "bloodbond",
+        name: "Bloodbond",
+        class: "resonant",
+        unlock: 64,
+        description: "Bind an ally to you: a heavy heal, Regen and Barrier at once, paid in your own blood.",
+        rank: "",
+    },
+    SkillDef {
+        key: "martyr",
+        name: "Martyr",
+        class: "resonant",
+        unlock: 81,
+        description: "Give almost everything you have left to the party. They will need it more than you.",
+        rank: "",
+    },
+    SkillDef {
+        key: "eternal_bloom",
+        name: "Eternal Bloom",
+        class: "resonant",
+        unlock: 100,
+        description: "Everyone whole, warded and mending. The fight starts again from here.",
+        rank: "",
+    },
+    // ---- Shifter: martial. Three tricks, learned early, then it lives on daggers
+    // and Dex — a fourth button at level 60 would make it a caster in leather.
+
     SkillDef {
         key: "backstab",
         name: "Backstab",
@@ -346,8 +446,7 @@ pub fn rank_title(class: &str, level: i32) -> Option<&'static str> {
         .find(|(c, _)| *c == class)?
         .1
         .iter()
-        .filter(|(_, at)| level >= *at)
-        .next_back()
+        .rfind(|(_, at)| level >= *at)
         .map(|(title, _)| *title)
 }
 
@@ -495,6 +594,38 @@ mod tests {
     }
 
     #[test]
+    fn a_martial_kit_is_short_and_a_casters_runs_the_whole_way() {
+        // The Dragon Quest rule: a martial class's late game is its weapon, so its
+        // ladder ends while the numbers still matter. A caster has no comparable gear
+        // curve, so its ladder IS the progression. "More abilities" must not mean
+        // "ten each".
+        for class in ["hunter", "shifter", "explorer", "psyker", "resonant", "phoenix_guard"] {
+            let kit = skills_for_class(class);
+            let deepest = kit.iter().map(|s| s.unlock).max().unwrap();
+            let ceiling = ladder_ceiling(archetype(class));
+            assert!(
+                deepest <= ceiling,
+                "{class} ({:?}) learns something at {deepest}, past its {ceiling} ceiling",
+                archetype(class)
+            );
+        }
+        // And a caster actually reaches for it, rather than stopping early and
+        // leaving the archetype a claim nobody honoured.
+        let resonant = skills_for_class("resonant");
+        assert_eq!(
+            resonant.iter().map(|s| s.unlock).max().unwrap(),
+            100,
+            "the Resonant is a caster and should still be learning at the top"
+        );
+        assert!(resonant.len() >= 9, "a caster's ladder is thin: {}", resonant.len());
+        // A martial class stays lean.
+        assert!(
+            skills_for_class("shifter").len() <= 5,
+            "the Shifter has grown a caster's menu"
+        );
+    }
+
+    #[test]
     fn abilities_are_spaced_out_to_about_a_hundred_not_bunched_under_ten() {
         // The point of the ladder is that levelling keeps paying. A kit whose last
         // ability lands at level 5 stops mattering at level 5.
@@ -511,10 +642,12 @@ mod tests {
             }
             assert!(*levels.last().unwrap() <= 100, "{class} reaches past 100");
         }
-        // The two biggest kits reach deep; nothing is bunched at the bottom.
+        // The hybrid kits reach past the martial ceiling, or the archetypes are a
+        // distinction with no difference.
         assert!(
-            skills_for_class("phoenix_guard").iter().map(|s| s.unlock).max().unwrap() >= 36,
-            "the Phoenix Guard's ladder is too shallow"
+            skills_for_class("phoenix_guard").iter().map(|s| s.unlock).max().unwrap()
+                > ladder_ceiling(Archetype::Martial),
+            "the Phoenix Guard's ladder is no deeper than a martial one"
         );
     }
 
