@@ -1014,8 +1014,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "meld-balance",
  "meld-db",
  "meld-proto",
+ "meld-world",
  "rand 0.8.7",
  "serde",
  "serde_json",

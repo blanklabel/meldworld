@@ -753,6 +753,99 @@ fn biome_element(biome: &str) -> &'static str {
     }
 }
 
+/// Forge one piece of gear (MS-1). The crafted counterpart to
+/// [`roll_creature_loot`]'s drop: the smith chooses the slot and the class, and
+/// **Forging level** decides both how deep a tier they can work at and how tightly
+/// the stat rolls (`variance_at` — a master smith is consistent, an apprentice is
+/// not). Affixes come from the same tier-gated roller as loot, so a forged piece is
+/// the same KIND of object as a found one; the difference is that you chose its slot.
+pub fn forge_gear(
+    balance: &Balance,
+    forging_level: i32,
+    slot: &str,
+    class_key: &str,
+    biome: &str,
+    seed: u64,
+) -> GearDrop {
+    let fg = &balance.forge;
+    let l = &balance.loot;
+    let mut rng = Rng(seed);
+    let tier = fg.forgeable_tier(forging_level).max(0);
+    let variance = fg.variance_at(forging_level);
+    let jitter = 1.0 + rng.signed() * variance;
+    let stat = ((l.gear_atk_per_tier * tier.max(1) as f64 * jitter).round() as i32).max(1);
+    let (atk_bonus, def_bonus, spd_bonus) = match slot {
+        "main_hand" => (stat, 0, 0),
+        "accessory" => (0, 0, stat),
+        _ => (0, stat, 0),
+    };
+    let family = match eq::class_from_key(class_key) {
+        Some(c) => {
+            let legal = eq::families_for_slot(c, slot);
+            legal
+                .get(if legal.len() > 1 { rng.below(legal.len()) } else { 0 })
+                .map(|f| f.wire().to_string())
+                .unwrap_or_default()
+        }
+        None => String::new(),
+    };
+    let armor_weight = match (eq::class_from_key(class_key), eq::is_armor_slot(slot)) {
+        (Some(c), true) => eq::drop_weight(c).wire().to_string(),
+        _ => String::new(),
+    };
+    let affixes = roll_affixes(
+        balance,
+        &mut rng,
+        tier,
+        "rare",
+        false,
+        class_key,
+        slot,
+        biome,
+    );
+    let base = format!(
+        "{} {}",
+        POWER_ADJECTIVES[rng.below(POWER_ADJECTIVES.len())],
+        class_slot_noun(class_key, slot)
+    );
+    let name = match aff::name_suffix(&affixes) {
+        Some(suffix) => format!("{base} {suffix}"),
+        None => base,
+    };
+    GearDrop {
+        name,
+        rarity: "rare".to_string(),
+        slot: slot.to_string(),
+        class_key: class_key.to_string(),
+        tier,
+        atk_bonus,
+        def_bonus,
+        spd_bonus,
+        max_durability: l.gear_base_durability,
+        damage_modifiers: Vec::new(),
+        family,
+        armor_weight,
+        affixes,
+        unique_key: String::new(),
+        set_key: String::new(),
+    }
+}
+
+/// Reroll a piece's affixes (MS-1, closing AD-1's last thread): same tier, same
+/// slot, a fresh draw. What a smith sells is another chance at the roll, not a
+/// better piece — the stats are untouched.
+pub fn reroll_affixes(
+    balance: &Balance,
+    tier: i32,
+    class_key: &str,
+    slot: &str,
+    biome: &str,
+    seed: u64,
+) -> Vec<aff::Affix> {
+    let mut rng = Rng(seed);
+    roll_affixes(balance, &mut rng, tier, "rare", false, class_key, slot, biome)
+}
+
 /// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
 fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -5062,6 +5155,108 @@ mod tests {
             mixed_share(2) * 100.0,
             mixed_share(1) * 100.0
         );
+    }
+
+    #[test]
+    fn a_better_smith_forges_deeper_and_more_consistently() {
+        let b = Balance::load_default().unwrap();
+        let forge_at = |level: i32, seed: u64| {
+            forge_gear(&b, level, "main_hand", "explorer", "forest", seed)
+        };
+
+        // Forging level sets the tier a smith can reach.
+        let apprentice = forge_at(1, 7);
+        let master = forge_at(10, 7);
+        assert!(
+            master.tier > apprentice.tier,
+            "a master should forge deeper: {} vs {}",
+            master.tier,
+            apprentice.tier
+        );
+
+        // …and how tightly the stat rolls. Compare the SPREAD across many seeds at
+        // each level: an apprentice's work is erratic, a master's is dependable.
+        let spread = |level: i32| -> f64 {
+            let stats: Vec<i32> = (0..200u64).map(|s| forge_at(level, s).atk_bonus).collect();
+            let lo = *stats.iter().min().unwrap() as f64;
+            let hi = *stats.iter().max().unwrap() as f64;
+            let mid = stats.iter().sum::<i32>() as f64 / stats.len() as f64;
+            (hi - lo) / mid.max(1.0)
+        };
+        assert!(
+            spread(10) < spread(1),
+            "a master smith is not more consistent: {:.3} vs {:.3}",
+            spread(10),
+            spread(1)
+        );
+
+        // A forged piece is a real, wearable piece of its class's kit.
+        let piece = forge_at(6, 3);
+        assert_eq!(piece.class_key, "explorer");
+        assert_eq!(piece.slot, "main_hand");
+        assert!(piece.atk_bonus > 0 && piece.max_durability > 0);
+        let fam = meld_proto::equipment::ItemFamily::from_wire(&piece.family)
+            .expect("a forged weapon has a family");
+        assert!(
+            meld_proto::equipment::allows_family(meld_proto::enums::CharacterClass::Explorer, fam),
+            "forged a family its own class cannot hold: {:?}",
+            fam
+        );
+        // Crafted gear is never a unique or a set piece — those are chased, not made.
+        assert!(piece.unique_key.is_empty() && piece.set_key.is_empty());
+    }
+
+    #[test]
+    fn forging_armour_rolls_a_weight_its_class_can_wear() {
+        let b = Balance::load_default().unwrap();
+        for (class, slot) in [("iron_hull", "chest"), ("psyker", "head"), ("shifter", "legs")] {
+            let piece = forge_gear(&b, 8, slot, class, "tundra", 11);
+            let w = meld_proto::equipment::ArmorWeight::from_wire(&piece.armor_weight)
+                .expect("forged armour has a weight");
+            let c = meld_proto::equipment::class_from_key(class).unwrap();
+            assert!(
+                meld_proto::equipment::allows_weight(c, w),
+                "{class} cannot wear its own forged {slot}: {w:?}"
+            );
+            assert!(piece.def_bonus > 0, "armour should defend");
+            assert!(piece.family.is_empty(), "armour carries no weapon family");
+        }
+    }
+
+    #[test]
+    fn a_reroll_is_another_draw_not_a_better_piece() {
+        let b = Balance::load_default().unwrap();
+        // Same tier and slot, different seeds: the affixes differ, so paying for a
+        // reroll is paying for a chance.
+        let a = reroll_affixes(&b, 12, "explorer", "main_hand", "ashfall", 1);
+        let mut differed = false;
+        for seed in 2..40u64 {
+            let c = reroll_affixes(&b, 12, "explorer", "main_hand", "ashfall", seed);
+            if c != a {
+                differed = true;
+                break;
+            }
+        }
+        assert!(differed, "every reroll produced the same affixes");
+
+        // The same seed reproduces the same draw (so a bug report is reproducible).
+        assert_eq!(
+            reroll_affixes(&b, 12, "explorer", "main_hand", "ashfall", 99),
+            reroll_affixes(&b, 12, "explorer", "main_hand", "ashfall", 99)
+        );
+
+        // A reroll respects the same tier gates as loot: shallow gear cannot reroll
+        // into a deep affix class.
+        use meld_proto::affixes::AffixClass;
+        for seed in 0..60u64 {
+            for a in reroll_affixes(&b, 1, "explorer", "main_hand", "forest", seed) {
+                assert_eq!(
+                    a.class(),
+                    Some(AffixClass::Stat),
+                    "a tier-1 reroll produced {a:?}"
+                );
+            }
+        }
     }
 }
 

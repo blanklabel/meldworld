@@ -347,13 +347,26 @@ XP; harvesting exists but is instant.
     Forging regardless of what it made. There is now a recipe registry (seven recipes:
     six potions + the Town Portal), `POST /v1/crafting/craft {recipe}` runs any of them,
     `GET /v1/crafting/recipes` lists them with inputs, and each credits the skill it
-    actually belongs to — **a potion credits Alchemy**. Gear crafting, stat variance,
-    gems/socketing and repair scaling are still open. Bring **Forging/Smithing,
+    actually belongs to — **a potion credits Alchemy**. Bring **Forging/Smithing,
   Alchemy, and Mercantile** to real depth: recipes, gear crafting with stat
   variance, gem/materia synthesis + socketing, durability repair scaling with
   Forging level, and the mercantile tax/stall-gate effects. UIs live in Last
   City's Forge & Alembic. Spec: [`behaviors/meta-progression.md`](behaviors/meta-progression.md)
   §4.1 + [`interfaces/http-api/crafting-meld.md`](interfaces/http-api/crafting-meld.md).
+  - 🟡 *The Forge is open (Forging side):* `POST /v1/crafting/forge` makes a piece of
+    gear for a chosen slot + class, where **Forging level is the lever on both reach and
+    quality** — it sets the tier a smith can work at (`forgeable_tier`) and how tightly
+    the stat rolls (`variance_at`: an apprentice is erratic, a master dependable).
+    `POST /v1/vault/gear/:id/reroll` buys **another draw on a piece's affixes** (stats
+    untouched — a smith sells a chance, not a better item), gated behind
+    `reroll_min_forging_level`. `POST /v1/vault/gear/:id/repair` buys back max durability
+    a death chewed, restoring more per repair the better the smith
+    (`repair_points_per_forging_level`) and billing only for what it actually restored —
+    `GR-2`'s repair sink. Crafted gear is **insured**, and never a unique or set piece:
+    those are chased, not made. All three are atomic (a smith who cannot pay keeps their
+    materials) and credit Forging XP. Knobs in `[forge]`.
+  - **Remains:** gem/materia synthesis + socketing (no socket model exists yet) and the
+    mercantile tax / stall-gate effects (want `EC-1` stalls first).
 - [ ] **MS-2 — Harvesting takes time in the field.** Turn instant `run.harvest`
   into a **channeled gather** (a timed action, interruptible, vulnerable while
   channeling) — tension, not a free tap. Add the channel timer `[TUNABLE]` and the
@@ -820,7 +833,7 @@ the current build.
 > [`proposals/core-loop-and-personas.md`](proposals/core-loop-and-personas.md) (which
 > had overstated the persona as "whole").
 
-- [ ] **AD-1 — Gear affixes & the loot chase (the star).** Server-rolled affixes in three
+- [x] **AD-1 — Gear affixes & the loot chase (the star).** Server-rolled affixes in three
   classes — **stat / keyword (twist a class mechanic) / synergy (reference allies)** — from
   distance-banded tiered pools; **uniques** (build-defining + a tradeoff) and **sets**
   (party-wide bonuses). Extends `GR-1` + gear-item-models; rolled/rerolled by crafting
@@ -853,8 +866,9 @@ the current build.
     game that reaches past its owner, which is what makes assembling one a group
     project). Drawbacks are floored so a build can be lopsided without being
     unplayable, and the tooltip shows a unique's cost in red right under its upside.
-  - **Remains:** rerolling affixes via crafting (`MS-1`). The elemental half landed with
-    the `brand` affix under `AD-3` below.
+  - *Complete:* affix rerolling landed with the Forge (`MS-1`), and the elemental half
+    with the `brand` affix (`AD-3`). Affixes, uniques, sets, damage types and rerolling
+    are all live.
 - [x] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
   Three layers, all live (`meld_proto::synergies`; magnitudes in `[adventure]`):
