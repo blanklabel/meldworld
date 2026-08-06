@@ -449,6 +449,7 @@ pub struct Meld {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CombatMath {
     pub min_damage: i32,
+    pub damage_floor_fraction: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -620,6 +621,9 @@ pub struct Perks {
     pub shifter_dungeon_radius_base: f32,
     pub shifter_dungeon_radius_per_level: f32,
     pub shifter_item_sense_at: i32,
+    pub shifter_trap_sense_at: i32,
+    pub shifter_trap_radius_base: f32,
+    pub shifter_trap_radius_per_level: f32,
     /// Extra minimap coverage per run level above the unlock.
     pub explorer_map_radius_per_level: f32,
     // --- Psyker: threat sense. ---
@@ -773,6 +777,7 @@ mod tests {
         assert_eq!(b.perks.hunter_intel_hp_at, 3);
         assert_eq!(b.perks.explorer_map_at, 1);
         assert!(b.perks.shifter_dungeon_radius_base > 0.0);
+        assert!(b.perks.shifter_trap_radius_base > 0.0);
         assert!(b.perks.shifter_item_sense_at >= 1);
         assert!(b.perks.phoenix_guard_aggro_mult_floor > 0.0 && b.perks.phoenix_guard_aggro_mult_floor <= 1.0);
     }

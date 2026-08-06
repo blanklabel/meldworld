@@ -538,6 +538,7 @@ pub struct Battle {
     burn_dot_fraction: f64,
     basic_attack_weight: i32,
     min_damage: i32,
+    damage_floor_fraction: f64,
     creature_flee_hp_fraction: f64,
     flee_base: f64,
     flee_penalty_per_tier: f64,
@@ -774,6 +775,7 @@ impl Battle {
             burn_dot_fraction: balance.battle.burn_dot_fraction,
             basic_attack_weight: balance.battle.basic_attack_weight,
             min_damage: balance.combat_math.min_damage,
+            damage_floor_fraction: balance.combat_math.damage_floor_fraction,
             creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
             flee_penalty_per_tier: balance.battle.flee_penalty_per_tier,
@@ -1119,8 +1121,14 @@ impl Battle {
 
     /// Damage after defense and an optional defend stance. Structural formula;
     /// coefficients (`min_damage`, `defend_reduction`) are tunables.
+    /// Damage after armour. Armour subtracts, but it can never absorb the whole
+    /// blow: a hit always lands for at least `damage_floor_fraction` of the
+    /// attacker's scaled attack. Defence grows about +1 per hero level while creature
+    /// attack grows only with distance, so without that floor a levelled hero simply
+    /// stops taking damage and the game never gets harder than its tutorial.
     fn damage(&self, atk: i32, def: i32, target_defending: bool) -> i32 {
-        let mut raw = (atk - def) as f64;
+        let floor = (atk as f64) * self.damage_floor_fraction;
+        let mut raw = ((atk - def) as f64).max(floor);
         if target_defending {
             raw *= 1.0 - self.defend_reduction;
         }
@@ -4107,8 +4115,14 @@ mod tests {
                 .unwrap();
             200 - player_hp(&battle, "m")
         };
-        assert_eq!(dmg(None), 2, "a plain attack is eaten by def 10");
+        // atk 12 vs def 10 leaves 2, but armour can never eat a whole blow — the
+        // mitigation floor (25% of the attack) lands 3 instead.
+        assert_eq!(dmg(None), 3, "a plain attack is mostly eaten by def 10");
         assert_eq!(dmg(Some("backstab")), 15, "Backstab pierces most of the armour");
+        assert!(
+            dmg(Some("backstab")) > dmg(None) * 4,
+            "piercing armour should still be worth doing"
+        );
     }
 
     /// Flicker (Shifter) grants Evasion — a dodge bonus surfaced on the wire that
@@ -4571,6 +4585,48 @@ mod tests {
 
 
 
+
+    #[test]
+    fn armour_never_absorbs_a_whole_blow_so_depth_stays_dangerous() {
+        let b = balance();
+        let battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("p", 400)],
+            vec![monster("m", 100, 1)],
+            &b,
+            7,
+        );
+        // Defence grows about +1 per hero level while creature attack grows only with
+        // distance, so a levelled hero used to stop taking damage entirely: a level-25
+        // hero (def 30, 292 HP) took `min_damage` from everything out to roughly
+        // distance 1100 and needed 292 hits to die. The floor is what keeps depth
+        // dangerous without touching hero growth or the distance curve.
+        let floor = b.combat_math.damage_floor_fraction;
+        for atk in [10i32, 30, 60, 120, 400] {
+            // Armour far above the attack still cannot reduce the hit to nothing.
+            let overwhelmed = battle.damage(atk, atk * 10, false);
+            assert!(
+                overwhelmed as f64 >= (atk as f64 * floor).round() - 1.0,
+                "atk {atk} against heavy armour landed {overwhelmed}, below the floor"
+            );
+            // And armour still MATTERS: unarmoured takes more than armoured.
+            assert!(
+                battle.damage(atk, 0, false) > battle.damage(atk, atk * 10, false),
+                "armour stopped mattering at atk {atk}"
+            );
+        }
+        // Deeper creatures hit a fixed hero harder, monotonically — the property the
+        // whole difficulty-by-distance design rests on.
+        let hero_def = 30;
+        let mut last = 0;
+        for atk in [7i32, 12, 17, 28, 52, 109] {
+            let hit = battle.damage(atk, hero_def, false);
+            assert!(hit >= last, "a deeper creature hit softer: {hit} after {last}");
+            last = hit;
+        }
+        assert!(last > 20, "the deepest creature measured still only hit for {last}");
+    }
     #[test]
     fn a_theft_is_reported_for_the_server_to_settle() {
         let b = balance();

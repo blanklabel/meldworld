@@ -147,6 +147,34 @@ impl PlayerRun {
 
     /// This hero's level inside the dive; the run's headline level until the hero has
     /// earned anything of its own.
+    /// Try to put `item` in the backpack. Returns false when the pack is FULL, so the
+    /// caller can tell the player rather than silently swallowing the drop.
+    ///
+    /// A dive's carrying capacity is the pressure that makes extraction a decision:
+    /// with an unbounded pack you never choose between the heavy thing and the
+    /// valuable thing, and you never turn back early because you are full.
+    /// Same-kind stacks merge and do not consume a slot.
+    pub fn try_carry(&mut self, item: ItemStack, balance: &Balance) -> bool {
+        if let Some(stack) = self
+            .backpack
+            .iter_mut()
+            .find(|s| s.item_kind == item.item_kind && s.insurance == item.insurance)
+        {
+            stack.quantity += item.quantity;
+            return true;
+        }
+        if self.backpack.len() >= balance.runs.backpack_slots.max(1) as usize {
+            return false;
+        }
+        self.backpack.push(item);
+        true
+    }
+
+    /// Whether the pack has no room for a NEW kind of item.
+    pub fn pack_full(&self, balance: &Balance) -> bool {
+        self.backpack.len() >= balance.runs.backpack_slots.max(1) as usize
+    }
+
     pub fn hero_level(&self, slot: usize) -> i32 {
         self.hero_levels.get(slot).copied().unwrap_or(self.run_level)
     }
@@ -1260,6 +1288,51 @@ mod tests {
         assert!(
             hp_of(4) > hp_of(1),
             "the same creature was no tougher against four heroes"
+        );
+    }
+
+
+
+    #[test]
+    fn a_full_pack_refuses_new_kinds_but_still_stacks_what_it_has() {
+        let b = Balance::load_default().unwrap();
+        let mut r = PlayerRun {
+            run_id: "r".into(),
+            player_id: "p".into(),
+            username: "u".into(),
+            character_class: CharacterClass::Hunter,
+            run_level: 1,
+            xp: 0,
+            backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
+            max_distance_reached: 0,
+            result: None,
+            party_id: 0,
+            hero_levels: vec![1],
+            hero_xp: vec![0],
+        };
+        let item = |kind: &str| ItemStack {
+            item_id: format!("i-{kind}"),
+            item_kind: kind.to_string(),
+            quantity: 1,
+            insurance: None,
+        };
+        let slots = b.runs.backpack_slots as usize;
+        for n in 0..slots {
+            assert!(r.try_carry(item(&format!("kind{n}")), &b), "slot {n} refused early");
+        }
+        assert!(r.pack_full(&b));
+        // A NEW kind has nowhere to go — and the caller is told, rather than the drop
+        // vanishing silently.
+        assert!(!r.try_carry(item("one_too_many"), &b));
+        assert_eq!(r.backpack.len(), slots);
+        // But more of something already carried always fits: stacks are not slots.
+        assert!(r.try_carry(item("kind0"), &b));
+        assert_eq!(r.backpack.len(), slots, "a merged stack consumed a slot");
+        assert_eq!(
+            r.backpack.iter().find(|s| s.item_kind == "kind0").unwrap().quantity,
+            2
         );
     }
 }

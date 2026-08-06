@@ -133,6 +133,10 @@ pub enum EntityKind {
     /// A hand-designed dungeon entrance (`monster_kind` carries the dungeon name).
     /// Walk up and press F to descend (`run.enter_dungeon`).
     Entrance,
+    /// An ARMED dungeon trap a Shifter has read (`monster_kind` carries its kind).
+    /// Only ever sent when the party's Shift-sense reaches it — the server decides
+    /// what is visible, so an unaccompanied party genuinely cannot see these.
+    Trap,
 }
 
 /// A dynamic overworld entity.
@@ -334,6 +338,8 @@ pub struct PerksLine {
     pub shifter_dungeon_radius: f32,
     /// Whether a Shifter can read a dropped item's permanence before picking it up.
     pub shifter_item_sense: bool,
+    /// Dungeon cells within which a Shifter reveals ARMED traps (0 = none).
+    pub shifter_trap_radius: f32,
     pub psyker_threat: u8,
     pub psyker_reveal_radius: f32,
     pub resonant_regen: f32,
@@ -349,6 +355,7 @@ impl Default for PerksLine {
             explorer_map_radius: 0.0,
             shifter_dungeon_radius: 0.0,
             shifter_item_sense: false,
+            shifter_trap_radius: 0.0,
             psyker_threat: 0,
             psyker_reveal_radius: 0.0,
             resonant_regen: 0.0,
@@ -1463,6 +1470,7 @@ impl Inner {
                     explorer_map_radius: f("explorer_map_radius"),
                     shifter_dungeon_radius: f("shifter_dungeon_radius"),
                     shifter_item_sense: p["shifter_item_sense"].as_bool().unwrap_or(false),
+                    shifter_trap_radius: f("shifter_trap_radius"),
                     psyker_threat: u("psyker_threat"),
                     psyker_reveal_radius: f("psyker_reveal_radius"),
                     resonant_regen: f("resonant_regen"),
@@ -1564,6 +1572,11 @@ impl Inner {
                             let mut opened = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
+                                Some(s) if s.starts_with("trap:") => (
+                                    EntityKind::Trap,
+                                    Some(s["trap:".len()..].to_string()),
+                                    None,
+                                ),
                                 Some(s) if s.starts_with("chest:") => {
                                     // chest:<tier>:<open>
                                     opened = s.ends_with(":1");

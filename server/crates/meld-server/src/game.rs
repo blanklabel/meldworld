@@ -913,6 +913,10 @@ impl WorldActor {
                     + p.shifter_dungeon_radius_per_level * above(p.shifter_dungeon_at);
             }
             out.shifter_item_sense = lvl >= p.shifter_item_sense_at;
+            if lvl >= p.shifter_trap_sense_at {
+                out.shifter_trap_radius = p.shifter_trap_radius_base
+                    + p.shifter_trap_radius_per_level * above(p.shifter_trap_sense_at);
+            }
         }
         // Psyker — threat sense.
         if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
@@ -1450,6 +1454,14 @@ impl WorldActor {
     /// floor is small).
     fn dungeon_snapshot(&self, pid: &str, key: u64, floor: usize, server_tick: i64) -> Outgoing {
         let mut entities: Vec<wm::SnapshotEntity> = Vec::new();
+        // Shifter trap sense: armed traps within the Runner's radius are revealed.
+        // Server-side, because whether a trap is armed is authoritative state and a
+        // client that could see every trap by asking would be a client that cheats.
+        let trap_radius = self.perks_for(pid).shifter_trap_radius as f64;
+        let sensed_from = self
+            .dungeons
+            .get(&key)
+            .and_then(|d| d.occupants().find(|(o, _)| *o == pid).map(|(_, occ)| occ.pos));
         if let Some(d) = self.dungeons.get(&key) {
             let def = d.def();
             for (opid, occ) in d.occupants() {
@@ -1484,6 +1496,21 @@ impl WorldActor {
                             }
                             Some(ObjectKind::Boss { sprite, .. }) => {
                                 entities.push(dungeon_prop(format!("dboss-{id}"), pos, &format!("mob:{sprite}:hostile")));
+                            }
+                            // An ARMED trap the Runner can read from here. A disarmed
+                            // one is furniture and stays unmarked.
+                            Some(ObjectKind::Trap { kind, .. })
+                                if trap_radius > 0.0
+                                    && d.trap_state(id) == Some(meld_dungeon_run::TrapState::Armed)
+                                    && sensed_from.is_some_and(|from| {
+                                        from.distance_to(&pos) <= trap_radius
+                                    }) =>
+                            {
+                                entities.push(dungeon_prop(
+                                    format!("dtrap-{id}"),
+                                    pos,
+                                    &format!("trap:{kind}"),
+                                ));
                             }
                             _ => {}
                         }
@@ -4279,7 +4306,12 @@ impl WorldActor {
             .collect();
         let mut run_gear_snapshot = None;
         if let Some(r) = self.run.run_mut(player_id) {
-            r.backpack.push(loot_item.clone());
+            // A full pack drops the loot on the floor of the world, so to speak: the
+            // player is told, and the choice of what to carry stays theirs.
+            let carried = r.try_carry(loot_item.clone(), &balance);
+            if !carried {
+                tracing::debug!("pack full for {player_id}; {} not carried", loot_item.item_kind);
+            }
             r.chits += loot.chits;
             r.looted_gear.extend(gear.iter().cloned());
             if !gear.is_empty() {
@@ -4956,12 +4988,13 @@ impl WorldActor {
                 quantity: 1,
                 insurance: None,
             };
-            r.backpack.push(item.clone());
-            added.push(wr::BackpackChange {
-                item,
-                delta: "added".to_string(),
-                cause: "pilfered".to_string(),
-            });
+            if r.try_carry(item.clone(), b) {
+                added.push(wr::BackpackChange {
+                    item,
+                    delta: "added".to_string(),
+                    cause: "pilfered".to_string(),
+                });
+            }
         }
         vec![out_msg(
             thief,

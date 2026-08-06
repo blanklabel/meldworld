@@ -42,7 +42,11 @@ encounter_party_scale = [1.0, 1.9, 3.0, 4.4]
 # lone hero absorbs the whole lesson, four share it. This is what makes the early
 # solo era level fast and the late four-hero era long, using the same encounters.
 xp_split_across_party = true
-backpack_slots = 40                   # limits.md
+# A dive's carrying capacity — and the pressure that makes extraction a DECISION.
+# Declared but never enforced until now, so the pack was effectively infinite and
+# you never had to choose between the heavy thing and the valuable thing, or turn
+# back early because you were full. Same-kind stacks merge and cost no slot. [TUNABLE]
+backpack_slots = 16                   # limits.md
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]
 extraction_channel_ms = 2500
@@ -504,12 +508,34 @@ forging_xp_per_craft = 25             # successful craft (GDD §4.1)
 # Damage = max(1, round(atk * stat_mult_attacker - def)). Content-defined
 # formula; coefficients here. mlevel/stat_mult per world scaling.
 min_damage = 1
+# Armour can never absorb ALL of a hit: a blow always lands for at least this
+# fraction of the attacker's scaled attack.
+#
+# Without this floor, defence — which is SUBTRACTIVE and grows about +1 per level —
+# outruns creature attack, which only grows with distance. A level-25 hero has 30
+# defence and 292 HP, so every creature out to roughly distance 1100 was doing
+# `min_damage` (1) and needed 292 hits to kill them. The tutorial-easy phase never
+# ended. The floor makes depth dangerous again without touching hero growth or the
+# distance curve. [TUNABLE]
+damage_floor_fraction = 0.25
 
 [world_scaling]
 tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
-stat_mult_exp = 1.25
+# MELDWORLD is meant to kill you until you have the right gear. At the old 1.25 an
+# ungeared level-25 hero needed 42 hits to die at distance 1000 and 14 at 2000 —
+# the tutorial-easy phase never ended, so nothing ever made you want to come back
+# better equipped. At 2.0 the shallow ring is still gentle (73 hits at d=300, which
+# is the one-hero tutorial era) and it turns lethal fast: 9 hits at d=1000, 3 at
+# 2000, 1 at 4000.
+#
+# Known gap this does NOT close: gear attack grows LINEARLY with distance
+# (gear_atk_per_tier x 7 slots ~= 0.21 x d) while creature stats grow as
+# (1 + d/500)^exp. Different curve shapes, so no single exponent makes them track —
+# a fully geared hero still one-shots ordinary creatures. Closing that means putting
+# creature stats and gear power on the SAME tier basis, which is a CANON §B change.
+stat_mult_exp = 2.0
 # Armour rides its OWN, gentler curve. Defence subtracts from damage rather than
 # multiplying it, so scaling it as fast as attack/HP makes deep creatures immune to
 # physical hits (damage floors at `min_damage`) — while leaving it flat, as it was,
@@ -682,6 +708,13 @@ shifter_dungeon_at = 1              # run level that starts revealing dungeon en
 shifter_dungeon_radius_base = 45.0  # world-units at which an entrance shows itself
 shifter_dungeon_radius_per_level = 3.0
 shifter_item_sense_at = 2           # run level to tell insured loot from ephemeral
+# Trap sense: a Runner reads a dungeon's rigged cells before anyone stands on one.
+# Radius is in dungeon CELLS, and only armed traps are ever revealed — a disarmed
+# one is furniture. Without this the Shifter's whole disarm advantage only mattered
+# after someone had already found the trap the hard way.
+shifter_trap_sense_at = 1
+shifter_trap_radius_base = 4.0
+shifter_trap_radius_per_level = 0.15
 # Psyker — threat sense.
 psyker_threat_elites_at = 1       # run level to mark elite/gatekeeper mobs
 psyker_threat_aggro_at = 3        # + mark aggressive mobs
