@@ -432,6 +432,21 @@ burns on death/leave; some is single-use. See
   - **Remains (Shifter):** the world-space entrance beacon and the in-world
     permanence tell. The perk rides the wire and gates the minimap; the extra
     presentation is client rendering, not a rule.
+- [x] **PT-4 — the pacing arc: solo is quick, a full party is long.** Two levers, one
+  intent. **Encounter XP is now SPLIT across the party** (`xp_split_across_party`)
+  rather than paid to every hero in full — a lone hero absorbs the whole lesson, four
+  share it. And **creatures scale with the size of the party facing them**
+  (`encounter_party_scale = [1.0, 1.9, 3.0, 4.4]`), superlinearly: four heroes bring
+  ~4x the damage, so a flat encounter would make a full party's fights the *shortest*
+  in the game. Together they give the intended arc — the solo era levels fast on short
+  fights (which is the tutorial), and by the time four slots are unlocked the runs are
+  long. Indexed to the same progression the player feels, since slots open at 1 hero
+  L10 / 2 at L20 / 3 at L30.
+  - *Measured, not assumed:* a Gravity Well **cannot** be triple-stacked — the cap is
+    2, per the class doc. At realistic level/distance pairs a single stack kills an
+    ordinary creature in 5 turns at level 1, 2 by level 10, and 1 by level 25; a
+    double stack roughly halves that. The Psyker outscaling creatures is the same
+    hero-power-vs-distance divergence noted above, not a stacking bug.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
