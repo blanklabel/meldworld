@@ -26,6 +26,22 @@ avatar_speed_tiles_per_sec = 6.0 # overworld walk speed (spec-defined)
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
 base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
+
+# How an encounter's creatures scale with the SIZE of the party facing them, on top
+# of the distance curve. Indexed by party size (1..4).
+#
+# Why superlinear rather than flat: four heroes bring roughly four times the damage,
+# so creatures that only doubled would make a full party's fights SHORTER than a solo
+# hero's. The intended arc is the opposite — a new player soloing does quick, easy
+# fights (the tutorial era), and by the time they field four the fights are long
+# affairs. Party slots unlock at 1 hero L10 / 2 at L20 / 3 at L30, so this ramp is
+# indexed to the same progression the player actually feels. [TUNABLE]
+encounter_party_scale = [1.0, 1.9, 3.0, 4.4]
+
+# Encounter XP is SPLIT across the party rather than paid to each hero in full: a
+# lone hero absorbs the whole lesson, four share it. This is what makes the early
+# solo era level fast and the late four-hero era long, using the same encounters.
+xp_split_across_party = true
 backpack_slots = 40                   # limits.md
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]

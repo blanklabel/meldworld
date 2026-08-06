@@ -99,6 +99,12 @@ impl PlayerRun {
     ///
     /// `party_size` grows the per-hero vectors on first use, seeded at the run's
     /// `base_run_level`, so a dive from a deeper hub starts every hero deeper.
+    /// Credit one hero its share of an encounter's XP.
+    ///
+    /// The share is the encounter's XP DIVIDED by the party size: a lone hero absorbs
+    /// the whole lesson, four split it. That single division is what gives the game
+    /// its intended arc — the solo era levels fast on short fights, and a full party's
+    /// runs are long — without needing two sets of encounters.
     pub fn award_hero_xp(
         &mut self,
         slot: usize,
@@ -107,6 +113,12 @@ impl PlayerRun {
         balance: &Balance,
     ) -> i32 {
         let size = party_size.max(slot + 1);
+        let xp = if balance.runs.xp_split_across_party {
+            // Never round a real reward down to nothing.
+            ((xp as f64) / size.max(1) as f64).round().max(1.0) as i64
+        } else {
+            xp
+        };
         if self.hero_levels.len() < size {
             let base = self.run_level;
             self.hero_levels.resize(size, base);
@@ -511,6 +523,18 @@ pub fn party_fighters(
 pub type EnemyMember<'a> = (&'a MonsterSpawn, Id);
 
 #[allow(clippy::too_many_arguments)]
+/// How much tougher a creature is for the size of the party facing it. Indexed off
+/// `[runs] encounter_party_scale`; a party larger than the table is clamped to its
+/// last entry, and an empty party (impossible in practice) scales by 1.
+pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
+    let table = &balance.runs.encounter_party_scale;
+    if table.is_empty() || party_size == 0 {
+        return 1.0;
+    }
+    let idx = (party_size - 1).min(table.len() - 1);
+    table[idx].max(0.1)
+}
+
 pub fn build_battle(
     battle_id: Id,
     party: &[PartyMember],
@@ -525,6 +549,11 @@ pub fn build_battle(
     row_overrides: &[Option<bool>],
 ) -> Battle {
     let mut allies = party_fighters(party, runs, balance, row_overrides);
+    // Creatures scale with how many heroes are facing them, on top of the distance
+    // curve. Four heroes bring ~4x the damage, so a flat encounter would make a full
+    // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
+    // the intended way — quick solo fights early, long ones once the party is full.
+    let party_scale = encounter_party_scale(allies.len(), balance);
     for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
         if let Some(h) = hp {
             f.hp = (*h).clamp(0, f.max_hp);
@@ -556,8 +585,8 @@ pub fn build_battle(
                 None,
                 Some(name),
                 m.level,
-                m.hp,
-                m.atk,
+                ((m.hp as f64) * party_scale).round() as i32,
+                ((m.atk as f64) * party_scale).round() as i32,
                 m.def,
                 m.speed_stat,
             );
@@ -1109,8 +1138,9 @@ mod tests {
         };
         let one = same_level_encounter_xp(1, &b);
 
-        // Hero 0 fights; heroes 1-3 do not (or fell). Only hero 0 climbs.
-        let gained = r.award_hero_xp(0, 4, one * 6, &b);
+        // Hero 0 fights; heroes 1-3 do not (or fell). Only hero 0 climbs. The award is
+        // SPLIT four ways, so this is twenty-four encounters' worth arriving as six.
+        let gained = r.award_hero_xp(0, 4, one * 6 * 4, &b);
         assert!(gained >= 2, "six level-1 fights bought {gained} levels");
         assert!(r.hero_level(0) > r.hero_level(1), "the idle hero climbed too");
         assert_eq!(r.hero_level(1), 1, "an unearned hero should sit at the base level");
@@ -1126,7 +1156,7 @@ mod tests {
         // The slot-unlock rules count heroes at a level.
         assert_eq!(r.heroes_at_level(before), 1);
         assert_eq!(r.heroes_at_level(1), 4);
-        let _ = r.award_hero_xp(1, 4, one * 6, &b);
+        let _ = r.award_hero_xp(1, 4, one * 6 * 4, &b);
         assert_eq!(r.heroes_at_level(before), 2, "two heroes should now be there");
 
         // The cap holds per hero.
@@ -1135,4 +1165,101 @@ mod tests {
     }
 
 
+
+
+    #[test]
+    fn a_lone_hero_learns_the_whole_lesson_and_four_split_it() {
+        let b = Balance::load_default().unwrap();
+        let mk = |size: usize| {
+            let mut r = PlayerRun {
+                run_id: "r".into(),
+                player_id: "p".into(),
+                username: "u".into(),
+                character_class: CharacterClass::Hunter,
+                run_level: 1,
+                xp: 0,
+                backpack: vec![],
+                chits: 0,
+                looted_gear: vec![],
+                max_distance_reached: 0,
+                result: None,
+                party_id: 0,
+                hero_levels: vec![1; size],
+                hero_xp: vec![0; size],
+            };
+            r.award_hero_xp(0, size, 400, &b);
+            r.hero_xp[0] + (0..r.hero_levels[0] - 1).map(|l| xp_to_next(l + 1, &b)).sum::<i64>()
+        };
+        let solo = mk(1);
+        let four = mk(4);
+        assert!(
+            solo > four,
+            "a solo hero should absorb more of an encounter than one of four: {solo} vs {four}"
+        );
+        // Specifically: the whole thing versus a quarter of it.
+        assert_eq!(solo, 400);
+        assert_eq!(four, 100);
+    }
+
+    #[test]
+    fn creatures_get_tougher_as_the_party_grows_so_the_arc_runs_the_right_way() {
+        let b = Balance::load_default().unwrap();
+        // Four heroes bring roughly four times the damage. If encounters did not
+        // scale, a full party's fights would be the SHORTEST in the game — the exact
+        // opposite of the intended arc (quick solo fights early, long ones late).
+        let solo = encounter_party_scale(1, &b);
+        let full = encounter_party_scale(4, &b);
+        assert_eq!(solo, 1.0, "a lone hero faces the creature as written");
+        assert!(full > solo * 3.0, "a full party's encounters barely grew: {full}");
+        // Monotonic, so every unlocked slot makes the world push back harder.
+        for n in 1..4 {
+            assert!(
+                encounter_party_scale(n + 1, &b) > encounter_party_scale(n, &b),
+                "party of {} is not harder than {n}",
+                n + 1
+            );
+        }
+        // Out-of-range party sizes clamp instead of panicking.
+        assert_eq!(encounter_party_scale(9, &b), full);
+        assert_eq!(encounter_party_scale(0, &b), 1.0);
+    }
+
+    #[test]
+    fn the_same_creature_hits_harder_when_more_heroes_are_present() {
+        let b = Balance::load_default().unwrap();
+        let hp_of = |size: usize| {
+            let party: Vec<PartyMember> = (0..size)
+                .map(|i| {
+                    (
+                        format!("p{i}"),
+                        format!("c{i}"),
+                        CharacterClass::Hunter,
+                        GearBonus::default(),
+                    )
+                })
+                .collect();
+            let mut runs = InstanceRun::new("i".into(), 0, &b);
+            runs.add_party(
+                (0..size)
+                    .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
+                    .collect(),
+            );
+            let m = meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "", 200, 7);
+            let battle = build_battle(
+                "b".into(),
+                &party,
+                &[(&m, "e0".to_string())],
+                &runs,
+                &b,
+                1,
+                &[],
+                &[],
+            );
+            battle.combatant_hp("e0").unwrap_or(0)
+        };
+        assert!(
+            hp_of(4) > hp_of(1),
+            "the same creature was no tougher against four heroes"
+        );
+    }
 }

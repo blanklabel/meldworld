@@ -1464,6 +1464,44 @@ pub(crate) fn rebuild_command_menu(
                         }
                     });
 
+                // A Psyker's held Foci, spelled out. The party HUD shows them as
+                // two-letter tags in slot order, which is fine once you know the
+                // class and unreadable before then — this is the hero you are
+                // actually commanding, so it gets full names, stack counts, and what
+                // each one is doing every turn.
+                if is_psyker {
+                    let held: Vec<(String, u8)> = battle
+                        .view(&active_id)
+                        .map(|v| parse_foci(&v.statuses).1)
+                        .unwrap_or_default();
+                    let line = if held.is_empty() {
+                        "Holding nothing — a Focus fires every turn you keep it".to_string()
+                    } else {
+                        held.iter()
+                            .map(|(k, st)| {
+                                let name = meld_proto::skills::pretty_skill(k);
+                                if *st > 1 {
+                                    format!("{name} x{st}")
+                                } else {
+                                    name
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    };
+                    panel.spawn((
+                        Text::new(line),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgb(0.78, 0.62, 1.0)),
+                    ));
+                    if !held.is_empty() {
+                        panel.spawn((
+                            Text::new("each fires again every turn it is held".to_string()),
+                            TextFont { font_size: 10.0, ..default() },
+                            TextColor(glass::DIM),
+                        ));
+                    }
+                }
                 if level == MenuLevel::Root && !is_psyker {
                     // The d-pad cross. Indices match `menu_entries` Root order.
                     panel

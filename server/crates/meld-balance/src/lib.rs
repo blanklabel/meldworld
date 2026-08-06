@@ -69,6 +69,8 @@ pub struct World {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Runs {
     pub base_run_level_per_distance: f64,
+    pub encounter_party_scale: Vec<f64>,
+    pub xp_split_across_party: bool,
     pub backpack_slots: i32,
     pub extraction_channel_ms: u64,
 
