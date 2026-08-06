@@ -30,6 +30,11 @@ base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
 # How an encounter's creatures scale with the SIZE of the party facing them, on top
 # of the distance curve. Indexed by party size (1..4).
 #
+# Applied to creature HEALTH only — never to attack. A pack facing four heroes needs
+# to LAST longer, but it does not swing four times harder at each of them; scaling
+# attack made a larger party strictly more lethal per head and wiped level-1 parties
+# at distance 0.
+#
 # Why superlinear rather than flat: four heroes bring roughly four times the damage,
 # so creatures that only doubled would make a full party's fights SHORTER than a solo
 # hero's. The intended arc is the opposite — a new player soloing does quick, easy

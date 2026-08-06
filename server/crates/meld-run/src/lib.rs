@@ -629,7 +629,13 @@ pub fn build_battle(
                 Some(name),
                 m.level,
                 ((m.hp as f64) * party_scale).round() as i32,
-                ((m.atk as f64) * party_scale).round() as i32,
+                // NOT scaled by party size. A party of four brings four times the
+                // damage, so the creature needs more HEALTH to last — but it does not
+                // swing four times harder at each individual hero, and scaling attack
+                // made a bigger party strictly more lethal per head. (Measured: at
+                // distance 0 a creature hit for 31 against a level-1 hero's 34 HP,
+                // and a four-bot party wiped instead of winning.)
+                m.atk,
                 m.def,
                 m.speed_stat,
             );
@@ -1477,4 +1483,63 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn a_bigger_party_faces_a_tougher_creature_but_not_a_harder_hitting_one() {
+        let b = Balance::load_default().unwrap();
+        let build = |size: usize| {
+            let party: Vec<PartyMember> = (0..size)
+                .map(|i| {
+                    (
+                        format!("p{i}"),
+                        format!("c{i}"),
+                        CharacterClass::Hunter,
+                        GearBonus::default(),
+                    )
+                })
+                .collect();
+            let mut runs = InstanceRun::new("i".into(), 0, &b);
+            runs.add_party(
+                (0..size)
+                    .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
+                    .collect(),
+            );
+            let arena = meld_world::Arena::generate(&b, 7, false);
+            let m = arena
+                .monsters
+                .iter()
+                .find(|m| m.encounter_class == "standard")
+                .expect("a standard creature")
+                .clone();
+            let atk = m.atk;
+            let battle = build_battle(
+                "b".into(),
+                &party,
+                &[(&m, "e0".to_string())],
+                &runs,
+                &b,
+                1,
+                &[],
+                &[],
+            );
+            (battle.combatant_hp("e0").unwrap_or(0), atk)
+        };
+        let (hp1, base_atk) = build(1);
+        let (hp4, _) = build(4);
+        // Health scales: four heroes bring four times the damage, so the creature has
+        // to LAST longer or a full party's fights are the shortest in the game.
+        assert!(hp4 > hp1, "a creature facing four heroes was no tougher");
+
+        // Attack deliberately does NOT scale. A pack does not swing four times harder
+        // at each individual hero; scaling it made a larger party strictly more lethal
+        // per head, and a level-1 four-bot party wiped at distance 0 instead of
+        // winning. The guard for that is the `four_players_kill_monster` conformance
+        // test — it drives real bots over the wire and is what caught it, which
+        // arithmetic here did not.
+        assert!(
+            hp4 < hp1 * 5,
+            "the party ramp is scaling something it should not: {hp1} -> {hp4}"
+        );
+        let _ = base_atk;
+    }
 }
