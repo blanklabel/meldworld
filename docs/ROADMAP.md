@@ -401,11 +401,37 @@ burns on death/leave; some is single-use. See
     holds the best level ever reached per class and the Vanguard board holds the
     deepest distance banked. Until hubs land, the ladder past ~16 is content waiting
     on a system — not a mis-tuned curve to be rescaled.
-  - **Remains:** the Psyker's deep manifestation ladder — the canonical class doc has
-    Kinetic Wave, Thermal Flux, Phase Shift, Matter Dissolution, Gravity Vortex and
-    Reality Collapse to add, plus Psi Points as a real cost and the Psychic Strain
-    (damage threatening to break a Focus). Each is a focus-kind arm in the engine
-    rather than a table row. Also: the Explorer/Shifter overworld role swap.
+  - *Also shipped:* **the Psyker's manifestation ladder to 100**, taken from the
+    canonical class doc and scaled off its D&D tiers: **Kinetic Wave** (25, grinds the
+    whole line), **Thermal Flux** (36, fire-typed so elemental profiles decide),
+    **Matter Dissolution** (49, damage *and* permanent armour corrosion), **Phase
+    Shift** (64, Evasion it keeps topping up), **Dominate Mind** (81, takes the turn
+    outright rather than slowing it) and **Reality Collapse** (100, the line, harder,
+    armour irrelevant). Focus slots now grow 2 → 5 across the same span. The client's
+    hand-kept four-entry manifest list is gone — every surface reads the registry, so
+    it cannot silently stop offering what the engine learned to resolve.
+  - **Remains from the Psyker doc:** Psi Points as a real cost, the Psychic Strain save
+    that threatens a Focus when the Psyker is hit, and per-Manifestation aspects with
+    prerequisites (Pressure → Gravity → Anchor).
+  - *Also shipped:* **the overworld perk swap** (`CL-2`) — each perk now sits with the
+    class whose fantasy it is. The **minimap** moved to the **Explorer** ("a world
+    known" — the order that maps the world carries the map). The **predator's eye**
+    (mob level → HP → battle ATB reveal) moved to the **Hunter**, whose entire trade is
+    sizing up prey. The **Shifter** got Shift-sense instead: it reveals **dungeon
+    entrances** within its own radius (plotted on the minimap in the Runner's colour,
+    limited by the Runner's sense rather than the map's reach) and, from level 2, reads
+    an item's **permanence** before it is picked up — "check the weight".
+  - *Also shipped:* **the Shifter actually steals.** Steal/Mug reported only tempo
+    before; the engine now raises `Event::Pilfered` — the mirror of the `Stolen` event a
+    creature raises when it robs a hero — and the server settles it: chits scaled off
+    the creature's tier (a deep theft is worth the trip) plus a rolled chance at the
+    biome's combat material. The engine stays pure: it reports that a pocket was
+    picked and never learns what was in it. `submit` drains a small pending-events
+    buffer so a resolver deep in the call tree can report a fact without threading a
+    return value through every signature.
+  - **Remains (Shifter):** the world-space entrance beacon and the in-world
+    permanence tell. The perk rides the wire and gates the minimap; the extra
+    presentation is client rendering, not a rule.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

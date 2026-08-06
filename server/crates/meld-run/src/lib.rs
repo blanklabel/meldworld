@@ -1134,4 +1134,5 @@ mod tests {
         assert_eq!(r.hero_level(2), b.runs.max_hero_level);
     }
 
+
 }

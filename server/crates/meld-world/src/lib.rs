@@ -68,6 +68,16 @@ impl<'a> Scaling<'a> {
         base.powf(self.b.world_scaling.stat_mult_exp)
     }
 
+    /// Armour's own curve: `(1 + d/500)^def_mult_exp`, deliberately gentler than
+    /// [`Self::stat_mult`]. Defence SUBTRACTS from damage instead of scaling it, so
+    /// armour that grew as fast as HP would floor every physical hit at `min_damage`
+    /// out deep; armour that does not grow at all (as it did not) leaves nothing for
+    /// an armour-piercing ability to pierce.
+    pub fn def_mult(&self, d: i64) -> f64 {
+        let base = 1.0 + d as f64 / self.b.world_scaling.stat_mult_base_divisor;
+        base.powf(self.b.world_scaling.def_mult_exp)
+    }
+
     /// XP curve (spec §4): `(1 + d/500)^1.5` — steeper than `stat_mult`, so a
     /// deep kill out-rewards a shallow one of the same creature by more than
     /// the fight got harder. The final award is `floor(base_xp × this)`.
@@ -1093,7 +1103,7 @@ impl MonsterSpawn {
             hp: ((stats.base_hp as f64) * mult).round() as i32,
             max_hp: ((stats.base_hp as f64) * mult).round() as i32,
             atk: ((stats.base_atk as f64) * mult).round() as i32,
-            def: stats.base_def,
+            def: ((stats.base_def as f64) * scaling.def_mult(d)).round() as i32,
             speed_stat: stats.speed_stat,
             // XP rides its own curve (spec §4): floor(base_xp × (1 + d/500)^1.5) —
             // steeper than the stat curve, so difficulty AND reward both ride
@@ -5447,6 +5457,51 @@ mod tests {
         // And onboarding never meets one.
         let tut = Arena::generate(&b, 5, true);
         assert!(tut.monsters.iter().all(|m| m.encounter_class != "undead_rite"));
+    }
+
+    #[test]
+    fn armour_grows_with_distance_but_never_outruns_the_attacks_aimed_at_it() {
+        let b = Balance::load_default().unwrap();
+        let s = Scaling::new(&b);
+        // Armour used to be the ONE creature stat that ignored distance, which made
+        // every armour-piercing ability (Backstab, the Psyker's armour-ignoring Foci)
+        // a selling point with nothing to sell against out deep.
+        assert!(s.def_mult(0) < s.def_mult(1000), "armour does not scale with depth");
+        assert!(s.def_mult(1000) < s.def_mult(4000));
+
+        // But it must stay GENTLER than attack and HP: defence subtracts from damage
+        // instead of scaling it, so armour growing as fast as HP would floor every
+        // physical hit at `min_damage` and turn the deep game into a wall.
+        for d in [500i64, 1000, 2000, 4000] {
+            assert!(
+                s.def_mult(d) < s.stat_mult(d),
+                "at d={d} armour ({}) grows at or above HP/attack ({})",
+                s.def_mult(d),
+                s.stat_mult(d)
+            );
+        }
+
+        // Concretely: the heaviest-armoured creature in the game, met deep, must still
+        // be hurt by a creature-tier attack rather than shrugging it off entirely.
+        let heaviest = b
+            .creature
+            .values()
+            .map(|c| c.base_def)
+            .max()
+            .expect("creatures exist");
+        for d in [1000i64, 4000] {
+            let def = ((heaviest as f64) * s.def_mult(d)).round() as i32;
+            let atk = b
+                .creature
+                .values()
+                .map(|c| ((c.base_atk as f64) * s.stat_mult(d)).round() as i32)
+                .max()
+                .unwrap();
+            assert!(
+                atk > def,
+                "at d={d} the toughest armour ({def}) beats the hardest hit ({atk})"
+            );
+        }
     }
 }
 

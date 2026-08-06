@@ -990,14 +990,12 @@ impl QueuedKind {
     }
 }
 
-/// Psyker manifestation catalog: (wire kind, display name, unlock level). Mirrors
-/// the server's `manifest_unlock_level` for menu gating (display only).
-const MANIFESTS: [(&str, &str, i32); 4] = [
-    ("gravity_well", "Gravity Well", 1),
-    ("kinetic_aegis", "Kinetic Aegis", 1),
-    ("mind_spike", "Mind Spike", 3),
-    ("temporal_anchor", "Temporal Anchor", 5),
-];
+/// The Psyker's manifestations, read from the shared registry rather than listed
+/// here: a hand-kept copy silently stops offering whatever the server learned to
+/// resolve, which is exactly what happened when the ladder grew past four.
+fn manifests() -> Vec<&'static meld_proto::skills::SkillDef> {
+    meld_proto::skills::skills_for_class("psyker")
+}
 
 /// Short two-letter tag for a manifestation kind (focus-bar display).
 fn manifest_abbrev(kind: &str) -> String {
@@ -1117,16 +1115,16 @@ fn psyker_autoplay_op(view: &CombatantView) -> QueuedKind {
     let (max, foci) = parse_foci(&view.statuses);
     let has = |k: &str| foci.iter().any(|(kind, _)| kind == k);
     if foci.len() < max {
-        for (kind, _name, lv) in MANIFESTS {
-            if view.level >= lv && !has(kind) {
-                return QueuedKind::Focus("cast", kind);
+        for def in manifests() {
+            if view.level >= def.unlock && !has(def.key) {
+                return QueuedKind::Focus("cast", def.key);
             }
         }
     }
     for (kind, stacks) in &foci {
         if *stacks < 2 {
-            if let Some((k, _, _)) = MANIFESTS.iter().find(|(mk, _, _)| *mk == kind.as_str()) {
-                return QueuedKind::Focus("reinforce", k);
+            if let Some(def) = manifests().into_iter().find(|d| d.key == kind.as_str()) {
+                return QueuedKind::Focus("reinforce", def.key);
             }
         }
     }
@@ -1712,10 +1710,14 @@ fn menu_entries(
             v
         }
         MenuLevel::Manifest => {
-            let mut v: Vec<MenuEntry> = MANIFESTS
-                .iter()
-                .filter(|(_, _, lv)| hero_level >= *lv)
-                .map(|(kind, name, _)| e(*name, EntryAction::Manifest(kind)))
+            // Manifestations carry their tooltip like every other ability now.
+            let mut v: Vec<MenuEntry> = meld_proto::skills::skills_for_class_at("psyker", hero_level)
+                .into_iter()
+                .map(|d| MenuEntry {
+                    label: d.name.to_string(),
+                    action: EntryAction::Manifest(d.key),
+                    tooltip: d.description.to_string(),
+                })
                 .collect();
             v.push(e("Back", EntryAction::Back));
             v

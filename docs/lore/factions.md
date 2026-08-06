@@ -147,7 +147,10 @@ buyers who don't ask. The public: tragic gamblers, respected and feared.
 
 **Why it senses items and dungeons.** Shift-sense is the class fantasy, so the Shifter
 is the one who knows where the doors are and which loot is permanent — see
-[`progression-and-unlocks.md`](../proposals/progression-and-unlocks.md).
+[`progression-and-unlocks.md`](../proposals/progression-and-unlocks.md). Live as of
+`CL-2`: `shifter_dungeon_radius` reveals entrances, `shifter_item_sense` reads
+permanence. The *map* is the Explorers' and the *prey-sense* is the Hunters'; a Runner
+contributes the doors.
 
 Ranks: Flicker Foot 1 · Shift Rat 2 · Runner **5** · Shifter **9** · Void-Dancer
 **13** · The Named **17**.
@@ -222,6 +225,18 @@ Wall Defense Force and the Phoenix Guard.
 registering, and the ones it sends to do the registering. The class's Foci — held,
 maintained, revoked, one slot at a time — read as containment rather than sorcery,
 which is exactly what The Trace does to everything else.
+
+**Its manifestations are the class doc's, scaled.** The canonical Psyker gates
+Manifestation tiers at D&D levels 1 / 5 / 9 / 13 / 17; on our ladder those become
+Gravity Well and Kinetic Aegis (1), Mind Spike (9), Temporal Anchor (16), **Kinetic
+Wave** (25), **Thermal Flux** (36), **Matter Dissolution** (49), **Phase Shift** (64),
+**Dominate Mind** (81) and **Reality Collapse** (100). Focus slots grow 2 → 5 across
+the same span.
+
+Still to bring across from the doc: **Psi Points** as a real cost (Foci are currently
+limited only by slots), the **Psychic Strain** save that threatens a Focus when the
+Psyker takes damage, and the per-Manifestation *aspects* with their prerequisites
+(Pressure → Gravity → Anchor).
 
 Ranks: Initiate 1 · Tracer 2 · Field Marshal **5** · Lead Investigator **9** ·
 Bureau Chief **13** · Director **17**.

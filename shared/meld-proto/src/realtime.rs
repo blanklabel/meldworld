@@ -646,15 +646,26 @@ pub mod run {
         /// Explorer avatar-light intensity factor (0 = no Explorer in party).
         #[serde(default)]
         pub explorer_glow: f32,
-        /// Explorer intel tier: 0 none · 1 mob level · 2 +HP bar · 3 +battle ATB reveal.
+        /// Explorer minimap tier: 0 none · 1 map+mob/portal · 2 +chests · 3 +harvestables.
+        /// The Explorers are the order that maps and reclaims the world
+        /// (docs/lore/factions.md), so the map is theirs.
         #[serde(default)]
-        pub explorer_intel: u8,
-        /// Shifter minimap tier: 0 none · 1 map+mob/portal · 2 +chests · 3 +harvestables.
+        pub explorer_map: u8,
+        /// World-units the Explorer minimap covers (0 when no map).
         #[serde(default)]
-        pub shifter_map: u8,
-        /// World-units the Shifter minimap covers (0 when no map).
+        pub explorer_map_radius: f32,
+        /// Hunter prey-sense tier: 0 none · 1 mob level · 2 +HP bar · 3 +battle ATB
+        /// reveal. Knowing what you are hunting is the Hunters' guild's whole job.
         #[serde(default)]
-        pub shifter_map_radius: f32,
+        pub hunter_intel: u8,
+        /// World-units within which a Shifter reveals DUNGEON entrances (0 = none).
+        /// Shift-sense reads the instability that a door leaks.
+        #[serde(default)]
+        pub shifter_dungeon_radius: f32,
+        /// Whether a Shifter can tell insured loot from ephemeral before picking it
+        /// up — "check the weight", in the crew's own cant.
+        #[serde(default)]
+        pub shifter_item_sense: bool,
         /// Psyker threat tier: 0 none · 1 elites/gatekeepers · 2 +aggressive mobs.
         #[serde(default)]
         pub psyker_threat: u8,
@@ -678,9 +689,11 @@ pub mod run {
         fn default() -> Self {
             Self {
                 explorer_glow: 0.0,
-                explorer_intel: 0,
-                shifter_map: 0,
-                shifter_map_radius: 0.0,
+                explorer_map: 0,
+                explorer_map_radius: 0.0,
+                hunter_intel: 0,
+                shifter_dungeon_radius: 0.0,
+                shifter_item_sense: false,
                 psyker_threat: 0,
                 psyker_reveal_radius: 0.0,
                 resonant_regen: 0.0,
@@ -1103,15 +1116,18 @@ mod tests {
         // Old/empty wire: aggro mult defaults to 1.0 (no Phoenix Guard), rest to 0.
         let empty: run::Perks = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.phoenix_guard_aggro_mult, 1.0);
-        assert_eq!(empty.explorer_intel, 0);
-        assert_eq!(empty.shifter_map, 0);
-        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"explorer_intel":3,"shifter_map":2,"shifter_map_radius":40.0,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"phoenix_guard_aggro_mult":0.6}}"#;
+        assert_eq!(empty.hunter_intel, 0);
+        assert_eq!(empty.explorer_map, 0);
+        assert!(!empty.shifter_item_sense);
+        let env_json = r#"{"type":"run.perks","seq":9,"ts":1,"payload":{"explorer_glow":2.5,"hunter_intel":3,"explorer_map":2,"explorer_map_radius":40.0,"shifter_dungeon_radius":55.0,"shifter_item_sense":true,"psyker_threat":1,"psyker_reveal_radius":30.0,"resonant_regen":1.5,"phoenix_guard_aggro_mult":0.6}}"#;
         let env: Envelope<run::Perks> = serde_json::from_str(env_json).unwrap();
-        assert_eq!(env.payload.explorer_intel, 3);
+        assert_eq!(env.payload.hunter_intel, 3);
+        assert_eq!(env.payload.shifter_dungeon_radius, 55.0);
+        assert!(env.payload.shifter_item_sense);
         assert_eq!(env.payload.phoenix_guard_aggro_mult, 0.6);
         let s = serde_json::to_string(&env.payload).unwrap();
         let back: run::Perks = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.shifter_map, 2);
+        assert_eq!(back.explorer_map, 2);
         assert_eq!(back.psyker_reveal_radius, 30.0);
     }
 

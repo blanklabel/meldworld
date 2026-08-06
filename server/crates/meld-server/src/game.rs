@@ -876,30 +876,43 @@ impl WorldActor {
         let lvl = run_level.max(1);
         let above = |floor: i32| (lvl - floor).max(0) as f32;
         let mut out = wr::Perks::default();
-        // Explorer — night glow + "predator's eye" monster intel.
+        // Explorer — the lantern, and the MAP. The order whose vision is "a world
+        // known" is the one that carries the minimap (docs/lore/factions.md).
         if has(CharacterClass::Explorer) {
             out.explorer_glow = p.explorer_glow_base + p.explorer_glow_per_level * (lvl - 1) as f32;
-            out.explorer_intel = if lvl >= p.explorer_intel_atb_at {
+            if lvl >= p.explorer_map_at {
+                out.explorer_map = if lvl >= p.explorer_map_harvest_at {
+                    3
+                } else if lvl >= p.explorer_map_chests_at {
+                    2
+                } else {
+                    1
+                };
+                out.explorer_map_radius = p.explorer_map_radius_base
+                    + p.explorer_map_radius_per_level * above(p.explorer_map_at);
+            }
+        }
+        // Hunter — the predator's eye. Sizing up prey before committing is the guild's
+        // trade, so creature intel belongs to it rather than to the mapmakers.
+        if has(CharacterClass::Hunter) {
+            out.hunter_intel = if lvl >= p.hunter_intel_atb_at {
                 3
-            } else if lvl >= p.explorer_intel_hp_at {
+            } else if lvl >= p.hunter_intel_hp_at {
                 2
-            } else if lvl >= p.explorer_intel_level_at {
+            } else if lvl >= p.hunter_intel_level_at {
                 1
             } else {
                 0
             };
         }
-        // Shifter — corner minimap.
-        if has(CharacterClass::Shifter) && lvl >= p.shifter_map_at {
-            out.shifter_map = if lvl >= p.shifter_map_harvest_at {
-                3
-            } else if lvl >= p.shifter_map_chests_at {
-                2
-            } else {
-                1
-            };
-            out.shifter_map_radius =
-                p.shifter_map_radius_base + p.shifter_map_radius_per_level * above(p.shifter_map_at);
+        // Shifter — Shift-sense. Not a map: a Runner reads the instability a door
+        // leaks, and can tell what is worth carrying out before touching it.
+        if has(CharacterClass::Shifter) {
+            if lvl >= p.shifter_dungeon_at {
+                out.shifter_dungeon_radius = p.shifter_dungeon_radius_base
+                    + p.shifter_dungeon_radius_per_level * above(p.shifter_dungeon_at);
+            }
+            out.shifter_item_sense = lvl >= p.shifter_item_sense_at;
         }
         // Psyker — threat sense.
         if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
@@ -4851,6 +4864,15 @@ impl WorldActor {
                 } => {
                     self.apply_steal(&victim_player_id, kind);
                 }
+                // A Shifter picked a creature's pocket. The engine reported the theft;
+                // deciding what a creature was carrying is this side's job (economy
+                // and loot live here, and the engine stays pure).
+                BattleEvent::Pilfered {
+                    thief_player_id,
+                    victim_combatant_id,
+                } => {
+                    out.extend(self.apply_pilfer(&thief_player_id, &victim_combatant_id));
+                }
                 BattleEvent::Resolved(res) => {
                     let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
@@ -4902,6 +4924,55 @@ impl WorldActor {
     /// chits lose `steal_chits_fraction`; a consumable/material steal takes one
     /// unit of the first matching backpack stack. Silently a no-op when the
     /// pockets are empty — the shout still happened.
+    /// The Shifter's side of a theft: chits scaled off where the creature was met,
+    /// and a chance at whatever it was carrying. The engine reports that a pocket was
+    /// picked; what was in it is decided here, next to the rest of the economy.
+    fn apply_pilfer(&mut self, thief: &str, victim_combatant: &str) -> Vec<Outgoing> {
+        let b = &self.balance;
+        // Size the haul off the creature's own tier — a deep theft is worth the trip.
+        let dist = self
+            .arena
+            .monsters
+            .iter()
+            .find(|m| m.entity_id == victim_combatant)
+            .map(|m| m.position.distance_floor())
+            .unwrap_or(0);
+        let tier = meld_world::Scaling::new(b).tier(dist);
+        let chits = b.battle.shifter_steal_chits_per_tier * (tier + 1);
+        let roll = roll_unit(self.arena.seed ^ hash_str(thief) ^ hash_str(victim_combatant));
+        let take_material = roll < b.battle.shifter_steal_material_chance;
+        let material = take_material
+            .then(|| meld_world::combat_material_for_biome(dist))
+            .map(|m| m.to_string());
+        let Some(r) = self.run.run_mut(thief) else {
+            return Vec::new();
+        };
+        r.chits += chits;
+        let mut added = Vec::new();
+        if let Some(kind) = material {
+            let item = ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: kind,
+                quantity: 1,
+                insurance: None,
+            };
+            r.backpack.push(item.clone());
+            added.push(wr::BackpackChange {
+                item,
+                delta: "added".to_string(),
+                cause: "pilfered".to_string(),
+            });
+        }
+        vec![out_msg(
+            thief,
+            &wr::BackpackUpdate {
+                changes: added,
+                chits_delta: chits,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
     fn apply_steal(&mut self, victim: &str, kind: meld_proto::abilities::StealTargetKind) {
         use meld_proto::abilities::StealTargetKind as K;
         let frac = self.balance.battle.steal_chits_fraction;

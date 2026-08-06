@@ -132,6 +132,12 @@ pub struct Battle {
     pub psyker_spike_tick_mult: f64,
     pub psyker_aegis_tick_fraction: f64,
     pub psyker_anchor_gauge_drain: f64,
+    pub psyker_wave_tick_mult: f64,
+    pub psyker_thermal_tick_mult: f64,
+    pub psyker_dissolution_tick_mult: f64,
+    pub psyker_dissolution_armour_shred: i32,
+    pub psyker_phase_evasion: f64,
+    pub psyker_collapse_tick_mult: f64,
     pub barrier_decay_per_turn: i32,
     pub resonant_regen_per_turn: i32,
     pub resonant_transfuse_heal_fraction: f64,
@@ -187,6 +193,8 @@ pub struct Battle {
     pub resonant_bloom_barrier_fraction: f64,
     pub resonant_bloom_self_cost: f64,
     pub shifter_steal_drain: f64,
+    pub shifter_steal_chits_per_tier: i64,
+    pub shifter_steal_material_chance: f64,
     pub shifter_mug_mult: f64,
     pub shifter_mug_drain: f64,
     pub hunter_crushing_blow_mult: f64,
@@ -447,6 +455,7 @@ pub struct WorldScaling {
     pub mlevel_divisor: f64,
     pub stat_mult_base_divisor: f64,
     pub stat_mult_exp: f64,
+    pub def_mult_exp: f64,
     /// XP curve exponent (spec §4): `xp = floor(base_xp × (1 + d/divisor)^exp)`
     /// — steeper than the stat curve so deep kills out-reward the grind.
     pub xp_distance_exp: f64,
@@ -591,22 +600,26 @@ pub struct Perks {
     /// Added avatar-light intensity per run level above 1.
     pub explorer_glow_per_level: f32,
     /// Run level that reveals a mob's LEVEL over its head.
-    pub explorer_intel_level_at: i32,
+    pub hunter_intel_level_at: i32,
     /// Run level that additionally reveals a mob's HP bar.
-    pub explorer_intel_hp_at: i32,
+    pub hunter_intel_hp_at: i32,
     /// Run level that additionally reveals enemy ATB gauges in battle.
-    pub explorer_intel_atb_at: i32,
+    pub hunter_intel_atb_at: i32,
     // --- Shifter: corner minimap. ---
     /// Run level that unlocks the minimap (+ mob/portal dots).
-    pub shifter_map_at: i32,
+    pub explorer_map_at: i32,
     /// Run level that adds treasure-chest dots.
-    pub shifter_map_chests_at: i32,
+    pub explorer_map_chests_at: i32,
     /// Run level that adds harvestable (resource-node) dots.
-    pub shifter_map_harvest_at: i32,
+    pub explorer_map_harvest_at: i32,
     /// World-units the minimap covers at unlock.
-    pub shifter_map_radius_base: f32,
+    pub explorer_map_radius_base: f32,
+    pub shifter_dungeon_at: i32,
+    pub shifter_dungeon_radius_base: f32,
+    pub shifter_dungeon_radius_per_level: f32,
+    pub shifter_item_sense_at: i32,
     /// Extra minimap coverage per run level above the unlock.
-    pub shifter_map_radius_per_level: f32,
+    pub explorer_map_radius_per_level: f32,
     // --- Psyker: threat sense. ---
     /// Run level that marks elite/gatekeeper mobs.
     pub psyker_threat_elites_at: i32,
@@ -753,8 +766,12 @@ mod tests {
         assert!(b.creature.contains_key("forest_bloom_stalker"));
         assert!(b.player.contains_key("explorer"));
         // Overworld class perks load.
-        assert_eq!(b.perks.explorer_intel_hp_at, 3);
-        assert_eq!(b.perks.shifter_map_at, 1);
+        // The overworld perks moved to the classes whose fantasy they are: the map to
+        // the Explorers, the predator's eye to the Hunters, Shift-sense to the Shifter.
+        assert_eq!(b.perks.hunter_intel_hp_at, 3);
+        assert_eq!(b.perks.explorer_map_at, 1);
+        assert!(b.perks.shifter_dungeon_radius_base > 0.0);
+        assert!(b.perks.shifter_item_sense_at >= 1);
         assert!(b.perks.phoenix_guard_aggro_mult_floor > 0.0 && b.perks.phoenix_guard_aggro_mult_floor <= 1.0);
     }
 }

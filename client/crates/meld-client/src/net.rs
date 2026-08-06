@@ -327,9 +327,13 @@ pub struct HeroLevelUpLine {
 #[derive(Clone, Copy)]
 pub struct PerksLine {
     pub explorer_glow: f32,
-    pub explorer_intel: u8,
-    pub shifter_map: u8,
-    pub shifter_map_radius: f32,
+    pub hunter_intel: u8,
+    pub explorer_map: u8,
+    pub explorer_map_radius: f32,
+    /// World-units at which a Shifter reveals dungeon entrances (0 = no Shifter).
+    pub shifter_dungeon_radius: f32,
+    /// Whether a Shifter can read a dropped item's permanence before picking it up.
+    pub shifter_item_sense: bool,
     pub psyker_threat: u8,
     pub psyker_reveal_radius: f32,
     pub resonant_regen: f32,
@@ -340,9 +344,11 @@ impl Default for PerksLine {
     fn default() -> Self {
         Self {
             explorer_glow: 0.0,
-            explorer_intel: 0,
-            shifter_map: 0,
-            shifter_map_radius: 0.0,
+            hunter_intel: 0,
+            explorer_map: 0,
+            explorer_map_radius: 0.0,
+            shifter_dungeon_radius: 0.0,
+            shifter_item_sense: false,
             psyker_threat: 0,
             psyker_reveal_radius: 0.0,
             resonant_regen: 0.0,
@@ -1452,9 +1458,11 @@ impl Inner {
                 let u = |k: &str| p[k].as_u64().unwrap_or(0) as u8;
                 let perks = PerksLine {
                     explorer_glow: f("explorer_glow"),
-                    explorer_intel: u("explorer_intel"),
-                    shifter_map: u("shifter_map"),
-                    shifter_map_radius: f("shifter_map_radius"),
+                    hunter_intel: u("hunter_intel"),
+                    explorer_map: u("explorer_map"),
+                    explorer_map_radius: f("explorer_map_radius"),
+                    shifter_dungeon_radius: f("shifter_dungeon_radius"),
+                    shifter_item_sense: p["shifter_item_sense"].as_bool().unwrap_or(false),
                     psyker_threat: u("psyker_threat"),
                     psyker_reveal_radius: f("psyker_reveal_radius"),
                     resonant_regen: f("resonant_regen"),

@@ -1899,7 +1899,7 @@ pub(crate) fn update_mob_nameplates(
     for e in &old {
         commands.entity(e).despawn();
     }
-    let intel = perks.0.explorer_intel;
+    let intel = perks.0.hunter_intel;
     let threat = perks.0.psyker_threat;
     if intel == 0 && threat == 0 {
         return;
@@ -1997,7 +1997,7 @@ pub(crate) fn update_mob_nameplates(
 }
 
 /// Shifter "Scout's Instinct": rebuild the corner minimap. The panel shows/hides by
-/// the map tier; dots plot entities within `shifter_map_radius` of the player —
+/// the map tier; dots plot entities within `explorer_map_radius` of the player —
 /// mobs + portal (tier ≥1), chests (≥2), harvestables (≥3), self at centre.
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_minimap(
@@ -2014,7 +2014,7 @@ pub(crate) fn update_minimap(
     let Ok((root, mut node)) = root_q.single_mut() else {
         return;
     };
-    let tier = perks.0.shifter_map;
+    let tier = perks.0.explorer_map;
     node.display = if tier >= 1 { Display::Flex } else { Display::None };
     if tier == 0 {
         return;
@@ -2025,8 +2025,9 @@ pub(crate) fn update_minimap(
     // Panel is 140px; keep dots inside a 64px radius from its centre.
     const HALF: f32 = 70.0;
     const R: f32 = 64.0;
-    let radius = perks.0.shifter_map_radius.max(1.0);
+    let radius = perks.0.explorer_map_radius.max(1.0);
     let scale = R / radius;
+    let shifter_sense = perks.0.shifter_dungeon_radius;
     commands.entity(root).with_children(|p| {
         // The player, dead centre.
         spawn_dot(p, HALF, HALF, 6.0, Color::srgb(1.0, 1.0, 1.0));
@@ -2036,8 +2037,23 @@ pub(crate) fn update_minimap(
                 EntityKind::Portal => (Color::srgb(0.4, 0.85, 1.0), 6.0),
                 EntityKind::Chest if tier >= 2 => (Color::srgb(1.0, 0.82, 0.3), 5.0),
                 EntityKind::Resource if tier >= 3 => (Color::srgb(0.5, 0.95, 0.5), 4.0),
+                // A dungeon door is the SHIFTER's contribution to the map, not the
+                // Explorer's: Shift-sense reads the instability a doorway leaks, so
+                // entrances plot only while a Runner is in the party, and only inside
+                // that Runner's sense radius.
+                EntityKind::Entrance if shifter_sense > 0.0 => {
+                    (Color::srgb(0.85, 0.55, 1.0), 7.0)
+                }
                 _ => continue,
             };
+            // An entrance is limited by the Runner's sense, everything else by the
+            // map's reach.
+            if e.kind == EntityKind::Entrance {
+                let d = ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt();
+                if d > shifter_sense {
+                    continue;
+                }
+            }
             let (dx, dy) = ((e.x - me.x) * scale, (e.y - me.y) * scale);
             if dx.abs() > R || dy.abs() > R {
                 continue; // outside the minimap's world radius

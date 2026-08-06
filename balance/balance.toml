@@ -121,8 +121,21 @@ crit_mult = 1.8                  # damage multiplier on a crit
 # casts/reinforces/revokes one. Focus slots and which manifestations are unlocked
 # scale with level. All [TUNABLE].
 psyker_focus_base = 2             # focus slots at level 1
-psyker_focus_per_level = 4        # +1 slot every this many levels
+# +1 slot every this many levels. Scaled from the class doc's ladder (Focus 2 at
+# D&D 1 → 5 at D&D 17), which on our 255 cap puts the 5th slot around level 85.
+psyker_focus_per_level = 28
 psyker_focus_cap = 5             # hard cap on focus slots
+
+# The deep Manifestations (meld_proto::skills; the Psyker is a CASTER archetype, so
+# its ladder runs to level 100). Each multiplier is applied to the Psyker's
+# spell_power on every tick the Focus is held. AoE manifestations are tuned BELOW the
+# single-target ones per target, because they hit the whole line. [TUNABLE]
+psyker_wave_tick_mult = 0.32          # Kinetic Wave (L25): all enemies
+psyker_thermal_tick_mult = 0.62       # Thermal Flux (L36): one foe, fire-typed
+psyker_dissolution_tick_mult = 0.5    # Matter Dissolution (L49): one foe...
+psyker_dissolution_armour_shred = 2   # ...and its armour corrodes this much per tick
+psyker_phase_evasion = 0.06           # Phase Shift (L64): Evasion granted per tick
+psyker_collapse_tick_mult = 0.55      # Reality Collapse (L100): all enemies, armour-ignoring
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
 psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick
@@ -251,6 +264,10 @@ resonant_bloom_self_cost = 0.35
 # by its rows getting better, not by growing more of them, so each of these replaces
 # an earlier ability and is tuned above it. [TUNABLE]
 shifter_steal_drain = 0.5          # Steal: strip this much of the foe's ATB gauge
+# What comes off the body. Chits scale with the creature's distance so a deep theft
+# is worth the trip; the material chance is the "finders, keepers" roll. [TUNABLE]
+shifter_steal_chits_per_tier = 6
+shifter_steal_material_chance = 0.35
 shifter_mug_mult = 1.35            # Mug: Steal, plus a hit on the way past
 shifter_mug_drain = 0.6
 hunter_crushing_blow_mult = 2.1    # Crushing Blow: replaces Power Strike (1.5)
@@ -477,6 +494,13 @@ tier_divisor = 100.0             # tier(d) = floor(d/100)
 mlevel_divisor = 12.5            # mlevel(d) = max(1, round(d/12.5))
 stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 stat_mult_exp = 1.25
+# Armour rides its OWN, gentler curve. Defence subtracts from damage rather than
+# multiplying it, so scaling it as fast as attack/HP makes deep creatures immune to
+# physical hits (damage floors at `min_damage`) — while leaving it flat, as it was,
+# means nothing out there wears armour and every armour-piercing ability (Backstab,
+# the Psyker's armour-ignoring Foci) is a selling point with nothing to sell against.
+# [TUNABLE]
+def_mult_exp = 0.7
 xp_distance_exp = 1.5            # spec §4: xp = floor(base_xp * (1 + d/500)^1.5) [TUNABLE]
 red_chest_floor_distance = 300  # spec §4: no gear drops shallower than d=300 [TUNABLE]
 
@@ -623,18 +647,25 @@ loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within
 # run_level. Per-hero level is uniform, so thresholds are run-level values.
 # [TUNABLE] — see meld-balance::Perks and the CANON class taxonomy.
 [perks]
-# Explorer — night glow + "predator's eye" monster intel.
+# Explorer — the lantern, and the MAP. "A world known": the order that maps and
+# reclaims the world is the one that carries the minimap (docs/lore/factions.md).
 explorer_glow_base = 180000.0       # avatar PointLight intensity at run level 1
 explorer_glow_per_level = 30000.0   # brighter (and, client-side, wider) per run level
-explorer_intel_level_at = 1         # run level to reveal a mob's LEVEL over its head
-explorer_intel_hp_at = 3            # run level to also reveal a mob's HP bar
-explorer_intel_atb_at = 6           # run level to reveal enemy ATB gauges in battle
-# Shifter — corner minimap.
-shifter_map_at = 1                # run level that unlocks the minimap (+ mob/portal dots)
-shifter_map_chests_at = 3         # + treasure-chest dots
-shifter_map_harvest_at = 5        # + harvestable (resource-node) dots
-shifter_map_radius_base = 30.0    # world-units the minimap covers at unlock
-shifter_map_radius_per_level = 2.0
+explorer_map_at = 1                 # run level that unlocks the minimap (+ mob/portal dots)
+explorer_map_chests_at = 3          # + treasure-chest dots
+explorer_map_harvest_at = 5         # + harvestable (resource-node) dots
+explorer_map_radius_base = 30.0     # world-units the minimap covers at unlock
+explorer_map_radius_per_level = 2.0
+# Hunter — the predator's eye. Knowing your prey before you commit is the guild's
+# entire trade, so the creature intel is theirs.
+hunter_intel_level_at = 1           # run level to reveal a mob's LEVEL over its head
+hunter_intel_hp_at = 3              # run level to also reveal a mob's HP bar
+hunter_intel_atb_at = 6             # run level to reveal enemy ATB gauges in battle
+# Shifter — Shift-sense: where the doors are, and which loot is worth carrying.
+shifter_dungeon_at = 1              # run level that starts revealing dungeon entrances
+shifter_dungeon_radius_base = 45.0  # world-units at which an entrance shows itself
+shifter_dungeon_radius_per_level = 3.0
+shifter_item_sense_at = 2           # run level to tell insured loot from ephemeral
 # Psyker — threat sense.
 psyker_threat_elites_at = 1       # run level to mark elite/gatekeeper mobs
 psyker_threat_aggro_at = 3        # + mark aggressive mobs
