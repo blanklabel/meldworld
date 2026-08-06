@@ -655,6 +655,21 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   (`cargo test -p meld-world the_encounter_ramp -- --nocapture`).
   Feeds `P1-2` (combat feel) and is the placement half of the ecology epic's
   herds/alphas line.
+- [x] **CR-7 — Pack AI: a pack fights like a pack (and clearing one is a decision).**
+  Placement made packs exist (`CR-6`); this makes them *behave*. Three rules, all
+  `[encounters]` `[TUNABLE]`s, carried into battle on `Fighter::pack_role`:
+  - A **minion hits harder while its leader lives** (`pack_aura_atk_mult`) and softer
+    once the pack has routed (`pack_rout_atk_mult`), so breaking the big one is felt
+    immediately.
+  - A **leader is shielded by its living minions** (`pack_guard_per_minion`, capped by
+    `pack_guard_cap` so a big pack is never immune) — clearing the littles first is the
+    other valid line.
+  - **Killing the leader routs the littles**: they lose the aura and bolt when they drop
+    low, announced per minion as a `routed` status so the client can show the moment the
+    fight turns.
+  Which order is better depends on the pack, which is the point — a pack fight is a
+  *decision* instead of just more HP. Lone creatures, elites, gatekeepers and heroes are
+  untouched by all three rules (tested).
 - [ ] **CR-2 — Creatures fight each other, visibly, with consequences.** 🟡
   *Partial:* hostile factions already skirmish and lose `hp`. **Remaining:** show
   the **fighting state on the map** (so you can read "those two are clashing"),

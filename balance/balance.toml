@@ -242,6 +242,15 @@ leader_xp_mult = 1.8
 minion_hp_mult = 0.45            # the "four little ones": individually weak…
 minion_atk_mult = 0.6            # …but four of them act four times as often
 minion_xp_mult = 0.55
+# PACK AI: a pack should fight like a pack, which also makes clearing one a
+# DECISION — break the leader and the littles rout, or clear the littles first and
+# the leader stops being shielded.
+pack_aura_atk_mult = 1.25        # a minion hits this much harder while its leader lives [TUNABLE]
+pack_guard_per_minion = 0.08     # each living minion soaks this fraction of the leader's incoming damage [TUNABLE]
+pack_guard_cap = 0.32            # …capped, so a big pack is never immune
+pack_rout_atk_mult = 0.6         # a minion's attack after its leader dies [TUNABLE]
+pack_rout_flees = true           # a routed minion also bolts when it drops low (structural)
+
 # Encounter-size RAMP by distance. Group size is a deliberate curve, not a dice
 # roll: the first ~150 tiles are duels while a player learns the ATB, then pairs,
 # then mixed triples, then quads. `size` counts the WHOLE encounter (a leader plus
