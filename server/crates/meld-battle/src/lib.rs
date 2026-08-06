@@ -435,6 +435,7 @@ pub struct Battle {
     consumable_regen: i32,
     consumable_evasion_pct: i32,
     consumable_adrenaline: i32,
+    revive_hp_fraction: f64,
     /// The skill currently resolving, if any — set for the length of one player
     /// skill so `apply_damage` can prime a combo or cash one in without every
     /// skill arm having to know combos exist.
@@ -534,6 +535,7 @@ impl Battle {
             consumable_regen: balance.consumable.regen_amount,
             consumable_evasion_pct: balance.consumable.evasion_pct,
             consumable_adrenaline: balance.consumable.adrenaline_amount,
+            revive_hp_fraction: balance.consumable.revive_hp_fraction,
             active_skill: None,
             back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
@@ -1632,7 +1634,36 @@ impl Battle {
         action_id: Option<Id>,
     ) -> Resolution {
         use meld_proto::consumables::{self as con, ConsumableEffect as E};
-        let target_i = self.ally_target(target_id).unwrap_or(actor_i);
+        // A revive is the one item that AIMS AT THE DEAD: every other targeting
+        // helper skips them, so resolve it before the usual ally pick.
+        let reviving = con::consumable(item_id.unwrap_or(""))
+            .map(|c| c.effect == E::Revive)
+            .unwrap_or(false);
+        let target_i = if reviving {
+            match target_id.and_then(|t| self.idx(t)).filter(|i| !self.fighters[*i].alive) {
+                Some(i) => i,
+                None => match self
+                    .fighters
+                    .iter()
+                    .position(|f| !f.alive && f.kind == CombatantKind::Player)
+                {
+                    Some(i) => i,
+                    // Nobody to raise: the bottle stays corked rather than being
+                    // spent on a living hero who cannot use it.
+                    None => {
+                        self.reset_gauge(actor_i);
+                        return self.resolution(
+                            actor_i,
+                            BattleActionKind::Item,
+                            action_id,
+                            Vec::new(),
+                        );
+                    }
+                },
+            }
+        } else {
+            self.ally_target(target_id).unwrap_or(actor_i)
+        };
         let max_hp = self.fighters[target_i].max_hp;
         // GR-4: a potion does what its registry entry says. An unknown item id keeps
         // the old fraction-heal behaviour, so an older client cannot be stranded.
@@ -1640,6 +1671,23 @@ impl Battle {
             .map(|c| c.effect)
             .unwrap_or(E::Heal);
         let effects = match effect {
+            E::Revive => {
+                let back = ((max_hp as f64) * self.revive_hp_fraction).round().max(1.0) as i32;
+                self.fighters[target_i].alive = true;
+                self.fighters[target_i].hp = back.min(max_hp);
+                self.fighters[target_i].gauge = 0.0;
+                vec![ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[target_i].combatant_id.clone(),
+                    kind: EffectKind::Heal,
+                    amount: Some(back),
+                    status: Some("revived".to_string()),
+                    hp_after: self.fighters[target_i].hp,
+                }]
+            }
+            // The XP a mote carries is banked by the run, not the battle: the engine
+            // has no notion of persistent progression.
+            E::Experience => self.status_effect(target_i, "insight", 1),
             E::FullHeal => self.apply_heal(target_i, max_hp),
             E::Heal => {
                 let raw = ((max_hp as f64) * self.item_heal_fraction).round() as i32;
@@ -3777,6 +3825,62 @@ mod tests {
     }
 
     #[test]
+    fn a_waking_salt_is_the_only_way_back_up() {
+        let b = balance();
+        let mut fallen = player("down", 5);
+        fallen.hp = 0;
+        fallen.alive = false;
+        fallen.max_hp = 100;
+        let standing = player("up", 5);
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![standing, fallen],
+            vec![monster("m1", 900, 1)],
+            &b,
+            42,
+        );
+        let actor = battle.idx("up").unwrap();
+        let down = battle.idx("down").unwrap();
+
+        // A salve cannot reach the dead — every other item targets the living.
+        let _ = battle.resolve_item(actor, Some("bloom_salve"), Some("down"), None);
+        assert!(!battle.fighters[down].alive, "a salve raised the dead");
+
+        // A Waking Salt does, at a fraction of max HP rather than a full heal.
+        let fx = battle.resolve_item(actor, Some("waking_salt"), Some("down"), None);
+        assert!(battle.fighters[down].alive, "the salt did not revive");
+        let want = ((100.0 * b.consumable.revive_hp_fraction).round() as i32).max(1);
+        assert_eq!(battle.fighters[down].hp, want);
+        assert!(
+            fx.effects.iter().any(|e| e.status.as_deref() == Some("revived")),
+            "the revival was not announced: {:?}",
+            fx.effects
+        );
+    }
+
+    #[test]
+    fn a_waking_salt_with_nobody_down_is_not_wasted() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 5)],
+            vec![monster("m1", 900, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        let before = battle.fighters[i].hp;
+        // Nobody to raise: the bottle produces no effects, so the game loop (which
+        // spends the item only when the action resolves with something) has nothing
+        // to charge for.
+        let res = battle.resolve_item(i, Some("waking_salt"), None, None);
+        assert!(res.effects.is_empty(), "{:?}", res.effects);
+        assert_eq!(battle.fighters[i].hp, before);
+    }
+
+    #[test]
     fn a_leader_is_shielded_by_its_living_minions() {
         let b = balance();
         let pack = |minions: usize| -> (Battle, usize) {
@@ -3884,7 +3988,7 @@ mod tests {
         let b = balance();
         let lone = monster("m1", 500, 1);
         assert_eq!(lone.pack_role, PackRole::None);
-        let mut battle = Battle::new(
+        let battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
             vec![player("a", 5)],

@@ -283,6 +283,22 @@ impl Db {
         sqlx::query("ALTER TABLE gear ADD COLUMN IF NOT EXISTS set_key TEXT NOT NULL DEFAULT ''")
             .execute(pool)
             .await?;
+        // The high-water mark per CLASS: the deepest level any hero of that class has
+        // ever reached. XP itself is dive-scoped and never persists — this is the
+        // record of what was achieved, which is what the unlock rules and the roster
+        // screen read.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS class_bests (
+                player_id UUID NOT NULL REFERENCES players(player_id),
+                class_key TEXT NOT NULL,
+                best_level INTEGER NOT NULL,
+                PRIMARY KEY (player_id, class_key)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
         // The Vanguard Board (roadmap P1-1, behaviors/endgame-seasons.md): the
         // per-season deepest-distance leaderboard. One row per (season, player):
         // that player's deepest run in the season. `achieved_at` is the tie-break.
@@ -557,6 +573,71 @@ impl Db {
                 Ok(out)
             }
         }
+    }
+
+    /// Record that a hero of `class_key` reached `level`, if it beats the account's
+    /// previous best. Monotonic: a shallow dive can never lower a record earned deep.
+    /// Returns `true` when this call set a new best.
+    pub async fn record_class_best(
+        &self,
+        player_id: Uuid,
+        class_key: &str,
+        level: i32,
+    ) -> Result<bool, DbError> {
+        if level <= 0 || class_key.is_empty() {
+            return Ok(false);
+        }
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "INSERT INTO class_bests (player_id, class_key, best_level) VALUES ($1, $2, $3)
+                     ON CONFLICT (player_id, class_key) DO UPDATE SET best_level = $3
+                       WHERE class_bests.best_level < $3",
+                )
+                .bind(player_id)
+                .bind(class_key)
+                .bind(level)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let e = m.class_bests.entry((player_id, class_key.to_string())).or_insert(0);
+                if *e < level {
+                    *e = level;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+        }
+    }
+
+    /// The best level ever reached per class, for the roster screen and the unlock
+    /// rules: `(class_key, best_level)`, deepest first.
+    pub async fn get_class_bests(&self, player_id: Uuid) -> Result<Vec<(String, i32)>, DbError> {
+        let mut rows = match &self.backend {
+            Backend::Pg(pool) => sqlx::query(
+                "SELECT class_key, best_level FROM class_bests WHERE player_id = $1",
+            )
+            .bind(player_id)
+            .fetch_all(pool)
+            .await?
+            .iter()
+            .map(|r| (r.get::<String, _>("class_key"), r.get::<i32, _>("best_level")))
+            .collect::<Vec<_>>(),
+            Backend::Mem(m) => m
+                .lock()
+                .unwrap()
+                .class_bests
+                .iter()
+                .filter(|((p, _), _)| *p == player_id)
+                .map(|((_, k), v)| (k.clone(), *v))
+                .collect(),
+        };
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(rows)
     }
 
     /// Record a hero slot's class (GR-7). Upsert, so the party a player takes on a
@@ -2431,6 +2512,8 @@ struct Mem {
     hero_rows: HashMap<(Uuid, i16), bool>,
     /// heroes.class_key, keyed by (player_id, slot); absent = not yet chosen.
     hero_classes: HashMap<(Uuid, i16), String>,
+    /// class_bests.best_level, keyed by (player_id, class_key).
+    class_bests: HashMap<(Uuid, String), i32>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
 }
@@ -3212,6 +3295,30 @@ mod tests {
 
         // Nothing left to repair → nothing charged.
         assert_eq!(db.repair_gear(p, gid, 50, 4).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_class_best_only_ever_climbs() {
+        let db = mem().await;
+        let p = db.register("recorder", "pw").await.unwrap().player_id;
+        assert!(db.get_class_bests(p).await.unwrap().is_empty());
+
+        // A new record sticks…
+        assert!(db.record_class_best(p, "explorer", 12).await.unwrap());
+        // …a shallower dive never lowers it (XP is dive-scoped; the ACHIEVEMENT is not).
+        assert!(!db.record_class_best(p, "explorer", 5).await.unwrap());
+        assert!(db.record_class_best(p, "explorer", 31).await.unwrap());
+
+        // Records are per class, and read back deepest first.
+        assert!(db.record_class_best(p, "resonant", 20).await.unwrap());
+        let bests = db.get_class_bests(p).await.unwrap();
+        assert_eq!(bests[0], ("explorer".to_string(), 31));
+        assert_eq!(bests[1], ("resonant".to_string(), 20));
+
+        // Nonsense is refused rather than stored.
+        assert!(!db.record_class_best(p, "explorer", 0).await.unwrap());
+        assert!(!db.record_class_best(p, "", 40).await.unwrap());
+        assert_eq!(db.get_class_bests(p).await.unwrap().len(), 2);
     }
 }
 

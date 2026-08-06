@@ -97,6 +97,9 @@ enum DbWrite {
     HeroRename(String, i16, String),
     /// Persist a hero's formation rank: (player, slot, back_row).
     HeroFormation(String, i16, bool),
+    /// Record a class's best level ever reached: (player, class_key, level). XP is
+    /// dive-scoped; this is the achievement that survives it.
+    ClassBest(String, String, i32),
     /// Persist a hero slot's class (GR-7): (player, slot, class_key). Written when
     /// a party dives, so the roster a player takes down becomes their roster in
     /// town — which is what equip-time legality checks against.
@@ -154,6 +157,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_hero_row(uid, slot, back_row).await {
                         tracing::error!("hero formation persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::ClassBest(pid, class_key, level) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.record_class_best(uid, &class_key, level).await {
+                        tracing::error!("class best persist failed for {pid}: {e}");
                     }
                 }
             }
@@ -4820,21 +4830,55 @@ impl WorldActor {
                 }
                 // Award XP to every participant; note who leveled so we can refresh
                 // their party panel (stats change on level-up).
+                // Snapshot what the per-hero award needs before the runs are borrowed
+                // mutably: who is still standing, and which class each slot is.
+                let hero_hp_snapshot = inst.hero_hp.clone();
+                let party_classes_snapshot = inst.party_classes.clone();
+                // XP goes to each hero that is still STANDING, at its own ladder: a
+                // hero that fell earns nothing from the fight it did not finish, and
+                // the hero doing the killing is the one that gets stronger.
+                let mut class_bests: Vec<(String, String, i32)> = Vec::new();
+                for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
+                    let hps = hero_hp_snapshot.get(&r.player_id).cloned().unwrap_or_default();
+                    let comp = party_classes_snapshot
+                        .get(&r.player_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let size = comp.len().max(hps.len());
+                    for (slot, hp) in hps.iter().enumerate() {
+                        if *hp <= 0 {
+                            continue;
+                        }
+                        if r.award_hero_xp(slot, size, xp_reward, &balance) > 0 {
+                            if let Some(class) = comp.get(slot) {
+                                class_bests.push((
+                                    r.player_id.clone(),
+                                    meld_run::class_key(*class).to_string(),
+                                    r.hero_level(slot),
+                                ));
+                            }
+                        }
+                    }
+                }
+                for (pid, class, level) in class_bests {
+                    let _ = inst.db_writes.send(DbWrite::ClassBest(pid, class, level));
+                }
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     let old_level = r.run_level;
                     if r.award_xp(xp_reward, &balance) > 0 {
                         leveled.push(r.player_id.clone());
                         level_ups.push((r.player_id.clone(), old_level, r.run_level));
-                        // A level-up heals every one of the player's heroes to their
-                        // new max HP (mid-run wounds otherwise persist between
-                        // battles — see `hero_hp`'s doc comment — but a level gain
-                        // always tops them up).
+                        // A level-up tops up the LIVING and raises nobody: the dead
+                        // come back on a Waking Salt, not on someone else's good
+                        // fortune. (`hero_hp` at 0 is a fallen hero.)
                         if let (Some(classes), Some(hps)) = (
                             inst.party_classes.get(&r.player_id),
                             inst.hero_hp.get_mut(&r.player_id),
                         ) {
                             for (class, hp) in classes.iter().zip(hps.iter_mut()) {
-                                *hp = meld_run::max_hp_at_level(*class, r.run_level, &balance);
+                                if *hp > 0 {
+                                    *hp = meld_run::max_hp_at_level(*class, r.run_level, &balance);
+                                }
                             }
                         }
                     }
@@ -4970,6 +5014,41 @@ impl WorldActor {
                                     item: tp,
                                     delta: "added".to_string(),
                                     cause: "town_portal_drop".to_string(),
+                                }],
+                                chits_delta: 0,
+                                gear_added: Vec::new(),
+                            },
+                        ));
+                    }
+                    // The world also sprinkles the two progression consumables: an
+                    // Insight Mote (XP you choose who to spend on) and a Waking Salt
+                    // (the only way a fallen hero stands back up, now that a level-up
+                    // raises nobody). Separate rolls off separate seeds so one lucky
+                    // number cannot hand out both.
+                    for (kind, chance, salt) in [
+                        ("insight_mote", balance.consumable.world_xp_item_chance, 0xA11u64),
+                        ("waking_salt", balance.consumable.world_revive_item_chance, 0xB22u64),
+                    ] {
+                        let roll = roll_unit(inst.arena.seed ^ hash_str(pid) ^ now_ms() ^ salt);
+                        if roll >= chance {
+                            continue;
+                        }
+                        let item = ItemStack {
+                            item_id: Uuid::now_v7().to_string(),
+                            item_kind: kind.to_string(),
+                            quantity: 1,
+                            insurance: None,
+                        };
+                        if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
+                            r.backpack.push(item.clone());
+                        }
+                        out.push(out_msg(
+                            pid,
+                            &wr::BackpackUpdate {
+                                changes: vec![wr::BackpackChange {
+                                    item,
+                                    delta: "added".to_string(),
+                                    cause: format!("{kind}_drop"),
                                 }],
                                 chits_delta: 0,
                                 gear_added: Vec::new(),
