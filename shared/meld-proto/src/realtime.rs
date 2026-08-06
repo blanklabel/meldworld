@@ -723,6 +723,41 @@ pub mod run {
         const TYPE: &'static str = "run.level_up";
     }
 
+    /// S2C — one or more account-permanent unlocks just landed (roadmap `CL-1`).
+    /// Sent the moment the milestone is met, not at extraction, so the reward
+    /// arrives while the player still remembers what earned it. Also sent on
+    /// connect with `banner: false` so the client knows what the account owns.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Unlocked {
+        pub unlocks: Vec<UnlockView>,
+        /// Everything the account owns now, so the party builder never has to
+        /// accumulate deltas to know what it can field.
+        pub owned: Vec<String>,
+        pub party_slots: i32,
+        /// Whether to announce these with the banner. False on the connect-time
+        /// inventory: nobody wants four banners at login.
+        pub banner: bool,
+    }
+    /// One unlock, described well enough for the banner and the locked row.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct UnlockView {
+        pub key: String,
+        pub name: String,
+        /// `party_slot` or `class`.
+        pub kind: String,
+        /// The class key, when `kind == "class"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub class_key: Option<String>,
+        /// The slot number, when `kind == "party_slot"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub slot: Option<i32>,
+        pub trigger_text: String,
+        pub banner: String,
+    }
+    impl Message for Unlocked {
+        const TYPE: &'static str = "run.unlocked";
+    }
+
     /// C2S — harvest a resource node the avatar is standing next to. The node's
     /// `material` banks into the backpack and its `skill` gains XP (world-gen.md).
     #[derive(Debug, Clone, Serialize, Deserialize)]

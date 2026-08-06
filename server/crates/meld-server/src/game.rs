@@ -72,6 +72,13 @@ enum WorldEffect {
         slot: usize,
         name: String,
     },
+    /// CL-1: something happened that an unlock might be waiting on. The world
+    /// reports the fact; the Router owns the session + DB and decides what it
+    /// grants (the world has no business knowing what an account owns).
+    Milestone {
+        player_id: String,
+        milestone: meld_proto::unlocks::Milestone,
+    },
     /// Same, for the front/back-row formation flag.
     SetSessionHeroRow {
         player_id: String,
@@ -126,6 +133,9 @@ enum DbWrite {
     /// Clear a player's pending-backpack queue: its contents were just drained
     /// into a freshly-formed run's live Backpack.
     ClearPendingBackpack(String),
+    /// Persist earned unlocks: (player, keys). Fire-and-forget — the session's
+    /// in-memory set is what gates THIS dive, so a slow write costs nothing.
+    Unlocks(String, Vec<String>),
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
@@ -199,6 +209,13 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
                     let season = meld_db::current_season();
                     if let Err(e) = db.record_vanguard_distance(uid, season, distance).await {
                         tracing::error!("vanguard post failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::Unlocks(pid, keys) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.grant_unlocks(uid, &keys).await {
+                        tracing::error!("unlock grant failed for {pid}: {e}");
                     }
                 }
             }
@@ -388,6 +405,11 @@ struct Session {
     /// roadmap WG-2); every dive after gets a randomized biome order + start.
     /// Defaults `false` until loaded; the load lands before the first `enter_maze`.
     has_dived: bool,
+    /// Account-permanent unlocks (roadmap CL-1) — which party slots and classes
+    /// this account has earned. Loaded on connect; `None` until then, and a party
+    /// built before the load lands is NOT gated (the load beats the first
+    /// `enter_maze` in practice, and failing open beats locking a player out).
+    unlocks: Option<Vec<String>>,
     /// Materials withdrawn from the Vault (storage chest), refreshed right
     /// before `run.enter_maze` is handled so `form_run` can drain them
     /// synchronously into the fresh run's Backpack (see `flush_pending_materials`).
@@ -411,6 +433,60 @@ struct Outgoing {
 /// Serialize a message body to shared raw JSON exactly once.
 fn serialize_payload<M: Message>(m: &M) -> Arc<serde_json::value::RawValue> {
     Arc::from(serde_json::value::to_raw_value(m).expect("payload serializes"))
+}
+
+/// Clamp a requested party to what an account owns: at most `party_slots` heroes,
+/// and every class one the player has earned. An unowned class becomes an Explorer
+/// rather than an error — the dive still happens.
+fn clamp_party_to_unlocks(
+    party: Vec<CharacterClass>,
+    owned: &[String],
+) -> Vec<CharacterClass> {
+    let slots = meld_proto::unlocks::party_slots(owned) as usize;
+    let fieldable = meld_proto::unlocks::owned_classes(owned);
+    party
+        .into_iter()
+        .take(slots.max(1))
+        .map(|c| {
+            if fieldable.contains(&c) {
+                c
+            } else {
+                CharacterClass::Explorer
+            }
+        })
+        .collect()
+}
+
+/// The party-slot bars a run currently clears: for each distinct `HeroesAtLevel`
+/// rule in the registry, the count of heroes simultaneously at-or-above it. Read
+/// from the registry rather than hardcoded, so adding a fifth slot needs no server
+/// change.
+fn party_slot_bars(run: &meld_run::PlayerRun) -> Vec<(i32, i32)> {
+    let mut bars = Vec::new();
+    for u in meld_proto::unlocks::UNLOCKS {
+        if let meld_proto::unlocks::Trigger::HeroesAtLevel { level, .. } = u.trigger {
+            let heroes = run.heroes_at_level(level) as i32;
+            if heroes > 0 && !bars.iter().any(|(h, l)| *h == heroes && *l == level) {
+                bars.push((heroes, level));
+            }
+        }
+    }
+    bars
+}
+
+/// Build the `run.unlocked` message: `newly` is what to announce (empty for the
+/// connect-time inventory), `owned` is everything the account has after the grant.
+fn unlock_inventory(
+    owned: &[String],
+    newly: &[&'static meld_proto::unlocks::UnlockDef],
+    banner: bool,
+) -> wr::Unlocked {
+    wr::Unlocked {
+        unlocks: newly.iter().map(|d| meld_proto::unlocks::view(d)).collect(),
+        owned: owned.to_vec(),
+        party_slots: meld_proto::unlocks::party_slots(owned),
+        banner,
+    }
 }
 
 fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
@@ -707,6 +783,10 @@ struct WorldActor {
     /// floor))` — so the per-tick loop emits the re-skin cue only on a transition
     /// (descend / floor change / exit), not every tick. Purely presentational.
     dungeon_scene_sent: HashMap<String, (bool, usize)>,
+    /// CL-1 milestones raised by handlers that cannot return a `WorldEffect`
+    /// (a descent, for one). Drained on the next `tick`, so a milestone is never
+    /// lost just because its call path returns only messages.
+    pending_effects: Vec<WorldEffect>,
 }
 
 /// A placed dungeon entrance in the overworld (DG-3).
@@ -1118,6 +1198,22 @@ impl WorldActor {
             .collect();
         for m in mates {
             self.place_in_dungeon(&m, key);
+        }
+        // CL-1: the Shifter is the class whose senses are ABOUT dungeons, so the
+        // first descent is what earns it — for everyone who walked in, not just
+        // whoever pressed the key.
+        let descended: Vec<String> = self
+            .arena
+            .avatars
+            .iter()
+            .map(|a| a.player_id.clone())
+            .filter(|id| self.dungeon_of(id).map(|(k, _)| k) == Some(key))
+            .collect();
+        for id in descended {
+            self.pending_effects.push(WorldEffect::Milestone {
+                player_id: id,
+                milestone: meld_proto::unlocks::Milestone::DungeonEntered,
+            });
         }
         Vec::new()
     }
@@ -2096,6 +2192,7 @@ impl GameState {
                         hero_names: None,
                         hero_rows: None,
                         has_dived: false,
+                        unlocks: None,
                         pending_materials: Vec::new(),
                     },
                 );
@@ -2177,6 +2274,32 @@ impl GameState {
     /// instance down if they were the last one). Without this, `in_instance`
     /// stays `true` after a run ends and the next `enter_maze` is rejected with
     /// "A run is already active for you." — the extract-or-die loop can't close.
+    /// CL-1: a milestone landed — work out what it unlocks for this account,
+    /// persist it, and announce it. Everything is decided against the session's
+    /// in-memory set, so a milestone reported every tick still only ever grants
+    /// once, and the DB write can lag without letting it grant twice.
+    fn grant_milestone(&mut self, player_id: &str, milestone: meld_proto::unlocks::Milestone) {
+        let Some(owned) = self.sessions.get(player_id).and_then(|s| s.unlocks.clone()) else {
+            return; // unlocks not loaded yet — nothing to compare against
+        };
+        let newly = meld_proto::unlocks::granted_by(milestone, &owned);
+        if newly.is_empty() {
+            return;
+        }
+        let keys: Vec<String> = newly.iter().map(|u| u.key.to_string()).collect();
+        let mut owned = owned;
+        owned.extend(keys.iter().cloned());
+        owned.sort();
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            s.unlocks = Some(owned.clone());
+        }
+        let _ = self
+            .db_writes
+            .send(DbWrite::Unlocks(player_id.to_string(), keys));
+        let msg = unlock_inventory(&owned, &newly, true);
+        self.dispatch(vec![out_msg(player_id, &msg)]);
+    }
+
     fn release_from_run(&mut self, player_id: &str) {
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.in_instance = false;
@@ -2191,6 +2314,10 @@ impl GameState {
         for e in effects {
             match e {
                 WorldEffect::ReleaseFromRun(pid) => self.release_from_run(&pid),
+                WorldEffect::Milestone {
+                    player_id,
+                    milestone,
+                } => self.grant_milestone(&player_id, milestone),
                 WorldEffect::SetSessionHeroName {
                     player_id,
                     slot,
@@ -2457,6 +2584,21 @@ impl GameState {
             .as_ref()
             .and_then(|e| e.names.clone())
             .filter(|n| !n.is_empty());
+        // CL-1: a party is clamped to what the account has EARNED — extra slots
+        // dropped, unowned classes replaced by the Explorer. Clamped rather than
+        // rejected, so a stale client (or a saved party from before a wipe) still
+        // gets a dive instead of an error it can't act on.
+        let owned = self.sessions.get(player_id).and_then(|s| s.unlocks.clone());
+        let party_comp = match (&owned, party_comp) {
+            (Some(owned), Some(p)) => Some(clamp_party_to_unlocks(p, owned)),
+            (_, p) => p,
+        };
+        let chosen = match &owned {
+            Some(owned) if !meld_proto::unlocks::owned_classes(owned).contains(&chosen) => {
+                CharacterClass::Explorer
+            }
+            _ => chosen,
+        };
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.character_class = chosen;
             s.party_comp = party_comp;
@@ -2576,6 +2718,7 @@ impl GameState {
                 next_dungeon_key: 0,
                 entrances_scanned: 0,
                 dungeon_scene_sent: HashMap::new(),
+                pending_effects: Vec::new(),
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -3953,6 +4096,16 @@ impl GameState {
                         s.has_dived = dived;
                     }
                 }
+                // CL-1: what this account owns. Sent straight back with
+                // `banner: false` so the party builder can grey the rows it
+                // cannot field without four banners firing at login.
+                if let Ok(owned) = self.db.get_unlocks(uid).await {
+                    let inventory = unlock_inventory(&owned, &[], false);
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.unlocks = Some(owned);
+                    }
+                    self.dispatch(vec![out_msg(&pid, &inventory)]);
+                }
             }
         }
     }
@@ -4408,7 +4561,7 @@ impl WorldActor {
     fn tick(&mut self) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
         let mut out = Vec::new();
-        let mut effects: Vec<WorldEffect> = Vec::new();
+        let mut effects: Vec<WorldEffect> = std::mem::take(&mut self.pending_effects);
 
         // 1) The overworld always advances — even while some party is in a battle.
         // Roaming creatures move and skirmish with rival factions; creatures pulled
@@ -4876,6 +5029,43 @@ impl WorldActor {
                 for (pid, class, level) in class_bests {
                     let _ = inst.db_writes.send(DbWrite::ClassBest(pid, class, level));
                 }
+                // CL-1 milestones from a won fight. Read off the creatures BEFORE
+                // they leave the arena: what was in the encounter is what earns the
+                // class, and a moment later there is nothing left to ask.
+                let (mut felled_champion, mut felled_rite) = (false, false);
+                for id in &monster_ids {
+                    match inst.arena.monster_by_id(id).map(|m| m.encounter_class.as_str()) {
+                        Some("elite") | Some("gatekeeper") => felled_champion = true,
+                        Some("undead_rite") => felled_rite = true,
+                        _ => {}
+                    }
+                }
+                for r in inst.run.runs.iter().filter(|r| bp.contains(&r.party_id)) {
+                    if felled_champion {
+                        effects.push(WorldEffect::Milestone {
+                            player_id: r.player_id.clone(),
+                            milestone: meld_proto::unlocks::Milestone::EliteFelled,
+                        });
+                    }
+                    if felled_rite {
+                        effects.push(WorldEffect::Milestone {
+                            player_id: r.player_id.clone(),
+                            milestone: meld_proto::unlocks::Milestone::SurvivedUndeadRite,
+                        });
+                    }
+                    // The party-slot bars: report the DEEPEST bar this party clears
+                    // (most heroes simultaneously at a level), so one milestone can
+                    // satisfy every rule it qualifies for.
+                    for (heroes, level) in party_slot_bars(r) {
+                        effects.push(WorldEffect::Milestone {
+                            player_id: r.player_id.clone(),
+                            milestone: meld_proto::unlocks::Milestone::HeroesReached {
+                                heroes,
+                                level,
+                            },
+                        });
+                    }
+                }
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     let old_level = r.run_level;
                     if r.award_xp(xp_reward, &balance) > 0 {
@@ -4922,6 +5112,7 @@ impl WorldActor {
                     .filter_map(|id| inst.arena.monster_by_id(id))
                     .map(|m| match m.encounter_class.as_str() {
                         "gatekeeper" => balance.encounters.gatekeeper_loot_mult,
+                        "undead_rite" => balance.encounters.undead_rite_loot_mult,
                         "elite" => balance.encounters.elite_loot_mult,
                         _ => 1.0,
                     })
@@ -5071,6 +5262,20 @@ impl WorldActor {
                 }
             }
             BattleOutcome::Defeat => {
+                // CL-1: a wipe is the Psyker's trigger — but only a real party's
+                // wipe. `party_classes` is the composition that went in, so a solo
+                // hero's death does not count as losing a party.
+                for pid in &members {
+                    let heroes = inst
+                        .party_classes
+                        .get(pid)
+                        .map(|c| c.len() as i32)
+                        .unwrap_or(0);
+                    effects.push(WorldEffect::Milestone {
+                        player_id: pid.clone(),
+                        milestone: meld_proto::unlocks::Milestone::PartyWiped { heroes },
+                    });
+                }
                 for pid in &members {
                     out.push(out_msg(
                         pid,
@@ -5417,5 +5622,114 @@ mod interest_grid_tests {
         assert!(got.contains(&1), "portal always included even when far");
         assert!(!got.contains(&2), "far mob excluded");
         assert!(got.contains(&3), "near resource included");
+    }
+}
+
+#[cfg(test)]
+mod unlock_gate_tests {
+    use super::*;
+
+    fn owned(keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// A run whose heroes sit at the given levels — the only thing the slot bars
+    /// read.
+    fn run_at(levels: &[i32]) -> meld_run::PlayerRun {
+        meld_run::PlayerRun {
+            run_id: "r".into(),
+            player_id: "p".into(),
+            username: "u".into(),
+            character_class: CharacterClass::Explorer,
+            run_level: *levels.iter().max().unwrap_or(&1),
+            xp: 0,
+            backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
+            max_distance_reached: 0,
+            result: None,
+            party_id: 0,
+            hero_levels: levels.to_vec(),
+            hero_xp: vec![0; levels.len()],
+        }
+    }
+
+    #[test]
+    fn a_party_is_clamped_to_what_the_account_owns() {
+        use CharacterClass::*;
+        let wanted = vec![Explorer, Psyker, Resonant, Shifter];
+
+        // A brand-new account fields exactly one Explorer, whatever the client asked
+        // for. Clamped rather than rejected: a stale saved party still gets a dive.
+        let fresh = owned(&["class_explorer"]);
+        assert_eq!(clamp_party_to_unlocks(wanted.clone(), &fresh), vec![Explorer]);
+
+        // A second slot seats a second hero — but an unowned class in it becomes an
+        // Explorer, not an error.
+        let two = owned(&["class_explorer", "party_slot_2"]);
+        assert_eq!(clamp_party_to_unlocks(wanted.clone(), &two), vec![Explorer, Explorer]);
+
+        // Earn the Resonant and it can take the seat; the Psyker still can't.
+        let two_res = owned(&["class_explorer", "party_slot_2", "class_resonant"]);
+        assert_eq!(
+            clamp_party_to_unlocks(vec![Resonant, Psyker], &two_res),
+            vec![Resonant, Explorer]
+        );
+
+        // Everything owned: the party comes through untouched.
+        let all: Vec<String> =
+            meld_proto::unlocks::UNLOCKS.iter().map(|u| u.key.to_string()).collect();
+        assert_eq!(clamp_party_to_unlocks(wanted.clone(), &all), wanted);
+    }
+
+    #[test]
+    fn the_party_slot_bars_count_heroes_standing_together() {
+        // Nobody at a bar yet: no milestone to report, rather than a zero-count one
+        // that would grant slot 2 to a level-1 party.
+        assert!(party_slot_bars(&run_at(&[1, 1, 1, 1])).is_empty());
+
+        let run = run_at(&[10, 3, 1, 1]);
+        let bars = party_slot_bars(&run);
+        assert!(bars.contains(&(1, 10)), "{bars:?}");
+        assert!(!bars.iter().any(|(_, l)| *l == 20), "{bars:?}");
+
+        // Two at 20 clears the level-10 bar with two heroes AND the 20 bar with two.
+        let run = run_at(&[22, 20, 9, 1]);
+        let bars = party_slot_bars(&run);
+        assert!(bars.contains(&(2, 20)), "{bars:?}");
+        assert!(bars.contains(&(2, 10)), "{bars:?}");
+
+        // Three at 30 is the deepest bar, and it clears every shallower one.
+        let run = run_at(&[30, 31, 30, 4]);
+        let bars = party_slot_bars(&run);
+        for want in [(3, 30), (3, 20), (3, 10)] {
+            assert!(bars.contains(&want), "missing {want:?} in {bars:?}");
+        }
+    }
+
+    #[test]
+    fn the_bars_a_party_clears_grant_exactly_the_slots_they_should() {
+        // The registry and the reporting have to agree end-to-end: feed each bar
+        // through `granted_by` the way the loop does and check the slot it opens.
+        let mut have = owned(&["class_explorer"]);
+
+        let run = run_at(&[10, 1, 1, 1]);
+        let mut granted: Vec<&str> = Vec::new();
+        for (heroes, level) in party_slot_bars(&run) {
+            let m = meld_proto::unlocks::Milestone::HeroesReached { heroes, level };
+            granted.extend(meld_proto::unlocks::granted_by(m, &have).iter().map(|u| u.key));
+        }
+        assert_eq!(granted, vec!["party_slot_2"]);
+        have.push("party_slot_2".to_string());
+
+        // One hero at 40 is still only ONE hero: no third slot.
+        let run = run_at(&[40, 3, 1, 1]);
+        for (heroes, level) in party_slot_bars(&run) {
+            let m = meld_proto::unlocks::Milestone::HeroesReached { heroes, level };
+            assert!(
+                meld_proto::unlocks::granted_by(m, &have).is_empty(),
+                "a single hero at 40 opened a slot it should not"
+            );
+        }
     }
 }

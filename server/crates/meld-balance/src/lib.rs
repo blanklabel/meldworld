@@ -196,6 +196,7 @@ pub struct Encounters {
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
+    pub undead_rite_loot_mult: f64,
     pub pack_spread: f64,
     pub undead_rite_chance: f64,
     pub undead_rite_min_tier: i32,

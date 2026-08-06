@@ -241,6 +241,10 @@ gatekeeper_hp_mult = 7.5         # a wall of HP — a real fight, sized to the p
 gatekeeper_atk_mult = 1.6
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
+# The undead rite (a risen boss + its dead) is harder than an elite and short of a
+# gatekeeper, so it pays between them. Without its own entry it fell through to the
+# standard 1.0 and paid trash loot for the hardest fight most players will meet.
+undead_rite_loot_mult = 5.0
 # PACKS (CR/encounter composition): a lone creature versus a party of four is not a
 # fight, so a share of spawns come as a LEADER plus minions clustered inside
 # `[ai] group_radius` — touch one and the whole pack joins. Minions are visibly
