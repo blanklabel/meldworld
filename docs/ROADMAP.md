@@ -257,9 +257,14 @@ burns on death/leave; some is single-use. See
   class without it, exactly like the matching affix). Magnitudes are `[consumable]`
   `[TUNABLE]`s. `resolve_item` reads the registry instead of treating every item as a
   heal, and an unknown item id still heals so an older client is never stranded.
-  - **Remains:** potions are not yet *consumed* from the backpack on use (the slice's
-    "items are always available"), and the battle menu does not show counts. That is the
-    inventory half of `GR-4`.
+  - *Inventory half done too:* consumption was already server-side (an Item action is
+    checked against the run backpack and spends one, `battle_item`), but the client's
+    Items page was a hardcoded `Salve`/`Elixir` pair — and **`salve` was not a real item
+    kind**, so that row could only ever answer "Out of salve". The page is now built from
+    the run backpack: only potions the party carries, with counts ("Bloom Salve x3"), and
+    a `(no potions)` row when empty, so it can never offer what the server will refuse.
+    The starting kit and the consumable/material split now use registry keys instead of
+    string literals, so a new potion is never mistaken for a crafting material.
 - [ ] **GR-4b — Consumable healing items (legacy line).** Field/battle-usable heal items that are
   **consumed on use** (decrement + destroy at zero). Wire into the existing async
   battle-injection path (GDD §6; [`behaviors/async-interaction.md`](behaviors/async-interaction.md))

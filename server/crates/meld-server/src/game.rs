@@ -2595,7 +2595,7 @@ impl GameState {
         // items (Salve/Elixir), so the battle Item command is now inventory-backed.
         let starting_stock = [
             (TOWN_PORTAL, starting_tp),
-            ("salve", self.balance.runs.starting_salves),
+            ("bloom_salve", self.balance.runs.starting_salves),
             ("elixir", self.balance.runs.starting_elixirs),
         ];
         for (kind, qty) in starting_stock {
@@ -4725,8 +4725,10 @@ impl WorldActor {
                 r.chits -= taken;
             }
             K::Consumable | K::Material => {
+                // The registry decides what a consumable is, so a new potion is
+                // never silently treated as a crafting material.
                 let is_consumable = |k: &str| {
-                    matches!(k, "town_portal" | "salve" | "elixir" | "bloom_salve")
+                    k == "town_portal" || meld_proto::consumables::is_consumable(k)
                 };
                 let want_consumable = matches!(kind, K::Consumable);
                 if let Some(stack) = r

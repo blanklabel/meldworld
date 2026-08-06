@@ -583,6 +583,7 @@ pub(crate) fn battle_click_target(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     ui_hit: Query<&Interaction, With<Button>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
+    backpack: Res<RunBackpack>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     mut target: ResMut<BattleTarget>,
@@ -638,7 +639,8 @@ pub(crate) fn battle_click_target(
     if menu.level == MenuLevel::Target {
         if let Some(idx) = menu.rows.iter().position(|(_, v)| *v == eid) {
             let class = battle.active_class();
-            select_entry(idx, &mut menu, &mut battle, &class);
+            let held = held_potions(&backpack);
+            select_entry(idx, &mut menu, &mut battle, &class, &held);
         }
         return;
     }
@@ -990,7 +992,13 @@ pub(crate) fn manifest_verb(battle: &BattleData, hero: &str, kind: &str) -> &'st
 /// dynamic Target/Revoke pages index into [`BattleMenu::rows`] (with a trailing Back).
 /// Order-producing rows route through [`begin_order`], which opens the Target picker
 /// when the action needs aiming.
-pub(crate) fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut BattleData, class: &str) {
+pub(crate) fn select_entry(
+    index: usize,
+    menu: &mut BattleMenu,
+    battle: &mut BattleData,
+    class: &str,
+    held: &[(String, i32)],
+) {
     let active = match battle.active.clone() {
         Some(a) => a,
         None => return,
@@ -1017,7 +1025,7 @@ pub(crate) fn select_entry(index: usize, menu: &mut BattleMenu, battle: &mut Bat
     }
 
     let hero_level = battle.view(&active).map(|c| c.level).unwrap_or(1);
-    let entries = menu_entries(menu.level, class, hero_level);
+    let entries = menu_entries(menu.level, class, hero_level, held);
     let Some(entry) = entries.get(index) else {
         return;
     };
@@ -1074,11 +1082,27 @@ pub(crate) fn open_page(menu: &mut BattleMenu, level: MenuLevel) {
 
 /// Number of selectable rows on the current page. Static pages come from
 /// [`menu_entries`]; the dynamic Target/Revoke pages are `rows` plus a Back row.
-pub(crate) fn page_len(menu: &BattleMenu, class: &str, hero_level: i32) -> usize {
+pub(crate) fn page_len(
+    menu: &BattleMenu,
+    class: &str,
+    hero_level: i32,
+    held: &[(String, i32)],
+) -> usize {
     match menu.level {
         MenuLevel::Target | MenuLevel::Revoke => menu.rows.len() + 1,
-        level => menu_entries(level, class, hero_level).len(),
+        level => menu_entries(level, class, hero_level, held).len(),
     }
+}
+
+/// The run backpack reduced to the potions it holds, in registry order — what the
+/// Items page may offer (GR-4).
+pub(crate) fn held_potions(backpack: &RunBackpack) -> Vec<(String, i32)> {
+    backpack
+        .items
+        .iter()
+        .filter(|(kind, qty)| *qty > 0 && meld_proto::consumables::is_consumable(kind))
+        .cloned()
+        .collect()
 }
 
 /// Keyboard control for the command panel. Orders are *queued* for the active hero
@@ -1092,9 +1116,12 @@ pub(crate) fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     autoplay: Res<Autoplay>,
     tactics: Res<Tactics>,
+    backpack: Res<RunBackpack>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
+    // The Items page offers only what the party is carrying (GR-4).
+    let held = held_potions(&backpack);
     // The command menu keys off the *active hero's* class — a mixed party is
     // commanded hero by hero.
     let class = battle.active_class();
@@ -1186,7 +1213,7 @@ pub(crate) fn menu_keyboard(
         };
         if let Some(i) = pick {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class);
+            select_entry(i, &mut menu, &mut battle, &class, &held);
         }
         return;
     }
@@ -1194,7 +1221,7 @@ pub(crate) fn menu_keyboard(
     // Sub-page (or a Psyker's list root): ↑/↓ move the highlight, digits jump to a
     // row, ENTER/SPACE selects.
     let hero_level = battle.active_level();
-    let n = page_len(&menu, &class, hero_level).max(1);
+    let n = page_len(&menu, &class, hero_level, &held).max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % n;
     }
@@ -1204,17 +1231,18 @@ pub(crate) fn menu_keyboard(
     for (i, key) in digits.iter().enumerate() {
         if i < n && keys.just_pressed(*key) {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class);
+            select_entry(i, &mut menu, &mut battle, &class, &held);
             return;
         }
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        select_entry(menu.cursor, &mut menu, &mut battle, &class);
+        select_entry(menu.cursor, &mut menu, &mut battle, &class, &held);
     }
 }
 
 /// Mouse/touch: pressing a command row queues it for the active hero.
 pub(crate) fn menu_click(
+    backpack: Res<RunBackpack>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     rows: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
@@ -1228,7 +1256,8 @@ pub(crate) fn menu_click(
     if let Some(index) = pressed {
         menu.cursor = index;
         let class = battle.active_class();
-        select_entry(index, &mut menu, &mut battle, &class);
+        let held = held_potions(&backpack);
+        select_entry(index, &mut menu, &mut battle, &class, &held);
     }
 }
 
@@ -1328,6 +1357,7 @@ pub(crate) fn rebuild_command_menu(
     mut commands: Commands,
     battle: Res<BattleData>,
     tactics: Res<Tactics>,
+    backpack: Res<RunBackpack>,
     mut menu: ResMut<BattleMenu>,
     existing: Query<Entity, With<CommandWindow>>,
 ) {
@@ -1371,7 +1401,7 @@ pub(crate) fn rebuild_command_menu(
             .map(|(l, _)| l.clone())
             .chain(std::iter::once("Back".to_string()))
             .collect(),
-        _ => menu_entries(level, &class, hero_level)
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack))
             .into_iter()
             .map(|e| e.label.to_string())
             .collect(),
