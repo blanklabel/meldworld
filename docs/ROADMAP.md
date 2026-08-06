@@ -185,7 +185,7 @@ burns on death/leave; some is single-use. See
   declares a **family** (sword/shield/spear/staff/globe/gauntlet/dagger/parry_blade)
   and every class declares which families it may wear, so classes read as classes:
   Explorer sword+shield *or* two-handed spear, Resonant staff (2H), Psyker globe (2H),
-  Iron Hull gauntlet+shield, Shifter dagger with **two** legal off-hands (second dagger
+  Phoenix Guard gauntlet+shield, Shifter dagger with **two** legal off-hands (second dagger
   or parrying blade). A **two-handed** weapon occupies `main_hand` and reserves
   `off_hand` (409 + offer-to-unequip, never a silent stat loss). Armor uses **weight
   classes** (heavy/medium/light/robe) with a per-class allowed *set* so most drops fit
@@ -203,7 +203,7 @@ burns on death/leave; some is single-use. See
     armor"). Enforcement is authoritative in **derivation**
     (`equipped_gear_bonuses`): illegal gear grants nothing. Nouns that contradicted
     the families were fixed (Psyker Focus Rod → Psi-Orb, Resonant Ward Scepter → Ward
-    Stave, Iron Hull Warhammer → Kinetic Gauntlet).
+    Stave, Phoenix Guard Warhammer → Kinetic Gauntlet).
   - *Also shipped:* the equip **UX** — `GET /v1/heroes` returns each slot's class so the
     Equip tab knows the rules in town too; a row this hero's class cannot wear renders
     dim with the reason (`-- too heavy`, `-- cannot wield`) and a press does nothing,
@@ -313,6 +313,11 @@ burns on death/leave; some is single-use. See
     ability** (level 45+) and a **palette band** that darkens with the level it is met at
     (`boss_palette_band` → `boss_band:<n>` on the wire → the client's material tint), so
     the same named boss escalates in both kit and look.
+  - *Also shipped:* **Iron Hull → Phoenix Guard.** The Order of the Phoenix Guard
+    walks out of fires nothing else survives, which is why the class is earned by
+    surviving the undead rite. Key is `phoenix_guard` everywhere (wire, balance,
+    sprites); `iron_hull` stays a serde alias so heroes persisted under the old key
+    keep their class rather than silently falling back.
   - **Remains:** the unlock registry + party-slot/class gating + banners (`CL-1`),
     the ability ladder and tooltips, the Explorer/Shifter role swap, and the
     frosted-glass menu pass.
@@ -321,14 +326,14 @@ burns on death/leave; some is single-use. See
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
   emblem drops** (GDD §4; FS-4) and **hiring at a town vendor** (EC-2). See
   [`behaviors/meta-progression.md`](behaviors/meta-progression.md) "class unlocks
-  via ClassEmblem." Existing classes (Explorer/Psyker/Resonant/Shifter/Iron Hull)
+  via ClassEmblem." Existing classes (Explorer/Psyker/Resonant/Shifter/Phoenix Guard)
   define the taxonomy — see [`CLAUDE.md`](../CLAUDE.md) "Combat & class taxonomy."
 - [ ] **CL-2 — Overworld class perks ("party sense") — deepen the system.** 🟡
   *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
   `game.rs::compute_perks`) — each class's *presence* in the party grants an
   earned overworld capability that scales with the shared `run_level`: the
   **Shifter grants a corner minimap** (+ mob/portal dots, coverage grows with
-  level), the **Explorer grants enemy-HP intel**, Iron Hull shrinks creature aggro
+  level), the **Explorer grants enemy-HP intel**, Phoenix Guard shrinks creature aggro
   range, Resonant grants overworld regen. **This is where overworld map-reveal and
   threat-reading belong — they're *what a class can do*, a reason to bring it, not
   universal UI.** Remaining: flesh the system out — round out perks per class
@@ -904,13 +909,13 @@ the current build.
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
   Three layers, all live (`meld_proto::synergies`; magnitudes in `[adventure]`):
   - **Class-pair synergies** — passive while both classes are in the party: *Fortress
-    Front* (Iron Hull + Psyker → every hero opens each fight warded), *Blood and Balm*
+    Front* (Phoenix Guard + Psyker → every hero opens each fight warded), *Blood and Balm*
     (Resonant + Explorer → party Regen), *Covering Blink* (Shifter + Resonant → back-row
     Evasion). Applied at battle assembly, the only place that sees the whole comp.
   - **Sequenced combos** — one hero's ability primes a target and a *specific* follow-up
     cashes it in inside a `combo_window_ticks` window: **Cut the Snare** (Explorer Snare →
-    Shifter Backstab, +60%), **Crush the Pinned** (Psyker Gravity Well → Iron Hull Kinetic
-    Shock, +50%), **Follow the Stagger** (Iron Hull Swell Strike → Explorer Frenzy, +50%),
+    Shifter Backstab, +60%), **Crush the Pinned** (Psyker Gravity Well → Phoenix Guard Kinetic
+    Shock, +50%), **Follow the Stagger** (Phoenix Guard Swell Strike → Explorer Frenzy, +50%),
     **Press the Slowed** (Shifter Ransack → Explorer Power Strike, +40%). Three of the four
     need *two different heroes*, so turn order becomes a party decision instead of four
     independent menus. Primers ride the existing `timed_statuses`, are consumed on payoff,

@@ -183,7 +183,7 @@ explorer_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
 explorer_frenzy_cost = 80              # Frenzy: Adrenaline spent
 explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
 
-# The Order of the Iron Hull (monk / tank). A dense, deliberate front-line wall
+# The Order of the Phoenix Guard (monk / tank). A dense, deliberate front-line wall
 # that channels the ocean's momentum into blunt-force kinetic strikes. Its kit is
 # level-gated (no build-up resource — its "equilibrium" is its Root stance):
 #   Swell Strike — a heavy blow that also staggers (drains the target's ATB gauge).
@@ -191,11 +191,11 @@ explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
 #   Kinetic Shock— a heavier blow that FULLY resets the target's ATB gauge (hard stagger).
 #   Toll of the Deep — an all-enemy shockwave (Destructive Wave); the Grandmaster's toll.
 # All [TUNABLE].
-ironhull_swell_mult = 1.4            # Swell Strike: dmg = atk*mult - def
-ironhull_swell_drain = 0.3          # Swell Strike: enemy ATB gauge -= this on hit
-ironhull_root_barrier_fraction = 0.25 # Root: Barrier granted = max_hp * fraction
-ironhull_shock_mult = 1.6           # Kinetic Shock: dmg = atk*mult - def (then gauge → 0)
-ironhull_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to EVERY enemy
+phoenix_guard_swell_mult = 1.4            # Swell Strike: dmg = atk*mult - def
+phoenix_guard_swell_drain = 0.3          # Swell Strike: enemy ATB gauge -= this on hit
+phoenix_guard_root_barrier_fraction = 0.25 # Root: Barrier granted = max_hp * fraction
+phoenix_guard_shock_mult = 1.6           # Kinetic Shock: dmg = atk*mult - def (then gauge → 0)
+phoenix_guard_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - def to EVERY enemy
 
 # Monster-ability system (Creature AI spec §2). All [TUNABLE].
 status_slow_mult = 0.5               # ATB fill mult while webbed/chilled/bound/…
@@ -578,10 +578,10 @@ psyker_reveal_base = 22.0         # extended mob interest radius (tiles) at unlo
 psyker_reveal_per_level = 2.0
 # Resonant — overworld regen (HP/sec per run level, applied while walking).
 resonant_regen_per_level = 0.4
-# Iron Hull — bulwark: creature aggro/skirmish radius shrinks per run level.
-ironhull_aggro_reduction_per_level = 0.04
-ironhull_aggro_mult_floor = 0.4   # mobs never fully ignore an Iron Hull party
-ironhull_trample_radius = 0.0     # stretch: trample obstacles this small (0 = off)
+# Phoenix Guard — bulwark: creature aggro/skirmish radius shrinks per run level.
+phoenix_guard_aggro_reduction_per_level = 0.04
+phoenix_guard_aggro_mult_floor = 0.4   # mobs never fully ignore an Phoenix Guard party
+phoenix_guard_trample_radius = 0.0     # stretch: trample obstacles this small (0 = off)
 
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,
@@ -903,10 +903,10 @@ mnd_per_level = 0
 dex_per_level = 3
 wll_per_level = 1
 
-# Iron Hull: the tankiest class. Most HP + armour of any hero and the slowest
+# Phoenix Guard: the tankiest class. Most HP + armour of any hero and the slowest
 # gauge (deliberate, rooted), with no Dex (a wall, not a dodger). Front-row.
 # [TUNABLE]
-[player.iron_hull]
+[player.phoenix_guard]
 base_hp = 52
 base_atk = 13
 base_def = 6

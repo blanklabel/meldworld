@@ -278,7 +278,7 @@ pub const CLASS_KEYS: [&str; 10] = [
     "psyker",
     "resonant",
     "shifter",
-    "iron_hull",
+    "phoenix_guard",
 ];
 
 /// The universal 20-step power ladder (weakest → strongest), shared by every
@@ -344,9 +344,9 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("shifter", "main_hand") => "Glitchblade",
         ("shifter", "chest") => "Runner's Wrap",
         ("shifter", "accessory") => "Flicker Charm",
-        ("iron_hull", "main_hand") => "Kinetic Gauntlet",
-        ("iron_hull", "chest") => "Bulwark Plate",
-        ("iron_hull", "accessory") => "Aggro Band",
+        ("phoenix_guard", "main_hand") => "Kinetic Gauntlet",
+        ("phoenix_guard", "chest") => "Bulwark Plate",
+        ("phoenix_guard", "accessory") => "Aggro Band",
         // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
         ("explorer", "off_hand") => "Targe",
         ("explorer", "head") => "Warhelm",
@@ -375,9 +375,9 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("shifter", "off_hand") => "Parry Dagger",
         ("shifter", "head") => "Runner's Cowl",
         ("shifter", "legs") => "Phase Boots",
-        ("iron_hull", "off_hand") => "Tower Shield",
-        ("iron_hull", "head") => "Great Helm",
-        ("iron_hull", "legs") => "Anchor Boots",
+        ("phoenix_guard", "off_hand") => "Tower Shield",
+        ("phoenix_guard", "head") => "Great Helm",
+        ("phoenix_guard", "legs") => "Anchor Boots",
         _ => "Trinket",
     }
 }
@@ -414,9 +414,9 @@ fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
         ("shifter", "main_hand") => "Paradox, the Glitched Kris",
         ("shifter", "chest") => "Wrap of a Thousand Steps",
         ("shifter", "accessory") => "The Flicker Between Moments",
-        ("iron_hull", "main_hand") => "Worldender",
-        ("iron_hull", "chest") => "The Immovable Bulwark",
-        ("iron_hull", "accessory") => "Band of the Undying Wall",
+        ("phoenix_guard", "main_hand") => "Worldender",
+        ("phoenix_guard", "chest") => "The Immovable Bulwark",
+        ("phoenix_guard", "accessory") => "Band of the Undying Wall",
         _ => "Unnamed Relic",
     }
 }
@@ -477,7 +477,7 @@ pub fn roll_creature_loot(
         // matches their own class (enforced server-side at equip/battle time).
         let class_key = CLASS_KEYS[rng.below(CLASS_KEYS.len())];
         // GR-5: the drop's family/weight come from the class it belongs to, so a
-        // Resonant drop is a stave and an Iron Hull drop is plate. A two-handed
+        // Resonant drop is a stave and an Phoenix Guard drop is plate. A two-handed
         // class has no off-hand to fill, so an off_hand roll becomes its main
         // hand rather than an unwearable (dead) drop.
         let drop_class = eq::class_from_key(class_key);
@@ -2941,7 +2941,7 @@ impl Arena {
     }
 
     /// Like [`Arena::step_creatures`], but scales each player's effective aggro
-    /// radius by `aggro_mult[player_id]` (default 1.0) — the Iron Hull "Bulwark"
+    /// radius by `aggro_mult[player_id]` (default 1.0) — the Phoenix Guard "Bulwark"
     /// perk shrinks how close a creature will chase/skirmish-pull that party.
     /// Deterministic given the per-creature seed and the multiplier map.
     pub fn step_creatures_with_aggro(&mut self, dt: f64, aggro_mult: &HashMap<Id, f64>) {
@@ -3018,7 +3018,7 @@ impl Arena {
             // produce `None`. (Same result, less work; behaviour unchanged.)
             let (player_target, creature_target) = if aggro_range > 0.0 {
                 // Nearest active player within aggro range — each player's range is
-                // scaled by their Bulwark multiplier (Iron Hull parties are chased
+                // scaled by their Bulwark multiplier (Phoenix Guard parties are chased
                 // from closer).
                 let player_target = players
                     .iter()
@@ -5297,7 +5297,7 @@ mod tests {
     #[test]
     fn forging_armour_rolls_a_weight_its_class_can_wear() {
         let b = Balance::load_default().unwrap();
-        for (class, slot) in [("iron_hull", "chest"), ("psyker", "head"), ("shifter", "legs")] {
+        for (class, slot) in [("phoenix_guard", "chest"), ("psyker", "head"), ("shifter", "legs")] {
             let piece = forge_gear(&b, 8, slot, class, "tundra", 11);
             let w = meld_proto::equipment::ArmorWeight::from_wire(&piece.armor_weight)
                 .expect("forged armour has a weight");

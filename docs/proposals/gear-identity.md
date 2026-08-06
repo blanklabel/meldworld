@@ -31,11 +31,11 @@ on the client (CANON §S).
 | Family | Hands | Slot | Worn by |
 |--------|-------|------|---------|
 | `sword` | 1 | main | Explorer |
-| `shield` | 1 | off | Explorer, Iron Hull |
+| `shield` | 1 | off | Explorer, Phoenix Guard |
 | `spear` | **2** | main (+reserves off) | Explorer |
 | `staff` | **2** | main (+reserves off) | Resonant |
 | `globe` | **2** | main (+reserves off) | Psyker |
-| `gauntlet` | 1 | main | Iron Hull |
+| `gauntlet` | 1 | main | Phoenix Guard |
 | `dagger` | 1 | main **or** off | Shifter |
 | `parry_blade` | 1 | off | Shifter |
 
@@ -45,7 +45,7 @@ Which gives each class a recognizable hand:
   baseline is the only class with a real weapon *choice* (defensive vs reach).
 - **Resonant** — staff only, two-handed. A healer's hands are full.
 - **Psyker** — globe only, two-handed: the Foci are channeled through it.
-- **Iron Hull** — gauntlet + shield. The tankiest class is also the only one that
+- **Phoenix Guard** — gauntlet + shield. The tankiest class is also the only one that
   cannot reach past its own arms.
 - **Shifter** — dagger main-hand, with **two legal off-hands**: a second dagger
   (dual-wield, aggressive) or a parrying blade (defensive, leans on the class's
@@ -64,7 +64,7 @@ which is the point of weight classes rather than per-class armor:
 
 | Class | Allowed weights |
 |-------|-----------------|
-| Iron Hull | `heavy`, `medium` |
+| Phoenix Guard | `heavy`, `medium` |
 | Explorer | `medium`, `light` |
 | Shifter | `light` |
 | Resonant | `robe`, `light` |
@@ -72,7 +72,7 @@ which is the point of weight classes rather than per-class armor:
 
 Plus **signature pieces**: rare, class-exclusive armor that names one class
 (`class_key` set), ignores the weight table, and carries a class-flavored keyword
-affix — a Psyker's crown that adds a Focus slot, an Iron Hull cuirass that
+affix — a Psyker's crown that adds a Focus slot, an Phoenix Guard cuirass that
 converts a fraction of incoming damage into Barrier. These are the armor arm of
 `AD-1`'s uniques: the pieces you *chase* because only one class can wear them and
 they change how that class plays.

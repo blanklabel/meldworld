@@ -66,8 +66,10 @@ the player was going to do anyway, so the unlock reads as recognition rather tha
 | **Phoenix Guard** | survive an **undead boss + minions** encounter | the fight that wants a wall; surviving it proves you needed one |
 | **Psyker** | suffer a **full party wipe** with 3 heroes | the consolation prize for the worst night: the class that changes how you fight |
 
-Renames: **Iron Hull → Phoenix Guard** (mechanically identical; the name earns its
-fire-and-return fiction from the unlock that grants it).
+Renames: **Iron Hull → Phoenix Guard** ✅ (mechanically identical; the name earns its
+fire-and-return fiction from the unlock that grants it). The wire/balance/asset key is
+`phoenix_guard`; `iron_hull` survives as a deserialization alias so heroes already
+persisted under the old key keep their class.
 
 ## 3. The Shifter becomes the dungeon class
 

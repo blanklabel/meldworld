@@ -2892,7 +2892,7 @@ mod tests {
         let db = mem().await;
         let p = db.register("gr5", "pw").await.unwrap().player_id;
         // Hero 0 is a Resonant (staff only); hero 3 an Explorer (spear is legal).
-        let classes: Vec<String> = ["resonant", "iron_hull", "psyker", "explorer"]
+        let classes: Vec<String> = ["resonant", "phoenix_guard", "psyker", "explorer"]
             .iter()
             .map(|s| s.to_string())
             .collect();

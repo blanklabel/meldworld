@@ -21,7 +21,7 @@ pub const HERO_SKILLS: &[(&str, &[&str])] = &[
     ("resonant", &["transfuse", "regen_boon", "ward"]),
     ("shifter", &["backstab", "flicker", "ransack"]),
     (
-        "iron_hull",
+        "phoenix_guard",
         &["swell_strike", "root", "kinetic_shock", "toll_of_the_deep"],
     ),
 ];
@@ -57,7 +57,7 @@ pub fn unlock_level(skill: &str) -> i32 {
         // Shifter (rogue)
         "flicker" => 2,
         "ransack" => 3,
-        // Iron Hull (monk / tank): Swell Strike is L1; the rest gate by level.
+        // Phoenix Guard (monk / tank): Swell Strike is L1; the rest gate by level.
         "root" => 2,
         "kinetic_shock" => 3,
         "toll_of_the_deep" => 5,

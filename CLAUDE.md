@@ -329,11 +329,11 @@ Use these terms consistently in code, comments, and UI.
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
   that pierces most armour), Flicker (L2, self **Evasion** blink), Ransack (L3, damage + drains the
   enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
-- **Iron Hull** — Order of the Iron Hull monk. The tankiest, slowest class (most HP + armour, no dodge):
+- **Phoenix Guard** — Order of the Phoenix Guard monk. The tankiest, slowest class (most HP + armour, no dodge):
   a dense front-line wall that channels kinetic momentum into blunt-force. Level-gated kit: Swell Strike
   (heavy blow + gauge-drain stagger), Root (L2, self **Barrier** stance), Kinetic Shock (L3, heavier blow
   that fully zeroes the target's gauge), Toll of the Deep (L5, an **all-enemy** shockwave). See
-  `Battle::resolve_ironhull`.
+  `Battle::resolve_phoenix_guard`.
 
 New classes: add the enum variant (`meld-proto` `CharacterClass`), `[player.<key>]` stats +
 any `[battle]` tunables, the `class_key` mapping (`meld-run`), the kit in `meld-battle`, and the

@@ -422,7 +422,7 @@ town/anchor.
 At a **`barracks`** 🆕 structure (or a **town vendor** — this is the *"hiring at a town
 vendor"* the roadmap already names under **EC-2**, related to **CL-1** class hires),
 spend **chits + materials** to hire a **`GarrisonUnit`** of a chosen **tier**
-(militia → guard → veteran …), optionally **class-flavored** (a hired Iron Hull holds a
+(militia → guard → veteran …), optionally **class-flavored** (a hired Phoenix Guard holds a
 wall; a hired Ranger mans a tower). **Guild towns pay from the guild vault** (SOC B.5),
 recorded in the **guild audit log** (SOC B.6) — so a garrison is an accountable guild
 expense, not a silent drain.

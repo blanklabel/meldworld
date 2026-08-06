@@ -227,7 +227,7 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Psyker => "psyker",
         CharacterClass::Resonant => "resonant",
         CharacterClass::Shifter => "shifter",
-        CharacterClass::IronHull => "iron_hull",
+        CharacterClass::PhoenixGuard => "phoenix_guard",
     }
 }
 
@@ -1054,19 +1054,19 @@ mod tests {
     fn a_class_pair_synergy_arms_the_whole_party() {
         let b = Balance::load_default().unwrap();
         let mut runs = InstanceRun::new("i".into(), 0, &b);
-        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::IronHull, "r".into())]);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::PhoenixGuard, "r".into())]);
         let member = |class: CharacterClass| -> PartyMember {
             ("p".into(), "c".into(), class, GearBonus::default())
         };
         // No Psyker: no Fortress Front, so nobody opens warded.
-        let no_pair = vec![member(CharacterClass::IronHull), member(CharacterClass::Shifter)];
+        let no_pair = vec![member(CharacterClass::PhoenixGuard), member(CharacterClass::Shifter)];
         let bare = party_fighters(&no_pair, &runs, &b, &[]);
         assert!(bare.iter().all(|f| f.barrier == 0), "unpaired party opened warded");
 
-        // Iron Hull + Psyker: EVERY hero opens with the synergy's Barrier, not just
+        // Phoenix Guard + Psyker: EVERY hero opens with the synergy's Barrier, not just
         // the two that formed the pair.
         let paired = vec![
-            member(CharacterClass::IronHull),
+            member(CharacterClass::PhoenixGuard),
             member(CharacterClass::Psyker),
             member(CharacterClass::Shifter),
         ];

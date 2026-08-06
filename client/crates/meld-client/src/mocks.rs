@@ -9,7 +9,7 @@ use meld_client::net::{CombatantView, GearLine, SkillLine};
 use super::*;
 
 /// The classes the party builder cycles through.
-pub(crate) const PARTY_CLASSES: [&str; 5] = ["explorer", "psyker", "resonant", "shifter", "iron_hull"];
+pub(crate) const PARTY_CLASSES: [&str; 5] = ["explorer", "psyker", "resonant", "shifter", "phoenix_guard"];
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
@@ -96,12 +96,12 @@ pub(crate) fn mock_battle_setup(
         Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // A Explorer + Iron Hull hold the front; a Psyker + Resonant sit the back row.
-        // (The Iron Hull makes the TACTICS tap toggle visible for screenshots.)
+        // A Explorer + Phoenix Guard hold the front; a Psyker + Resonant sit the back row.
+        // (The Phoenix Guard makes the TACTICS tap toggle visible for screenshots.)
         hero("h1", 32, 1.0, "explorer", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
-        hero("h4", 36, 0.75, "iron_hull", false),
+        hero("h4", 36, 0.75, "phoenix_guard", false),
         CombatantView {
             id: "grendel".into(),
             name: "Grendel".into(),

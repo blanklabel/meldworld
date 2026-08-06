@@ -851,7 +851,7 @@ fn order_side(kind: QueuedKind) -> Option<Side> {
         // Shifter Flicker is a self-cast evasion blink (Backstab/Ransack hit an enemy
         // via the default arm below).
         QueuedKind::Skill("flicker") => None,
-        // Iron Hull: Root is a self-cast stance; Toll of the Deep is an all-enemy
+        // Phoenix Guard: Root is a self-cast stance; Toll of the Deep is an all-enemy
         // shockwave that needs no single target (Swell Strike / Kinetic Shock hit an
         // enemy via the default arm below).
         QueuedKind::Skill("root") | QueuedKind::Skill("toll_of_the_deep") => None,
@@ -1065,9 +1065,9 @@ fn shifter_autoplay_op(view: &CombatantView) -> QueuedKind {
     QueuedKind::Skill("backstab")
 }
 
-/// Autoplay heuristic for an Iron Hull hero: smash with the heaviest kinetic strike
+/// Autoplay heuristic for an Phoenix Guard hero: smash with the heaviest kinetic strike
 /// it has unlocked — Kinetic Shock once available (L3), otherwise Swell Strike (L1).
-fn ironhull_autoplay_op(view: &CombatantView) -> QueuedKind {
+fn phoenix_guard_autoplay_op(view: &CombatantView) -> QueuedKind {
     if view.level >= meld_proto::skills::unlock_level("kinetic_shock") {
         QueuedKind::Skill("kinetic_shock")
     } else {
@@ -1516,7 +1516,7 @@ struct MoveClock {
 #[derive(Resource)]
 struct Autoplay(bool);
 
-/// The Tactics auto-battle toggle (spec §6): available while an Iron Hull is
+/// The Tactics auto-battle toggle (spec §6): available while an Phoenix Guard is
 /// in the battle; when enabled, ready heroes auto-queue their class default
 /// (same per-class heuristics as `?autoplay`) with no human reaction delay.
 /// Toggled with T on the battle screen.
@@ -1658,7 +1658,7 @@ fn menu_entries(
             v.push(e("Back", EntryAction::Back));
             v
         }
-        MenuLevel::Skills if class == "iron_hull" => {
+        MenuLevel::Skills if class == "phoenix_guard" => {
             let mut v = skill_entries(
                 &[
                     ("Swell Strike", "swell_strike"),
@@ -1768,7 +1768,7 @@ struct CommandWindow;
 struct MenuRow {
     index: usize,
 }
-/// The tappable Iron Hull Tactics-stance toggle in the command window (keyboard: T).
+/// The tappable Phoenix Guard Tactics-stance toggle in the command window (keyboard: T).
 #[derive(Component)]
 struct TacticsButton;
 /// A clickable party HUD cell: tapping it makes that hero the one the command panel

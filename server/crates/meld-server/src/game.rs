@@ -832,10 +832,10 @@ impl WorldActor {
         if has(CharacterClass::Resonant) {
             out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
         }
-        // Iron Hull — bulwark (shrinks how close creatures chase this party).
-        if has(CharacterClass::IronHull) {
-            let mult = 1.0 - p.ironhull_aggro_reduction_per_level * lvl as f64;
-            out.ironhull_aggro_mult = mult.max(p.ironhull_aggro_mult_floor) as f32;
+        // Phoenix Guard — bulwark (shrinks how close creatures chase this party).
+        if has(CharacterClass::PhoenixGuard) {
+            let mult = 1.0 - p.phoenix_guard_aggro_reduction_per_level * lvl as f64;
+            out.phoenix_guard_aggro_mult = mult.max(p.phoenix_guard_aggro_mult_floor) as f32;
         }
         out
     }
@@ -4416,14 +4416,14 @@ impl WorldActor {
         // only in the no-battle branch) is what keeps players who *aren't* fighting
         // live: without it, one player's fight froze the whole instance and starved
         // everyone else of snapshots until their sockets dropped (the co-op crash).
-        // Iron Hull "Bulwark": per-player creature-aggro multipliers (≤1 shrinks how
+        // Phoenix Guard "Bulwark": per-player creature-aggro multipliers (≤1 shrinks how
         // close a creature will chase/skirmish-pull that party). Built before the
         // mut borrow below (perks_for needs a shared borrow of the instance).
         let aggro_mult: HashMap<String, f64> = {
             let ids: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
             ids.into_iter()
                 .map(|pid| {
-                    let m = self.perks_for(&pid).ironhull_aggro_mult as f64;
+                    let m = self.perks_for(&pid).phoenix_guard_aggro_mult as f64;
                     (pid, m)
                 })
                 .collect()

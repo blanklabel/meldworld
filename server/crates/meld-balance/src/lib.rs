@@ -153,11 +153,11 @@ pub struct Battle {
     pub explorer_snare_drain: f64,
     pub explorer_frenzy_cost: i32,
     pub explorer_frenzy_mult: f64,
-    pub ironhull_swell_mult: f64,
-    pub ironhull_swell_drain: f64,
-    pub ironhull_root_barrier_fraction: f64,
-    pub ironhull_shock_mult: f64,
-    pub ironhull_toll_mult: f64,
+    pub phoenix_guard_swell_mult: f64,
+    pub phoenix_guard_swell_drain: f64,
+    pub phoenix_guard_root_barrier_fraction: f64,
+    pub phoenix_guard_shock_mult: f64,
+    pub phoenix_guard_toll_mult: f64,
     // Monster-ability system (Creature AI spec §2).
     /// ATB fill multiplier while a slowing status (web/chill/bind/…) is active.
     pub status_slow_mult: f64,
@@ -586,13 +586,13 @@ pub struct Perks {
     /// HP/sec restored to each carried hero while walking the overworld, per run
     /// level (0 at level 0). Applied server-side; feeds next fight's start HP.
     pub resonant_regen_per_level: f32,
-    // --- Iron Hull: bulwark (reduced skirmish/aggro pull). ---
+    // --- Phoenix Guard: bulwark (reduced skirmish/aggro pull). ---
     /// Fraction the creature aggro/skirmish radius shrinks per run level.
-    pub ironhull_aggro_reduction_per_level: f64,
+    pub phoenix_guard_aggro_reduction_per_level: f64,
     /// Lowest the aggro multiplier can fall to (a floor so mobs never fully ignore).
-    pub ironhull_aggro_mult_floor: f64,
-    /// Obstacle radius an Iron Hull party can trample through (0 = disabled; stretch).
-    pub ironhull_trample_radius: f64,
+    pub phoenix_guard_aggro_mult_floor: f64,
+    /// Obstacle radius an Phoenix Guard party can trample through (0 = disabled; stretch).
+    pub phoenix_guard_trample_radius: f64,
 }
 
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).
@@ -720,6 +720,6 @@ mod tests {
         // Overworld class perks load.
         assert_eq!(b.perks.explorer_intel_hp_at, 3);
         assert_eq!(b.perks.shifter_map_at, 1);
-        assert!(b.perks.ironhull_aggro_mult_floor > 0.0 && b.perks.ironhull_aggro_mult_floor <= 1.0);
+        assert!(b.perks.phoenix_guard_aggro_mult_floor > 0.0 && b.perks.phoenix_guard_aggro_mult_floor <= 1.0);
     }
 }

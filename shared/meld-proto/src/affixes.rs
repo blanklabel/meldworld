@@ -161,7 +161,7 @@ impl Affix {
     }
 }
 
-/// Display form of a class key (`iron_hull` → `Iron Hull`).
+/// Display form of a class key (`phoenix_guard` → `Phoenix Guard`).
 pub fn pretty_class(key: &str) -> String {
     key.split('_')
         .map(|w| {
@@ -259,10 +259,10 @@ mod tests {
             key: "ally_atk".into(),
             magnitude: 3,
             element: None,
-            ally_class: Some("iron_hull".into()),
+            ally_class: Some("phoenix_guard".into()),
         };
-        assert_eq!(a.describe(), "+3 atk while a Iron Hull is in your party");
-        assert_eq!(pretty_class("iron_hull"), "Iron Hull");
+        assert_eq!(a.describe(), "+3 atk while a Phoenix Guard is in your party");
+        assert_eq!(pretty_class("phoenix_guard"), "Phoenix Guard");
     }
 
     #[test]

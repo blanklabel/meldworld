@@ -1809,7 +1809,7 @@ mod equip_ux_tests {
         assert_eq!(gear_block_reason(&plate, Some("psyker")).as_deref(), Some("too heavy"));
         // Legal kit is not labelled.
         assert!(gear_block_reason(&spear, Some("explorer")).is_none());
-        assert!(gear_block_reason(&plate, Some("iron_hull")).is_none());
+        assert!(gear_block_reason(&plate, Some("phoenix_guard")).is_none());
         // An unknown class never blocks: the server would allow it, so the UI must
         // not claim otherwise.
         assert!(gear_block_reason(&spear, None).is_none());

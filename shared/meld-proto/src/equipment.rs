@@ -117,7 +117,7 @@ impl ArmorWeight {
 
 /// The weapon families a class may wear. Each class gets a recognizable hand:
 /// Explorer chooses between sword+shield and a two-handed spear, Resonant and
-/// Psyker have both hands full (staff / globe), Iron Hull cannot reach past its
+/// Psyker have both hands full (staff / globe), Phoenix Guard cannot reach past its
 /// own arms (gauntlet+shield), and the Shifter's off-hand is a build decision —
 /// a second dagger (aggressive) or a parrying blade (defensive).
 pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
@@ -125,7 +125,7 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
         CharacterClass::Explorer => &[ItemFamily::Sword, ItemFamily::Shield, ItemFamily::Spear],
         CharacterClass::Resonant => &[ItemFamily::Staff],
         CharacterClass::Psyker => &[ItemFamily::Globe],
-        CharacterClass::IronHull => &[ItemFamily::Gauntlet, ItemFamily::Shield],
+        CharacterClass::PhoenixGuard => &[ItemFamily::Gauntlet, ItemFamily::Shield],
         CharacterClass::Shifter => &[ItemFamily::Dagger, ItemFamily::ParryBlade],
         // The unbuilt roster classes inherit the martial baseline until each gets
         // its own kit — never an empty set, which would lock a hero out of gear.
@@ -136,7 +136,7 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
 /// The armor weights a class may wear.
 pub fn armor_weights(class: CharacterClass) -> &'static [ArmorWeight] {
     match class {
-        CharacterClass::IronHull => &[ArmorWeight::Heavy, ArmorWeight::Medium],
+        CharacterClass::PhoenixGuard => &[ArmorWeight::Heavy, ArmorWeight::Medium],
         CharacterClass::Explorer => &[ArmorWeight::Medium, ArmorWeight::Light],
         CharacterClass::Shifter => &[ArmorWeight::Light],
         CharacterClass::Resonant => &[ArmorWeight::Robe, ArmorWeight::Light],
@@ -165,7 +165,9 @@ pub fn class_from_key(key: &str) -> Option<CharacterClass> {
         "psyker" => CharacterClass::Psyker,
         "resonant" => CharacterClass::Resonant,
         "shifter" => CharacterClass::Shifter,
-        "iron_hull" => CharacterClass::IronHull,
+        // `iron_hull` is the pre-rename key; still accepted so a hero persisted
+        // under it keeps its class instead of silently falling back.
+        "phoenix_guard" | "iron_hull" => CharacterClass::PhoenixGuard,
         _ => return None,
     })
 }
@@ -188,7 +190,7 @@ pub fn has_off_hand(class: CharacterClass) -> bool {
 }
 
 /// The weight a drop for this class rolls: the heaviest the class allows, so a
-/// class's armor reads as its own (an Iron Hull drop is plate, not the medium it
+/// class's armor reads as its own (an Phoenix Guard drop is plate, not the medium it
 /// merely tolerates).
 pub fn drop_weight(class: CharacterClass) -> ArmorWeight {
     armor_weights(class).first().copied().unwrap_or(ArmorWeight::Medium)
@@ -271,7 +273,7 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Psyker => "psyker",
         CharacterClass::Resonant => "resonant",
         CharacterClass::Shifter => "shifter",
-        CharacterClass::IronHull => "iron_hull",
+        CharacterClass::PhoenixGuard => "phoenix_guard",
     }
 }
 
@@ -288,9 +290,9 @@ mod tests {
         // Casters and healers have both hands full.
         assert_eq!(weapon_families(CharacterClass::Resonant), &[ItemFamily::Staff]);
         assert_eq!(weapon_families(CharacterClass::Psyker), &[ItemFamily::Globe]);
-        // Iron Hull cannot reach past its own arms.
-        assert!(allows_family(CharacterClass::IronHull, ItemFamily::Gauntlet));
-        assert!(!allows_family(CharacterClass::IronHull, ItemFamily::Spear));
+        // Phoenix Guard cannot reach past its own arms.
+        assert!(allows_family(CharacterClass::PhoenixGuard, ItemFamily::Gauntlet));
+        assert!(!allows_family(CharacterClass::PhoenixGuard, ItemFamily::Spear));
         // The Shifter's off-hand is the build decision: dagger or parry blade.
         assert!(allows_family(CharacterClass::Shifter, ItemFamily::Dagger));
         assert!(allows_family(CharacterClass::Shifter, ItemFamily::ParryBlade));
@@ -301,7 +303,7 @@ mod tests {
             CharacterClass::Psyker,
             CharacterClass::Resonant,
             CharacterClass::Shifter,
-            CharacterClass::IronHull,
+            CharacterClass::PhoenixGuard,
             CharacterClass::Dragoon,
             CharacterClass::Bard,
         ] {
@@ -342,10 +344,10 @@ mod tests {
 
     #[test]
     fn armor_weights_are_shared_where_they_overlap() {
-        // Medium fits Explorer AND Iron Hull; light fits three classes. That
+        // Medium fits Explorer AND Phoenix Guard; light fits three classes. That
         // overlap is the whole point of weights over per-class armor.
         assert!(allows_weight(CharacterClass::Explorer, ArmorWeight::Medium));
-        assert!(allows_weight(CharacterClass::IronHull, ArmorWeight::Medium));
+        assert!(allows_weight(CharacterClass::PhoenixGuard, ArmorWeight::Medium));
         for c in [
             CharacterClass::Explorer,
             CharacterClass::Shifter,
@@ -367,7 +369,7 @@ mod tests {
         assert!(families_for_slot(CharacterClass::Psyker, "off_hand").is_empty());
         // Everyone else does.
         assert!(has_off_hand(CharacterClass::Explorer));
-        assert!(has_off_hand(CharacterClass::IronHull));
+        assert!(has_off_hand(CharacterClass::PhoenixGuard));
         assert!(has_off_hand(CharacterClass::Shifter));
         assert_eq!(
             families_for_slot(CharacterClass::Shifter, "off_hand"),
@@ -382,11 +384,11 @@ mod tests {
 
     #[test]
     fn drops_roll_a_class_defining_weight() {
-        assert_eq!(drop_weight(CharacterClass::IronHull), ArmorWeight::Heavy);
+        assert_eq!(drop_weight(CharacterClass::PhoenixGuard), ArmorWeight::Heavy);
         assert_eq!(drop_weight(CharacterClass::Psyker), ArmorWeight::Robe);
         assert_eq!(drop_weight(CharacterClass::Shifter), ArmorWeight::Light);
         // And a class always allows what it drops.
-        for c in [CharacterClass::IronHull, CharacterClass::Psyker, CharacterClass::Shifter] {
+        for c in [CharacterClass::PhoenixGuard, CharacterClass::Psyker, CharacterClass::Shifter] {
             assert!(allows_weight(c, drop_weight(c)), "{c:?}");
         }
     }
@@ -401,7 +403,7 @@ mod tests {
             Legality::Ok
         );
         assert_eq!(
-            check_equip(IronHull, "", "main_hand", Some(ItemFamily::Gauntlet), Some(ArmorWeight::Robe)),
+            check_equip(PhoenixGuard, "", "main_hand", Some(ItemFamily::Gauntlet), Some(ArmorWeight::Robe)),
             Legality::Ok
         );
         // On real armor it bites.

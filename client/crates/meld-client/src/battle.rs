@@ -1134,10 +1134,10 @@ pub(crate) fn menu_keyboard(
     // The command menu keys off the *active hero's* class — a mixed party is
     // commanded hero by hero.
     let class = battle.active_class();
-    // Tactics (spec §6): available while an Iron Hull anchors the battle line;
+    // Tactics (spec §6): available while an Phoenix Guard anchors the battle line;
     // when toggled on it drives the same per-class defaults as `?autoplay`,
     // submitting intents with no human reaction delay.
-    if autoplay.0 || (tactics.0 && battle_has_iron_hull(&battle)) {
+    if autoplay.0 || (tactics.0 && battle_has_phoenix_guard(&battle)) {
         let idle: Vec<String> = battle
             .your_ids
             .iter()
@@ -1153,7 +1153,7 @@ pub(crate) fn menu_keyboard(
                 "resonant" => resonant_autoplay_op(&battle),
                 "shifter" => battle.view(&h).map(shifter_autoplay_op).unwrap_or(QueuedKind::Attack),
                 "explorer" => battle.view(&h).map(explorer_autoplay_op).unwrap_or(QueuedKind::Attack),
-                "iron_hull" => battle.view(&h).map(ironhull_autoplay_op).unwrap_or(QueuedKind::Attack),
+                "phoenix_guard" => battle.view(&h).map(phoenix_guard_autoplay_op).unwrap_or(QueuedKind::Attack),
                 _ => QueuedKind::Attack,
             };
             let target = default_target(&battle, kind);
@@ -1558,10 +1558,10 @@ pub(crate) fn rebuild_command_menu(
                             }
                         });
                 }
-                // Iron Hull stance toggle — the last keyboard-only battle control ([T]),
+                // Phoenix Guard stance toggle — the last keyboard-only battle control ([T]),
                 // now also a tap button so battle is fully click/tap driven. Shown only
-                // when an Iron Hull anchors the line (mirrors `tactics_toggle`).
-                if battle_has_iron_hull(&battle) {
+                // when an Phoenix Guard anchors the line (mirrors `tactics_toggle`).
+                if battle_has_phoenix_guard(&battle) {
                     let (label, col) = if tactics.0 {
                         ("\u{f132} TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
                     } else {
@@ -1593,7 +1593,7 @@ pub(crate) fn rebuild_command_menu(
         });
 }
 
-/// Toggle the Iron Hull Tactics stance from its tap button (the keyboard [T] path
+/// Toggle the Phoenix Guard Tactics stance from its tap button (the keyboard [T] path
 /// is `tactics_toggle`). Marks the command menu dirty so the label rebuilds.
 pub(crate) fn tactics_click(
     q: Query<&Interaction, (With<TacticsButton>, Changed<Interaction>)>,
@@ -2405,23 +2405,23 @@ pub(crate) fn advance_atb_flash(time: Res<Time>, battle: Res<BattleData>, mut fl
     flash.prev = battle.ready.iter().cloned().collect();
 }
 
-/// Whether any allied hero in this battle is an Iron Hull (their wire statuses
-/// carry `class:iron_hull`) — the gate for the Tactics auto-battle toggle.
-pub(crate) fn battle_has_iron_hull(battle: &BattleData) -> bool {
+/// Whether any allied hero in this battle is an Phoenix Guard (their wire statuses
+/// carry `class:phoenix_guard`) — the gate for the Tactics auto-battle toggle.
+pub(crate) fn battle_has_phoenix_guard(battle: &BattleData) -> bool {
     battle
         .combatants
         .iter()
-        .any(|c| c.is_player && c.statuses.iter().any(|s| s == "class:iron_hull"))
+        .any(|c| c.is_player && c.statuses.iter().any(|s| s == "class:phoenix_guard"))
 }
 
-/// Toggle Tactics with T on the battle screen (only while an Iron Hull is in
+/// Toggle Tactics with T on the battle screen (only while an Phoenix Guard is in
 /// the battle — without one the toggle is inert and the hint hidden).
 pub(crate) fn tactics_toggle(
     keys: Res<ButtonInput<KeyCode>>,
     battle: Res<BattleData>,
     mut tactics: ResMut<Tactics>,
 ) {
-    if keys.just_pressed(KeyCode::KeyT) && battle_has_iron_hull(&battle) {
+    if keys.just_pressed(KeyCode::KeyT) && battle_has_phoenix_guard(&battle) {
         tactics.0 = !tactics.0;
     }
 }
@@ -2544,10 +2544,10 @@ pub(crate) fn render_hit_fx(
                 });
             }
 
-            // Tactics status (spec §6): a passive top-right readout while an Iron Hull
+            // Tactics status (spec §6): a passive top-right readout while an Phoenix Guard
             // anchors the line. Suppressed while a hero is being commanded, since the
             // command window then shows the interactive TACTICS toggle button instead.
-            if battle_has_iron_hull(&battle) && battle.active.is_none() {
+            if battle_has_phoenix_guard(&battle) && battle.active.is_none() {
                 let (label, col) = if tactics.0 {
                     ("TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
                 } else {
