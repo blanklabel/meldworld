@@ -467,6 +467,19 @@ pub(crate) fn draw_web_trail(
     world_web.drawn = true;
 }
 
+/// The bodies a dungeon door within reach wants held on plates at once, when that is
+/// more than one. `None` when there is no such door nearby.
+pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Option<u8> {
+    let (mx, my) = me?;
+    world
+        .entities
+        .values()
+        .filter(|e| e.kind == EntityKind::Entrance && e.bodies_required > 1)
+        .filter(|e| (e.x - mx).powi(2) + (e.y - my).powi(2) <= 2.25)
+        .map(|e| e.bodies_required)
+        .max()
+}
+
 /// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
 /// and the run backpack moved off the HUD into the menu (Status tab — see
 /// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: only
@@ -486,6 +499,15 @@ pub(crate) fn update_overworld_hud(
         let mut parts: Vec<String> = Vec::new();
         if near_fight(&world, me_pos) {
             parts.push("\u{f0817} Press [J] to join the fight".into()); // crossed-swords marker
+        }
+        // A door that wants more bodies than one says so BEFORE you are inside it.
+        // There is no Town Portal in a dungeon, so a party that finds out at the gate
+        // has walked the whole way for nothing.
+        if let Some(n) = coop_door_near(&world, me_pos) {
+            parts.push(format!(
+                "{} This door needs {n} heroes on its plates at once  -  Press [F] to enter anyway",
+                '\u{f06cc}'
+            ));
         }
         **t = parts.join("  -  ");
     }
@@ -597,7 +619,15 @@ pub(crate) fn overworld_input(
             .min_by(|a, b| a.1.total_cmp(&b.1));
         match touch {
             // `insert` is true the first frame we touch this doorway → send once.
-            Some((eid, _)) if entered.insert(eid.clone()) || keys.just_pressed(KeyCode::KeyF) => {
+            // A CO-OP door is never entered by walking into it: a dungeon takes no
+            // Town Portal, so being swallowed by a maze your party cannot finish
+            // costs the whole trip. Those need [F] — a deliberate answer to the
+            // prompt, not a footstep.
+            Some((eid, _))
+                if (entered.insert(eid.clone())
+                    && world.entities.get(&eid).is_none_or(|e| e.bodies_required <= 1))
+                    || keys.just_pressed(KeyCode::KeyF) =>
+            {
                 net.0.send(ClientCmd::EnterDungeon { entity_id: eid });
             }
             Some(_) => {} // still standing on an already-triggered doorway

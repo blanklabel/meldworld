@@ -62,6 +62,23 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_co_op_gate_is_visible_from_the_definition() {
+        // `verdant_barrow`'s G1 is `all[P1,P2,P3]` over momentary plates: three bodies.
+        // The runtime currently latches plates so one player clears it, but the
+        // AUTHORED requirement is what a party is warned about at the entrance — and
+        // what binds again the moment `momentary` is honoured.
+        let d = by_name("verdant_barrow").unwrap();
+        assert_eq!(d.bodies_required(), 3, "its gate wants three plates held at once");
+
+        // Every shipped dungeon reports something sane, and a soloable one says 1.
+        for d in all() {
+            let n = d.bodies_required();
+            assert!((1..=4).contains(&n), "{} wants {n} bodies", d.name);
+        }
+        assert_eq!(by_name("guardia_forest").unwrap().bodies_required(), 1);
+    }
+
     fn every_embedded_dungeon_revalidates_at_runtime() {
         // Belt-and-suspenders: the build already validated these, but prove the
         // embedded form round-trips back to a still-valid def.

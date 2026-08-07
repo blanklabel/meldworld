@@ -180,7 +180,13 @@ impl<'a> DungeonInstance<'a> {
     pub fn enter(&mut self, player_id: &str) -> Position {
         let e = &self.def.entrances[0];
         let pos = cell_center(e.x, e.y);
-        self.occupants.insert(player_id.to_string(), Occupant { floor: e.floor, pos, arrived_on: None });
+        // Arrive DISARMED. The door you came in by is also a way out
+        // ([`Self::at_exit_for`]), so without this you would turn round and leave in
+        // the same tick you entered.
+        self.occupants.insert(
+            player_id.to_string(),
+            Occupant { floor: e.floor, pos, arrived_on: Some((e.x, e.y)) },
+        );
         pos
     }
 
@@ -316,6 +322,26 @@ impl<'a> DungeonInstance<'a> {
     pub fn at_exit(&self, floor: usize, pos: Position) -> bool {
         let Some((x, y)) = cell_of(pos) else { return false };
         self.def.exits.iter().any(|e| e.floor == floor && e.x == x && e.y == y)
+            || self.def.entrances.iter().any(|e| e.floor == floor && e.x == x && e.y == y)
+    }
+
+    /// Whether `player_id` is standing on a way out right now — an authored exit, or
+    /// the entrance they came in by.
+    ///
+    /// The door you walked in through stays open. A dungeon refuses Town Portal
+    /// ([`Self::town_portal_allowed`]), so otherwise the only ways out are the far
+    /// exit or dying, and a player who could not find the exit had to throw the run
+    /// away. Turning back is not a reward — you leave with exactly what you are
+    /// carrying — it just stops being lost from being fatal.
+    ///
+    /// Suppressed on the cell they arrived on, so entering does not fire instantly.
+    /// See [`Occupant::arrived_on`].
+    pub fn at_exit_for(&self, player_id: &str) -> bool {
+        let Some(o) = self.occupants.get(player_id) else { return false };
+        if o.arrived_on.is_some() && o.arrived_on == cell_of(o.pos) {
+            return false;
+        }
+        self.at_exit(o.floor, o.pos)
     }
 
     /// If `pos` on `floor` is a stair endpoint, the paired endpoint's
@@ -906,6 +932,32 @@ mod tests {
         assert!(d.open_chest("vault"), "opens once");
         assert!(!d.chest_openable("vault"), "and only once");
         assert!(!d.open_chest("vault"));
+    }
+
+    #[test]
+    fn the_door_you_came_in_by_is_a_way_out() {
+        // A dungeon refuses Town Portal, so before this the only ways out were the far
+        // exit or dying — a player who could not find the exit had to bin the run.
+        let def = forest();
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        let spawn = d.enter("p");
+
+        // Standing in the doorway the instant you arrive must NOT eject you.
+        assert!(!d.at_exit_for("p"), "entering would bounce you straight back out");
+
+        // Walk into the dungeon proper: no longer on a way out.
+        let inside = Position { x: spawn.x + 2.0, y: spawn.y };
+        d.set_pos("p", 0, inside);
+        assert!(!d.at_exit_for("p"));
+
+        // Come back to the doorway and it lets you leave.
+        d.set_pos("p", 0, spawn);
+        assert!(d.at_exit_for("p"), "turning back must be possible");
+
+        // The authored far exit still works.
+        let e = &def.exits[0];
+        d.set_pos("p", e.floor, cell_center(e.x, e.y));
+        assert!(d.at_exit_for("p"), "the far exit must still let you out");
     }
 
     #[test]

@@ -170,6 +170,9 @@ pub struct EntityView {
     pub encounter_class: Option<String>,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: Option<String>,
+    /// For dungeon entrances: how many heroes the doors inside want standing on
+    /// plates at once. 1 for anything a lone player can finish.
+    pub bodies_required: u8,
 }
 
 /// A connector (ladder/rope/slope) joining two elevation levels — client view.
@@ -1571,6 +1574,7 @@ impl Inner {
                             // Server tags monsters `mob:<kind>:<faction>`, the portal
                             // `portal`, and players with their avatar state (`active`, …).
                             let mut radius = 0.0;
+                            let mut bodies_required: u8 = 1;
                             let mut opened = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
@@ -1608,7 +1612,11 @@ impl Inner {
                                     (EntityKind::Obstacle, Some(k.to_string()), None)
                                 }
                                 Some(s) if s.starts_with("entrance:") => {
-                                    (EntityKind::Entrance, Some(s["entrance:".len()..].to_string()), None)
+                                    // entrance:<dungeon>:<bodies>
+                                    let rest = &s["entrance:".len()..];
+                                    let (n, b) = rest.rsplit_once(':').unwrap_or((rest, "1"));
+                                    bodies_required = b.parse().unwrap_or(1);
+                                    (EntityKind::Entrance, Some(n.to_string()), None)
                                 }
                                 _ => (EntityKind::Player, None, None),
                             };
@@ -1631,6 +1639,7 @@ impl Inner {
                                 max_hp: is_mob.then_some(e.max_hp).flatten(),
                                 encounter_class: if is_mob { e.encounter_class } else { None },
                                 aggression: if is_mob { e.aggression } else { None },
+                                bodies_required,
                             }
                         })
                         .collect();

@@ -57,9 +57,24 @@ async fn hero_names_persist_load_and_show_in_battle() {
     let player_id = login["player"]["player_id"].as_str().unwrap().to_string();
     let token = login["session_token"].as_str().unwrap().to_string();
 
-    // Fresh accounts seed default hero names.
+    // A fresh account seeds GENERATED hero names — four distinct ones, stable for the
+    // account, and none of them the "Hero N" placeholder a player would have to fix.
     let h0: Value = http.get(format!("{base}/v1/heroes")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
-    assert_eq!(h0["names"][0], json!("Hero 1"), "default hero name");
+    let seeded: Vec<String> = h0["names"]
+        .as_array()
+        .expect("names")
+        .iter()
+        .map(|n| n.as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(seeded, meld_proto::names::roster(&player_id, 4), "seeded from the account");
+    let mut uniq = seeded.clone();
+    uniq.sort();
+    uniq.dedup();
+    assert_eq!(uniq.len(), 4, "four distinct names: {seeded:?}");
+    assert!(
+        !seeded.iter().any(|n| n.starts_with("Hero ")),
+        "a generated name, not a placeholder: {seeded:?}"
+    );
 
     // Rename slot 0 over HTTP → persisted.
     let r = http

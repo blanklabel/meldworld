@@ -1038,7 +1038,17 @@ impl WorldActor {
                 entity_id: e.entity_id.clone(),
                 position: e.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("entrance:{}", e.dungeon)),
+                // `entrance:<dungeon>:<bodies>` — how many heroes the doors inside
+                // want held on plates at once. A dungeon takes no Town Portal, so a
+                // party that learns this on the far side of the maze has wasted the
+                // trip; the door says it up front.
+                avatar_state: Some(format!(
+                    "entrance:{}:{}",
+                    e.dungeon,
+                    meld_dungeon_content::by_name(&e.dungeon)
+                        .map(|d| d.bodies_required())
+                        .unwrap_or(1)
+                )),
                 level: Some(0),
                 ..Default::default()
             });
@@ -1285,7 +1295,9 @@ impl WorldActor {
             // Fire an armed trap only on ENTERING a new cell (not while lingering).
             let changed = stair.is_some()
                 || pre.is_none_or(|p| (p.x.floor() as i64, p.y.floor() as i64) != (fp.x.floor() as i64, fp.y.floor() as i64));
-            (ff, fp, dj.at_exit(ff, fp), changed)
+            // `_for` so the entrance you are standing on the instant you arrive does
+            // not throw you straight back out.
+            (ff, fp, dj.at_exit_for(pid), changed)
         };
         if final_floor != floor {
             self.location.insert(pid.to_string(), Location::InDungeon { key, floor: final_floor });
@@ -1640,7 +1652,7 @@ impl WorldActor {
                 name: names
                     .get(slot)
                     .cloned()
-                    .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                    .unwrap_or_else(|| generated_hero_name(pid, slot)),
                 class_key: f.class_key.clone(),
                 level: f.level,
                 str_: f.str_,
@@ -1752,7 +1764,7 @@ impl WorldActor {
                     name: names
                         .get(slot)
                         .cloned()
-                        .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                        .unwrap_or_else(|| generated_hero_name(pid, slot)),
                     class_key: meld_run::class_key(*class).to_string(),
                     level: new_level,
                     max_hp_before: hp0,
@@ -2380,7 +2392,7 @@ impl GameState {
                     if let Some(s) = self.sessions.get_mut(&player_id) {
                         let mut v = s.hero_names.clone().unwrap_or_default();
                         while v.len() <= slot {
-                            v.push(format!("Hero {}", v.len() + 1));
+                            v.push(generated_hero_name(&player_id, v.len()));
                         }
                         v[slot] = name;
                         s.hero_names = Some(v);
@@ -2912,12 +2924,12 @@ impl GameState {
                     meld_run::class_key(*class).to_string(),
                 ));
             }
-            // Hero names by slot: the builder's, normalized to party size and
-            // defaulted to "Hero N" for any unnamed slot.
+            // Hero names by slot: the builder's, normalized to party size, with any
+            // unnamed slot falling back to its generated name.
             let mut names = names.unwrap_or_default();
             names.truncate(party_size);
             while names.len() < party_size {
-                names.push(format!("Hero {}", names.len() + 1));
+                names.push(generated_hero_name(pid, names.len()));
             }
             let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
             // Saved formation by slot, normalized to party size (missing = false).
@@ -5688,6 +5700,13 @@ impl WorldActor {
         }
         (out, effects)
     }
+}
+
+/// The name a hero slot falls back to when nothing has been stored for it — the same
+/// generated name registration would have seeded, so a slot never surfaces as
+/// "Hero 3" just because its row is missing.
+fn generated_hero_name(player_id: &str, slot: usize) -> String {
+    meld_proto::names::hero_name(meld_proto::names::seed_of(player_id), slot).to_string()
 }
 
 fn error(
