@@ -236,7 +236,12 @@ pub struct Loot {
     pub material_qty_per_tier: f64,
     pub gear_drop_chance: f64,
     /// Fraction of a reward-spike encounter's gear drops that are PERMANENT (blue).
+    pub ephemeral_gear_chance: f64,
+    pub ephemeral_power_mult: f64,
     pub permanent_gear_chance: f64,
+    pub insured_power_mult: f64,
+    /// Fraction of max durability an INSURED piece loses per wipe.
+    pub insured_death_decay: f64,
     pub gear_atk_per_tier: f64,
     pub gear_atk_jitter: f64,
     pub gear_base_durability: i32,

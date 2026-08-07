@@ -338,7 +338,24 @@ gear_drop_chance = 0.35
 # it at any depth, so a permanent piece is something you fought something real for.
 # Deliberately low — permanence is the reward that makes a loadout worth saving.
 # [TUNABLE]
+# The three gear tiers, rolled only on a REWARD-SPIKE encounter (elite / gatekeeper
+# / rite / chest — anything carrying a `loot_mult`). Ordinary creatures always drop
+# standard, at any depth. The two chances are cumulative slices of one roll, so they
+# must sum to well under 1.
+#
+# Ephemeral is the STRONGEST gear in the game and burns the moment you reach the
+# city — power you can only spend inside the run that found it. Insured sits above
+# ordinary kit, survives a wipe, and erodes until it breaks. [TUNABLE]
+ephemeral_gear_chance = 0.10
+ephemeral_power_mult = 1.60
 permanent_gear_chance = 0.15
+insured_power_mult = 1.15
+# What one wipe costs a piece of INSURED gear: max durability keeps
+# `1 - insured_death_decay` of itself. Insured gear cannot be taken from you, so
+# erosion is the whole price of that guarantee — this dial is how long "eventually
+# breaks" takes. At 0.08 a piece survives roughly 28 wipes before it is scrap.
+# [TUNABLE]
+insured_death_decay = 0.08
 gear_atk_per_tier = 3.0
 gear_atk_jitter = 0.4
 gear_base_durability = 80

@@ -475,7 +475,10 @@ pub(crate) fn render_gear_tooltip(
     // a player must never lose an item without having been told it was temporary.
     let ins_color = match ins {
         Insurance::Ephemeral => Color::srgb(0.98, 0.62, 0.35),
-        Insurance::Insured => dim,
+        // Insured is worth calling out too — it is the tier that survives a wipe, and
+        // a player choosing what to risk should be able to see which is which.
+        Insurance::Insured => Color::srgb(0.55, 0.75, 0.98),
+        Insurance::Standard => dim,
     };
     let mut lines: Vec<(String, Color)> = vec![
         (item.name.clone(), gold),

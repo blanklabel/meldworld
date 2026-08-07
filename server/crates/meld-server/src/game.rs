@@ -110,7 +110,9 @@ enum DbWrite {
     /// Permanently delete a player's EQUIPPED red-insurance gear — the spec §5
     /// canon-gap resolution: Vault-owned red gear brought back into a run is
     /// at absolute risk, burned when the run ends `died` OR `abandoned`.
-    PurgeEquippedRed(String),
+    /// The run ended and this player is back in the city — burn their ephemeral gear.
+    /// Sent on EVERY way home, extraction included.
+    BurnEphemeral(String),
     /// Credit harvested Meld-skill XP: (player, skill, xp).
     SkillXp(String, String, i64),
     /// Persist a hero rename: (player, slot, name).
@@ -139,24 +141,30 @@ enum DbWrite {
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
-async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
+async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
+    let decay = balance.loot.insured_death_decay;
     while let Some(job) = rx.recv().await {
         match job {
             DbWrite::Death(pid) => {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
-                    if let Err(e) = db.apply_death_durability(uid).await {
+                    // A wipe touches all three tiers, each in its own way: insured
+                    // wears down, standard is destroyed outright, ephemeral burns like
+                    // it would have on any other way home.
+                    if let Err(e) = db.apply_death_durability(uid, decay).await {
                         tracing::error!("death durability failed for {pid}: {e}");
                     }
-                    // Died is one of the two red-burning ends (spec §5).
-                    if let Err(e) = db.delete_equipped_red_gear(uid).await {
-                        tracing::error!("red-gear purge failed for {pid}: {e}");
+                    if let Err(e) = db.destroy_equipped_standard_gear(uid).await {
+                        tracing::error!("standard-gear loss failed for {pid}: {e}");
+                    }
+                    if let Err(e) = db.burn_ephemeral_gear(uid).await {
+                        tracing::error!("ephemeral burn failed for {pid}: {e}");
                     }
                 }
             }
-            DbWrite::PurgeEquippedRed(pid) => {
+            DbWrite::BurnEphemeral(pid) => {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
-                    if let Err(e) = db.delete_equipped_red_gear(uid).await {
-                        tracing::error!("red-gear purge failed for {pid}: {e}");
+                    if let Err(e) = db.burn_ephemeral_gear(uid).await {
+                        tracing::error!("ephemeral burn failed for {pid}: {e}");
                     }
                 }
             }
@@ -234,7 +242,7 @@ async fn run_db_writer(db: Db, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
 pub fn spawn(balance: Arc<Balance>, db: Db) -> GameHandle {
     let (tx, rx) = mpsc::channel(1024);
     let (db_tx, db_rx) = mpsc::unbounded_channel::<DbWrite>();
-    tokio::spawn(run_db_writer(db.clone(), db_rx));
+    tokio::spawn(run_db_writer(db.clone(), balance.clone(), db_rx));
     tokio::spawn(async move {
         GameState::new(balance, db, db_tx).run(rx).await;
     });
@@ -2328,7 +2336,7 @@ impl GameState {
                         .any(|r| r.player_id == player_id && r.result.is_none())
                 });
                 if abandoned {
-                    let _ = self.db_writes.send(DbWrite::PurgeEquippedRed(player_id.clone()));
+                    let _ = self.db_writes.send(DbWrite::BurnEphemeral(player_id.clone()));
                 }
                 self.remove_from_instance(&player_id);
                 out
@@ -4543,9 +4551,8 @@ impl WorldActor {
                 rarity: g.rarity.clone(),
                 slot: g.slot.clone(),
                 class_key: g.class_key.clone(),
-                // Permanence is decided by the ROLL, not the drop site: a reward-spike
-                // encounter can yield blue, and everything else stays red and burns.
-                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
+                // The tier is decided by the ROLL, not the drop site.
+                insurance: g.insurance,
                 tier: g.tier,
                 atk_bonus: g.atk_bonus,
                 def_bonus: g.def_bonus,
@@ -4653,9 +4660,8 @@ impl WorldActor {
                     rarity: g.rarity.clone(),
                     slot: g.slot.clone(),
                     class_key: g.class_key.clone(),
-                    // Permanence is decided by the ROLL, not the drop site: a reward-spike
-                // encounter can yield blue, and everything else stays red and burns.
-                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
+                    // The tier is decided by the ROLL, not the drop site.
+                insurance: g.insurance,
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,
                     def_bonus: g.def_bonus,
@@ -4778,6 +4784,10 @@ impl GameState {
             // Hunters' hall recruits on ("hunts are only rewarded with evidence of
             // kills"), so a completed extraction is the Hunter's trigger.
             self.grant_milestone(&b.player_id, meld_proto::unlocks::Milestone::Extracted);
+            // Reaching the city burns ephemeral gear even when you WALKED in. It is
+            // the strongest gear in the game precisely because it can never be banked
+            // — surviving extraction would make it merely the best loot.
+            let _ = self.db_writes.send(DbWrite::BurnEphemeral(b.player_id.clone()));
             let items_kv: Vec<(String, i32)> = b
                 .items
                 .iter()
@@ -4795,7 +4805,7 @@ impl GameState {
                     .iter()
                     .filter_map(|g| {
                         Some(meld_db::LootedGear {
-                            permanent: g.insurance == Insurance::Insured,
+                            insurance: g.insurance,
                             gear_id: Uuid::parse_str(&g.gear_id).ok()?,
                             name: g.name.clone(),
                             slot: g.slot.clone(),
@@ -5600,9 +5610,8 @@ impl WorldActor {
                             rarity: g.rarity.clone(),
                             slot: g.slot.clone(),
                             class_key: g.class_key.clone(),
-                            // Permanence is decided by the ROLL, not the drop site: a reward-spike
-                // encounter can yield blue, and everything else stays red and burns.
-                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
+                            // The tier is decided by the ROLL, not the drop site.
+                insurance: g.insurance,
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
                             def_bonus: g.def_bonus,
