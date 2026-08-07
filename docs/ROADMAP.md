@@ -154,11 +154,21 @@ Right now the party is fixed at dive time; players can't rearrange or save teams
   (melee reach / damage taken / target priority — pick the rule, add its
   `[TUNABLE]`, cite it in `combat-atb`). Server-authoritative; rides existing
   party/roster surface. Editable in Last City (LC-4) and on the party screen.
-- [ ] **PT-2 — Save, name, and swap party loadouts in town.** Persist multiple
-  named party compositions (which heroes, their equipped gear, rows) and let the
-  player swap the active team before stepping through The Threshold. New
-  persistent model + HTTP CRUD; surfaces in Last City. Relates to the GDD §4
-  "Build Templates" idea ([`behaviors/meta-progression.md`](behaviors/meta-progression.md)).
+- [x] **PT-2 — Save, name, and swap party loadouts in town.** Named compositions
+  AND the gear they wore, saved and re-applied at the Drill Yard (whose placeholder
+  had promised "build templates" all along). `party_loadouts` + HTTP CRUD +
+  `POST /:name/apply`.
+  - **The client never names gear — not on save, not on load.** Save captures the
+    equipped set server-side from `get_gear`; load sends only a NAME and the server
+    replays its own captured ids through `set_equipped`, which scopes every lookup to
+    the owner and refuses broken or class-illegal pieces. A client that could name the
+    gear could name gear it does not own and have it equipped on the next load.
+  - **Load-time re-validation, not save-time trust.** A loadout is a promise made in
+    the past: gear gets wrecked, sold and lost, and unlocks change. Anything that no
+    longer qualifies is skipped and reported (`gear_missing`), so the worst case is an
+    empty slot rather than a wrong one. Compositions are re-clamped the same way.
+  - Rows are NOT part of a loadout yet — they persist per hero slot already, so
+    folding them in is additive when `PT-1` wants it.
 
 ---
 
