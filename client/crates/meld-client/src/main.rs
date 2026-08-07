@@ -322,7 +322,6 @@ fn main() {
             (
                 overlay_input,
                 overworld_input,
-                auto_harvest,
                 overworld_click_menu,
                 overworld_camera_control,
                 gather_steer,
@@ -341,7 +340,7 @@ fn main() {
                 hd2d::billboard,
                 animate_sway,
                 ambient::update_ambient_scatter,
-                (update_overworld_hud, update_run_stats),
+                (update_overworld_hud, update_run_stats, update_channel_bar, update_touch_interact),
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -358,9 +357,9 @@ fn main() {
                 unlock_banner,
                 menu::render_main_menu,
                 main_menu_click,
+                return_to_town_click,
                 build_world_walls,
                 sync_chests,
-                auto_open_chest,
                 pulse_collectibles,
                 // Overworld class perks ("party sense").
                 update_explorer_lamp,
@@ -531,6 +530,9 @@ struct Session {
     connecting: bool,
     entered: bool,
     channeling: bool,
+    /// Milliseconds one fill of the channel bar takes (from `run.channel_started`).
+    /// 0 = nothing to draw.
+    channel_fill_ms: u64,
     status: String,
     /// The party — one class key per hero slot (wire form: "explorer" / "psyker" /
     /// "resonant"). Sent on enter_maze. Chosen in TOWN, not at login.
@@ -559,6 +561,7 @@ impl Default for Session {
             connecting: false,
             entered: false,
             channeling: false,
+            channel_fill_ms: 0,
             status: String::new(),
             // A diverse default so newcomers see a spread of classes at once.
             party: vec![

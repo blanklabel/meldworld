@@ -31,6 +31,7 @@ pub struct Balance {
     pub affix: Affix,
     pub meld: Meld,
     pub material: Material,
+    pub harvest: Harvest,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
     pub worldgen: WorldGen,
@@ -723,6 +724,33 @@ pub struct Perks {
 pub type Creatures = std::collections::HashMap<String, CreatureStats>;
 pub type Players = std::collections::HashMap<String, PlayerStats>;
 pub type Resources = std::collections::HashMap<String, ResourceStats>;
+
+/// Harvest-channel knobs (MS-2). Keyed by **material class** rather than by node id,
+/// because the rhythm — a patch of quick gathers vs a long dangerous dig — is what
+/// separates the two gathering professions.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Harvest {
+    pub reagent_stock: i32,
+    pub reagent_tick_ms: u64,
+    pub ore_stock: i32,
+    pub ore_tick_ms: u64,
+    pub default_stock: i32,
+    pub default_tick_ms: u64,
+}
+
+impl Harvest {
+    /// How many units a node of this material class holds, and how long each unit
+    /// takes to cut loose. `class` is a `meld_proto::materials::MaterialClass` wire
+    /// word; anything unrecognised falls back to the defaults rather than failing —
+    /// a new material class should change the pace of the game, not break spawning.
+    pub fn node_yield(&self, class: &str) -> (i32, u64) {
+        match class {
+            "reagent" => (self.reagent_stock, self.reagent_tick_ms),
+            "ore" => (self.ore_stock, self.ore_tick_ms),
+            _ => (self.default_stock, self.default_tick_ms),
+        }
+    }
+}
 
 /// A harvestable resource node's content, keyed by node id (e.g. `bloom_herb`).
 #[derive(Debug, Clone, Deserialize)]

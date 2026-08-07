@@ -42,13 +42,49 @@ Each `Player` in an instance has their own `Run` record; terminal states are per
 
 ---
 
+## Flow: Harvesting (the gather channel)
+
+**Source:** GDD.md §4.1; roadmap `MS-2`; design of record
+[proposals/crafting-and-professions.md](../proposals/crafting-and-professions.md).
+
+Working a resource node is a **repeating channel**, not a pickup. It shares the
+extraction channel's shape (below) but pays out *as it goes*, which is what makes
+gathering a decision rather than a walk.
+
+1. The player starts a gather with `run.harvest {entity_id}` while standing within
+   `interaction_radius_tiles` of a node **on their own elevation**. Refused if they are
+   in a battle, already channeling, or the node is out of reach or empty.
+2. The server answers `run.channel_started` with `method: "harvest:<node_kind>"`,
+   `completes_at` set to when the node would run dry *if nothing interrupted* (a horizon,
+   not a promise), and `fill_ms` = one tick. `fill_ms` is what the client's **progress
+   bar** fills over: a gather refills it per unit, an extraction fills it once and
+   completes.
+3. Every `[harvest] *_tick_ms` the channel hands over **one unit**: the node's material
+   is appended to the Backpack and announced on `run.backpack_update` with
+   `cause: "harvest:<node_kind>"`, and the node's Meld skill is credited that unit's XP.
+   The node's stock decrements by one.
+4. **A node holds finite stock** (`[harvest] *_stock`, by material class — a reagent
+   patch is several quick units, an ore vein is more units at a slower pace). When it
+   empties, the channel ends with `run.channel_interrupted` `reason: "exhausted"`.
+5. **Interruption is strict, and cheap.** Moving (`reason: "moved"`), being pulled into
+   or opting into a battle (`battle_started`), `run.cancel_harvest` (`cancelled`), or
+   walking out of range all end the channel immediately and lose the tick in flight.
+   **Every unit already banked stays banked** — so the most a broken gather ever costs
+   is one tick, and a player can deliberately take a few units off a dangerous node and
+   leave. As with extraction, the movement input that breaks a channel is spent breaking
+   it.
+6. Units live in the Backpack, so they are lost on death and banked on extraction like
+   any other material — a gather is not safe until it comes home.
+
 ## Flow: Extraction
 
 **Source:** GDD.md §2.2, §4.1; CANON.md §D15, §G (Backpack, Vault, Red Chest gear), §S
 
 1. The player initiates extraction by either:
-   - standing at an **extraction portal** (deterministic at every Hub, plus ~1 per 200-distance band per instance seed — see [world-generation.md](./world-generation.md)), or
-   - using an **escape item** (`ripcord_scroll`), usable from anywhere.
+   - standing at an **extraction portal** (deterministic at every Hub, plus ~1 per 200-distance band per instance seed — see [world-generation.md](./world-generation.md)) — a world object, so the client offers it on the one interact key, or
+   - spending a **Town Portal item** from anywhere — an *item use*, so the client offers it as an explicit "Return to town" choice in the menu rather than on a hotkey (there is deliberately no key for going home).
+
+   A third route exists and needs no input at all: **walking west** into the city wedge behind the hub returns the player to Last City instantly, with no channel and no item cost (`west_return`).
 2. A **10 s interruptible channel** begins **[TUNABLE]**. The channel is cancelled if the player moves, takes any other action, or is pulled into a `Battle` (monster touch). A cancelled channel has no effect; it may be restarted. (CANON.md §D15 defines the channel for escape items; this spec applies the same channel to portal extraction for symmetry — flagged in Edge Cases.)
 3. On channel completion the server (and only the server — CANON.md §S boundary rule: persistent mutation at run end is performed by the server itself) atomically performs the terminal transition `active → extracted`:
    - **Backpack → Vault:** all Backpack contents (potions, raw materials, plants, monster parts, chits found) are banked into the player's `Vault`.
@@ -133,7 +169,7 @@ On close, all ephemeral instance state is discarded (see [world-generation.md](.
 
 ## Edge Cases
 
-- **Death during extraction channel:** being pulled into a battle interrupts the channel; if the ensuing battle is lost, the outcome is `died` — a partially-completed channel banks nothing.
+- **Death during extraction channel:** being pulled into a battle interrupts the channel; if the ensuing battle is lost, the outcome is `died` — a partially-completed channel banks nothing. (A **harvest** channel differs deliberately: it pays per tick, so an interrupted gather keeps every unit it already handed over. Extraction is one atomic event; harvesting is many small ones.)
 - **Simultaneous portal + battle touch:** server processes battle creation first (battle pull cancels the channel); extraction requires the player to be out of battle.
 - **Extraction at the Center Hub portal immediately after entry:** legal; banks an empty Backpack, credits no meaningful Meld XP, ends the run `extracted`.
 - **Vault-owned red gear on death:** CANON.md §G says red gear is "lost on death unless extracted (extraction converts it to owned Vault gear, still red tier)". This spec reads ownership as *not* conferring insurance: carrying owned red gear into a new run risks it permanently. **Canon ambiguity — flagged for design confirmation.**

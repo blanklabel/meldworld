@@ -20,9 +20,9 @@
 | **The Trace** | Tracking and containing anomalies — including Psykers | `psyker` | Initiate · Tracer · Field Marshal · Lead Investigator · Bureau Chief · Director |
 | **Order of the Iron Hull** | Blunt-force deterrent against leviathans | *future* | Bilge-Scraper · Wake-Striker · Anchor-Priest · Iron-Bound · Deck-Master · Grandmaster |
 | **Leviathan's Slumber** | Druids of the coast and the colossal deep | *future* | Tidewatcher · Wave Weaver · Stormspeaker · Deepwalker · Seafather/Seamother · Leviathan's Voice |
-| **The Open Flower** | Druids of agriculture and balance | *future* | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
+| **The Open Flower** | Druids of agriculture and balance | *future* (`keeper`) | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
 | **The Order** | Secret anti-corruption coteries | *future, hidden* | Pacifier · Placater · Peacemaker · Conciliator · Arbiter · Judge |
-| **The Foundry** | Structural iron and magitech metal for the city's infrastructure | *future* (`foundry`) | Indentured Extractor · Smelter Apprentice · Journeyman Smithwright / Extractor Foreman · Smithwright · Master Smithwright · Master of the Foundry |
+| **The Foundry** | Structural iron and magitech metal for the city's infrastructure | *future* (`smithwright`) | Indentured Extractor · Smelter Apprentice · Journeyman Smithwright / Extractor Foreman · Smithwright · Master Smithwright · Master of the Foundry |
 
 The **Resonant** is the one class with no order yet — a healer who pays in its own
 blood fits none of the above cleanly, and inventing one to fill the table would be
@@ -291,6 +291,14 @@ it; sustainable practice is the long game; the wisdom of nature guides action.
 **Already touching the game:** the potion makers are the alchemy ladder, and the
 Apothecary's shelf is the city-facing end of it.
 
+**The class is the `keeper`** — an Open Flower hero in the field. Keepers are
+**Alchemy's** gathering hands: reagents, farms, groves, planting. Stacking them in one
+party buys **tempo** on every one of those timed actions rather than more material — four
+Keepers harvest, plant and tend markedly faster, which is what makes a mono-Keeper party
+a fast, fragile gathering raid instead of a wasted roster
+([`proposals/crafting-and-professions.md`](../proposals/crafting-and-professions.md)
+§2.3a).
+
 Ranks: Sprout 1 · Seedling 2 · Budling **5** · Flowerling **9** · Cultivator **13** ·
 Terra **17**.
 
@@ -347,6 +355,15 @@ castes are the Forging pipeline end to end — Extractors are ore/wood harvest, 
 are the raw→refined step the game does not have yet, Smithwrights are the Forge itself.
 See [`proposals/crafting-and-professions.md`](../proposals/crafting-and-professions.md)
 §2.4.
+
+**The class is the `smithwright`**, named for the caste that builds rather than the order
+that employs them — as the Psyker is named for what it is, not for The Trace. A
+Smithwright is **Forging's** hands: extraction, smelting, forging, repair, and
+(eventually) raising walls and structures. Stacking them buys **tempo** on all of it —
+four Smithwrights build, repair, smelt and forge markedly faster, never producing *more*
+material than the vein held (§2.3a). Their eventual apex is co-authoring an **Anchor**:
+the Foundry forges the body, Artificing fits it out, and only an Explorer of Serin can
+set it — the load-bearing artifact of the setting is a thing no single order can make.
 
 Ranks: Indentured Extractor 1 · Smelter Apprentice 2 · Journeyman Smithwright /
 Extractor Foreman **5** · Smithwright **9** · Master Smithwright **13** · Master of the

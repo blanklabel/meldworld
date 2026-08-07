@@ -20,13 +20,21 @@ use super::*;
 /// An overworld action reachable by a keyboard key OR an on-screen (touch) button.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum OverworldAct {
-    Extract,
-    TownPortal,
-    Join,
-    /// Open the inventory/menu overlay (where distance, biome and the backpack now
-    /// live). Keyboard equivalent: C / I, or tapping your own character.
+    /// The touch twin of **[E]**: does whatever is in reach, and is hidden when
+    /// nothing is. One button, so touch and keyboard can never disagree.
+    Interact,
+    /// Open the inventory/menu overlay (where distance, biome, the backpack and
+    /// "Return to town" live). Keyboard equivalent: C / I, or tapping your own
+    /// character.
     Menu,
 }
+
+/// The channel progress bar's frame (hidden unless a channel is running).
+#[derive(Component)]
+pub(crate) struct ChannelBar;
+/// The filling part of the channel bar.
+#[derive(Component)]
+pub(crate) struct ChannelBarFill;
 
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
 #[derive(Component)]
@@ -54,9 +62,36 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
                 TextColor(Color::srgb(0.9, 0.92, 1.0)),
             ));
+            // Channel progress: a bar that fills once per unit while gathering, and
+            // once while extracting. Hidden unless a channel is running, like every
+            // other piece of this HUD.
+            p.spawn((
+                ChannelBar,
+                Node {
+                    display: Display::None,
+                    width: Val::Px(210.0),
+                    height: Val::Px(9.0),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(Color::srgba(0.78, 0.86, 1.0, 0.45)),
+                BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 0.7)),
+            ))
+            .with_children(|bar| {
+                bar.spawn((
+                    ChannelBarFill,
+                    Node {
+                        width: Val::Percent(0.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.98, 0.86, 0.42)),
+                ));
+            });
             p.spawn((
                 Text::new(
-                    "WASD/arrows or drag = move | tap = go there | Menu (or tap yourself / C) = inventory, distance & stats | walk into nodes to harvest | T town portal | J join | E portal",
+                    "WASD/arrows or drag = move  |  tap = go there  |  [E] interact  |  Menu (or tap yourself / C) = inventory",
                 ),
                 TextFont {
                     font_size: 14.0,
@@ -77,12 +112,12 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
-                // Only the Menu button shows on the overworld now — it opens the
-                // inventory/stats overlay (also: tap yourself, or C/I). The situational
-                // actions (Join / deep Portal / Town Portal) live INSIDE that menu (and
-                // still have keyboard shortcuts J/E/T), so the field view stays clean.
+                // Two buttons: the contextual Interact (shown only when something is in
+                // reach — `update_touch_interact` keeps its label and visibility in step
+                // with the [E] prompt) and Menu, which is where going home lives.
                 for (act, label) in [
-                    (OverworldAct::Menu, "\u{f0214} Menu"), // list icon
+                    (OverworldAct::Interact, "\u{f0e6d} Interact"), // hand-pointing icon
+                    (OverworldAct::Menu, "\u{f0214} Menu"),         // list icon
                 ] {
                     action_button(bar, act, label);
                 }
@@ -205,7 +240,6 @@ pub(crate) fn touch_action_buttons(
     net: NonSend<NetRes>,
     world: Res<Overworld>,
     session: Res<Session>,
-    backpack: Res<RunBackpack>,
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
 ) {
@@ -213,17 +247,25 @@ pub(crate) fn touch_action_buttons(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
         match btn.0 {
-            OverworldAct::Extract => net.0.send(ClientCmd::Extract),
-            OverworldAct::TownPortal => {
-                if backpack.count("town_portal") > 0 {
-                    net.0.send(ClientCmd::TownPortal);
-                }
-            }
-            OverworldAct::Join => {
-                if near_fight(&world, me) {
-                    net.0.send(ClientCmd::JoinBattle);
+            OverworldAct::Interact => {
+                if session.channeling {
+                    net.0.send(ClientCmd::CancelHarvest);
+                } else {
+                    match interact_target(&world, &session) {
+                        Some(Interact::JoinFight) => net.0.send(ClientCmd::JoinBattle),
+                        Some(Interact::Harvest { entity_id, .. }) => {
+                            net.0.send(ClientCmd::Harvest { entity_id })
+                        }
+                        Some(Interact::OpenChest { entity_id }) => {
+                            net.0.send(ClientCmd::OpenChest { entity_id })
+                        }
+                        Some(Interact::EnterDungeon { entity_id }) => {
+                            net.0.send(ClientCmd::EnterDungeon { entity_id })
+                        }
+                        Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
+                        None => {}
+                    }
                 }
             }
             OverworldAct::Menu => {
@@ -480,37 +522,109 @@ pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Optio
         .max()
 }
 
-/// The always-on overworld HUD now shows ONLY contextual prompts. Distance, biome
-/// and the run backpack moved off the HUD into the menu (Status tab — see
-/// [`update_run_stats`] + the overlay); the view stays uncluttered. Kept here: only
-/// the "join the fight" prompt. (Passive-perk hints like "Regen"/"Bulwark" were
-/// dropped — the party always has a Resonant, so "Regen" was always on and read as a
-/// stuck status badge cluttering the world map.)
+/// The overworld HUD shows ONLY what you can do *right now*: the prompt for whatever
+/// [E] would act on, or the fact that you are mid-channel. Nothing otherwise — a
+/// permanent control list is noise a player stops reading on the second dive, and
+/// distance/biome/backpack live in the menu (Status tab — see [`update_run_stats`]).
+/// (Passive-perk hints like "Regen"/"Bulwark" were dropped too: the party always has a
+/// Resonant, so "Regen" was always on and read as a stuck status badge.)
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
-    let Some(me) = world.entities.get(&session.player_id) else {
-        return;
+    let Ok(mut t) = q.single_mut() else { return };
+    let mut line = if session.channeling {
+        "gathering\u{2026}  [E] stop".to_string()
+    } else {
+        interact_target(&world, &session)
+            .map(|i| i.prompt())
+            .unwrap_or_default()
     };
-    let me_pos = Some((me.x, me.y));
-    if let Ok(mut t) = q.single_mut() {
-        let mut parts: Vec<String> = Vec::new();
-        if near_fight(&world, me_pos) {
-            parts.push("\u{f0817} Press [J] to join the fight".into()); // crossed-swords marker
-        }
-        // A door that wants more bodies than one says so BEFORE you are inside it.
-        // There is no Town Portal in a dungeon, so a party that finds out at the gate
-        // has walked the whole way for nothing.
-        if let Some(n) = coop_door_near(&world, me_pos) {
-            parts.push(format!(
-                "{} This door needs {n} heroes on its plates at once  -  Press [F] to enter anyway",
-                '\u{f06cc}'
-            ));
-        }
-        **t = parts.join("  -  ");
+    // A door that wants more bodies than one says so BEFORE you are inside it (#190):
+    // there is no Town Portal in a dungeon, so a party that finds out at the gate has
+    // walked the whole way for nothing.
+    let me_pos = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+    if let Some(n) = coop_door_near(&world, me_pos) {
+        let warn = format!(
+            "{} needs {n} heroes on its plates at once",
+            '\u{f06cc}'
+        );
+        line = if line.is_empty() { warn } else { format!("{line}  -  {warn}") };
     }
+    if **t != line {
+        **t = line;
+    }
+}
+
+/// Keep the touch Interact button in step with the [E] prompt: same label, and hidden
+/// whenever there is nothing to touch — so the field view stays as clean as the HUD.
+pub(crate) fn update_touch_interact(
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut buttons: Query<(&TouchActionButton, &mut Node, &Children)>,
+    mut labels: Query<&mut Text>,
+) {
+    let target = interact_target(&world, &session);
+    for (btn, mut node, children) in &mut buttons {
+        if btn.0 != OverworldAct::Interact {
+            continue;
+        }
+        let label = if session.channeling {
+            Some("Stop".to_string())
+        } else {
+            target.as_ref().map(|t| t.verb())
+        };
+        node.display = if label.is_some() { Display::Flex } else { Display::None };
+        if let Some(text) = label {
+            for c in children.iter() {
+                if let Ok(mut t) = labels.get_mut(c) {
+                    let want = format!("\u{f0e6d} {text}");
+                    if **t != want {
+                        **t = want;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Fill the channel bar. One fill = one payout: a gather refills it per unit, an
+/// extraction fills it once and completes. The phase is tracked locally (reset when a
+/// channel starts) rather than off the server clock — this is cosmetic feedback, and
+/// every unit that actually lands is reported separately on `run.backpack_update`.
+pub(crate) fn update_channel_bar(
+    time: Res<Time>,
+    session: Res<Session>,
+    mut phase: Local<f32>,
+    mut was_channeling: Local<bool>,
+    mut frame: Query<&mut Node, (With<ChannelBar>, Without<ChannelBarFill>)>,
+    mut fill: Query<&mut Node, With<ChannelBarFill>>,
+) {
+    let running = session.channeling && session.channel_fill_ms > 0;
+    if running && !*was_channeling {
+        *phase = 0.0;
+    }
+    *was_channeling = session.channeling;
+    if let Ok(mut f) = frame.single_mut() {
+        f.display = if running { Display::Flex } else { Display::None };
+    }
+    if !running {
+        *phase = 0.0;
+        return;
+    }
+    *phase += time.delta_secs();
+    if let Ok(mut bar) = fill.single_mut() {
+        bar.width = Val::Percent(channel_fill_pct(*phase, session.channel_fill_ms));
+    }
+}
+
+/// How full the channel bar is, as a percentage, `phase` seconds into a channel whose
+/// payout lands every `fill_ms`. Wraps, because a gather pays repeatedly — each fill is
+/// one unit, so the bar emptying IS the unit landing.
+pub(crate) fn channel_fill_pct(phase: f32, fill_ms: u64) -> f32 {
+    let fill_secs = (fill_ms as f32 / 1000.0).max(0.05);
+    ((phase % fill_secs) / fill_secs * 100.0).clamp(0.0, 100.0)
 }
 
 /// Recompute the live exploration readouts (distance / tier / biome) into the
@@ -548,8 +662,13 @@ pub(crate) fn update_run_stats(
     }
 }
 
-/// Keyboard-only overworld *actions* (E/T/H/J). Movement is device-agnostic in
-/// [`gather_steer`] + [`emit_move`]; the touch bar mirrors these actions.
+/// Overworld *actions*. **[E] is the one interact key** — it does whatever the world
+/// is offering at your feet (gather, open, descend, extract at the deep portal, join a
+/// fight), and stops a channel if one is running. There is **no hotkey for going home**:
+/// a Town Portal is an item, so spending one is an explicit choice in the menu's Map
+/// column ([`crate::menu::return_to_town_click`]) rather than a key you have to be told
+/// about. Movement is device-agnostic in [`gather_steer`] + [`emit_move`]; the touch bar
+/// mirrors the interact key.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn overworld_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -558,111 +677,144 @@ pub(crate) fn overworld_input(
     world: Res<Overworld>,
     session: Res<Session>,
     overlay: Res<Overlay>,
-    backpack: Res<RunBackpack>,
-    mut entered: Local<HashSet<String>>,
+    time: Res<Time>,
+    mut auto_cooldown: Local<f32>,
 ) {
-    // No actions while a screen is open or while channeling an extraction.
-    if overlay.kind.is_some() || session.channeling {
+    if overlay.kind.is_some() {
         return;
     }
 
-    let me = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
-    // Nearest portal to the player (there is one per area now).
-    let portal = match me {
-        Some((mx, my)) => world
-            .entities
-            .values()
-            .filter(|e| e.kind == EntityKind::Portal)
-            .min_by(|a, b| {
-                let da = (a.x - mx).powi(2) + (a.y - my).powi(2);
-                let db = (b.x - mx).powi(2) + (b.y - my).powi(2);
-                da.total_cmp(&db)
-            })
-            .map(|e| (e.x, e.y)),
-        None => None,
-    };
-    let near_portal = match (me, portal) {
-        (Some((mx, my)), Some((px, py))) => ((mx - px).powi(2) + (my - py).powi(2)).sqrt() <= 2.0,
-        _ => false,
-    };
+    // [E] while channeling puts the tool down (keeping every unit already banked) —
+    // the keyboard twin of clicking away.
+    if session.channeling {
+        if keys.just_pressed(KeyCode::KeyE) {
+            net.0.send(ClientCmd::CancelHarvest);
+        }
+        return;
+    }
 
-    // Extract at the deep portal (E key, or autopilot once it arrives).
-    if keys.just_pressed(KeyCode::KeyE) || (autoplay.0 && near_portal) {
-        net.0.send(ClientCmd::Extract);
-        return;
-    }
-    // Town Portal (T): the primary way out — spend a Town Portal item to extract
-    // from anywhere.
-    if keys.just_pressed(KeyCode::KeyT) && backpack.count("town_portal") > 0 {
-        net.0.send(ClientCmd::TownPortal);
-        return;
-    }
-    // Harvesting is automatic now (walk into a node → `auto_harvest`); no key.
-    // Join a nearby fight (J): opt into a teammate's ongoing battle (never pulled
-    // in automatically). The server re-checks range.
-    if keys.just_pressed(KeyCode::KeyJ) && near_fight(&world, me) {
-        net.0.send(ClientCmd::JoinBattle);
-    }
-    // Descend into a hand-designed dungeon by **walking into its entrance** — like
-    // harvesting a node, entry is collision-based (WG-1/DG-6b). Touching the doorway
-    // sends `run.enter_dungeon`; the server still pulls in teammates gathered at the
-    // entrance for a co-op descent. `F` remains as an explicit fallback. `entered`
-    // dedupes so we send once per entrance, not every frame while standing on it
-    // (the reach is generous so you don't have to pixel-hunt the doorway).
-    if let Some((mx, my)) = me {
-        let touch = world
-            .entities
-            .iter()
-            .filter(|(_, e)| e.kind == EntityKind::Entrance)
-            .map(|(id, e)| (id.clone(), (e.x - mx).powi(2) + (e.y - my).powi(2)))
-            .filter(|(_, d2)| *d2 <= 2.25) // ~1.5 tiles — collision reach
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        match touch {
-            // `insert` is true the first frame we touch this doorway → send once.
-            // A CO-OP door is never entered by walking into it: a dungeon takes no
-            // Town Portal, so being swallowed by a maze your party cannot finish
-            // costs the whole trip. Those need [F] — a deliberate answer to the
-            // prompt, not a footstep.
-            Some((eid, _))
-                if (entered.insert(eid.clone())
-                    && world.entities.get(&eid).is_none_or(|e| e.bodies_required <= 1))
-                    || keys.just_pressed(KeyCode::KeyF) =>
-            {
-                net.0.send(ClientCmd::EnterDungeon { entity_id: eid });
+    // Everything you do TO the world is [E]. Autoplay takes whatever is offered so
+    // demos still gather, extract and descend on their own.
+    let target = interact_target(&world, &session);
+    let Some(target) = target else { return };
+    let pressed = keys.just_pressed(KeyCode::KeyE);
+    if !pressed {
+        // A co-op door is a deliberate answer to the prompt, never an unattended one
+        // (#190): a dungeon takes no Town Portal, and autoplay cannot muster the bodies
+        // its plates want.
+        if let Interact::EnterDungeon { entity_id } = &target {
+            if world.entities.get(entity_id).is_some_and(|e| e.bodies_required > 1) {
+                return;
             }
-            Some(_) => {} // still standing on an already-triggered doorway
-            None => entered.clear(), // walked clear of every entrance → re-arm
+        }
+        // Autoplay acts on its own, but throttled: firing every frame would flood the
+        // server while the channel it just opened is still starting. A throttle rather
+        // than a once-per-target latch, so a send the server refused is retried instead
+        // of wedging the demo in front of something it never managed to touch.
+        *auto_cooldown -= time.delta_secs();
+        if !autoplay.0 || *auto_cooldown > 0.0 {
+            return;
+        }
+        *auto_cooldown = AUTOPLAY_INTERACT_THROTTLE;
+    }
+    match target {
+        Interact::JoinFight => net.0.send(ClientCmd::JoinBattle),
+        Interact::Harvest { entity_id, .. } => net.0.send(ClientCmd::Harvest { entity_id }),
+        Interact::OpenChest { entity_id } => net.0.send(ClientCmd::OpenChest { entity_id }),
+        Interact::EnterDungeon { entity_id } => net.0.send(ClientCmd::EnterDungeon { entity_id }),
+        Interact::Extract => net.0.send(ClientCmd::Extract),
+    }
+}
+
+/// What pressing **[E]** would do at the avatar's current position. One interact key
+/// for the whole overworld: the world tells you what it offers, rather than the player
+/// memorising a key per object. `None` = nothing in reach, and the HUD stays silent.
+///
+/// Priority is urgency first, then proximity: a teammate's fight is transient and
+/// closes, so it outranks scenery that will still be there in ten seconds.
+#[derive(Clone, PartialEq)]
+pub(crate) enum Interact {
+    JoinFight,
+    Harvest { entity_id: String, label: String },
+    OpenChest { entity_id: String },
+    EnterDungeon { entity_id: String },
+    Extract,
+}
+
+impl Interact {
+    /// What this action IS, in the player's words. Shared by the keyboard prompt and
+    /// the touch button so the two can never describe the same key differently.
+    pub(crate) fn verb(&self) -> String {
+        match self {
+            Interact::JoinFight => "Join the fight".into(),
+            Interact::Harvest { label, .. } => format!("Gather {label}"),
+            Interact::OpenChest { .. } => "Open the chest".into(),
+            Interact::EnterDungeon { .. } => "Descend".into(),
+            Interact::Extract => "Extract".into(),
+        }
+    }
+
+    /// The prompt shown while this is in reach. Every line names the SAME key, which
+    /// is the point of collapsing the controls onto one.
+    pub(crate) fn prompt(&self) -> String {
+        match self {
+            Interact::JoinFight => format!("\u{f0817} [E] {}", self.verb()),
+            _ => format!("[E] {}", self.verb()),
         }
     }
 }
 
-/// Harvest resource nodes automatically the moment you walk within reach — so
-/// "touching" a node picks it up (and tapping/clicking a distant node just walks
-/// you there via tap-to-move, then this fires on arrival). `sent` dedupes so a node
-/// isn't requested twice before the server removes it.
-pub(crate) fn auto_harvest(
-    net: NonSend<NetRes>,
-    world: Res<Overworld>,
-    session: Res<Session>,
-    overlay: Res<Overlay>,
-    mut sent: Local<HashSet<String>>,
-) {
-    if overlay.kind.is_some() || session.channeling {
-        return;
+/// Seconds autoplay waits between unattended interactions.
+const AUTOPLAY_INTERACT_THROTTLE: f32 = 1.0;
+
+/// Reach for interacting with world scenery, in tiles. Generous on purpose — nobody
+/// should have to pixel-hunt a doorway.
+const INTERACT_REACH: f32 = 2.0;
+
+/// Resolve the best [`Interact`] for the avatar's position.
+pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<Interact> {
+    let me = world.entities.get(&session.player_id)?;
+    let me_pos = Some((me.x, me.y));
+    if near_fight(world, me_pos) {
+        return Some(Interact::JoinFight);
     }
-    let Some(me) = world.entities.get(&session.player_id) else {
-        return;
-    };
+    // Nearest thing in reach on the player's own level wins.
+    let mut best: Option<(f32, Interact)> = None;
     for (id, e) in &world.entities {
-        if e.kind == EntityKind::Resource
-            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
-            && !sent.contains(id)
-        {
-            net.0.send(ClientCmd::Harvest { entity_id: id.clone() });
-            sent.insert(id.clone());
+        let d = ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt();
+        if d > INTERACT_REACH || e.level != me.level {
+            continue;
+        }
+        let what = match e.kind {
+            EntityKind::Resource => Some(Interact::Harvest {
+                entity_id: id.clone(),
+                label: node_label(e.name.as_deref().unwrap_or("")),
+            }),
+            EntityKind::Chest if !e.opened => Some(Interact::OpenChest { entity_id: id.clone() }),
+            EntityKind::Entrance => Some(Interact::EnterDungeon { entity_id: id.clone() }),
+            EntityKind::Portal => Some(Interact::Extract),
+            _ => None,
+        };
+        if let Some(w) = what {
+            if best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+                best = Some((d, w));
+            }
         }
     }
-    sent.retain(|id| world.entities.contains_key(id)); // forget harvested/gone nodes
+    best.map(|(_, w)| w)
+}
+
+/// A resource node's content id as a player-facing word (`bloom_herb` → "Bloom Herb").
+/// An unnamed node still prompts — just generically, rather than showing a blank.
+fn node_label(kind: &str) -> String {
+    if kind.is_empty() {
+        return "it".to_string();
+    }
+    let base = kind.split(':').next_back().unwrap_or(kind);
+    base.split('_')
+        .map(title_case)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Distance in screen pixels from point `p` to the segment `a`–`b`.
@@ -1594,35 +1746,6 @@ pub(crate) fn sync_chests(
                 ));
             });
     }
-}
-
-/// Walk-into-to-open: when the avatar is within reach of an unopened chest, ask
-/// the server to open it (mirrors [`auto_harvest`]). The server rolls the loot.
-pub(crate) fn auto_open_chest(
-    net: NonSend<NetRes>,
-    world: Res<Overworld>,
-    session: Res<Session>,
-    overlay: Res<Overlay>,
-    mut sent: Local<std::collections::HashSet<String>>,
-) {
-    if overlay.kind.is_some() || session.channeling {
-        return;
-    }
-    let Some(me) = world.entities.get(&session.player_id) else {
-        return;
-    };
-    for (id, e) in &world.entities {
-        if e.kind == EntityKind::Chest
-            && !e.opened
-            && e.level == me.level // must be on the chest's level (a terrace-top chest)
-            && ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= 2.0
-            && !sent.contains(id)
-        {
-            net.0.send(ClientCmd::OpenChest { entity_id: id.clone() });
-            sent.insert(id.clone());
-        }
-    }
-    sent.retain(|id| world.entities.contains_key(id));
 }
 
 /// Spawn a player's overworld avatar: a ground-anchored, walk-animated psyker
@@ -2873,7 +2996,91 @@ pub(crate) fn overworld_camera_control(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use super::creature_kind;
+
+    fn ent(kind: EntityKind, x: f32, y: f32) -> OwEntity {
+        OwEntity {
+            x,
+            y,
+            kind,
+            name: Some("bloom_herb".into()),
+            faction: None,
+            radius: 0.0,
+            battling: false,
+            level: 0,
+            opened: false,
+            mob_level: None,
+            hp: None,
+            max_hp: None,
+            encounter_class: None,
+            aggression: None,
+            bodies_required: 1,
+        }
+    }
+
+    // [E] is the one interact key, so what it does has to be unambiguous at any spot:
+    // nothing in reach → no prompt at all (the HUD stays clean), otherwise the NEAREST
+    // thing wins — except a teammate's fight, which is transient and outranks scenery.
+    #[test]
+    fn one_key_resolves_to_the_nearest_thing_worth_touching() {
+        let mut world = Overworld::default();
+        let session = Session { player_id: "me".into(), ..Default::default() };
+        world.entities.insert("me".into(), ent(EntityKind::Player, 0.0, 0.0));
+
+        // Empty hands → no prompt. A permanent control list is what this replaces.
+        assert!(interact_target(&world, &session).is_none());
+
+        // Out of reach stays silent; in reach prompts, and names the material.
+        world.entities.insert("res-1".into(), ent(EntityKind::Resource, 40.0, 0.0));
+        assert!(interact_target(&world, &session).is_none(), "40 tiles away is not in reach");
+        world.entities.insert("res-1".into(), ent(EntityKind::Resource, 1.0, 0.0));
+        let t = interact_target(&world, &session).expect("node in reach");
+        assert!(matches!(&t, Interact::Harvest { entity_id, .. } if entity_id == "res-1"));
+        assert_eq!(t.prompt(), "[E] Gather Bloom Herb");
+
+        // A closer portal wins over the node.
+        world.entities.insert("portal".into(), ent(EntityKind::Portal, 0.2, 0.0));
+        assert!(matches!(interact_target(&world, &session), Some(Interact::Extract)));
+
+        // …but a fight in progress outranks both, because it closes.
+        let mut fighter = ent(EntityKind::Player, 1.0, 1.0);
+        fighter.battling = true;
+        world.entities.insert("ally".into(), fighter);
+        assert!(matches!(interact_target(&world, &session), Some(Interact::JoinFight)));
+
+        // Only things on your own level are reachable — a terrace node needs the climb.
+        world.entities.remove("ally");
+        world.entities.remove("portal");
+        let mut up = ent(EntityKind::Resource, 1.0, 0.0);
+        up.level = 2;
+        world.entities.insert("res-1".into(), up);
+        assert!(interact_target(&world, &session).is_none(), "a node a terrace up is not in reach");
+    }
+
+    // The bar has to READ as progress: empty at the start of a payout, near-full just
+    // before it lands, and wrapping rather than sticking at 100% — because a gather pays
+    // repeatedly and each emptying is a unit hitting the backpack.
+    #[test]
+    fn the_channel_bar_fills_then_wraps_for_the_next_unit() {
+        assert_eq!(channel_fill_pct(0.0, 900), 0.0);
+        let nearly = channel_fill_pct(0.89, 900);
+        assert!(nearly > 95.0, "just before the unit lands it should look full: {nearly}");
+        // One full tick later it has wrapped, not stuck.
+        assert!(channel_fill_pct(0.90, 900) < 5.0);
+        // Halfway through a 2.5s extraction reads as half.
+        let half = channel_fill_pct(1.25, 2500);
+        assert!((half - 50.0).abs() < 1.0, "{half}");
+        // A zero/absent fill length can never divide by zero or overflow the bar.
+        assert!((0.0..=100.0).contains(&channel_fill_pct(3.0, 0)));
+    }
+
+    #[test]
+    fn an_unnamed_node_still_prompts() {
+        assert_eq!(node_label("bloom_herb"), "Bloom Herb");
+        assert_eq!(node_label("resource:dune_iron"), "Dune Iron");
+        assert_eq!(node_label(""), "it");
+    }
 
     // A creature must resolve to the SAME kind (hence the same sprite) whether it
     // arrives as the overworld's underscored id, the battle's spaced display name, or

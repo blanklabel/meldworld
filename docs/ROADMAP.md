@@ -582,11 +582,40 @@ XP; harvesting exists but is instant.
     playable. The Smelters also name a missing mechanic worth building — a **raw → refined
     smelting tier**, which is where Forging's absent recipe line (it has exactly one
     recipe today, vs Alchemy's thirteen) should come from. Prior art surveyed there.
-- [ ] **MS-2 — Harvesting takes time in the field.** Turn instant `run.harvest`
-  into a **channeled gather** (a timed action, interruptible, vulnerable while
-  channeling) — tension, not a free tap. Add the channel timer `[TUNABLE]` and the
-  interrupt rules; mirror the extraction-channel pattern in
-  [`behaviors/run-lifecycle.md`](behaviors/run-lifecycle.md).
+- [x] **MS-2 — Harvesting takes time in the field.** ✅ Instant `run.harvest` is now a
+  **channel**: it opens a repeating gather that hands over **one unit per tick** while
+  the player stands still, and a node holds **finite stock** rather than being a
+  one-tap flag. Pace and stock are per **material class** (`[harvest]`) — a reagent
+  patch is several quick units, an ore vein is more units at a slower pace, which is the
+  rhythm that separates the two gathering professions. **Interruption is strict but
+  cheap:** moving, a battle (either dragged in or opting in), `run.cancel_harvest`, or
+  walking out of range ends it and loses only the tick in flight — every unit already
+  banked stays banked. That turns "do I dare start" (a cliff) into "how long do I dare
+  stay" (a slope), and makes partial-harvesting a real play: nibble a dangerous vein and
+  come back. Also, the input layer it needed: **[E] is now the one interact key** on the
+  overworld (gather, open, descend, extract at the deep portal, join) with a **contextual
+  prompt** that only appears when something is in reach — replacing walk-into
+  auto-collect, the static control list, and the per-action keys. A **channel progress
+  bar** fills once per payout (`fill_ms` on `run.channel_started`), touch gets the same
+  thing as one contextual **Interact** button, and **going home lost its hotkey**: a Town
+  Portal is an item, so it is now an explicit "Return to town" row in the menu's Map
+  column. Spec: [`behaviors/run-lifecycle.md`](behaviors/run-lifecycle.md)
+  "Flow: Harvesting".
+  - *Next for this surface (stage 2):* click/tap a node directly to target it, node stock
+    in the HUD, and the Map column's readouts becoming a real **explored world map** when
+    the party has an Explorer (its minimap perk already gates what the map may show).
+  - *Found and fixed on the way:* an in-flight **extraction** channel survived a battle
+    start (`start_battle` never cleared it), so you could Town-Portal out *mid-fight*
+    and bank the backpack — a free escape past `flee_chit_loss_fraction` /
+    `flee_item_drop_chance`. A battle now breaks both channels.
+  - **Why it was load-bearing.** The profession design pays a stacked specialist
+    in **tempo** rather than yield — four **Keepers** (Open Flower) gather/plant faster,
+    four **Smithwrights** (Foundry) build/repair/smelt/forge faster
+    ([`proposals/crafting-and-professions.md`](proposals/crafting-and-professions.md)
+    §2.3a). An instant action cannot be accelerated, so every profession verb needs a
+    duration before either class can exist: harvest (here), smelting, building, repair,
+    planting. Also the reason the field half of gathering has any tension at all — the
+    creature-aggro geometry only bites while you are committed to a channel.
 - [x] **MS-3 — Harvesting grants XP.** Already implemented: `run.harvest` banks the
   node's material **and** credits the node's Meld skill XP (`resource.<kind>` →
   `skill`; see [`CLAUDE.md`](../CLAUDE.md) "Harvestable resource nodes"). *Revisit

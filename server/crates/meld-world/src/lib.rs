@@ -213,6 +213,20 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// How many units a node of this content kind holds, from its **material class**
+/// (`[harvest]`): a reagent patch is several quick gathers, an ore vein is a longer
+/// dig. Keying the rhythm on the class rather than the node id is what makes the two
+/// gathering professions play differently instead of merely banking different ids.
+fn node_stock(balance: &Balance, kind: &str) -> i32 {
+    let class = balance
+        .resource
+        .get(kind)
+        .and_then(|r| meld_proto::materials::material(&r.material))
+        .map(|m| m.class.wire())
+        .unwrap_or("");
+    balance.harvest.node_yield(class).0
+}
+
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
@@ -1344,7 +1358,19 @@ pub struct ResourceNode {
     /// Elevation the node sits on. A terrace node is only harvestable once you've
     /// climbed to it (rewards exploring the verticality).
     pub elevation: u8,
-    pub harvested: bool,
+    /// Units still in the node (MS-2). A harvest CHANNEL takes these one at a time,
+    /// so a node is a quantity you can partly work and come back to rather than a
+    /// one-tap flag — which is what lets an interrupted gather cost only the tick in
+    /// flight. Stock and pace come from the material's class (`[harvest]`).
+    pub remaining: i32,
+}
+
+impl ResourceNode {
+    /// Nothing left to take. Kept as a method so the old `harvested` reads still
+    /// make sense at call sites (the snapshot hides an empty node).
+    pub fn depleted(&self) -> bool {
+        self.remaining <= 0
+    }
 }
 
 /// One generated area / **section**: a stretch of corridor `[start_x, end_x)` in
@@ -2029,12 +2055,13 @@ impl Arena {
             self.monsters[idx].area_max_x = end_x;
             // A guaranteed starter resource node just off the tutorial path, so
             // the first thing a new player can safely do is harvest (no fight).
+            let starter_kind = resources_for_biome(biome)[0].to_string();
             self.resources.push(ResourceNode {
                 entity_id: format!("res-{}", self.resources.len()),
-                kind: resources_for_biome(biome)[0].to_string(),
+                remaining: node_stock(balance, &starter_kind),
+                kind: starter_kind,
                 position: Position::new(wg.first_monster_x * 0.5, 3.0),
                 elevation: 0,
-                harvested: false,
             });
             // A guaranteed starter treasure chest opposite the node, so a new
             // player sees the loot loop (open → chits/materials) in area 0.
@@ -2271,7 +2298,7 @@ impl Arena {
                 kind: rk.to_string(),
                 position: Position::new(rx, ry),
                 elevation: 0,
-                harvested: false,
+                remaining: node_stock(balance, rk),
             });
             section_resources.push(nid);
         }
@@ -3379,25 +3406,34 @@ impl Arena {
         }
     }
 
-    /// Harvest the resource node `entity_id` if `player` is within interaction
-    /// range **on the same elevation** and it isn't already spent. Marks it
-    /// harvested and returns its content kind (the caller maps that to a material +
-    /// skill XP via balance).
-    pub fn harvest(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
-        let (ppos, pelev) = {
-            let a = self.avatar(player_id)?;
-            (a.position, a.elevation)
-        };
-        let radius = self.interaction_radius;
+    /// Whether `player` may work the node `entity_id` right now: it exists, has
+    /// stock left, sits on the player's own elevation, and is within interaction
+    /// range. Returns its content kind. Pure — this is the check a harvest channel
+    /// re-runs every tick, so walking off (or emptying the node) ends the channel
+    /// without the caller needing its own range logic.
+    pub fn can_harvest(&self, player_id: &str, entity_id: &str) -> Option<String> {
+        let a = self.avatar(player_id)?;
         let node = self
             .resources
-            .iter_mut()
-            .find(|n| n.entity_id == entity_id && !n.harvested)?;
-        if node.elevation != pelev || ppos.distance_to(&node.position) > radius {
+            .iter()
+            .find(|n| n.entity_id == entity_id && !n.depleted())?;
+        if node.elevation != a.elevation
+            || a.position.distance_to(&node.position) > self.interaction_radius
+        {
             return None;
         }
-        node.harvested = true;
         Some(node.kind.clone())
+    }
+
+    /// Take **one unit** out of the node (MS-2's channel tick) and return its content
+    /// kind, or `None` if it is out of reach or already empty. The unit is banked the
+    /// moment it comes out, which is what bounds an interrupted gather to the tick in
+    /// flight rather than the whole node.
+    pub fn take_one(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
+        let kind = self.can_harvest(player_id, entity_id)?;
+        let node = self.resources.iter_mut().find(|n| n.entity_id == entity_id)?;
+        node.remaining -= 1;
+        Some(kind)
     }
 
     /// Open the treasure chest `entity_id` if `player` is within interaction range
@@ -4112,25 +4148,58 @@ mod tests {
     }
 
     #[test]
-    fn resource_nodes_generate_and_harvest_once_within_range() {
+    fn a_node_holds_stock_and_gives_it_up_one_unit_at_a_time() {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 7, true);
         assert!(!arena.resources.is_empty(), "resource nodes are scattered in");
         // Use the guaranteed level-0 starter node (area 0) so elevation doesn't gate.
         let node = arena.resources[0].clone();
         assert_eq!(node.elevation, 0);
-        arena.add_avatar("p".into(), 6.0);
-        // Too far → no harvest.
-        arena.avatar_mut("p").unwrap().position = Position::new(node.position.x + 50.0, node.position.y);
-        assert!(arena.harvest("p", &node.entity_id).is_none(), "out of range");
-        // Standing on it → harvest yields its kind, once.
-        arena.avatar_mut("p").unwrap().position = node.position;
-        assert_eq!(arena.harvest("p", &node.entity_id).as_deref(), Some(node.kind.as_str()));
-        assert!(arena.harvest("p", &node.entity_id).is_none(), "already harvested");
-        // Every node kind maps to balance content.
+        assert!(node.remaining > 1, "MS-2: a node is a quantity, not a one-tap flag");
+        assert_eq!(node.remaining, node_stock(&b, &node.kind));
+
+        // Every node spawns stocked, and every kind maps to balance content AND to the
+        // material registry — so a node can never yield an item nothing can spend.
+        // Checked before anything is drained below.
         for n in &arena.resources {
-            assert!(b.resource.contains_key(&n.kind), "resource {} in balance", n.kind);
+            let res = b.resource.get(&n.kind).unwrap_or_else(|| panic!("{} in balance", n.kind));
+            assert!(
+                meld_proto::materials::material(&res.material).is_some(),
+                "node {} yields unregistered material {}",
+                n.kind,
+                res.material
+            );
+            assert!(n.remaining > 0, "node {} spawned empty", n.kind);
         }
+        arena.add_avatar("p".into(), 6.0);
+
+        // Too far → nothing, and the check is the same one the channel re-runs.
+        arena.avatar_mut("p").unwrap().position =
+            Position::new(node.position.x + 50.0, node.position.y);
+        assert!(arena.can_harvest("p", &node.entity_id).is_none(), "out of range");
+        assert!(arena.take_one("p", &node.entity_id).is_none(), "out of range");
+        assert_eq!(arena.resources[0].remaining, node.remaining, "a failed take costs nothing");
+
+        // Standing on it → one unit per call, until the node runs dry.
+        arena.avatar_mut("p").unwrap().position = node.position;
+        for left in (0..node.remaining).rev() {
+            assert_eq!(
+                arena.take_one("p", &node.entity_id).as_deref(),
+                Some(node.kind.as_str())
+            );
+            assert_eq!(arena.resources[0].remaining, left);
+        }
+        assert!(arena.resources[0].depleted());
+        assert!(arena.take_one("p", &node.entity_id).is_none(), "an empty node gives nothing");
+        assert!(arena.can_harvest("p", &node.entity_id).is_none());
+
+        // An ore vein is a longer commitment than a reagent patch — that rhythm split
+        // is what makes the two gathering professions play differently.
+        let (r_stock, r_tick) = b.harvest.node_yield("reagent");
+        let (o_stock, o_tick) = b.harvest.node_yield("ore");
+        assert!(o_stock > r_stock, "an ore vein should hold more");
+        assert!(o_tick > r_tick, "…and give it up more slowly");
+
     }
 
     #[test]

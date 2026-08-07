@@ -999,6 +999,27 @@ aggression = "aggressive"
 flees = false
 loot_kind = "venom_sac"
 
+# HARVESTING (MS-2). A node is no longer a one-tap pickup: standing on it opens a
+# CHANNEL that yields one unit every `tick_ms` until the node is empty, you walk away,
+# something drags you into a fight, or you stop. Interruption is strict — the partial
+# tick in flight is lost — but every unit already banked is yours, so the most a broken
+# channel ever costs is one tick. That turns "do I dare start" (a cliff) into "how long
+# do I dare stay" (a slope), which is the extract-or-die decision at node scale.
+#
+# Stock and tick rate are per MATERIAL CLASS (meld_proto::materials), which is what
+# makes the two gathering professions FEEL different rather than merely bank different
+# item ids:
+#   - reagent: many small nodes, quick ticks — a patch. Breadth; never exposed long.
+#   - ore:     few big nodes, slow ticks — a dig. Commitment in one dangerous place.
+# [TUNABLE]
+[harvest]
+reagent_stock = 3               # units a reagent node holds
+reagent_tick_ms = 900           # …one every this long
+ore_stock = 6                   # an ore vein holds more…
+ore_tick_ms = 1600              # …and gives it up more slowly
+default_stock = 3               # any material class without its own row
+default_tick_ms = 1200
+
 # Harvestable resource nodes, keyed by content id (biome→node assignment is
 # structural, in `meld-world::resources_for_biome`). Harvesting one banks its
 # `material` into the run backpack (extract to keep it, feeds crafting) and

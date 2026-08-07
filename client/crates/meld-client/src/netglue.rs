@@ -400,13 +400,21 @@ pub(crate) fn pump_net(
                 report.gear = gear;
                 report.elapsed = 0.0;
             }
-            ServerMsg::ChannelStarted { .. } => {
+            ServerMsg::ChannelStarted { fill_ms, method, .. } => {
                 session.channeling = true;
-                session.status = "extracting...".to_string();
+                // The bar restarts from empty on every fill, so the client only needs
+                // the fill length and when this one began.
+                session.channel_fill_ms = fill_ms;
+                session.status = if method.starts_with("harvest") {
+                    "gathering...".to_string()
+                } else {
+                    "extracting...".to_string()
+                };
             }
             ServerMsg::ChannelInterrupted => {
                 session.channeling = false;
-                session.status = "extraction interrupted".to_string();
+                session.channel_fill_ms = 0;
+                session.status = String::new();
             }
             ServerMsg::RunEnded { result, banked, chits, gear } => {
                 session.channeling = false;

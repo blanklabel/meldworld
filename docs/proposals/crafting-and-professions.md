@@ -184,16 +184,60 @@ yields, every party must slot one and the choice evaporates. Keep the base-mater
 bump modest and put the exclusivity only in the byproduct, which is optional content by
 construction.
 
-**Gate the byproduct on a rank, not on presence.** Perks ramp with *run level*, and run
-level is earned by fighting **in this dive** — so a specialist you bring but never play
-has a weak perk, and the system self-balances with no new rule. Put the byproduct
-behind a level threshold the way `hunter_intel_atb_at = 6` does. The monopoly should
-belong to a *developed* specialist, not a slotted one.
+**Gate the byproduct on a rank, not on presence.** Put the byproduct behind a level
+threshold the way `hunter_intel_atb_at = 6` does, so the monopoly belongs to a
+*developed* specialist rather than a slotted one.
+
+This has to be **stated as a rule, because nothing enforces it for free.**
+[`compute_perks`](../../server/crates/meld-server/src/game.rs) is a pure *presence*
+check — `classes.contains(&c)` — scaled by the player's **shared** `run_level`, which
+follows their best hero, not the specialist's own. So a specialist you bring and never
+play carries exactly the same perk as one you built; there is no self-balancing to lean
+on, and any "a developed specialist earns more" rule is a rule someone must write.
 
 **Granularity is the party, not the hero.** The overworld avatar is the whole party
 (one avatar per player; heroes only materialize as combatants in battle), so the check
 is "does this party contain class X" — which the run already knows from the persisted
 hero classes. There is deliberately no notion of *which* hero harvested.
+
+### 2.3a Stacking a specialist buys **tempo**, not yield
+
+A pure presence check makes four of one class worth exactly one of it, so a mono-party
+pays four slots for a single lens *and* eats the party-size penalty — creature HP scales
+`[1.0, 1.9, 3.0, 4.4]` with party size and XP splits across it. Both of these orders are
+support/control archetypes, so **a mono-gatherer party cannot fight**: four low-damage
+heroes against 4.4× HP is a fight that does not finish. Strictly dominated by "one
+specialist plus three fighters," which makes the 4-stack a mistake rather than a build.
+
+**The rule that fixes it: the first specialist sets the yield lens; every additional one
+makes that trade's timed actions faster.**
+
+| Class | Order | Stacking speeds up |
+|---|---|---|
+| **Keeper** | The Open Flower | harvesting, farming, planting — and tending a town's groves |
+| **Smithwright** | The Foundry | building (walls included), repairing, smelting, forging |
+
+It works because it never inflates *supply* — a node still gives what it gives, so
+there is no economy pressure — while paying the mono-party in the one currency a
+vulnerable channel makes precious: **time exposed**. Four pairs of hands dig faster; the
+vein does not get bigger. That yields a real spectrum instead of a trap:
+
+- **1 specialist** — the balanced party's yield bump.
+- **4 specialists** — a fast, fragile raid on a resource field you must not be caught
+  in: maximum tempo, no combat capability, and the whole backpack lost if something
+  reaches you.
+
+**This makes `MS-2` load-bearing rather than optional.** If the stack buys speed, then
+every profession action must *have a duration to speed up*: the harvest channel (`MS-2`),
+smelting, building, repairing, planting. Instant actions cannot be accelerated, so a
+profession built on tempo cannot exist until its verbs take time. Harvesting stops being
+a free tap and becomes the commitment the whole design rests on.
+
+*Later, better, for the Foundry specifically:* the fiction says a Foundry crew is
+**mixed-caste** — Extractor, Smelter, Smithwright — not four identical smiths, so "a
+party of Smithwrights" ideally means a *work crew* with different jobs and different
+lenses. That wants a sub-role on a hero (a caste choice, a wire field, UI), so it is the
+expensive version of this idea and should not be designed away before it can be built.
 
 ### 2.4 Who mines? — **The Foundry**
 

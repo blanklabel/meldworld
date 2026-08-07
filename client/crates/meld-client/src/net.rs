@@ -46,8 +46,11 @@ pub enum ClientCmd {
     Extract,
     /// Consume a Town Portal item to extract from anywhere (the primary way out).
     TownPortal,
-    /// Harvest a resource node the avatar is standing next to.
+    /// Begin working a resource node the avatar is standing next to — a channel that
+    /// drips one unit per tick until stopped (MS-2).
     Harvest { entity_id: String },
+    /// Put the tool down on purpose, keeping every unit already banked.
+    CancelHarvest,
     /// Open a treasure chest the avatar is standing next to.
     OpenChest { entity_id: String },
     /// Descend into a hand-designed dungeon whose entrance the avatar is next to.
@@ -496,7 +499,7 @@ pub enum ServerMsg {
         gear: Vec<String>,
     },
     /// An extraction channel began / broke.
-    ChannelStarted { completes_at: u64 },
+    ChannelStarted { completes_at: u64, fill_ms: u64, method: String },
     ChannelInterrupted,
     /// This player's run ended (extracted / died / abandoned), with the count of
     /// items + gear banked and the chits banked (extract) or lost (death).
@@ -1181,6 +1184,7 @@ impl Inner {
             ClientCmd::Harvest { entity_id } => {
                 self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::CancelHarvest => self.send_env(wr::CancelHarvest::TYPE, json!({})),
             ClientCmd::OpenChest { entity_id } => {
                 self.send_env(wr::OpenChest::TYPE, json!({ "entity_id": entity_id }))
             }
@@ -1811,6 +1815,8 @@ impl Inner {
                 if let Ok(c) = serde_json::from_value::<wr::ChannelStarted>(raw.payload) {
                     self.out.push_back(ServerMsg::ChannelStarted {
                         completes_at: c.completes_at,
+                        fill_ms: c.fill_ms,
+                        method: c.method,
                     });
                 }
             }
