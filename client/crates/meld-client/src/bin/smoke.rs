@@ -52,6 +52,7 @@ fn main() {
         net.poll();
         while let Some(msg) = net.try_recv() {
             match msg {
+                ServerMsg::Loadouts { .. } => {}
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");
                     // Lead hero = the chosen class (the bot commands hero 0); the

@@ -303,6 +303,7 @@ pub(crate) fn city_action_buttons(
                 if city.party_open {
                     city.notice.clear();
                     net.0.fetch_hero_names();
+                    net.0.fetch_loadouts();
                 }
             }
             CityAct::Vault => {
@@ -687,6 +688,7 @@ pub(crate) fn city_input(
                     city.party_open = true;
                     city.notice.clear();
                     net.0.fetch_hero_names();
+                    net.0.fetch_loadouts();
                 }
                 CityAction::Shop => {
                     city.shop_open = !city.shop_open;
@@ -1129,6 +1131,22 @@ pub(crate) struct PartyClassButton(pub &'static str);
 #[derive(Component)]
 pub(crate) struct PartyDoneButton;
 
+/// Load a saved composition into the live party.
+#[derive(Component)]
+pub(crate) struct LoadoutLoadButton(pub String);
+
+/// Forget a saved composition.
+#[derive(Component)]
+pub(crate) struct LoadoutDeleteButton(pub String);
+
+/// Save the current party under the typed name.
+#[derive(Component)]
+pub(crate) struct LoadoutSaveButton;
+
+/// The editable name field for the next save.
+#[derive(Component)]
+pub(crate) struct LoadoutNameText;
+
 /// The label inside a slot button (kept in sync by [`party_panel_refresh`]).
 #[derive(Component)]
 pub(crate) struct PartySlotLabel(pub usize);
@@ -1142,13 +1160,19 @@ pub(crate) fn party_panel(
     city: Res<CityUi>,
     unlocks: Res<UnlocksRes>,
     session: Res<Session>,
+    loadouts: Res<LoadoutData>,
     existing: Query<Entity, With<PartyPanelRoot>>,
     mut was_open: Local<bool>,
+    mut shown: Local<usize>,
 ) {
-    if city.party_open == *was_open {
+    // Rebuild when the yard opens/closes OR when the saved list changes, so a save or
+    // delete is reflected without closing and reopening the panel.
+    let n = loadouts.list.len();
+    if city.party_open == *was_open && (!city.party_open || n == *shown) {
         return;
     }
     *was_open = city.party_open;
+    *shown = n;
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -1252,6 +1276,132 @@ pub(crate) fn party_panel(
                     });
                 }
             });
+            // PT-2: the saved compositions. Named rather than numbered slots because
+            // the point is recognising a team at a glance ("Delvers", "Boss squad").
+            p.spawn((
+                Text::new("Saved parties"),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+                Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
+            ));
+            if loadouts.list.is_empty() {
+                p.spawn((
+                    Text::new("none yet"),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.45, 0.48, 0.58)),
+                ));
+            }
+            for l in &loadouts.list {
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Button,
+                        LoadoutLoadButton(l.name.clone()),
+                        Node {
+                            flex_grow: 1.0,
+                            padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(glass::EDGE_SOFT),
+                        BorderRadius::all(Val::Px(6.0)),
+                        BackgroundColor(glass::CHIP_OFF),
+                    ))
+                    .with_children(|b| {
+                        let comp = l
+                            .classes
+                            .iter()
+                            .map(|c| class_info(c).name)
+                            .collect::<Vec<_>>()
+                            .join(" / ");
+                        b.spawn((
+                            Text::new(format!("{}  —  {comp}", l.name)),
+                            TextFont { font_size: 13.0, ..default() },
+                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                        ));
+                    });
+                    row.spawn((
+                        Button,
+                        LoadoutDeleteButton(l.name.clone()),
+                        Node {
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(glass::EDGE_SOFT),
+                        BorderRadius::all(Val::Px(6.0)),
+                        BackgroundColor(glass::CHIP_OFF),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new("x"),
+                            TextFont { font_size: 13.0, ..default() },
+                            TextColor(Color::srgb(0.9, 0.6, 0.6)),
+                        ));
+                    });
+                });
+            }
+            p.spawn((
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(6.0),
+                    align_items: AlignItems::Center,
+                    margin: UiRect::top(Val::Px(4.0)),
+                    ..default()
+                },
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    Text::new("Name:"),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.6, 0.65, 0.8)),
+                ));
+                row.spawn((
+                    Node {
+                        flex_grow: 1.0,
+                        padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(glass::EDGE_SOFT),
+                    BorderRadius::all(Val::Px(5.0)),
+                    BackgroundColor(glass::CHIP_OFF),
+                ))
+                .with_children(|f| {
+                    f.spawn((
+                        Text::new(String::new()),
+                        LoadoutNameText,
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                    ));
+                });
+            });
+            p.spawn((
+                Button,
+                LoadoutSaveButton,
+                Node {
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    margin: UiRect::top(Val::Px(2.0)),
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(6.0)),
+                BackgroundColor(glass::CHIP_OFF),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Save this party"),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                ));
+            });
             p.spawn((
                 Button,
                 PartyDoneButton,
@@ -1309,6 +1459,111 @@ pub(crate) fn party_panel_buttons(
             session.party_chosen = true;
             city.notice = "Party set.".to_string();
         }
+    }
+}
+
+/// Type the name for the next save while the Drill Yard is open.
+///
+/// Only while the yard is open, so the town's WASD/E/C shortcuts are untouched the
+/// rest of the time — the panel is the one place in town that swallows letter keys.
+pub(crate) fn loadout_name_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut city: ResMut<CityUi>,
+    mut q: Query<&mut Text, With<LoadoutNameText>>,
+) {
+    if !city.party_open {
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let mut changed = false;
+    if keys.just_pressed(KeyCode::Backspace) {
+        city.loadout_name.pop();
+        changed = true;
+    }
+    for key in keys.get_just_pressed() {
+        if let Some(c) = crate::screens::typed_char(*key, shift) {
+            if city.loadout_name.chars().count() < 24 {
+                city.loadout_name.push(c);
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        if let Ok(mut t) = q.single_mut() {
+            **t = city.loadout_name.clone();
+        }
+    }
+}
+
+/// Clicks on the saved-loadout rows: load one into the live party, delete one, or
+/// save the current party under the typed name.
+pub(crate) fn loadout_buttons(
+    load_q: Query<(&Interaction, &LoadoutLoadButton), Changed<Interaction>>,
+    del_q: Query<(&Interaction, &LoadoutDeleteButton), Changed<Interaction>>,
+    save_q: Query<&Interaction, (Changed<Interaction>, With<LoadoutSaveButton>)>,
+    net: NonSend<NetRes>,
+    loadouts: Res<LoadoutData>,
+    unlocks: Res<UnlocksRes>,
+    mut session: ResMut<Session>,
+    mut city: ResMut<CityUi>,
+) {
+    for (i, b) in &load_q {
+        if *i != Interaction::Pressed {
+            continue;
+        }
+        if let Some(l) = loadouts.list.iter().find(|l| l.name == b.0) {
+            // The SERVER applies it — it re-clamps the classes and re-equips the gear
+            // it captured, skipping anything since broken, sold or lost. This local
+            // copy is only so the panel reads right before the refresh lands; the
+            // authoritative answer is whatever the server did.
+            net.0.apply_loadout(l.name.clone());
+            let owned = fieldable_classes(&unlocks);
+            let slots = (unlocks.party_slots.max(1) as usize).min(4);
+            let party: Vec<String> = l
+                .classes
+                .iter()
+                .take(slots)
+                .map(|c| {
+                    if owned.iter().any(|o| o == c) {
+                        c.clone()
+                    } else {
+                        "explorer".to_string()
+                    }
+                })
+                .collect();
+            if !party.is_empty() {
+                session.party = party;
+                session.party_chosen = true;
+                session.party_cursor = 0;
+                city.notice = format!("Loaded \"{}\".", l.name);
+            }
+        }
+    }
+    for (i, b) in &del_q {
+        if *i == Interaction::Pressed {
+            net.0.delete_loadout(b.0.clone());
+            city.notice = format!("Deleted \"{}\".", b.0);
+        }
+    }
+    for i in &save_q {
+        if *i != Interaction::Pressed {
+            continue;
+        }
+        // The typed name if there is one, else the next free "Party N" — an empty
+        // field should still save something rather than refuse.
+        let typed = city.loadout_name.trim().to_string();
+        let name = if typed.is_empty() {
+            let mut n = 1;
+            while loadouts.list.iter().any(|l| l.name == format!("Party {n}")) {
+                n += 1;
+            }
+            format!("Party {n}")
+        } else {
+            typed
+        };
+        city.loadout_name.clear();
+        net.0.save_loadout(name.clone(), session.party.clone());
+        city.notice = format!("Saved as \"{name}\".");
     }
 }
 

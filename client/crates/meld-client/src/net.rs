@@ -175,6 +175,13 @@ pub struct EntityView {
     pub bodies_required: u8,
 }
 
+/// One saved party composition (PT-2).
+#[derive(Clone, Debug)]
+pub struct LoadoutLine {
+    pub name: String,
+    pub classes: Vec<String>,
+}
+
 /// A connector (ladder/rope/slope) joining two elevation levels — client view.
 #[derive(Clone)]
 pub struct ConnectorView {
@@ -527,6 +534,8 @@ pub enum ServerMsg {
     /// Persistent per-account hero names (`GET /v1/heroes`), for the Equip/Status
     /// tabs when there's no active run's `PartyRoster` to source names from
     /// (e.g. opening the storage chest from the City).
+    /// PT-2: the account's saved party loadouts.
+    Loadouts { list: Vec<LoadoutLine> },
     HeroNames {
         names: Vec<String>,
         /// Each slot's persisted class key (GR-7); empty when never recorded.
@@ -573,6 +582,7 @@ struct Inner {
     inv_rx: Option<mpsc::Receiver<InvPayload>>,
     prog_rx: Option<mpsc::Receiver<ProgPayload>>,
     heroes_rx: Option<mpsc::Receiver<(Vec<String>, Vec<String>)>>,
+    loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
     ticket: String,
@@ -612,6 +622,7 @@ pub fn start(base: String) -> Net {
         inv_rx: None,
         prog_rx: None,
         heroes_rx: None,
+        loadouts_rx: None,
         vanguard_rx: None,
         shop_rx: None,
         ticket: String::new(),
@@ -679,6 +690,30 @@ impl Net {
     /// Vault so the chit balance the player sees is the server's, not a guess.
     pub fn buy_item(&self, item_kind: String, qty: i32) {
         self.0.borrow_mut().buy_item(item_kind, qty);
+    }
+
+    /// Kick off an authenticated GET of the account's saved party loadouts (PT-2).
+    pub fn fetch_loadouts(&self) {
+        self.0.borrow_mut().fetch_loadouts();
+    }
+
+    /// Save (or overwrite) a named party composition, then refresh the list so what
+    /// the panel shows is the server's answer rather than an optimistic guess.
+    pub fn save_loadout(&self, name: String, classes: Vec<String>) {
+        self.0.borrow_mut().save_loadout(name, classes);
+    }
+
+    /// Forget a named loadout, then refresh.
+    pub fn delete_loadout(&self, name: String) {
+        self.0.borrow_mut().delete_loadout(name);
+    }
+
+    /// Apply a saved loadout: the SERVER sets the classes and re-equips the gear it
+    /// captured, re-validating every piece. The client sends only the name — it never
+    /// says which gear to wear, so there is no request in which it could ask for gear
+    /// it does not own.
+    pub fn apply_loadout(&self, name: String) {
+        self.0.borrow_mut().apply_loadout(name);
     }
 
     /// Kick off an authenticated GET of the live Vanguard Board
@@ -764,6 +799,12 @@ impl Inner {
             if let Ok((names, classes)) = rx.try_recv() {
                 self.heroes_rx = None;
                 self.out.push_back(ServerMsg::HeroNames { names, classes });
+            }
+        }
+        if let Some(rx) = &self.loadouts_rx {
+            if let Ok(list) = rx.try_recv() {
+                self.loadouts_rx = None;
+                self.out.push_back(ServerMsg::Loadouts { list });
             }
         }
 
@@ -905,6 +946,85 @@ impl Inner {
             }
             let _ = tx.send((names, classes));
         });
+    }
+
+    fn fetch_loadouts(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.loadouts_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/party/loadouts", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut list = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for row in v["data"].as_array().into_iter().flatten() {
+                        let name = row["name"].as_str().unwrap_or_default().to_string();
+                        let classes: Vec<String> = row["classes"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|c| c.as_str().map(String::from))
+                            .collect();
+                        if !name.is_empty() {
+                            list.push(LoadoutLine { name, classes });
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(list);
+        });
+    }
+
+    fn save_loadout(&mut self, name: String, classes: Vec<String>) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{}/v1/party/loadouts", self.base),
+            serde_json::to_vec(&serde_json::json!({ "name": name, "classes": classes }))
+                .unwrap_or_default(),
+        );
+        req.headers.insert("Content-Type", "application/json");
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, |_| {});
+        // The server validates against the account's unlocks and can refuse, so the
+        // list is re-read rather than assumed.
+        self.fetch_loadouts();
+    }
+
+    fn apply_loadout(&mut self, name: String) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{}/v1/party/loadouts/{name}/apply", self.base),
+            Vec::new(),
+        );
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, |_| {});
+        // The equip state the server just rewrote is what the panels read.
+        self.fetch_hero_names();
+        self.fetch_inventory();
+    }
+
+    fn delete_loadout(&mut self, name: String) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request {
+            method: "DELETE".to_string(),
+            ..ehttp::Request::get(format!("{}/v1/party/loadouts/{name}", self.base))
+        };
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, |_| {});
+        self.fetch_loadouts();
     }
 
     /// GET `/v1/vendors/apothecary` (Bearer auth) for the shop panel.

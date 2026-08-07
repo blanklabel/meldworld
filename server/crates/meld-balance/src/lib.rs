@@ -231,6 +231,8 @@ pub struct Loot {
     pub chits_per_mlevel: f64,
     pub chits_jitter: f64,
     pub gear_drop_chance: f64,
+    /// Fraction of a reward-spike encounter's gear drops that are PERMANENT (blue).
+    pub permanent_gear_chance: f64,
     pub gear_atk_per_tier: f64,
     pub gear_atk_jitter: f64,
     pub gear_base_durability: i32,

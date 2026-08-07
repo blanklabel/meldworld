@@ -77,6 +77,7 @@ pub(crate) fn pump_net(
         ResMut<LootReport>,
         ResMut<PerksRes>,
         ResMut<AccountHeroNames>,
+        ResMut<LoadoutData>,
         ResMut<RunGearData>,
         ResMut<WorldWeb>,
         ResMut<crate::world_render::DungeonSceneRes>,
@@ -88,7 +89,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, run_gear, world_web, dungeon_scene, vanguard, shop) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -443,6 +444,10 @@ pub(crate) fn pump_net(
                 vanguard.entries = entries;
                 vanguard.you = you;
                 vanguard.loaded = true;
+            }
+            ServerMsg::Loadouts { list } => {
+                loadouts.list = list;
+                loadouts.loaded = true;
             }
             ServerMsg::HeroNames { names, classes } => {
                 hero_names.names = names;
