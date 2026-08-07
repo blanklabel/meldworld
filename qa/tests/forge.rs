@@ -54,19 +54,19 @@ async fn the_forge_makes_gear_rerolls_affixes_and_charges_for_it() {
     let res = http
         .post(format!("{base}/v1/crafting/forge"))
         .bearer_auth(&token)
-        .json(&json!({ "slot": "main_hand", "material": "dune_iron" }))
+        .json(&json!({ "slot": "main_hand", "material": "dune_ingot" }))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 409, "forged something from nothing");
     let err: Value = res.json().await.unwrap();
     let msg = err["error"]["message"].as_str().unwrap_or_default();
-    assert!(msg.contains("dune_iron"), "the refusal should name the cost: {msg}");
+    assert!(msg.contains("dune_ingot"), "the refusal should name the cost: {msg}");
 
     // Nonsense inputs are validation errors rather than surprises.
     for bad in [
-        json!({ "slot": "hat", "material": "dune_iron" }),
-        json!({ "slot": "main_hand", "class_key": "wizard", "material": "dune_iron" }),
+        json!({ "slot": "hat", "material": "dune_ingot" }),
+        json!({ "slot": "main_hand", "class_key": "wizard", "material": "dune_ingot" }),
     ] {
         let res = http
             .post(format!("{base}/v1/crafting/forge"))
@@ -92,7 +92,7 @@ async fn the_forge_makes_gear_rerolls_affixes_and_charges_for_it() {
     let res = http
         .post(format!("{base}/v1/vault/gear/{starter}/reroll"))
         .bearer_auth(&token)
-        .json(&json!({ "material": "dune_iron" }))
+        .json(&json!({ "material": "dune_ingot" }))
         .send()
         .await
         .unwrap();
@@ -129,7 +129,7 @@ async fn the_forge_makes_gear_rerolls_affixes_and_charges_for_it() {
     // And the whole Forge surface is authenticated.
     let res = http
         .post(format!("{base}/v1/crafting/forge"))
-        .json(&json!({ "slot": "main_hand", "material": "dune_iron" }))
+        .json(&json!({ "slot": "main_hand", "material": "dune_ingot" }))
         .send()
         .await
         .unwrap();

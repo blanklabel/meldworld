@@ -502,16 +502,23 @@ pub struct Material {
     pub sale_base_chits: i64,
     pub sale_growth_per_tier: f64,
     pub sale_trophy_mult: f64,
+    pub sale_refined_mult: f64,
     pub sale_haggle_pct_per_level: f64,
     pub sale_haggle_max_pct: f64,
 }
 
 impl Material {
-    /// Unit price in chits for a material of `tier`, at this Mercantile level.
-    /// `trophy` parts fetch more than plants — they cost a fight, not a walk.
-    pub fn sale_price(&self, tier: i32, trophy: bool, mercantile_level: i32) -> i64 {
+    /// Unit price in chits for a material of `tier` and `class` (a
+    /// `meld_proto::materials::MaterialClass` wire word), at this Mercantile level.
+    /// What it cost to get is what it fetches: a trophy costs a fight rather than a
+    /// walk, and refined stock has a Smelter's labour in it.
+    pub fn sale_price(&self, tier: i32, class: &str, mercantile_level: i32) -> i64 {
         let band = self.sale_growth_per_tier.powi(tier.max(0));
-        let class = if trophy { self.sale_trophy_mult } else { 1.0 };
+        let class = match class {
+            "trophy" => self.sale_trophy_mult,
+            "refined" => self.sale_refined_mult,
+            _ => 1.0,
+        };
         let haggle = (self.sale_haggle_pct_per_level * (mercantile_level.max(1) - 1) as f64)
             .min(self.sale_haggle_max_pct)
             / 100.0;

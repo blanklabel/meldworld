@@ -3110,6 +3110,63 @@ mod tests {
         assert!((0.0..=100.0).contains(&channel_fill_pct(3.0, 0)));
     }
 
+    // Running the REAL system, because the thing that can silently break is the wiring
+    // (does `channeling` reach the bar, does the frame un-hide, does the fill widen?),
+    // not the arithmetic. Driving autoplay to a node for a screenshot proved unreliable
+    // — the bot steers at creatures — so the bar is pinned here instead, where it is
+    // deterministic and runs in CI.
+    #[test]
+    fn the_real_bar_hides_when_idle_and_fills_while_channeling() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Session::default())
+            .add_systems(Update, update_channel_bar);
+        let fill = app
+            .world_mut()
+            .spawn((ChannelBarFill, Node { width: Val::Percent(0.0), ..default() }))
+            .id();
+        let frame = app
+            .world_mut()
+            .spawn((ChannelBar, Node { display: Display::None, ..default() }))
+            .id();
+
+        // Idle: the bar stays out of the way.
+        app.update();
+        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
+
+        // A channel starts → the frame appears.
+        {
+            let mut s = app.world_mut().resource_mut::<Session>();
+            s.channeling = true;
+            s.channel_fill_ms = 1000;
+        }
+        app.update();
+        assert_eq!(
+            app.world().get::<Node>(frame).unwrap().display,
+            Display::Flex,
+            "a running channel should show the bar"
+        );
+
+        // …and it fills as time passes, rather than sitting at zero.
+        let width_of = |app: &App| match app.world().get::<Node>(fill).unwrap().width {
+            Val::Percent(p) => p,
+            other => panic!("fill width should be a percentage, got {other:?}"),
+        };
+        let start = width_of(&app);
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            app.update();
+        }
+        let later = width_of(&app);
+        assert!(later > start, "the bar should fill over time: {start} -> {later}");
+        assert!((0.0..=100.0).contains(&later), "{later}");
+
+        // The channel ends → the bar goes away again.
+        app.world_mut().resource_mut::<Session>().channeling = false;
+        app.update();
+        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
+    }
+
     #[test]
     fn an_unnamed_node_still_prompts() {
         assert_eq!(node_label("bloom_herb"), "Bloom Herb");

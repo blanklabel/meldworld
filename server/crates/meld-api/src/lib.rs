@@ -554,9 +554,10 @@ struct ForgeReq {
     /// Which class's kit to forge for; defaults to the martial baseline.
     #[serde(default)]
     class_key: Option<String>,
-    /// The piece's BODY: an `ore`-class material out of the Vault. A smith uses
-    /// whichever ore they have, so the client names it rather than the server
-    /// guessing — but it has to be an ore.
+    /// The piece's BODY: a **`refined`**-class material out of the Vault. Raw ore is
+    /// volatile — a Smelter stabilises it first (the smelt recipes) — so the anvil
+    /// takes stock, not what came out of the ground. A smith uses whichever stock they
+    /// have, so the client names it rather than the server guessing.
     material: String,
     /// Optional **catalyst**: a `trophy` (combat drop) quenched into the piece,
     /// buying `catalyst_tier_bonus` tiers past the smith's own reach and the better
@@ -581,10 +582,15 @@ async fn forge(
     if meld_proto::equipment::class_from_key(&class_key).is_none() {
         return Err(ApiReject::validation("Unknown class."));
     }
-    if !mat::is_class(&req.material, mat::MaterialClass::Ore) {
-        return Err(ApiReject::validation(
-            "The forge needs an ore or wood for the body of the piece.",
-        ));
+    if !mat::is_class(&req.material, mat::MaterialClass::Refined) {
+        // Name the smelt if they brought raw ore: "wrong class" is useless advice when
+        // the fix is one craft away.
+        let hint = mat::refined_form(&req.material)
+            .map(|r| format!(" Smelt it into {r} first."))
+            .unwrap_or_default();
+        return Err(ApiReject::validation(format!(
+            "The forge builds from refined stock, not raw material.{hint}"
+        )));
     }
     if let Some(c) = &req.catalyst {
         if !mat::is_class(c, mat::MaterialClass::Trophy) {
@@ -907,11 +913,7 @@ async fn broker_prices(
 }
 
 fn broker_price(st: &ApiState, m: &mat::MaterialDef, mercantile_level: i32) -> i64 {
-    st.balance.material.sale_price(
-        m.tier,
-        m.class == mat::MaterialClass::Trophy,
-        mercantile_level,
-    )
+    st.balance.material.sale_price(m.tier, m.class.wire(), mercantile_level)
 }
 
 #[derive(serde::Deserialize)]

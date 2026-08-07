@@ -24,8 +24,8 @@ could ask for one.
 ### The shipped fix
 
 1. **Materials are a registry with a class** (`meld_proto::materials`) —
-   `reagent` (harvest), `ore` (harvest), `trophy` (**combat drop**) — plus a tier
-   equal to its biome band (forest 0 → mire 4). Class is what everything else gates
+   `reagent` (harvest), `ore` (harvest), `refined` (smelted), `trophy` (**combat
+   drop**) — plus a tier equal to its biome band (forest 0 → mire 4). Class is what everything else gates
    on, and a `meld-world` unit test asserts every key the world can drop is in it.
 2. **The trophy potion line** — six recipes keyed on monster parts, each one step up
    its own effect's ladder from the reagent-line potion it shadows (Verdant Draught,
@@ -44,7 +44,10 @@ could ask for one.
    the same roll already scaled with both — so trophies had no supply curve at all.
 5. **Recipes have a permanent level gate** — `RecipeDef::min_level` against the
    crafter's Meld level, refused with a `403` that names the missing level.
-6. **The Broker buys materials** (`/v1/vendors/broker`) — a floor price under every
+6. **The smelt line** — Forging's own craft ladder (§2.4): five recipes turning raw ore
+   into **refined stock**, which is what the Forge now builds from. Forging had one
+   recipe in the entire game before this.
+7. **The Broker buys materials** (`/v1/vendors/broker`) — a floor price under every
    material, scaled by Mercantile level, paying Mercantile XP. Mercantile previously
    had **no XP source at all**; this is its first.
 
@@ -252,30 +255,37 @@ Its three castes are already, exactly, the Forging material pipeline:
 | Caste | Fiction | Mechanically |
 |---|---|---|
 | **Extractors** (Rank 1) | rip resources out of the Shifting Lands and the Slag-Fields; indentured, high mortality | **ore/wood harvest yield** — the `forging` nodes |
-| **Smelters** (Rank 2) | boil the corruption and magical volatility out of raw ore to stabilize it | **a refining tier** — see below |
-| **Smithwrights** (Rank 3–6) | magitech components, riveted plating, structural armor | **the Forge** — gear crafting, `forgeable_tier` |
+| **Smelters** (Rank 2) | boil the corruption and magical volatility out of raw ore to stabilize it | **the smelt line** — raw → `refined`, *ships* |
+| **Smithwrights** (Rank 3–6) | magitech components, riveted plating, structural armor | **the Forge** — gear crafting from refined stock, `forgeable_tier` |
 
 And its rank ladder already lands on MELDWORLD's: Rank 3 at character level 5, Rank 4 at
 9, Rank 5 at 13, Rank 6 at 17 — the same 1/2/5/9/13/17 rungs every order's ability
 unlocks use ([`skills.rs`](../../shared/meld-proto/src/skills.rs)). Nothing needs
 inventing; the ladder was already built to fit.
 
-**The Smelters name a mechanic we don't have, and we want it.** "Boiling away the
+**The Smelters named a mechanic we didn't have — it now ships.** "Boiling away the
 corruption or magical volatility from raw ores" is a **raw → refined** step, and it
-fills a real hole: Forging currently has exactly *one* recipe in the whole game (the
-Town Portal), while Alchemy has thirteen. Smelting is a whole line of them —
-`cinder_ore` → a stable ingot, with the Forge consuming the *refined* material rather
-than the raw one. The registry already supports it (a recipe output is a legal recipe
-input — `elixir` eats `bloom_salve`); it needs a `refined` flag or a fourth
-[`MaterialClass`](../../shared/meld-proto/src/materials.rs), a smelting recipe per ore,
-and a `min_level` ladder that mirrors the caste ranks.
+filled a real hole: Forging had exactly *one* recipe in the whole game (the Town Portal)
+against Alchemy's thirteen. A profession with a single craft is not a profession.
 
-It also hands the raw ores a *reason to be volatile*, which the fiction is begging for
-and the run already has the vocabulary for: raw ore is the risky thing to carry home,
-refined ore is the safe thing to build with. That is `MS-2`-adjacent tension for the
-Foundry persona specifically, and worth designing alongside it rather than after.
+Shipped as the **smelt line**: a fourth [`MaterialClass::Refined`](../../shared/meld-proto/src/materials.rs)
+with one refined form per ore (Heartoak Stave, Dune/Cinder/Rime/Peat Ingot, each in its
+ore's own band so smelting cannot launder shallow material into deep gear), five
+`forging` recipes at **two raw for one refined** — the loss *is* the cost of stabilising
+it — and **the Forge now builds from refined stock**, refusing raw ore with a message
+that names the smelt to run. So a Smithwright's pipeline is `harvest ore → smelt → forge`
+rather than a single tap, and the Smelter caste has a job.
 
-**Deliberately still ungated, for now.** Ore is the one input every gear craft needs, so
+The `min_level` ladder rises by band (1 / 2 / 4 / 6 / 8), which is where the decision
+lives: **ore you cannot yet work is ore worth banking** until your Forging catches up.
+Refined stock also out-prices its ore at the Broker, because a Smelter's labour is in it.
+
+*Still open (§4):* the **volatility gamble** — a level-scaled recovery rate, so smelting
+early costs you material rather than merely being unavailable. The shipped version gates
+by level instead of rolling, which is simpler and has no RNG in it; the gamble is the
+richer version and belongs with Experimentation.
+
+**Ore is deliberately still ungated by CLASS-yield, for now.** It is the one input every gear craft needs, so
 until the Foundry exists as a playable class, ore stays the democratic material and the
 Extractor yield-lens is a `[perks]` entry waiting for its class. §2.3's rules apply to it
 unchanged when it lands.

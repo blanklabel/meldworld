@@ -46,7 +46,8 @@ Forge gate on:
 | Class | Comes from | Consumed by |
 |---|---|---|
 | `reagent` | harvest nodes (plants, salts) | Alchemy recipes |
-| `ore` | harvest nodes (ore, wood) | the Forge, as the **body** of a piece |
+| `ore` | harvest nodes (ore, wood) | the **smelt** recipes (2 raw → 1 refined) |
+| `refined` | smelting an ore (Forging, gated by band) | the Forge, as the **body** of a piece |
 | `trophy` | **felled creatures** (`run.backpack_update` on a kill) | the trophy recipe line, and the Forge as a **catalyst** |
 
 `GET /v1/crafting/recipes` reports each input's `material_class` so a UI can explain
@@ -56,8 +57,11 @@ registry is a bug — it is loot nothing can spend, and unit tests in `meld-prot
 
 ### The Forge and the catalyst
 
-`POST /v1/crafting/forge` spends `[forge] gear_material_cost` of `material` (an ore)
-plus `gear_chit_cost`, and rolls a piece at `forgeable_tier(forging_level)`.
+`POST /v1/crafting/forge` spends `[forge] gear_material_cost` of `material` — a
+**`refined`**-class material, *not* raw ore, since a Smelter stands between the ground
+and the anvil — plus `gear_chit_cost`, and rolls a piece at
+`forgeable_tier(forging_level)`. Passing raw ore is a `400` whose message names the smelt
+to run.
 
 Passing `catalyst` (a trophy) additionally spends `[forge] catalyst_material_cost` of
 it and forges at `catalyzed_tier` = `forgeable_tier + catalyst_tier_bonus`, rolling
@@ -66,7 +70,7 @@ can reach; monster parts raise the ceiling.
 
 **Response** — `200 OK`: `{forged, slot, tier, rarity, catalyzed, forging_level}`.
 
-**Errors** — 400 `validation_error` (unknown slot/class, `material` not an ore,
+**Errors** — 400 `validation_error` (unknown slot/class, `material` not refined stock,
 `catalyst` not a trophy); 409 `conflict` (materials or chits short — the message
 names both halves of the bill).
 

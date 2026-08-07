@@ -165,6 +165,16 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
         400,
         "forged a blade out of herbs"
     );
+    // Raw ore is refused too — a Smelter stands between the ground and the anvil — and
+    // the refusal names the smelt so the player is not left guessing.
+    let raw = forge(json!({ "slot": "main_hand", "material": "dune_iron" })).await;
+    assert_eq!(raw.status(), 400, "forged a blade out of unsmelted ore");
+    let err: Value = raw.json().await.unwrap();
+    let msg = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("dune_ingot"),
+        "the refusal should name the smelt to run: {msg}"
+    );
     assert_eq!(
         forge(json!({ "slot": "main_hand", "material": "bog_ichor" })).await.status(),
         400,
@@ -173,8 +183,8 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     assert_eq!(
         forge(json!({
             "slot": "main_hand",
-            "material": "dune_iron",
-            "catalyst": "dune_iron",
+            "material": "dune_ingot",
+            "catalyst": "dune_ingot",
         }))
         .await
         .status(),
@@ -185,7 +195,7 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     // refusal names both halves of it.
     let res = forge(json!({
         "slot": "main_hand",
-        "material": "dune_iron",
+        "material": "dune_ingot",
         "catalyst": "bog_ichor",
     }))
     .await;
@@ -193,9 +203,52 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     let err: Value = res.json().await.unwrap();
     let msg = err["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("dune_iron") && msg.contains("bog_ichor"),
+        msg.contains("dune_ingot") && msg.contains("bog_ichor"),
         "the refusal should name the catalyst too: {msg}"
     );
+
+    // The SMELT line: Forging's own craft ladder. Every ore has a smelt, the deep ones
+    // are gated behind a better smith, and the Forge builds from what they produce — so
+    // a Smithwright's pipeline is harvest ore -> smelt -> forge rather than a single tap.
+    let forging_recipes: Vec<&Value> =
+        listed.iter().filter(|r| r["skill"] == "forging").collect();
+    assert!(
+        forging_recipes.len() > 1,
+        "Forging had one recipe (the Town Portal) and needs a craft line: {:?}",
+        forging_recipes.iter().map(|r| &r["recipe"]).collect::<Vec<_>>()
+    );
+    for (ore, refined) in [
+        ("heartoak_bark", "heartoak_stave"),
+        ("dune_iron", "dune_ingot"),
+        ("cinder_ore", "cinder_ingot"),
+        ("rime_ore", "rime_ingot"),
+        ("peat_iron", "peat_ingot"),
+    ] {
+        let r = listed
+            .iter()
+            .find(|r| r["output"] == json!(refined))
+            .unwrap_or_else(|| panic!("no recipe makes {refined}"));
+        assert_eq!(r["skill"], "forging", "{refined} should credit Forging");
+        let takes_raw = r["inputs"].as_array().into_iter().flatten().any(|i| {
+            i["item_kind"] == json!(ore)
+                && i["material_class"] == json!("ore")
+                && i["quantity"].as_i64().unwrap_or(0) > 1
+        });
+        assert!(takes_raw, "{refined} should cost several raw {ore}: {r}");
+        // Refined stock is worth more at the Broker than the ore it came from — a
+        // Smelter's labour is in it.
+        assert!(
+            price(refined) > price(ore),
+            "{refined} ({}) should out-price {ore} ({})",
+            price(refined),
+            price(ore)
+        );
+    }
+    // A fresh smith can run the shallow smelt (only materials are missing → 409) but
+    // the deep bands are locked (403). That gate is the reason to bank ore you cannot
+    // yet work.
+    assert_eq!(craft("heartoak_stave").await.status(), 409, "the first smelt should be open");
+    assert_eq!(craft("peat_ingot").await.status(), 403, "deep ore needs a better smith");
 
     // The Broker refuses what it does not deal in, refuses a sale the Vault cannot
     // cover, and never gifts chits for either.

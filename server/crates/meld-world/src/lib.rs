@@ -5722,7 +5722,7 @@ mod tests {
                 !meld_proto::consumables::recipes_consuming(key).is_empty(),
                 "{key} has no recipe to be spent in"
             );
-            assert!(b.material.sale_price(def.tier, true, 1) > 0);
+            assert!(b.material.sale_price(def.tier, def.class.wire(), 1) > 0);
         }
         for node in BIOMES.iter().flat_map(|b| resources_for_biome(b)) {
             assert!(material(node).is_some(), "harvest node {node} is not a registered material");
