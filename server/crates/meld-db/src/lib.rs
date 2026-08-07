@@ -33,6 +33,16 @@ pub struct Loadout {
 
 /// Split a stored `classes` column back into slot order, dropping empties so a
 /// trailing comma cannot conjure a phantom slot.
+/// The stored column word for a tier. `blue`/`red` are the legacy chest colours the
+/// column has always used; `standard` is the third tier joining them.
+fn insurance_word(i: meld_proto::Insurance) -> &'static str {
+    match i {
+        meld_proto::Insurance::Insured => "blue",
+        meld_proto::Insurance::Ephemeral => "red",
+        meld_proto::Insurance::Standard => "standard",
+    }
+}
+
 fn split_classes(joined: &str) -> Vec<String> {
     joined.split(',').filter(|c| !c.is_empty()).map(str::to_string).collect()
 }
@@ -2168,7 +2178,7 @@ impl Db {
                     .bind(&g.set_key)
                     // Permanent (blue) survives death and wears down; looted (red)
                     // burns. Only a reward-spike encounter rolls permanence.
-                    .bind(if g.permanent { "blue" } else { "red" })
+                    .bind(insurance_word(g.insurance))
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -2184,7 +2194,7 @@ impl Db {
                         name: g.name.clone(),
                         slot: g.slot.clone(),
                         class_key: g.class_key.clone(),
-                        insurance: if g.permanent { "blue".into() } else { "red".into() },
+                        insurance: insurance_word(g.insurance).to_string(),
                         family: g.family.clone(),
                         armor_weight: g.armor_weight.clone(),
                         affixes: g.affixes.clone(),
@@ -2327,12 +2337,56 @@ impl Db {
     /// at absolute risk, permanently deleted when the run ends `died` OR
     /// `abandoned`. (Blue gear only decays; unequipped red gear sat safe in
     /// the Vault and is untouched.)
-    pub async fn delete_equipped_red_gear(&self, player_id: Uuid) -> Result<(), DbError> {
+    /// Set one item's insurance tier directly. Test-only: the drop roll is what picks
+    /// a tier in the real game, and there is no player-facing way to change one.
+    #[cfg(test)]
+    pub async fn force_insurance(&self, gear_id: Uuid, tier: &str) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("UPDATE gear SET insurance = $2 WHERE gear_id = $1")
+                    .bind(gear_id)
+                    .bind(tier)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                if let Some(g) = m.lock().unwrap().gear.get_mut(&gear_id) {
+                    g.insurance = tier.to_string();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn burn_ephemeral_gear(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("DELETE FROM gear WHERE owner_player_id = $1 AND insurance = 'red'")
+                    .bind(player_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                m.gear.retain(|_, g| !(g.owner_player_id == player_id && g.insurance == "red"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Destroy the STANDARD gear a player had equipped when a run ended in a wipe.
+    ///
+    /// The only thing that ever takes standard gear, which is the trade against
+    /// insured: normal kit is untouched right up until one bad night takes all of it,
+    /// insured kit can never be taken but is never quite whole. Equipped only — what
+    /// they left at home was never at risk.
+    pub async fn destroy_equipped_standard_gear(&self, player_id: Uuid) -> Result<(), DbError> {
         match &self.backend {
             Backend::Pg(pool) => {
                 sqlx::query(
                     "DELETE FROM gear
-                     WHERE owner_player_id = $1 AND insurance = 'red' AND equipped_hero_slot IS NOT NULL",
+                     WHERE owner_player_id = $1 AND insurance = 'standard'
+                       AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
                 .execute(pool)
@@ -2342,7 +2396,7 @@ impl Db {
                 let mut m = m.lock().unwrap();
                 m.gear.retain(|_, g| {
                     !(g.owner_player_id == player_id
-                        && g.insurance == "red"
+                        && g.insurance == "standard"
                         && g.equipped_hero_slot.is_some())
                 });
             }
@@ -2352,14 +2406,20 @@ impl Db {
 
     /// Apply the death durability sink to equipped blue-chest gear:
     /// `max_durability ← floor(max_durability × 0.9)` (CANON.md D6).
-    pub async fn apply_death_durability(&self, player_id: Uuid) -> Result<(), DbError> {
+    pub async fn apply_death_durability(
+        &self,
+        player_id: Uuid,
+        rate: f64,
+    ) -> Result<(), DbError> {
+        let keep = (1.0 - rate).clamp(0.0, 1.0);
         match &self.backend {
             Backend::Pg(pool) => {
                 sqlx::query(
-                    "UPDATE gear SET max_durability = (max_durability * 9) / 10
+                    "UPDATE gear SET max_durability = FLOOR(max_durability * $2)
                      WHERE owner_player_id = $1 AND insurance = 'blue' AND equipped_hero_slot IS NOT NULL",
                 )
                 .bind(player_id)
+                .bind(keep)
                 .execute(pool)
                 .await?;
             }
@@ -2367,7 +2427,7 @@ impl Db {
                 let mut m = m.lock().unwrap();
                 for g in m.gear.values_mut() {
                     if g.owner_player_id == player_id && g.insurance == "blue" && g.equipped_hero_slot.is_some() {
-                        g.max_durability = (g.max_durability * 9) / 10;
+                        g.max_durability = (g.max_durability as f64 * keep).floor() as i32;
                     }
                 }
             }
@@ -2788,8 +2848,9 @@ pub struct LootedGear {
     /// AD-1 affixes as JSON (`[]` for none).
     pub affixes: String,
     /// AD-1 unique key; empty for ordinary loot.
-    /// PERMANENT (blue) rather than looted (red): survives death and degrades instead.
-    pub permanent: bool,
+    /// Which tier this dropped as — it decides how the item is lost, not just how it
+    /// is coloured.
+    pub insurance: meld_proto::Insurance,
     pub unique_key: String,
     /// AD-1 set key; empty when not part of a set.
     pub set_key: String,
@@ -3159,7 +3220,7 @@ mod tests {
         db.insert_looted_gear(
             p,
             &[LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Ephemeral,
                 gear_id: Uuid::now_v7(),
                 name: "Looted Sword".into(),
                 slot: "main_hand".into(),
@@ -3212,17 +3273,102 @@ mod tests {
         assert_eq!(db.set_equipped(p, Uuid::now_v7(), Some(0)).await.unwrap(), EquipResult::NotFound);
 
         // Death sink only touches equipped blue-chest gear (looted sword is red).
-        db.apply_death_durability(p).await.unwrap();
+        db.apply_death_durability(p, 0.1).await.unwrap();
         let starter_row = db.get_gear(p).await.unwrap().into_iter().find(|g| g.gear_id == starter).unwrap();
         assert_eq!(starter_row.max_durability, 90); // floor(100 * 0.9)
 
         // Spec §5 red-gear canon gap: equipped red gear is DELETED on a run
         // that ends died/abandoned (the looted sword is equipped on hero 1),
         // while blue gear survives (decayed above, never deleted).
-        db.delete_equipped_red_gear(p).await.unwrap();
+        db.burn_ephemeral_gear(p).await.unwrap();
         let after = db.get_gear(p).await.unwrap();
         assert!(after.iter().all(|g| g.name != "Looted Sword"), "equipped red gear burned");
         assert!(after.iter().any(|g| g.gear_id == starter), "blue starter survives");
+    }
+
+    #[tokio::test]
+    async fn the_three_gear_tiers_are_lost_in_three_different_ways() {
+        let db = mem().await;
+        let p = db.register("tiers", "correct-horse-battery").await.unwrap().player_id;
+        let piece = |name: &str| LootedGear {
+            insurance: meld_proto::Insurance::Standard,
+            gear_id: Uuid::now_v7(),
+            name: name.into(),
+            slot: "accessory".into(),
+            class_key: String::new(),
+            tier: 1,
+            atk_bonus: 1,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 100,
+            max_durability: 100,
+            damage_modifiers: "{}".into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        db.insert_looted_gear(
+            p,
+            &[piece("Insured Ring"), piece("Burning Ring"), piece("Plain Ring")],
+        )
+        .await
+        .unwrap();
+        let ids: Vec<(String, Uuid)> = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|g| (g.name, g.gear_id))
+            .collect();
+        let id_of = |want: &str| ids.iter().find(|(n, _)| n == want).expect("ring exists").1;
+        db.force_insurance(id_of("Insured Ring"), "blue").await.unwrap();
+        db.force_insurance(id_of("Burning Ring"), "red").await.unwrap();
+        db.force_insurance(id_of("Plain Ring"), "standard").await.unwrap();
+        // One ring per hero: an accessory slot holds one item, so stacking all three on
+        // hero 0 would leave two unequipped and out of the sinks' reach.
+        for (slot, want) in ["Insured Ring", "Burning Ring", "Plain Ring"].iter().enumerate() {
+            assert_eq!(
+                db.set_equipped(p, id_of(want), Some(slot as i32)).await.unwrap(),
+                EquipResult::Ok,
+                "{want} should equip on hero {slot}"
+            );
+        }
+        let insured = id_of("Insured Ring");
+        let has = |gs: &[GearRow], n: &str| gs.iter().any(|g| g.name == n);
+
+        // REACHING THE CITY: only ephemeral burns, and it burns however you got home.
+        db.burn_ephemeral_gear(p).await.unwrap();
+        let after = db.get_gear(p).await.unwrap();
+        assert!(!has(&after, "Burning Ring"), "ephemeral must not survive the trip home");
+        assert!(has(&after, "Plain Ring"), "standard gear is yours to keep");
+        assert!(has(&after, "Insured Ring"), "insured gear comes home");
+        let dur = after.iter().find(|g| g.gear_id == insured).unwrap().max_durability;
+        assert_eq!(dur, 100, "surviving a run costs insured gear nothing");
+
+        // A WIPE: standard is destroyed outright, insured only wears down.
+        db.destroy_equipped_standard_gear(p).await.unwrap();
+        db.apply_death_durability(p, 0.08).await.unwrap();
+        let after = db.get_gear(p).await.unwrap();
+        assert!(!has(&after, "Plain Ring"), "a wipe takes standard gear entirely");
+        assert!(has(&after, "Insured Ring"), "insured gear cannot be taken");
+        let dur = after.iter().find(|g| g.gear_id == insured).unwrap().max_durability;
+        assert_eq!(dur, 92, "insured gear pays in durability instead: floor(100 * 0.92)");
+
+        // Enough wipes and it finally breaks — the price of never losing it.
+        for _ in 0..80 {
+            db.apply_death_durability(p, 0.08).await.unwrap();
+        }
+        let dur = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|g| g.gear_id == insured)
+            .unwrap()
+            .max_durability;
+        assert_eq!(dur, 0, "insured gear eventually wears out completely");
     }
 
     #[tokio::test]
@@ -3230,7 +3376,7 @@ mod tests {
         let db = mem().await;
         let p = db.register("erin", "pw").await.unwrap().player_id;
         let ring = |name: &str| LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: name.into(),
             slot: "accessory".into(),
@@ -3403,7 +3549,7 @@ mod tests {
         let base = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
 
         let spear = LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: "Warpike".into(),
             slot: "main_hand".into(),
@@ -3458,7 +3604,7 @@ mod tests {
         );
 
         let piece = |name: &str, slot: &str, family: &str, weight: &str| LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: name.into(),
             slot: slot.into(),
@@ -3522,7 +3668,7 @@ mod tests {
         let db = mem().await;
         let p = db.register("gr7b", "pw").await.unwrap().player_id;
         let staff = LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: "Ward Stave".into(),
             slot: "main_hand".into(),
@@ -3577,7 +3723,7 @@ mod tests {
             Affix { key: "ally_atk".into(), magnitude: 6, element: None, ally_class: Some("resonant".into()) },
         ];
         let piece = LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: "Warblade of the Bulwark".into(),
             slot: "main_hand".into(),
@@ -3668,7 +3814,7 @@ mod tests {
         let theirs = db.register("lo_theirs", "correct-horse-battery").await.unwrap().player_id;
 
         let blade = LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::new_v4(),
             name: "Their Blade".into(),
             slot: "main_hand".into(),
@@ -3770,7 +3916,7 @@ mod tests {
         let p = db.register("smith", "pw").await.unwrap().player_id;
         db.bank_extraction(p, &[("dune_iron".into(), 10)], 500).await.unwrap();
         let piece = LootedGear {
-            permanent: false,
+            insurance: meld_proto::Insurance::Standard,
             gear_id: Uuid::now_v7(),
             name: "Forged Warblade".into(),
             slot: "main_hand".into(),
@@ -3837,7 +3983,7 @@ mod tests {
             .expect("starter main-hand");
         assert_eq!(db.set_equipped(p, starter.gear_id, None).await.unwrap(), EquipResult::Ok);
         assert_eq!(db.set_equipped(p, gid, Some(0)).await.unwrap(), EquipResult::Ok);
-        db.apply_death_durability(p).await.unwrap();
+        db.apply_death_durability(p, 0.1).await.unwrap();
         let chewed = db.get_gear_by_id(p, gid).await.unwrap().unwrap();
         assert!(chewed.max_durability < chewed.base_max_durability, "nothing was chewed");
         let missing = chewed.base_max_durability - chewed.max_durability;

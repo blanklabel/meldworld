@@ -153,15 +153,26 @@ impl PackRole {
 /// in canon; the enum and every player-facing string say what the tier actually
 /// does, because "red" is not something a player can decode (GR-6). The `blue` /
 /// `red` wire aliases keep older payloads parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Insurance {
-    /// Blue-Chest: comes home with you, degrading on death.
+    /// Blue-Chest: yours forever, but always dying. Survives a wipe and wears down a
+    /// little each time until it finally breaks.
     #[serde(alias = "blue")]
     Insured,
-    /// Red-Chest: vanishes when the run ends, win or lose.
+    /// Red-Chest: burns the moment you reach the Last City, whether you walked in or
+    /// were carried. Power you can only spend inside the run that found it — which is
+    /// why it is the strongest gear in the game.
     #[serde(alias = "red")]
     Ephemeral,
+    /// The ordinary kind. Never degrades and is yours to keep — until a run ends in a
+    /// wipe nobody could reverse, and then all of it is gone at once.
+    ///
+    /// Normal and Insured trade the SHAPE of loss rather than the amount: normal gear
+    /// is untouched right up until one bad night takes the lot, insured gear can never
+    /// be taken but is never quite whole.
+    #[serde(alias = "normal")]
+    Standard,
 }
 
 impl Insurance {
@@ -170,6 +181,7 @@ impl Insurance {
         match self {
             Insurance::Insured => "Insured",
             Insurance::Ephemeral => "Ephemeral",
+            Insurance::Standard => "Standard",
         }
     }
 
@@ -178,6 +190,7 @@ impl Insurance {
         match self {
             Insurance::Insured => "insured",
             Insurance::Ephemeral => "ephemeral",
+            Insurance::Standard => "standard",
         }
     }
 
@@ -186,6 +199,7 @@ impl Insurance {
         Some(match s {
             "insured" | "blue" => Insurance::Insured,
             "ephemeral" | "red" => Insurance::Ephemeral,
+            "standard" | "normal" => Insurance::Standard,
             _ => return None,
         })
     }
@@ -193,8 +207,9 @@ impl Insurance {
     /// The one sentence a player must be able to read before they risk the item.
     pub fn tooltip(self) -> &'static str {
         match self {
-            Insurance::Insured => "Comes home with you. Degrades on death.",
-            Insurance::Ephemeral => "Vanishes when the run ends - win or lose. Use it now.",
+            Insurance::Insured => "Survives a wipe. Wears down each time, until it breaks.",
+            Insurance::Ephemeral => "Burns the moment you reach the city - win or lose. Use it now.",
+            Insurance::Standard => "Yours to keep. Lost only if a run ends in a wipe.",
         }
     }
 }

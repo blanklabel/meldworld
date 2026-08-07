@@ -785,7 +785,7 @@ async fn repair(
 /// A forged drop as the gear table wants it.
 fn crafted_row(d: &meld_world::GearDrop) -> meld_db::LootedGear {
     meld_db::LootedGear {
-        permanent: d.permanent,
+        insurance: d.insurance,
         gear_id: Uuid::now_v7(),
         name: d.name.clone(),
         slot: d.slot.clone(),

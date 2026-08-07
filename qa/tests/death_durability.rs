@@ -58,6 +58,11 @@ async fn gear(http: &reqwest::Client, base: &str, token: &str) -> Vec<Value> {
 
 #[tokio::test]
 async fn death_degrades_equipped_gear_durability() {
+    // Pin the world. This bot walks out unarmed looking for something to kill it, and
+    // whether anything reaches it is decided by the roll — seeds 1-3 die every time,
+    // unseeded it sometimes wanders the full 240s budget. The subject is what a wipe
+    // costs your gear, not whether an aimless walk finds a fight.
+    std::env::set_var("MELD_SEED", "1");
     let addr = start_server().await;
     let http = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -154,9 +159,11 @@ async fn death_degrades_equipped_gear_durability() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    let decay = meld_balance::Balance::load_default().unwrap().loot.insured_death_decay;
+    let want = ((base_max as f64) * (1.0 - decay)).floor() as i64;
     assert_eq!(
         degraded,
-        Some((base_max * 9) / 10),
-        "death should reduce max durability by 10% (floor)"
+        Some(want),
+        "a wipe should cost insured gear one `insured_death_decay` of its max durability"
     );
 }

@@ -33,6 +33,7 @@ use std::collections::HashMap;
 
 use meld_balance::Balance;
 use meld_proto::common::Position;
+use meld_proto::enums::Insurance;
 use meld_proto::affixes as aff;
 use meld_proto::uniques as uq;
 use meld_proto::equipment as eq;
@@ -338,11 +339,10 @@ pub struct GearDrop {
     /// GR-5 armor weight wire word for head/chest/legs (`heavy`, `robe`, …);
     /// empty for weapons and accessories.
     pub armor_weight: String,
-    /// PERMANENT (blue) rather than looted (red): it survives death and wears down
-    /// instead, and it is the only gear worth saving into a loadout. Rolled only on a
-    /// reward-spike encounter — a champion, a gatekeeper, a rite, a chest — so
-    /// permanence is something you fight for rather than something trash hands out.
-    pub permanent: bool,
+    /// Which of the three tiers this is, which decides both how it is lost and how
+    /// strong it rolled. Ephemeral is the most powerful gear in the game and cannot be
+    /// banked; insured sits above ordinary kit and erodes; standard is the baseline.
+    pub insurance: Insurance,
     /// AD-1 rolled affixes — the qualities that make this drop a build rather
     /// than a bigger number.
     pub affixes: Vec<meld_proto::affixes::Affix>,
@@ -654,9 +654,26 @@ pub fn roll_creature_loot(
             && rng.unit() < gr.class_signature_chance
             && has_signature;
         let signature_mult = if is_signature { gr.class_signature_mult } else { 1.0 };
+        // The tier is rolled BEFORE the stat because it scales it. Only a reward-spike
+        // encounter (`loot_mult > 1` — a champion, gatekeeper, rite or chest, and
+        // nothing else) can yield the two special tiers; trash always drops standard.
+        let spike = loot_mult > 1.0;
+        let roll = rng.unit();
+        let insurance = if spike && roll < l.ephemeral_gear_chance {
+            Insurance::Ephemeral
+        } else if spike && roll < l.ephemeral_gear_chance + l.permanent_gear_chance {
+            Insurance::Insured
+        } else {
+            Insurance::Standard
+        };
+        let tier_mult = match insurance {
+            Insurance::Ephemeral => l.ephemeral_power_mult,
+            Insurance::Insured => l.insured_power_mult,
+            Insurance::Standard => 1.0,
+        };
         // One roll, routed into whichever stat this slot cares about: weapon
         // hits harder, armor shrugs off more, an accessory moves faster.
-        let stat = (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult * signature_mult)
+        let stat = (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult * signature_mult * tier_mult)
             .round()
             .max(1.0) as i32;
         // Stat routing: the main hand hits harder, an accessory moves faster,
@@ -763,10 +780,7 @@ pub fn roll_creature_loot(
             affixes,
             unique_key: unique_def.map(|u| u.key.to_string()).unwrap_or_default(),
             set_key,
-            // `loot_mult > 1` IS the "this was a champion, gatekeeper, rite or chest"
-            // signal — it is the reward spike those encounters carry and nothing else
-            // does. Trash never yields permanence at any depth.
-            permanent: loot_mult > 1.0 && rng.unit() < l.permanent_gear_chance,
+            insurance,
         })
     } else {
         None
@@ -949,8 +963,9 @@ pub fn forge_gear(
         affixes,
         unique_key: String::new(),
         set_key: String::new(),
-        // You made it at a forge in town; it does not evaporate the first time you die.
-        permanent: true,
+        // You made it at a forge in town, out of materials you carried home; it does
+        // not evaporate the first time you die.
+        insurance: Insurance::Insured,
     }
 }
 
@@ -4800,41 +4815,71 @@ mod tests {
     // ---- FS-4: Elite champions + Gatekeeper bosses ----
 
     #[test]
-    fn only_a_reward_spike_encounter_drops_permanent_gear() {
+    fn only_a_reward_spike_encounter_drops_the_special_tiers() {
         let b = Balance::load_default().unwrap();
         let d = b.world_scaling.red_chest_floor_distance + 500;
 
-        // Ordinary creatures NEVER yield permanence, however many you kill and however
-        // deep you go. Permanent gear survives death, so trash handing it out would
-        // make the extract-or-die stake evaporate.
-        let trash: usize = (0..400)
+        // Ordinary creatures only ever drop STANDARD. Ephemeral is the strongest gear
+        // in the game and insured survives wipes; trash handing out either would make
+        // the extract-or-die stake evaporate.
+        let trash: Vec<_> = (0..400)
             .filter_map(|s| roll_creature_loot(&b, d, 1, 1.0, s).gear)
-            .filter(|g| g.permanent)
-            .count();
-        assert_eq!(trash, 0, "a standard creature must never drop permanent gear");
+            .collect();
+        assert!(!trash.is_empty(), "a standard creature should still drop gear at all");
+        assert!(
+            trash.iter().all(|g| g.insurance == Insurance::Standard),
+            "trash must never drop ephemeral or insured gear"
+        );
 
-        // A gatekeeper's reward spike does — but only sometimes.
+        // A gatekeeper's reward spike yields all three, with the special tiers rare.
         let mult = b.encounters.gatekeeper_loot_mult;
-        let drops: Vec<_> = (0..400)
+        let drops: Vec<_> = (0..600)
             .filter_map(|s| roll_creature_loot(&b, d, 1, mult, s).gear)
             .collect();
-        assert!(!drops.is_empty(), "a gatekeeper should drop gear at all");
-        let perm = drops.iter().filter(|g| g.permanent).count();
-        assert!(perm > 0, "a champion should sometimes drop permanent gear");
+        let count = |t: Insurance| drops.iter().filter(|g| g.insurance == t).count();
+        assert!(count(Insurance::Ephemeral) > 0, "a champion should sometimes drop ephemeral");
+        assert!(count(Insurance::Insured) > 0, "a champion should sometimes drop insured");
         assert!(
-            perm < drops.len(),
-            "permanence should be RARE, not the default for a champion ({perm}/{})",
-            drops.len()
+            count(Insurance::Standard) > count(Insurance::Ephemeral) + count(Insurance::Insured),
+            "the special tiers must stay the exception, not the rule"
         );
     }
 
     #[test]
-    fn forged_gear_is_permanent() {
+    fn the_tiers_are_powered_in_the_order_they_are_risky() {
+        // Ephemeral > insured > standard. You cannot keep ephemeral at all, and
+        // insured is always dying, so both have to out-hit ordinary kit or the risk
+        // buys nothing. Averaged across seeds because each roll carries its own
+        // jitter/rarity, which would otherwise drown a per-drop comparison.
+        let b = Balance::load_default().unwrap();
+        let d = b.world_scaling.red_chest_floor_distance + 500;
+        let mult = b.encounters.gatekeeper_loot_mult;
+        let mut totals = std::collections::HashMap::new();
+        let mut counts = std::collections::HashMap::new();
+        for seed in 0..4000u64 {
+            if let Some(g) = roll_creature_loot(&b, d, 1, mult, seed).gear {
+                let power = g.atk_bonus + g.def_bonus + g.spd_bonus;
+                *totals.entry(g.insurance).or_insert(0i64) += power as i64;
+                *counts.entry(g.insurance).or_insert(0i64) += 1;
+            }
+        }
+        let mean = |t: Insurance| {
+            totals.get(&t).copied().unwrap_or(0) as f64
+                / counts.get(&t).copied().unwrap_or(1).max(1) as f64
+        };
+        let (eph, ins, std_) =
+            (mean(Insurance::Ephemeral), mean(Insurance::Insured), mean(Insurance::Standard));
+        assert!(eph > ins, "ephemeral should out-roll insured ({eph:.1} vs {ins:.1})");
+        assert!(ins > std_, "insured should out-roll standard ({ins:.1} vs {std_:.1})");
+    }
+
+    #[test]
+    fn forged_gear_is_insured() {
         // You made it at a forge in town, out of materials you carried home. It must
         // not evaporate the first time you die.
         let b = Balance::load_default().unwrap();
-        let g = forge_gear(&b, 5, "main_hand", "explorer", "forest", 7);
-        assert!(g.permanent, "a forged piece is yours to keep");
+        let g = forge_gear(&b, 5, "main_hand", "explorer", "forest", false, 7);
+        assert_eq!(g.insurance, Insurance::Insured, "a forged piece is yours to keep");
     }
 
     #[test]
