@@ -256,6 +256,7 @@ fn main() {
                 city_move,
                 city_interact,
                 city_camera,
+                city::seed_party_from_account,
                 city_input,
                 city_action_buttons,
                 render_city,
@@ -528,9 +529,17 @@ struct Session {
     entered: bool,
     channeling: bool,
     status: String,
-    /// The party the player built on the Join screen — one class key per hero
-    /// slot (wire form: "explorer" / "psyker" / "resonant"). Sent on enter_maze.
+    /// The party — one class key per hero slot (wire form: "explorer" / "psyker" /
+    /// "resonant"). Sent on enter_maze. Chosen in TOWN, not at login.
     party: Vec<String>,
+    /// True once this party came from somewhere real — the account's persisted
+    /// composition or the player's own pick — rather than the newcomer default. Town
+    /// prompts only when it is false, so a returning player is never re-asked.
+    party_chosen: bool,
+    /// `?party=` / `MELD_PARTY` pinned the composition, so nothing may overwrite it —
+    /// the screenshot and autoplay harnesses depend on getting exactly what they asked
+    /// for.
+    party_from_flags: bool,
     /// Which party slot the builder cursor is on.
     party_cursor: usize,
     /// True if the player chose Co-op at Join (go to the lobby after connecting
@@ -556,6 +565,8 @@ impl Default for Session {
                 "explorer".into(),
             ],
             party_cursor: 0,
+            party_chosen: false,
+            party_from_flags: false,
             coop: false,
         }
     }

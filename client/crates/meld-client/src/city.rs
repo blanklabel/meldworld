@@ -961,3 +961,56 @@ mod shop_tests {
         assert!(text.contains("30 chits"), "{text}");
     }
 }
+
+/// Seed the party from what the account last took down, filtered to what it owns.
+///
+/// The composition is already persisted per hero slot (`heroes.class_key`, GR-7) and
+/// already arrives on `/v1/heroes` — it was simply never read back, so every session
+/// rebuilt the party from scratch. Reusing it is what lets town skip the picker for a
+/// returning player and only prompt someone who has never chosen.
+///
+/// Filtered because a class can be persisted and later be un-fieldable: a slot that
+/// dived as a Hunter on an account that has since been reset to one party slot must
+/// not silently re-enter as one — the server would clamp it and the two would disagree.
+pub(crate) fn seed_party_from_account(
+    hero_names: Res<AccountHeroNames>,
+    unlocks: Res<UnlocksRes>,
+    mut session: ResMut<Session>,
+    mut done: Local<bool>,
+) {
+    // Runs every frame in town until the async `/v1/heroes` fetch lands, then once.
+    if *done || session.party_from_flags {
+        return;
+    }
+    if !hero_names.loaded {
+        return;
+    }
+    *done = true;
+    let owned: Vec<String> = if unlocks.owned.is_empty() {
+        vec!["explorer".to_string()]
+    } else {
+        unlocks
+            .owned
+            .iter()
+            .filter_map(|k| k.strip_prefix("class_"))
+            .map(str::to_string)
+            .collect()
+    };
+    let slots = (unlocks.party_slots.max(1) as usize).min(4);
+    let saved: Vec<String> = hero_names
+        .classes
+        .iter()
+        .take(slots)
+        .map(|c| {
+            if owned.iter().any(|o| o == c) {
+                c.clone()
+            } else {
+                "explorer".to_string()
+            }
+        })
+        .collect();
+    if !saved.is_empty() {
+        session.party = saved;
+        session.party_chosen = true;
+    }
+}

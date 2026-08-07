@@ -429,7 +429,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             });
 
             p.spawn((
-                Text::new("ENTER: run solo     C: co-op"),
+                Text::new("ENTER: log in"),
                 TextFont { font_size: 15.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
@@ -446,7 +446,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
 /// Join-screen keyboard. Autoplay auto-connects as a guest. Otherwise: when a login
 /// field is focused (click it), typing edits it and TAB switches fields; when no field
 /// is focused, 1-4 select a party slot and ←/→ cycle its class. ENTER logs in with the
-/// typed account (creating it on first use); C (when not typing) starts co-op.
+/// typed account (creating it on first use). Co-op starts in town, not here.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn join_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -522,9 +522,11 @@ pub(crate) fn join_input(
             }
         }
 
-        // ENTER = log in & play; C (only when not typing) = co-op.
-        let coop = login.0.is_none() && keys.just_pressed(KeyCode::KeyC);
-        if keys.just_pressed(KeyCode::Enter) || coop {
+        // ENTER = log in & play. Co-op is NOT startable here: a lobby wants a party,
+        // and the party is assembled in town, so starting one from the login screen
+        // means picking teammates before you have picked heroes. The city's [C] is the
+        // one way in.
+        if keys.just_pressed(KeyCode::Enter) {
             let user = session.username.trim().to_string();
             if user.is_empty() {
                 session.status = "Enter a username to log in.".to_string();
@@ -533,7 +535,7 @@ pub(crate) fn join_input(
                 login.0 = Some(1);
             } else {
                 session.connecting = true;
-                session.coop = coop;
+                session.coop = false;
                 session.status = "logging in...".to_string();
                 let password = session.password.clone();
                 net.0.send(ClientCmd::Connect { username: user, password });
