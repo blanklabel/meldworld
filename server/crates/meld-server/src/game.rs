@@ -1274,9 +1274,12 @@ impl WorldActor {
                 return Vec::new();
             };
             dj.activate_at(floor, newpos); // reaching a lever/plate/key/boss opens gated doors
-            let stair = dj.stair_dest(floor, newpos);
+            // `_for` rather than by position: a stair delivers you onto its partner,
+            // which is itself a stair, so the plain lookup re-fires it and bounces the
+            // player between floors forever.
+            let stair = dj.stair_dest_for(pid);
             if let Some((df, dp)) = stair {
-                dj.set_pos(pid, df, dp);
+                dj.take_stair(pid, df, dp);
             }
             let (ff, fp) = stair.unwrap_or((floor, newpos));
             // Fire an armed trap only on ENTERING a new cell (not while lingering).
@@ -4926,6 +4929,11 @@ impl WorldActor {
                     out.extend(self.apply_pilfer(&thief_player_id, &victim_combatant_id));
                 }
                 BattleEvent::Resolved(res) => {
+                    // An Insight Mote's XP is banked HERE, not in the engine: the
+                    // battle has no notion of persistent progression, so it reports an
+                    // `insight` status and this side pays it. Without this the mote
+                    // was drunk, consumed, and did nothing at all.
+                    out.extend(self.bank_insight(battle_id, &res));
                     let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
                         battle_id: battle_id.to_string(),
@@ -4976,6 +4984,72 @@ impl WorldActor {
     /// chits lose `steal_chits_fraction`; a consumable/material steal takes one
     /// unit of the first matching backpack stack. Silently a no-op when the
     /// pockets are empty — the shout still happened.
+    /// Pay out an Insight Mote: the engine reports an `insight` status on the hero
+    /// that drank it, and the XP is banked here, where persistent progression lives.
+    ///
+    /// The mote is the one consumable whose whole effect is progression, so without
+    /// this it was drunk, consumed, and did nothing — `insight_mote_xp` was dead
+    /// config and the status was a label with no payout behind it.
+    fn bank_insight(&mut self, battle_id: &str, res: &meld_battle::Resolution) -> Vec<Outgoing> {
+        let xp = self.balance.consumable.insight_mote_xp;
+        if xp <= 0 {
+            return Vec::new();
+        }
+        let drinkers: Vec<String> = res
+            .effects
+            .iter()
+            .filter(|e| e.status.as_deref() == Some("insight"))
+            .map(|e| e.target_id.clone())
+            .collect();
+        if drinkers.is_empty() {
+            return Vec::new();
+        }
+        // Resolve who drank before touching the runs — the battle slot and the runs
+        // live on the same actor, so the lookup has to finish first.
+        let Some(slot) = self.battle_by_id(battle_id) else {
+            return Vec::new();
+        };
+        let mut owed: Vec<(String, usize, usize)> = Vec::new();
+        for cid in drinkers {
+            let Some(pid) = slot.combatant_player.get(&cid) else {
+                continue;
+            };
+            let Some(cids) = slot.player_combatants.get(pid) else {
+                continue;
+            };
+            if let Some(hero_slot) = cids.iter().position(|c| *c == cid) {
+                owed.push((pid.clone(), hero_slot, cids.len().max(1)));
+            }
+        }
+        let balance = self.balance.clone();
+        let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
+        for (pid, hero_slot, size) in owed {
+            if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
+                let old = r.run_level;
+                // A mote is drunk by ONE hero and is not an encounter, so it pays out
+                // WHOLE. `award_hero_xp` divides by party size (the encounter split),
+                // so pre-multiply to cancel it — otherwise a four-hero party's mote is
+                // worth a quarter of a solo player's.
+                let grant = xp * size as i64;
+                if r.award_hero_xp(hero_slot, size, grant, &balance) > 0 {
+                    level_ups.push((pid.clone(), old, r.run_level));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (pid, old, new) in level_ups {
+            let heroes = self.hero_level_ups(&pid, old, new);
+            out.push(out_msg(
+                &pid,
+                &wr::LevelUp { new_run_level: new, levels_gained: new - old, heroes },
+            ));
+            let party = self.party_views(&pid);
+            let (synergies, combos) = self.party_depth(&pid);
+            out.push(out_msg(&pid, &wr::Party { heroes: party, synergies, combos }));
+        }
+        out
+    }
+
     /// The Shifter's side of a theft: chits scaled off where the creature was met,
     /// and a chance at whatever it was carrying. The engine reports that a pocket was
     /// picked; what was in it is decided here, next to the rest of the economy.
@@ -5399,15 +5473,19 @@ impl WorldActor {
                 }
             }
             BattleOutcome::Defeat => {
-                // CL-1: a wipe is the Psyker's trigger — but only a real party's
-                // wipe. `party_classes` is the composition that went in, so a solo
-                // hero's death does not count as losing a party.
+                // CL-1: how MANY heroes were lost decides what the wipe teaches — the
+                // Resonant on any wipe (a lone hero's death is the fight that explains
+                // why you want a healer), the Psyker only on a real party's. Counted
+                // off `party_classes`, the composition that actually went in, and
+                // floored at one: a wipe means at least one hero fell, so a missing
+                // composition must not silently swallow the grant.
                 for pid in &members {
                     let heroes = inst
                         .party_classes
                         .get(pid)
                         .map(|c| c.len() as i32)
-                        .unwrap_or(0);
+                        .unwrap_or(1)
+                        .max(1);
                     effects.push(WorldEffect::Milestone {
                         player_id: pid.clone(),
                         milestone: meld_proto::unlocks::Milestone::PartyWiped { heroes },

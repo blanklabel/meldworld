@@ -76,7 +76,9 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::Explorer),
         trigger: Trigger::Start,
         trigger_text: "Yours from the first dive.",
-        banner: "The disposal-of-dangerous-creatures guild takes anyone. Go down, come back.",
+        banner: "The disposal-of-dangerous-creatures guild takes anyone. An Explorer holds the \
+                 front line: basic attacks bank Adrenaline and every skill spends it, so the \
+                 longer a fight runs the harder you hit.",
         requires: None,
     },
     UnlockDef {
@@ -94,17 +96,25 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::Hunter),
         trigger: Trigger::Extracted,
         trigger_text: "Extract from a dive — the hall pays on evidence, not stories.",
-        banner: "The Den has a board, a pit, and a marker with your callsign on it.",
+        banner: "The Den has a board, a pit, and a marker with your callsign on it. A Hunter \
+                 opens the fight: it reads a creature's weak point and hits it there, and its \
+                 intel names what you are walking into before you commit to it.",
         requires: Some("party_slot_2"),
     },
     UnlockDef {
         key: "class_resonant",
         name: "Resonant",
         kind: UnlockKind::Class(CharacterClass::Resonant),
-        trigger: Trigger::EliteFelled,
-        trigger_text: "Fell an elite creature (needs a second party slot).",
-        banner: "That fight wanted a healer. Now you have one.",
-        requires: Some("party_slot_2"),
+        // The wipe IS the lesson, so it pays out on the first one — which for a new
+        // account is a solo death. Gating this behind the second slot would push the
+        // healer past the exact fight that explains why you want a healer.
+        trigger: Trigger::PartyWipe { heroes: 1 },
+        trigger_text: "Lose a run to a wipe. You'll learn what you were missing.",
+        banner: "That fight wanted a healer. A Resonant keeps a party standing: it heals an \
+                 ally from its own HP, grants Regen so wounds close every turn, and Wards \
+                 damage before it lands. Wounds carry between fights — this is how you stop \
+                 starting the next one already hurt.",
+        requires: None,
     },
     UnlockDef {
         key: "class_shifter",
@@ -112,7 +122,9 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::Shifter),
         trigger: Trigger::DungeonEntered,
         trigger_text: "Enter a dungeon.",
-        banner: "A Runner found the door before you did. It knows where the others are.",
+        banner: "A Runner found the door before you did. A Shifter is fast and fragile — the \
+                 only class that dodges by default. It robs creatures mid-fight, and it senses \
+                 the dungeon doors and the traps you would have walked into.",
         requires: Some("party_slot_2"),
     },
     UnlockDef {
@@ -130,7 +142,10 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::PhoenixGuard),
         trigger: Trigger::SurvivedUndeadRite,
         trigger_text: "Survive an undead rite — a risen boss and its dead.",
-        banner: "The Order walks out of fires nothing else survives. One of them saw you do it.",
+        banner: "The Order walks out of fires nothing else survives, and one of them saw you \
+                 do it. A Phoenix Guard is the wall: the most HP and armour in the game, it \
+                 soaks what was aimed at everyone else and burns undead ordinary steel barely \
+                 scratches.",
         requires: Some("party_slot_3"),
     },
     UnlockDef {
@@ -148,7 +163,9 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::Psyker),
         trigger: Trigger::PartyWipe { heroes: 3 },
         trigger_text: "Lose a full party of three or more. Someone will explain why.",
-        banner: "Nothing you swung mattered. The Psyker does not swing.",
+        banner: "Nothing you swung mattered. The Psyker does not swing — it seats \
+                 Manifestations that fire on their own every turn: armour-ignoring damage, \
+                 Barriers for the party, and a drag on the enemy's ATB gauge.",
         requires: Some("party_slot_4"),
     },
 ];
@@ -310,16 +327,31 @@ mod tests {
 
     #[test]
     fn a_class_waits_for_a_seat_to_sit_in() {
-        // An elite falls on the very first dive: no second slot, no Resonant. A
-        // class you cannot field is not a reward.
+        // A dungeon found on the very first dive: no second slot, no Shifter. A class
+        // you cannot field is not a reward.
         let owned = vec!["class_explorer".to_string()];
-        assert!(keys(granted_by(Milestone::EliteFelled, &owned)).is_empty());
+        assert!(keys(granted_by(Milestone::DungeonEntered, &owned)).is_empty());
 
-        // Earn the slot, fell another elite, and now it lands.
+        // Earn the slot, walk into another dungeon, and now it lands.
         let owned = vec!["class_explorer".to_string(), "party_slot_2".to_string()];
-        assert_eq!(keys(granted_by(Milestone::EliteFelled, &owned)), vec!["class_resonant"]);
+        assert_eq!(keys(granted_by(Milestone::DungeonEntered, &owned)), vec!["class_shifter"]);
         // And coming home with the proof is what the Hunters' hall recruits on.
         assert_eq!(keys(granted_by(Milestone::Extracted, &owned)), vec!["class_hunter"]);
+    }
+
+    #[test]
+    fn the_first_wipe_hands_over_the_healer_even_solo() {
+        // The Resonant is the ONE class with no seat requirement, because the fight
+        // that teaches you why you want a healer is the one a lone hero loses — and
+        // that happens long before the second slot opens at level 10.
+        let owned = vec!["class_explorer".to_string()];
+        assert_eq!(
+            keys(granted_by(Milestone::PartyWiped { heroes: 1 }, &owned)),
+            vec!["class_resonant"]
+        );
+        // Once earned it is never re-granted, so a second bad night is quiet.
+        let owned = vec!["class_explorer".to_string(), "class_resonant".to_string()];
+        assert!(keys(granted_by(Milestone::PartyWiped { heroes: 1 }, &owned)).is_empty());
     }
 
     #[test]
@@ -363,8 +395,10 @@ mod tests {
             vec!["class_phoenix_guard"]
         );
         assert_eq!(keys(granted_by(Milestone::DungeonEntered, &owned)), vec!["class_shifter"]);
-        // The Psyker needs the fourth slot AND a three-hero wipe. A solo death
-        // is not a lesson.
+        // The Psyker needs the fourth slot AND a three-hero wipe — a solo death buys
+        // the healer, not the mind. `class_resonant` is pre-owned here so the wipes
+        // below isolate the Psyker's own bar.
+        let owned = [owned, vec!["class_resonant".to_string()]].concat();
         assert!(keys(granted_by(Milestone::PartyWiped { heroes: 3 }, &owned)).is_empty());
         let owned = [owned, vec!["party_slot_4".to_string()]].concat();
         assert!(keys(granted_by(Milestone::PartyWiped { heroes: 2 }, &owned)).is_empty());

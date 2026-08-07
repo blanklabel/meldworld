@@ -63,6 +63,12 @@ async fn send(ws: &mut Ws, t: &str, p: Value, seq: &mut u32) {
 #[tokio::test]
 async fn stepping_on_a_dungeon_trap_kills_the_run() {
     std::env::set_var("MELD_BIOME", "forest");
+    // Pin the world too, not just the biome. This bot walks into the dungeon and
+    // marches east hoping to cross a trap, and whether that line of travel meets one
+    // is decided by the rolled layout: measured across seeds 1-6 it passed on 1 and 4
+    // and missed on the rest. The subject here is that a sprung trap kills the run,
+    // not that a blind march finds a trap, so the layout is held still.
+    std::env::set_var("MELD_SEED", "1");
     let addr = start_server().await;
     let (ticket, pid) =
         http_login(&addr, &format!("tbot_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])).await;
