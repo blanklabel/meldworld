@@ -1,7 +1,7 @@
 //! The main menu: **three columns that cascade left**, in the manner of the Dragon
 //! Quest remakes.
 //!
-//! Column one is the nav — *Items, Materials, Party, Map*. Choosing one opens column
+//! Column one is the nav — *Items, Materials, Party, Map, Guide*. Choosing one opens column
 //! two to its right; from the Party column, a hero's *Equipment* or *Abilities*
 //! button opens column three. The nav never disappears, so a player can always see
 //! where they are and step back out one column at a time.
@@ -27,11 +27,17 @@ pub(crate) enum MenuSection {
     Materials,
     Party,
     Map,
+    Guide,
 }
 
 impl MenuSection {
-    pub(crate) const ALL: [MenuSection; 4] =
-        [MenuSection::Items, MenuSection::Materials, MenuSection::Party, MenuSection::Map];
+    pub(crate) const ALL: [MenuSection; 5] = [
+        MenuSection::Items,
+        MenuSection::Materials,
+        MenuSection::Party,
+        MenuSection::Map,
+        MenuSection::Guide,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -39,9 +45,43 @@ impl MenuSection {
             MenuSection::Materials => "Materials",
             MenuSection::Party => "Party",
             MenuSection::Map => "Map",
+            MenuSection::Guide => "Guide",
         }
     }
 }
+
+/// The controls, as `(heading, rows)`. This is where they live now: a permanent
+/// on-screen control list is noise a player stops reading on the second dive, but it
+/// still has to be findable somewhere that is not the README.
+const GUIDE: [(&str, &[(&str, &str)]); 3] = [
+    (
+        "Moving",
+        &[
+            ("WASD / arrows", "walk"),
+            ("drag", "thumbstick"),
+            ("tap the ground", "go there"),
+        ],
+    ),
+    (
+        "Acting",
+        &[
+            ("[E] / Interact", "gather, open, descend, extract, join a fight"),
+            ("[E] again", "stop channelling"),
+            ("[C] / [I] / tap yourself", "this menu"),
+            ("[P]", "show the party behind you"),
+        ],
+    ),
+    (
+        "In this menu",
+        &[
+            ("up / down", "move"),
+            ("right / Enter", "open"),
+            ("left / Esc", "back out"),
+            ("[A]", "the focused hero's abilities"),
+            ("[R]", "rename the focused hero"),
+        ],
+    ),
+];
 
 /// Which per-hero pane column three is showing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,6 +213,8 @@ pub(crate) fn column_len(
         (Some(MenuSection::Items), None) => backpack.items.len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
         (Some(MenuSection::Map), None) => 1,
+        // Reading only — the cursor has nothing to land on.
+        (Some(MenuSection::Guide), None) => 0,
         (None, _) => MenuSection::ALL.len(),
         // Only the Party column opens a third; anything else has nothing deeper.
         (Some(_), Some(_)) => 0,
@@ -328,6 +370,47 @@ pub(crate) fn render_main_menu(
                             ] {
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
+                        }
+                        MenuSection::Guide => {
+                            for (heading, rows) in GUIDE {
+                                col.spawn(glass::text(heading, 17.0, glass::TITLE));
+                                for (key, what) in rows {
+                                    // Two cells, not one padded string: a description
+                                    // long enough to wrap has to wrap under ITSELF,
+                                    // not back under the key column.
+                                    col.spawn(Node {
+                                        flex_direction: FlexDirection::Row,
+                                        column_gap: Val::Px(12.0),
+                                        padding: UiRect::left(Val::Px(10.0)),
+                                        ..default()
+                                    })
+                                    .with_children(|row| {
+                                        row.spawn((
+                                            Node { width: Val::Px(190.0), flex_shrink: 0.0, ..default() },
+                                            glass::text(*key, 16.0, glass::TEXT),
+                                        ));
+                                        row.spawn((
+                                            Node { width: Val::Px(260.0), ..default() },
+                                            glass::text(*what, 16.0, glass::DIM),
+                                        ));
+                                    });
+                                }
+                                col.spawn(glass::divider());
+                            }
+                            // The one control a player cannot discover by pressing
+                            // things, because it deliberately has no key: a Town
+                            // Portal is an item, so leaving is a choice on the Map
+                            // column rather than a hotkey.
+                            col.spawn(glass::text(
+                                "Going home is not a key \u{2014} it costs a Town Portal, on the Map column.",
+                                15.0,
+                                glass::DIM,
+                            ));
+                            col.spawn(glass::text(
+                                "Walking west into the city is the free way back.",
+                                15.0,
+                                glass::DIM,
+                            ));
                         }
                         MenuSection::Party => {
                             for (i, h) in heroes.iter().enumerate() {
@@ -685,6 +768,51 @@ mod tests {
         assert_eq!(class_and_rank("phoenix_guard", 255), "Phoenix Guard - Apotheosis");
         // The Resonant has no order, so it is just a class — no empty separator.
         assert_eq!(class_and_rank("resonant", 40), class_display("resonant"));
+    }
+
+    #[test]
+    fn every_section_is_reachable_from_the_nav() {
+        // The nav renders `ALL` and opening a row indexes into it, so a variant
+        // missing from `ALL` is a column no player can ever reach.
+        for s in [
+            MenuSection::Items,
+            MenuSection::Materials,
+            MenuSection::Party,
+            MenuSection::Map,
+            MenuSection::Guide,
+        ] {
+            assert!(MenuSection::ALL.contains(&s), "{s:?} is off the nav");
+            assert!(!s.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_guide_names_a_key_and_what_it_does_on_every_row() {
+        assert!(!GUIDE.is_empty());
+        for (heading, rows) in GUIDE {
+            assert!(!heading.is_empty());
+            assert!(!rows.is_empty(), "{heading} lists nothing");
+            for (key, what) in rows {
+                assert!(!key.is_empty() && !what.is_empty(), "{heading} has a half-row");
+            }
+        }
+    }
+
+    #[test]
+    fn the_guide_column_is_reading_only() {
+        // Nothing to select, so `column_len` is 0 — the cursor arithmetic in
+        // `main_menu_input` divides by it, and only its `.max(1)` keeps that safe.
+        let menu = MainMenu { section: Some(MenuSection::Guide), ..default() };
+        let len = column_len(
+            &menu,
+            &PartyRoster::default(),
+            &AccountHeroNames::default(),
+            &InventoryData::default(),
+            &RunBackpack::default(),
+            &EquipPicker::default(),
+        );
+        assert_eq!(len, 0);
+        assert_eq!(len.max(1), 1, "the guard the cursor relies on");
     }
 }
 

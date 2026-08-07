@@ -55,7 +55,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
         .with_children(|p| {
             p.spawn((
                 HudText,
-                Text::new("distance 0  -  Forest"),
+                Text::new(String::new()),
                 TextFont {
                     font_size: 20.0,
                     ..default()
@@ -89,16 +89,6 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     BackgroundColor(Color::srgb(0.98, 0.86, 0.42)),
                 ));
             });
-            p.spawn((
-                Text::new(
-                    "WASD/arrows or drag = move  |  tap = go there  |  [E] interact  |  Menu (or tap yourself / C) = inventory",
-                ),
-                TextFont {
-                    font_size: 14.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-            ));
             // Touch action bar (bottom-right). Also clickable with the mouse.
             p.spawn((
                 Node {
@@ -177,6 +167,23 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 BorderColor(Color::srgba(0.6, 0.8, 1.0, 0.5)),
                 BorderRadius::all(Val::Px(6.0)),
                 BackgroundColor(glass::GLASS_THIN),
+            ));
+            // How deep you are, under the map that earned it. Distance is the whole
+            // difficulty axis, so it belongs beside the reading of the ground rather
+            // than in a corner of its own — and it shows only when the Explorer's map
+            // does, because without one you are meant to be guessing.
+            p.spawn((
+                MinimapDistance,
+                Text::new(String::new()),
+                TextFont { font_size: 15.0, ..default() },
+                TextColor(glass::TEXT),
+                Node {
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    top: Val::Px(160.0),
+                    display: Display::None,
+                    ..default()
+                },
             ));
         });
 }
@@ -524,8 +531,10 @@ pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Optio
 
 /// The overworld HUD shows ONLY what you can do *right now*: the prompt for whatever
 /// [E] would act on, or the fact that you are mid-channel. Nothing otherwise — a
-/// permanent control list is noise a player stops reading on the second dive, and
-/// distance/biome/backpack live in the menu (Status tab — see [`update_run_stats`]).
+/// permanent control list is noise a player stops reading on the second dive, so the
+/// controls live in the menu's Guide column and the backpack in its own. Distance
+/// reads under the Explorer's minimap ([`update_minimap_distance`]) and, for everyone,
+/// on the menu's Map column (see [`update_run_stats`]).
 /// (Passive-perk hints like "Regen"/"Bulwark" were dropped too: the party always has a
 /// Resonant, so "Regen" was always on and read as a stuck status badge.)
 pub(crate) fn update_overworld_hud(
@@ -2018,6 +2027,10 @@ pub(crate) struct MinimapRoot;
 #[derive(Component)]
 pub(crate) struct MinimapDot;
 
+/// The depth readout under the minimap.
+#[derive(Component)]
+pub(crate) struct MinimapDistance;
+
 /// Explorer "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
 /// perk levels, dark by day and absent without a Explorer (intensity from `run.perks`).
 /// Explorer "Predator's Eye": the avatar's point light illuminates the surrounding
@@ -2183,9 +2196,12 @@ pub(crate) fn update_mob_nameplates(
     });
 }
 
-/// Shifter "Scout's Instinct": rebuild the corner minimap. The panel shows/hides by
-/// the map tier; dots plot entities within `explorer_map_radius` of the player —
-/// mobs + portal (tier ≥1), chests (≥2), harvestables (≥3), self at centre.
+/// Rebuild the corner minimap. It is the EXPLORER's — `compute_perks` grants
+/// `explorer_map` only with one in the party (the order whose vision is "a world
+/// known" carries the map); the Shifter contributes just the dungeon-door dots.
+/// The panel shows/hides by the map tier; dots plot entities within
+/// `explorer_map_radius` of the player — mobs + portal (tier ≥1), chests (≥2),
+/// harvestables (≥3), self at centre.
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_minimap(
     mut commands: Commands,
@@ -2248,6 +2264,25 @@ pub(crate) fn update_minimap(
             spawn_dot(p, HALF + dx, HALF + dy, size, col);
         }
     });
+}
+
+/// The depth readout under the minimap: distance, its tier, and the biome it is in.
+/// Rides the Explorer's map perk, so it appears and vanishes with the panel above it.
+pub(crate) fn update_minimap_distance(
+    perks: Res<PerksRes>,
+    stats: Res<RunStats>,
+    mut q: Query<(&mut Text, &mut Node), With<MinimapDistance>>,
+) {
+    let Ok((mut text, mut node)) = q.single_mut() else { return };
+    if perks.0.explorer_map == 0 {
+        node.display = Display::None;
+        return;
+    }
+    node.display = Display::Flex;
+    let line = format!("{} m  \u{b7}  T{}  \u{b7}  {}", stats.distance, stats.tier, stats.biome);
+    if **text != line {
+        **text = line;
+    }
 }
 
 /// Spawn one absolutely-positioned minimap dot centred at (`cx`,`cy`) px.

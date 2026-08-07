@@ -1249,6 +1249,14 @@ only the things that can't be class-gated.
   one focuses it. The screen also moved onto a glass panel over a looping baked-video
   backdrop, because 12 px hint text over the live 3D overworld was unreadable
   ([`asset-pipeline.md`](asset-pipeline.md) for how a clip is baked).
+- [x] **UX-4 — The controls move off the field and into a Guide column.** The
+  permanent control list across the top of the overworld contradicted the HUD's own
+  rule (show only what you can do *right now*); it is now the menu's fifth nav
+  column, which is also where the one control that has no key — going home costs a
+  Town Portal — can finally be written down. In its place, the **distance** reads
+  under the minimap, so the difficulty axis sits with the reading of the ground.
+  Both ride the Explorer's map perk, and everyone still has distance on the Map
+  column.
 
 ---
 
