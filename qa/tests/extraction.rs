@@ -79,6 +79,8 @@ async fn extraction_banks_loot_into_the_vault() {
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;
     let mut input_seq = 0u32;
+    // Steer at prey: a straight line east walks past the sparse shallow ring.
+    let mut nav = meld_qa::Nav::default();
     ws.send(Message::Text(
         json!({"type":"session.authenticate","seq":seq,"ts":0,"payload":{"ticket":ticket,"resume":null}}).to_string(),
     ))
@@ -113,7 +115,7 @@ async fn extraction_banks_loot_into_the_vault() {
                 input_seq += 1;
                 ws.send(Message::Text(json!({
                     "type":"movement.move_intent","seq":seq,"ts":0,
-                    "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}
+                    "payload":{"input_seq":input_seq,"move_dir":{"x":nav.heading(0).0,"y":nav.heading(0).1},"client_pos":{"x":0.0,"y":0.0}}
                 }).to_string())).await.unwrap();
                 seq += 1;
             }
@@ -121,7 +123,9 @@ async fn extraction_banks_loot_into_the_vault() {
                 let Some(Ok(Message::Text(t))) = msg else { panic!("ws closed unexpectedly") };
                 let v: Value = serde_json::from_str(&t).unwrap();
                 match v["type"].as_str().unwrap_or("") {
-                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
+                    // Every snapshot re-aims the walk at the nearest creature.
+                    "world.snapshot" => nav.observe(&v["payload"], &player_id),
+                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{"tutorial":true}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => { let _ = &player_id; phase = Phase::ToMonster; }
                     "battle.started" => {
                         phase = Phase::InBattle;

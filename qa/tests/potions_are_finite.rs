@@ -113,7 +113,7 @@ async fn drinking_a_potion_spends_it_and_running_out_is_refused() {
                 let v: Value = serde_json::from_str(&t).unwrap();
                 match v["type"].as_str().unwrap_or("") {
                     "session.authenticated" => {
-                        ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap();
+                        ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{"tutorial":true}}).to_string())).await.unwrap();
                         seq += 1;
                     }
                     "run.started" => {

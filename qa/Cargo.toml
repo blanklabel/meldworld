@@ -6,6 +6,7 @@ license.workspace = true
 description = "QA harness: headless bot clients + conformance/integration tests (BUILD-PLAN T6)."
 
 [dependencies]
+serde_json.workspace = true
 meld-proto.workspace = true
 
 [dev-dependencies]

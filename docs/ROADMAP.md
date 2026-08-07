@@ -447,6 +447,12 @@ burns on death/leave; some is single-use. See
     ordinary creature in 5 turns at level 1, 2 by level 10, and 1 by level 25; a
     double stack roughly halves that. The Psyker outscaling creatures is the same
     hero-power-vs-distance divergence noted above, not a stacking bug.
+  - *Played, not calculated:* `qa/tests/pacing_arc.rs` drives a real bot through a real
+    dive at one, two, three and four heroes and asserts the arc holds — every size can
+    win, the lone hero levels faster per fight, and the full party's fights run longer.
+    The arithmetic behind these two levers was right and the game was still unplayable
+    once (creature attack was scaled by party size and wiped level-1 parties), so the
+    numbers get checked by playing them.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

@@ -4568,8 +4568,17 @@ impl GameState {
                 if let Err(e) = db.insert_looted_gear(uid, &looted).await {
                     tracing::error!("insert_looted_gear failed for {}: {e}", b.player_id);
                 }
-                // Extraction success credits Alchemy XP (GDD §4.1).
-                let axp = items_kv.len() as i64 * alchemy_per;
+                // Extraction success credits Alchemy XP (GDD §4.1) — for the plants and
+                // monster parts you brought back, NOT for the kit you dived in with.
+                // Counting every stack pays out for walking in and straight back out
+                // with the starting salves and elixirs still in the bag.
+                let axp = items_kv
+                    .iter()
+                    .filter(|(kind, _)| {
+                        !meld_proto::consumables::is_consumable(kind) && kind != "town_portal"
+                    })
+                    .count() as i64
+                    * alchemy_per;
                 if axp > 0 {
                     if let Err(e) = db.add_skill_xp(uid, "alchemy", axp).await {
                         tracing::error!("alchemy xp failed for {}: {e}", b.player_id);

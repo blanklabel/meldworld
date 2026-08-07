@@ -443,6 +443,74 @@ impl Db {
         }
     }
 
+    /// One player's placement for a season: their row and their rank across the WHOLE
+    /// season, not just the board's first page. `None` if they never posted.
+    ///
+    /// Ranking off a `LIMIT`ed board silently reports "unranked" for everyone below the
+    /// cut, which is precisely the player who needs to be told where they stand.
+    pub async fn vanguard_placement(
+        &self,
+        season: i32,
+        player_id: Uuid,
+    ) -> Result<Option<(VanguardRow, i64)>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                // Same ordering as `vanguard_board`, so a player's rank here and their
+                // position on the board agree.
+                let row = sqlx::query(
+                    "SELECT v.player_id, p.username, v.max_distance, v.achieved_at,
+                            (SELECT count(*) + 1 FROM vanguard w
+                              WHERE w.season = v.season
+                                AND (-w.max_distance, w.achieved_at, w.player_id)
+                                  < (-v.max_distance, v.achieved_at, v.player_id)) AS rank
+                       FROM vanguard v JOIN players p USING (player_id)
+                      WHERE v.season = $1 AND v.player_id = $2",
+                )
+                .bind(season)
+                .bind(player_id)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(|r| {
+                    (
+                        VanguardRow {
+                            player_id: r.get("player_id"),
+                            username: r.get("username"),
+                            max_distance: r.get("max_distance"),
+                            achieved_at: r.get::<DateTime<Utc>, _>("achieved_at"),
+                        },
+                        r.get::<i64, _>("rank"),
+                    )
+                }))
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut rows: Vec<VanguardRow> = m
+                    .vanguard
+                    .iter()
+                    .filter(|((s, _), _)| *s == season)
+                    .filter_map(|((_, pid), (dist, at))| {
+                        m.players.get(pid).map(|p| VanguardRow {
+                            player_id: *pid,
+                            username: p.username.clone(),
+                            max_distance: *dist,
+                            achieved_at: *at,
+                        })
+                    })
+                    .collect();
+                rows.sort_by(|a, b| {
+                    b.max_distance
+                        .cmp(&a.max_distance)
+                        .then(a.achieved_at.cmp(&b.achieved_at))
+                        .then(a.player_id.cmp(&b.player_id))
+                });
+                Ok(rows
+                    .iter()
+                    .position(|r| r.player_id == player_id)
+                    .map(|i| (rows[i].clone(), i as i64 + 1)))
+            }
+        }
+    }
+
     /// The player's hero names by slot (0-based), ordered. Empty if never set.
     pub async fn get_hero_names(&self, player_id: Uuid) -> Result<Vec<String>, DbError> {
         match &self.backend {
@@ -2958,6 +3026,50 @@ mod tests {
         assert_eq!(board[1].username, "vg_shallow");
         // Seasons are separate boards: last season's rows never leak into this one.
         assert!(db.vanguard_board(season - 1, 100).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_player_below_the_board_cut_still_has_a_placement() {
+        // Searching the LIMITed board for the caller reads as unranked for everyone
+        // outside the top page — the one player a placement endpoint exists to serve.
+        // Rank is against the whole season.
+        let db = mem().await;
+        let season = current_season();
+        let mut last = Uuid::nil();
+        for i in 0..12 {
+            let p = db
+                .register(&format!("vg_cut{i}"), &Uuid::new_v4().to_string())
+                .await
+                .unwrap();
+            db.record_vanguard_distance(p.player_id, season, 1000 - i * 10)
+                .await
+                .unwrap();
+            last = p.player_id;
+        }
+        // A three-deep board cannot see the twelfth player at all…
+        let page = db.vanguard_board(season, 3).await.unwrap();
+        assert_eq!(page.len(), 3);
+        assert!(!page.iter().any(|r| r.player_id == last));
+
+        // …but their placement resolves, with their true season-wide rank.
+        let (row, rank) = db
+            .vanguard_placement(season, last)
+            .await
+            .unwrap()
+            .expect("the deepest-but-last player is still ranked");
+        assert_eq!(rank, 12, "rank counts the whole season, not the page");
+        assert_eq!(row.max_distance, 1000 - 11 * 10);
+
+        // Someone who never posted has no placement rather than a bogus last place.
+        let ghost = db
+            .register("vg_ghost", &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(db
+            .vanguard_placement(season, ghost.player_id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]

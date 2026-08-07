@@ -108,7 +108,7 @@ async fn harvest_banks_material_and_grants_skill_xp() {
                 let Some(Ok(Message::Text(t))) = msg else { panic!("ws closed") };
                 let v: Value = serde_json::from_str(&t).unwrap();
                 match v["type"].as_str().unwrap_or("") {
-                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
+                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{"tutorial":true}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => phase = Phase::ToNode,
                     "world.snapshot" => {
                         let ents = v["payload"]["entities"].as_array().unwrap();
