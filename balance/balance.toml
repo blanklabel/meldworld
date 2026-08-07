@@ -379,6 +379,14 @@ minion_xp_mult = 0.55
 # ambush.
 undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [TUNABLE]
 undead_rite_min_tier = 4         # never shallower than this
+# An Elite is a NAMED BOSS with elite_hp_mult behind it. Ungated, one can be the
+# second creature a level-1 party meets — measured as a guaranteed wipe, which is
+# not an encounter. The shallow ring is the on-ramp; champions wait past it.
+elite_min_distance = 120         # no Elite promotion shallower than this [TUNABLE]
+# A Gatekeeper is a 10x-HP wall and was gated only by `hub_safe_radius` (13 units),
+# so one could stand a few paces from the hub and end a new account's first dive on
+# contact. It waits until a party has had somewhere to grow into. [TUNABLE]
+gatekeeper_min_distance = 300
 undead_rite_minions = 4          # the retinue [TUNABLE]
 undead_rite_boss_hp_mult = 3.2   # above an Elite (2.4), below a Gatekeeper (7.5)
 undead_rite_boss_atk_mult = 1.45
@@ -553,6 +561,16 @@ stat_mult_base_divisor = 500.0   # (1 + d/500)^exp
 # ATTACK, because attack is opposed by hero HP and defence, which grow with LEVEL —
 # a different thing, wanting a different curve. [TUNABLE]
 hp_per_tier = 5.4
+
+# The shallow-ring ON-RAMP. Every other curve above multiplies a creature's base
+# stats, and near the hub they all sit at ~1.0 — so a new account's first fight was
+# just whatever `[creature.<kind>]` happened to say. Measured, a level-1 solo lost
+# better than half of its opening fights in the randomized world. This ramps creature
+# power from `onboarding_floor` at the hub to full strength at `onboarding_distance`,
+# which is what makes "distance is the difficulty axis" true at the shallow end too.
+# Past `onboarding_distance` it is exactly 1.0 and changes nothing. [TUNABLE]
+onboarding_floor = 0.6
+onboarding_distance = 200
 
 # MELDWORLD is meant to kill you until you have the right gear. At the old 1.25 an
 # ungeared level-25 hero needed 42 hits to die at distance 1000 and 14 at 2000 —
@@ -825,9 +843,9 @@ flees = false
 loot_kind = "imp_horn"
 
 [creature.magma_golem]        # ashfall BRUISER — a slow, molten wall
-base_hp = 120
+base_hp = 154
 base_atk = 13
-base_def = 8
+base_def = 3
 speed_stat = 44
 xp_reward = 70
 encounter_class = "standard"
@@ -875,9 +893,9 @@ flees = false
 loot_kind = "serpent_fang"
 
 [creature.myconid_brute]      # mire BRUISER — a huge, armoured fungal wall
-base_hp = 125
+base_hp = 160
 base_atk = 13
-base_def = 9
+base_def = 3
 speed_stat = 52
 xp_reward = 72
 encounter_class = "standard"
@@ -905,9 +923,9 @@ flees = false
 loot_kind = "spore_pod"
 
 [creature.dune_colossus]    # desert BRUISER — a slow, armoured wall that hits hard
-base_hp = 118
+base_hp = 152
 base_atk = 13
-base_def = 8
+base_def = 3
 speed_stat = 40
 xp_reward = 70
 encounter_class = "standard"
@@ -929,9 +947,9 @@ flees = true
 loot_kind = "ember_mote"
 
 [creature.glacier_maw]      # tundra BRUISER — a slow, immense maw of ice
-base_hp = 120
+base_hp = 155
 base_atk = 13
-base_def = 9
+base_def = 3
 speed_stat = 38
 xp_reward = 70
 encounter_class = "standard"
@@ -1113,3 +1131,17 @@ str_per_level = 3
 mnd_per_level = 0
 dex_per_level = 0
 wll_per_level = 4
+
+# The distance at which each biome starts appearing in a RANDOMIZED run (the tutorial
+# keeps its own hand-tuned Forest-first bands). Difficulty is distance-driven, but a
+# biome's creature ROSTER is not interchangeable: measured against a level-1 solo at
+# the shallow ring, forest won 11/15 while desert and tundra won 0/15 — their rosters
+# lead with armoured bruisers. Gating the harsher themes outward is what makes the
+# first ring an on-ramp without flattening the creatures themselves. Keyed by biome
+# id; a biome missing here is available from the hub. [TUNABLE]
+[biome_gate]
+forest = 0
+mire = 0
+ashfall = 250
+desert = 400
+tundra = 550

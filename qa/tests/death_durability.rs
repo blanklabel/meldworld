@@ -18,6 +18,15 @@ async fn start_server() -> String {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1; // pin one hero so test timing stays stable
+    // This test is about what DEATH does to GEAR, not about how the death happened,
+    // so the death has to be certain and quick. The shallow ring is deliberately
+    // survivable now (`onboarding_floor`) and a passive bot stopped dying inside the
+    // budget — it logged 19 resolved actions in 240s against a slow creature. One HP
+    // makes the first landed hit fatal, whatever the world rolled.
+    for st in balance.player.values_mut() {
+        st.base_hp = 1;
+        st.wll = 1;
+    }
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
@@ -113,7 +122,7 @@ async fn death_degrades_equipped_gear_durability() {
                 input_seq += 1;
                 ws.send(Message::Text(json!({
                     "type":"movement.move_intent","seq":seq,"ts":0,
-                    "payload":{"input_seq":input_seq,"move_dir":{"x":nav.heading(0).0,"y":nav.heading(0).1},"client_pos":{"x":0.0,"y":0.0}}
+                    "payload":{"input_seq":input_seq,"move_dir":{"x":nav.heading_any(0).0,"y":nav.heading_any(0).1},"client_pos":{"x":0.0,"y":0.0}}
                 }).to_string())).await.unwrap();
                 seq += 1;
             }
@@ -123,7 +132,7 @@ async fn death_degrades_equipped_gear_durability() {
                 match v["type"].as_str().unwrap_or("") {
                     // Every snapshot re-aims the walk at the nearest creature.
                     "world.snapshot" => nav.observe(&v["payload"], &player_id),
-                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{"tutorial":true}}).to_string())).await.unwrap(); seq += 1; }
+                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
                     "battle.started" => in_battle = true, // and never attack — auto-lose
                     "battle.ended" => assert_eq!(v["payload"]["outcome"], json!("defeat"), "passive bot should lose"),
                     "run.member_result" => { assert_eq!(v["payload"]["result"], json!("died")); died = true; }

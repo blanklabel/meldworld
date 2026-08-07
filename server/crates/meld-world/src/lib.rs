@@ -99,6 +99,24 @@ impl<'a> Scaling<'a> {
         base.powf(self.b.world_scaling.def_mult_exp)
     }
 
+    /// The ON-RAMP: creature power ramps linearly from `onboarding_floor` at the hub
+    /// to full strength at `onboarding_distance`, and is 1.0 everywhere past it.
+    ///
+    /// Every other curve here multiplies a creature's *base* stats, and at the shallow
+    /// ring those multipliers are all ~1.0 — so the first creature a new account meets
+    /// is simply whatever `[creature.<kind>]` says, tuned for no particular opponent.
+    /// Measured, that was a level-1 solo losing better than half its opening fights.
+    /// This is the one lever that makes "distance is the difficulty axis" true at the
+    /// shallow end too, instead of only past the first tier.
+    pub fn onboarding_mult(&self, d: i64) -> f64 {
+        let ws = &self.b.world_scaling;
+        if d >= ws.onboarding_distance || ws.onboarding_distance <= 0 {
+            return 1.0;
+        }
+        let t = d as f64 / ws.onboarding_distance as f64;
+        ws.onboarding_floor + (1.0 - ws.onboarding_floor) * t
+    }
+
     /// XP curve (spec §4): `(1 + d/500)^1.5` — steeper than `stat_mult`, so a
     /// deep kill out-rewards a shallow one of the same creature by more than
     /// the fight got harder. The final award is `floor(base_xp × this)`.
@@ -142,11 +160,40 @@ fn biome_pick_seed(run_seed: u64, i: usize) -> u64 {
 ///   Forest), excluding the previous section's biome so two identical themes never
 ///   sit back-to-back. Uniform for this first pass; per-band weighting can layer on
 ///   later without changing callers.
-fn section_biome(run_seed: u64, i: usize, distance: i64, prev: Option<&str>, tutorial: bool) -> &'static str {
+fn section_biome(
+    balance: &Balance,
+    run_seed: u64,
+    i: usize,
+    distance: i64,
+    prev: Option<&str>,
+    tutorial: bool,
+) -> &'static str {
     if tutorial {
         return biome_for_distance(distance);
     }
-    let cands: Vec<&'static str> = BIOMES.iter().copied().filter(|b| Some(*b) != prev).collect();
+    // A biome's creature ROSTER is not difficulty-neutral even though its scaling is:
+    // desert and tundra lead with armoured bruisers a level-1 party cannot chew
+    // through. `[biome_gate]` holds each theme back until the party has had room to
+    // grow, so the shallow ring is an on-ramp rather than a coin toss.
+    let unlocked =
+        |b: &'static str| balance.biome_gate.get(b).copied().unwrap_or(0) <= distance;
+    let cands: Vec<&'static str> = BIOMES
+        .iter()
+        .copied()
+        .filter(|b| Some(*b) != prev && unlocked(b))
+        .collect();
+    // Never strand the generator: if the gates and the no-repeat rule between them
+    // leave nothing, the no-repeat rule is the one that yields.
+    let cands = if cands.is_empty() {
+        let open: Vec<&'static str> =
+            BIOMES.iter().copied().filter(|b| unlocked(b)).collect();
+        if open.is_empty() {
+            return BIOMES[0];
+        }
+        open
+    } else {
+        cands
+    };
     let mut rng = Rng(biome_pick_seed(run_seed, i));
     cands[rng.below(cands.len())]
 }
@@ -1105,7 +1152,8 @@ impl MonsterSpawn {
             .creature
             .get(kind)
             .unwrap_or_else(|| panic!("creature `{kind}` in balance.toml"));
-        let mult = scaling.stat_mult(d);
+        let ramp = scaling.onboarding_mult(d);
+        let mult = scaling.stat_mult(d) * ramp;
         MonsterSpawn {
             entity_id,
             monster_kind: kind.to_string(),
@@ -1121,10 +1169,10 @@ impl MonsterSpawn {
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
             flees: stats.flees,
-            hp: ((stats.base_hp as f64) * scaling.hp_mult(d)).round() as i32,
-            max_hp: ((stats.base_hp as f64) * scaling.hp_mult(d)).round() as i32,
-            atk: ((stats.base_atk as f64) * mult).round() as i32,
-            def: ((stats.base_def as f64) * scaling.def_mult(d)).round() as i32,
+            hp: ((stats.base_hp as f64) * scaling.hp_mult(d) * ramp).round().max(1.0) as i32,
+            max_hp: ((stats.base_hp as f64) * scaling.hp_mult(d) * ramp).round().max(1.0) as i32,
+            atk: ((stats.base_atk as f64) * mult).round().max(1.0) as i32,
+            def: ((stats.base_def as f64) * scaling.def_mult(d) * ramp).round() as i32,
             speed_stat: stats.speed_stat,
             // XP rides its own curve (spec §4): floor(base_xp × (1 + d/500)^1.5) —
             // steeper than the stat curve, so difficulty AND reward both ride
@@ -1939,7 +1987,7 @@ impl Arena {
         // Theme rides the run (WG-2/WG-3) but difficulty rides `distance` as always.
         let prev_biome = self.areas.last().map(|a| a.biome);
         let biome = self.force_biome.unwrap_or_else(|| {
-            section_biome(self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
+            section_biome(balance, self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
         });
         let kinds = creatures_for_biome(biome);
 
@@ -2044,7 +2092,13 @@ impl Arena {
                 .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
-            if i > 0 && !self.tutorial && erng.unit() < enc.elite_chance {
+            // Never shallow: an Elite is a named boss carrying `elite_hp_mult`, so one
+            // in the first ring is a wipe rather than an encounter.
+            if i > 0
+                && !self.tutorial
+                && pos.distance_floor() >= enc.elite_min_distance
+                && erng.unit() < enc.elite_chance
+            {
                 self.monsters[idx].promote(
                     enc.elite_hp_mult,
                     enc.elite_atk_mult,
@@ -2323,7 +2377,12 @@ impl Arena {
                 let summit = Position::new(base_wp.x, cy);
                 self.peaks
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
-                if summit.x > wg.hub_safe_radius && prng.unit() < wg.peak_boss_chance {
+                // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
+                // hub — a new party's first contact, and the end of the dive.
+                if summit.x > wg.hub_safe_radius
+                    && summit.distance_floor() >= enc.gatekeeper_min_distance
+                    && prng.unit() < wg.peak_boss_chance
+                {
                     let gidx = self.monsters.len();
                     let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
                     self.monsters
@@ -2518,6 +2577,10 @@ impl Arena {
             if from == to {
                 continue;
             }
+            // The seam itself still forms — the biomes do change here — but nobody
+            // mounts the door this shallow. The first seam sits at d=100, and a
+            // `gatekeeper_hp_mult` (10x) wall there is a level-1 party's whole dive.
+            let mount_gatekeeper = bd.floor() as i64 >= enc.gatekeeper_min_distance;
             self.seams.push(Seam {
                 x: bd,
                 gap_y: path_y_at(&self.path, bd),
@@ -2532,6 +2595,9 @@ impl Arena {
             // in-memory demo build is perpetually a first (tutorial) dive — gating them
             // off it meant bosses effectively never appeared. Scattered Elites stay off
             // the tutorial (see the elite roll above); only the gate-bosses run here.
+            if !mount_gatekeeper {
+                continue;
+            }
             let gk_pos = Position::new(bd, path_y_at(&self.path, bd));
             let gidx = self.monsters.len();
             let gseed = section_seed(self.seed_base, i) ^ (0x6A7E_0000_0000_0000 | bd as u64);
@@ -2586,7 +2652,7 @@ impl Arena {
             // never exceeds its own count), and the neighbour ramps up from its side.
             let tw = wg.biome_transition_width.max(0.0);
             let next_biome = self.force_biome.unwrap_or_else(|| {
-                section_biome(self.seed_base, i + 1, end_x.floor() as i64, Some(biome), self.tutorial)
+                section_biome(balance, self.seed_base, i + 1, end_x.floor() as i64, Some(biome), self.tutorial)
             });
             let prev_ratio = (biome_obstacle_mult(wg, prev_biome.unwrap_or(biome)) / maze_mult).min(1.0);
             let next_ratio = (biome_obstacle_mult(wg, next_biome) / maze_mult).min(1.0);
@@ -4540,6 +4606,95 @@ mod tests {
             (a.areas.iter().map(|x| x.dungeon).collect(), a.obstacles.len(), a.chests.len())
         };
         assert_eq!(sig(55), sig(55), "same seed reproduces the same dungeons + walls");
+    }
+
+    // ---- The shallow-ring on-ramp ----
+
+    #[test]
+    fn the_on_ramp_softens_the_hub_and_vanishes_past_its_distance() {
+        let b = Balance::load_default().unwrap();
+        let s = Scaling::new(&b);
+        let ws = &b.world_scaling;
+        assert!((s.onboarding_mult(0) - ws.onboarding_floor).abs() < 1e-9);
+        assert_eq!(s.onboarding_mult(ws.onboarding_distance), 1.0);
+        // Past the on-ramp it is EXACTLY 1.0, so the deep game is untouched by it.
+        for d in [
+            ws.onboarding_distance,
+            ws.onboarding_distance + 1,
+            1_000,
+            10_000,
+        ] {
+            assert_eq!(s.onboarding_mult(d), 1.0, "ramp leaked out to d={d}");
+        }
+        // Monotonic across the ramp — no step a player can feel as a difficulty wall.
+        let mut prev = 0.0;
+        for d in (0..=ws.onboarding_distance).step_by(10) {
+            let m = s.onboarding_mult(d);
+            assert!(m >= prev, "ramp dipped at d={d}");
+            prev = m;
+        }
+    }
+
+    #[test]
+    fn a_hub_creature_is_gentler_than_the_same_kind_past_the_on_ramp() {
+        let b = Balance::load_default().unwrap();
+        let past = b.world_scaling.onboarding_distance as f64;
+        let near = MonsterSpawn::build(&b, "m".into(), "bog_serpent", Position::new(10.0, 0.0), 1);
+        let far = MonsterSpawn::build(&b, "m".into(), "bog_serpent", Position::new(past, 0.0), 1);
+        assert!(near.atk < far.atk, "{} vs {}", near.atk, far.atk);
+        assert!(near.max_hp < far.max_hp, "{} vs {}", near.max_hp, far.max_hp);
+        // Never scaled out of existence: a creature the party cannot damage or that
+        // cannot act is a softlock, not an easy fight.
+        assert!(near.max_hp >= 1 && near.atk >= 1);
+    }
+
+    #[test]
+    fn the_harsh_biomes_stay_out_of_the_shallow_ring() {
+        let b = Balance::load_default().unwrap();
+        // Measured: desert and tundra lead with armoured bruisers that a level-1 solo
+        // beat 0 times in 15, so they are gated outward rather than flattened.
+        for (biome, gate) in &b.biome_gate {
+            for d in [0i64, 25, 60] {
+                if *gate > d {
+                    for seed in 0..40u64 {
+                        assert_ne!(
+                            section_biome(&b, seed, 0, d, None, false),
+                            biome.as_str(),
+                            "{biome} (gated at {gate}) appeared at d={d}"
+                        );
+                    }
+                }
+            }
+        }
+        // …and the gates never starve the generator of a theme to pick.
+        for d in [0i64, 100, 300, 600, 5_000] {
+            for seed in 0..20u64 {
+                let picked = section_biome(&b, seed, 1, d, None, false);
+                assert!(BIOMES.contains(&picked), "picked {picked:?} at d={d}");
+            }
+        }
+        // A tutorial run keeps its own hand-tuned bands regardless of the gates.
+        assert_eq!(section_biome(&b, 7, 0, 0, None, true), biome_for_distance(0));
+    }
+
+    #[test]
+    fn no_elite_champions_in_the_first_ring() {
+        let b = Balance::load_default().unwrap();
+        let min = b.encounters.elite_min_distance;
+        assert!(min > 0, "an ungated elite can be a new party's second fight");
+        for seed in 0..60u64 {
+            let arena = Arena::generate(&b, seed, false);
+            for m in arena.monsters.iter() {
+                let d = m.position.distance_floor();
+                if d < min {
+                    assert_eq!(
+                        m.encounter_class, "standard",
+                        "{} ({}) at d={d} is inside the on-ramp",
+                        m.monster_kind, m.encounter_class
+                    );
+                }
+            }
+        }
     }
 
     // ---- FS-4: Elite champions + Gatekeeper bosses ----
