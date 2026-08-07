@@ -1018,7 +1018,20 @@ mod gear_label_tests {
     fn ephemeral_says_what_it_does_in_words() {
         let e = insurance_of("ephemeral");
         assert_eq!(e.label(), "Ephemeral");
-        assert!(e.tooltip().contains("Burns the moment you reach the city"));
+        // The copy IS the contract here: a player must never lose an item without
+        // having been told it was temporary (proposals/gear-identity.md §2). Pinning the
+        // phrase is deliberate — silently losing this sentence is the bug.
+        assert!(
+            e.tooltip().contains("Burns the moment you reach the city"),
+            "the ephemeral tooltip must say it does not come home: {:?}",
+            e.tooltip()
+        );
+        // …and no two tiers may share a promise, or the word stops meaning anything.
+        for tier in [Insurance::Ephemeral, Insurance::Insured, Insurance::Standard] {
+            assert!(!tier.tooltip().is_empty(), "{tier:?} has no tooltip");
+        }
+        assert_ne!(Insurance::Ephemeral.tooltip(), Insurance::Insured.tooltip());
+        assert_ne!(Insurance::Insured.tooltip(), Insurance::Standard.tooltip());
         // The stored chest colours still parse to the right tier.
         assert_eq!(insurance_of("red"), Insurance::Ephemeral);
         assert_eq!(insurance_of("blue"), Insurance::Insured);
