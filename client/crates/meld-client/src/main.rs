@@ -145,6 +145,7 @@ fn main() {
         .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
         .init_resource::<LoginFocus>()
+        .init_resource::<LoginBg>()
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
         .init_resource::<PartyView>()
@@ -223,10 +224,17 @@ fn main() {
         )
         // Join
         .add_systems(OnEnter(Screen::Join), (join_ui, fetch_join_board))
-        .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
+        .add_systems(OnExit(Screen::Join), (despawn::<JoinRoot>, login_bg_unload))
         .add_systems(
             Update,
-            (join_input, join_login_refresh, join_board_refresh)
+            (
+                join_field_click,
+                join_input,
+                join_login_refresh,
+                join_board_refresh,
+                login_bg_play,
+                login_bg_fit,
+            )
                 .run_if(in_state(Screen::Join)),
         )
         // City — The Last City (persistent hub): a walkable HD-2D plaza built from Kenney

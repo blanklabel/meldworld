@@ -94,6 +94,29 @@ source.)
 3. **Door / lever sprites** — billboards into `prop_sprites`.
 4. (Bosses already have their 8-dir sets in `bosses/<key>/`.)
 
+## Login backdrops: a video, baked to frames
+
+The login screen plays a looping clip behind the panel. Bevy plays no video, so a clip
+is **baked into a WebP frame sequence** and stepped by `LoginBg`
+(`client/crates/meld-client/src/screens.rs`):
+
+```sh
+client/scripts/bake_login_bg.sh client/crates/meld-client/assets/loginscreens/<clip>.mp4
+```
+
+That decodes via AVFoundation (no ffmpeg) and writes
+`assets/loginscreens/<clip>/frame###.webp`. Keep the source `.mp4` beside the folder —
+it is the master, and nothing loads it at runtime.
+
+- **WebP, not JPEG** — every `zune-jpeg` 0.5.x (what bevy's `jpeg` feature pulls in)
+  fails to build on the current rustc. Bevy's `webp` feature uses an unrelated decoder.
+- **Every frame is a live GPU texture** while the login screen is up, so width is a
+  memory decision, not a quality one: 120 frames at 640×360 is ~110 MB of VRAM (and
+  4.3 MB on disk). The handles are dropped on log-in.
+- **Playback is ping-pong** (forwards, then backwards). A push-in clip does not join
+  its own first frame, so a plain loop would jump.
+- After a re-bake, set `LOGIN_BG_FRAMES` in `screens.rs` to the count the script prints.
+
 ## Where it wires in code
 - Tiling textures: `world_render::load_tiled(&assets, path)` (Repeat sampler).
 - Ground tiles: `assets/ground/tile_<biome>.png` (biome-blend shader).

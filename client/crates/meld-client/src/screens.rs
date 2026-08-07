@@ -86,6 +86,28 @@ fn kit_text(ci: &ClassInfo) -> String {
 #[derive(Resource, Default)]
 pub(crate) struct LoginFocus(pub Option<u8>);
 
+/// The login screen's looping backdrop. Bevy plays no video, so the source clip is
+/// baked into a WebP frame sequence (`assets/loginscreens/`) and stepped here. The
+/// clip is a slow push-in, which would jump on a plain loop, so it plays **ping-pong**
+/// — forwards, then backwards — and joins itself seamlessly.
+///
+/// The handles live here only while the Join screen is up, so the frame textures are
+/// handed back to the GPU on log-in.
+#[derive(Resource, Default)]
+pub(crate) struct LoginBg {
+    frames: Vec<Handle<Image>>,
+    idx: usize,
+    forward: bool,
+    t: f32,
+}
+
+const LOGIN_BG_FRAMES: usize = 120;
+const LOGIN_BG_FPS: f32 = 12.0;
+const LOGIN_BG_ASPECT: f32 = 16.0 / 9.0;
+
+#[derive(Component)]
+pub(crate) struct LoginBgImage;
+
 #[derive(Component)]
 pub(crate) struct JoinUserField; // clickable username box
 #[derive(Component)]
@@ -131,21 +153,21 @@ fn field_box(
             r.spawn((
                 Text::new(label.to_string()),
                 TextFont { font_size: 14.0, ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+                TextColor(glass::DIM),
             ));
             r.spawn((
                 Button,
                 field_tag,
                 Node {
-                    width: Val::Px(170.0),
-                    height: Val::Px(28.0),
+                    width: Val::Px(180.0),
+                    height: Val::Px(30.0),
                     align_items: AlignItems::Center,
                     padding: UiRect::horizontal(Val::Px(8.0)),
                     border: UiRect::all(Val::Px(1.5)),
                     ..default()
                 },
-                BorderColor(glass(0.9)),
-                BackgroundColor(glass(0.5)),
+                BorderColor(glass::EDGE_SOFT),
+                BackgroundColor(glass::GLASS_DEEP),
                 BorderRadius::all(Val::Px(6.0)),
             ))
             .with_children(|b| {
@@ -153,14 +175,10 @@ fn field_box(
                     Text::new(String::new()),
                     text_tag,
                     TextFont { font_size: 15.0, ..default() },
-                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                    TextColor(glass::TEXT),
                 ));
             });
         });
-}
-
-fn glass(a: f32) -> Color {
-    Color::srgba(0.10, 0.13, 0.22, a)
 }
 
 /// One class card (used for both the 4 party slots and the 5-class palette): a
@@ -188,8 +206,8 @@ fn class_card(
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
-            BorderColor(glass(0.9)),
-            BackgroundColor(glass(0.5)),
+            BorderColor(glass::EDGE_SOFT),
+            BackgroundColor(glass::GLASS_DEEP),
             BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|c| {
@@ -214,10 +232,24 @@ fn class_card(
         });
 }
 
-pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, session: Res<Session>) {
-    let sprite = |key: &str| -> Handle<Image> {
-        wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
-    };
+#[allow(clippy::type_complexity)]
+pub(crate) fn join_ui(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut bg: ResMut<LoginBg>,
+    mut login: ResMut<LoginFocus>,
+) {
+    bg.frames = (0..LOGIN_BG_FRAMES)
+        .map(|i| assets.load(format!("loginscreens/gears_and_forest/frame{i:03}.webp")))
+        .collect();
+    bg.idx = 0;
+    bg.forward = true;
+    bg.t = 0.0;
+
+    // A field is focused up front, so the first thing a player types lands in the
+    // username instead of being swallowed (they should not have to find the click).
+    login.0 = Some(0);
+
     commands
         .spawn((
             JoinRoot,
@@ -227,90 +259,241 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(7.0),
                 ..default()
             },
-            // A dark scrim over the (bright) 3D overworld behind the menu so the text
-            // and cards read clearly instead of washing out against the grass.
-            BackgroundColor(glass::SCRIM),
         ))
         .with_children(|p| {
             p.spawn((
-                Text::new("MELDWORLD"),
-                TextFont { font_size: 44.0, ..default() },
-                TextColor(Color::srgb(0.85, 0.9, 1.0)),
+                LoginBgImage,
+                ImageNode::new(bg.frames[0].clone()).with_color(BG_TINT),
+                Node { position_type: PositionType::Absolute, ..default() },
+                BackgroundColor(Color::BLACK),
+                ZIndex(0),
             ));
-            p.spawn((
-                Text::new("Log in \u{2014} then muster your party in the Last City."),
-                TextFont { font_size: 19.0, ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-            ));
-
-            // Account login (real, persistent accounts): click a field and type;
-            // TAB switches fields. New name → account is created on first login.
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::Center,
-                column_gap: Val::Px(18.0),
-                ..default()
-            })
-            .with_children(|row| {
-                field_box(row, "Username", JoinUserField, JoinUserText);
-                field_box(row, "Password", JoinPassField, JoinPassText);
-            });
-            p.spawn((
-                Text::new("Click a field and type, then ENTER \u{2014} first login creates your account.  (username 3\u{2013}20 \u{b7} password 8+ chars)"),
-                TextFont { font_size: 12.0, ..default() },
-                TextColor(Color::srgb(0.5, 0.55, 0.7)),
-            ));
-
-            // The season's Vanguard Board. The party used to be built here, but this
-            // screen runs BEFORE login: it cannot know which classes the account owns,
-            // so it could only offer all six and let the server clamp the answer. The
-            // party is mustered in town (the Drill Yard), where the unlock set is
-            // known. What belongs on a login screen is a reason to log in.
-            p.spawn((
-                Text::new("The Vanguard \u{2014} deepest of the season"),
-                TextFont { font_size: 16.0, ..default() },
-                TextColor(Color::srgb(0.85, 0.78, 0.5)),
-                Node { margin: UiRect::top(Val::Px(10.0)), ..default() },
-            ));
+            // The backdrop is a busy painting, so the panel needs a real scrim under
+            // it — glass alone leaves 12 px hint text fighting bark and gear teeth.
             p.spawn((
                 Node {
-                    width: Val::Px(460.0),
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(3.0),
-                    padding: UiRect::all(Val::Px(14.0)),
-                    border: UiRect::all(Val::Px(1.0)),
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
                     ..default()
                 },
-                BorderColor(glass(0.9)),
-                BackgroundColor(glass(0.55)),
-                BorderRadius::all(Val::Px(12.0)),
+                BackgroundColor(glass::SCRIM),
+                ZIndex(1),
+            ));
+
+            p.spawn((
+                Node {
+                    width: Val::Px(560.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(7.0),
+                    padding: UiRect::axes(Val::Px(28.0), Val::Px(24.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(glass::GLASS),
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(14.0)),
+                ZIndex(2),
             ))
-            .with_children(|d| {
-                d.spawn((
-                    Text::new("reading the board..."),
-                    JoinBoardText,
-                    TextFont { font_size: 14.0, ..default() },
-                    TextColor(Color::srgb(0.72, 0.76, 0.88)),
+            .with_children(|p| {
+                p.spawn((
+                    Text::new("MELDWORLD"),
+                    TextFont { font_size: 44.0, ..default() },
+                    TextColor(glass::TITLE),
+                ));
+                p.spawn((
+                    Text::new("Log in \u{2014} then muster your party in the Last City."),
+                    TextFont { font_size: 17.0, ..default() },
+                    TextColor(glass::DIM),
+                    Node { margin: UiRect::bottom(Val::Px(6.0)), ..default() },
+                ));
+
+                // Account login (real, persistent accounts): click a field and type;
+                // TAB switches fields. New name → account is created on first login.
+                p.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(18.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    field_box(row, "Username", JoinUserField, JoinUserText);
+                    field_box(row, "Password", JoinPassField, JoinPassText);
+                });
+                p.spawn((
+                    Text::new("Type, TAB to switch field, ENTER to log in \u{2014} first login creates your account."),
+                    TextFont { font_size: 13.0, ..default() },
+                    TextColor(glass::DIM),
+                ));
+                p.spawn((
+                    Text::new("username 3\u{2013}20 \u{b7} password 8+ characters"),
+                    TextFont { font_size: 12.0, ..default() },
+                    TextColor(Color::srgba(0.72, 0.78, 0.9, 0.6)),
+                ));
+
+                // The season's Vanguard Board. The party used to be built here, but this
+                // screen runs BEFORE login: it cannot know which classes the account owns,
+                // so it could only offer all six and let the server clamp the answer. The
+                // party is mustered in town (the Drill Yard), where the unlock set is
+                // known. What belongs on a login screen is a reason to log in.
+                p.spawn((
+                    Text::new("The Vanguard \u{2014} deepest of the season"),
+                    TextFont { font_size: 16.0, ..default() },
+                    TextColor(glass::TITLE),
+                    Node { margin: UiRect::top(Val::Px(12.0)), ..default() },
+                ));
+                p.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(3.0),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border: UiRect::all(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor(glass::EDGE_SOFT),
+                    BackgroundColor(glass::GLASS_DEEP),
+                    BorderRadius::all(Val::Px(12.0)),
+                ))
+                .with_children(|d| {
+                    d.spawn((
+                        Text::new("reading the board..."),
+                        JoinBoardText,
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(glass::TEXT),
+                    ));
+                });
+
+                p.spawn((
+                    StatusText,
+                    Text::new(""),
+                    TextFont { font_size: 15.0, ..default() },
+                    TextColor(glass::WARN),
+                    Node { margin: UiRect::top(Val::Px(8.0)), ..default() },
                 ));
             });
-
-
-            p.spawn((
-                Text::new("ENTER: log in"),
-                TextFont { font_size: 15.0, ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
-            ));
-            p.spawn((
-                StatusText,
-                Text::new(""),
-                TextFont { font_size: 15.0, ..default() },
-                TextColor(Color::srgb(0.9, 0.6, 0.6)),
-            ));
         });
+}
+
+/// How far the backdrop is knocked down before any UI sits on it.
+const BG_TINT: Color = Color::srgb(0.62, 0.62, 0.68);
+
+/// Ping-pong the baked frame sequence behind the login panel.
+pub(crate) fn login_bg_play(
+    time: Res<Time>,
+    images: Res<Assets<Image>>,
+    mut bg: ResMut<LoginBg>,
+    mut q: Query<&mut ImageNode, With<LoginBgImage>>,
+) {
+    let Ok(mut img) = q.single_mut() else { return };
+    if bg.frames.is_empty() {
+        return;
+    }
+    bg.t += time.delta_secs();
+    while bg.t >= 1.0 / LOGIN_BG_FPS {
+        bg.t -= 1.0 / LOGIN_BG_FPS;
+        if bg.forward {
+            if bg.idx + 1 >= bg.frames.len() {
+                bg.forward = false;
+            } else {
+                bg.idx += 1;
+            }
+        } else if bg.idx == 0 {
+            bg.forward = true;
+        } else {
+            bg.idx -= 1;
+        }
+    }
+    // Hold the frame on screen until its successor has actually decoded — the 120
+    // loads land over the first moment or two, and swapping to a pending handle
+    // draws nothing at all (a black flash) rather than an old frame.
+    let frame = bg.frames[bg.idx].clone();
+    if img.image != frame && images.contains(&frame) {
+        img.image = frame;
+    }
+}
+
+/// Cover-fit the backdrop to the window: fill it in both axes and centre the
+/// overflow, so the clip never stretches to the window's aspect.
+pub(crate) fn login_bg_fit(
+    window: Query<&Window>,
+    mut q: Query<&mut Node, With<LoginBgImage>>,
+) {
+    let (Ok(win), Ok(mut node)) = (window.single(), q.single_mut()) else { return };
+    let (ww, wh) = (win.width(), win.height());
+    let (w, h) = if ww / wh > LOGIN_BG_ASPECT {
+        (ww, ww / LOGIN_BG_ASPECT)
+    } else {
+        (wh * LOGIN_BG_ASPECT, wh)
+    };
+    node.width = Val::Px(w);
+    node.height = Val::Px(h);
+    node.left = Val::Px((ww - w) * 0.5);
+    node.top = Val::Px((wh - h) * 0.5);
+}
+
+/// Drop the frame handles on leaving the login screen so their textures are freed.
+pub(crate) fn login_bg_unload(mut bg: ResMut<LoginBg>) {
+    bg.frames.clear();
+}
+
+/// This frame's login keyboard, as plain data.
+pub(crate) struct LoginKeys<'a> {
+    pub tab: bool,
+    pub backspace: bool,
+    pub shift: bool,
+    pub typed: &'a [KeyCode],
+}
+
+/// The longest an account name or password may be typed to.
+const LOGIN_FIELD_MAX: usize = 24;
+
+/// Apply one frame of the login keyboard to the focused field. Split out of
+/// [`join_input`] so the typing rules can be tested without a window.
+pub(crate) fn edit_login_field(
+    focus: &mut Option<u8>,
+    keys: LoginKeys,
+    username: &mut String,
+    password: &mut String,
+) {
+    // TAB is the keyboard's only way INTO the fields, so it has to work from an
+    // unfocused screen too — otherwise the login is unusable without a mouse.
+    if keys.tab {
+        *focus = Some(1 - focus.unwrap_or(1));
+        return;
+    }
+    let Some(f) = *focus else { return };
+    let field = if f == 0 { username } else { password };
+    if keys.backspace {
+        field.pop();
+        return;
+    }
+    for key in keys.typed {
+        if let Some(c) = typed_char(*key, keys.shift) {
+            if field.chars().count() < LOGIN_FIELD_MAX {
+                field.push(c);
+            }
+        }
+    }
+}
+
+/// Click-to-focus for the login fields. Nothing else ever sets [`LoginFocus`], so
+/// without this every keystroke on the login screen is discarded.
+#[allow(clippy::type_complexity)]
+pub(crate) fn join_field_click(
+    user: Query<&Interaction, (Changed<Interaction>, With<JoinUserField>)>,
+    pass: Query<&Interaction, (Changed<Interaction>, With<JoinPassField>)>,
+    mut login: ResMut<LoginFocus>,
+) {
+    if user.iter().any(|i| *i == Interaction::Pressed) {
+        login.0 = Some(0);
+    }
+    if pass.iter().any(|i| *i == Interaction::Pressed) {
+        login.0 = Some(1);
+    }
 }
 
 /// The Vanguard board line on the login screen.
@@ -366,28 +549,18 @@ pub(crate) fn join_input(
     }
 
     if !session.connecting {
-        if let Some(f) = login.0 {
-            // Typing into a login field.
-            let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-            if keys.just_pressed(KeyCode::Tab) {
-                login.0 = Some(1 - f);
-            } else if keys.just_pressed(KeyCode::Backspace) {
-                if f == 0 {
-                    session.username.pop();
-                } else {
-                    session.password.pop();
-                }
-            } else {
-                for key in keys.get_just_pressed() {
-                    if let Some(c) = typed_char(*key, shift) {
-                        let field = if f == 0 { &mut session.username } else { &mut session.password };
-                        if field.chars().count() < 24 {
-                            field.push(c);
-                        }
-                    }
-                }
-            }
-        }
+        let s = &mut *session;
+        edit_login_field(
+            &mut login.0,
+            LoginKeys {
+                tab: keys.just_pressed(KeyCode::Tab),
+                backspace: keys.just_pressed(KeyCode::Backspace),
+                shift: keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight),
+                typed: &keys.get_just_pressed().copied().collect::<Vec<_>>(),
+            },
+            &mut s.username,
+            &mut s.password,
+        );
 
         // ENTER = log in & play. Co-op is NOT startable here: a lobby wants a party,
         // and the party is assembled in town, so starting one from the login screen
@@ -428,7 +601,7 @@ pub(crate) fn join_login_refresh(
     mut user_border: Query<&mut BorderColor, (With<JoinUserField>, Without<JoinPassField>)>,
     mut pass_border: Query<&mut BorderColor, (With<JoinPassField>, Without<JoinUserField>)>,
 ) {
-    let gold = Color::srgb(1.0, 0.85, 0.45);
+    let gold = glass::EDGE;
     if let Ok(mut t) = user_text.single_mut() {
         let caret = if login.0 == Some(0) { "_" } else { "" };
         **t = format!("{}{caret}", session.username);
@@ -439,10 +612,10 @@ pub(crate) fn join_login_refresh(
         **t = format!("{masked}{caret}");
     }
     if let Ok(mut b) = user_border.single_mut() {
-        *b = BorderColor(if login.0 == Some(0) { gold } else { glass(0.9) });
+        *b = BorderColor(if login.0 == Some(0) { gold } else { glass::EDGE_SOFT });
     }
     if let Ok(mut b) = pass_border.single_mut() {
-        *b = BorderColor(if login.0 == Some(1) { gold } else { glass(0.9) });
+        *b = BorderColor(if login.0 == Some(1) { gold } else { glass::EDGE_SOFT });
     }
 }
 
@@ -834,5 +1007,72 @@ pub(crate) fn ended_buttons(
                 exit.write(AppExit::Success);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(typed: &[KeyCode]) -> LoginKeys<'_> {
+        LoginKeys { tab: false, backspace: false, shift: false, typed }
+    }
+
+    #[test]
+    fn tab_reaches_the_fields_from_an_unfocused_screen() {
+        let mut focus = None;
+        let (mut u, mut p) = (String::new(), String::new());
+        edit_login_field(&mut focus, LoginKeys { tab: true, ..keys(&[]) }, &mut u, &mut p);
+        assert_eq!(focus, Some(0), "TAB with nothing focused must land on the username");
+        edit_login_field(&mut focus, LoginKeys { tab: true, ..keys(&[]) }, &mut u, &mut p);
+        assert_eq!(focus, Some(1), "TAB again crosses to the password");
+        edit_login_field(&mut focus, LoginKeys { tab: true, ..keys(&[]) }, &mut u, &mut p);
+        assert_eq!(focus, Some(0), "and back — the two fields cycle");
+    }
+
+    #[test]
+    fn typing_lands_in_the_focused_field_only() {
+        let mut focus = Some(0);
+        let (mut u, mut p) = (String::new(), String::new());
+        edit_login_field(&mut focus, keys(&[KeyCode::KeyA, KeyCode::KeyB]), &mut u, &mut p);
+        assert_eq!((u.as_str(), p.as_str()), ("ab", ""));
+
+        focus = Some(1);
+        edit_login_field(&mut focus, keys(&[KeyCode::Digit7]), &mut u, &mut p);
+        assert_eq!((u.as_str(), p.as_str()), ("ab", "7"));
+    }
+
+    #[test]
+    fn shift_uppercases_and_backspace_deletes_one() {
+        let mut focus = Some(0);
+        let (mut u, mut p) = (String::new(), String::new());
+        edit_login_field(
+            &mut focus,
+            LoginKeys { shift: true, ..keys(&[KeyCode::KeyD]) },
+            &mut u,
+            &mut p,
+        );
+        edit_login_field(&mut focus, keys(&[KeyCode::KeyO]), &mut u, &mut p);
+        assert_eq!(u, "Do");
+        edit_login_field(&mut focus, LoginKeys { backspace: true, ..keys(&[]) }, &mut u, &mut p);
+        assert_eq!(u, "D");
+        assert!(p.is_empty(), "backspace must not reach across fields");
+    }
+
+    #[test]
+    fn a_field_stops_growing_at_its_cap() {
+        let mut focus = Some(0);
+        let (mut u, mut p) = ("x".repeat(LOGIN_FIELD_MAX), String::new());
+        edit_login_field(&mut focus, keys(&[KeyCode::KeyA]), &mut u, &mut p);
+        assert_eq!(u.chars().count(), LOGIN_FIELD_MAX);
+    }
+
+    #[test]
+    fn an_unfocused_screen_swallows_typing() {
+        let mut focus = None;
+        let (mut u, mut p) = (String::new(), String::new());
+        edit_login_field(&mut focus, keys(&[KeyCode::KeyA]), &mut u, &mut p);
+        assert!(u.is_empty() && p.is_empty());
+        assert_eq!(focus, None, "which is why join_ui focuses a field up front");
     }
 }
