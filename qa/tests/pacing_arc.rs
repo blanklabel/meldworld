@@ -92,6 +92,7 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
     let mut nav = meld_qa::Nav::default();
     let mut in_battle = false;
     let mut my_c = String::new();
+    let mut mon_c = String::new();
     let mut bid = String::new();
     let mut out = Dive {
         heroes,
@@ -136,15 +137,26 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
                         fight_started = Some(Instant::now());
                         my_c = v["payload"]["your_combatant_id"].as_str().unwrap_or_default().to_string();
                         bid = v["payload"]["battle_id"].as_str().unwrap_or_default().to_string();
+                        mon_c = v["payload"]["enemies"][0]["combatant_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                     }
                     "battle.turn_ready"
                         if v["payload"]["combatant_id"].as_str() == Some(my_c.as_str()) =>
                     {
                         ws.send(Message::Text(json!({"type":"battle.submit_action","seq":seq,"ts":0,
                             "payload":{"battle_id":bid,"action_id":uuid::Uuid::new_v4().to_string(),
-                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[]}
+                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[mon_c]}
                         }).to_string())).await.unwrap();
                         seq += 1;
+                    }
+                    // A `validation_error` means this bot is speaking the protocol
+                    // wrong; failing here names the cause instead of letting the dive
+                    // score zero and look like a balance regression. (`invalid_state`
+                    // is expected: the mover sends intents before the run starts.)
+                    "session.error" if v["payload"]["code"] == json!("validation_error") => {
+                        panic!("server refused a bot action: {}", v["payload"]);
                     }
                     "battle.ended" => {
                         in_battle = false;
