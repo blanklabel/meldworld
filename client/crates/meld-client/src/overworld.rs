@@ -540,9 +540,20 @@ pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Optio
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
+    notice: Res<Notice>,
+    time: Res<Time>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
+    // A refusal the player just earned outranks the prompt: they pressed a key and are
+    // owed the reason before being told what they could press next.
+    if let Some(why) = notice.live(time.elapsed_secs_f64()) {
+        let line = format!("\u{f0026} {why}");
+        if **t != line {
+            **t = line;
+        }
+        return;
+    }
     let mut line = if session.channeling {
         "gathering\u{2026}  [E] stop".to_string()
     } else {
@@ -3074,6 +3085,22 @@ mod tests {
         assert!(matches!(&t, Interact::Harvest { entity_id, .. } if entity_id == "res-1"));
         assert_eq!(t.prompt(), "[E] Gather Bloom Herb");
 
+        // A chest in reach is offered — including a DUNGEON chest, which arrives as the
+        // same `chest:<tier>:<open>` snapshot tag as an overworld one.
+        world.entities.remove("res-1");
+        world.entities.insert("dchest-vault".into(), ent(EntityKind::Chest, 0.5, 0.0));
+        assert!(
+            matches!(interact_target(&world, &session), Some(Interact::OpenChest { entity_id }) if entity_id == "dchest-vault"),
+            "a chest in reach should be offered"
+        );
+        // An already-opened chest is not offered again.
+        let mut done = ent(EntityKind::Chest, 0.5, 0.0);
+        done.opened = true;
+        world.entities.insert("dchest-vault".into(), done);
+        assert!(interact_target(&world, &session).is_none(), "an opened chest is done");
+        world.entities.remove("dchest-vault");
+        world.entities.insert("res-1".into(), ent(EntityKind::Resource, 1.0, 0.0));
+
         // A closer portal wins over the node.
         world.entities.insert("portal".into(), ent(EntityKind::Portal, 0.2, 0.0));
         assert!(matches!(interact_target(&world, &session), Some(Interact::Extract)));
@@ -3165,6 +3192,19 @@ mod tests {
         app.world_mut().resource_mut::<Session>().channeling = false;
         app.update();
         assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
+    }
+
+    // A button that does nothing reads as broken. When the server refuses ("The vault
+    // is sealed — defeat the boss first."), the reason has to reach the screen and then
+    // get out of the way.
+    #[test]
+    fn a_refusal_is_shown_and_then_expires() {
+        let mut n = Notice::default();
+        assert_eq!(n.live(0.0), None, "nothing to say at rest");
+        n.say("The vault is sealed - defeat the boss first.", 100.0);
+        assert_eq!(n.live(100.0), Some("The vault is sealed - defeat the boss first."));
+        assert_eq!(n.live(100.0 + NOTICE_SECS - 0.1).is_some(), true, "still on screen");
+        assert_eq!(n.live(100.0 + NOTICE_SECS + 0.1), None, "and then it gets out of the way");
     }
 
     #[test]

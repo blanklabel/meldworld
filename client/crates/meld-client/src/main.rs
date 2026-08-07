@@ -165,6 +165,7 @@ fn main() {
         .init_resource::<AccountHeroNames>()
         .init_resource::<VanguardBoardData>()
         .init_resource::<ShopData>()
+        .init_resource::<Notice>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -1540,6 +1541,31 @@ struct CityUi {
     /// party of its own, so nobody dives with the newcomer default by accident.
     party_open: bool,
 }
+
+/// A short-lived line of feedback for something the player just tried and the server
+/// refused. With walk-into interactions a refusal could be silent — you simply kept
+/// walking — but **[E] is a button**, and a button that does nothing reads as broken.
+/// The server already writes good refusals ("The vault is sealed — defeat the boss
+/// first."); this is where they get seen.
+#[derive(Resource, Default)]
+pub(crate) struct Notice {
+    pub(crate) text: String,
+    /// Client-clock seconds after which it fades.
+    pub(crate) until: f64,
+}
+
+impl Notice {
+    pub(crate) fn say(&mut self, text: impl Into<String>, now: f64) {
+        self.text = text.into();
+        self.until = now + NOTICE_SECS;
+    }
+    pub(crate) fn live(&self, now: f64) -> Option<&str> {
+        (now < self.until && !self.text.is_empty()).then_some(self.text.as_str())
+    }
+}
+
+/// How long a refusal stays on screen.
+pub(crate) const NOTICE_SECS: f64 = 3.5;
 
 /// The Apothecary's shelf as last read from `GET /v1/vendors/apothecary` (EC-2).
 #[derive(Resource, Default)]
