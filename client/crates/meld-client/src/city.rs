@@ -663,20 +663,33 @@ pub(crate) fn city_input(
         }
         return;
     }
-    // While the shelf is open, [1]-[4] buy one of that row. The server prices and
-    // refuses; the client only names the row.
+    // While the counter is open, [1]-[4] buy an item and [5]-[8] buy a piece of plain
+    // gear. The server prices and refuses; the client only names the row.
     if city.shop_open {
-        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
-            .iter()
-            .enumerate()
-        {
-            if keys.just_pressed(*key) {
+        const KEYS: [KeyCode; 8] = [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+        ];
+        for (i, key) in KEYS.iter().enumerate() {
+            if !keys.just_pressed(*key) {
+                continue;
+            }
+            if i < ITEM_ROWS {
                 if let Some(line) = shop.items.get(i) {
                     net.0.buy_item(line.item_kind.clone(), 1);
                     city.notice = format!("bought {}", line.name);
                 }
-                return;
+            } else if let Some(g) = shop.gear.get(i - ITEM_ROWS) {
+                net.0.buy_gear(g.slot.clone(), g.class_key.clone());
+                city.notice = format!("requisitioned {}", g.name);
             }
+            return;
         }
     }
     // E interacts with whichever other district the avatar is standing in.
@@ -695,6 +708,9 @@ pub(crate) fn city_input(
                     if city.shop_open {
                         city.notice.clear();
                         net.0.fetch_shop();
+                        // Both halves of the counter: the Apothecary's basics and the
+                        // Requisition's plain gear, in one panel.
+                        net.0.fetch_gear_shop();
                     }
                 }
                 CityAction::Vanguard => {
@@ -964,25 +980,50 @@ pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData) -> String {
     if shop.items.is_empty() {
         return "The Apothecary has nothing on the shelf.".to_string();
     }
+    // Mark what the player cannot afford, so a price is a decision rather than a
+    // rejection they discover by pressing a key.
+    let afford = |price: i64| if inv.chits >= price { "" } else { " (short)" };
     let rows: Vec<String> = shop
         .items
         .iter()
         .take(4)
         .enumerate()
-        .map(|(i, s)| {
-            // Mark what the player cannot afford, so the price is a decision rather
-            // than a rejection they discover by pressing a key.
-            let mark = if inv.chits >= s.price_chits { "" } else { " (short)" };
-            format!("[{}] {} {}c{}", i + 1, s.name, s.price_chits, mark)
+        .map(|(i, s)| format!("[{}] {} {}c{}", i + 1, s.name, s.price_chits, afford(s.price_chits)))
+        .collect();
+    // The Requisition's plain gear shares the counter, on the keys after the items:
+    // "spend chits so the next dive is easier" is one errand, not two.
+    let gear: Vec<String> = shop
+        .gear
+        .iter()
+        .take(GEAR_ROWS)
+        .enumerate()
+        .map(|(i, g)| {
+            let stat = [("atk", g.atk), ("def", g.def), ("spd", g.spd)]
+                .into_iter()
+                .find(|(_, v)| *v > 0)
+                .map(|(n, v)| format!(" +{v} {n}"))
+                .unwrap_or_default();
+            format!(
+                "[{}] {}{} {}c{}",
+                ITEM_ROWS + i + 1,
+                g.name,
+                stat,
+                g.price_chits,
+                afford(g.price_chits)
+            )
         })
         .collect();
-    format!(
-        "{} - {} chits    {}",
-        shop.vendor.clone(),
-        inv.chits,
-        rows.join("   ")
-    )
+    let mut line = format!("{} - {} chits    {}", shop.vendor.clone(), inv.chits, rows.join("   "));
+    if !gear.is_empty() {
+        line.push_str("    |  Requisition: ");
+        line.push_str(&gear.join("   "));
+    }
+    line
 }
+
+/// Shelf rows the counter shows: items on `[1]`-`[4]`, plain gear on the keys after.
+pub(crate) const ITEM_ROWS: usize = 4;
+pub(crate) const GEAR_ROWS: usize = 4;
 
 #[cfg(test)]
 mod shop_tests {
@@ -1017,6 +1058,38 @@ mod shop_tests {
         assert!(!text.contains("Bloom Salve 25c (short)"), "{text}");
         assert!(text.contains("Town Portal 60c (short)"), "{text}");
         assert!(text.contains("30 chits"), "{text}");
+    }
+
+    #[test]
+    fn the_counter_stocks_plain_gear_on_the_keys_after_the_items() {
+        let mut shop = ShopData::default();
+        let mut inv = InventoryData::default();
+        shop.loaded = true;
+        shop.vendor = "The Apothecary".into();
+        shop.items = vec![line("bloom_salve", "Bloom Salve", 25)];
+        shop.gear = vec![meld_client::net::GearShopLine {
+            slot: "main_hand".into(),
+            class_key: "explorer".into(),
+            name: "Issued Warblade".into(),
+            price_chits: 220,
+            atk: 3,
+            def: 0,
+            spd: 0,
+        }];
+        inv.chits = 300;
+        let text = shop_text(&shop, &inv);
+        // Items keep [1]-[4]; gear starts on the key after them, so a row's number
+        // never moves when the shelf is short.
+        assert!(text.contains("[1] Bloom Salve"), "{text}");
+        assert!(text.contains("[5] Issued Warblade"), "{text}");
+        // What the piece DOES is on the row — a price with no stat is not a decision.
+        assert!(text.contains("+3 atk"), "{text}");
+        assert!(text.contains("Requisition"), "{text}");
+        assert!(!text.contains("Warblade +3 atk 220c (short)"), "300 chits covers it: {text}");
+
+        // …and when it does not, the row says so before a keypress is spent.
+        inv.chits = 10;
+        assert!(shop_text(&shop, &inv).contains("220c (short)"));
     }
 }
 

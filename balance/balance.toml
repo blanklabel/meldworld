@@ -549,6 +549,15 @@ price_markup_per_tier = 2.5     # each shop tier above 0 costs this much more [T
 # the reagent line without moving any number a player already knows. [TUNABLE]
 potency_per_step = 1.6
 
+# THE REQUISITION (EC-2): Silas's off-the-books counter at the Foundry, where chits buy
+# the plainest gear in the game (tier 0, common, no affixes, `normal` insurance). Priced
+# so it is a floor to stand on after a bad death, never a shortcut past the loot chase —
+# a forged or found piece must always beat what a clerk will sell you. [TUNABLE]
+[requisition]
+weapon_price = 220        # main_hand / off_hand
+armor_price = 180         # head / chest / legs
+accessory_price = 140
+
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop
 epic_weight = 0.09

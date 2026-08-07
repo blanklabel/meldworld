@@ -67,6 +67,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vault/gear/:gear_id/repair", post(repair))
         .route("/v1/vendors/apothecary", get(vendor_stock))
         .route("/v1/vendors/apothecary/buy", post(vendor_buy))
+        .route("/v1/vendors/requisition", get(requisition_stock))
+        .route("/v1/vendors/requisition/buy", post(requisition_buy))
         .route("/v1/vendors/broker", get(broker_prices))
         .route("/v1/vendors/broker/sell", post(broker_sell))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
@@ -951,6 +953,122 @@ async fn broker_prices(
 
 fn broker_price(st: &ApiState, m: &mat::MaterialDef, mercantile_level: i32) -> i64 {
     st.balance.material.sale_price(m.tier, m.class.wire(), mercantile_level)
+}
+
+/// The class a hero slot takes when the roster has not been told otherwise, and what
+/// the Requisition stocks for an account that has not named anything yet.
+const DEFAULT_CLASS_KEY: &str = "explorer";
+
+/// `GET /v1/vendors/requisition` — Silas's off-the-books counter at the Foundry: the
+/// plainest gear in the game, for chits (EC-2).
+///
+/// Lore-consistent by construction — the Foundry makes gear for the military and the
+/// state, so an outsider buys through a Requisition Officer who filters stock to the
+/// highest bidder ([`docs/lore/factions.md`]). Mechanically it is the floor that lets a
+/// player who died with nothing walk back out equipped, which is why every piece is
+/// tier 0, common, affix-free and deliberately worse than anything forged or found.
+async fn requisition_stock(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let classes = st.db.get_hero_classes(player_id).await.map_err(ApiReject::internal)?;
+    // Stock what the caller's own roster can actually wear: a counter full of gear for
+    // classes you do not field is a catalogue, not a shop. A fresh roster reports its
+    // slots as empty (they take the class default), and an empty shop is useless to
+    // exactly the player this counter exists for — so fall back to the starting class.
+    let mut stocked: std::collections::BTreeSet<&str> =
+        classes.iter().map(|c| c.as_str()).filter(|c| !c.is_empty()).collect();
+    if stocked.is_empty() {
+        stocked.insert(DEFAULT_CLASS_KEY);
+    }
+    let mut data: Vec<serde_json::Value> = Vec::new();
+    for class_key in stocked {
+        for slot in meld_proto::equipment::SLOT_CATEGORIES {
+            let Some(price) = st.balance.requisition.price(slot) else {
+                continue;
+            };
+            let piece = meld_world::shop_gear(&st.balance, slot, class_key);
+            if piece.family.is_empty() && !meld_proto::equipment::is_armor_slot(slot)
+                && slot != "accessory"
+            {
+                continue; // this class has no legal weapon for that hand
+            }
+            data.push(serde_json::json!({
+                "slot": slot,
+                "class_key": class_key,
+                "name": piece.name,
+                "price_chits": price,
+                "tier": piece.tier,
+                "rarity": piece.rarity,
+                "insurance": piece.insurance,
+                "family": piece.family,
+                "armor_weight": piece.armor_weight,
+                "stats": {"atk": piece.atk_bonus, "def": piece.def_bonus, "spd": piece.spd_bonus},
+            }));
+        }
+    }
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "vendor": "requisition",
+            "name": "The Requisition",
+            "data": data,
+        })),
+    )
+        .into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct RequisitionBuyReq {
+    slot: String,
+    #[serde(default)]
+    class_key: Option<String>,
+}
+
+/// `POST /v1/vendors/requisition/buy` — chits for a plain piece of gear, atomically.
+async fn requisition_buy(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<RequisitionBuyReq>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Some(price) = st.balance.requisition.price(&req.slot) else {
+        return Err(ApiReject::validation("The Requisition does not stock that slot."));
+    };
+    let class_key = req.class_key.unwrap_or_else(|| DEFAULT_CLASS_KEY.to_string());
+    if meld_proto::equipment::class_from_key(&class_key).is_none() {
+        return Err(ApiReject::validation("Unknown class."));
+    }
+    let drop = meld_world::shop_gear(&st.balance, &req.slot, &class_key);
+    let piece = crafted_row(&drop);
+    // No materials — a counter takes coin. `forge_gear` with an empty material list is
+    // exactly "spend chits, insert one row", atomically.
+    match st.db.forge_gear(player_id, &[], price, &piece).await {
+        Ok(true) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "bought": piece.name,
+                "gear_id": piece.gear_id,
+                "slot": piece.slot,
+                "class_key": piece.class_key,
+                "insurance": drop.insurance,
+                "stats": {
+                    "atk": piece.atk_bonus,
+                    "def": piece.def_bonus,
+                    "spd": piece.spd_bonus,
+                },
+                "spent_chits": price,
+            })),
+        )
+            .into_response()),
+        Ok(false) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("The Requisition wants {price} chits for that."),
+        )),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
 }
 
 #[derive(serde::Deserialize)]

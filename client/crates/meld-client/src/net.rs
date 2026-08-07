@@ -287,6 +287,18 @@ pub struct ShopLine {
     pub price_chits: i64,
 }
 
+/// One piece the Requisition counter stocks (EC-2): plain city-made gear for chits.
+#[derive(Clone, Debug, Default)]
+pub struct GearShopLine {
+    pub slot: String,
+    pub class_key: String,
+    pub name: String,
+    pub price_chits: i64,
+    pub atk: i32,
+    pub def: i32,
+    pub spd: i32,
+}
+
 /// One active class-pair synergy or runnable combo (AD-2), as the party screen
 /// renders it — the server describes them so the words never drift from the rules.
 #[derive(Clone, Debug, Default)]
@@ -527,6 +539,8 @@ pub enum ServerMsg {
     },
     /// The Apothecary's shelf (`GET /v1/vendors/apothecary`), for the shop panel.
     ShopStock { vendor: String, items: Vec<ShopLine> },
+    /// The Requisition counter's plain-gear stock (EC-2).
+    GearShopStock { gear: Vec<GearShopLine> },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     VanguardBoard {
@@ -588,6 +602,7 @@ struct Inner {
     loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
+    gear_shop_rx: Option<mpsc::Receiver<Vec<GearShopLine>>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -628,6 +643,7 @@ pub fn start(base: String) -> Net {
         loadouts_rx: None,
         vanguard_rx: None,
         shop_rx: None,
+            gear_shop_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -693,6 +709,16 @@ impl Net {
     /// Vault so the chit balance the player sees is the server's, not a guess.
     pub fn buy_item(&self, item_kind: String, qty: i32) {
         self.0.borrow_mut().buy_item(item_kind, qty);
+    }
+
+    /// Kick off an authenticated GET of the Requisition counter's gear stock (EC-2).
+    pub fn fetch_gear_shop(&self) {
+        self.0.borrow_mut().fetch_gear_shop();
+    }
+
+    /// Buy one plain piece of gear for chits, then refresh the Vault.
+    pub fn buy_gear(&self, slot: String, class_key: String) {
+        self.0.borrow_mut().buy_gear(slot, class_key);
     }
 
     /// Kick off an authenticated GET of the account's saved party loadouts (PT-2).
@@ -815,6 +841,12 @@ impl Inner {
             if let Ok((vendor, items)) = rx.try_recv() {
                 self.shop_rx = None;
                 self.out.push_back(ServerMsg::ShopStock { vendor, items });
+            }
+        }
+        if let Some(rx) = &self.gear_shop_rx {
+            if let Ok(gear) = rx.try_recv() {
+                self.gear_shop_rx = None;
+                self.out.push_back(ServerMsg::GearShopStock { gear });
             }
         }
         if let Some(rx) = &self.vanguard_rx {
@@ -1071,6 +1103,58 @@ impl Inner {
             .unwrap_or_default();
         let mut req =
             ehttp::Request::post(format!("{base}/v1/vendors/apothecary/buy"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// GET `/v1/vendors/requisition` — the counter's plain-gear stock for the caller's
+    /// own roster (EC-2).
+    fn fetch_gear_shop(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.gear_shop_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/vendors/requisition", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut gear = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for g in v["data"].as_array().into_iter().flatten() {
+                        gear.push(GearShopLine {
+                            slot: g["slot"].as_str().unwrap_or("").to_string(),
+                            class_key: g["class_key"].as_str().unwrap_or("").to_string(),
+                            name: g["name"].as_str().unwrap_or("").to_string(),
+                            price_chits: g["price_chits"].as_i64().unwrap_or(0),
+                            atk: g["stats"]["atk"].as_i64().unwrap_or(0) as i32,
+                            def: g["stats"]["def"].as_i64().unwrap_or(0) as i32,
+                            spd: g["stats"]["spd"].as_i64().unwrap_or(0) as i32,
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(gear);
+        });
+    }
+
+    /// POST a gear purchase, then re-read the Vault so the chits and the new piece the
+    /// player sees are the server's answer rather than the client's arithmetic.
+    fn buy_gear(&mut self, slot: String, class_key: String) {
+        if self.session_token.is_empty() || slot.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "slot": slot, "class_key": class_key }))
+            .unwrap_or_default();
+        let mut req = ehttp::Request::post(format!("{base}/v1/vendors/requisition/buy"), body);
         req.headers.insert("Authorization", format!("Bearer {token}"));
         req.headers.insert("Content-Type", "application/json");
         let (tx, rx) = mpsc::channel();

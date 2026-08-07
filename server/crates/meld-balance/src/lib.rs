@@ -25,6 +25,7 @@ pub struct Balance {
     pub loot: Loot,
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
+    pub requisition: Requisition,
     pub consumable: Consumable,
     pub forge: Forge,
     pub adventure: Adventure,
@@ -463,6 +464,27 @@ impl Affix {
 }
 
 /// Gear-rarity tunables (loot excitement). See the `[gear_rarity]` block.
+/// The Requisition counter's price list (EC-2). Flat per slot category: a shop piece
+/// has no roll, so it can have a number rather than an estimate.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Requisition {
+    pub weapon_price: i64,
+    pub armor_price: i64,
+    pub accessory_price: i64,
+}
+
+impl Requisition {
+    /// What the counter charges for `slot`, or `None` if it does not stock that slot.
+    pub fn price(&self, slot: &str) -> Option<i64> {
+        Some(match slot {
+            "main_hand" | "off_hand" => self.weapon_price,
+            "head" | "chest" | "legs" => self.armor_price,
+            "accessory" => self.accessory_price,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GearRarity {
     pub rare_weight: f64,

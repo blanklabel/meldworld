@@ -1572,6 +1572,9 @@ pub(crate) const NOTICE_SECS: f64 = 3.5;
 pub(crate) struct ShopData {
     pub vendor: String,
     pub items: Vec<meld_client::net::ShopLine>,
+    /// The Requisition's plain-gear stock, shown in the same panel: one shop button,
+    /// both halves of "spend chits to make the next dive easier" (EC-2).
+    pub gear: Vec<meld_client::net::GearShopLine>,
     pub loaded: bool,
 }
 

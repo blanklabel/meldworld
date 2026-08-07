@@ -969,6 +969,53 @@ pub fn forge_gear(
     }
 }
 
+/// Shop-counter gear (`EC-2`): the plain, honest baseline a city vendor sells for
+/// chits — tier 0, common, **no affixes**, `Standard` insurance.
+///
+/// Deliberately the dullest gear in the game. A shop exists so a player who died with
+/// nothing can walk back out equipped, not so chits can buy their way past the loot
+/// chase: what a Requisition counter stocks must always be worse than what a smith
+/// forges or a creature drops. No RNG at all, so a price can be a fixed number and the
+/// player knows exactly what they are buying.
+pub fn shop_gear(balance: &Balance, slot: &str, class_key: &str) -> GearDrop {
+    let l = &balance.loot;
+    let stat = (l.gear_atk_per_tier.round() as i32).max(1);
+    let (atk_bonus, def_bonus, spd_bonus) = match slot {
+        "main_hand" => (stat, 0, 0),
+        "accessory" => (0, 0, stat),
+        _ => (0, stat, 0),
+    };
+    let family = match eq::class_from_key(class_key) {
+        Some(c) => eq::families_for_slot(c, slot)
+            .first()
+            .map(|f| f.wire().to_string())
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    let armor_weight = match (eq::class_from_key(class_key), eq::is_armor_slot(slot)) {
+        (Some(c), true) => eq::drop_weight(c).wire().to_string(),
+        _ => String::new(),
+    };
+    GearDrop {
+        name: format!("Issued {}", class_slot_noun(class_key, slot)),
+        rarity: "common".to_string(),
+        slot: slot.to_string(),
+        class_key: class_key.to_string(),
+        tier: 0,
+        atk_bonus,
+        def_bonus,
+        spd_bonus,
+        max_durability: l.gear_base_durability,
+        damage_modifiers: Vec::new(),
+        family,
+        armor_weight,
+        insurance: meld_proto::Insurance::Standard,
+        affixes: Vec::new(),
+        unique_key: String::new(),
+        set_key: String::new(),
+    }
+}
+
 /// Reroll a piece's affixes (MS-1, closing AD-1's last thread): same tier, same
 /// slot, a fresh draw. What a smith sells is another chance at the roll, not a
 /// better piece — the stats are untouched.

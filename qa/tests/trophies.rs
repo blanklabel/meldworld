@@ -301,11 +301,62 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
         .unwrap();
     assert_eq!(vault["chits"].as_i64().unwrap(), 0, "a failed sale minted chits");
 
-    // And the whole surface is authenticated.
-    assert_eq!(
-        http.get(format!("{base}/v1/vendors/broker")).send().await.unwrap().status(),
-        401
+    // THE REQUISITION (EC-2): chits buy the plainest gear in the game, so a player who
+    // died with nothing can walk back out equipped.
+    let stock: Value = http
+        .get(format!("{base}/v1/vendors/requisition"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = stock["data"].as_array().expect("the counter has stock");
+    assert!(!rows.is_empty(), "a fresh account should be able to buy something: {stock}");
+    for row in rows {
+        assert!(row["price_chits"].as_i64().unwrap_or(0) > 0, "unpriced stock: {row}");
+        // Shop gear is the FLOOR: tier 0, common, and never insured against a wipe the
+        // way found or forged gear is. Chits must not buy a way past the loot chase.
+        assert_eq!(row["tier"], json!(0), "shop gear should be the baseline: {row}");
+        assert_eq!(row["rarity"], json!("common"), "{row}");
+        assert_eq!(row["insurance"], json!("standard"), "{row}");
+    }
+
+    // A penniless player is refused and told the price.
+    let res = http
+        .post(format!("{base}/v1/vendors/requisition/buy"))
+        .bearer_auth(&token)
+        .json(&json!({ "slot": "main_hand" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409, "bought a blade with no chits");
+    let err: Value = res.json().await.unwrap();
+    assert!(
+        err["error"]["message"].as_str().unwrap_or_default().contains("chits"),
+        "the refusal should name the price: {err}"
     );
+    // Nonsense slots are validation errors rather than surprises.
+    for bad in [json!({ "slot": "hat" }), json!({ "slot": "main_hand", "class_key": "wizard" })] {
+        let res = http
+            .post(format!("{base}/v1/vendors/requisition/buy"))
+            .bearer_auth(&token)
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "accepted {bad}");
+    }
+
+    // And the whole surface is authenticated.
+    for path in ["/v1/vendors/broker", "/v1/vendors/requisition"] {
+        assert_eq!(
+            http.get(format!("{base}{path}")).send().await.unwrap().status(),
+            401,
+            "{path} served an unauthenticated caller"
+        );
+    }
     assert_eq!(
         http.post(format!("{base}/v1/vendors/broker/sell"))
             .json(&json!({ "item_kind": "bog_ichor", "quantity": 1 }))

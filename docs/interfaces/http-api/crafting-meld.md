@@ -84,6 +84,28 @@ never has to re-read the Vault to report a result:
 `catalyst` not a trophy); 409 `conflict` (materials or chits short — the message
 names both halves of the bill).
 
+### The Requisition
+
+`GET /v1/vendors/requisition` — Silas's off-the-books counter at the Foundry
+([lore/factions.md](../../lore/factions.md)): the plainest gear in the game, for chits.
+Stocks one piece per legal slot for each class on the caller's roster (falling back to
+the starting class for a fresh account, since an empty shop is useless to exactly the
+player it exists for).
+
+**Response** — `200 OK`: `{vendor: "requisition", name, data: [{slot, class_key, name, price_chits, tier, rarity, insurance, family, armor_weight, stats}]}`.
+
+`POST /v1/vendors/requisition/buy {slot, class_key?}` — chits for one piece, atomically.
+
+**Response** — `200 OK`: `{bought, gear_id, slot, class_key, insurance, stats, spent_chits}`.
+
+**Errors** — 400 `validation_error` (slot not stocked, unknown class); 409 `conflict`
+(not enough chits — the message names the price).
+
+Every piece is **tier 0, common, affix-free, `standard` insurance**, priced from
+`[requisition]`. Deliberately the dullest gear in the game: the counter is a floor to
+stand on after a bad death, never a way for chits to buy past the loot chase, so what a
+clerk sells must always lose to what a smith forges or a creature drops.
+
 ### The Broker
 
 `GET /v1/vendors/broker` — the standing offer on every material, quoted at the

@@ -449,6 +449,9 @@ pub(crate) fn pump_net(
                 shop.items = items;
                 shop.loaded = true;
             }
+            ServerMsg::GearShopStock { gear } => {
+                shop.gear = gear;
+            }
             ServerMsg::VanguardBoard { season, entries, you } => {
                 vanguard.season = season;
                 vanguard.entries = entries;
