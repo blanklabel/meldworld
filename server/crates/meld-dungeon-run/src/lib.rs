@@ -60,6 +60,12 @@ impl Location {
 pub struct Occupant {
     pub floor: usize,
     pub pos: Position,
+    /// The stair cell this occupant was just delivered onto, if any. A stair fires on
+    /// CONTACT and lands you on its partner — which is itself a stair cell — so
+    /// without this the next move re-triggers it and you ping-pong between floors
+    /// forever. A move step is a fraction of a cell, so walking on never escapes by
+    /// itself. Cleared as soon as they stand on any other cell.
+    pub arrived_on: Option<(usize, usize)>,
 }
 
 /// The centre of grid cell `(x, y)` in continuous dungeon-local coordinates
@@ -174,7 +180,7 @@ impl<'a> DungeonInstance<'a> {
     pub fn enter(&mut self, player_id: &str) -> Position {
         let e = &self.def.entrances[0];
         let pos = cell_center(e.x, e.y);
-        self.occupants.insert(player_id.to_string(), Occupant { floor: e.floor, pos });
+        self.occupants.insert(player_id.to_string(), Occupant { floor: e.floor, pos, arrived_on: None });
         pos
     }
 
@@ -197,11 +203,37 @@ impl<'a> DungeonInstance<'a> {
     }
 
     /// Update a player's floor/position (after a validated move). No-op if absent.
+    /// Leaving the cell a stair delivered them onto re-arms that stair.
     pub fn set_pos(&mut self, player_id: &str, floor: usize, pos: Position) {
         if let Some(o) = self.occupants.get_mut(player_id) {
             o.floor = floor;
             o.pos = pos;
+            if o.arrived_on.is_some() && o.arrived_on != cell_of(pos) {
+                o.arrived_on = None;
+            }
         }
+    }
+
+    /// Place a player at a stair's far end and disarm that stair until they step off
+    /// it, so arriving does not immediately send them back.
+    pub fn take_stair(&mut self, player_id: &str, floor: usize, pos: Position) {
+        if let Some(o) = self.occupants.get_mut(player_id) {
+            o.floor = floor;
+            o.pos = pos;
+            o.arrived_on = cell_of(pos);
+        }
+    }
+
+    /// The stair under `player_id` right now, unless it is the one that just delivered
+    /// them. See [`Occupant::arrived_on`] — without this a one-cell-wide corridor
+    /// bounces a player between floors forever, because a single move step never
+    /// leaves the arrival cell.
+    pub fn stair_dest_for(&self, player_id: &str) -> Option<(usize, Position)> {
+        let o = self.occupants.get(player_id)?;
+        if o.arrived_on.is_some() && o.arrived_on == cell_of(o.pos) {
+            return None;
+        }
+        self.stair_dest(o.floor, o.pos)
     }
 
     /// Move the occupant by direction `(dx, dy)` up to `step` tiles on their floor,
@@ -212,6 +244,7 @@ impl<'a> DungeonInstance<'a> {
     pub fn try_move(&mut self, player_id: &str, dx: f64, dy: f64, step: f64) -> Option<Position> {
         let occ = *self.occupants.get(player_id)?;
         let (floor, cur) = (occ.floor, occ.pos);
+        let prev_arrived = occ.arrived_on;
         let mag = (dx * dx + dy * dy).sqrt();
         let (nx, ny) = if mag > 1.0 { (dx / mag, dy / mag) } else { (dx, dy) };
         let full = Position { x: cur.x + nx * step, y: cur.y + ny * step };
@@ -229,7 +262,11 @@ impl<'a> DungeonInstance<'a> {
                 cur
             }
         };
-        self.occupants.insert(player_id.to_string(), Occupant { floor, pos: dest });
+        // Keep the stair disarmed while the move stays inside the arrival cell; a
+        // step is a fraction of a cell, so clearing it here unconditionally would put
+        // the ping-pong straight back.
+        let arrived_on = prev_arrived.filter(|c| Some(*c) == cell_of(dest));
+        self.occupants.insert(player_id.to_string(), Occupant { floor, pos: dest, arrived_on });
         Some(dest)
     }
 
@@ -309,6 +346,17 @@ impl<'a> DungeonInstance<'a> {
     /// newly-opened barriers. (The driver decides *when* — on reach or on interact.)
     pub fn activate_at(&mut self, floor: usize, pos: Position) -> Vec<Id> {
         match self.object_at(floor, pos).cloned() {
+            // A boss is the one `activates_on_reach` emitter that does NOT activate on
+            // reach. Its active flag means `boss_dead(...)`, set by the driver when the
+            // fight is won — so activating it on contact both suppressed the fight
+            // (the spawn check skips an already-active boss) and unlocked its gated
+            // vault for anyone who merely walked up to it. `activates_on_reach` stays
+            // as-is because the solvability validator needs it: a boss you can reach
+            // is a boss you can beat, so doors behind it are provably openable.
+            Some(id) if matches!(self.def.objects.get(&id), Some(ObjectKind::Boss { .. })) => {
+                let _ = id;
+                Vec::new()
+            }
             Some(id) => self.activate(&id),
             None => Vec::new(),
         }
@@ -858,6 +906,60 @@ mod tests {
         assert!(d.open_chest("vault"), "opens once");
         assert!(!d.chest_openable("vault"), "and only once");
         assert!(!d.open_chest("vault"));
+    }
+
+    #[test]
+    fn a_stair_does_not_bounce_you_straight_back() {
+        // A stair fires on CONTACT and delivers you onto its partner, which is itself
+        // a stair cell. A move step is a fraction of a cell, so without disarming the
+        // arrival cell the next move re-triggers it and the player ping-pongs between
+        // floors forever — which is exactly what a one-cell-wide corridor produced.
+        let def = forest();
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        d.enter("p");
+        let (sf, sp) = cell(def, "S1");
+        d.set_pos("p", sf, sp);
+
+        let (df, dp) = d.stair_dest_for("p").expect("standing on a stair, it should fire");
+        assert_ne!(df, sf, "the stair should take us to the other floor");
+        d.take_stair("p", df, dp);
+        assert_eq!(d.occupant("p").unwrap().floor, df);
+
+        // Still inside the arrival cell: the stair stays disarmed however much we
+        // shuffle, so we never bounce.
+        for _ in 0..8 {
+            assert!(d.stair_dest_for("p").is_none(), "bounced back off the arrival cell");
+            d.try_move("p", 0.05, 0.0, 0.05);
+            assert_eq!(d.occupant("p").unwrap().floor, df, "left the floor without walking off");
+        }
+
+        // Step clear of it and it re-arms, so the stair is still usable both ways.
+        let far = Position { x: dp.x + 2.0, y: dp.y };
+        d.set_pos("p", df, far);
+        assert!(d.occupant("p").unwrap().arrived_on.is_none(), "leaving re-arms the stair");
+        d.set_pos("p", df, dp);
+        assert!(d.stair_dest_for("p").is_some(), "stepping back on should work again");
+    }
+
+    #[test]
+    fn walking_up_to_a_boss_does_not_count_as_killing_it() {
+        // A boss's active flag MEANS `boss_dead(...)`. It is in `activates_on_reach`
+        // for the solvability validator's benefit (a boss you can reach is one you can
+        // beat), but taking that literally at runtime let contact both suppress the
+        // fight and unlock the boss-gated vault without a single blow.
+        let def = forest();
+        let mut d = DungeonInstance::new(1, def, 0, 0);
+        d.enter("p");
+        let (bf, bp) = cell(def, "B1");
+
+        d.activate_at(bf, bp);
+        assert!(!d.is_active("B1"), "standing on the boss must not mark it dead");
+        assert!(!d.chest_openable("vault"), "its vault must stay sealed");
+
+        // Killing it is what counts, and that still works.
+        d.activate("B1");
+        assert!(d.is_active("B1"));
+        assert!(d.chest_openable("vault"));
     }
 
     #[test]

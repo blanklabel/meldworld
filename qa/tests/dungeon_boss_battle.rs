@@ -19,12 +19,22 @@ async fn start_server() -> String {
     balance.worldgen.dungeon_spawn_chance = 1.0;
     balance.worldgen.dungeon_trap_damage = 1; // don't let the corridor trap matter
     // Pin WHICH dungeon loads. The point of this test is that a bot can fight and beat
-    // a dungeon boss — not that it can solve every authored maze. Left unpinned it
-    // rolled a layout each run and passed or failed on whether the boss happened to be
-    // reachable in a straight line, which is a coin toss dressed up as a conformance
-    // test. `world_of_ruin` is the single-floor layout, so no stairs stand between the
-    // entrance and the boss.
-    std::env::set_var("MELD_DUNGEON", "world_of_ruin");
+    // a dungeon boss — not that it can solve an authored maze.
+    //
+    // `verdant_barrow` is a ONE-CELL-WIDE corridor on both floors, so walking east is
+    // a complete solution: floor 0 runs entrance -> trap -> lever (opens D1) -> key ->
+    // stairs, and floor 1 runs up-stair -> keyed door -> three plates -> gate -> boss.
+    // Note it clears G1, a `all[P1,P2,P3]` CO-OP gate, only because the runtime latches
+    // plates permanently and ignores their `momentary` flag; if that is ever made
+    // faithful, a lone bot can no longer open this gate and this test needs a dungeon
+    // without one.
+    //
+    // It was pinned to `world_of_ruin` on the grounds that a single floor meant no
+    // stairs in the way. That is the most complex dungeon in the game — nine mandatory
+    // bosses, six dragons each holding a switch, all six levers needed to bridge to
+    // Kefka's Tower — so no amount of pathfinding could have solved it, and it is a
+    // DESERT dungeon pinned under `MELD_BIOME=forest` besides.
+    std::env::set_var("MELD_DUNGEON", "verdant_barrow");
     // A pushover boss so a single hero wins fast + deterministically.
     balance.encounters.gatekeeper_hp_mult = 0.02;
     balance.encounters.gatekeeper_atk_mult = 0.0;

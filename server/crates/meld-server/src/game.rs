@@ -1274,9 +1274,12 @@ impl WorldActor {
                 return Vec::new();
             };
             dj.activate_at(floor, newpos); // reaching a lever/plate/key/boss opens gated doors
-            let stair = dj.stair_dest(floor, newpos);
+            // `_for` rather than by position: a stair delivers you onto its partner,
+            // which is itself a stair, so the plain lookup re-fires it and bounces the
+            // player between floors forever.
+            let stair = dj.stair_dest_for(pid);
             if let Some((df, dp)) = stair {
-                dj.set_pos(pid, df, dp);
+                dj.take_stair(pid, df, dp);
             }
             let (ff, fp) = stair.unwrap_or((floor, newpos));
             // Fire an armed trap only on ENTERING a new cell (not while lingering).
