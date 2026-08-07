@@ -418,6 +418,15 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   banks into the run backpack (extract to keep it; feeds Forging/Alchemy crafting) and
   its `xp` credits the node's Meld `skill`. Biome→node ids in `resources_for_biome`;
   stats under `[resource.<kind>]`. Client key `H` harvests the nearest node in reach.
+- **Materials are one registry** ([`meld_proto::materials`](shared/meld-proto/src/materials.rs)):
+  every material key with a **class** — `reagent`/`ore` (harvest nodes) and **`trophy`**
+  (the combat drop a felled creature banks, `combat_material_for_biome`) — plus a tier
+  per biome band. The class is what recipes and the Forge gate on: Alchemy's **trophy
+  line** takes monster parts, the Forge takes an *ore* for the body and an optional
+  *trophy* **catalyst** (a tier past the smith's own reach), and the **Broker**
+  (`/v1/vendors/broker`) buys any material for chits + Mercantile XP. A drop key missing
+  from the registry is loot nothing can spend, and unit tests fail on it. Design:
+  [`proposals/crafting-and-professions.md`](docs/proposals/crafting-and-professions.md).
 - The run backpack rides the wire on `run.backpack_update` (added/removed changes with
   a `cause`); the client mirrors it into `RunBackpack` for the overworld HUD.
 
@@ -453,4 +462,4 @@ joiners render as an "allies" strip on the battle screen.
 - **Data models**: [`interfaces/data-models.md`](docs/interfaces/data-models.md) + [`interfaces/data-models/`](docs/interfaces/data-models/)
 - **What we're building next (checkable worklist)**: [`ROADMAP.md`](docs/ROADMAP.md)
 - **Milestones & tasks**: [`BUILD-PLAN.md`](docs/BUILD-PLAN.md)
-- **Feature proposals**: [`proposals/last-city.md`](docs/proposals/last-city.md) (the hub), [`proposals/verticality.md`](docs/proposals/verticality.md)
+- **Feature proposals**: [`proposals/last-city.md`](docs/proposals/last-city.md) (the hub), [`proposals/verticality.md`](docs/proposals/verticality.md), [`proposals/crafting-and-professions.md`](docs/proposals/crafting-and-professions.md) (crafting depth; why professions are Meld skills, not classes)

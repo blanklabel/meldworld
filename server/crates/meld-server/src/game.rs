@@ -4315,7 +4315,7 @@ impl WorldActor {
         let loot_item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
             item_kind: loot.material.to_string(),
-            quantity: 1,
+            quantity: loot.material_qty,
             insurance: None,
         };
         let gear: Vec<LootGear> = loot
@@ -4424,7 +4424,7 @@ impl WorldActor {
             let item = ItemStack {
                 item_id: Uuid::now_v7().to_string(),
                 item_kind: l.material.to_string(),
-                quantity: 1,
+                quantity: l.material_qty,
                 insurance: None,
             };
             changes.push(wr::BackpackChange { item, delta: "added".to_string(), cause: "chest".to_string() });
@@ -5364,7 +5364,7 @@ impl WorldActor {
                     let loot_item = ItemStack {
                         item_id: Uuid::now_v7().to_string(),
                         item_kind: loot.material.to_string(),
-                        quantity: 1,
+                        quantity: loot.material_qty,
                         insurance: None,
                     };
                     // Any gear drop becomes a wire LootGear with a fresh server id

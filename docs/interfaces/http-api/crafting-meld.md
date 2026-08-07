@@ -18,8 +18,79 @@ Meld Skills are the persistent non-combat progression path (GDD.md §4.1): `forg
 **XP sources** (all applied server-side; never via client HTTP mutation):
 
 - `forging`: successful crafts ([`POST /v1/crafting/craft`](#post-v1craftingcraft)) and repairs ([`POST /v1/vault/gear/{gear_id}/repair`](vault-gear.md#post-v1vaultgeargear_idrepair)).
-- `mercantile`: stall sales completing ([buy listing](economy.md#post-v1stallsstall_idlistingslisting_idbuy), XP to seller) and contract fulfillment ([fulfill](economy.md#post-v1contractscontract_idfulfill), XP to fulfiller).
+- `mercantile`: stall sales completing ([buy listing](economy.md#post-v1stallsstall_idlistingslisting_idbuy), XP to seller), contract fulfillment ([fulfill](economy.md#post-v1contractscontract_idfulfill), XP to fulfiller), and **Broker sales** ([`POST /v1/vendors/broker/sell`](#post-v1vendorsbrokersell) — the shipped source; the other two are unbuilt).
 - `alchemy`: extracting rare plants/monster parts (run-end banking, server-applied) and gem synthesis ([`POST /v1/crafting/synthesize`](#post-v1craftingsynthesize)).
+
+---
+
+## Shipped surface (MS-1) vs the v0.1 spec below
+
+The endpoint specs in the rest of this file are the **v0.1 target**. The paths that
+ship today differ; where they differ, the shipped behavior is authoritative and the
+target is the direction of travel:
+
+| Shipped | Target below | Notes |
+|---|---|---|
+| `GET /v1/crafting/recipes` | `GET /v1/recipes` | Unpaginated. Rows carry `recipe`, `name`, `skill`, `required_level`, `skill_level` (the caller's), `craftable`, `output`, `output_quantity`, `inputs[]` (`item_kind`, `quantity`, `material_class`). Sorted by `required_level`, then key. |
+| `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
+| `POST /v1/crafting/forge {slot, class_key?, material, catalyst?}` | — | Rolls a whole piece of gear for a slot; not recipe-driven. `material` must be an **ore**-class material and `catalyst`, if given, a **trophy** (400 otherwise). See [Materials](#materials) and [The Forge](#the-forge-and-the-catalyst). |
+| `POST /v1/vault/gear/{gear_id}/reroll`, `/repair` | — | See [vault-gear.md](vault-gear.md). |
+| `GET /v1/vendors/broker`, `POST /v1/vendors/broker/sell` | — | See [The Broker](#the-broker). |
+
+### Materials
+
+Every crafting material is declared once in `meld_proto::materials` with a **class**
+and a **tier** (its biome band, forest 0 → mire 4). The class is what recipes and the
+Forge gate on:
+
+| Class | Comes from | Consumed by |
+|---|---|---|
+| `reagent` | harvest nodes (plants, salts) | Alchemy recipes |
+| `ore` | harvest nodes (ore, wood) | the Forge, as the **body** of a piece |
+| `trophy` | **felled creatures** (`run.backpack_update` on a kill) | the trophy recipe line, and the Forge as a **catalyst** |
+
+`GET /v1/crafting/recipes` reports each input's `material_class` so a UI can explain
+*why* a stack is wanted. A material key the world can drop that is absent from the
+registry is a bug — it is loot nothing can spend, and unit tests in `meld-proto` and
+`meld-world` assert against it.
+
+### The Forge and the catalyst
+
+`POST /v1/crafting/forge` spends `[forge] gear_material_cost` of `material` (an ore)
+plus `gear_chit_cost`, and rolls a piece at `forgeable_tier(forging_level)`.
+
+Passing `catalyst` (a trophy) additionally spends `[forge] catalyst_material_cost` of
+it and forges at `catalyzed_tier` = `forgeable_tier + catalyst_tier_bonus`, rolling
+the **epic** affix pool instead of rare. Levelling Forging raises the floor a smith
+can reach; monster parts raise the ceiling.
+
+**Response** — `200 OK`: `{forged, slot, tier, rarity, catalyzed, forging_level}`.
+
+**Errors** — 400 `validation_error` (unknown slot/class, `material` not an ore,
+`catalyst` not a trophy); 409 `conflict` (materials or chits short — the message
+names both halves of the bill).
+
+### The Broker
+
+`GET /v1/vendors/broker` — the standing offer on every material, quoted at the
+caller's Mercantile level.
+
+**Response** — `200 OK`: `{vendor: "broker", name, mercantile_level, data: [{item_kind, name, description, material_class, tier, price_chits}]}`.
+
+`POST /v1/vendors/broker/sell {item_kind, quantity}` — materials out, chits in,
+Mercantile XP earned (`[meld] mercantile_xp_per_sale`). Atomic: a seller who is short
+keeps the stack and earns nothing.
+
+**Response** — `200 OK`: `{sold, quantity, unit_price, earned_chits, mercantile_level}`.
+
+**Errors** — 400 `validation_error` (`quantity` outside 1–999, or `item_kind` is not
+a **material** — the Broker does not buy potions, portals or gear); 409 `conflict`
+(the Vault does not hold that many).
+
+Price: `sale_base_chits × sale_growth_per_tier^tier × (sale_trophy_mult if trophy) ×
+(1 + haggle)`, where `haggle = min(sale_haggle_pct_per_level × (level−1),
+sale_haggle_max_pct)`. This is a **floor price** by design — see
+[economy.md](../../behaviors/economy.md) source S3.
 
 ---
 

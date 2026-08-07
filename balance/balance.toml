@@ -324,6 +324,13 @@ steal_chits_fraction = 0.10          # chit-steal: fraction of carried chits tak
 [loot]
 chits_per_mlevel = 5.0
 chits_jitter = 0.35
+# TROPHY yield per felled encounter (MS-1). A trophy is the material a kill leaves,
+# so supply tracks the pack you actually beat: one per carcass, plus a band bonus so
+# the deep bands (whose materials the top recipes want) pay for the walk. Multiplied
+# by the elite/gatekeeper reward spike, and drawn WITHOUT rng — a crafter should be
+# able to plan a hunt. [TUNABLE]
+material_per_creature = 1.0
+material_qty_per_tier = 0.2
 gear_drop_chance = 0.35
 gear_atk_per_tier = 3.0
 gear_atk_jitter = 0.4
@@ -487,6 +494,12 @@ reroll_min_forging_level = 3    # rerolling is a smith's trick, not a beginner's
 repair_chit_cost_per_point = 4  # chits per point of max durability restored [TUNABLE]
 repair_points_per_forging_level = 6  # how much one repair can restore, per Forging level
 forge_xp_per_craft = 30         # Forging XP for a forge/reroll/repair [TUNABLE]
+# The CATALYST: quench the piece in a monster part (a `trophy` material) and it
+# comes out a tier past what the smith's own level can reach, rolling epic-grade
+# affixes instead of rare. This is what makes a combat drop worth carrying home —
+# it buys REACH, which is the one thing levelling otherwise gates. [TUNABLE]
+catalyst_material_cost = 2      # trophies consumed by a catalyzed forge
+catalyst_tier_bonus = 1         # tiers the catalyst adds on top of forgeable_tier
 
 # Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
 # `meld_proto::consumables`; these are its numbers, plus the chit price of the
@@ -507,6 +520,10 @@ price_bulwark_tonic = 40
 price_mending_draught = 35
 price_town_portal = 60
 price_markup_per_tier = 2.5     # each shop tier above 0 costs this much more [TUNABLE]
+# Each step up a potion's own effect ladder (ConsumableDef::potency) multiplies its
+# magnitude by this. Step 0 is the standard dose, so the trophy line can sit above
+# the reagent line without moving any number a player already knows. [TUNABLE]
+potency_per_step = 1.6
 
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop
@@ -529,6 +546,18 @@ class_signature_mult = 1.6       # stat-bonus multiplier, stacks with rarity
 xp_per_level = 100
 alchemy_xp_per_extracted_stack = 15   # extracting plants/monster parts (GDD §4.1)
 forging_xp_per_craft = 25             # successful craft (GDD §4.1)
+mercantile_xp_per_sale = 8            # selling a material stack to the Broker (GDD §4.1)
+
+# THE BROKER (MS-1 / EC-2): the NPC that BUYS materials, so nothing you carry home
+# is ever unspendable. Priced as a FLOOR, not an income — crafting with a material
+# must always beat selling it, or the crafting economy never starts. Chits minted
+# here are economy source S3 (docs/behaviors/economy.md).
+[material]
+sale_base_chits = 5              # what a tier-0 (forest) material fetches [TUNABLE]
+sale_growth_per_tier = 1.7       # each biome band deeper is worth this much more
+sale_trophy_mult = 1.6           # a monster part costs a fight, not a walk
+sale_haggle_pct_per_level = 2.0  # Mercantile level improves the price by this %/level…
+sale_haggle_max_pct = 60.0       # …capped here, so a master haggler is better, not rich
 
 [combat_math]
 # Damage = max(1, round(atk * stat_mult_attacker - def)). Content-defined

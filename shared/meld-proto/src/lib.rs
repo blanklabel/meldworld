@@ -10,6 +10,7 @@
 //! - [`uniques`] — named uniques (with a drawback) and party-wide sets (AD-1).
 //! - [`synergies`] — class-pair synergies and sequenced ability combos (AD-2).
 //! - [`consumables`] — potions, what they do, and the recipes that make them (GR-4/MS-1).
+//! - [`materials`] — every crafting material and its class (reagent/ore/trophy) (MS-1).
 //! - [`common`] — shared payload objects (`Position`, `ItemStack`, `Combatant`).
 //! - [`realtime`] — C2S/S2C message payloads by domain.
 //! - [`http`] — HTTP request/response DTOs.
@@ -25,6 +26,7 @@ pub mod equipment;
 pub mod factions;
 pub mod http;
 pub mod limits;
+pub mod materials;
 pub mod names;
 pub mod realtime;
 pub mod skills;

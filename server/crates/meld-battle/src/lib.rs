@@ -466,6 +466,7 @@ pub struct Battle {
     consumable_regen: i32,
     consumable_evasion_pct: i32,
     consumable_adrenaline: i32,
+    consumable_potency_per_step: f64,
     revive_hp_fraction: f64,
     /// The skill currently resolving, if any — set for the length of one player
     /// skill so `apply_damage` can prime a combo or cash one in without every
@@ -704,6 +705,7 @@ impl Battle {
             consumable_regen: balance.consumable.regen_amount,
             consumable_evasion_pct: balance.consumable.evasion_pct,
             consumable_adrenaline: balance.consumable.adrenaline_amount,
+            consumable_potency_per_step: balance.consumable.potency_per_step,
             revive_hp_fraction: balance.consumable.revive_hp_fraction,
             active_skill: None,
             back_row_target_weight: balance.battle.back_row_target_weight,
@@ -2274,12 +2276,18 @@ impl Battle {
         let max_hp = self.fighters[target_i].max_hp;
         // GR-4: a potion does what its registry entry says. An unknown item id keeps
         // the old fraction-heal behaviour, so an older client cannot be stranded.
-        let effect = con::consumable(item_id.unwrap_or("bloom_salve"))
-            .map(|c| c.effect)
-            .unwrap_or(E::Heal);
+        let def = con::consumable(item_id.unwrap_or("bloom_salve"));
+        let effect = def.map(|c| c.effect).unwrap_or(E::Heal);
+        // MS-1: the trophy line is the same effects at a bigger dose. `potency` is
+        // how many steps up its own ladder a potion sits; step 0 is the standard
+        // dose, so every potion that predates the ladder is untouched.
+        let dose = self
+            .consumable_potency_per_step
+            .powi(def.map(|c| c.potency).unwrap_or(0).max(0));
         let effects = match effect {
             E::Revive => {
-                let back = ((max_hp as f64) * self.revive_hp_fraction).round().max(1.0) as i32;
+                let fraction = (self.revive_hp_fraction * dose).min(1.0);
+                let back = ((max_hp as f64) * fraction).round().max(1.0) as i32;
                 self.fighters[target_i].alive = true;
                 self.fighters[target_i].hp = back.min(max_hp);
                 self.fighters[target_i].gauge = 0.0;
@@ -2297,21 +2305,21 @@ impl Battle {
             E::Experience => self.status_effect(target_i, "insight", 1),
             E::FullHeal => self.apply_heal(target_i, max_hp),
             E::Heal => {
-                let raw = ((max_hp as f64) * self.item_heal_fraction).round() as i32;
+                let raw = ((max_hp as f64) * self.item_heal_fraction * dose).round() as i32;
                 self.apply_heal(target_i, raw)
             }
             E::Barrier => {
-                let amount = self.consumable_barrier;
+                let amount = ((self.consumable_barrier as f64) * dose).round() as i32;
                 self.fighters[target_i].barrier += amount;
                 self.status_effect(target_i, "barrier", amount)
             }
             E::Regen => {
-                let amount = self.consumable_regen;
+                let amount = ((self.consumable_regen as f64) * dose).round() as i32;
                 self.fighters[target_i].regen += amount;
                 self.status_effect(target_i, "regen", amount)
             }
             E::Evasion => {
-                let pct = self.consumable_evasion_pct;
+                let pct = ((self.consumable_evasion_pct as f64) * dose).round() as i32;
                 self.fighters[target_i].evasion += pct as f64 / 100.0;
                 self.status_effect(target_i, "evasion", pct)
             }
@@ -2320,7 +2328,8 @@ impl Battle {
                 // matching keyword affix — the bottle is not wasted, it just does
                 // nothing, and the client greys it for non-Explorers.
                 let max = self.fighters[target_i].adrenaline_max;
-                let amount = self.consumable_adrenaline.min(max);
+                let banked = ((self.consumable_adrenaline as f64) * dose).round() as i32;
+                let amount = banked.min(max);
                 self.fighters[target_i].adrenaline =
                     (self.fighters[target_i].adrenaline + amount).min(max);
                 self.status_effect(target_i, "adrenaline", amount)
@@ -5139,6 +5148,42 @@ mod tests {
 
         // An unknown id still heals, so an older client is never stranded.
         assert!(drink("mystery_bottle").hp > 20);
+
+        // MS-1's trophy line: the same effects, a bigger dose. A potion made from a
+        // monster part has to out-do the herb version or nobody would render one.
+        assert!(drink("scarab_ward").barrier > tonic.barrier);
+        assert!(drink("verdant_draught").regen > b.consumable.regen_amount);
+        assert!(drink("rimeglass_vial").evasion > dust.evasion);
+        assert!(drink("cinderblood_philtre").adrenaline >= philtre.adrenaline);
+        assert!(drink("ichor_salve").hp > salve.hp, "ichor should out-heal a salve");
+    }
+
+    #[test]
+    fn a_quintessence_raises_the_fallen_nearer_to_whole_than_a_salt_does() {
+        let b = balance();
+        let raise = |item: &str| -> i32 {
+            let mut down = player("down", 5);
+            down.alive = false;
+            down.hp = 0;
+            down.max_hp = 100;
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("a", 5), down],
+                vec![monster("m1", 500, 1)],
+                &b,
+                42,
+            );
+            let actor = battle.idx("a").unwrap();
+            let _ = battle.resolve_item(actor, Some(item), Some("down"), None);
+            let i = battle.idx("down").unwrap();
+            assert!(battle.fighters[i].alive, "{item} did not revive");
+            battle.fighters[i].hp
+        };
+        let salt = raise("waking_salt");
+        let quint = raise("quintessence");
+        assert!(quint > salt, "quintessence {quint} vs salt {salt}");
+        assert!(quint <= 100, "a revive cannot overshoot max HP: {quint}");
     }
 
     #[test]

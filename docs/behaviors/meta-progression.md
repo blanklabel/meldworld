@@ -140,8 +140,8 @@ Three permanent non-combat skills per player, levels **1–99**: `forging`, `mer
 | Skill | XP source |
 |-------|-----------|
 | `forging` | Successfully combining extracted raw materials (crafting). |
-| `mercantile` | Successfully completing player contracts, or selling items at stalls. |
-| `alchemy` | Extracting rare plants and monster parts. |
+| `mercantile` | Successfully completing player contracts, or selling items at stalls. **Shipped source:** selling a material stack to the Broker (`POST /v1/vendors/broker/sell`) — stalls and contracts are unbuilt, so until `EC-1` this is Mercantile's only XP anywhere. |
+| `alchemy` | Extracting rare plants and monster parts. Also every potion craft (`POST /v1/crafting/craft` — a potion credits Alchemy, only metalwork credits Forging). |
 
 XP amounts per action and the level curve are content-table values **[TUNABLE]** (not specified in GDD/CANON). No XP is granted for failed crafts, cancelled contracts, or unsold stall listings ("successfully" is load-bearing in GDD §4.1).
 
@@ -150,7 +150,10 @@ XP amounts per action and the level curve are content-table values **[TUNABLE]**
 | Skill | Effect | Formula / rule |
 |-------|--------|----------------|
 | `forging` (level L) | Max-durability repair cap on blue-chest gear | Can restore max durability up to `base_max × (0.5 + L/198)` — L99 → 100% of `base_max`. **[TUNABLE]** See [economy.md](economy.md) (Durability Sink). |
-| `forging` | Better stat variance on crafted items | Directionally per GDD §4.1; magnitude is content-table **[TUNABLE]**, no CANON formula. |
+| `forging` | Better stat variance on crafted items | Directionally per GDD §4.1; magnitude is content-table **[TUNABLE]**, no CANON formula. Shipped as `[forge] gear_variance` narrowing by `gear_variance_per_level` to `gear_variance_floor`. |
+| `forging` (level L) | Gear tier a smith can reach | `floor(L × gear_tier_per_forging_level)`; a **trophy catalyst** adds `catalyst_tier_bonus` on top (levelling raises the floor, monster parts raise the ceiling). Rerolling affixes needs `reroll_min_forging_level`. **[TUNABLE]** |
+| `forging` / `alchemy` (level L) | Which recipes are craftable | Each recipe declares `min_level` in its own skill (`meld_proto::consumables::RecipeDef`); below it the craft is refused `403 forbidden`. The **trophy line** (potions made from combat drops) sits above the reagent line on this ladder. |
+| `mercantile` (level L) | Broker sale price | `+sale_haggle_pct_per_level` per level over 1, capped at `sale_haggle_max_pct` — a better haggler is quoted better. **[TUNABLE]** |
 | `mercantile` (level L) | Hub tax reduction | Tax `= 10% − L × 0.05%`, floor 5%. **[TUNABLE]** Applies to stall sales and contract payouts (paid by seller/poster). |
 | `mercantile` (level L) | Stall slot count | `4 + floor(L / 10) × 2`, max 24. **[TUNABLE]** |
 | `mercantile` (level L) | Stall placement gates | Stalls in hubs `d ≥ 1000` require Mercantile ≥ 30; `d ≥ 3000` require ≥ 60. **[TUNABLE]** |

@@ -533,8 +533,55 @@ XP; harvesting exists but is instant.
     `GR-2`'s repair sink. Crafted gear is **insured**, and never a unique or set piece:
     those are chased, not made. All three are atomic (a smith who cannot pay keeps their
     materials) and credit Forging XP. Knobs in `[forge]`.
-  - **Remains:** gem/materia synthesis + socketing (no socket model exists yet) and the
-    mercantile tax / stall-gate effects (want `EC-1` stalls first).
+  - 🟡 *Combat drops have a sink, and Mercantile has an XP source:* felling a creature
+    banked one of five **combat drops** that nothing could spend — no recipe named them,
+    the Forge treated every material as interchangeable, no vendor bought anything.
+    Materials are now a **registry with a class** (`meld_proto::materials`: `reagent` /
+    `ore` / **`trophy`** = the combat drops, plus a tier per biome band), which is what
+    lets a recipe or a vendor ask for a monster part specifically. On top of it:
+    a **trophy potion line** (six recipes keyed on monster parts, each a step up its
+    effect's own dose ladder via `ConsumableDef::potency`, capped by a Quintessence that
+    takes one part from all five biomes); **trophies as the Forge's catalyst** — the
+    Forge now needs an *ore* for the body and takes an optional *trophy* that buys
+    `catalyst_tier_bonus` tiers past the smith's own reach and the epic affix pool, so
+    **levelling raises the floor and monster parts raise the ceiling**; **permanent level
+    gates on recipes** (`RecipeDef::min_level`, refused `403` naming the missing level);
+    and **the Broker** (`GET /v1/vendors/broker`, `POST /v1/vendors/broker/sell`) — an
+    NPC that BUYS any material at a Mercantile-scaled floor price, which is Mercantile's
+    first XP source anywhere in the game. Knobs in `[material]`, `[forge] catalyst_*`,
+    `[consumable] potency_per_step`, `[meld] mercantile_xp_per_sale`; new economy source
+    **S3** in [`behaviors/economy.md`](behaviors/economy.md). Design of record:
+    [`proposals/crafting-and-professions.md`](proposals/crafting-and-professions.md).
+  - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
+    mercantile tax / stall-gate effects (want `EC-1` stalls first); the Forge/Alembic/
+    Broker **client UIs** (all of the above is HTTP-only — `LC-4`); and the crafting-depth
+    layers the proposal scopes: recipe *discovery*, *experimentation*, and the
+    **maker's mark** that gives a master crafter a reputation instead of a spreadsheet.
+  - 🟡 *Trophy supply tracks the fight:* a trophy was a flat **one per encounter** at any
+    depth against any pack, while chits in the same roll scaled with both — so the new
+    crafting inputs had no supply curve. `CreatureLoot` now carries a `material_qty`
+    scaled by pack size × distance band × the elite/gatekeeper spike, drawn **without**
+    RNG (so it cannot shift the gear roll that follows it in the same stream, and a
+    crafter can plan a hunt). `[loot] material_per_creature`, `material_qty_per_tier`.
+  - **Non-combat classes:** answered in the proposal — **no** (hero levels reset every
+    dive and a party slot is a combat slot; professions belong on the permanent Meld
+    ladder). What to build instead: **profession rank titles**, plus gathering **yield
+    lenses on the `[perks]` system that already exists** — every class already has an
+    overworld perk, so a gathering specialization is one more entry, not a new concept.
+    The model: three material sources, each with a *find* lens (all shipping: Explorer
+    node dots, Hunter creature intel, Shifter dungeon/item sense) and a *yield* lens
+    (none shipping: Open Flower → reagents, Hunter → trophies, Shifter → salvage).
+    Base materials stay **ungated**; the specialist multiplies yield and solely produces
+    a **rare byproduct**, gated on a run-level rank rather than mere presence.
+    Profession homes are settled in the lore: **Forging → The Foundry**, **Alchemy → The
+    Open Flower**, and **Mercantile → no order at all, by design** (merchants are just
+    merchants — its ladder is market *standing*, not a promotion).
+    Forging's home order is **The Foundry** (the city's quota-driven industrial branch):
+    its Extractors / Smelters / Smithwrights castes *are* the Forging pipeline, and its
+    rank ladder already lands on the 1/2/5/9/13/17 rungs. Ore stays ungated until it is
+    playable. The Smelters also name a missing mechanic worth building — a **raw → refined
+    smelting tier**, which is where Forging's absent recipe line (it has exactly one
+    recipe today, vs Alchemy's thirteen) should come from. Prior art surveyed there.
 - [ ] **MS-2 — Harvesting takes time in the field.** Turn instant `run.harvest`
   into a **channeled gather** (a timed action, interruptible, vulnerable while
   channeling) — tension, not a free tap. Add the channel timer `[TUNABLE]` and the

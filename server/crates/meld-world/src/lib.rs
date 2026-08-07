@@ -282,9 +282,11 @@ fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
 }
 
 /// A biome's combat-drop material — banked into the run backpack when a creature is
-/// felled, distinct from harvestable resource nodes. No recipe consumes these yet:
-/// every entry in `meld_proto::consumables::RECIPES` takes harvest reagents, so combat
-/// drops currently bank and sit. Structural content; deeper bands repeat Mire.
+/// felled, distinct from harvestable resource nodes. These are the **trophies**
+/// (`meld_proto::materials::MaterialClass::Trophy`): they feed the trophy potion line,
+/// they are the Forge's catalyst ([`forge_gear`]), and the Broker buys them. The
+/// registry is the contract — a key here that isn't in `materials::MATERIALS` is loot
+/// nothing can spend. Structural content; deeper bands repeat Mire.
 pub fn combat_material_for_biome(d: i64) -> &'static str {
     match biome_for_distance(d) {
         "forest" => "forest_bloom_petal",
@@ -336,8 +338,13 @@ pub struct GearDrop {
 pub struct CreatureLoot {
     /// Chits found (banked on extraction, lost on death). Scales with depth.
     pub chits: i64,
-    /// The biome's combat material (one unit).
+    /// The biome's combat material — the **trophy** the kill yields.
     pub material: &'static str,
+    /// How many units of it. Scales with the size of the pack you felled (a
+    /// carcass each) and, gently, with depth — so trophy *supply* tracks the
+    /// difficulty of getting it, the way the chit haul already does. Deliberately
+    /// draws no RNG: a crafter can plan a hunt.
+    pub material_qty: i32,
     /// Red-chest gear, only rolled at/after `red_chest_floor_distance`.
     pub gear: Option<GearDrop>,
 }
@@ -535,6 +542,16 @@ pub fn roll_creature_loot(
         .round()
         .max(0.0) as i64;
     let material = combat_material_for_biome(distance);
+    // Trophies per felled creature, plus a band bonus, times the reward spike. No
+    // RNG draw here on purpose: it would shift every subsequent roll in this
+    // stream (the gear check below), and a predictable trophy yield is what lets a
+    // crafter decide "four more of those and I can quench a blade".
+    let material_qty = ((l.material_per_creature
+        * monster_count.max(1) as f64
+        * (1.0 + sc.tier(distance) as f64 * l.material_qty_per_tier)
+        * loot_mult.max(0.0))
+    .round() as i32)
+        .max(1);
     // Red-chest gear only generates at/after the red-chest floor
     // (`world_scaling.red_chest_floor_distance`; spec §4 sets it to 300 — a
     // shallow kill never drops gear); a reward spike (loot_mult) boosts (and
@@ -734,6 +751,7 @@ pub fn roll_creature_loot(
     CreatureLoot {
         chits,
         material,
+        material_qty,
         gear,
     }
 }
@@ -837,18 +855,29 @@ fn biome_element(biome: &str) -> &'static str {
 /// the stat rolls (`variance_at` — a master smith is consistent, an apprentice is
 /// not). Affixes come from the same tier-gated roller as loot, so a forged piece is
 /// the same KIND of object as a found one; the difference is that you chose its slot.
+///
+/// `catalyzed` is a **trophy** quenched into the piece: it buys `catalyst_tier_bonus`
+/// tiers past the smith's own reach and rolls the affix pool at epic instead of rare.
+/// Levelling raises the floor; monster parts raise the ceiling.
 pub fn forge_gear(
     balance: &Balance,
     forging_level: i32,
     slot: &str,
     class_key: &str,
     biome: &str,
+    catalyzed: bool,
     seed: u64,
 ) -> GearDrop {
     let fg = &balance.forge;
     let l = &balance.loot;
     let mut rng = Rng(seed);
-    let tier = fg.forgeable_tier(forging_level).max(0);
+    let rarity = if catalyzed { "epic" } else { "rare" };
+    let tier = if catalyzed {
+        fg.catalyzed_tier(forging_level)
+    } else {
+        fg.forgeable_tier(forging_level)
+    }
+    .max(0);
     let variance = fg.variance_at(forging_level);
     let jitter = 1.0 + rng.signed() * variance;
     let stat = ((l.gear_atk_per_tier * tier.max(1) as f64 * jitter).round() as i32).max(1);
@@ -871,16 +900,7 @@ pub fn forge_gear(
         (Some(c), true) => eq::drop_weight(c).wire().to_string(),
         _ => String::new(),
     };
-    let affixes = roll_affixes(
-        balance,
-        &mut rng,
-        tier,
-        "rare",
-        false,
-        class_key,
-        slot,
-        biome,
-    );
+    let affixes = roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome);
     let base = format!(
         "{} {}",
         POWER_ADJECTIVES[rng.below(POWER_ADJECTIVES.len())],
@@ -892,7 +912,7 @@ pub fn forge_gear(
     };
     GearDrop {
         name,
-        rarity: "rare".to_string(),
+        rarity: rarity.to_string(),
         slot: slot.to_string(),
         class_key: class_key.to_string(),
         tier,
@@ -5435,7 +5455,7 @@ mod tests {
     fn a_better_smith_forges_deeper_and_more_consistently() {
         let b = Balance::load_default().unwrap();
         let forge_at = |level: i32, seed: u64| {
-            forge_gear(&b, level, "main_hand", "explorer", "forest", seed)
+            forge_gear(&b, level, "main_hand", "explorer", "forest", false, seed)
         };
 
         // Forging level sets the tier a smith can reach.
@@ -5481,10 +5501,76 @@ mod tests {
     }
 
     #[test]
+    fn a_trophy_quenched_into_the_piece_reaches_past_the_smiths_own_level() {
+        let b = Balance::load_default().unwrap();
+        for level in [1, 4, 10, 20] {
+            let plain = forge_gear(&b, level, "main_hand", "explorer", "forest", false, 5);
+            let quenched = forge_gear(&b, level, "main_hand", "explorer", "forest", true, 5);
+            assert_eq!(
+                quenched.tier,
+                plain.tier + b.forge.catalyst_tier_bonus,
+                "the catalyst bought no reach at level {level}"
+            );
+            assert_eq!(plain.rarity, "rare");
+            assert_eq!(quenched.rarity, "epic", "a catalyzed piece rolls the better pool");
+            // The stat scales off `tier.max(1)`, so at level 1 (tier 0 → 1) the
+            // catalyst buys affix quality rather than a bigger number. Everywhere
+            // above that it buys both.
+            if plain.tier >= 1 {
+                assert!(quenched.atk_bonus > plain.atk_bonus, "level {level}");
+            } else {
+                assert!(quenched.atk_bonus >= plain.atk_bonus, "level {level}");
+            }
+        }
+    }
+
+    #[test]
+    fn trophy_yield_tracks_the_pack_and_the_depth_you_beat() {
+        let b = Balance::load_default().unwrap();
+        let qty = |dist: i64, count: i32, mult: f64| {
+            roll_creature_loot(&b, dist, count, mult, 7).material_qty
+        };
+        // A carcass each: beating five things yields more parts than beating one.
+        assert!(qty(0, 5, 1.0) > qty(0, 1, 1.0));
+        // Depth pays, because the deep bands' parts are what the top recipes want.
+        assert!(qty(1500, 1, 1.0) > qty(0, 1, 1.0));
+        // An elite is worth cutting up; a lone hub creature still leaves something.
+        assert!(qty(300, 2, b.encounters.elite_loot_mult) > qty(300, 2, 1.0));
+        assert_eq!(qty(0, 1, 1.0), 1, "the first kill of the game should give one");
+        assert!(qty(0, 1, 0.0) >= 1, "no encounter yields zero parts");
+        // Deterministic: the same fight always butchers the same, whatever the seed,
+        // so a crafter can count on a plan.
+        for seed in 0..50u64 {
+            assert_eq!(roll_creature_loot(&b, 800, 3, 1.0, seed).material_qty, qty(800, 3, 1.0));
+        }
+    }
+
+    #[test]
+    fn every_combat_drop_is_a_registered_trophy() {
+        // The registry is the sink's contract: a drop key that isn't in it is loot
+        // no recipe, no Forge and no vendor can accept.
+        use meld_proto::materials::{is_class, material, MaterialClass};
+        let b = Balance::load_default().unwrap();
+        for d in [0i64, 50, 150, 350, 700, 1500, 9000] {
+            let key = combat_material_for_biome(d);
+            let def = material(key).unwrap_or_else(|| panic!("{key} is not a registered material"));
+            assert!(is_class(key, MaterialClass::Trophy), "{key} is not a trophy");
+            assert!(
+                !meld_proto::consumables::recipes_consuming(key).is_empty(),
+                "{key} has no recipe to be spent in"
+            );
+            assert!(b.material.sale_price(def.tier, true, 1) > 0);
+        }
+        for node in BIOMES.iter().flat_map(|b| resources_for_biome(b)) {
+            assert!(material(node).is_some(), "harvest node {node} is not a registered material");
+        }
+    }
+
+    #[test]
     fn forging_armour_rolls_a_weight_its_class_can_wear() {
         let b = Balance::load_default().unwrap();
         for (class, slot) in [("phoenix_guard", "chest"), ("psyker", "head"), ("shifter", "legs")] {
-            let piece = forge_gear(&b, 8, slot, class, "tundra", 11);
+            let piece = forge_gear(&b, 8, slot, class, "tundra", false, 11);
             let w = meld_proto::equipment::ArmorWeight::from_wire(&piece.armor_weight)
                 .expect("forged armour has a weight");
             let c = meld_proto::equipment::class_from_key(class).unwrap();
