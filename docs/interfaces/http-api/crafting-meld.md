@@ -32,7 +32,7 @@ target is the direction of travel:
 | Shipped | Target below | Notes |
 |---|---|---|
 | `GET /v1/crafting/recipes` | `GET /v1/recipes` | Unpaginated. Rows carry `recipe`, `name`, `skill`, `required_level`, `skill_level` (the caller's), `craftable`, `output`, `output_quantity`, `inputs[]` (`item_kind`, `quantity`, `material_class`). Sorted by `required_level`, then key. |
-| `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
+| `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. Answers `{crafted, name, quantity, skill, skill_level, spent: [{item_kind, quantity}]}`. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
 | `POST /v1/crafting/forge {slot, class_key?, material, catalyst?}` | — | Rolls a whole piece of gear for a slot; not recipe-driven. `material` must be an **ore**-class material and `catalyst`, if given, a **trophy** (400 otherwise). See [Materials](#materials) and [The Forge](#the-forge-and-the-catalyst). |
 | `POST /v1/vault/gear/{gear_id}/reroll`, `/repair` | — | See [vault-gear.md](vault-gear.md). |
 | `GET /v1/vendors/broker`, `POST /v1/vendors/broker/sell` | — | See [The Broker](#the-broker). |
@@ -68,7 +68,17 @@ it and forges at `catalyzed_tier` = `forgeable_tier + catalyst_tier_bonus`, roll
 the **epic** affix pool instead of rare. Levelling Forging raises the floor a smith
 can reach; monster parts raise the ceiling.
 
-**Response** — `200 OK`: `{forged, slot, tier, rarity, catalyzed, forging_level}`.
+**Response** — `200 OK`. Describes both what was made and what it cost, so a caller
+never has to re-read the Vault to report a result:
+
+| Field | Description |
+|---|---|
+| `forged`, `gear_id`, `slot`, `class_key`, `tier`, `rarity` | the piece |
+| `stats` | `{atk, def, spd}` — the rolled bonuses |
+| `max_durability`, `family`, `armor_weight` | the rest of the piece's shape |
+| `affixes` | the rolled affixes (`AD-1`) |
+| `catalyzed`, `forging_level` | whether a trophy was quenched in, and the smith's level |
+| `spent` | `{materials: [{item_kind, quantity}], chits}` — itemised cost |
 
 **Errors** — 400 `validation_error` (unknown slot/class, `material` not refined stock,
 `catalyst` not a trophy); 409 `conflict` (materials or chits short — the message

@@ -525,9 +525,19 @@ async fn craft(
             StatusCode::OK,
             Json(serde_json::json!({
                 "crafted": r.output,
+                "name": r.name,
                 "quantity": r.output_qty,
                 "skill": r.skill,
                 "skill_level": level,
+                // Itemised inputs, so a caller can say "2 dune iron became 1 ingot"
+                // without holding the recipe table itself.
+                "spent": inputs
+                    .iter()
+                    .map(|(kind, qty)| serde_json::json!({
+                        "item_kind": kind,
+                        "quantity": qty,
+                    }))
+                    .collect::<Vec<_>>(),
             })),
         )
             .into_response()),
@@ -629,11 +639,38 @@ async fn forge(
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "forged": piece.name,
+                    "gear_id": piece.gear_id,
                     "slot": piece.slot,
+                    "class_key": piece.class_key,
                     "tier": piece.tier,
                     "rarity": drop.rarity,
                     "catalyzed": catalyzed,
                     "forging_level": level,
+                    // What you actually MADE. Without these the caller is told a name
+                    // and a tier and has to go re-read the Vault to learn whether the
+                    // roll was any good — and a player is owed the numbers they just
+                    // paid for.
+                    "stats": {
+                        "atk": piece.atk_bonus,
+                        "def": piece.def_bonus,
+                        "spd": piece.spd_bonus,
+                    },
+                    "max_durability": piece.max_durability,
+                    "family": piece.family,
+                    "armor_weight": piece.armor_weight,
+                    "affixes": drop.affixes,
+                    // …and what it cost, itemised, so "how much of what" never needs
+                    // a second request.
+                    "spent": {
+                        "materials": materials
+                            .iter()
+                            .map(|(kind, qty)| serde_json::json!({
+                                "item_kind": kind,
+                                "quantity": qty,
+                            }))
+                            .collect::<Vec<_>>(),
+                        "chits": st.balance.forge.gear_chit_cost,
+                    },
                 })),
             )
                 .into_response())

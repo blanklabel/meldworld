@@ -126,6 +126,88 @@ async fn the_forge_makes_gear_rerolls_affixes_and_charges_for_it() {
         );
     }
 
+    // ---- The happy path, which nothing covered before: seed the Vault directly (the
+    // only way to hold stock without a dive), then forge for real and check the
+    // response describes what was made and what it cost.
+    let db_url = std::env::var("MELD_DATABASE_URL").unwrap();
+    let balance = meld_balance::Balance::load_default().unwrap();
+    let db = meld_db::Db::connect(&db_url, balance.auth.bcrypt_cost).await.unwrap();
+    let me: Value = http
+        .get(format!("{base}/v1/players/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pid = uuid::Uuid::parse_str(me["player_id"].as_str().unwrap()).unwrap();
+    db.bank_extraction(
+        pid,
+        &[("dune_ingot".into(), 20), ("bog_ichor".into(), 20)],
+        10_000,
+    )
+    .await
+    .unwrap();
+
+    let res = http
+        .post(format!("{base}/v1/crafting/forge"))
+        .bearer_auth(&token)
+        .json(&json!({ "slot": "main_hand", "material": "dune_ingot" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "a paid-up smith should get a blade");
+    let made: Value = res.json().await.unwrap();
+    assert!(!made["forged"].as_str().unwrap_or_default().is_empty(), "{made}");
+    assert_eq!(made["slot"], json!("main_hand"));
+    assert_eq!(made["catalyzed"], json!(false));
+    // The numbers you just paid for, in the answer.
+    assert!(made["stats"]["atk"].as_i64().unwrap_or(0) > 0, "a weapon should have atk: {made}");
+    assert!(made["max_durability"].as_i64().unwrap_or(0) > 0, "{made}");
+    assert!(!made["family"].as_str().unwrap_or_default().is_empty(), "{made}");
+    assert!(made["gear_id"].as_str().is_some(), "{made}");
+    // …and what it cost, itemised.
+    let spent = made["spent"]["materials"].as_array().expect("itemised cost");
+    assert!(
+        spent.iter().any(|m| m["item_kind"] == json!("dune_ingot")
+            && m["quantity"].as_i64().unwrap_or(0) > 0),
+        "the ore spent should be named: {made}"
+    );
+    assert!(made["spent"]["chits"].as_i64().unwrap_or(0) > 0, "{made}");
+
+    // A catalyst reaches PAST the smith's own level and rolls the better pool — the
+    // sentence the whole design turns on, now checked over the wire.
+    let plain_tier = made["tier"].as_i64().unwrap_or(0);
+    let res = http
+        .post(format!("{base}/v1/crafting/forge"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "slot": "main_hand",
+            "material": "dune_ingot",
+            "catalyst": "bog_ichor",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let quenched: Value = res.json().await.unwrap();
+    assert_eq!(quenched["catalyzed"], json!(true));
+    assert!(
+        quenched["tier"].as_i64().unwrap_or(0) > plain_tier,
+        "a trophy should buy reach: {} vs {plain_tier}",
+        quenched["tier"]
+    );
+    assert_eq!(quenched["rarity"], json!("epic"), "catalyzed rolls the better pool");
+    assert!(
+        quenched["spent"]["materials"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|m| m["item_kind"] == json!("bog_ichor")),
+        "the catalyst should be itemised too: {quenched}"
+    );
+
     // And the whole Forge surface is authenticated.
     let res = http
         .post(format!("{base}/v1/crafting/forge"))

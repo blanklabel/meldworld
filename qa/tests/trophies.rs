@@ -250,6 +250,16 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     assert_eq!(craft("heartoak_stave").await.status(), 409, "the first smelt should be open");
     assert_eq!(craft("peat_ingot").await.status(), 403, "deep ore needs a better smith");
 
+    // A craft says what it MADE and what it COST, so a caller never has to hold the
+    // recipe table or re-read the Vault to report a result.
+    let smelt_refusal = craft("heartoak_stave").await;
+    assert_eq!(smelt_refusal.status(), 409);
+    let err: Value = smelt_refusal.json().await.unwrap();
+    assert!(
+        err["error"]["message"].as_str().unwrap_or_default().contains("heartoak_bark"),
+        "a refusal should name what is missing: {err}"
+    );
+
     // The Broker refuses what it does not deal in, refuses a sale the Vault cannot
     // cover, and never gifts chits for either.
     let sell = |body: Value| {
