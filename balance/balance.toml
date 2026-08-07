@@ -325,6 +325,13 @@ steal_chits_fraction = 0.10          # chit-steal: fraction of carried chits tak
 chits_per_mlevel = 5.0
 chits_jitter = 0.35
 gear_drop_chance = 0.35
+# Of the gear a REWARD-SPIKE encounter drops (elite / gatekeeper / undead rite /
+# chest — anything carrying a `loot_mult`), the fraction that is PERMANENT (blue):
+# it survives death and wears down instead of burning. Ordinary creatures never drop
+# it at any depth, so a permanent piece is something you fought something real for.
+# Deliberately low — permanence is the reward that makes a loadout worth saving.
+# [TUNABLE]
+permanent_gear_chance = 0.15
 gear_atk_per_tier = 3.0
 gear_atk_jitter = 0.4
 gear_base_durability = 80

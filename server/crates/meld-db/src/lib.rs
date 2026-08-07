@@ -21,6 +21,36 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+/// One saved party composition (PT-2): classes by slot, plus the gear that was worn.
+#[derive(Debug, Clone, Default)]
+pub struct Loadout {
+    pub name: String,
+    pub classes: Vec<String>,
+    /// `(hero_slot, gear_id)` pairs. Ids only — the item's stats are read live from
+    /// `gear` at load time, so a loadout can never restore an item's old numbers.
+    pub gear: Vec<(i32, Uuid)>,
+}
+
+/// Split a stored `classes` column back into slot order, dropping empties so a
+/// trailing comma cannot conjure a phantom slot.
+fn split_classes(joined: &str) -> Vec<String> {
+    joined.split(',').filter(|c| !c.is_empty()).map(str::to_string).collect()
+}
+
+/// Parse the stored `gear` column back into `(hero_slot, gear_id)` pairs, dropping
+/// anything unparseable rather than failing the read — a malformed pair costs one
+/// item at load time, not the whole loadout.
+fn split_gear(joined: &str) -> Vec<(i32, Uuid)> {
+    joined
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            let (slot, id) = p.split_once(':')?;
+            Some((slot.parse().ok()?, Uuid::parse_str(id).ok()?))
+        })
+        .collect()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
     #[error("database error: {0}")]
@@ -304,6 +334,31 @@ impl Db {
         // promise, so there is deliberately no revoke path.
         sqlx::query(
             r#"
+            CREATE TABLE IF NOT EXISTS party_loadouts (
+                player_id  UUID NOT NULL REFERENCES players(player_id),
+                name       TEXT NOT NULL,
+                -- One class key per slot, in slot order, comma-joined. A loadout is a
+                -- COMPOSITION, not a set of hero ids: hero slots are positional, so
+                -- "slot 2 is a Resonant" is the whole content and a join table would
+                -- carry nothing else.
+                classes    TEXT NOT NULL,
+                -- The gear that was equipped when this was saved, as
+                -- `hero_slot:gear_id` pairs, comma-joined. Gear ids only: what an item
+                -- IS lives in `gear`, and duplicating its stats here would let a stale
+                -- loadout resurrect an item's old numbers.
+                gear       TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (player_id, name)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("ALTER TABLE party_loadouts ADD COLUMN IF NOT EXISTS gear TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS unlocks (
                 player_id UUID NOT NULL REFERENCES players(player_id),
                 unlock_key TEXT NOT NULL,
@@ -441,6 +496,105 @@ impl Db {
                 Ok(rows)
             }
         }
+    }
+
+    /// The account's saved party loadouts, newest-touched first, as
+    /// `(name, class keys in slot order)`.
+    pub async fn list_loadouts(&self, player_id: Uuid) -> Result<Vec<Loadout>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT name, classes, gear FROM party_loadouts
+                      WHERE player_id = $1 ORDER BY updated_at DESC, name ASC",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| Loadout {
+                        name: r.get("name"),
+                        classes: split_classes(&r.get::<String, _>("classes")),
+                        gear: split_gear(&r.get::<String, _>("gear")),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut out: Vec<Loadout> = m
+                    .loadouts
+                    .iter()
+                    .filter(|((p, _), _)| *p == player_id)
+                    .map(|((_, n), l)| Loadout { name: n.clone(), ..l.clone() })
+                    .collect();
+                // No timestamps in the mem store, so name order — deterministic, which
+                // is what its callers (tests, the demo binary) actually need.
+                out.sort_by(|a, b| a.name.cmp(&b.name));
+                Ok(out)
+            }
+        }
+    }
+
+    /// Save (or overwrite) a named loadout. Upsert on `(player_id, name)` so saving
+    /// over a name is how you update one — there is no separate rename.
+    pub async fn save_loadout(
+        &self,
+        player_id: Uuid,
+        name: &str,
+        classes: &[String],
+        gear: &[(i32, Uuid)],
+    ) -> Result<(), DbError> {
+        let joined = classes.join(",");
+        let gear_s = gear
+            .iter()
+            .map(|(slot, id)| format!("{slot}:{id}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "INSERT INTO party_loadouts (player_id, name, classes, gear)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (player_id, name)
+                       DO UPDATE SET classes = $3, gear = $4, updated_at = now()",
+                )
+                .bind(player_id)
+                .bind(name)
+                .bind(&joined)
+                .bind(&gear_s)
+                .execute(pool)
+                .await?;
+            }
+            Backend::Mem(m) => {
+                m.lock().unwrap().loadouts.insert(
+                    (player_id, name.to_string()),
+                    Loadout {
+                        name: name.to_string(),
+                        classes: classes.to_vec(),
+                        gear: gear.to_vec(),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget a named loadout. Deleting one that is not there is not an error — the
+    /// caller wanted it gone and it is gone.
+    pub async fn delete_loadout(&self, player_id: Uuid, name: &str) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("DELETE FROM party_loadouts WHERE player_id = $1 AND name = $2")
+                    .bind(player_id)
+                    .bind(name)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                m.lock().unwrap().loadouts.remove(&(player_id, name.to_string()));
+            }
+        }
+        Ok(())
     }
 
     /// One player's placement for a season: their row and their rank across the WHOLE
@@ -1912,7 +2066,7 @@ impl Db {
                 for g in gear {
                     sqlx::query(
                         "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key)
-                         VALUES ($1, $2, $3, $4, $5, 'red', $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, $16, $17)
+                         VALUES ($1, $2, $3, $4, $5, $18, $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, $16, $17)
                          ON CONFLICT (gear_id) DO NOTHING",
                     )
                     .bind(g.gear_id)
@@ -1932,6 +2086,9 @@ impl Db {
                     .bind(&g.affixes)
                     .bind(&g.unique_key)
                     .bind(&g.set_key)
+                    // Permanent (blue) survives death and wears down; looted (red)
+                    // burns. Only a reward-spike encounter rolls permanence.
+                    .bind(if g.permanent { "blue" } else { "red" })
                     .execute(&mut *tx)
                     .await?;
                 }
@@ -1947,7 +2104,7 @@ impl Db {
                         name: g.name.clone(),
                         slot: g.slot.clone(),
                         class_key: g.class_key.clone(),
-                        insurance: "red".into(),
+                        insurance: if g.permanent { "blue".into() } else { "red".into() },
                         family: g.family.clone(),
                         armor_weight: g.armor_weight.clone(),
                         affixes: g.affixes.clone(),
@@ -2551,6 +2708,8 @@ pub struct LootedGear {
     /// AD-1 affixes as JSON (`[]` for none).
     pub affixes: String,
     /// AD-1 unique key; empty for ordinary loot.
+    /// PERMANENT (blue) rather than looted (red): survives death and degrades instead.
+    pub permanent: bool,
     pub unique_key: String,
     /// AD-1 set key; empty when not part of a set.
     pub set_key: String,
@@ -2677,6 +2836,8 @@ struct Mem {
     unlocks: HashSet<(Uuid, String)>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
+    /// party_loadouts.classes, keyed by (player_id, name).
+    loadouts: HashMap<(Uuid, String), Loadout>,
 }
 
 struct MemPlayer {
@@ -2879,6 +3040,7 @@ mod tests {
         db.insert_looted_gear(
             p,
             &[LootedGear {
+            permanent: false,
                 gear_id: Uuid::now_v7(),
                 name: "Looted Sword".into(),
                 slot: "main_hand".into(),
@@ -2949,6 +3111,7 @@ mod tests {
         let db = mem().await;
         let p = db.register("erin", "pw").await.unwrap().player_id;
         let ring = |name: &str| LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: name.into(),
             slot: "accessory".into(),
@@ -3121,6 +3284,7 @@ mod tests {
         let base = db.equipped_gear_bonuses(p, 4, &classes).await.unwrap();
 
         let spear = LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: "Warpike".into(),
             slot: "main_hand".into(),
@@ -3175,6 +3339,7 @@ mod tests {
         );
 
         let piece = |name: &str, slot: &str, family: &str, weight: &str| LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: name.into(),
             slot: slot.into(),
@@ -3238,6 +3403,7 @@ mod tests {
         let db = mem().await;
         let p = db.register("gr7b", "pw").await.unwrap().player_id;
         let staff = LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: "Ward Stave".into(),
             slot: "main_hand".into(),
@@ -3292,6 +3458,7 @@ mod tests {
             Affix { key: "ally_atk".into(), magnitude: 6, element: None, ally_class: Some("resonant".into()) },
         ];
         let piece = LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: "Warblade of the Bulwark".into(),
             slot: "main_hand".into(),
@@ -3371,6 +3538,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_loadout_can_never_equip_gear_the_account_does_not_own() {
+        // The anti-cheat property PT-2 rests on. A loadout is applied by NAME and the
+        // server replays the gear ids IT captured — but those ids are replayed through
+        // `set_equipped`, which scopes every lookup to the owner. So even a loadout
+        // holding a stranger's id (a hand-edited row, a copied database) equips
+        // nothing: the item is simply not found for this player.
+        let db = mem().await;
+        let mine = db.register("lo_mine", "correct-horse-battery").await.unwrap().player_id;
+        let theirs = db.register("lo_theirs", "correct-horse-battery").await.unwrap().player_id;
+
+        let blade = LootedGear {
+            permanent: false,
+            gear_id: Uuid::new_v4(),
+            name: "Their Blade".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            tier: 1,
+            atk_bonus: 5,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 80,
+            max_durability: 80,
+            damage_modifiers: "{}".into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        let stolen_id = blade.gear_id;
+        db.insert_looted_gear(theirs, &[blade]).await.unwrap();
+
+        // Forge a loadout naming somebody else's item.
+        db.save_loadout(mine, "Cheat", &["explorer".to_string()], &[(0, stolen_id)])
+            .await
+            .unwrap();
+        let saved = db.list_loadouts(mine).await.unwrap();
+        assert_eq!(saved[0].gear, vec![(0, stolen_id)], "the row stores what it was given");
+
+        // Replaying it equips nothing: the owner scope refuses.
+        assert_eq!(
+            db.set_equipped(mine, stolen_id, Some(0)).await.unwrap(),
+            EquipResult::NotFound,
+            "another account's gear must not be equippable"
+        );
+        // And it is still on its real owner, untouched (alongside their starter kit).
+        assert!(
+            db.get_gear(theirs).await.unwrap().iter().any(|g| g.gear_id == stolen_id),
+            "the item should still belong to the account that looted it"
+        );
+        assert!(
+            db.get_gear(mine).await.unwrap().iter().all(|g| g.gear_id != stolen_id),
+            "it must not have crossed accounts"
+        );
+
+        // A gear id that has ceased to exist is skipped the same way, which is the
+        // "it got wrecked or sold since you saved" case.
+        assert_eq!(
+            db.set_equipped(mine, Uuid::new_v4(), Some(0)).await.unwrap(),
+            EquipResult::NotFound
+        );
+    }
+
+    #[tokio::test]
     async fn a_potion_craft_credits_alchemy_and_a_forge_craft_credits_forging() {
         let db = mem().await;
         let p = db.register("brewer", "pw").await.unwrap().player_id;
@@ -3420,6 +3651,7 @@ mod tests {
         let p = db.register("smith", "pw").await.unwrap().player_id;
         db.bank_extraction(p, &[("dune_iron".into(), 10)], 500).await.unwrap();
         let piece = LootedGear {
+            permanent: false,
             gear_id: Uuid::now_v7(),
             name: "Forged Warblade".into(),
             slot: "main_hand".into(),

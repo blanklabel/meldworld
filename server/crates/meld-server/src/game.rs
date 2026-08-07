@@ -4327,7 +4327,9 @@ impl WorldActor {
                 rarity: g.rarity.clone(),
                 slot: g.slot.clone(),
                 class_key: g.class_key.clone(),
-                insurance: Insurance::Ephemeral,
+                // Permanence is decided by the ROLL, not the drop site: a reward-spike
+                // encounter can yield blue, and everything else stays red and burns.
+                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
                 tier: g.tier,
                 atk_bonus: g.atk_bonus,
                 def_bonus: g.def_bonus,
@@ -4435,7 +4437,9 @@ impl WorldActor {
                     rarity: g.rarity.clone(),
                     slot: g.slot.clone(),
                     class_key: g.class_key.clone(),
-                    insurance: Insurance::Ephemeral,
+                    // Permanence is decided by the ROLL, not the drop site: a reward-spike
+                // encounter can yield blue, and everything else stays red and burns.
+                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
                     tier: g.tier,
                     atk_bonus: g.atk_bonus,
                     def_bonus: g.def_bonus,
@@ -4568,12 +4572,14 @@ impl GameState {
                 if let Err(e) = db.bank_extraction(uid, &items_kv, b.chits).await {
                     tracing::error!("bank_extraction failed for {}: {e}", b.player_id);
                 }
-                // Convert red-chest loot to owned Vault gear (stays `red`).
+                // Convert looted gear to owned Vault gear, keeping whichever
+                // insurance it was rolled with.
                 let looted: Vec<meld_db::LootedGear> = b
                     .gear
                     .iter()
                     .filter_map(|g| {
                         Some(meld_db::LootedGear {
+                            permanent: g.insurance == Insurance::Insured,
                             gear_id: Uuid::parse_str(&g.gear_id).ok()?,
                             name: g.name.clone(),
                             slot: g.slot.clone(),
@@ -5378,7 +5384,9 @@ impl WorldActor {
                             rarity: g.rarity.clone(),
                             slot: g.slot.clone(),
                             class_key: g.class_key.clone(),
-                            insurance: Insurance::Ephemeral,
+                            // Permanence is decided by the ROLL, not the drop site: a reward-spike
+                // encounter can yield blue, and everything else stays red and burns.
+                insurance: if g.permanent { Insurance::Insured } else { Insurance::Ephemeral },
                             tier: g.tier,
                             atk_bonus: g.atk_bonus,
                             def_bonus: g.def_bonus,

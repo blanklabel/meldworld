@@ -322,6 +322,11 @@ pub struct GearDrop {
     /// GR-5 armor weight wire word for head/chest/legs (`heavy`, `robe`, …);
     /// empty for weapons and accessories.
     pub armor_weight: String,
+    /// PERMANENT (blue) rather than looted (red): it survives death and wears down
+    /// instead, and it is the only gear worth saving into a loadout. Rolled only on a
+    /// reward-spike encounter — a champion, a gatekeeper, a rite, a chest — so
+    /// permanence is something you fight for rather than something trash hands out.
+    pub permanent: bool,
     /// AD-1 rolled affixes — the qualities that make this drop a build rather
     /// than a bigger number.
     pub affixes: Vec<meld_proto::affixes::Affix>,
@@ -727,6 +732,10 @@ pub fn roll_creature_loot(
             affixes,
             unique_key: unique_def.map(|u| u.key.to_string()).unwrap_or_default(),
             set_key,
+            // `loot_mult > 1` IS the "this was a champion, gatekeeper, rite or chest"
+            // signal — it is the reward spike those encounters carry and nothing else
+            // does. Trash never yields permanence at any depth.
+            permanent: loot_mult > 1.0 && rng.unit() < l.permanent_gear_chance,
         })
     } else {
         None
@@ -906,6 +915,8 @@ pub fn forge_gear(
         affixes,
         unique_key: String::new(),
         set_key: String::new(),
+        // You made it at a forge in town; it does not evaporate the first time you die.
+        permanent: true,
     }
 }
 
@@ -4698,6 +4709,44 @@ mod tests {
     }
 
     // ---- FS-4: Elite champions + Gatekeeper bosses ----
+
+    #[test]
+    fn only_a_reward_spike_encounter_drops_permanent_gear() {
+        let b = Balance::load_default().unwrap();
+        let d = b.world_scaling.red_chest_floor_distance + 500;
+
+        // Ordinary creatures NEVER yield permanence, however many you kill and however
+        // deep you go. Permanent gear survives death, so trash handing it out would
+        // make the extract-or-die stake evaporate.
+        let trash: usize = (0..400)
+            .filter_map(|s| roll_creature_loot(&b, d, 1, 1.0, s).gear)
+            .filter(|g| g.permanent)
+            .count();
+        assert_eq!(trash, 0, "a standard creature must never drop permanent gear");
+
+        // A gatekeeper's reward spike does — but only sometimes.
+        let mult = b.encounters.gatekeeper_loot_mult;
+        let drops: Vec<_> = (0..400)
+            .filter_map(|s| roll_creature_loot(&b, d, 1, mult, s).gear)
+            .collect();
+        assert!(!drops.is_empty(), "a gatekeeper should drop gear at all");
+        let perm = drops.iter().filter(|g| g.permanent).count();
+        assert!(perm > 0, "a champion should sometimes drop permanent gear");
+        assert!(
+            perm < drops.len(),
+            "permanence should be RARE, not the default for a champion ({perm}/{})",
+            drops.len()
+        );
+    }
+
+    #[test]
+    fn forged_gear_is_permanent() {
+        // You made it at a forge in town, out of materials you carried home. It must
+        // not evaporate the first time you die.
+        let b = Balance::load_default().unwrap();
+        let g = forge_gear(&b, 5, "main_hand", "explorer", "forest", 7);
+        assert!(g.permanent, "a forged piece is yours to keep");
+    }
 
     #[test]
     fn promote_scales_stats_and_tags_the_encounter_class() {

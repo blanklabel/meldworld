@@ -174,6 +174,7 @@ fn main() {
         .init_resource::<PerksRes>()
         .init_resource::<LevelUpQueue>()
         .init_resource::<UnlocksRes>()
+        .init_resource::<LoadoutData>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
         .init_resource::<Steer>()
@@ -259,6 +260,8 @@ fn main() {
                 city::prompt_party_if_unset,
                 city::party_panel,
                 city::party_panel_buttons,
+                city::loadout_buttons,
+                city::loadout_name_input,
                 city::party_panel_refresh,
                 city_input,
                 city_action_buttons,
@@ -1517,6 +1520,9 @@ struct CityUi {
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
+    /// The name being typed for the next loadout save. On `CityUi` rather than the
+    /// panel so it survives the panel being rebuilt when the saved list changes.
+    loadout_name: String,
     /// True while the Drill Yard's party picker is open (PT: choose the team you
     /// take down). Opens by itself the first time an account reaches town without a
     /// party of its own, so nobody dives with the newcomer default by accident.
@@ -1533,6 +1539,13 @@ pub(crate) struct ShopData {
 
 /// The live Vanguard Board as last read from `GET /v1/leaderboards/vanguard`
 /// (P1-1) — what the Vanguard Wall in Last City displays.
+/// PT-2: the account's saved party loadouts, as last read from the server.
+#[derive(Resource, Default)]
+pub(crate) struct LoadoutData {
+    pub list: Vec<meld_client::net::LoadoutLine>,
+    pub loaded: bool,
+}
+
 #[derive(Resource, Default)]
 pub(crate) struct VanguardBoardData {
     pub season: i32,

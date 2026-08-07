@@ -56,6 +56,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/meld-skills", get(meld_skills))
         .route("/v1/heroes", get(heroes))
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
+        .route("/v1/party/loadouts", get(list_loadouts).post(save_loadout))
+        .route("/v1/party/loadouts/:name", axum::routing::delete(delete_loadout))
+        .route("/v1/party/loadouts/:name/apply", post(apply_loadout))
         .route("/v1/crafting/craft", post(craft))
         .route("/v1/crafting/recipes", get(recipes))
         .route("/v1/crafting/forge", post(forge))
@@ -287,6 +290,177 @@ async fn rename_hero(
         Ok(()) => Ok((StatusCode::OK, Json(serde_json::json!({ "slot": slot, "name": name }))).into_response()),
         Err(e) => Err(ApiReject::internal(e)),
     }
+}
+
+/// The most loadouts one account may keep. A cap so a client cannot turn the table
+/// into unbounded per-account storage; well past what anyone builds by hand.
+const MAX_LOADOUTS: usize = 12;
+
+/// `GET /v1/party/loadouts` — the caller's saved party compositions (PT-2).
+async fn list_loadouts(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let rows = st.db.list_loadouts(player_id).await.map_err(ApiReject::internal)?;
+    let data: Vec<_> = rows
+        .into_iter()
+        .map(|l| {
+            serde_json::json!({
+                "name": l.name,
+                "classes": l.classes,
+                "gear_count": l.gear.len(),
+            })
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct SaveLoadout {
+    name: String,
+    classes: Vec<String>,
+}
+
+/// `POST /v1/party/loadouts` — save (or overwrite) a named composition.
+///
+/// Validated against the account's OWN unlocks, not just the class registry: saving a
+/// party you cannot field would store a loadout that silently changes the moment you
+/// load it, since `clamp_party_to_unlocks` rewrites it at dive time. Better to refuse
+/// than to keep a lie on disk.
+async fn save_loadout(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<SaveLoadout>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let name: String = req.name.trim().chars().take(24).collect();
+    if name.is_empty() {
+        return Err(ApiReject::validation("A loadout needs a name."));
+    }
+    if req.classes.is_empty() {
+        return Err(ApiReject::validation("A loadout needs at least one hero."));
+    }
+    let owned = st.db.get_unlocks(player_id).await.map_err(ApiReject::internal)?;
+    let slots = meld_proto::unlocks::party_slots(&owned) as usize;
+    if req.classes.len() > slots {
+        return Err(ApiReject::validation(format!(
+            "That is {} heroes; this account has earned {slots} party slot(s).",
+            req.classes.len()
+        )));
+    }
+    let fieldable = meld_proto::unlocks::owned_classes(&owned);
+    for c in &req.classes {
+        let Some(class) = meld_proto::equipment::class_from_key(c) else {
+            return Err(ApiReject::validation(format!("No such class: {c}.")));
+        };
+        if !fieldable.contains(&class) {
+            return Err(ApiReject::validation(format!("This account has not earned the {c}.")));
+        }
+    }
+    let existing = st.db.list_loadouts(player_id).await.map_err(ApiReject::internal)?;
+    // Overwriting an existing name is always allowed; only a NEW name can hit the cap.
+    if existing.len() >= MAX_LOADOUTS && !existing.iter().any(|l| l.name == name) {
+        return Err(ApiReject::validation(format!(
+            "That is {MAX_LOADOUTS} loadouts already — delete one first."
+        )));
+    }
+    // The gear snapshot is taken from the DB, NOT from the request. A client that
+    // could name the gear in a loadout could name gear it does not own, or gear it
+    // owns but cannot legally wear, and get it equipped on the next load. What is
+    // currently equipped is a fact the server already holds.
+    let gear: Vec<(i32, uuid::Uuid)> = st
+        .db
+        .get_gear(player_id)
+        .await
+        .map_err(ApiReject::internal)?
+        .into_iter()
+        .filter_map(|g| g.equipped_hero_slot.map(|slot| (slot, g.gear_id)))
+        .filter(|(slot, _)| (*slot as usize) < req.classes.len())
+        .collect();
+    st.db
+        .save_loadout(player_id, &name, &req.classes, &gear)
+        .await
+        .map_err(ApiReject::internal)?;
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "name": name, "classes": req.classes, "gear_count": gear.len() })),
+    )
+        .into_response())
+}
+
+/// `POST /v1/party/loadouts/:name/apply` — set the party to a saved composition and
+/// re-equip what it wore, as far as that is still possible.
+///
+/// The client sends a NAME and nothing else. Everything applied is read from the
+/// server's own tables and re-validated here, because a loadout is a promise made in
+/// the past: gear gets broken, sold, lost on death, and classes get re-clamped. Each
+/// piece is checked again at load time and skipped if it no longer qualifies, so the
+/// worst case is an unequipped slot rather than a wrong one.
+async fn apply_loadout(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let all = st.db.list_loadouts(player_id).await.map_err(ApiReject::internal)?;
+    let Some(l) = all.into_iter().find(|l| l.name == name) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such loadout."));
+    };
+    let owned = st.db.get_unlocks(player_id).await.map_err(ApiReject::internal)?;
+    let slots = meld_proto::unlocks::party_slots(&owned) as usize;
+    let fieldable = meld_proto::unlocks::owned_classes(&owned);
+
+    // Re-clamp the composition: it was legal when saved, and the account may have
+    // changed since.
+    let classes: Vec<String> = l
+        .classes
+        .iter()
+        .take(slots)
+        .map(|c| match meld_proto::equipment::class_from_key(c) {
+            Some(k) if fieldable.contains(&k) => c.clone(),
+            _ => "explorer".to_string(),
+        })
+        .collect();
+    for (slot, key) in classes.iter().enumerate() {
+        st.db
+            .set_hero_class(player_id, slot as i16, key)
+            .await
+            .map_err(ApiReject::internal)?;
+    }
+
+    // Re-equip. `set_equipped` re-checks ownership, brokenness and class legality in
+    // one place, so anything that no longer qualifies simply does not go on.
+    let (mut restored, mut skipped) = (0, 0);
+    for (slot, gear_id) in l.gear {
+        if (slot as usize) >= classes.len() {
+            skipped += 1;
+            continue;
+        }
+        match st.db.set_equipped(player_id, gear_id, Some(slot)).await {
+            Ok(meld_db::EquipResult::Ok) => restored += 1,
+            Ok(_) => skipped += 1,
+            Err(e) => return Err(ApiReject::internal(e)),
+        }
+    }
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "name": name,
+            "classes": classes,
+            "gear_restored": restored,
+            "gear_missing": skipped,
+        })),
+    )
+        .into_response())
+}
+
+/// `DELETE /v1/party/loadouts/:name` — forget one.
+async fn delete_loadout(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    st.db.delete_loadout(player_id, &name).await.map_err(ApiReject::internal)?;
+    Ok((StatusCode::OK, Json(serde_json::json!({ "deleted": name }))).into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -559,6 +733,7 @@ async fn repair(
 /// A forged drop as the gear table wants it.
 fn crafted_row(d: &meld_world::GearDrop) -> meld_db::LootedGear {
     meld_db::LootedGear {
+        permanent: d.permanent,
         gear_id: Uuid::now_v7(),
         name: d.name.clone(),
         slot: d.slot.clone(),
