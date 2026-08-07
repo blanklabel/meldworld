@@ -34,6 +34,12 @@ is the human table of contents.
 - [`lore/shifting-lands.md`](lore/shifting-lands.md) — the world fiction + biome
   bestiary. The **world model** it drives — persistent player-seeded worlds, the
   **Shift**, and Structures/anchors — is authoritative in **[CANON §W](CANON.md)**.
+- [`lore/factions.md`](lore/factions.md) — the **orders** a hero belongs to: source of
+  truth for faction names and the six-rank ladders the ability registry is generated
+  against.
+- [`lore/city-institutions.md`](lore/city-institutions.md) — the Last City's *non-class*
+  organisations: government, Sentinels, Archivists, Artificing, Messengers, Wall Defense
+  Force, infrastructure, and the criminal syndicates.
 - [`design-notes/`](design-notes/worldgen-research.md) — non-normative design
   rationale (e.g. the worldgen research survey).
 
@@ -41,6 +47,14 @@ is the human table of contents.
 
 - [`proposals/last-city.md`](proposals/last-city.md) — **Last City**, the persistent
   social/economic hub (M0 shipped; M1–M3 = roadmap epic **LC**).
+- [`proposals/crafting-and-professions.md`](proposals/crafting-and-professions.md) —
+  **Crafting depth & the non-combat class question** (the rest of epic **MS**): the
+  material registry (`reagent`/`ore`/`trophy`), the trophy potion line, trophies as the
+  Forge's catalyst, permanent recipe level gates, and the Broker — plus the answer of
+  record on non-combat classes (**no** — professions belong on the Meld ladder; build
+  rank titles and gathering yield-lenses on the existing `[perks]` system instead),
+  the soft-gate/hard-byproduct model for who gathers what, the open "nobody mines"
+  gap, and a survey of the prior art (SWG, FFXIV, EVE, BDO, UO, Mabinogi, PoE).
 - [`proposals/server-scaling.md`](proposals/server-scaling.md) — lifting the
   authoritative server's concurrency ceiling (interest indexing → sim/IO split →
   world sharding) without breaking the single-owner/no-locks loop; includes a

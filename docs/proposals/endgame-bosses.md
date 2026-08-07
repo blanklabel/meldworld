@@ -123,6 +123,12 @@ Not required to reach Ometus (or, optionally, each grants an *edge* — §Open).
 
 ### Terim — the God of Crafting & Building
 - **Fiction:** the god who makes things; patron of every hand that shapes the world.
+  Terim keeps the craft/build domain: the Foundry's state cult of **"One", the Forge
+  God** is a **heresy of Terim** — a god of *making* industrialised into a god of
+  *throughput* — not a rival deity, so this boss is unaffected. Terim's own followers
+  hold the stabilisers and the Healery
+  ([`lore/city-institutions.md`](../lore/city-institutions.md),
+  [`lore/factions.md`](../lore/factions.md) → The Foundry).
 - **Persona:** the **Builder / Crafter** apex — reached through **mastery of the craft,
   not combat depth**: a threshold of Forging/Alchemy/Mercantile level and/or structures
   built/anchors held (BD). You *earn the audience* by being a great maker.
