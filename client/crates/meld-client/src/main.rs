@@ -166,6 +166,7 @@ fn main() {
         .init_resource::<VanguardBoardData>()
         .init_resource::<ShopData>()
         .init_resource::<Notice>()
+        .init_resource::<CraftData>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -1530,6 +1531,8 @@ struct CityUi {
     near: Option<usize>,
     /// True while the Apothecary's shelf is open (EC-2).
     shop_open: bool,
+    /// True while the Forge & Alembic's recipe book is open (MS-1).
+    craft_open: bool,
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
@@ -1541,6 +1544,25 @@ struct CityUi {
     /// party of its own, so nobody dives with the newcomer default by accident.
     party_open: bool,
 }
+
+/// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).
+#[derive(Resource, Default)]
+pub(crate) struct CraftData {
+    pub recipes: Vec<meld_client::net::RecipeLine>,
+    pub loaded: bool,
+    /// Which recipe row the cursor sits on.
+    pub cursor: usize,
+    /// Which equipment slot the Forge half would make.
+    pub slot: usize,
+    /// Whether the next forge quenches the piece in a trophy.
+    pub catalyze: bool,
+    /// The last thing the workshop said — a made item, or why it refused.
+    pub last: String,
+}
+
+/// The slots the Forge half cycles through, in loadout order.
+pub(crate) const FORGE_SLOTS: [&str; 6] =
+    ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
 
 /// A short-lived line of feedback for something the player just tried and the server
 /// refused. With walk-into interactions a refusal could be silent — you simply kept

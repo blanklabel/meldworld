@@ -31,6 +31,8 @@ pub(crate) enum CityAction {
     Vanguard,
     /// The Apothecary: the one NPC who sells the lowest-tier basics for chits.
     Shop,
+    /// The Forge & Alembic: the recipe book, and the anvil (MS-1).
+    Craft,
     /// The Drill Yard: pick the party you take down.
     Party,
     /// A not-yet-raised district: post its milestone notice.
@@ -80,7 +82,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
         x: -10.0,
         z: 9.0,
         radius: 5.0,
-        action: CityAction::Notice("The Forge & Alembic are cold - crafting arrives in M2."),
+        action: CityAction::Craft,
     },
     District {
         label: "The Bounty Board",
@@ -169,6 +171,10 @@ pub(crate) fn city_hud(
     city.board_open = crate::flags::wall_preview_flag();
     if city.board_open {
         net.0.fetch_vanguard();
+    }
+    city.craft_open = crate::flags::forge_preview_flag();
+    if city.craft_open {
+        net.0.fetch_recipes();
     }
     city.shop_open = crate::flags::shop_preview_flag();
     if city.shop_open {
@@ -576,6 +582,7 @@ pub(crate) fn city_input(
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
+    mut craft: ResMut<CraftData>,
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -692,6 +699,59 @@ pub(crate) fn city_input(
             return;
         }
     }
+    // The Forge & Alembic: ↑/↓ walk the recipe book, ENTER runs the highlighted recipe,
+    // [S] cycles which slot the anvil would make, [C] arms a trophy quench, [F] forges.
+    // Every refusal comes back from the server in its own words.
+    if city.craft_open {
+        let n = craft.recipes.len();
+        if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
+            craft.cursor = (craft.cursor + 1) % n;
+            return;
+        }
+        if n > 0 && keys.just_pressed(KeyCode::ArrowUp) {
+            craft.cursor = (craft.cursor + n - 1) % n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            if let Some(r) = craft.recipes.get(craft.cursor) {
+                net.0.craft(r.recipe.clone());
+                craft.last = format!("working {}...", r.name);
+            }
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyS) {
+            craft.slot = (craft.slot + 1) % FORGE_SLOTS.len();
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyC) {
+            craft.catalyze = !craft.catalyze;
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyF) {
+            // The anvil takes REFINED stock, so pick the best the Vault holds rather
+            // than making the player name it; same for the trophy if a quench is armed.
+            match best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
+                Some(material) => {
+                    let catalyst = craft
+                        .catalyze
+                        .then(|| best_stock(&inv, meld_proto::materials::MaterialClass::Trophy))
+                        .flatten();
+                    if craft.catalyze && catalyst.is_none() {
+                        craft.last = "no trophy in the Vault to quench it in".to_string();
+                    } else {
+                        let slot = FORGE_SLOTS[craft.slot];
+                        craft.last = format!("forging a {slot}...");
+                        net.0.forge(slot.to_string(), material, catalyst);
+                    }
+                }
+                None => {
+                    craft.last =
+                        "the anvil needs refined stock - smelt an ore first".to_string();
+                }
+            }
+            return;
+        }
+    }
     // E interacts with whichever other district the avatar is standing in.
     if keys.just_pressed(KeyCode::KeyE) {
         if let Some(i) = city.near {
@@ -711,6 +771,14 @@ pub(crate) fn city_input(
                         // Both halves of the counter: the Apothecary's basics and the
                         // Requisition's plain gear, in one panel.
                         net.0.fetch_gear_shop();
+                    }
+                }
+                CityAction::Craft => {
+                    city.craft_open = !city.craft_open;
+                    if city.craft_open {
+                        city.notice.clear();
+                        craft.last.clear();
+                        net.0.fetch_recipes();
                     }
                 }
                 CityAction::Vanguard => {
@@ -852,6 +920,7 @@ pub(crate) fn render_city(
     session: Res<Session>,
     city: Res<CityUi>,
     board: Res<VanguardBoardData>,
+    craft: Res<CraftData>,
     shop: Res<ShopData>,
     unlocks: Res<UnlocksRes>,
     hero_names: Res<AccountHeroNames>,
@@ -870,6 +939,7 @@ pub(crate) fn render_city(
                 CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
                 CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
                 CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
+                CityAction::Craft => format!("{}    [E] work the recipes and the anvil", d.label),
                 CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
                 CityAction::Party => format!("{}    [E] muster your party", d.label),
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
@@ -878,7 +948,9 @@ pub(crate) fn render_city(
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
-        **t = if city.shop_open {
+        **t = if city.craft_open {
+            format!("{}\n{prompt}", craft_text(&craft, &inv))
+        } else if city.shop_open {
             format!("{}\n{prompt}", shop_text(&shop, &inv))
         } else if city.board_open {
             format!("{}\n{prompt}", vanguard_wall_text(&board))
@@ -1021,6 +1093,92 @@ pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData) -> String {
     line
 }
 
+/// The deepest-band material of `class` the Vault holds, or `None`.
+///
+/// The Forge asks for a material by name, and making the player type one would be
+/// absurd — so the panel spends the best thing available, which is also what a smith
+/// would reach for.
+pub(crate) fn best_stock(
+    inv: &InventoryData,
+    class: meld_proto::materials::MaterialClass,
+) -> Option<String> {
+    inv.materials
+        .iter()
+        .filter(|(kind, qty)| *qty > 0 && meld_proto::materials::is_class(kind, class))
+        .filter_map(|(kind, _)| {
+            meld_proto::materials::material(kind).map(|m| (m.tier, kind.clone()))
+        })
+        .max_by_key(|(tier, _)| *tier)
+        .map(|(_, kind)| kind)
+}
+
+/// The Forge & Alembic as the city's status block: the recipe book with the cursor on
+/// one row, then the anvil's own line. The server owns every gate, so a locked row says
+/// the level it wants and an unaffordable one says what it is missing — before a
+/// keypress is spent on it.
+pub(crate) fn craft_text(craft: &CraftData, inv: &InventoryData) -> String {
+    if !craft.loaded {
+        return "The Forge & Alembic are warming up...".to_string();
+    }
+    if craft.recipes.is_empty() {
+        return "No recipes known.".to_string();
+    }
+    let held = |kind: &str| -> i32 {
+        inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
+    };
+    let mut out = String::new();
+    // A window around the cursor, so a long book still fits the city's status block.
+    let n = craft.recipes.len();
+    let start = craft.cursor.saturating_sub(1).min(n.saturating_sub(CRAFT_ROWS));
+    for (i, r) in craft.recipes.iter().enumerate().skip(start).take(CRAFT_ROWS) {
+        let inputs: Vec<String> = r
+            .inputs
+            .iter()
+            .map(|(kind, need)| {
+                let have = held(kind);
+                // Show have/need per input: "1/2 dune_iron" is the whole answer to
+                // "what am I missing", and the reason a craft is greyed out.
+                format!("{have}/{need} {kind}")
+            })
+            .collect();
+        let gate = if !r.craftable {
+            format!("  (needs {} {})", r.skill, r.required_level)
+        } else if r.inputs.iter().any(|(kind, need)| held(kind) < *need) {
+            "  (short)".to_string()
+        } else {
+            String::new()
+        };
+        let cursor = if i == craft.cursor { ">" } else { " " };
+        out.push_str(&format!(
+            "{cursor} {} x{}  <- {}{gate}
+",
+            r.name,
+            r.output_quantity,
+            inputs.join(" + ")
+        ));
+    }
+    let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
+    let anvil = match &stock {
+        Some(m) => m.as_str(),
+        None => "nothing refined",
+    };
+    let quench = if craft.catalyze { "on" } else { "off" };
+    out.push_str(&format!(
+        "  ANVIL  [S] slot: {}   [C] quench: {quench}   [F] forge from {anvil}
+",
+        FORGE_SLOTS[craft.slot]
+    ));
+    out.push_str("  up/down choose   ENTER craft");
+    if !craft.last.is_empty() {
+        out.push_str(&format!("
+  {}", craft.last));
+    }
+    out
+}
+
+/// Recipe rows the book shows at once, so the book fits the city's status block.
+pub(crate) const CRAFT_ROWS: usize = 5;
+
 /// Shelf rows the counter shows: items on `[1]`-`[4]`, plain gear on the keys after.
 pub(crate) const ITEM_ROWS: usize = 4;
 pub(crate) const GEAR_ROWS: usize = 4;
@@ -1058,6 +1216,81 @@ mod shop_tests {
         assert!(!text.contains("Bloom Salve 25c (short)"), "{text}");
         assert!(text.contains("Town Portal 60c (short)"), "{text}");
         assert!(text.contains("30 chits"), "{text}");
+    }
+
+    fn recipe(name: &str, level: i32, have: bool, inputs: &[(&str, i32)]) -> meld_client::net::RecipeLine {
+        meld_client::net::RecipeLine {
+            recipe: name.to_lowercase().replace(' ', "_"),
+            name: name.into(),
+            skill: "alchemy".into(),
+            required_level: level,
+            skill_level: if have { level } else { 1 },
+            craftable: have,
+            output_quantity: 1,
+            inputs: inputs.iter().map(|(k, q)| ((*k).to_string(), *q)).collect(),
+        }
+    }
+
+    // The book has to answer "why can't I make this" on the row itself — a level it
+    // wants, or the exact material it is short of — because the alternative is a player
+    // pressing ENTER to find out.
+    #[test]
+    fn the_recipe_book_says_what_each_row_needs() {
+        let mut craft = CraftData::default();
+        let mut inv = InventoryData::default();
+        assert!(craft_text(&craft, &inv).contains("warming up"));
+
+        craft.loaded = true;
+        assert!(craft_text(&craft, &inv).contains("No recipes known"));
+
+        craft.recipes = vec![
+            recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)]),
+            recipe("Quintessence", 9, false, &[("bog_ichor", 1)]),
+        ];
+        inv.materials = vec![("bloom_herb".to_string(), 1)];
+        let text = craft_text(&craft, &inv);
+        // Have/need per input is the whole answer to "what am I missing".
+        assert!(text.contains("1/2 bloom_herb"), "{text}");
+        assert!(text.contains("(short)"), "{text}");
+        // A locked row names the level rather than just refusing later.
+        assert!(text.contains("needs alchemy 9"), "{text}");
+        // The cursor is visible, and moves.
+        assert!(text.starts_with("> Bloom Salve"), "{text}");
+        craft.cursor = 1;
+        assert!(craft_text(&craft, &inv).contains("> Quintessence"), "{text}");
+
+        // Enough material and the row stops complaining.
+        inv.materials = vec![("bloom_herb".to_string(), 5)];
+        let text = craft_text(&craft, &inv);
+        assert!(text.contains("5/2 bloom_herb"), "{text}");
+        assert!(!text.contains("Bloom Salve x1  <- 5/2 bloom_herb  (short)"), "{text}");
+    }
+
+    // The anvil spends the best refined stock in the Vault rather than making anyone
+    // type a material name — and says so, including when there is none.
+    #[test]
+    fn the_anvil_reaches_for_the_deepest_stock_it_has() {
+        use meld_proto::materials::MaterialClass;
+        let mut inv = InventoryData::default();
+        assert_eq!(best_stock(&inv, MaterialClass::Refined), None);
+        inv.materials = vec![
+            ("dune_ingot".to_string(), 4),   // tier 1
+            ("peat_ingot".to_string(), 2),   // tier 4 — the best
+            ("bloom_herb".to_string(), 9),   // not refined at all
+            ("cinder_ore".to_string(), 9),   // raw ore, not stock
+        ];
+        assert_eq!(best_stock(&inv, MaterialClass::Refined).as_deref(), Some("peat_ingot"));
+        // A stack of zero is not stock.
+        inv.materials = vec![("peat_ingot".to_string(), 0)];
+        assert_eq!(best_stock(&inv, MaterialClass::Refined), None);
+
+        let mut craft = CraftData::default();
+        craft.loaded = true;
+        craft.recipes = vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])];
+        let text = craft_text(&craft, &inv);
+        assert!(text.contains("nothing refined"), "the anvil should say it is empty: {text}");
+        assert!(text.contains("[S] slot: main_hand"), "{text}");
+        assert!(text.contains("[C] quench: off"), "{text}");
     }
 
     #[test]

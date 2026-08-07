@@ -72,6 +72,18 @@ pub(crate) fn shop_preview_flag() -> bool {
     query_has("shop")
 }
 
+/// Open the Forge & Alembic's recipe book on arrival (with `MELD_CITY`) — a stable
+/// frame for screenshotting the crafting panel without walking to the district.
+/// Native: `MELD_FORGE`. Browser: `?forge`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn forge_preview_flag() -> bool {
+    std::env::var("MELD_FORGE").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn forge_preview_flag() -> bool {
+    query_has("forge")
+}
+
 /// Light the Vanguard Wall on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the seasonal board without having to walk over and press [E].
 /// Native: `MELD_WALL`. Browser: `?wall`.

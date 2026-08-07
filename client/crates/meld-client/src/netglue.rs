@@ -85,13 +85,14 @@ pub(crate) fn pump_net(
         ResMut<ShopData>,
         ResMut<Notice>,
         Res<Time>,
+        ResMut<CraftData>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut announce: Announce,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -451,6 +452,17 @@ pub(crate) fn pump_net(
             }
             ServerMsg::GearShopStock { gear } => {
                 shop.gear = gear;
+            }
+            ServerMsg::Recipes { recipes } => {
+                craft.recipes = recipes;
+                craft.loaded = true;
+                craft.cursor = craft.cursor.min(craft.recipes.len().saturating_sub(1));
+            }
+            ServerMsg::CraftResult { text } => {
+                craft.last = text;
+                // The book's `craftable` flags are the server's answer at fetch time, so
+                // a craft that changed a level or a stack invalidates them.
+                net.0.fetch_recipes();
             }
             ServerMsg::VanguardBoard { season, entries, you } => {
                 vanguard.season = season;

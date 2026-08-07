@@ -573,6 +573,15 @@ XP; harvesting exists but is instant.
     which is the decision: ore you cannot yet work is ore worth banking. Refined stock
     out-prices its ore at the Broker (`[material] sale_refined_mult`) because a Smelter's
     labour is in it.
+  - 🟡 *The Forge & Alembic is open (the client half):* crafting was HTTP-only — every
+    recipe, the anvil and the Broker were unreachable from the game. The district in Last
+    City now opens a real panel: the recipe book from `GET /v1/crafting/recipes` with the
+    cursor on a row, **have/need per input** (`1/2 dune_iron` is the whole answer to
+    "what am I missing"), a locked row naming the level it wants, and ENTER to craft. The
+    **anvil** line cycles the slot with `[S]`, arms a trophy quench with `[C]`, and forges
+    with `[F]`, spending the deepest refined stock in the Vault rather than making anyone
+    type a material name. Every refusal comes back in the server's own words. Screenshot
+    flag: `MELD_FORGE` / `?forge`.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first); the Forge/Alembic/
     Broker **client UIs** (all of the above is HTTP-only — `LC-4`); and the crafting-depth
