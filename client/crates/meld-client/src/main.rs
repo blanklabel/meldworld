@@ -144,7 +144,6 @@ fn main() {
         .init_resource::<Ashfall>()
         .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
-        .init_resource::<JoinFocus>()
         .init_resource::<LoginFocus>()
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
@@ -222,11 +221,11 @@ fn main() {
             ),
         )
         // Join
-        .add_systems(OnEnter(Screen::Join), join_ui)
+        .add_systems(OnEnter(Screen::Join), (join_ui, fetch_join_board))
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
         .add_systems(
             Update,
-            (join_input, join_interact, join_refresh, join_login_refresh)
+            (join_input, join_login_refresh, join_board_refresh)
                 .run_if(in_state(Screen::Join)),
         )
         // City — The Last City (persistent hub): a walkable HD-2D plaza built from Kenney
@@ -257,6 +256,10 @@ fn main() {
                 city_interact,
                 city_camera,
                 city::seed_party_from_account,
+                city::prompt_party_if_unset,
+                city::party_panel,
+                city::party_panel_buttons,
+                city::party_panel_refresh,
                 city_input,
                 city_action_buttons,
                 render_city,
@@ -829,6 +832,12 @@ struct UnlocksRes {
     /// Offline demo/screenshot: hold the banner until [Space] instead of letting it
     /// time out, the same way the level-up screen does.
     hold: bool,
+}
+
+/// Ask for the season's board as the login screen opens — it is public, so this
+/// works before anyone has authenticated.
+fn fetch_join_board(net: NonSend<NetRes>) {
+    net.0.fetch_vanguard();
 }
 
 /// Marker for the immediate-mode unlock-banner root.
@@ -1508,6 +1517,10 @@ struct CityUi {
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
+    /// True while the Drill Yard's party picker is open (PT: choose the team you
+    /// take down). Opens by itself the first time an account reaches town without a
+    /// party of its own, so nobody dives with the newcomer default by accident.
+    party_open: bool,
 }
 
 /// The Apothecary's shelf as last read from `GET /v1/vendors/apothecary` (EC-2).

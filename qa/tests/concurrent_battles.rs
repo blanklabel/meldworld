@@ -216,6 +216,11 @@ async fn run_bot(
 
 #[tokio::test]
 async fn two_parties_fight_separate_battles_at_once() {
+    // Pin the world: two bots have to find and hold SEPARATE fights, and whether the
+    // creatures are spread far enough apart for that is decided by the roll. Seeds
+    // 1-3 pass every time; unseeded it was roughly one failure in two. The subject is
+    // that two battles run at once, not that a random map cooperates.
+    std::env::set_var("MELD_SEED", "1");
     let addr = start_server().await;
     let a_live = Arc::new(Notify::new());
     let b_live = Arc::new(Notify::new());

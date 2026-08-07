@@ -2886,9 +2886,13 @@ impl GameState {
         // (Re)enter = a fresh dive: build each player's mixed party composition and
         // start every hero at its class's full HP. Within the run this HP persists
         // across battles (see hero_hp write-back).
-        let party_size = self.balance.battle.party_size_per_player.max(1);
+        // The CAP, not the entitlement. How many heroes a player actually fields is
+        // how many party slots their account has EARNED (CL-1) — clamping the chosen
+        // composition down and then padding it back to the cap handed a one-slot
+        // account four copies of the only class it owns.
+        let party_cap = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let (chosen, explicit, names, rows, gear) = self
+            let (chosen, explicit, names, rows, gear, owned) = self
                 .sessions
                 .get(pid)
                 .map(|s| {
@@ -2898,9 +2902,18 @@ impl GameState {
                         s.hero_names.clone(),
                         s.hero_rows.clone(),
                         s.gear_bonuses.clone(),
+                        s.unlocks.clone(),
                     )
                 })
-                .unwrap_or((CharacterClass::Explorer, None, None, None, Vec::new()));
+                .unwrap_or((CharacterClass::Explorer, None, None, None, Vec::new(), None));
+            // Unlocks not loaded yet (a dive racing the account read) falls back to
+            // ONE hero rather than the cap: too few heroes is a worse dive, too many
+            // is a party the account did not earn.
+            let party_size = owned
+                .as_deref()
+                .map(|o| meld_proto::unlocks::party_slots(o) as usize)
+                .unwrap_or(1)
+                .clamp(1, party_cap);
             // The builder's explicit composition wins (normalized to party size,
             // padded with Explorer); otherwise build a default mixed party around
             // the lead.
@@ -5886,6 +5899,32 @@ mod unlock_gate_tests {
             hero_levels: levels.to_vec(),
             hero_xp: vec![0; levels.len()],
         }
+    }
+
+    #[test]
+    fn a_party_is_only_as_big_as_the_slots_the_account_earned() {
+        // The bug this pins: `clamp_party_to_unlocks` correctly cut a one-slot
+        // account's party down to a single Explorer, and `form_run` then padded it
+        // straight back up to `party_size_per_player` — so a new player was handed
+        // FOUR copies of the only class they owned. The cap is a ceiling, not a
+        // grant. This is the arithmetic `form_run` now does per player.
+        let sized = |owned_keys: &[&str], cap: usize| -> usize {
+            let o = owned(owned_keys);
+            (meld_proto::unlocks::party_slots(&o) as usize).clamp(1, cap)
+        };
+        assert_eq!(sized(&["class_explorer"], 4), 1, "a fresh account fields ONE hero");
+        assert_eq!(sized(&["class_explorer", "party_slot_2"], 4), 2);
+        assert_eq!(sized(&["class_explorer", "party_slot_2", "party_slot_3"], 4), 3);
+        assert_eq!(
+            sized(&["class_explorer", "party_slot_2", "party_slot_3", "party_slot_4"], 4),
+            4
+        );
+        // The balance cap still wins when it is the smaller of the two, so lowering
+        // `party_size_per_player` for a test or a mode is still honoured.
+        assert_eq!(
+            sized(&["class_explorer", "party_slot_2", "party_slot_3", "party_slot_4"], 2),
+            2
+        );
     }
 
     #[test]

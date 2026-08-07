@@ -962,15 +962,17 @@ impl Inner {
     /// `/me` round-trip — the board is the top 100, so an unlisted caller is
     /// simply unranked as far as the wall is concerned.
     fn fetch_vanguard(&mut self) {
-        if self.session_token.is_empty() {
-            return;
-        }
+        // No token check: the current-season board is PUBLIC so the login screen can
+        // show it before anyone has logged in. The header still rides along when a
+        // token exists, so `you` (the caller's own rank) resolves once signed in.
         let (tx, rx) = mpsc::channel();
         self.vanguard_rx = Some(rx);
         let token = self.session_token.clone();
         let me = self.player_id.clone();
         let mut req = ehttp::Request::get(format!("{}/v1/leaderboards/vanguard", self.base));
-        req.headers.insert("Authorization", format!("Bearer {token}"));
+        if !token.is_empty() {
+            req.headers.insert("Authorization", format!("Bearer {token}"));
+        }
         ehttp::fetch(req, move |res| {
             let (mut season, mut entries, mut you) = (0, Vec::new(), None);
             if let Ok(resp) = &res {

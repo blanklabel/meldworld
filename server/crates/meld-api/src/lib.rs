@@ -164,8 +164,11 @@ const VANGUARD_BOARD_LIMIT: i64 = 100;
 
 /// `GET /v1/leaderboards/vanguard` — the live board for the open season
 /// (http-api/leaderboards.md; roadmap P1-1's basic cut).
-async fn vanguard_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
-    authenticate(&st, &headers)?;
+async fn vanguard_board(State(st): State<ApiState>) -> Result<Response, ApiReject> {
+    // PUBLIC, unlike every other route here. The login screen shows the season's
+    // board — that is the reason to log in — and a login screen is by definition
+    // unauthenticated. It exposes exactly what a leaderboard is for: usernames and
+    // how deep they got. `/vanguard/me` and the archived seasons stay authenticated.
     vanguard_body(&st, meld_db::current_season()).await
 }
 
