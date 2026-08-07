@@ -1183,6 +1183,21 @@ pub(crate) fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+            EntityKind::Stair => {
+                // The way down. Drawn as a cool, low marker — a floor whose exit you
+                // cannot see is a floor you wander.
+                spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    1.6,
+                    Color::srgb(0.55, 0.85, 1.1),
+                    0.3,
+                );
+            }
             EntityKind::Trap => {
                 // A trap the party's Shifter has read. Drawn low and hot-red so it
                 // reads as "do not stand here" without hiding the floor — the server
