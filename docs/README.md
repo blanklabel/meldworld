@@ -31,9 +31,14 @@ is the human table of contents.
   [data models](interfaces/data-models.md).
 - [`edge-cases/`](edge-cases/limits.md) — the consolidated table of every numeric
   limit, cap, and timeout.
-- [`lore/shifting-lands.md`](lore/shifting-lands.md) — the world fiction + biome
-  bestiary. The **world model** it drives — persistent player-seeded worlds, the
-  **Shift**, and Structures/anchors — is authoritative in **[CANON §W](CANON.md)**.
+- [`lore/shifting-lands.md`](lore/shifting-lands.md) — the world fiction + the **Shift**.
+  The **world model** it drives — persistent player-seeded worlds, the Shift, and
+  Structures/anchors — is authoritative in **[CANON §W](CANON.md)**.
+- [`lore/biomes.md`](lore/biomes.md) — the **master biome registry**: all 27 biomes in
+  five categories, verbatim design intent and the source of record. Our five shipped
+  biomes are its **Pale Echoes** category. Written in tabletop terms — what the engine
+  would need before any of it is buildable is
+  [`proposals/biome-hazards.md`](proposals/biome-hazards.md).
 - [`lore/factions.md`](lore/factions.md) — the **orders** a hero belongs to: source of
   truth for faction names and the six-rank ladders the ability registry is generated
   against.
@@ -97,6 +102,11 @@ is the human table of contents.
   full / DG epic): authored, separately-instanced set-piece dungeons (the
   `meld-dungeon` authoring + validation foundation shipped). Built as *content within
   a world-actor* per the SC/§W model — ephemeral, per-entry-fresh, never persisted.
+- [`proposals/biome-hazards.md`](proposals/biome-hazards.md) — **Biome hazards** (FS-6):
+  the gap analysis between [`lore/biomes.md`](lore/biomes.md) and an engine where the
+  overworld cannot hurt you. Sorts 27 biomes into five engine primitives, names the
+  invariant most at risk (the guaranteed clear path), and proposes the cheapest order —
+  starting with making Ashfall's existing lava actually hurt.
 
 *Graduated out of proposals (shipped + now specced): verticality →
 [`behaviors/verticality.md`](behaviors/verticality.md) + CANON D24; worldgen (WG) →

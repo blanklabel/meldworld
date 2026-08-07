@@ -861,6 +861,18 @@ Make time in the field a living, dangerous place worth screenshotting.
   and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates
   weather and encounter tables (FS-2). One source of truth for "what time is it in
   this instance," on the wire so every client agrees.
+- [ ] **FS-6 — Biome hazards: let the field itself hurt you.** The overworld cannot
+  currently damage anyone — all damage lives in the ATB battle — which is why
+  [`lore/biomes.md`](lore/biomes.md)'s 27 biomes are unbuildable: nearly every one is
+  defined by a hazard, not by scenery. Generalise the one out-of-battle damage path that
+  already exists (`apply_trap_hit`, today reachable only from authored dungeon traps)
+  into placed overworld hazards. **Start with H-0: make Ashfall's existing `lava`
+  obstacle actually hurt** — no new placement, wire field, or art, and it answers whether
+  a field that hurts is *fun* before anything expensive is built. Hazards MUST be
+  rejection-sampled out of `Arena::path`'s clear tube exactly like obstacles, with the
+  existing property test extended to cover them, or guaranteed extraction quietly stops
+  being guaranteed. Design, primitives + sequencing:
+  [`proposals/biome-hazards.md`](proposals/biome-hazards.md).
 
 ---
 
