@@ -38,6 +38,11 @@ async fn start_server() -> String {
 
 #[tokio::test]
 async fn walking_outward_posts_the_run_to_the_vanguard_board() {
+    // Pin the world. This bot walks outward through a live map, and whether a roaming
+    // creature intercepts it decides between a 4s depth check and a 75s timeout —
+    // reproducibly per seed (1 and 2 pass, 3 fails, every time). The subject is that a
+    // server-validated depth reaches the board, not that a walk goes uninterrupted.
+    std::env::set_var("MELD_SEED", "1");
     let addr = start_server().await;
     let http = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -87,9 +92,13 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
     .unwrap();
     seq += 1;
 
-    // Walk east (away from the hub, and away from the western return border) until
-    // the server has seen us at least this deep.
+    // Walk out-and-UP until the server has seen us at least this deep. Distance is
+    // `hypot(x, y)`, so climbing counts the same as heading east — and it lifts the
+    // bot off the centre line where the shallow creatures sit, which is what turns a
+    // 4s depth check into a 75s timeout when it gets dragged into a fight on the way.
+    // East also keeps it away from the western return border (`west_return`).
     const TARGET: f64 = 12.0;
+    const DIAG: f64 = std::f64::consts::FRAC_1_SQRT_2;
     let mut started = false;
     let (mut my_x, mut my_y) = (0.0f64, 0.0f64);
     let mut deep_enough = false;
@@ -106,7 +115,7 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
                 input_seq += 1;
                 ws.send(Message::Text(json!({
                     "type":"movement.move_intent","seq":seq,"ts":0,
-                    "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}
+                    "payload":{"input_seq":input_seq,"move_dir":{"x":DIAG,"y":DIAG},"client_pos":{"x":0.0,"y":0.0}}
                 }).to_string())).await.unwrap();
                 seq += 1;
             }
