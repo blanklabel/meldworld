@@ -90,6 +90,10 @@ impl MainMenu {
 #[derive(Component)]
 pub(crate) struct NavButton(pub(crate) MenuSection);
 
+/// The Map column's "Return to town" row — spends a Town Portal item.
+#[derive(Component)]
+pub(crate) struct ReturnToTownButton;
+
 /// An Equipment/Abilities button under a hero in the Party column.
 #[derive(Component)]
 pub(crate) struct PaneButton {
@@ -302,19 +306,25 @@ pub(crate) fn render_main_menu(
                             ));
                         }
                         MenuSection::Map => {
+                            // Going home on a Town Portal is an ITEM use, so it lives
+                            // here as an explicit choice rather than on a hotkey — the
+                            // primary way out of a dive should be somewhere a player
+                            // can FIND it, not a key they have to be told about.
+                            let portals = backpack.count("town_portal");
+                            let focused = depth == 1 && menu.cursor == 0;
+                            col.spawn((glass::inset(focused), ReturnToTownButton))
+                                .with_children(|row| {
+                                    let (label, tint) = if portals > 0 {
+                                        (format!("Return to town   ({portals})"), glass::TEXT)
+                                    } else {
+                                        ("Return to town   (none held)".to_string(), glass::DIM)
+                                    };
+                                    row.spawn(glass::text(label, 19.0, tint));
+                                });
                             for line in [
                                 format!("Distance   {}", stats.distance),
                                 format!("Tier       {}", stats.tier),
                                 format!("Biome      {}", stats.biome),
-                                format!(
-                                    "Town portals  {}",
-                                    backpack
-                                        .items
-                                        .iter()
-                                        .filter(|(kind, _)| kind == "town_portal")
-                                        .map(|(_, q)| *q)
-                                        .sum::<i32>()
-                                ),
                             ] {
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
@@ -691,6 +701,7 @@ pub(crate) fn main_menu_input(
     inv: Res<InventoryData>,
     backpack: Res<RunBackpack>,
     mut rename: ResMut<HeroRename>,
+    net: NonSend<NetRes>,
 ) {
     if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
         return;
@@ -719,6 +730,13 @@ pub(crate) fn main_menu_input(
             0 => {
                 menu.section = MenuSection::ALL.get(menu.cursor).copied();
                 menu.cursor = 0;
+            }
+            1 if menu.section == Some(MenuSection::Map) && menu.cursor == 0 => {
+                // Explicit, and only when you actually hold one.
+                if backpack.count("town_portal") > 0 {
+                    net.0.send(ClientCmd::TownPortal);
+                    overlay.kind = None;
+                }
             }
             1 if menu.section == Some(MenuSection::Party) => {
                 // Stepping into a hero opens its gear; Abilities is a click or a
@@ -749,6 +767,22 @@ pub(crate) fn main_menu_input(
         menu.member = if menu.depth() == 1 { menu.cursor } else { menu.member };
         menu.pane = Some(MenuPane::Abilities);
         menu.cursor = 0;
+    }
+}
+
+/// Tapping the Map column's "Return to town" row spends a Town Portal — the same
+/// explicit action as pressing Enter on it, for touch.
+pub(crate) fn return_to_town_click(
+    rows: Query<&Interaction, (Changed<Interaction>, With<ReturnToTownButton>)>,
+    mut overlay: ResMut<Overlay>,
+    backpack: Res<RunBackpack>,
+    net: NonSend<NetRes>,
+) {
+    for interaction in &rows {
+        if *interaction == Interaction::Pressed && backpack.count("town_portal") > 0 {
+            net.0.send(ClientCmd::TownPortal);
+            overlay.kind = None;
+        }
     }
 }
 

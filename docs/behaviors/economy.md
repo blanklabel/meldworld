@@ -123,8 +123,19 @@ Chits is a conserved 64-bit integer quantity. Every chits mutation is classified
 |---|--------|-------|
 | S1 | Monster kill chits drops | Battle loot rolls (server-authoritative), banked on extraction |
 | S2 | World loot drops (chests, containers) | Overworld loot rolls, banked on extraction |
+| S3 | **Broker material buyback** | `POST /v1/vendors/broker/sell` — the NPC that buys crafting materials out of the Vault at `[material] sale_*`, scaled by the seller's Mercantile level |
 
 Chits found during a run lives in the Backpack: it is only **minted into the persistent economy at extraction**; dying deletes it with the Backpack (so a death of un-extracted chits is a non-event for the persistent supply — it never entered circulation).
+
+**On S3 (the Broker).** GDD §7's rule is that NPCs do not sell the best gear — the
+community runs the world. A vendor that *buys* is the other side of that: it exists
+so no material a player carries home is unspendable, which is a legibility and
+trust property, not an income. It is therefore deliberately priced as a **floor** —
+below what the same material is worth crafted or traded — so selling to the Broker
+is always the answer to "I will never use this" and never the optimal play. It is
+also Mercantile's only XP source until player stalls (EC-1) ship. The faucet is
+uncapped by design for now; if inflation shows up, the lever is
+`[material] sale_base_chits`, and a per-day cap is the next step (open question).
 
 ### Sinks (chits destroyed)
 
@@ -132,8 +143,14 @@ Chits found during a run lives in the Backpack: it is only **minted into the per
 |---|------|--------|
 | K1 | Hub tax on stall sales | `round_up(price × tax_rate(seller))`, rate `max(5%, 10% − 0.05% × mercantile_level)` |
 | K2 | Hub tax on contract payouts | `round_up(reward × tax_rate(poster))`, same rate formula |
+| K3 | Apothecary purchases | `[consumable] price_*` per unit — basics only (a heal, a Barrier, a Regen, a way home) |
+| K4 | Forge fees | `[forge] gear_chit_cost` per forge, `reroll_chit_cost` per affix reroll |
+| K5 | Repair fees | `[forge] repair_chit_cost_per_point` × points actually restored |
 
-The tax is the **only** chits sink. NPCs do not sell gear or services for chits (GDD §7: "NPCs do not sell the best gear. The community runs the world."); any future NPC chits cost is a new sink and must be added to this table.
+The tax (K1/K2) is the only **player-to-player** sink; K3–K5 are the NPC services
+Last City runs. GDD §7's rule holds — NPCs do not sell the *best gear*; they sell
+basics, labour, and second chances. Any further NPC chits cost is a new sink and
+must be added to this table.
 
 ### Transfers (chits conserved)
 
@@ -147,7 +164,7 @@ The tax is the **only** chits sink. NPCs do not sell gear or services for chits 
 
 ### Invariants
 
-- **I1:** `Σ(vault chits) + Σ(contract escrow) + Σ(backpack chits in live runs)` changes only by S1+S2 (up) and K1+K2 (down).
+- **I1:** `Σ(vault chits) + Σ(contract escrow) + Σ(backpack chits in live runs)` changes only by S1+S2+S3 (up) and K1–K5 (down).
 - **I2:** Every purchase/payout is atomic; no observable state exists where chits left one party without arriving (net of tax) at the other.
 - **I3:** Escrowed chits (stall items are item-escrow; contract rewards are chits-escrow) is owned by no player and is unspendable until release.
 - **I4:** Tax is computed with `round_up` so `T ≥ 1` on any taxed transaction of `P ≥ 1` — the sink can never round to zero **[TUNABLE — rounding direction chosen by this spec; CANON specifies only the rate]**.

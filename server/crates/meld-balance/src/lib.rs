@@ -30,6 +30,8 @@ pub struct Balance {
     pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
+    pub material: Material,
+    pub harvest: Harvest,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
     pub worldgen: WorldGen,
@@ -230,6 +232,8 @@ pub struct Battle {
 pub struct Loot {
     pub chits_per_mlevel: f64,
     pub chits_jitter: f64,
+    pub material_per_creature: f64,
+    pub material_qty_per_tier: f64,
     pub gear_drop_chance: f64,
     /// Fraction of a reward-spike encounter's gear drops that are PERMANENT (blue).
     pub permanent_gear_chance: f64,
@@ -322,12 +326,21 @@ pub struct Forge {
     pub repair_chit_cost_per_point: i64,
     pub repair_points_per_forging_level: i32,
     pub forge_xp_per_craft: i64,
+    pub catalyst_material_cost: i32,
+    pub catalyst_tier_bonus: i32,
 }
 
 impl Forge {
     /// The highest tier a smith of this Forging level can forge at.
     pub fn forgeable_tier(&self, forging_level: i32) -> i32 {
         ((forging_level.max(1) as f64) * self.gear_tier_per_forging_level).floor() as i32
+    }
+
+    /// The tier a smith reaches when they quench the piece in a **trophy** — a
+    /// monster part is how a forge reaches past the smith's own level, which is
+    /// what makes a combat drop worth carrying home to the Forge.
+    pub fn catalyzed_tier(&self, forging_level: i32) -> i32 {
+        self.forgeable_tier(forging_level) + self.catalyst_tier_bonus
     }
 
     /// How wide a forged stat's roll is at this Forging level — a master smith is
@@ -359,9 +372,18 @@ pub struct Consumable {
     pub price_mending_draught: i64,
     pub price_town_portal: i64,
     pub price_markup_per_tier: f64,
+    pub potency_per_step: f64,
 }
 
 impl Consumable {
+    /// The multiplier on a potion's magnitude at `potency` steps up its own
+    /// effect's ladder (`ConsumableDef::potency`). Step 0 is exactly the standard
+    /// dose, so adding the trophy line above the reagent line cannot move a
+    /// number a player already knows.
+    pub fn potency_mult(&self, potency: i32) -> f64 {
+        self.potency_per_step.powi(potency.max(0))
+    }
+
     /// Shelf price of one unit, in chits. `None` for anything the Apothecary does
     /// not stock — a shop that sells everything is not a shop.
     pub fn price(&self, item_kind: &str) -> Option<i64> {
@@ -463,6 +485,33 @@ pub struct Meld {
     pub xp_per_level: i64,
     pub alchemy_xp_per_extracted_stack: i64,
     pub forging_xp_per_craft: i64,
+    pub mercantile_xp_per_sale: i64,
+}
+
+/// What the Broker pays for a material (MS-1 / EC-2). Deliberately a **floor
+/// price**, not an income: selling a material must always be worth less than
+/// crafting with it, so the Broker is the answer to "I will never use this" rather
+/// than the optimal play. See docs/behaviors/economy.md (source S3).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Material {
+    pub sale_base_chits: i64,
+    pub sale_growth_per_tier: f64,
+    pub sale_trophy_mult: f64,
+    pub sale_haggle_pct_per_level: f64,
+    pub sale_haggle_max_pct: f64,
+}
+
+impl Material {
+    /// Unit price in chits for a material of `tier`, at this Mercantile level.
+    /// `trophy` parts fetch more than plants — they cost a fight, not a walk.
+    pub fn sale_price(&self, tier: i32, trophy: bool, mercantile_level: i32) -> i64 {
+        let band = self.sale_growth_per_tier.powi(tier.max(0));
+        let class = if trophy { self.sale_trophy_mult } else { 1.0 };
+        let haggle = (self.sale_haggle_pct_per_level * (mercantile_level.max(1) - 1) as f64)
+            .min(self.sale_haggle_max_pct)
+            / 100.0;
+        (((self.sale_base_chits as f64) * band * class * (1.0 + haggle)).round() as i64).max(1)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -677,6 +726,33 @@ pub struct Perks {
 pub type Creatures = std::collections::HashMap<String, CreatureStats>;
 pub type Players = std::collections::HashMap<String, PlayerStats>;
 pub type Resources = std::collections::HashMap<String, ResourceStats>;
+
+/// Harvest-channel knobs (MS-2). Keyed by **material class** rather than by node id,
+/// because the rhythm — a patch of quick gathers vs a long dangerous dig — is what
+/// separates the two gathering professions.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Harvest {
+    pub reagent_stock: i32,
+    pub reagent_tick_ms: u64,
+    pub ore_stock: i32,
+    pub ore_tick_ms: u64,
+    pub default_stock: i32,
+    pub default_tick_ms: u64,
+}
+
+impl Harvest {
+    /// How many units a node of this material class holds, and how long each unit
+    /// takes to cut loose. `class` is a `meld_proto::materials::MaterialClass` wire
+    /// word; anything unrecognised falls back to the defaults rather than failing —
+    /// a new material class should change the pace of the game, not break spawning.
+    pub fn node_yield(&self, class: &str) -> (i32, u64) {
+        match class {
+            "reagent" => (self.reagent_stock, self.reagent_tick_ms),
+            "ore" => (self.ore_stock, self.ore_tick_ms),
+            _ => (self.default_stock, self.default_tick_ms),
+        }
+    }
+}
 
 /// A harvestable resource node's content, keyed by node id (e.g. `bloom_herb`).
 #[derive(Debug, Clone, Deserialize)]

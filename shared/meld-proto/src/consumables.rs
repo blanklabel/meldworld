@@ -6,11 +6,15 @@
 //!   effect reuses a state the ATB engine already models (heal, Barrier, Regen,
 //!   Evasion, banked Adrenaline), so a potion is authored content rather than new
 //!   engine machinery.
-//! - [`RECIPES`] — how a potion is made: inputs, output, and the Meld skill the
-//!   craft credits. A potion credits **Alchemy**; only metalwork credits Forging.
+//! - [`RECIPES`] — how a potion is made: inputs, output, the Meld skill the craft
+//!   credits, and the **level that skill must have reached**. A potion credits
+//!   **Alchemy**; only metalwork credits Forging.
 //!
 //! Magnitudes live in `[consumable]` `[TUNABLE]`s — the numbers are balance's, the
-//! shape is here.
+//! shape is here. A potion's [`ConsumableDef::potency`] is how many steps up its
+//! own effect it sits, so the **trophy line** (potions made from monster parts,
+//! [`crate::materials::MaterialClass::Trophy`]) is the same eight effects at a
+//! bigger dose rather than eight new mechanics.
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +54,10 @@ pub struct ConsumableDef {
     /// Which tier of the shop/recipe ladder this sits on; 0 is the basics an
     /// Apothecary stocks for a new player.
     pub tier: i32,
+    /// Steps up this effect's own ladder: 0 is the standard dose, each step
+    /// multiplies the magnitude by `[consumable] potency_per_step`. Lets the
+    /// trophy line be *stronger* without being *different*.
+    pub potency: i32,
     pub description: &'static str,
 }
 
@@ -59,6 +67,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Waking Salt",
         effect: ConsumableEffect::Revive,
         tier: 1,
+        potency: 0,
         description: "Held under the nose of the fallen. Not pleasant. Effective.",
     },
     ConsumableDef {
@@ -66,6 +75,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Insight Mote",
         effect: ConsumableEffect::Experience,
         tier: 1,
+        potency: 0,
         description: "Someone else's hard-won lesson, bottled. Drink and know it.",
     },
     ConsumableDef {
@@ -73,6 +83,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Bloom Salve",
         effect: ConsumableEffect::Heal,
         tier: 0,
+        potency: 0,
         description: "Field medicine. Closes what is open.",
     },
     ConsumableDef {
@@ -80,6 +91,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Elixir",
         effect: ConsumableEffect::FullHeal,
         tier: 2,
+        potency: 0,
         description: "Whole again, once.",
     },
     ConsumableDef {
@@ -87,6 +99,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Bulwark Tonic",
         effect: ConsumableEffect::Barrier,
         tier: 0,
+        potency: 0,
         description: "Drink before the blow, not after.",
     },
     ConsumableDef {
@@ -94,6 +107,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Mending Draught",
         effect: ConsumableEffect::Regen,
         tier: 0,
+        potency: 0,
         description: "Slow, steady, and cheaper than a Resonant's blood.",
     },
     ConsumableDef {
@@ -101,6 +115,7 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Ghostdust",
         effect: ConsumableEffect::Evasion,
         tier: 1,
+        potency: 0,
         description: "Be somewhere else for a while.",
     },
     ConsumableDef {
@@ -108,7 +123,59 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         name: "Fury Philtre",
         effect: ConsumableEffect::Adrenaline,
         tier: 1,
+        potency: 0,
         description: "Rage on credit. Explorers only.",
+    },
+    // --- The trophy line: the same effects, rendered out of monster parts. Each
+    // is one step stronger than its reagent-line counterpart and gated behind a
+    // real Alchemy level, so a felled creature is worth cutting up.
+    ConsumableDef {
+        key: "verdant_draught",
+        name: "Verdant Draught",
+        effect: ConsumableEffect::Regen,
+        tier: 1,
+        potency: 1,
+        description: "The lure a stalker grew, boiled down. It keeps growing in you.",
+    },
+    ConsumableDef {
+        key: "scarab_ward",
+        name: "Scarab Ward",
+        effect: ConsumableEffect::Barrier,
+        tier: 1,
+        potency: 1,
+        description: "Ground husk, drunk thick. For a while you are wearing the desert's answer.",
+    },
+    ConsumableDef {
+        key: "cinderblood_philtre",
+        name: "Cinderblood Philtre",
+        effect: ConsumableEffect::Adrenaline,
+        tier: 2,
+        potency: 1,
+        description: "An imp's coal, still burning, in your blood instead of its own.",
+    },
+    ConsumableDef {
+        key: "rimeglass_vial",
+        name: "Rimeglass Vial",
+        effect: ConsumableEffect::Evasion,
+        tier: 2,
+        potency: 1,
+        description: "Whatever a revenant does instead of standing still, bottled.",
+    },
+    ConsumableDef {
+        key: "ichor_salve",
+        name: "Ichor Salve",
+        effect: ConsumableEffect::Heal,
+        tier: 3,
+        potency: 2,
+        description: "It closes wounds the way the mire closes over things. Do not watch.",
+    },
+    ConsumableDef {
+        key: "quintessence",
+        name: "Quintessence",
+        effect: ConsumableEffect::Revive,
+        tier: 4,
+        potency: 2,
+        description: "One part of every biome that tried to kill you. The fallen stand up nearly whole.",
     },
 ];
 
@@ -123,7 +190,7 @@ pub fn is_consumable(key: &str) -> bool {
 }
 
 /// A crafting recipe: `inputs` (item kind, quantity) become `output`, crediting
-/// `skill` XP.
+/// `skill` XP — once `skill` has reached `min_level`.
 #[derive(Debug, Clone, Copy)]
 pub struct RecipeDef {
     pub key: &'static str,
@@ -133,6 +200,11 @@ pub struct RecipeDef {
     pub output_qty: i32,
     /// The Meld skill the craft credits (`alchemy` / `forging` / `mercantile`).
     pub skill: &'static str,
+    /// Level of `skill` the crafter must have reached. Permanent progression:
+    /// Meld levels never wipe, not even at season end, so the recipe book opening
+    /// up is the crafter's own ladder — the same role `unlock_level` plays for
+    /// abilities in [`crate::skills`].
+    pub min_level: i32,
 }
 
 pub const RECIPES: &[RecipeDef] = &[
@@ -143,6 +215,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "bloom_salve",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 1,
     },
     RecipeDef {
         key: "bulwark_tonic",
@@ -151,6 +224,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "bulwark_tonic",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 1,
     },
     RecipeDef {
         key: "mending_draught",
@@ -159,6 +233,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "mending_draught",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 1,
     },
     RecipeDef {
         key: "ghostdust",
@@ -167,6 +242,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "ghostdust",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 3,
     },
     RecipeDef {
         key: "fury_philtre",
@@ -175,6 +251,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "fury_philtre",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 3,
     },
     RecipeDef {
         key: "waking_salt",
@@ -183,6 +260,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "waking_salt",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 5,
     },
     RecipeDef {
         key: "elixir",
@@ -191,6 +269,7 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "elixir",
         output_qty: 1,
         skill: "alchemy",
+        min_level: 7,
     },
     RecipeDef {
         key: "town_portal",
@@ -199,6 +278,70 @@ pub const RECIPES: &[RecipeDef] = &[
         output: "town_portal",
         output_qty: 1,
         skill: "forging",
+        min_level: 1,
+    },
+    // --- The trophy line. Every one of these is keyed on a monster part, which is
+    // the point: a creature felled anywhere in the world now has something a
+    // crafter wants, and the deep bands' parts open the strongest doses.
+    RecipeDef {
+        key: "verdant_draught",
+        name: "Verdant Draught",
+        inputs: &[("forest_bloom_petal", 2), ("bloom_herb", 1)],
+        output: "verdant_draught",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 2,
+    },
+    RecipeDef {
+        key: "scarab_ward",
+        name: "Scarab Ward",
+        inputs: &[("sun_scarab_husk", 2), ("sun_salts", 1)],
+        output: "scarab_ward",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 2,
+    },
+    RecipeDef {
+        key: "cinderblood_philtre",
+        name: "Cinderblood Philtre",
+        inputs: &[("ember_cinder", 2), ("ember_ash", 1)],
+        output: "cinderblood_philtre",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 4,
+    },
+    RecipeDef {
+        key: "rimeglass_vial",
+        name: "Rimeglass Vial",
+        inputs: &[("frost_shard", 2), ("frost_lichen", 1)],
+        output: "rimeglass_vial",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 4,
+    },
+    RecipeDef {
+        key: "ichor_salve",
+        name: "Ichor Salve",
+        inputs: &[("bog_ichor", 2), ("bog_myrrh", 1)],
+        output: "ichor_salve",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 6,
+    },
+    RecipeDef {
+        key: "quintessence",
+        name: "Quintessence",
+        inputs: &[
+            ("forest_bloom_petal", 1),
+            ("sun_scarab_husk", 1),
+            ("ember_cinder", 1),
+            ("frost_shard", 1),
+            ("bog_ichor", 1),
+        ],
+        output: "quintessence",
+        output_qty: 1,
+        skill: "alchemy",
+        min_level: 9,
     },
 ];
 
@@ -209,6 +352,16 @@ pub fn recipe(key: &str) -> Option<&'static RecipeDef> {
 /// Recipes in a stable display order for the crafting UI.
 pub fn recipes_for_skill(skill: &str) -> Vec<&'static RecipeDef> {
     RECIPES.iter().filter(|r| r.skill == skill).collect()
+}
+
+/// Every recipe that consumes `item_kind` — the "what is this good for?" lookup a
+/// player asks of a stack in their Vault, and the check that keeps a material from
+/// becoming a dead end.
+pub fn recipes_consuming(item_kind: &str) -> Vec<&'static RecipeDef> {
+    RECIPES
+        .iter()
+        .filter(|r| r.inputs.iter().any(|(k, _)| *k == item_kind))
+        .collect()
 }
 
 #[cfg(test)]
@@ -241,7 +394,85 @@ mod tests {
                 "{} consumes its own output",
                 r.key
             );
+            assert!(r.min_level >= 1, "{} unlocks below level 1", r.key);
             assert_eq!(recipe(r.key).map(|d| d.key), Some(r.key));
+        }
+    }
+
+    #[test]
+    fn every_recipe_input_is_a_real_material_or_something_craftable() {
+        for r in RECIPES {
+            for (kind, qty) in r.inputs {
+                assert!(qty > &0, "{} asks for {qty} {kind}", r.key);
+                assert!(
+                    crate::materials::is_material(kind) || recipe(kind).is_some(),
+                    "{} needs {kind}, which nothing in the world produces",
+                    r.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_material_the_world_drops_has_somewhere_to_go() {
+        // The reason this test exists: a material with no recipe and no shelf is
+        // loot the player can never spend, and that is invisible until someone
+        // audits the tables by hand. Trophies (combat drops) are the ones that
+        // went unspent, so they get the strictest form of the check.
+        use crate::materials::{MaterialClass, MATERIALS};
+        for m in MATERIALS {
+            // An ore's sink is the Forge, which takes any ore by class rather than
+            // by name — so a recipe is not the bar for those.
+            if m.class == MaterialClass::Ore {
+                continue;
+            }
+            assert!(
+                !recipes_consuming(m.key).is_empty(),
+                "{} is dead loot: no recipe consumes it",
+                m.key
+            );
+        }
+        for t in crate::materials::materials_of_class(MaterialClass::Trophy) {
+            let line: Vec<&str> = recipes_consuming(t.key).iter().map(|r| r.key).collect();
+            assert!(
+                line.iter().any(|k| *k != "quintessence"),
+                "{} is only good for the capstone: {line:?}",
+                t.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_trophy_line_is_stronger_than_the_reagent_line_it_shadows() {
+        // A monster part costs a fight; a herb costs a walk. If the trophy line
+        // were not the bigger dose there would be no reason to prefer it.
+        for (reagent_potion, trophy_potion) in [
+            ("mending_draught", "verdant_draught"),
+            ("bulwark_tonic", "scarab_ward"),
+            ("fury_philtre", "cinderblood_philtre"),
+            ("ghostdust", "rimeglass_vial"),
+            ("bloom_salve", "ichor_salve"),
+            ("waking_salt", "quintessence"),
+        ] {
+            let base = consumable(reagent_potion).unwrap();
+            let trophy = consumable(trophy_potion).unwrap();
+            assert_eq!(base.effect, trophy.effect, "{trophy_potion} shadows {reagent_potion}");
+            assert!(
+                trophy.potency > base.potency,
+                "{trophy_potion} is no stronger than {reagent_potion}"
+            );
+            let r = recipe(trophy_potion).expect("trophy potion is craftable");
+            assert!(
+                r.inputs
+                    .iter()
+                    .any(|(k, _)| crate::materials::is_class(k, crate::materials::MaterialClass::Trophy)),
+                "{trophy_potion} is not made of monster parts"
+            );
+            assert!(
+                r.min_level > recipe(reagent_potion).map(|b| b.min_level).unwrap_or(1)
+                    || r.min_level >= 2,
+                "{trophy_potion} is not gated above the basics"
+            );
         }
     }
 

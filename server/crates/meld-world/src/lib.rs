@@ -213,6 +213,20 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     }
 }
 
+/// How many units a node of this content kind holds, from its **material class**
+/// (`[harvest]`): a reagent patch is several quick gathers, an ore vein is a longer
+/// dig. Keying the rhythm on the class rather than the node id is what makes the two
+/// gathering professions play differently instead of merely banking different ids.
+fn node_stock(balance: &Balance, kind: &str) -> i32 {
+    let class = balance
+        .resource
+        .get(kind)
+        .and_then(|r| meld_proto::materials::material(&r.material))
+        .map(|m| m.class.wire())
+        .unwrap_or("");
+    balance.harvest.node_yield(class).0
+}
+
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
@@ -282,9 +296,11 @@ fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
 }
 
 /// A biome's combat-drop material — banked into the run backpack when a creature is
-/// felled, distinct from harvestable resource nodes. No recipe consumes these yet:
-/// every entry in `meld_proto::consumables::RECIPES` takes harvest reagents, so combat
-/// drops currently bank and sit. Structural content; deeper bands repeat Mire.
+/// felled, distinct from harvestable resource nodes. These are the **trophies**
+/// (`meld_proto::materials::MaterialClass::Trophy`): they feed the trophy potion line,
+/// they are the Forge's catalyst ([`forge_gear`]), and the Broker buys them. The
+/// registry is the contract — a key here that isn't in `materials::MATERIALS` is loot
+/// nothing can spend. Structural content; deeper bands repeat Mire.
 pub fn combat_material_for_biome(d: i64) -> &'static str {
     match biome_for_distance(d) {
         "forest" => "forest_bloom_petal",
@@ -341,8 +357,13 @@ pub struct GearDrop {
 pub struct CreatureLoot {
     /// Chits found (banked on extraction, lost on death). Scales with depth.
     pub chits: i64,
-    /// The biome's combat material (one unit).
+    /// The biome's combat material — the **trophy** the kill yields.
     pub material: &'static str,
+    /// How many units of it. Scales with the size of the pack you felled (a
+    /// carcass each) and, gently, with depth — so trophy *supply* tracks the
+    /// difficulty of getting it, the way the chit haul already does. Deliberately
+    /// draws no RNG: a crafter can plan a hunt.
+    pub material_qty: i32,
     /// Red-chest gear, only rolled at/after `red_chest_floor_distance`.
     pub gear: Option<GearDrop>,
 }
@@ -540,6 +561,16 @@ pub fn roll_creature_loot(
         .round()
         .max(0.0) as i64;
     let material = combat_material_for_biome(distance);
+    // Trophies per felled creature, plus a band bonus, times the reward spike. No
+    // RNG draw here on purpose: it would shift every subsequent roll in this
+    // stream (the gear check below), and a predictable trophy yield is what lets a
+    // crafter decide "four more of those and I can quench a blade".
+    let material_qty = ((l.material_per_creature
+        * monster_count.max(1) as f64
+        * (1.0 + sc.tier(distance) as f64 * l.material_qty_per_tier)
+        * loot_mult.max(0.0))
+    .round() as i32)
+        .max(1);
     // Red-chest gear only generates at/after the red-chest floor
     // (`world_scaling.red_chest_floor_distance`; spec §4 sets it to 300 — a
     // shallow kill never drops gear); a reward spike (loot_mult) boosts (and
@@ -743,6 +774,7 @@ pub fn roll_creature_loot(
     CreatureLoot {
         chits,
         material,
+        material_qty,
         gear,
     }
 }
@@ -846,18 +878,29 @@ fn biome_element(biome: &str) -> &'static str {
 /// the stat rolls (`variance_at` — a master smith is consistent, an apprentice is
 /// not). Affixes come from the same tier-gated roller as loot, so a forged piece is
 /// the same KIND of object as a found one; the difference is that you chose its slot.
+///
+/// `catalyzed` is a **trophy** quenched into the piece: it buys `catalyst_tier_bonus`
+/// tiers past the smith's own reach and rolls the affix pool at epic instead of rare.
+/// Levelling raises the floor; monster parts raise the ceiling.
 pub fn forge_gear(
     balance: &Balance,
     forging_level: i32,
     slot: &str,
     class_key: &str,
     biome: &str,
+    catalyzed: bool,
     seed: u64,
 ) -> GearDrop {
     let fg = &balance.forge;
     let l = &balance.loot;
     let mut rng = Rng(seed);
-    let tier = fg.forgeable_tier(forging_level).max(0);
+    let rarity = if catalyzed { "epic" } else { "rare" };
+    let tier = if catalyzed {
+        fg.catalyzed_tier(forging_level)
+    } else {
+        fg.forgeable_tier(forging_level)
+    }
+    .max(0);
     let variance = fg.variance_at(forging_level);
     let jitter = 1.0 + rng.signed() * variance;
     let stat = ((l.gear_atk_per_tier * tier.max(1) as f64 * jitter).round() as i32).max(1);
@@ -880,16 +923,7 @@ pub fn forge_gear(
         (Some(c), true) => eq::drop_weight(c).wire().to_string(),
         _ => String::new(),
     };
-    let affixes = roll_affixes(
-        balance,
-        &mut rng,
-        tier,
-        "rare",
-        false,
-        class_key,
-        slot,
-        biome,
-    );
+    let affixes = roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome);
     let base = format!(
         "{} {}",
         POWER_ADJECTIVES[rng.below(POWER_ADJECTIVES.len())],
@@ -901,7 +935,7 @@ pub fn forge_gear(
     };
     GearDrop {
         name,
-        rarity: "rare".to_string(),
+        rarity: rarity.to_string(),
         slot: slot.to_string(),
         class_key: class_key.to_string(),
         tier,
@@ -1335,7 +1369,19 @@ pub struct ResourceNode {
     /// Elevation the node sits on. A terrace node is only harvestable once you've
     /// climbed to it (rewards exploring the verticality).
     pub elevation: u8,
-    pub harvested: bool,
+    /// Units still in the node (MS-2). A harvest CHANNEL takes these one at a time,
+    /// so a node is a quantity you can partly work and come back to rather than a
+    /// one-tap flag — which is what lets an interrupted gather cost only the tick in
+    /// flight. Stock and pace come from the material's class (`[harvest]`).
+    pub remaining: i32,
+}
+
+impl ResourceNode {
+    /// Nothing left to take. Kept as a method so the old `harvested` reads still
+    /// make sense at call sites (the snapshot hides an empty node).
+    pub fn depleted(&self) -> bool {
+        self.remaining <= 0
+    }
 }
 
 /// One generated area / **section**: a stretch of corridor `[start_x, end_x)` in
@@ -2020,12 +2066,13 @@ impl Arena {
             self.monsters[idx].area_max_x = end_x;
             // A guaranteed starter resource node just off the tutorial path, so
             // the first thing a new player can safely do is harvest (no fight).
+            let starter_kind = resources_for_biome(biome)[0].to_string();
             self.resources.push(ResourceNode {
                 entity_id: format!("res-{}", self.resources.len()),
-                kind: resources_for_biome(biome)[0].to_string(),
+                remaining: node_stock(balance, &starter_kind),
+                kind: starter_kind,
                 position: Position::new(wg.first_monster_x * 0.5, 3.0),
                 elevation: 0,
-                harvested: false,
             });
             // A guaranteed starter treasure chest opposite the node, so a new
             // player sees the loot loop (open → chits/materials) in area 0.
@@ -2262,7 +2309,7 @@ impl Arena {
                 kind: rk.to_string(),
                 position: Position::new(rx, ry),
                 elevation: 0,
-                harvested: false,
+                remaining: node_stock(balance, rk),
             });
             section_resources.push(nid);
         }
@@ -3370,25 +3417,34 @@ impl Arena {
         }
     }
 
-    /// Harvest the resource node `entity_id` if `player` is within interaction
-    /// range **on the same elevation** and it isn't already spent. Marks it
-    /// harvested and returns its content kind (the caller maps that to a material +
-    /// skill XP via balance).
-    pub fn harvest(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
-        let (ppos, pelev) = {
-            let a = self.avatar(player_id)?;
-            (a.position, a.elevation)
-        };
-        let radius = self.interaction_radius;
+    /// Whether `player` may work the node `entity_id` right now: it exists, has
+    /// stock left, sits on the player's own elevation, and is within interaction
+    /// range. Returns its content kind. Pure — this is the check a harvest channel
+    /// re-runs every tick, so walking off (or emptying the node) ends the channel
+    /// without the caller needing its own range logic.
+    pub fn can_harvest(&self, player_id: &str, entity_id: &str) -> Option<String> {
+        let a = self.avatar(player_id)?;
         let node = self
             .resources
-            .iter_mut()
-            .find(|n| n.entity_id == entity_id && !n.harvested)?;
-        if node.elevation != pelev || ppos.distance_to(&node.position) > radius {
+            .iter()
+            .find(|n| n.entity_id == entity_id && !n.depleted())?;
+        if node.elevation != a.elevation
+            || a.position.distance_to(&node.position) > self.interaction_radius
+        {
             return None;
         }
-        node.harvested = true;
         Some(node.kind.clone())
+    }
+
+    /// Take **one unit** out of the node (MS-2's channel tick) and return its content
+    /// kind, or `None` if it is out of reach or already empty. The unit is banked the
+    /// moment it comes out, which is what bounds an interrupted gather to the tick in
+    /// flight rather than the whole node.
+    pub fn take_one(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
+        let kind = self.can_harvest(player_id, entity_id)?;
+        let node = self.resources.iter_mut().find(|n| n.entity_id == entity_id)?;
+        node.remaining -= 1;
+        Some(kind)
     }
 
     /// Open the treasure chest `entity_id` if `player` is within interaction range
@@ -4103,25 +4159,58 @@ mod tests {
     }
 
     #[test]
-    fn resource_nodes_generate_and_harvest_once_within_range() {
+    fn a_node_holds_stock_and_gives_it_up_one_unit_at_a_time() {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 7, true);
         assert!(!arena.resources.is_empty(), "resource nodes are scattered in");
         // Use the guaranteed level-0 starter node (area 0) so elevation doesn't gate.
         let node = arena.resources[0].clone();
         assert_eq!(node.elevation, 0);
-        arena.add_avatar("p".into(), 6.0);
-        // Too far → no harvest.
-        arena.avatar_mut("p").unwrap().position = Position::new(node.position.x + 50.0, node.position.y);
-        assert!(arena.harvest("p", &node.entity_id).is_none(), "out of range");
-        // Standing on it → harvest yields its kind, once.
-        arena.avatar_mut("p").unwrap().position = node.position;
-        assert_eq!(arena.harvest("p", &node.entity_id).as_deref(), Some(node.kind.as_str()));
-        assert!(arena.harvest("p", &node.entity_id).is_none(), "already harvested");
-        // Every node kind maps to balance content.
+        assert!(node.remaining > 1, "MS-2: a node is a quantity, not a one-tap flag");
+        assert_eq!(node.remaining, node_stock(&b, &node.kind));
+
+        // Every node spawns stocked, and every kind maps to balance content AND to the
+        // material registry — so a node can never yield an item nothing can spend.
+        // Checked before anything is drained below.
         for n in &arena.resources {
-            assert!(b.resource.contains_key(&n.kind), "resource {} in balance", n.kind);
+            let res = b.resource.get(&n.kind).unwrap_or_else(|| panic!("{} in balance", n.kind));
+            assert!(
+                meld_proto::materials::material(&res.material).is_some(),
+                "node {} yields unregistered material {}",
+                n.kind,
+                res.material
+            );
+            assert!(n.remaining > 0, "node {} spawned empty", n.kind);
         }
+        arena.add_avatar("p".into(), 6.0);
+
+        // Too far → nothing, and the check is the same one the channel re-runs.
+        arena.avatar_mut("p").unwrap().position =
+            Position::new(node.position.x + 50.0, node.position.y);
+        assert!(arena.can_harvest("p", &node.entity_id).is_none(), "out of range");
+        assert!(arena.take_one("p", &node.entity_id).is_none(), "out of range");
+        assert_eq!(arena.resources[0].remaining, node.remaining, "a failed take costs nothing");
+
+        // Standing on it → one unit per call, until the node runs dry.
+        arena.avatar_mut("p").unwrap().position = node.position;
+        for left in (0..node.remaining).rev() {
+            assert_eq!(
+                arena.take_one("p", &node.entity_id).as_deref(),
+                Some(node.kind.as_str())
+            );
+            assert_eq!(arena.resources[0].remaining, left);
+        }
+        assert!(arena.resources[0].depleted());
+        assert!(arena.take_one("p", &node.entity_id).is_none(), "an empty node gives nothing");
+        assert!(arena.can_harvest("p", &node.entity_id).is_none());
+
+        // An ore vein is a longer commitment than a reagent patch — that rhythm split
+        // is what makes the two gathering professions play differently.
+        let (r_stock, r_tick) = b.harvest.node_yield("reagent");
+        let (o_stock, o_tick) = b.harvest.node_yield("ore");
+        assert!(o_stock > r_stock, "an ore vein should hold more");
+        assert!(o_tick > r_tick, "…and give it up more slowly");
+
     }
 
     #[test]
@@ -5484,7 +5573,7 @@ mod tests {
     fn a_better_smith_forges_deeper_and_more_consistently() {
         let b = Balance::load_default().unwrap();
         let forge_at = |level: i32, seed: u64| {
-            forge_gear(&b, level, "main_hand", "explorer", "forest", seed)
+            forge_gear(&b, level, "main_hand", "explorer", "forest", false, seed)
         };
 
         // Forging level sets the tier a smith can reach.
@@ -5530,10 +5619,76 @@ mod tests {
     }
 
     #[test]
+    fn a_trophy_quenched_into_the_piece_reaches_past_the_smiths_own_level() {
+        let b = Balance::load_default().unwrap();
+        for level in [1, 4, 10, 20] {
+            let plain = forge_gear(&b, level, "main_hand", "explorer", "forest", false, 5);
+            let quenched = forge_gear(&b, level, "main_hand", "explorer", "forest", true, 5);
+            assert_eq!(
+                quenched.tier,
+                plain.tier + b.forge.catalyst_tier_bonus,
+                "the catalyst bought no reach at level {level}"
+            );
+            assert_eq!(plain.rarity, "rare");
+            assert_eq!(quenched.rarity, "epic", "a catalyzed piece rolls the better pool");
+            // The stat scales off `tier.max(1)`, so at level 1 (tier 0 → 1) the
+            // catalyst buys affix quality rather than a bigger number. Everywhere
+            // above that it buys both.
+            if plain.tier >= 1 {
+                assert!(quenched.atk_bonus > plain.atk_bonus, "level {level}");
+            } else {
+                assert!(quenched.atk_bonus >= plain.atk_bonus, "level {level}");
+            }
+        }
+    }
+
+    #[test]
+    fn trophy_yield_tracks_the_pack_and_the_depth_you_beat() {
+        let b = Balance::load_default().unwrap();
+        let qty = |dist: i64, count: i32, mult: f64| {
+            roll_creature_loot(&b, dist, count, mult, 7).material_qty
+        };
+        // A carcass each: beating five things yields more parts than beating one.
+        assert!(qty(0, 5, 1.0) > qty(0, 1, 1.0));
+        // Depth pays, because the deep bands' parts are what the top recipes want.
+        assert!(qty(1500, 1, 1.0) > qty(0, 1, 1.0));
+        // An elite is worth cutting up; a lone hub creature still leaves something.
+        assert!(qty(300, 2, b.encounters.elite_loot_mult) > qty(300, 2, 1.0));
+        assert_eq!(qty(0, 1, 1.0), 1, "the first kill of the game should give one");
+        assert!(qty(0, 1, 0.0) >= 1, "no encounter yields zero parts");
+        // Deterministic: the same fight always butchers the same, whatever the seed,
+        // so a crafter can count on a plan.
+        for seed in 0..50u64 {
+            assert_eq!(roll_creature_loot(&b, 800, 3, 1.0, seed).material_qty, qty(800, 3, 1.0));
+        }
+    }
+
+    #[test]
+    fn every_combat_drop_is_a_registered_trophy() {
+        // The registry is the sink's contract: a drop key that isn't in it is loot
+        // no recipe, no Forge and no vendor can accept.
+        use meld_proto::materials::{is_class, material, MaterialClass};
+        let b = Balance::load_default().unwrap();
+        for d in [0i64, 50, 150, 350, 700, 1500, 9000] {
+            let key = combat_material_for_biome(d);
+            let def = material(key).unwrap_or_else(|| panic!("{key} is not a registered material"));
+            assert!(is_class(key, MaterialClass::Trophy), "{key} is not a trophy");
+            assert!(
+                !meld_proto::consumables::recipes_consuming(key).is_empty(),
+                "{key} has no recipe to be spent in"
+            );
+            assert!(b.material.sale_price(def.tier, true, 1) > 0);
+        }
+        for node in BIOMES.iter().flat_map(|b| resources_for_biome(b)) {
+            assert!(material(node).is_some(), "harvest node {node} is not a registered material");
+        }
+    }
+
+    #[test]
     fn forging_armour_rolls_a_weight_its_class_can_wear() {
         let b = Balance::load_default().unwrap();
         for (class, slot) in [("phoenix_guard", "chest"), ("psyker", "head"), ("shifter", "legs")] {
-            let piece = forge_gear(&b, 8, slot, class, "tundra", 11);
+            let piece = forge_gear(&b, 8, slot, class, "tundra", false, 11);
             let w = meld_proto::equipment::ArmorWeight::from_wire(&piece.armor_weight)
                 .expect("forged armour has a weight");
             let c = meld_proto::equipment::class_from_key(class).unwrap();

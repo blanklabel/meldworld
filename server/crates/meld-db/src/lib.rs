@@ -1730,6 +1730,86 @@ impl Db {
         }
     }
 
+    /// Sell `qty` of a material out of the Vault for `unit_price` chits each and
+    /// credit `skill_xp` to `skill` (MS-1's Broker: the floor price under every
+    /// material, and Mercantile's first XP source). Atomic and all-or-nothing — a
+    /// seller who is short keeps their stack and earns nothing. Returns the chits
+    /// paid, or `None` when the stack cannot cover the sale.
+    pub async fn sell_to_vendor(
+        &self,
+        player_id: Uuid,
+        item_kind: &str,
+        qty: i32,
+        unit_price: i64,
+        skill: &str,
+        skill_xp: i64,
+    ) -> Result<Option<i64>, DbError> {
+        if qty <= 0 || unit_price <= 0 {
+            return Ok(None);
+        }
+        let paid = unit_price * qty as i64;
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let sold = sqlx::query(
+                    "UPDATE vault_items SET quantity = quantity - $3
+                     WHERE player_id = $1 AND item_kind = $2 AND quantity >= $3",
+                )
+                .bind(player_id)
+                .bind(item_kind)
+                .bind(qty)
+                .execute(&mut *tx)
+                .await?;
+                if sold.rows_affected() == 0 {
+                    tx.rollback().await?;
+                    return Ok(None);
+                }
+                sqlx::query("DELETE FROM vault_items WHERE player_id = $1 AND quantity <= 0")
+                    .bind(player_id)
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO vaults (player_id, chits) VALUES ($1, $2)
+                     ON CONFLICT (player_id) DO UPDATE SET chits = vaults.chits + $2",
+                )
+                .bind(player_id)
+                .bind(paid)
+                .execute(&mut *tx)
+                .await?;
+                if skill_xp > 0 {
+                    sqlx::query(
+                        "INSERT INTO meld_skills (player_id, skill_kind, xp) VALUES ($1, $3, $2)
+                         ON CONFLICT (player_id, skill_kind) DO UPDATE SET xp = meld_skills.xp + $2",
+                    )
+                    .bind(player_id)
+                    .bind(skill_xp)
+                    .bind(skill)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+                Ok(Some(paid))
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let key = (player_id, item_kind.to_string());
+                if m.vault_items.get(&key).copied().unwrap_or(0) < qty {
+                    return Ok(None);
+                }
+                let stack = m.vault_items.get_mut(&key).unwrap();
+                *stack -= qty;
+                if *stack <= 0 {
+                    m.vault_items.remove(&key);
+                }
+                *m.chits.entry(player_id).or_insert(0) += paid;
+                if skill_xp > 0 {
+                    *m.skills.entry((player_id, skill.to_string())).or_insert(0) += skill_xp;
+                }
+                Ok(Some(paid))
+            }
+        }
+    }
+
     /// Withdraw `qty` of `item_kind` from the Vault (storage chest) into the
     /// player's pending-backpack queue — staged to seed their *next* run's
     /// Backpack (`form_run` drains + clears it at dive time). Atomic: fails with
@@ -2981,6 +3061,45 @@ mod tests {
         assert!(!db.craft(p, &[("wood".into(), 99)], ("plank", 1), "forging", 5).await.unwrap());
         let (_, items) = db.get_vault(p).await.unwrap();
         assert_eq!(items, vec![("blade".to_string(), 1), ("wood".to_string(), 2)]);
+    }
+
+    #[tokio::test]
+    async fn selling_a_stack_to_the_broker_pays_chits_and_credits_mercantile() {
+        async fn skill_xp(db: &Db, p: Uuid, want: &str) -> i64 {
+            db.get_skills(p)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|(k, _)| k == want)
+                .map(|(_, xp)| xp)
+                .unwrap_or(0)
+        }
+        let db = mem().await;
+        let p = db.register("seller", "pw").await.unwrap().player_id;
+        db.bank_extraction(p, &[("bog_ichor".into(), 5)], 0).await.unwrap();
+
+        let paid = db
+            .sell_to_vendor(p, "bog_ichor", 3, 20, "mercantile", 8)
+            .await
+            .unwrap()
+            .expect("the sale went through");
+        assert_eq!(paid, 60);
+        let (chits, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(chits, 60);
+        assert_eq!(items, vec![("bog_ichor".to_string(), 2)]);
+        assert_eq!(skill_xp(&db, p, "mercantile").await, 8);
+
+        // Selling more than you hold is refused whole — no partial sale, no chits.
+        assert!(db.sell_to_vendor(p, "bog_ichor", 9, 20, "mercantile", 8).await.unwrap().is_none());
+        assert_eq!(db.get_vault(p).await.unwrap(), (60, vec![("bog_ichor".to_string(), 2)]));
+        assert_eq!(skill_xp(&db, p, "mercantile").await, 8, "a failed sale paid XP");
+
+        // Selling out empties the stack rather than leaving a zero row behind.
+        assert_eq!(
+            db.sell_to_vendor(p, "bog_ichor", 2, 20, "mercantile", 8).await.unwrap(),
+            Some(40)
+        );
+        assert_eq!(db.get_vault(p).await.unwrap(), (100, vec![]));
     }
 
     #[tokio::test]

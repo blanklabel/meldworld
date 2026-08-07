@@ -141,26 +141,89 @@ Voluntarily cancels the sender's own active extraction channel.
 
 ---
 
+### `run.harvest` (C2S)
+
+Begins working a resource node the sender is standing beside — a **channel**, not a
+pickup (`MS-2`).
+
+**Source:** GDD.md §4.1; roadmap `MS-2`; [behaviors/run-lifecycle.md](../../behaviors/run-lifecycle.md) "Flow: Harvesting".
+**Direction:** C2S.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| entity_id | string | Yes | No | — | The `resource:<kind>` node from `world.snapshot`. |
+
+**Server validation** — in a battle → `invalid_state`; already channeling (extraction *or*
+harvest) → `invalid_state`; node unknown, empty, on another elevation, or beyond
+`interaction_radius_tiles` → `out_of_range`.
+
+**Results in** — `run.channel_started` (`method: "harvest:<node_kind>"`) broadcast to the
+instance, then one `run.backpack_update` per unit (`cause: "harvest:<node_kind>"`) every
+`fill_ms` until the node is empty or the channel breaks. Each unit also credits the node's
+Meld skill.
+
+**Example**
+
+```json
+{"type": "run.harvest", "seq": 512, "ts": 1783729000000, "payload": {"entity_id": "res-7"}}
+```
+
+---
+
+### `run.cancel_harvest` (C2S)
+
+Puts the tool down on purpose, keeping every unit already banked.
+
+**Source:** roadmap `MS-2`.
+**Direction:** C2S — legal only while the sender is harvesting.
+
+**Payload** — empty object `{}`.
+
+**Server validation** — no active harvest channel → the request is a no-op (no error), so a
+client may send it defensively.
+
+**Results in** — `run.channel_interrupted` (`reason: "cancelled"`); `avatar_state` returns
+to `active`. Units already handed over are **not** clawed back.
+
+**Example**
+
+```json
+{"type": "run.cancel_harvest", "seq": 519, "ts": 1783729003000, "payload": {}}
+```
+
+---
+
 ### `run.channel_started` (S2C)
 
-An extraction channel began; the channeling avatar is visible and vulnerable for the duration.
+A channel began; the channeling avatar is visible and vulnerable for the duration. Covers
+**extraction** and **harvesting** (`MS-2`) — `method` distinguishes them.
 
-**Source:** GDD.md §2.2; CANON.md D15 (10 s interruptible channel).
+**Source:** GDD.md §2.2; CANON.md D15 (10 s interruptible channel); roadmap `MS-2` for the
+harvest channel ([behaviors/run-lifecycle.md](../../behaviors/run-lifecycle.md) "Flow: Harvesting").
 **Direction:** S2C — broadcast to all instance members (carries `client_seq` on the channeler's copy). A `world.presence_update` (`avatar_state: "channeling"`) accompanies it.
 
 **Payload**
 
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
-| client_seq | integer (int64, u32 range) | Yes | Yes | — | Echo of `run.begin_extraction` seq on the channeler's copy; `null` on others. |
+| client_seq | integer (int64, u32 range) | Yes | Yes | — | Echo of the starting request's seq on the channeler's copy; `null` on others. |
 | player_id | string (uuid) | Yes | No | — | Who is channeling. |
-| method | string (enum: `portal`, `escape_item`) | Yes | No | — | Extraction mechanism in use. |
-| completes_at | integer (int64, u64) | Yes | No | — | Unix millis when the channel completes if uninterrupted (start + 10 000 ms **[TUNABLE]**). |
+| method | string | Yes | No | — | `portal` / `town_portal` / `escape_item` for extraction, or **`harvest:<node_kind>`** for a gather. |
+| completes_at | integer (int64, u64) | Yes | No | — | Unix millis when the channel completes if uninterrupted. Extraction: start + the channel duration **[TUNABLE]**. Harvest: when the node would run *dry* — a horizon, not a promise, since a gather pays out along the way. |
+| fill_ms | integer (int64, u64) | No | No | `0` | Milliseconds per **payout** — how long one fill of the client's progress bar takes. Extraction fills once and completes; a harvest refills per unit banked (`[harvest] *_tick_ms`). `0` = unknown, draw no bar. |
 
-**Example**
+**Example — extraction**
 
 ```json
-{"type": "run.channel_started", "seq": 5210, "ts": 1783729000040, "payload": {"client_seq": 480, "player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "method": "escape_item", "completes_at": 1783729010040}}
+{"type": "run.channel_started", "seq": 5210, "ts": 1783729000040, "payload": {"client_seq": 480, "player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "method": "escape_item", "completes_at": 1783729010040, "fill_ms": 10000}}
+```
+
+**Example — harvest** (a 3-unit reagent patch at 900 ms a unit)
+
+```json
+{"type": "run.channel_started", "seq": 5211, "ts": 1783729000040, "payload": {"client_seq": 481, "player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "method": "harvest:bloom_herb", "completes_at": 1783729002740, "fill_ms": 900}}
 ```
 
 ---
@@ -177,7 +240,12 @@ An extraction channel broke before completing.
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
 | player_id | string (uuid) | Yes | No | — | Whose channel broke. |
-| reason | string (enum: `damage_taken`, `battle_started`, `moved`, `cancelled`, `disconnected`) | Yes | No | — | What broke it: any damage; being pulled into a battle (touch); any accepted movement intent; explicit `run.cancel_extraction`; or the channeler's grace window expiring. |
+| reason | string (enum: `damage_taken`, `battle_started`, `moved`, `cancelled`, `disconnected`, `exhausted`) | Yes | No | — | What ended it: any damage; being pulled into **or opting into** a battle; any accepted movement intent; explicit `run.cancel_extraction` / `run.cancel_harvest`; the channeler's grace window expiring; or — harvest only — the node **running out of stock** (`exhausted`, a natural end rather than a break). |
+
+**Harvest note.** A broken *extraction* banks nothing. A broken *harvest* keeps every unit
+already handed over and loses only the tick in flight — extraction is one atomic event,
+harvesting is many small ones. See [behaviors/run-lifecycle.md](../../behaviors/run-lifecycle.md)
+"Flow: Harvesting".
 
 **Example**
 

@@ -19,6 +19,7 @@ use meld_db::{Db, DbError, EquipResult, PlayerRow};
 use meld_proto::enums::CharacterClass;
 use meld_proto::http::*;
 use meld_proto::limits;
+use meld_proto::materials as mat;
 use uuid::Uuid;
 
 pub use tokens::{Sessions, Tickets};
@@ -66,6 +67,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vault/gear/:gear_id/repair", post(repair))
         .route("/v1/vendors/apothecary", get(vendor_stock))
         .route("/v1/vendors/apothecary/buy", post(vendor_buy))
+        .route("/v1/vendors/broker", get(broker_prices))
+        .route("/v1/vendors/broker/sell", post(broker_sell))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -489,6 +492,19 @@ async fn craft(
             "No such recipe.",
         ));
     };
+    // The recipe book opens with the crafter's own permanent level (crafting-meld.md:
+    // a level gate is a 403, not a 409 — the materials are not the problem).
+    let level = skill_level(&st, player_id, r.skill).await?;
+    if level < r.min_level {
+        return Err(ApiReject::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            format!(
+                "{} level {} is below the required level {} for recipe '{}'.",
+                r.skill, level, r.min_level, r.key
+            ),
+        ));
+    }
     let inputs: Vec<(String, i32)> = r
         .inputs
         .iter()
@@ -511,6 +527,7 @@ async fn craft(
                 "crafted": r.output,
                 "quantity": r.output_qty,
                 "skill": r.skill,
+                "skill_level": level,
             })),
         )
             .into_response()),
@@ -537,9 +554,15 @@ struct ForgeReq {
     /// Which class's kit to forge for; defaults to the martial baseline.
     #[serde(default)]
     class_key: Option<String>,
-    /// Which material to spend. Any Vault material works — a smith uses what they
-    /// have — so the client names it rather than the server guessing.
+    /// The piece's BODY: an `ore`-class material out of the Vault. A smith uses
+    /// whichever ore they have, so the client names it rather than the server
+    /// guessing — but it has to be an ore.
     material: String,
+    /// Optional **catalyst**: a `trophy` (combat drop) quenched into the piece,
+    /// buying `catalyst_tier_bonus` tiers past the smith's own reach and the better
+    /// affix pool. This is what a monster part is *for*.
+    #[serde(default)]
+    catalyst: Option<String>,
 }
 
 /// `POST /v1/crafting/forge` — forge one piece of gear (MS-1). Forging level sets
@@ -558,6 +581,19 @@ async fn forge(
     if meld_proto::equipment::class_from_key(&class_key).is_none() {
         return Err(ApiReject::validation("Unknown class."));
     }
+    if !mat::is_class(&req.material, mat::MaterialClass::Ore) {
+        return Err(ApiReject::validation(
+            "The forge needs an ore or wood for the body of the piece.",
+        ));
+    }
+    if let Some(c) = &req.catalyst {
+        if !mat::is_class(c, mat::MaterialClass::Trophy) {
+            return Err(ApiReject::validation(
+                "Only a trophy — a part cut from a creature — can catalyze a forge.",
+            ));
+        }
+    }
+    let catalyzed = req.catalyst.is_some();
     let level = forging_level(&st, player_id).await?;
     let drop = meld_world::forge_gear(
         &st.balance,
@@ -565,10 +601,14 @@ async fn forge(
         &req.slot,
         &class_key,
         "forest",
+        catalyzed,
         seed_now(),
     );
     let piece = crafted_row(&drop);
-    let materials = [(req.material.clone(), st.balance.forge.gear_material_cost)];
+    let mut materials = vec![(req.material.clone(), st.balance.forge.gear_material_cost)];
+    if let Some(c) = &req.catalyst {
+        materials.push((c.clone(), st.balance.forge.catalyst_material_cost));
+    }
     match st
         .db
         .forge_gear(player_id, &materials, st.balance.forge.gear_chit_cost, &piece)
@@ -585,19 +625,31 @@ async fn forge(
                     "forged": piece.name,
                     "slot": piece.slot,
                     "tier": piece.tier,
+                    "rarity": drop.rarity,
+                    "catalyzed": catalyzed,
                     "forging_level": level,
                 })),
             )
                 .into_response())
         }
-        Ok(false) => Err(ApiReject::new(
-            StatusCode::CONFLICT,
-            "conflict",
-            format!(
-                "The forge needs {} {} and {} chits.",
-                st.balance.forge.gear_material_cost, req.material, st.balance.forge.gear_chit_cost
-            ),
-        )),
+        Ok(false) => {
+            let catalyst_cost = req
+                .catalyst
+                .as_ref()
+                .map(|c| format!(", {} {c}", st.balance.forge.catalyst_material_cost))
+                .unwrap_or_default();
+            Err(ApiReject::new(
+                StatusCode::CONFLICT,
+                "conflict",
+                format!(
+                    "The forge needs {} {}{} and {} chits.",
+                    st.balance.forge.gear_material_cost,
+                    req.material,
+                    catalyst_cost,
+                    st.balance.forge.gear_chit_cost
+                ),
+            ))
+        }
         Err(e) => Err(ApiReject::internal(e)),
     }
 }
@@ -753,14 +805,19 @@ fn crafted_row(d: &meld_world::GearDrop) -> meld_db::LootedGear {
     }
 }
 
-/// The caller's Forging level, derived from banked XP like every other Meld skill.
-async fn forging_level(st: &ApiState, player_id: Uuid) -> Result<i32, ApiReject> {
+/// The caller's level in one Meld skill, derived from banked XP. Permanent
+/// progression: this is the number every crafting gate reads.
+async fn skill_level(st: &ApiState, player_id: Uuid, kind: &str) -> Result<i32, ApiReject> {
     let skills = st.db.get_skills(player_id).await.map_err(ApiReject::internal)?;
     Ok(skill_entries(skills, st.meld_xp_per_level)
         .into_iter()
-        .find(|s| s.skill_kind == "forging")
+        .find(|s| s.skill_kind == kind)
         .map(|s| s.level)
         .unwrap_or(1))
+}
+
+async fn forging_level(st: &ApiState, player_id: Uuid) -> Result<i32, ApiReject> {
+    skill_level(st, player_id, "forging").await
 }
 
 /// A seed for a craft. Crafting is not replayed, so wall-clock entropy is fine here
@@ -773,25 +830,148 @@ fn seed_now() -> u64 {
 }
 
 /// `GET /v1/crafting/recipes` — every recipe, so the Forge & Alembic UI can list
-/// them instead of hard-coding a copy that drifts.
+/// them instead of hard-coding a copy that drifts. Each row carries the level it
+/// needs *and* the caller's level in that skill, so the UI can grey a locked row
+/// without a second round trip.
 async fn recipes(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
-    authenticate(&st, &headers)?;
-    let data: Vec<serde_json::Value> = meld_proto::consumables::RECIPES
+    let player_id = authenticate(&st, &headers)?;
+    let skills = st.db.get_skills(player_id).await.map_err(ApiReject::internal)?;
+    let levels = skill_entries(skills, st.meld_xp_per_level);
+    let level_of = |kind: &str| -> i32 {
+        levels
+            .iter()
+            .find(|s| s.skill_kind == kind)
+            .map(|s| s.level)
+            .unwrap_or(1)
+    };
+    let mut rows: Vec<&meld_proto::consumables::RecipeDef> =
+        meld_proto::consumables::RECIPES.iter().collect();
+    rows.sort_by_key(|r| (r.min_level, r.key));
+    let data: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
+            let have = level_of(r.skill);
             serde_json::json!({
                 "recipe": r.key,
                 "name": r.name,
                 "skill": r.skill,
+                "required_level": r.min_level,
+                "skill_level": have,
+                "craftable": have >= r.min_level,
                 "output": r.output,
                 "output_quantity": r.output_qty,
                 "inputs": r.inputs.iter().map(|(k, q)| serde_json::json!({
-                    "item_kind": k, "quantity": q
+                    "item_kind": k,
+                    "quantity": q,
+                    "material_class": meld_proto::materials::material(k).map(|m| m.class.wire()),
                 })).collect::<Vec<_>>(),
             })
         })
         .collect();
     Ok((StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response())
+}
+
+/// `GET /v1/vendors/broker` — the Broker's standing offer on every material,
+/// priced at the caller's Mercantile level (a better haggler is quoted better).
+/// The floor under the whole material economy: nothing you carry home is
+/// unspendable, even if you never learn a craft.
+async fn broker_prices(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let level = skill_level(&st, player_id, "mercantile").await?;
+    let data: Vec<serde_json::Value> = meld_proto::materials::MATERIALS
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "item_kind": m.key,
+                "name": m.name,
+                "description": m.description,
+                "material_class": m.class.wire(),
+                "tier": m.tier,
+                "price_chits": broker_price(&st, m, level),
+            })
+        })
+        .collect();
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "vendor": "broker",
+            "name": "The Broker",
+            "mercantile_level": level,
+            "data": data,
+        })),
+    )
+        .into_response())
+}
+
+fn broker_price(st: &ApiState, m: &mat::MaterialDef, mercantile_level: i32) -> i64 {
+    st.balance.material.sale_price(
+        m.tier,
+        m.class == mat::MaterialClass::Trophy,
+        mercantile_level,
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct SellReq {
+    item_kind: String,
+    #[serde(default = "one")]
+    quantity: i32,
+}
+
+/// `POST /v1/vendors/broker/sell` — materials out, chits in, Mercantile XP earned.
+/// Only *materials*: a potion or a Town Portal is refused, because a shop that buys
+/// everything makes the Vault a pawn shop and the crafting economy pointless.
+async fn broker_sell(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<SellReq>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if req.quantity <= 0 || req.quantity > 999 {
+        return Err(ApiReject::validation("Quantity must be 1-999."));
+    }
+    let Some(def) = mat::material(&req.item_kind) else {
+        return Err(ApiReject::new(
+            StatusCode::BAD_REQUEST,
+            "validation_error",
+            "The Broker deals in crafting materials only.",
+        ));
+    };
+    let level = skill_level(&st, player_id, "mercantile").await?;
+    let unit = broker_price(&st, def, level);
+    match st
+        .db
+        .sell_to_vendor(
+            player_id,
+            &req.item_kind,
+            req.quantity,
+            unit,
+            "mercantile",
+            st.balance.meld.mercantile_xp_per_sale,
+        )
+        .await
+    {
+        Ok(Some(paid)) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "sold": req.item_kind,
+                "quantity": req.quantity,
+                "unit_price": unit,
+                "earned_chits": paid,
+                "mercantile_level": level,
+            })),
+        )
+            .into_response()),
+        Ok(None) => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("The Vault does not hold {} {}.", req.quantity, req.item_kind),
+        )),
+        Err(e) => Err(ApiReject::internal(e)),
+    }
 }
 
 /// The one NPC every new player needs: the Apothecary's shelf (EC-2). Lowest-tier

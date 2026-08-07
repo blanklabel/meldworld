@@ -135,6 +135,21 @@ proxy, no second port. It needs `trunk` (`cargo install trunk`) and the wasm tar
 (`rustup target add wasm32-unknown-unknown`); everything needs a local Postgres
 (`initdb`/`pg_ctl`/`createdb` on PATH).
 
+**[E] is the one interact key** on the overworld — it does whatever is in reach
+(gather a node, open a chest, descend an entrance, extract at the deep portal, join a
+nearby fight) and stops a channel if one is running. Priority is urgency then
+proximity: a teammate's fight outranks scenery because it closes. The HUD shows a
+prompt *only* when something is in reach, plus a **progress bar** that fills once per
+channel payout (per unit while gathering, once while extracting — `fill_ms` on
+`run.channel_started`). Touch gets the same thing as one contextual **Interact** button
+that hides when nothing is in reach.
+
+**There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
+explicit choice on the menu's **Map** column ("Return to town", enabled only while you
+hold one) — the primary way out of a dive belongs somewhere a player can find, not on a
+key they have to be told about. The deep portal stays an `[E]` world interaction, and
+walking west into the city wedge is still an instant free return (no channel, no item).
+
 Build your **party of four** on the Join screen (keys 1–4 cycle each slot's class),
 or preset it: `?party=explorer,psyker,resonant,explorer` / `?class=psyker` (lead) in the
 browser, or `MELD_PARTY=…` / `MELD_CLASS=…` natively. `?autoplay` self-drives the
@@ -414,10 +429,23 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   interrupt). Each dive starts with `starting_town_portals`; felled creatures drop
   more at `town_portal_drop_chance`. Client keys: `E` = deep portal, `T` = Town Portal.
 - **Harvestable resource nodes** (`ResourceNode`) scatter through every area (area 0
-  gets one guaranteed starter node). `run.harvest { entity_id }` → the node's `material`
-  banks into the run backpack (extract to keep it; feeds Forging/Alchemy crafting) and
-  its `xp` credits the node's Meld `skill`. Biome→node ids in `resources_for_biome`;
-  stats under `[resource.<kind>]`. Client key `H` harvests the nearest node in reach.
+  gets one guaranteed starter node) and hold **finite stock**. `run.harvest { entity_id }`
+  opens a **channel** (MS-2) that hands over **one unit per tick** while you stand still:
+  each unit banks the node's `material` into the run backpack (extract to keep it; feeds
+  Forging/Alchemy crafting) and credits the node's Meld `skill` its `xp`. Stock + tick
+  pace come from the material's **class** (`[harvest]`: reagent = quick units, ore = a
+  slower dig). Interruption is strict but costs only the tick in flight — moving, a
+  battle, `run.cancel_harvest` or walking out of range ends it and keeps every banked
+  unit. Biome→node ids in `resources_for_biome`; stats under `[resource.<kind>]`.
+- **Materials are one registry** ([`meld_proto::materials`](shared/meld-proto/src/materials.rs)):
+  every material key with a **class** — `reagent`/`ore` (harvest nodes) and **`trophy`**
+  (the combat drop a felled creature banks, `combat_material_for_biome`) — plus a tier
+  per biome band. The class is what recipes and the Forge gate on: Alchemy's **trophy
+  line** takes monster parts, the Forge takes an *ore* for the body and an optional
+  *trophy* **catalyst** (a tier past the smith's own reach), and the **Broker**
+  (`/v1/vendors/broker`) buys any material for chits + Mercantile XP. A drop key missing
+  from the registry is loot nothing can spend, and unit tests fail on it. Design:
+  [`proposals/crafting-and-professions.md`](docs/proposals/crafting-and-professions.md).
 - The run backpack rides the wire on `run.backpack_update` (added/removed changes with
   a `cause`); the client mirrors it into `RunBackpack` for the overworld HUD.
 
@@ -453,4 +481,4 @@ joiners render as an "allies" strip on the battle screen.
 - **Data models**: [`interfaces/data-models.md`](docs/interfaces/data-models.md) + [`interfaces/data-models/`](docs/interfaces/data-models/)
 - **What we're building next (checkable worklist)**: [`ROADMAP.md`](docs/ROADMAP.md)
 - **Milestones & tasks**: [`BUILD-PLAN.md`](docs/BUILD-PLAN.md)
-- **Feature proposals**: [`proposals/last-city.md`](docs/proposals/last-city.md) (the hub), [`proposals/verticality.md`](docs/proposals/verticality.md)
+- **Feature proposals**: [`proposals/last-city.md`](docs/proposals/last-city.md) (the hub), [`proposals/verticality.md`](docs/proposals/verticality.md), [`proposals/crafting-and-professions.md`](docs/proposals/crafting-and-professions.md) (crafting depth; why professions are Meld skills, not classes)

@@ -679,6 +679,18 @@ fn inject_hero_names(
     }
 }
 
+/// An in-progress **harvest** channel (MS-2). Unlike extraction this is *repeating*:
+/// it hands over one unit every `tick_ms` until the node is empty or something stops
+/// it. Interruption is strict — the tick in flight is lost — but every unit already
+/// banked stays banked, so a broken gather costs one tick rather than the node. That
+/// is what turns "do I dare start" into "how long do I dare stay".
+struct Harvest {
+    node_id: String,
+    /// Wall-clock ms at which the next unit comes loose.
+    next_at: u64,
+    tick_ms: u64,
+}
+
 /// An in-progress extraction channel (interruptible; completes → bank).
 struct Extraction {
     completes_at: u64,
@@ -757,6 +769,8 @@ struct WorldActor {
     hero_rows: HashMap<String, Vec<bool>>,
     /// player_id -> active extraction channel.
     extraction: HashMap<String, Extraction>,
+    /// player -> in-progress harvest channel (MS-2).
+    harvest: HashMap<String, Harvest>,
     /// player_id -> fractional HP carried over between ticks for the Resonant
     /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
     /// bank the sub-1 remainder here and apply whole HP as it accrues).
@@ -995,7 +1009,7 @@ impl WorldActor {
             });
         }
         // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
-        for n in self.arena.resources.iter().filter(|n| !n.harvested) {
+        for n in self.arena.resources.iter().filter(|n| !n.depleted()) {
             entities.push(wm::SnapshotEntity {
                 entity_id: n.entity_id.clone(),
                 position: n.position,
@@ -1810,6 +1824,30 @@ impl WorldActor {
     }
 
     fn start_battle(&mut self, toucher: &str, party_id: u32, monster_idx: usize) -> Vec<Outgoing> {
+        // A fight breaks whatever the toucher was channeling. Without this an
+        // in-flight extraction completes *during* the battle and banks the backpack,
+        // which is a free escape past the flee cost (`flee_chit_loss_fraction` /
+        // `flee_item_drop_chance`) — and `handle_begin_extraction` already refuses to
+        // START one mid-battle, so surviving into a battle was never intended. The
+        // Town Portal is only consumed on completion, so an interrupted one is kept.
+        let mut broke = self.end_harvest(toucher, "battle_started");
+        if self.extraction.remove(toucher).is_some() {
+            if let Some(a) = self.arena.avatar_mut(toucher) {
+                if a.state == "channeling" {
+                    a.state = "active".to_string();
+                }
+            }
+            let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+            broke.extend(members.iter().map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelInterrupted {
+                        player_id: toucher.to_string(),
+                        reason: "battle_started".to_string(),
+                    },
+                )
+            }));
+        }
         let seed = now_ms();
         let balance = self.balance.clone();
         // Snapshot the world's own synced gear mirror before the mutable reborrow —
@@ -1939,7 +1977,7 @@ impl WorldActor {
             "battle started"
         );
 
-        let mut out = Vec::new();
+        let mut out = broke;
         for pid in &party_players {
             let yours = slot.player_combatants.get(pid).cloned().unwrap_or_default();
             out.push(out_msg(
@@ -2192,6 +2230,10 @@ impl GameState {
             self.flush_hero_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
+            if let Some(w) = self.world.as_mut() {
+                let harvested = w.advance_harvests();
+                self.dispatch(harvested);
+            }
         }
     }
 
@@ -2461,6 +2503,17 @@ impl GameState {
             wr::Harvest::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_harvest(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::CancelHarvest::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_cancel_harvest(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
                         Vec::new(),
@@ -2785,6 +2838,7 @@ impl GameState {
                 hero_names: HashMap::new(),
                 hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
+                harvest: HashMap::new(),
                 regen_accum: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
@@ -3324,6 +3378,13 @@ impl WorldActor {
             };
             return (out, eff);
         }
+        // Any movement interrupts an in-progress harvest channel, exactly as it does
+        // an extraction (D15): the input that breaks a channel is spent breaking it,
+        // and every unit already banked stays banked.
+        let harvest_broke = self.end_harvest(player_id, "moved");
+        if !harvest_broke.is_empty() {
+            return (harvest_broke, Vec::new());
+        }
         // Any movement interrupts an in-progress extraction channel (D15).
         if self.extraction.remove(player_id).is_some() {
             if let Some(a) = self.arena.avatar_mut(player_id) {
@@ -3470,7 +3531,11 @@ impl WorldActor {
             };
             (pid, battle_id)
         };
-        (self.join_battle(player_id, party_id, &battle_id), Vec::new())
+        // Opting into a fight breaks whatever you were channeling, same as being
+        // dragged into one does.
+        let mut out = self.end_harvest(player_id, "battle_started");
+        out.extend(self.join_battle(player_id, party_id, &battle_id));
+        (out, Vec::new())
     }
 
 }
@@ -4084,6 +4149,7 @@ impl WorldActor {
                         player_id: player_id.to_string(),
                         method: req.method.clone(),
                         completes_at,
+                        fill_ms: channel_ms,
                     },
                 )
             })
@@ -4204,6 +4270,9 @@ impl WorldActor {
     /// Harvest the named resource node the avatar is standing next to: bank its
     /// material into the backpack and queue its Meld-skill XP. The node vanishes
     /// from the next snapshot (server-authoritative — client just renders).
+    /// Begin working a resource node (MS-2). This opens a **channel** rather than
+    /// completing a gather: `advance_harvests` hands over one unit per tick while the
+    /// player stays put and the node holds out.
     fn handle_harvest(
         &mut self,
         player_id: &str,
@@ -4223,32 +4292,168 @@ impl WorldActor {
                 )
             }
         };
-        let balance = self.balance.clone();
-        let (item, skill, xp, kind) = {
-            if self.battle_of_player(player_id).is_some() {
-                return (
-                    vec![error(
-                        player_id,
-                        ErrorCode::InvalidState,
-                        "Resolve the battle first.",
-                        Some(raw.seq),
-                    )],
-                    Vec::new(),
-                );
+        if self.battle_of_player(player_id).is_some() {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Resolve the battle first.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
+        }
+        // One channel at a time: a player mid-extraction is not also mining.
+        if self.extraction.contains_key(player_id) || self.harvest.contains_key(player_id) {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Already channeling.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
+        }
+        let Some(kind) = self.arena.can_harvest(player_id, &req.entity_id) else {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::OutOfRange,
+                    "Nothing to harvest here.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
+        };
+        let Some(tick_ms) = self.harvest_tick_ms(&kind) else {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "unknown resource",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
+        };
+        let now = now_ms();
+        // `completes_at` is when the node would run dry if nobody interrupted — the
+        // horizon the client draws its bar against, not a promise.
+        let remaining = self
+            .arena
+            .resources
+            .iter()
+            .find(|n| n.entity_id == req.entity_id)
+            .map(|n| n.remaining.max(0) as u64)
+            .unwrap_or(1);
+        self.harvest.insert(
+            player_id.to_string(),
+            Harvest {
+                node_id: req.entity_id.clone(),
+                next_at: now + tick_ms,
+                tick_ms,
+            },
+        );
+        if let Some(a) = self.arena.avatar_mut(player_id) {
+            a.state = "channeling".to_string();
+        }
+        let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        let msgs: Vec<Outgoing> = members
+            .iter()
+            .map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelStarted {
+                        client_seq: if pid == player_id { Some(raw.seq) } else { None },
+                        player_id: player_id.to_string(),
+                        method: format!("harvest:{kind}"),
+                        completes_at: now + tick_ms * remaining,
+                        fill_ms: tick_ms,
+                    },
+                )
+            })
+            .collect();
+        (msgs, Vec::new())
+    }
+
+    /// Put the tool down on purpose (the "click away" gesture). Already-banked units
+    /// stay banked; there is nothing to lose but the tick in flight.
+    fn handle_cancel_harvest(
+        &mut self,
+        player_id: &str,
+        _raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        (self.end_harvest(player_id, "cancelled"), Vec::new())
+    }
+
+    /// The channel tick rate for a node kind, from its material class (`[harvest]`).
+    fn harvest_tick_ms(&self, kind: &str) -> Option<u64> {
+        let res = self.balance.resource.get(kind)?;
+        let class = meld_proto::materials::material(&res.material)
+            .map(|m| m.class.wire())
+            .unwrap_or("");
+        Some(self.balance.harvest.node_yield(class).1)
+    }
+
+    /// Drop `player_id`'s harvest channel and tell the instance why. Returns no
+    /// messages when there was nothing running, so every interrupt site can call it
+    /// unconditionally.
+    fn end_harvest(&mut self, player_id: &str, reason: &str) -> Vec<Outgoing> {
+        if self.harvest.remove(player_id).is_none() {
+            return Vec::new();
+        }
+        // Only clear the *channeling* state: a channel broken by a battle must not
+        // stamp `active` over the state the battle itself just set.
+        if let Some(a) = self.arena.avatar_mut(player_id) {
+            if a.state == "channeling" {
+                a.state = "active".to_string();
             }
-            let Some(kind) = self.arena.harvest(player_id, &req.entity_id) else {
-                return (
-                    vec![error(
-                        player_id,
-                        ErrorCode::OutOfRange,
-                        "Nothing to harvest here.",
-                        Some(raw.seq),
-                    )],
-                    Vec::new(),
-                );
+        }
+        self.run
+            .runs
+            .iter()
+            .map(|r| r.player_id.clone())
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelInterrupted {
+                        player_id: player_id.to_string(),
+                        reason: reason.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Hand one unit to every harvest channel whose tick has elapsed (MS-2). Each unit
+    /// is banked the instant it comes out, so an interrupt costs only the tick in
+    /// flight. A channel ends here when the node runs dry (`exhausted`) or when the
+    /// player is no longer beside it (`moved`) — walking away needs no special case,
+    /// because `take_one` re-checks range and elevation every tick.
+    fn advance_harvests(&mut self) -> Vec<Outgoing> {
+        let now = now_ms();
+        let due: Vec<(String, String)> = self
+            .harvest
+            .iter()
+            .filter(|(_, h)| h.next_at <= now)
+            .map(|(pid, h)| (pid.clone(), h.node_id.clone()))
+            .collect();
+        if due.is_empty() {
+            return Vec::new();
+        }
+        let balance = self.balance.clone();
+        let mut out = Vec::new();
+        for (pid, node_id) in due {
+            let Some(kind) = self.arena.take_one(&pid, &node_id) else {
+                out.extend(self.end_harvest(&pid, "moved"));
+                continue;
             };
             let Some(res) = balance.resource.get(&kind) else {
-                return (vec![error(player_id, ErrorCode::ValidationError, "unknown resource", Some(raw.seq))], Vec::new());
+                out.extend(self.end_harvest(&pid, "cancelled"));
+                continue;
             };
             let item = ItemStack {
                 item_id: Uuid::now_v7().to_string(),
@@ -4256,17 +4461,16 @@ impl WorldActor {
                 quantity: 1,
                 insurance: None,
             };
-            if let Some(r) = self.run.run_mut(player_id) {
+            if let Some(r) = self.run.run_mut(&pid) {
                 r.backpack.push(item.clone());
             }
-            (item, res.skill.clone(), res.xp, kind)
-        };
-        let _ = self
-            .db_writes
-            .send(DbWrite::SkillXp(player_id.to_string(), skill, xp));
-        (
-            vec![out_msg(
-                player_id,
+            let _ = self.db_writes.send(DbWrite::SkillXp(
+                pid.clone(),
+                res.skill.clone(),
+                res.xp,
+            ));
+            out.push(out_msg(
+                &pid,
                 &wr::BackpackUpdate {
                     changes: vec![wr::BackpackChange {
                         item,
@@ -4276,9 +4480,21 @@ impl WorldActor {
                     chits_delta: 0,
                     gear_added: Vec::new(),
                 },
-            )],
-            Vec::new(),
-        )
+            ));
+            let dry = self
+                .arena
+                .resources
+                .iter()
+                .find(|n| n.entity_id == node_id)
+                .map(|n| n.depleted())
+                .unwrap_or(true);
+            if dry {
+                out.extend(self.end_harvest(&pid, "exhausted"));
+            } else if let Some(h) = self.harvest.get_mut(&pid) {
+                h.next_at = now + h.tick_ms;
+            }
+        }
+        out
     }
 
     /// Open the treasure chest the avatar is standing next to: roll its loot
@@ -4315,7 +4531,7 @@ impl WorldActor {
         let loot_item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
             item_kind: loot.material.to_string(),
-            quantity: 1,
+            quantity: loot.material_qty,
             insurance: None,
         };
         let gear: Vec<LootGear> = loot
@@ -4426,7 +4642,7 @@ impl WorldActor {
             let item = ItemStack {
                 item_id: Uuid::now_v7().to_string(),
                 item_kind: l.material.to_string(),
-                quantity: 1,
+                quantity: l.material_qty,
                 insurance: None,
             };
             changes.push(wr::BackpackChange { item, delta: "added".to_string(), cause: "chest".to_string() });
@@ -5370,7 +5586,7 @@ impl WorldActor {
                     let loot_item = ItemStack {
                         item_id: Uuid::now_v7().to_string(),
                         item_kind: loot.material.to_string(),
-                        quantity: 1,
+                        quantity: loot.material_qty,
                         insurance: None,
                     };
                     // Any gear drop becomes a wire LootGear with a fresh server id

@@ -20,12 +20,17 @@
 | **The Trace** | Tracking and containing anomalies — including Psykers | `psyker` | Initiate · Tracer · Field Marshal · Lead Investigator · Bureau Chief · Director |
 | **Order of the Iron Hull** | Blunt-force deterrent against leviathans | *future* | Bilge-Scraper · Wake-Striker · Anchor-Priest · Iron-Bound · Deck-Master · Grandmaster |
 | **Leviathan's Slumber** | Druids of the coast and the colossal deep | *future* | Tidewatcher · Wave Weaver · Stormspeaker · Deepwalker · Seafather/Seamother · Leviathan's Voice |
-| **The Open Flower** | Druids of agriculture and balance | *future* | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
+| **The Open Flower** | Druids of agriculture and balance | *future* (`keeper`) | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
 | **The Order** | Secret anti-corruption coteries | *future, hidden* | Pacifier · Placater · Peacemaker · Conciliator · Arbiter · Judge |
+| **The Foundry** | Structural iron and magitech metal for the city's infrastructure | *future* (`smithwright`) | Indentured Extractor · Smelter Apprentice · Journeyman Smithwright / Extractor Foreman · Smithwright · Master Smithwright · Master of the Foundry |
 
 The **Resonant** is the one class with no order yet — a healer who pays in its own
 blood fits none of the above cleanly, and inventing one to fill the table would be
 worse than leaving the gap named.
+
+The city's **non-class institutions** — government, the Sentinels, the Archivists,
+Artificing, the Messengers, the Wall Defense Force, the Healery, and the criminal
+syndicates — live in [`city-institutions.md`](city-institutions.md).
 
 ---
 
@@ -286,8 +291,90 @@ it; sustainable practice is the long game; the wisdom of nature guides action.
 **Already touching the game:** the potion makers are the alchemy ladder, and the
 Apothecary's shelf is the city-facing end of it.
 
+**The class is the `keeper`** — an Open Flower hero in the field. Keepers are
+**Alchemy's** gathering hands: reagents, farms, groves, planting. Stacking them in one
+party buys **tempo** on every one of those timed actions rather than more material — four
+Keepers harvest, plant and tend markedly faster, which is what makes a mono-Keeper party
+a fast, fragile gathering raid instead of a wasted roster
+([`proposals/crafting-and-professions.md`](../proposals/crafting-and-professions.md)
+§2.3a).
+
 Ranks: Sprout 1 · Seedling 2 · Budling **5** · Flowerling **9** · Cultivator **13** ·
 Terra **17**.
+
+## The Foundry — *a future class*
+
+Not a guild — an **industry**. A heavily subsidised, strictly audited branch of the city
+government, and the backbone the rest of the Last City is bolted to. **Vision** The
+absolute survival of the Last City through relentless efficiency, industrial production
+and the strict fulfilment of city-mandated quotas. **Mission** Supply the structural iron
+and magitech metals that keep the mechanical **Stabilizing Towers**, the **Great Ivory
+Wall** and the **Power Grid** standing.
+
+Three castes, and they are a production line rather than a hierarchy of prestige. The
+**Extractors** rip resources out of the Shifting Lands and the Slag-Fields; the city
+fills those ranks with citizens in debt and minor criminals, keeping labour cheap and
+expendable, and the mortality rate is what you would expect. The **Smelters** boil the
+corruption and magical volatility out of raw ore to stabilise it — the bridge between
+raw material and anything usable. The **Smithwrights** build: complex magitech
+components, heavy riveted plating for the Wall, structural armor.
+
+Run as a bureaucracy under the **First Bloc**, out of the **Crystal Tower**, which hands
+down daily quotas to the Smithwrights and Smelters, who in turn spend the Extractors.
+Transactions are strictly bureaucratic — the Foundry makes gear for the military and the
+state, so an outsider cannot simply walk in and buy, only navigate red tape or pay a
+bribe. Its internal hierarchy is modelled deliberately on the automatons that run the
+First Tower.
+
+Notable: **Thora Iron-Bind** (dwarf, Master Smithwright), a zealot of industrial
+progress who takes the Forge-God cult literally, reads engineering blueprints as
+infallible holy text, has voluntarily replaced her left arm and jaw with magitech and
+riveted plate to better resemble the First Tower's automatons, and refuses anyone who
+wastes her time with inefficient emotions; **Silas "Scrap" Copper-Cough** (gnome,
+Requisition Officer), who controls military-gear distribution from a smog-filled office
+in the lower Crystal Tower, filters off-the-books material to the highest bidder, and
+coughs black metallic phlegm; **Brannek Deep-Shift** (dwarf, Extractor Foreman), who uses
+old Dwarven Ethereal Way technique to feel a resource vein about to dimensionally
+collapse and is clashing with Crystal Tower officials over a quota he knows will kill his
+crew; **Fidget Wrench-Warp** (gnome, Smelter Apprentice), who finds stable material
+boring and is hoarding the most corrupted slag in the lower furnaces to build an illegal
+golem powered by raw concentrated magic; **Jaxen "Lucky" Vane** (human, Indentured
+Extractor), drafted to pay off a gambling debt, fourteen months alive in the Slag-Fields
+against all odds, scarred by magical volatility and convinced the shifting earth is
+personally hunting him.
+
+Beliefs: industrial efficiency is a literal form of worship; blueprints are holy texts;
+the quota is the measure of a life's worth. The order keeps a state-mandated
+pseudo-religion dedicated to **"One", the Forge God** — which is the Foundry's **heresy
+of Terim**, the god of crafting and building: a cult that industrialised a god of
+*making* into a god of *throughput*. Terim's own followers, who maintain the stabilisers
+and staff the Healery, do not accept the renaming.
+
+**Already touching the game:** the Foundry is **Forging's home order**, and its three
+castes are the Forging pipeline end to end — Extractors are ore/wood harvest, Smelters
+are the raw→refined step the game does not have yet, Smithwrights are the Forge itself.
+See [`proposals/crafting-and-professions.md`](../proposals/crafting-and-professions.md)
+§2.4.
+
+**The class is the `smithwright`**, named for the caste that builds rather than the order
+that employs them — as the Psyker is named for what it is, not for The Trace. A
+Smithwright is **Forging's** hands: extraction, smelting, forging, repair, and
+(eventually) raising walls and structures. Stacking them buys **tempo** on all of it —
+four Smithwrights build, repair, smelt and forge markedly faster, never producing *more*
+material than the vein held (§2.3a). Their eventual apex is co-authoring an **Anchor**:
+the Foundry forges the body, Artificing fits it out, and only an Explorer of Serin can
+set it — the load-bearing artifact of the setting is a thing no single order can make.
+
+Ranks: Indentured Extractor 1 · Smelter Apprentice 2 · Journeyman Smithwright /
+Extractor Foreman **5** · Smithwright **9** · Master Smithwright **13** · Master of the
+Foundry **17**.
+
+> **Open naming questions**, carried from the design notes rather than silently
+> resolved: **Thora Iron-Bind** sits close to the Iron Hull's rank-4 title
+> **Iron-Bound**; and the **First Bloc** may or may not be the same body as the
+> **council** the Explorers report to. *(The Foundry's Extractor Foreman was renamed
+> from Kaelen to **Brannek** Deep-Shift to clear the collision with the Iron Hull's
+> Grandmaster Kaelen "Iron-Spine".)*
 
 ## The Order — *a future class, and a hidden one*
 

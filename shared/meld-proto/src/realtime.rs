@@ -777,7 +777,10 @@ pub mod run {
         const TYPE: &'static str = "run.unlocked";
     }
 
-    /// C2S — harvest a resource node the avatar is standing next to. The node's
+    /// C2S — begin working a resource node the avatar is standing next to (MS-2).
+    /// Opens a **channel** that yields one unit per tick until the node is empty, the
+    /// player moves, a fight starts, or [`CancelHarvest`] arrives — so this starts a
+    /// gather rather than completing one. The node's
     /// `material` banks into the backpack and its `skill` gains XP (world-gen.md).
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Harvest {
@@ -857,13 +860,29 @@ pub mod run {
         const TYPE: &'static str = "run.begin_extraction";
     }
 
-    /// S2C — an extraction channel began (interruptible; visible to the instance).
+    /// C2S — stop an in-progress harvest channel on purpose (the "click away"
+    /// gesture). Movement stops one too; this is for putting the tool down while
+    /// standing still.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct CancelHarvest {}
+    impl Message for CancelHarvest {
+        const TYPE: &'static str = "run.cancel_harvest";
+    }
+
+    /// S2C — a channel began (interruptible; visible to the whole instance). Covers
+    /// extraction *and* harvesting; `method` distinguishes them.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ChannelStarted {
         pub client_seq: Option<u32>,
         pub player_id: Id,
         pub method: String,
         pub completes_at: u64,
+        /// Milliseconds per **fill** — how long the client's progress bar takes to go
+        /// from empty to full once. Extraction fills once and completes; a harvest
+        /// repeats it, paying a unit each time, until `completes_at` (or an interrupt).
+        /// `0` = unknown, draw no bar.
+        #[serde(default)]
+        pub fill_ms: u64,
     }
     impl Message for ChannelStarted {
         const TYPE: &'static str = "run.channel_started";
