@@ -27,6 +27,15 @@ pub(crate) struct GrassBlade {
     last: Option<(i32, i32)>,
 }
 
+impl GrassBlade {
+    /// A blade with no cell assigned — enough for tests that only care that the pool
+    /// can be hidden.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self { idx: 0, mat: Handle::default(), last: None }
+    }
+}
+
 /// Grass variant sprites, shared with the scatter update so it can re-point a blade's
 /// material at its cell's chosen variant.
 #[derive(Resource)]

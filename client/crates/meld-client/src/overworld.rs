@@ -2964,6 +2964,27 @@ pub(crate) fn faction_color(faction: &str) -> Color {
     Color::hsl((h % 360) as f32, 0.62, 0.56)
 }
 
+/// Hide the field's decorative scatter when a battle opens.
+///
+/// The grass blades ([`crate::ambient::GrassBlade`]) and ground props
+/// ([`crate::world_render::GroundDetail`]) are a persistent pool that follows the
+/// player and is repositioned by systems gated to `Screen::Overworld`. They are not
+/// snapshot entities, so `clear_overworld_sprites` never touched them — on entering a
+/// battle they simply froze where they stood and kept drawing, which put grass and
+/// mushrooms **in front of** the combatants. Their own systems make them visible again
+/// on the way back out, so hiding is all this needs to do.
+pub(crate) fn hide_field_decor(
+    mut grass: Query<&mut Visibility, With<crate::ambient::GrassBlade>>,
+    mut props: Query<&mut Visibility, (With<crate::world_render::GroundDetail>, Without<crate::ambient::GrassBlade>)>,
+) {
+    for mut v in &mut grass {
+        *v = Visibility::Hidden;
+    }
+    for mut v in &mut props {
+        *v = Visibility::Hidden;
+    }
+}
+
 pub(crate) fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEntity>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -3197,6 +3218,34 @@ mod tests {
     // A button that does nothing reads as broken. When the server refuses ("The vault
     // is sealed — defeat the boss first."), the reason has to reach the screen and then
     // get out of the way.
+    // The field's decorative pool is persistent and follows the player, so a battle
+    // used to open with grass and mushrooms still drawing — in FRONT of the
+    // combatants, because they are billboards nearer the camera than the arena.
+    #[test]
+    fn a_battle_hides_the_fields_decoration() {
+        let mut app = App::new();
+        app.add_systems(Update, hide_field_decor);
+        let blade = app
+            .world_mut()
+            .spawn((crate::ambient::GrassBlade::for_test(), Visibility::Visible))
+            .id();
+        let prop = app
+            .world_mut()
+            .spawn((crate::world_render::GroundDetail::for_test(), Visibility::Visible))
+            .id();
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(blade).unwrap(),
+            Visibility::Hidden,
+            "grass must not draw over the combatants"
+        );
+        assert_eq!(
+            *app.world().get::<Visibility>(prop).unwrap(),
+            Visibility::Hidden,
+            "ground props must not draw over the combatants"
+        );
+    }
+
     #[test]
     fn a_refusal_is_shown_and_then_expires() {
         let mut n = Notice::default();

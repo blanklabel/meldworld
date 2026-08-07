@@ -422,7 +422,7 @@ fn main() {
         // Battle
         .add_systems(
             OnEnter(Screen::Battle),
-            (clear_overworld_sprites, despawn::<PartyFollower>, enter_battle),
+            (clear_overworld_sprites, hide_field_decor, despawn::<PartyFollower>, enter_battle),
         )
         .add_systems(
             OnExit(Screen::Battle),
