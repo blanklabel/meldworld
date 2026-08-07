@@ -1018,7 +1018,7 @@ mod gear_label_tests {
     fn ephemeral_says_what_it_does_in_words() {
         let e = insurance_of("ephemeral");
         assert_eq!(e.label(), "Ephemeral");
-        assert!(e.tooltip().contains("Vanishes when the run ends"));
+        assert!(e.tooltip().contains("Burns the moment you reach the city"));
         // The stored chest colours still parse to the right tier.
         assert_eq!(insurance_of("red"), Insurance::Ephemeral);
         assert_eq!(insurance_of("blue"), Insurance::Insured);

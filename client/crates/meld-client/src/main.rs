@@ -376,6 +376,7 @@ fn main() {
                 update_explorer_lamp,
                 update_mob_nameplates,
                 update_minimap,
+                update_minimap_distance,
             )
                 .run_if(in_state(Screen::Overworld)),
         )

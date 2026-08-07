@@ -198,6 +198,7 @@ pub(crate) fn mock_overlay_setup(
             "items" => (Some(MenuSection::Items), None),
             "materials" => (Some(MenuSection::Materials), None),
             "map" => (Some(MenuSection::Map), None),
+            "guide" => (Some(MenuSection::Guide), None),
             "party.abilities" => (Some(MenuSection::Party), Some(MenuPane::Abilities)),
             "party.equipment" => (Some(MenuSection::Party), Some(MenuPane::Equipment)),
             _ => (Some(MenuSection::Party), None),
