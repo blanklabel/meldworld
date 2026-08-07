@@ -25,6 +25,7 @@ pub mod equipment;
 pub mod factions;
 pub mod http;
 pub mod limits;
+pub mod names;
 pub mod realtime;
 pub mod skills;
 pub mod synergies;

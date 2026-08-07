@@ -31,6 +31,8 @@ pub(crate) enum CityAction {
     Vanguard,
     /// The Apothecary: the one NPC who sells the lowest-tier basics for chits.
     Shop,
+    /// The Drill Yard: pick the party you take down.
+    Party,
     /// A not-yet-raised district: post its milestone notice.
     Notice(&'static str),
 }
@@ -43,6 +45,8 @@ pub(crate) enum CityAct {
     Dive,
     Vault,
     Coop,
+    /// The Drill Yard: open party management.
+    Party,
 }
 
 /// Marks a tappable on-screen city action button.
@@ -90,7 +94,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
         x: 15.0,
         z: -13.0,
         radius: 5.0,
-        action: CityAction::Notice("The Drill Yard is closed - build templates arrive in M3."),
+        action: CityAction::Party,
     },
     District {
         label: "The Vanguard Wall",
@@ -231,6 +235,7 @@ pub(crate) fn city_hud(
             ))
             .with_children(|bar| {
                 for (act, label) in [
+                    (CityAct::Party, "Party"),
                     (CityAct::Dive, "Run"),
                     (CityAct::Vault, "Vault"),
                     (CityAct::Coop, "Co-op"),
@@ -274,6 +279,7 @@ pub(crate) fn city_action_buttons(
     q: Query<(&Interaction, &CityActionButton), Changed<Interaction>>,
     net: NonSend<NetRes>,
     mut session: ResMut<Session>,
+    mut city: ResMut<CityUi>,
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
@@ -290,6 +296,13 @@ pub(crate) fn city_action_buttons(
                     session.coop = false;
                     session.status = "stepping through The Threshold...".to_string();
                     net.0.send(ClientCmd::EnterMaze { party: session.party.clone(), tutorial: false });
+                }
+            }
+            CityAct::Party => {
+                city.party_open = !city.party_open;
+                if city.party_open {
+                    city.notice.clear();
+                    net.0.fetch_hero_names();
                 }
             }
             CityAct::Vault => {
@@ -562,6 +575,7 @@ pub(crate) fn city_input(
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
+    unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     // Dive: ENTER anywhere, E while standing at The Threshold, or autoplay (which
@@ -614,6 +628,40 @@ pub(crate) fn city_input(
         }
         return;
     }
+    // While the Drill Yard is open, [1]-[4] pick a slot and the arrows change its
+    // class — only ever among the classes the account actually owns.
+    if city.party_open {
+        let pool = fieldable_classes(&unlocks);
+        let slots = (unlocks.party_slots.max(1) as usize).min(4);
+        if session.party.len() < slots {
+            session.party.resize(slots, "explorer".to_string());
+        }
+        session.party.truncate(slots.max(1));
+        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
+            .iter()
+            .enumerate()
+        {
+            if keys.just_pressed(*key) && i < slots {
+                session.party_cursor = i;
+            }
+        }
+        let dir = i32::from(keys.just_pressed(KeyCode::ArrowRight))
+            - i32::from(keys.just_pressed(KeyCode::ArrowLeft));
+        if dir != 0 && !pool.is_empty() {
+            let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
+            let cur = session.party.get(slot).cloned().unwrap_or_default();
+            let n = pool.len() as i32;
+            let at = pool.iter().position(|c| *c == cur).unwrap_or(0) as i32;
+            session.party[slot] = pool[(((at + dir) % n + n) % n) as usize].to_string();
+            session.party_chosen = true;
+        }
+        if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::Escape) {
+            city.party_open = false;
+            session.party_chosen = true;
+            city.notice = "Party set.".to_string();
+        }
+        return;
+    }
     // While the shelf is open, [1]-[4] buy one of that row. The server prices and
     // refuses; the client only names the row.
     if city.shop_open {
@@ -635,6 +683,11 @@ pub(crate) fn city_input(
         if let Some(i) = city.near {
             match CITY_DISTRICTS[i].action {
                 CityAction::Dive | CityAction::Vault => {} // handled above
+                CityAction::Party => {
+                    city.party_open = true;
+                    city.notice.clear();
+                    net.0.fetch_hero_names();
+                }
                 CityAction::Shop => {
                     city.shop_open = !city.shop_open;
                     if city.shop_open {
@@ -782,6 +835,8 @@ pub(crate) fn render_city(
     city: Res<CityUi>,
     board: Res<VanguardBoardData>,
     shop: Res<ShopData>,
+    unlocks: Res<UnlocksRes>,
+    hero_names: Res<AccountHeroNames>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
@@ -798,6 +853,7 @@ pub(crate) fn render_city(
                 CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
                 CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
                 CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
+                CityAction::Party => format!("{}    [E] muster your party", d.label),
                 CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
@@ -959,5 +1015,320 @@ mod shop_tests {
         assert!(!text.contains("Bloom Salve 25c (short)"), "{text}");
         assert!(text.contains("Town Portal 60c (short)"), "{text}");
         assert!(text.contains("30 chits"), "{text}");
+    }
+}
+
+/// Seed the party from what the account last took down, filtered to what it owns.
+///
+/// The composition is already persisted per hero slot (`heroes.class_key`, GR-7) and
+/// already arrives on `/v1/heroes` — it was simply never read back, so every session
+/// rebuilt the party from scratch. Reusing it is what lets town skip the picker for a
+/// returning player and only prompt someone who has never chosen.
+///
+/// Filtered because a class can be persisted and later be un-fieldable: a slot that
+/// dived as a Hunter on an account that has since been reset to one party slot must
+/// not silently re-enter as one — the server would clamp it and the two would disagree.
+pub(crate) fn seed_party_from_account(
+    hero_names: Res<AccountHeroNames>,
+    unlocks: Res<UnlocksRes>,
+    mut session: ResMut<Session>,
+    mut done: Local<bool>,
+) {
+    // Runs every frame in town until the async `/v1/heroes` fetch lands, then once.
+    if *done || session.party_from_flags {
+        return;
+    }
+    if !hero_names.loaded {
+        return;
+    }
+    *done = true;
+    let owned: Vec<String> = if unlocks.owned.is_empty() {
+        vec!["explorer".to_string()]
+    } else {
+        unlocks
+            .owned
+            .iter()
+            .filter_map(|k| k.strip_prefix("class_"))
+            .map(str::to_string)
+            .collect()
+    };
+    let slots = (unlocks.party_slots.max(1) as usize).min(4);
+    let saved: Vec<String> = hero_names
+        .classes
+        .iter()
+        .take(slots)
+        .map(|c| {
+            if owned.iter().any(|o| o == c) {
+                c.clone()
+            } else {
+                "explorer".to_string()
+            }
+        })
+        .collect();
+    if !saved.is_empty() && saved.iter().any(|c| !c.is_empty()) {
+        session.party = saved;
+        session.party_chosen = true;
+    }
+}
+
+/// Open the Drill Yard by itself for anyone who has never picked a party.
+///
+/// A returning player is NOT re-asked — their composition is already persisted and
+/// seeded by [`seed_party_from_account`]. This is only the first trip to town, so the
+/// first dive is a team someone chose rather than the newcomer default.
+pub(crate) fn prompt_party_if_unset(
+    hero_names: Res<AccountHeroNames>,
+    autoplay: Res<Autoplay>,
+    session: Res<Session>,
+    mut city: ResMut<CityUi>,
+    mut asked: Local<bool>,
+) {
+    // Wait for the roster fetch, or a brand-new account looks unset and gets asked
+    // before the answer has even arrived.
+    if *asked || !hero_names.loaded || autoplay.0 || session.party_from_flags {
+        return;
+    }
+    *asked = true;
+    if !session.party_chosen {
+        city.party_open = true;
+        city.notice = "Muster a party before you dive.".to_string();
+    }
+}
+
+/// The classes this account may actually field, in a stable order.
+///
+/// Derived from the CL-1 unlock set rather than the full class list, which is the
+/// whole reason party selection belongs in town: the Join screen runs BEFORE login,
+/// so it cannot know what the account owns and can only offer all six and let the
+/// server clamp the answer afterwards.
+pub(crate) fn fieldable_classes(unlocks: &UnlocksRes) -> Vec<&'static str> {
+    let owned: Vec<&str> =
+        unlocks.owned.iter().filter_map(|k| k.strip_prefix("class_")).collect();
+    let mut out: Vec<&'static str> =
+        PARTY_CLASSES.iter().copied().filter(|c| owned.contains(c)).collect();
+    if out.is_empty() {
+        out.push("explorer"); // every account owns the Explorer from its first login
+    }
+    out
+}
+
+
+/// Marks the Drill Yard panel root, so it can be despawned when the yard closes.
+#[derive(Component)]
+pub(crate) struct PartyPanelRoot;
+
+/// A clickable party slot (index) in the Drill Yard.
+#[derive(Component)]
+pub(crate) struct PartySlotButton(pub usize);
+
+/// A clickable class chip in the Drill Yard.
+#[derive(Component)]
+pub(crate) struct PartyClassButton(pub &'static str);
+
+/// Closes the yard.
+#[derive(Component)]
+pub(crate) struct PartyDoneButton;
+
+/// The label inside a slot button (kept in sync by [`party_panel_refresh`]).
+#[derive(Component)]
+pub(crate) struct PartySlotLabel(pub usize);
+
+/// Build (or tear down) the Drill Yard's party panel as `city.party_open` flips.
+///
+/// Spawned rather than drawn into the shared HUD line so the slots and classes are
+/// real buttons — mustering a party is pointing at heroes, not memorising [1]-[4].
+pub(crate) fn party_panel(
+    mut commands: Commands,
+    city: Res<CityUi>,
+    unlocks: Res<UnlocksRes>,
+    session: Res<Session>,
+    existing: Query<Entity, With<PartyPanelRoot>>,
+    mut was_open: Local<bool>,
+) {
+    if city.party_open == *was_open {
+        return;
+    }
+    *was_open = city.party_open;
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    if !city.party_open {
+        return;
+    }
+    let pool = fieldable_classes(&unlocks);
+    let slots = (unlocks.party_slots.max(1) as usize).min(4);
+    commands
+        .spawn((
+            PartyPanelRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(16.0),
+                bottom: Val::Px(16.0),
+                width: Val::Px(430.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(16.0)),
+                border: UiRect::all(Val::Px(1.5)),
+                ..default()
+            },
+            BorderColor(glass::EDGE),
+            BorderRadius::all(Val::Px(10.0)),
+            BackgroundColor(glass::GLASS_DEEP),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new(format!("The Drill Yard \u{2014} {slots} of 4 slots earned")),
+                TextFont { font_size: 18.0, ..default() },
+                TextColor(Color::srgb(0.98, 0.9, 0.68)),
+            ));
+            for i in 0..4 {
+                if i < slots {
+                    let cls =
+                        session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
+                    p.spawn((
+                        Button,
+                        PartySlotButton(i),
+                        Node {
+                            padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(glass::EDGE_SOFT),
+                        BorderRadius::all(Val::Px(6.0)),
+                        BackgroundColor(glass::CHIP_OFF),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new(format!("{}. {}", i + 1, class_info(&cls).name)),
+                            PartySlotLabel(i),
+                            TextFont { font_size: 15.0, ..default() },
+                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                        ));
+                    });
+                } else {
+                    // Named rather than omitted: the roster you are working toward is
+                    // more legible than a list that silently stops short.
+                    p.spawn((
+                        Text::new(format!("{}. locked", i + 1)),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(Color::srgb(0.45, 0.48, 0.58)),
+                    ));
+                }
+            }
+            p.spawn((
+                Text::new("Pick a slot, then a class"),
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+            ));
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(6.0),
+                flex_wrap: FlexWrap::Wrap,
+                row_gap: Val::Px(6.0),
+                ..default()
+            })
+            .with_children(|row| {
+                // Only what the account owns — the whole reason this lives in town
+                // rather than on the pre-authentication login screen.
+                for key in &pool {
+                    row.spawn((
+                        Button,
+                        PartyClassButton(key),
+                        Node {
+                            padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(glass::EDGE_SOFT),
+                        BorderRadius::all(Val::Px(6.0)),
+                        BackgroundColor(glass::CHIP_OFF),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new(class_info(key).name.to_string()),
+                            TextFont { font_size: 14.0, ..default() },
+                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                        ));
+                    });
+                }
+            });
+            p.spawn((
+                Button,
+                PartyDoneButton,
+                Node {
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(Val::Px(1.5)),
+                    ..default()
+                },
+                BorderColor(glass::EDGE),
+                BorderRadius::all(Val::Px(8.0)),
+                BackgroundColor(glass::ACTIVE),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Done"),
+                    TextFont { font_size: 15.0, ..default() },
+                    TextColor(Color::srgb(0.98, 0.9, 0.68)),
+                ));
+            });
+        });
+}
+
+/// Clicks inside the Drill Yard: pick a slot, assign a class, or close.
+pub(crate) fn party_panel_buttons(
+    slots_q: Query<(&Interaction, &PartySlotButton), Changed<Interaction>>,
+    class_q: Query<(&Interaction, &PartyClassButton), Changed<Interaction>>,
+    done_q: Query<&Interaction, (Changed<Interaction>, With<PartyDoneButton>)>,
+    unlocks: Res<UnlocksRes>,
+    mut session: ResMut<Session>,
+    mut city: ResMut<CityUi>,
+) {
+    for (i, b) in &slots_q {
+        if *i == Interaction::Pressed {
+            session.party_cursor = b.0;
+        }
+    }
+    let slots = (unlocks.party_slots.max(1) as usize).min(4);
+    for (i, b) in &class_q {
+        if *i != Interaction::Pressed {
+            continue;
+        }
+        if session.party.len() < slots {
+            session.party.resize(slots, "explorer".to_string());
+        }
+        session.party.truncate(slots.max(1));
+        let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
+        session.party[slot] = b.0.to_string();
+        session.party_chosen = true;
+    }
+    for i in &done_q {
+        if *i == Interaction::Pressed {
+            city.party_open = false;
+            session.party_chosen = true;
+            city.notice = "Party set.".to_string();
+        }
+    }
+}
+
+/// Keep the slot labels and the selected-slot highlight honest as clicks land.
+pub(crate) fn party_panel_refresh(
+    session: Res<Session>,
+    mut labels: Query<(&PartySlotLabel, &mut Text)>,
+    mut slots: Query<(&PartySlotButton, &mut BackgroundColor)>,
+) {
+    for (tag, mut t) in &mut labels {
+        let cls = session.party.get(tag.0).cloned().unwrap_or_else(|| "explorer".into());
+        let want = format!("{}. {}", tag.0 + 1, class_info(&cls).name);
+        if **t != want {
+            **t = want;
+        }
+    }
+    for (tag, mut bg) in &mut slots {
+        let want = if tag.0 == session.party_cursor { glass::CHIP_ON } else { glass::CHIP_OFF };
+        if bg.0 != want {
+            bg.0 = want;
+        }
     }
 }

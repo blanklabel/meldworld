@@ -991,11 +991,19 @@ impl Db {
                 .bind(player_id)
                 .execute(&mut *tx)
                 .await?;
-                // Seed default hero names (renameable in the party builder).
+                // Seed generated hero names (renameable on the party screen). Seeded
+                // off the account so the four are stable and distinct — "Hero 1" read
+                // as a form the game forgot to fill in.
+                let names = meld_proto::names::roster(&player_id.to_string(), 4);
                 sqlx::query(
-                    "INSERT INTO heroes (player_id, slot, name) VALUES ($1,0,'Hero 1'),($1,1,'Hero 2'),($1,2,'Hero 3'),($1,3,'Hero 4')",
+                    "INSERT INTO heroes (player_id, slot, name)
+                     VALUES ($1,0,$2),($1,1,$3),($1,2,$4),($1,3,$5)",
                 )
                 .bind(player_id)
+                .bind(&names[0])
+                .bind(&names[1])
+                .bind(&names[2])
+                .bind(&names[3])
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -1048,8 +1056,10 @@ impl Db {
                 for kind in ["forging", "mercantile", "alchemy"] {
                     m.skills.insert((player_id, kind.to_string()), 0);
                 }
-                for (slot, name) in [(0, "Hero 1"), (1, "Hero 2"), (2, "Hero 3"), (3, "Hero 4")] {
-                    m.heroes.insert((player_id, slot), name.to_string());
+                for (slot, name) in
+                    meld_proto::names::roster(&player_id.to_string(), 4).into_iter().enumerate()
+                {
+                    m.heroes.insert((player_id, slot as i16), name);
                 }
                 Ok(PlayerRow {
                     player_id,

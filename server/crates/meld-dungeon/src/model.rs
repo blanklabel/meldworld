@@ -189,6 +189,32 @@ impl Condition {
         }
     }
 
+    /// The largest number of MOMENTARY plates this condition needs held at once.
+    ///
+    /// A momentary plate is only active while someone stands on it, so a barrier
+    /// wanting two or more of them at the same time cannot be opened alone however
+    /// clever you are — it wants that many bodies. `any`/`count(n,…)` take the cheapest
+    /// satisfying branch, because the party only has to solve it one way.
+    pub fn bodies_required(&self, momentary: &dyn Fn(&str) -> bool) -> usize {
+        match self {
+            Condition::Ref(id) => usize::from(momentary(id)),
+            Condition::HasKey(_) | Condition::BossDead(_) | Condition::RoomClear(_) => 0,
+            // A `not` is satisfied by standing OFF the plate, which costs nobody.
+            Condition::Not(_) => 0,
+            Condition::All(cs) => cs.iter().map(|c| c.bodies_required(momentary)).sum(),
+            Condition::Seq(ids) => ids.iter().filter(|id| momentary(id)).count(),
+            Condition::Any(cs) => {
+                cs.iter().map(|c| c.bodies_required(momentary)).min().unwrap_or(0)
+            }
+            Condition::Count(n, cs) => {
+                let mut costs: Vec<usize> =
+                    cs.iter().map(|c| c.bodies_required(momentary)).collect();
+                costs.sort_unstable();
+                costs.into_iter().take(*n).sum()
+            }
+        }
+    }
+
     /// Every object id this condition names — with the predicate that constrains
     /// the referent's type (for validation: `has_key` must name a `Key`, etc.).
     pub fn referenced(&self, out: &mut Vec<(Id, RefKind)>) {
@@ -238,5 +264,25 @@ impl DungeonDef {
     /// All placements of `id` (one for most objects, two for a stair).
     pub fn placements_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = &'a Placement> + 'a {
         self.placements.iter().filter(move |p| p.id == id)
+    }
+
+    /// How many bodies this dungeon needs at once — 1 for anything a lone player can
+    /// finish, more when a barrier wants several momentary plates held simultaneously.
+    ///
+    /// Surfaced at the entrance so a party learns a door needs three of them BEFORE
+    /// committing: a dungeon takes no Town Portal, so discovering it inside means
+    /// walking back out having wasted the trip.
+    pub fn bodies_required(&self) -> usize {
+        let momentary = |id: &str| {
+            matches!(self.objects.get(id), Some(ObjectKind::Plate { momentary: true }))
+        };
+        self.objects
+            .values()
+            .filter(|k| k.is_barrier())
+            .filter_map(|k| k.condition())
+            .map(|c| c.bodies_required(&momentary))
+            .max()
+            .unwrap_or(1)
+            .max(1)
     }
 }

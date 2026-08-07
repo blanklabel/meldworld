@@ -80,14 +80,6 @@ fn kit_text(ci: &ClassInfo) -> String {
     s
 }
 
-/// The class whose details fill the panel (last hovered/selected). Init to the lead.
-#[derive(Resource)]
-pub(crate) struct JoinFocus(pub String);
-impl Default for JoinFocus {
-    fn default() -> Self {
-        JoinFocus("explorer".into())
-    }
-}
 
 /// Which account-login field is being typed into: 0 = username, 1 = password, None =
 /// no field (so 1-4 / arrows still drive the class picker).
@@ -165,31 +157,6 @@ fn field_box(
                 ));
             });
         });
-}
-
-// Join-screen element markers.
-#[derive(Component)]
-pub(crate) struct JoinSlot(pub usize); // clickable party-slot card
-#[derive(Component)]
-pub(crate) struct JoinSlotSprite(pub usize);
-#[derive(Component)]
-pub(crate) struct JoinSlotName(pub usize);
-#[derive(Component)]
-pub(crate) struct JoinClassCard(pub &'static str); // palette card (hover=details, click=assign)
-#[derive(Component)]
-pub(crate) struct JoinClassSprite(pub &'static str); // palette card sprite (refreshed once art loads)
-#[derive(Component)]
-pub(crate) struct JoinDetailSprite;
-#[derive(Component)]
-pub(crate) struct JoinDetailName;
-#[derive(Component)]
-pub(crate) struct JoinDetailRole;
-#[derive(Component)]
-pub(crate) struct JoinDetailKit;
-#[derive(Component)]
-pub(crate) struct JoinStatFill {
-    pub stat: u8, // 0..5 which stat row
-    pub seg: u8,  // 0..5 which segment
 }
 
 fn glass(a: f32) -> Color {
@@ -274,7 +241,7 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
-                Text::new("Your party of 4 \u{2014} click a slot, then a class. Hover any class for details."),
+                Text::new("Log in \u{2014} then muster your party in the Last City."),
                 TextFont { font_size: 19.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
@@ -297,56 +264,24 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
                 TextColor(Color::srgb(0.5, 0.55, 0.7)),
             ));
 
-            // The party: 4 slot cards.
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(10.0),
-                ..default()
-            })
-            .with_children(|row| {
-                for i in 0..4 {
-                    let key = session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
-                    class_card(
-                        row,
-                        sprite(&key),
-                        class_info(&key).name,
-                        &format!("Slot {}", i + 1),
-                        144.0,
-                        JoinSlot(i),
-                        JoinSlotSprite(i),
-                        JoinSlotName(i),
-                    );
-                }
-            });
-
-            // The class palette.
+            // The season's Vanguard Board. The party used to be built here, but this
+            // screen runs BEFORE login: it cannot know which classes the account owns,
+            // so it could only offer all six and let the server clamp the answer. The
+            // party is mustered in town (the Drill Yard), where the unlock set is
+            // known. What belongs on a login screen is a reason to log in.
             p.spawn((
-                Text::new("Choose a class"),
-                TextFont { font_size: 14.0, ..default() },
-                TextColor(Color::srgb(0.55, 0.6, 0.75)),
-                Node { margin: UiRect::top(Val::Px(4.0)), ..default() },
+                Text::new("The Vanguard \u{2014} deepest of the season"),
+                TextFont { font_size: 16.0, ..default() },
+                TextColor(Color::srgb(0.85, 0.78, 0.5)),
+                Node { margin: UiRect::top(Val::Px(10.0)), ..default() },
             ));
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                ..default()
-            })
-            .with_children(|row| {
-                for ci in &CLASS_INFO {
-                    class_card(row, sprite(ci.key), ci.name, "", 122.0, JoinClassCard(ci.key), JoinClassSprite(ci.key), ());
-                }
-            });
-
-            // The detail panel (filled by `join_refresh` from `JoinFocus`).
-            let lead = class_info(&session.party.first().cloned().unwrap_or_else(|| "explorer".into()));
             p.spawn((
                 Node {
-                    width: Val::Px(820.0),
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(18.0),
+                    width: Val::Px(460.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(3.0),
                     padding: UiRect::all(Val::Px(14.0)),
                     border: UiRect::all(Val::Px(1.0)),
-                    margin: UiRect::top(Val::Px(2.0)),
                     ..default()
                 },
                 BorderColor(glass(0.9)),
@@ -355,81 +290,16 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
             ))
             .with_children(|d| {
                 d.spawn((
-                    ImageNode::new(sprite(lead.key)),
-                    JoinDetailSprite,
-                    Node { width: Val::Px(150.0), height: Val::Px(150.0), ..default() },
+                    Text::new("reading the board..."),
+                    JoinBoardText,
+                    TextFont { font_size: 14.0, ..default() },
+                    TextColor(Color::srgb(0.72, 0.76, 0.88)),
                 ));
-                d.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(6.0),
-                    flex_grow: 1.0,
-                    ..default()
-                })
-                .with_children(|col| {
-                    col.spawn((
-                        Text::new(lead.name.to_string()),
-                        JoinDetailName,
-                        TextFont { font_size: 30.0, ..default() },
-                        TextColor(Color::srgb(1.0, 0.85, 0.45)),
-                    ));
-                    col.spawn((
-                        Text::new(lead.role.to_string()),
-                        JoinDetailRole,
-                        TextFont { font_size: 17.0, ..default() },
-                        TextColor(Color::srgb(0.78, 0.82, 0.95)),
-                    ));
-                    // Stats (left) and skills (right) side by side to keep it compact.
-                    col.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(28.0),
-                        margin: UiRect::top(Val::Px(4.0)),
-                        ..default()
-                    })
-                    .with_children(|body| {
-                        body.spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: Val::Px(4.0),
-                            ..default()
-                        })
-                        .with_children(|stats| {
-                            for (si, name) in ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate() {
-                                stats
-                                    .spawn(Node {
-                                        flex_direction: FlexDirection::Row,
-                                        align_items: AlignItems::Center,
-                                        column_gap: Val::Px(6.0),
-                                        ..default()
-                                    })
-                                    .with_children(|r| {
-                                        r.spawn((
-                                            Text::new(name.to_string()),
-                                            TextFont { font_size: 12.0, ..default() },
-                                            TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                                            Node { width: Val::Px(34.0), ..default() },
-                                        ));
-                                        for seg in 0..5u8 {
-                                            r.spawn((
-                                                JoinStatFill { stat: si as u8, seg },
-                                                Node { width: Val::Px(20.0), height: Val::Px(9.0), ..default() },
-                                                BackgroundColor(glass::CHIP_OFF),
-                                                BorderRadius::all(Val::Px(2.0)),
-                                            ));
-                                        }
-                                    });
-                            }
-                        });
-                        body.spawn((
-                            Text::new(kit_text(lead)),
-                            JoinDetailKit,
-                            TextFont { font_size: 13.0, ..default() },
-                            TextColor(Color::srgb(0.7, 0.85, 0.7)),
-                        ));
-                    });
-                });
             });
 
+
             p.spawn((
-                Text::new("ENTER: run solo     C: co-op"),
+                Text::new("ENTER: log in"),
                 TextFont { font_size: 15.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
@@ -443,17 +313,42 @@ pub(crate) fn join_ui(mut commands: Commands, wa: Option<Res<WorldAssets>>, sess
         });
 }
 
+/// The Vanguard board line on the login screen.
+#[derive(Component)]
+pub(crate) struct JoinBoardText;
+
+/// Fill the login screen's Vanguard board once the fetch lands.
+pub(crate) fn join_board_refresh(
+    board: Res<VanguardBoardData>,
+    mut q: Query<&mut Text, With<JoinBoardText>>,
+) {
+    let Ok(mut t) = q.single_mut() else { return };
+    if !board.loaded {
+        return;
+    }
+    if board.entries.is_empty() {
+        **t = "No one has come back deep enough yet.".to_string();
+        return;
+    }
+    **t = board
+        .entries
+        .iter()
+        .take(8)
+        .map(|e| format!("{:>2}.  {:<20}  {} m", e.rank, e.username, e.max_distance))
+        .collect::<Vec<_>>()
+        .join("\n");
+}
+
 /// Join-screen keyboard. Autoplay auto-connects as a guest. Otherwise: when a login
-/// field is focused (click it), typing edits it and TAB switches fields; when no field
-/// is focused, 1-4 select a party slot and ←/→ cycle its class. ENTER logs in with the
-/// typed account (creating it on first use); C (when not typing) starts co-op.
+/// field is focused (click it), typing edits it and TAB switches fields. ENTER logs in
+/// with the typed account (creating it on first use). The party is mustered in town and
+/// co-op starts there too, so neither is reachable from here.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn join_input(
     keys: Res<ButtonInput<KeyCode>>,
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     mut session: ResMut<Session>,
-    mut focus: ResMut<JoinFocus>,
     mut login: ResMut<LoginFocus>,
     mut status_q: Query<&mut Text, With<StatusText>>,
 ) {
@@ -492,39 +387,13 @@ pub(crate) fn join_input(
                     }
                 }
             }
-        } else {
-            // No field focused → the keyboard drives the class picker.
-            for (slot, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
-                .iter()
-                .enumerate()
-            {
-                if keys.just_pressed(*key) && slot < session.party.len() {
-                    session.party_cursor = slot;
-                    focus.0 = session.party[slot].clone();
-                }
-            }
-            let dir = if keys.just_pressed(KeyCode::ArrowRight) {
-                1
-            } else if keys.just_pressed(KeyCode::ArrowLeft) {
-                -1
-            } else {
-                0
-            };
-            if dir != 0 {
-                let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
-                if let Some(cur) = session.party.get(slot).cloned() {
-                    let n = PARTY_CLASSES.len() as i32;
-                    let i = PARTY_CLASSES.iter().position(|c| *c == cur).unwrap_or(0) as i32;
-                    let key = PARTY_CLASSES[(((i + dir) % n + n) % n) as usize].to_string();
-                    session.party[slot] = key.clone();
-                    focus.0 = key;
-                }
-            }
         }
 
-        // ENTER = log in & play; C (only when not typing) = co-op.
-        let coop = login.0.is_none() && keys.just_pressed(KeyCode::KeyC);
-        if keys.just_pressed(KeyCode::Enter) || coop {
+        // ENTER = log in & play. Co-op is NOT startable here: a lobby wants a party,
+        // and the party is assembled in town, so starting one from the login screen
+        // means picking teammates before you have picked heroes. The city's [C] is the
+        // one way in.
+        if keys.just_pressed(KeyCode::Enter) {
             let user = session.username.trim().to_string();
             if user.is_empty() {
                 session.status = "Enter a username to log in.".to_string();
@@ -533,7 +402,7 @@ pub(crate) fn join_input(
                 login.0 = Some(1);
             } else {
                 session.connecting = true;
-                session.coop = coop;
+                session.coop = false;
                 session.status = "logging in...".to_string();
                 let password = session.password.clone();
                 net.0.send(ClientCmd::Connect { username: user, password });
@@ -546,136 +415,7 @@ pub(crate) fn join_input(
     }
 }
 
-/// Mouse/touch on the party slots + class palette: hover a class card to preview it
-/// in the detail panel; click a slot to select it, click a class to assign it to the
-/// selected slot (and preview it).
-#[allow(clippy::type_complexity)]
-pub(crate) fn join_interact(
-    mut session: ResMut<Session>,
-    mut focus: ResMut<JoinFocus>,
-    mut login: ResMut<LoginFocus>,
-    slots: Query<(&Interaction, &JoinSlot), Changed<Interaction>>,
-    cards: Query<(&Interaction, &JoinClassCard), Changed<Interaction>>,
-    user_field: Query<&Interaction, (Changed<Interaction>, With<JoinUserField>)>,
-    pass_field: Query<&Interaction, (Changed<Interaction>, With<JoinPassField>)>,
-) {
-    if session.connecting {
-        return;
-    }
-    // Click a login field to focus it (keyboard then types into it).
-    for i in &user_field {
-        if *i == Interaction::Pressed {
-            login.0 = Some(0);
-        }
-    }
-    for i in &pass_field {
-        if *i == Interaction::Pressed {
-            login.0 = Some(1);
-        }
-    }
-    for (interaction, slot) in &slots {
-        match interaction {
-            Interaction::Pressed => {
-                login.0 = None; // clicking the picker leaves the text fields
-                session.party_cursor = slot.0;
-                if let Some(k) = session.party.get(slot.0) {
-                    focus.0 = k.clone();
-                }
-            }
-            Interaction::Hovered => {
-                if let Some(k) = session.party.get(slot.0) {
-                    focus.0 = k.clone();
-                }
-            }
-            Interaction::None => {}
-        }
-    }
-    for (interaction, card) in &cards {
-        match interaction {
-            Interaction::Pressed => {
-                login.0 = None; // clicking the picker leaves the text fields
-                let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
-                if slot < session.party.len() {
-                    session.party[slot] = card.0.to_string();
-                }
-                focus.0 = card.0.to_string();
-            }
-            Interaction::Hovered => focus.0 = card.0.to_string(),
-            Interaction::None => {}
-        }
-    }
-}
 
-/// Keep the Join visuals in sync with the party + focused class: slot sprites/names,
-/// the selected-slot highlight, and the detail panel (sprite, name, role, kit, stat
-/// bars). Immediate-mode-ish, but cheap (a handful of nodes).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(crate) fn join_refresh(
-    session: Res<Session>,
-    focus: Res<JoinFocus>,
-    wa: Option<Res<WorldAssets>>,
-    mut slot_sprites: Query<(&JoinSlotSprite, &mut ImageNode), (Without<JoinDetailSprite>, Without<JoinClassSprite>)>,
-    mut class_sprites: Query<(&JoinClassSprite, &mut ImageNode), (Without<JoinDetailSprite>, Without<JoinSlotSprite>)>,
-    mut slot_names: Query<(&JoinSlotName, &mut Text), (Without<JoinDetailName>, Without<JoinDetailRole>, Without<JoinDetailKit>)>,
-    mut slot_borders: Query<(&JoinSlot, &mut BorderColor)>,
-    mut det_sprite: Query<&mut ImageNode, (With<JoinDetailSprite>, Without<JoinSlotSprite>, Without<JoinClassSprite>)>,
-    mut det_name: Query<&mut Text, (With<JoinDetailName>, Without<JoinSlotName>, Without<JoinDetailRole>, Without<JoinDetailKit>)>,
-    mut det_role: Query<&mut Text, (With<JoinDetailRole>, Without<JoinSlotName>, Without<JoinDetailName>, Without<JoinDetailKit>)>,
-    mut det_kit: Query<&mut Text, (With<JoinDetailKit>, Without<JoinSlotName>, Without<JoinDetailName>, Without<JoinDetailRole>)>,
-    mut stat_fills: Query<(&JoinStatFill, &mut BackgroundColor)>,
-) {
-    let Some(wa) = wa else { return };
-    let img = |key: &str| wa.class_frames(key).idle[0].clone();
-    // Party slots.
-    for (s, mut node) in &mut slot_sprites {
-        if let Some(k) = session.party.get(s.0) {
-            node.image = img(k);
-        }
-    }
-    // Palette cards (fixed class, but re-assign so the sprite appears once its art
-    // finishes loading — the Join screen spawns before assets are ready).
-    for (c, mut node) in &mut class_sprites {
-        node.image = img(c.0);
-    }
-    for (s, mut t) in &mut slot_names {
-        if let Some(k) = session.party.get(s.0) {
-            **t = class_info(k).name.to_string();
-        }
-    }
-    for (s, mut bc) in &mut slot_borders {
-        *bc = BorderColor(if s.0 == session.party_cursor {
-            Color::srgb(1.0, 0.85, 0.45) // gold: the slot the palette/arrows edit
-        } else {
-            glass(0.9)
-        });
-    }
-    // Detail panel.
-    let ci = class_info(&focus.0);
-    if let Ok(mut n) = det_sprite.single_mut() {
-        n.image = img(ci.key);
-    }
-    if let Ok(mut t) = det_name.single_mut() {
-        **t = ci.name.to_string();
-    }
-    if let Ok(mut t) = det_role.single_mut() {
-        **t = ci.role.to_string();
-    }
-    if let Ok(mut t) = det_kit.single_mut() {
-        **t = kit_text(ci);
-    }
-    let vals = [ci.hp, ci.atk, ci.spd, ci.mag, ci.def];
-    let cols = [
-        Color::srgb(0.4, 0.75, 0.45),
-        Color::srgb(0.9, 0.5, 0.4),
-        Color::srgb(0.5, 0.8, 0.9),
-        Color::srgb(0.7, 0.55, 1.0),
-        Color::srgb(0.6, 0.65, 0.85),
-    ];
-    for (f, mut bc) in &mut stat_fills {
-        let on = f.seg < vals[f.stat as usize];
-        *bc = BackgroundColor(if on { cols[f.stat as usize] } else { Color::srgb(0.2, 0.22, 0.3) });
-    }
-}
 
 /// Render the account login fields: username as typed, password masked, a caret on
 /// the focused field, and a gold border on it.

@@ -144,7 +144,6 @@ fn main() {
         .init_resource::<Ashfall>()
         .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
-        .init_resource::<JoinFocus>()
         .init_resource::<LoginFocus>()
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
@@ -222,11 +221,11 @@ fn main() {
             ),
         )
         // Join
-        .add_systems(OnEnter(Screen::Join), join_ui)
+        .add_systems(OnEnter(Screen::Join), (join_ui, fetch_join_board))
         .add_systems(OnExit(Screen::Join), despawn::<JoinRoot>)
         .add_systems(
             Update,
-            (join_input, join_interact, join_refresh, join_login_refresh)
+            (join_input, join_login_refresh, join_board_refresh)
                 .run_if(in_state(Screen::Join)),
         )
         // City — The Last City (persistent hub): a walkable HD-2D plaza built from Kenney
@@ -256,6 +255,11 @@ fn main() {
                 city_move,
                 city_interact,
                 city_camera,
+                city::seed_party_from_account,
+                city::prompt_party_if_unset,
+                city::party_panel,
+                city::party_panel_buttons,
+                city::party_panel_refresh,
                 city_input,
                 city_action_buttons,
                 render_city,
@@ -528,9 +532,17 @@ struct Session {
     entered: bool,
     channeling: bool,
     status: String,
-    /// The party the player built on the Join screen — one class key per hero
-    /// slot (wire form: "explorer" / "psyker" / "resonant"). Sent on enter_maze.
+    /// The party — one class key per hero slot (wire form: "explorer" / "psyker" /
+    /// "resonant"). Sent on enter_maze. Chosen in TOWN, not at login.
     party: Vec<String>,
+    /// True once this party came from somewhere real — the account's persisted
+    /// composition or the player's own pick — rather than the newcomer default. Town
+    /// prompts only when it is false, so a returning player is never re-asked.
+    party_chosen: bool,
+    /// `?party=` / `MELD_PARTY` pinned the composition, so nothing may overwrite it —
+    /// the screenshot and autoplay harnesses depend on getting exactly what they asked
+    /// for.
+    party_from_flags: bool,
     /// Which party slot the builder cursor is on.
     party_cursor: usize,
     /// True if the player chose Co-op at Join (go to the lobby after connecting
@@ -556,6 +568,8 @@ impl Default for Session {
                 "explorer".into(),
             ],
             party_cursor: 0,
+            party_chosen: false,
+            party_from_flags: false,
             coop: false,
         }
     }
@@ -586,11 +600,13 @@ struct OwEntity {
     max_hp: Option<i32>,
     encounter_class: Option<String>,
     aggression: Option<String>,
+    /// Dungeon entrances: heroes the doors inside want on plates at once (1 = solo).
+    bodies_required: u8,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, bodies_required: 1 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -608,10 +624,11 @@ impl OwEntity {
             max_hp: None,
             encounter_class: None,
             aggression: None,
+            bodies_required: 1,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, bodies_required: 1 }
     }
 }
 
@@ -815,6 +832,12 @@ struct UnlocksRes {
     /// Offline demo/screenshot: hold the banner until [Space] instead of letting it
     /// time out, the same way the level-up screen does.
     hold: bool,
+}
+
+/// Ask for the season's board as the login screen opens — it is public, so this
+/// works before anyone has authenticated.
+fn fetch_join_board(net: NonSend<NetRes>) {
+    net.0.fetch_vanguard();
 }
 
 /// Marker for the immediate-mode unlock-banner root.
@@ -1494,6 +1517,10 @@ struct CityUi {
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
+    /// True while the Drill Yard's party picker is open (PT: choose the team you
+    /// take down). Opens by itself the first time an account reaches town without a
+    /// party of its own, so nobody dives with the newcomer default by accident.
+    party_open: bool,
 }
 
 /// The Apothecary's shelf as last read from `GET /v1/vendors/apothecary` (EC-2).

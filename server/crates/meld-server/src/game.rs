@@ -1038,7 +1038,17 @@ impl WorldActor {
                 entity_id: e.entity_id.clone(),
                 position: e.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("entrance:{}", e.dungeon)),
+                // `entrance:<dungeon>:<bodies>` — how many heroes the doors inside
+                // want held on plates at once. A dungeon takes no Town Portal, so a
+                // party that learns this on the far side of the maze has wasted the
+                // trip; the door says it up front.
+                avatar_state: Some(format!(
+                    "entrance:{}:{}",
+                    e.dungeon,
+                    meld_dungeon_content::by_name(&e.dungeon)
+                        .map(|d| d.bodies_required())
+                        .unwrap_or(1)
+                )),
                 level: Some(0),
                 ..Default::default()
             });
@@ -1285,7 +1295,9 @@ impl WorldActor {
             // Fire an armed trap only on ENTERING a new cell (not while lingering).
             let changed = stair.is_some()
                 || pre.is_none_or(|p| (p.x.floor() as i64, p.y.floor() as i64) != (fp.x.floor() as i64, fp.y.floor() as i64));
-            (ff, fp, dj.at_exit(ff, fp), changed)
+            // `_for` so the entrance you are standing on the instant you arrive does
+            // not throw you straight back out.
+            (ff, fp, dj.at_exit_for(pid), changed)
         };
         if final_floor != floor {
             self.location.insert(pid.to_string(), Location::InDungeon { key, floor: final_floor });
@@ -1640,7 +1652,7 @@ impl WorldActor {
                 name: names
                     .get(slot)
                     .cloned()
-                    .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                    .unwrap_or_else(|| generated_hero_name(pid, slot)),
                 class_key: f.class_key.clone(),
                 level: f.level,
                 str_: f.str_,
@@ -1752,7 +1764,7 @@ impl WorldActor {
                     name: names
                         .get(slot)
                         .cloned()
-                        .unwrap_or_else(|| format!("Hero {}", slot + 1)),
+                        .unwrap_or_else(|| generated_hero_name(pid, slot)),
                     class_key: meld_run::class_key(*class).to_string(),
                     level: new_level,
                     max_hp_before: hp0,
@@ -2380,7 +2392,7 @@ impl GameState {
                     if let Some(s) = self.sessions.get_mut(&player_id) {
                         let mut v = s.hero_names.clone().unwrap_or_default();
                         while v.len() <= slot {
-                            v.push(format!("Hero {}", v.len() + 1));
+                            v.push(generated_hero_name(&player_id, v.len()));
                         }
                         v[slot] = name;
                         s.hero_names = Some(v);
@@ -2874,9 +2886,13 @@ impl GameState {
         // (Re)enter = a fresh dive: build each player's mixed party composition and
         // start every hero at its class's full HP. Within the run this HP persists
         // across battles (see hero_hp write-back).
-        let party_size = self.balance.battle.party_size_per_player.max(1);
+        // The CAP, not the entitlement. How many heroes a player actually fields is
+        // how many party slots their account has EARNED (CL-1) — clamping the chosen
+        // composition down and then padding it back to the cap handed a one-slot
+        // account four copies of the only class it owns.
+        let party_cap = self.balance.battle.party_size_per_player.max(1);
         for pid in &party_ids {
-            let (chosen, explicit, names, rows, gear) = self
+            let (chosen, explicit, names, rows, gear, owned) = self
                 .sessions
                 .get(pid)
                 .map(|s| {
@@ -2886,9 +2902,18 @@ impl GameState {
                         s.hero_names.clone(),
                         s.hero_rows.clone(),
                         s.gear_bonuses.clone(),
+                        s.unlocks.clone(),
                     )
                 })
-                .unwrap_or((CharacterClass::Explorer, None, None, None, Vec::new()));
+                .unwrap_or((CharacterClass::Explorer, None, None, None, Vec::new(), None));
+            // Unlocks not loaded yet (a dive racing the account read) falls back to
+            // ONE hero rather than the cap: too few heroes is a worse dive, too many
+            // is a party the account did not earn.
+            let party_size = owned
+                .as_deref()
+                .map(|o| meld_proto::unlocks::party_slots(o) as usize)
+                .unwrap_or(1)
+                .clamp(1, party_cap);
             // The builder's explicit composition wins (normalized to party size,
             // padded with Explorer); otherwise build a default mixed party around
             // the lead.
@@ -2912,12 +2937,12 @@ impl GameState {
                     meld_run::class_key(*class).to_string(),
                 ));
             }
-            // Hero names by slot: the builder's, normalized to party size and
-            // defaulted to "Hero N" for any unnamed slot.
+            // Hero names by slot: the builder's, normalized to party size, with any
+            // unnamed slot falling back to its generated name.
             let mut names = names.unwrap_or_default();
             names.truncate(party_size);
             while names.len() < party_size {
-                names.push(format!("Hero {}", names.len() + 1));
+                names.push(generated_hero_name(pid, names.len()));
             }
             let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
             // Saved formation by slot, normalized to party size (missing = false).
@@ -5690,6 +5715,13 @@ impl WorldActor {
     }
 }
 
+/// The name a hero slot falls back to when nothing has been stored for it — the same
+/// generated name registration would have seeded, so a slot never surfaces as
+/// "Hero 3" just because its row is missing.
+fn generated_hero_name(player_id: &str, slot: usize) -> String {
+    meld_proto::names::hero_name(meld_proto::names::seed_of(player_id), slot).to_string()
+}
+
 fn error(
     player_id: &str,
     code: ErrorCode,
@@ -5867,6 +5899,32 @@ mod unlock_gate_tests {
             hero_levels: levels.to_vec(),
             hero_xp: vec![0; levels.len()],
         }
+    }
+
+    #[test]
+    fn a_party_is_only_as_big_as_the_slots_the_account_earned() {
+        // The bug this pins: `clamp_party_to_unlocks` correctly cut a one-slot
+        // account's party down to a single Explorer, and `form_run` then padded it
+        // straight back up to `party_size_per_player` — so a new player was handed
+        // FOUR copies of the only class they owned. The cap is a ceiling, not a
+        // grant. This is the arithmetic `form_run` now does per player.
+        let sized = |owned_keys: &[&str], cap: usize| -> usize {
+            let o = owned(owned_keys);
+            (meld_proto::unlocks::party_slots(&o) as usize).clamp(1, cap)
+        };
+        assert_eq!(sized(&["class_explorer"], 4), 1, "a fresh account fields ONE hero");
+        assert_eq!(sized(&["class_explorer", "party_slot_2"], 4), 2);
+        assert_eq!(sized(&["class_explorer", "party_slot_2", "party_slot_3"], 4), 3);
+        assert_eq!(
+            sized(&["class_explorer", "party_slot_2", "party_slot_3", "party_slot_4"], 4),
+            4
+        );
+        // The balance cap still wins when it is the smaller of the two, so lowering
+        // `party_size_per_player` for a test or a mode is still honoured.
+        assert_eq!(
+            sized(&["class_explorer", "party_slot_2", "party_slot_3", "party_slot_4"], 2),
+            2
+        );
     }
 
     #[test]

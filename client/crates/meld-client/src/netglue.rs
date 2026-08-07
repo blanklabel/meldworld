@@ -242,6 +242,7 @@ pub(crate) fn pump_net(
                             max_hp: e.max_hp,
                             encounter_class: e.encounter_class,
                             aggression: e.aggression,
+                            bodies_required: e.bodies_required,
                         },
                     );
                 }

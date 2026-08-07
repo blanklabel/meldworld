@@ -23,11 +23,15 @@ pub(crate) fn apply_class_flag(mut session: ResMut<Session>) {
             .collect();
         if !party.is_empty() {
             session.party = party;
+            session.party_chosen = true;
+            session.party_from_flags = true;
         }
     } else if let Some(c) = class_flag() {
         if let Some(slot0) = session.party.first_mut() {
             *slot0 = c;
         }
+        session.party_chosen = true;
+        session.party_from_flags = true;
     }
 }
 
