@@ -39,7 +39,15 @@ pub struct Balance {
     pub player: Players,
     pub resource: Resources,
     pub perks: Perks,
+    pub biome_gate: BiomeGate,
 }
+
+/// The distance at which each biome starts appearing in a randomized run, keyed by
+/// biome id. A biome is a difficulty-neutral *skin* only in the sense that distance
+/// scales its creatures; the creatures themselves are not interchangeable — a tundra
+/// `glacier_maw` and a forest `sporeling` are a level-1 party's death and its lunch.
+/// Gating the harsher themes outward is what makes the shallow ring an on-ramp.
+pub type BiomeGate = std::collections::HashMap<String, i64>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Session {
@@ -245,6 +253,14 @@ pub struct Encounters {
     pub pack_spread: f64,
     pub undead_rite_chance: f64,
     pub undead_rite_min_tier: i32,
+    /// Distance below which a standard creature is never promoted to Elite. Without
+    /// it an Elite — a named boss with `elite_hp_mult` behind it — can be the second
+    /// creature a level-1 party meets, which is a wipe rather than an encounter.
+    pub elite_min_distance: i64,
+    /// Distance below which a peak never mounts a Gatekeeper. Deeper than the Elite
+    /// gate because a Gatekeeper carries `gatekeeper_hp_mult` (10x) — it was gated
+    /// only on `hub_safe_radius`, so one could stand 14 units from the hub.
+    pub gatekeeper_min_distance: i64,
     pub undead_rite_minions: usize,
     pub undead_rite_boss_hp_mult: f64,
     pub undead_rite_boss_atk_mult: f64,
@@ -461,6 +477,10 @@ pub struct WorldScaling {
     pub stat_mult_exp: f64,
     pub def_mult_exp: f64,
     pub hp_per_tier: f64,
+    /// The shallow-ring on-ramp: creature power at the hub, ramping to 1.0 by
+    /// `onboarding_distance`.
+    pub onboarding_floor: f64,
+    pub onboarding_distance: i64,
     /// XP curve exponent (spec §4): `xp = floor(base_xp × (1 + d/divisor)^exp)`
     /// — steeper than the stat curve so deep kills out-reward the grind.
     pub xp_distance_exp: f64,

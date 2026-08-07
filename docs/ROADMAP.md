@@ -813,6 +813,26 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   drop **higher-rarity** gear (GR) and collectables (CR-5). Loot rarity scales with
   distance. *Accessibility: the palette is a bonus cue, never the only one — pair it
   with a redundant non-color signal (level tag / nameplate / icon), see UX-2.*
+- [x] **CR-8 — The shallow ring is an on-ramp, in the RANDOMIZED world.** The tutorial
+  is opt-in, so a returning player's real second dive is the randomized world — and
+  measured there, a level-1 solo won **28%** of its opening fight. Three causes, all
+  fixed, all measured rather than reasoned about:
+  - **Champions had no distance gate.** Elites were gated only on "not the first
+    creature of an area"; peak Gatekeepers only on `hub_safe_radius` (13 units), so a
+    `gatekeeper_hp_mult` (10x) boss could stand a few paces from the hub; and seam
+    Gatekeepers mount every biome boundary, the first of which is d=100. Now
+    `elite_min_distance` / `gatekeeper_min_distance`.
+  - **Biome rosters are not interchangeable** even though their scaling is: at the
+    same distance and level, forest led with a 32 HP / atk 7 `sporeling` and tundra
+    with a 120 HP / atk 14 / def 9 `glacier_maw`. `[biome_gate]` holds ashfall, desert
+    and tundra outward.
+  - **Bruiser armour could not be distance-balanced.** Flat `def 9` erased 75% of a
+    level-1 hero's hit and ~0% of a level-40's, so the "same power budget" the balance
+    file claimed was never true. Tankiness moved into HP (def 8-9 -> 3, HP ~120 -> ~155).
+  - Plus `[world_scaling] onboarding_floor`/`onboarding_distance`: creature power ramps
+    from 0.6 at the hub to full by d=200, and is **exactly 1.0** past it, so the deep
+    game is untouched. Result: level-1 solo **83%**, level 3+ 100%, while an *ungeared*
+    four-hero level-20 party still only wins 83% of deep fights at ~59s.
 - [x] **CR-6 — Encounter packs: a leader and its minions (fights stop being duels).**
   Creatures were placed one at a time at `monster_spacing` gaps, so `group_around`
   almost never caught a second one and every fight was a party-of-four versus **one**

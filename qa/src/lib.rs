@@ -112,6 +112,22 @@ impl Nav {
     pub fn has_prey(&self) -> bool {
         !self.creatures.is_empty()
     }
+
+    /// Direction to ANY creature, champions included — for the tests whose subject is
+    /// losing. [`Self::heading`] deliberately skips elites and gatekeepers, so a bot
+    /// in a world made entirely of them has nothing to walk at and marches east until
+    /// the clock runs out.
+    pub fn heading_any(&self, nth: usize) -> (f64, f64) {
+        if self.creatures.is_empty() && !self.tough.is_empty() {
+            let (_, tx, ty, _) = &self.tough[nth.min(self.tough.len() - 1)];
+            let (dx, dy) = (tx - self.pos.0, ty - self.pos.1);
+            let d = (dx * dx + dy * dy).sqrt();
+            if d >= 1e-6 {
+                return (dx / d, dy / d);
+            }
+        }
+        self.heading(nth)
+    }
 }
 
 #[cfg(test)]
