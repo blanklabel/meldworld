@@ -1243,6 +1243,12 @@ only the things that can't be class-gated.
   readability for all players; the *richer* HP/threat intel on top of this is the
   Explorer's class perk (CL-2). Bake this in while the difficulty-signaling systems
   (CR-1) are being built, not as a retrofit.
+- [x] **UX-3 — A login screen you can actually log in on.** The account fields took
+  no typing at all: nothing ever set `LoginFocus`, so every keystroke was discarded.
+  A field is now focused on arrival, TAB reaches the fields from cold, and clicking
+  one focuses it. The screen also moved onto a glass panel over a looping baked-video
+  backdrop, because 12 px hint text over the live 3D overworld was unreadable
+  ([`asset-pipeline.md`](asset-pipeline.md) for how a clip is baked).
 
 ---
 

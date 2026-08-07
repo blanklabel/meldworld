@@ -10,7 +10,9 @@ description = "Bevy client: overworld + ATB battle UI for the core gameplay loop
 default-run = "meld-client"
 
 [dependencies]
-bevy = { version = "0.16", features = ["mp3"] }
+# `webp` decodes the login screen's baked backdrop frames. It is NOT `jpeg`
+# because every zune-jpeg 0.5.x fails to build on the current rustc.
+bevy = { version = "0.16", features = ["mp3", "webp"] }
 # Cross-platform networking (native desktop AND browser/wasm): ewebsock for the
 # realtime WebSocket, ehttp for the auth HTTP calls. Both are poll/callback based
 # and need no tokio, so the same code runs on the desktop and in the browser.
