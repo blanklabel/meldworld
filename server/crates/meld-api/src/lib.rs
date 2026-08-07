@@ -192,10 +192,21 @@ async fn vanguard_season(
 async fn vanguard_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
     let season = meld_db::current_season();
-    let entry = vanguard_entries(&st, season)
-        .await?
-        .into_iter()
-        .find(|e| e.player_id == player_id.to_string());
+    // Ranked against the whole season, NOT by scanning the board's first page: a player
+    // outside the top `VANGUARD_BOARD_LIMIT` is exactly who needs to be told where they
+    // stand, and searching a limited page reports them as unranked.
+    let entry = st
+        .db
+        .vanguard_placement(season, player_id)
+        .await
+        .map_err(ApiReject::internal)?
+        .map(|(r, rank)| VanguardEntry {
+            rank: rank as i32,
+            player_id: r.player_id.to_string(),
+            username: r.username,
+            max_distance: r.max_distance,
+            achieved_at: r.achieved_at.timestamp_millis(),
+        });
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "season": season, "entry": entry })),

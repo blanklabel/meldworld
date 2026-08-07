@@ -1,6 +1,6 @@
-//! Meld-skill progression + crafting: a bot extracts (banking a loot petal),
-//! which credits Alchemy XP; then crafts the petal into a bloom_salve, crediting
-//! Forging XP and mutating the Vault. All persisted to Postgres, read over HTTP.
+//! Meld-skill progression + crafting: a bot extracts (banking a combat drop), which
+//! credits Alchemy XP; then crafts a bloom_salve from harvest reagents, crediting the
+//! recipe's own skill and mutating the Vault. All persisted to Postgres, read over HTTP.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL`.
 
@@ -76,6 +76,8 @@ async fn extraction_and_crafting_grow_meld_skills() {
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;
     let mut input_seq = 0u32;
+    // Steer at prey: a straight line east walks past the sparse shallow ring.
+    let mut nav = meld_qa::Nav::default();
     ws.send(Message::Text(
         json!({"type":"session.authenticate","seq":seq,"ts":0,"payload":{"ticket":ticket,"resume":null}}).to_string(),
     ))
@@ -98,14 +100,16 @@ async fn extraction_and_crafting_grow_meld_skills() {
             _ = mover.tick(), if matches!(phase, Phase::ToMonster) => {
                 input_seq += 1;
                 ws.send(Message::Text(json!({"type":"movement.move_intent","seq":seq,"ts":0,
-                    "payload":{"input_seq":input_seq,"move_dir":{"x":1.0,"y":0.0},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
+                    "payload":{"input_seq":input_seq,"move_dir":{"x":nav.heading(0).0,"y":nav.heading(0).1},"client_pos":{"x":0.0,"y":0.0}}}).to_string())).await.unwrap();
                 seq += 1;
             }
             msg = ws.next() => {
                 let Some(Ok(Message::Text(t))) = msg else { panic!("ws closed") };
                 let v: Value = serde_json::from_str(&t).unwrap();
                 match v["type"].as_str().unwrap_or("") {
-                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{}}).to_string())).await.unwrap(); seq += 1; }
+                    // Every snapshot re-aims the walk at the nearest creature.
+                    "world.snapshot" => nav.observe(&v["payload"], &player_id),
+                    "session.authenticated" => { ws.send(Message::Text(json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{"tutorial":true}}).to_string())).await.unwrap(); seq += 1; }
                     "run.started" => phase = Phase::ToMonster,
                     "battle.started" => {
                         phase = Phase::InBattle;
@@ -146,17 +150,38 @@ async fn extraction_and_crafting_grow_meld_skills() {
         if skill_xp(&s, "alchemy") > 0 { alchemy = skill_xp(&s, "alchemy"); break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // One stack, not three: the run also carries the starting salves and elixirs home,
+    // and diving in and straight back out with your own kit is not alchemy.
     assert_eq!(alchemy, 15, "extraction should credit 15 alchemy xp (1 stack)");
 
-    // Craft the banked petal into a bloom_salve → Forging XP + Vault mutation.
-    let craft = http.post(format!("{base}/v1/crafting/craft")).bearer_auth(&token).send().await.unwrap();
-    assert_eq!(craft.status(), 200, "craft should succeed with the banked petal");
+    // The banked combat drop is NOT a crafting input — every recipe takes harvest-node
+    // reagents — so the craft is refused until the reagents are actually there.
+    let refused = http.post(format!("{base}/v1/crafting/craft")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(refused.status(), 409, "craft should be refused without the reagents");
 
+    // Bank the two bloom_herb the recipe wants. Harvesting them for real is its own
+    // test (`harvest`); doing it here would make this one hunt blind for a node and
+    // pass or fail on the world seed.
+    let db = meld_db::Db::connect(&std::env::var("MELD_DATABASE_URL").unwrap(), 4).await.unwrap();
+    db.bank_extraction(uuid::Uuid::parse_str(&player_id).unwrap(), &[("bloom_herb".into(), 2)], 0)
+        .await
+        .unwrap();
+
+    // Craft the herbs into a bloom_salve → Meld XP + Vault mutation.
+    let craft = http.post(format!("{base}/v1/crafting/craft")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(craft.status(), 200, "craft should succeed with the banked reagents");
+
+    // A craft credits its OWN recipe's skill: bloom_salve is a potion, so Alchemy —
+    // on top of the 15 the extraction paid. Forging stays untouched.
     let skills = get_skills().await;
-    assert_eq!(skill_xp(&skills, "forging"), 25, "craft credits 25 forging xp");
+    assert_eq!(skill_xp(&skills, "alchemy"), 40, "craft credits 25 alchemy xp on top of the 15");
+    assert_eq!(skill_xp(&skills, "forging"), 0, "a potion craft is not forging");
 
     let vault: Value = http.get(format!("{base}/v1/vault")).bearer_auth(&token).send().await.unwrap().json().await.unwrap();
     let mats = vault["materials"].as_array().unwrap();
     assert!(mats.iter().any(|m| m["item_kind"] == json!("bloom_salve")), "crafted item in vault");
-    assert!(!mats.iter().any(|m| m["item_kind"] == json!("forest_bloom_petal")), "petal was consumed");
+    assert!(
+        !mats.iter().any(|m| m["item_kind"] == json!("bloom_herb") && m["quantity"].as_i64() != Some(0)),
+        "the herbs were consumed"
+    );
 }

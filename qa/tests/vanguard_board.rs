@@ -77,6 +77,9 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;
     let mut input_seq = 0u32;
+    // No prey-steering here, unlike the fight tests: this one wants DEPTH, and the
+    // nearest creature is as often behind the bot as ahead of it (area 0 scatters
+    // creatures to negative x), so hunting walks it back toward the hub.
     ws.send(Message::Text(
         json!({"type":"session.authenticate","seq":seq,"ts":0,"payload":{"ticket":ticket,"resume":null}}).to_string(),
     ))
@@ -145,12 +148,16 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
     }
 
     // The board write is fire-and-forget off the game loop, so give the DB task a
-    // moment to drain before reading the board back.
-    let mut entry = Value::Null;
+    // moment to drain before reading the placement back.
+    //
+    // Read the CALLER'S OWN placement, not the top-N list: the QA Postgres is shared
+    // across every agent and every past run, so a twelve-metre walk does not make the
+    // leaderboard's first page and scanning `data` for our id finds nothing.
+    let mut me = Value::Null;
     for _ in 0..25 {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let board: Value = http
-            .get(format!("{base}/v1/leaderboards/vanguard"))
+        let res: Value = http
+            .get(format!("{base}/v1/leaderboards/vanguard/me"))
             .bearer_auth(&token)
             .send()
             .await
@@ -158,18 +165,13 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
             .json()
             .await
             .unwrap();
-        assert_eq!(board["archived"], json!(false), "the open season is never archived");
-        if let Some(found) = board["data"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|e| e["player_id"].as_str() == Some(player_id.as_str()))
-        {
-            entry = found.clone();
+        if !res["entry"].is_null() {
+            me = res;
             break;
         }
     }
-    assert!(!entry.is_null(), "the run never reached the Vanguard Board");
+    assert!(!me["entry"].is_null(), "the run never reached the Vanguard Board");
+    let entry = me["entry"].clone();
     assert!(entry["rank"].as_i64().unwrap() >= 1, "ranks are 1-based: {entry}");
     assert_eq!(entry["username"].as_str().unwrap(), username);
     let posted = entry["max_distance"].as_i64().unwrap();
@@ -178,9 +180,9 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
         "board distance {posted} should match the depth walked (~{TARGET})"
     );
 
-    // …and the caller's own placement now resolves to that same entry.
-    let me: Value = http
-        .get(format!("{base}/v1/leaderboards/vanguard/me"))
+    // …and the open season's board itself is live and unarchived.
+    let board: Value = http
+        .get(format!("{base}/v1/leaderboards/vanguard"))
         .bearer_auth(&token)
         .send()
         .await
@@ -188,7 +190,7 @@ async fn walking_outward_posts_the_run_to_the_vanguard_board() {
         .json()
         .await
         .unwrap();
-    assert_eq!(me["entry"]["max_distance"], entry["max_distance"]);
+    assert_eq!(board["archived"], json!(false), "the open season is never archived");
 
     // A season that hasn't happened yet is a 404, not an empty board.
     let future_season = me["season"].as_i64().unwrap() + 1;

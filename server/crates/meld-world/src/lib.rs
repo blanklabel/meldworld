@@ -234,10 +234,10 @@ fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
     }
 }
 
-/// A biome's combat-drop material — banked into the run backpack when a creature
-/// is felled (feeds Forging/Alchemy crafting), distinct from harvestable resource
-/// nodes. Forest keeps `forest_bloom_petal` (the crafting recipe + conformance
-/// tests depend on that content id). Structural content; deeper bands repeat Mire.
+/// A biome's combat-drop material — banked into the run backpack when a creature is
+/// felled, distinct from harvestable resource nodes. No recipe consumes these yet:
+/// every entry in `meld_proto::consumables::RECIPES` takes harvest reagents, so combat
+/// drops currently bank and sit. Structural content; deeper bands repeat Mire.
 pub fn combat_material_for_biome(d: i64) -> &'static str {
     match biome_for_distance(d) {
         "forest" => "forest_bloom_petal",
