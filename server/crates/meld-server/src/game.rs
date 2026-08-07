@@ -1497,6 +1497,17 @@ impl WorldActor {
                             Some(ObjectKind::Boss { sprite, .. }) => {
                                 entities.push(dungeon_prop(format!("dboss-{id}"), pos, &format!("mob:{sprite}:hostile")));
                             }
+                            // Stairs were never sent, so nothing downstream could see
+                            // them: not the client, and not a player trying to find
+                            // the way down. A floor's exit being invisible is a bug
+                            // whether a human or a bot is looking for it.
+                            Some(ObjectKind::Stair) => {
+                                entities.push(dungeon_prop(
+                                    format!("dstair-{floor}-{id}"),
+                                    pos,
+                                    "stair",
+                                ));
+                            }
                             // An ARMED trap the Runner can read from here. A disarmed
                             // one is furniture and stays unmarked.
                             Some(ObjectKind::Trap { kind, .. })

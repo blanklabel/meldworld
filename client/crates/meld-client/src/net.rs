@@ -133,6 +133,8 @@ pub enum EntityKind {
     /// A hand-designed dungeon entrance (`monster_kind` carries the dungeon name).
     /// Walk up and press F to descend (`run.enter_dungeon`).
     Entrance,
+    /// A dungeon staircase — the way to the next floor.
+    Stair,
     /// An ARMED dungeon trap a Shifter has read (`monster_kind` carries its kind).
     /// Only ever sent when the party's Shift-sense reaches it — the server decides
     /// what is visible, so an unaccompanied party genuinely cannot see these.
@@ -1572,6 +1574,7 @@ impl Inner {
                             let mut opened = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
+                                Some("stair") => (EntityKind::Stair, None, None),
                                 Some(s) if s.starts_with("trap:") => (
                                     EntityKind::Trap,
                                     Some(s["trap:".len()..].to_string()),
