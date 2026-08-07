@@ -17,6 +17,9 @@ async fn start_server() -> String {
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1;
     balance.worldgen.dungeon_spawn_chance = 1.0;
+    // This test is about what happens INSIDE a dungeon, not where doors are allowed
+    // to be, so it opts out of the hub exclusion that keeps them off the doorstep.
+    balance.worldgen.dungeon_min_distance = 0.0;
     balance.worldgen.dungeon_trap_damage = 1; // don't let the corridor trap matter
     // Pin WHICH dungeon loads. The point of this test is that a bot can fight and beat
     // a dungeon boss — not that it can solve an authored maze.

@@ -4987,7 +4987,15 @@ impl WorldActor {
                 let p0 = self.arena.path.get(i).copied().unwrap_or(portal);
                 let p1 = self.arena.path.get(i + 1).copied().unwrap_or(p0);
                 let seed = meld_world::section_seed(self.arena.seed, i);
-                if let Some(pl) = meld_dungeon_run::place_entrance(seed, biome, chance, p0, p1) {
+                // Never on the doorstep: a dungeon takes no Town Portal, so one you
+                // can see from the city gate is a committed space a new player has no
+                // way to read as one.
+                let too_close =
+                    p0.distance_floor() < self.balance.worldgen.dungeon_min_distance as i64;
+                if let Some(pl) = (!too_close)
+                    .then(|| meld_dungeon_run::place_entrance(seed, biome, chance, p0, p1))
+                    .flatten()
+                {
                     self.entrances.push(DungeonEntrance {
                         entity_id: format!("dungeon-entrance-{i}"),
                         dungeon: pl.dungeon,
@@ -5818,10 +5826,22 @@ impl WorldActor {
                 let frac = balance.battle.flee_chit_loss_fraction.clamp(0.0, 1.0);
                 let drop_chance = balance.battle.flee_item_drop_chance.clamp(0.0, 1.0);
                 let seed = inst.arena.seed ^ now_ms();
-                // Everyone who was in the fight is roaming again (they didn't die).
+                // Everyone who was in the fight is roaming again (they didn't die) —
+                // and BOLTS clear of the creature. Setting the state back to `active`
+                // without moving them left them standing on top of it, so the next
+                // tick's `resolve_touches` pulled them straight back into the fight
+                // they had just paid to escape. Fleeing was a death sentence.
+                let flee_dist = balance.world.touch_radius_tiles * 4.0;
                 for pid in &members {
                     if let Some(a) = inst.arena.avatar_mut(pid) {
                         a.state = "active".to_string();
+                        let (dx, dy) = (a.position.x - battle_pos.x, a.position.y - battle_pos.y);
+                        let len = (dx * dx + dy * dy).sqrt();
+                        // Standing exactly on it means no direction to flee in; fall
+                        // back to west, which is the way home.
+                        let (ux, uy) = if len > 1e-6 { (dx / len, dy / len) } else { (-1.0, 0.0) };
+                        a.position.x = battle_pos.x + ux * flee_dist;
+                        a.position.y = battle_pos.y + uy * flee_dist;
                     }
                 }
                 let mut losses: Vec<FleeLoss> = Vec::new();

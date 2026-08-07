@@ -40,6 +40,9 @@ struct Dive {
 async fn start_server(heroes: usize) -> String {
     let db_url = std::env::var("MELD_DATABASE_URL")
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
+    // Pin the world: these bots have to FIND fights, and whether they do is decided by
+    // the roll — unseeded, all four sizes won nothing in 50s.
+    std::env::set_var("MELD_SEED", "1");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = heroes;
     let config = meld_server::Config {
@@ -77,6 +80,19 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
         .unwrap();
     let ticket = login["realtime_ticket"].as_str().unwrap().to_string();
     let player_id = login["player"]["player_id"].as_str().unwrap().to_string();
+
+    // Grant the party SLOTS this dive is meant to test. Party size is the slots an
+    // account has EARNED, capped by `party_size_per_player` — raising the cap alone
+    // leaves a fresh account fielding one hero, which is the whole arc collapsed.
+    if heroes > 1 {
+        let db = meld_db::Db::connect(&std::env::var("MELD_DATABASE_URL").unwrap(), 4)
+            .await
+            .unwrap();
+        let keys: Vec<String> = (2..=heroes).map(|n| format!("party_slot_{n}")).collect();
+        db.grant_unlocks(uuid::Uuid::parse_str(&player_id).unwrap(), &keys)
+            .await
+            .unwrap();
+    }
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
     let mut seq = 1u32;

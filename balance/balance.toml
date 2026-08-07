@@ -680,6 +680,11 @@ dungeon_door_half = 2.6          # half-width of the door gap a divider leaves o
 # its biome's authored pool). 0 disables. Depth-step bumps the effective distance
 # (difficulty + loot) per dungeon floor descended.
 dungeon_spawn_chance = 0.12      # per streamed non-tutorial section (DG-3b)
+# No dungeon door within this distance of the hub. A dungeon is a committed space
+# that takes no Town Portal, so one sitting where you can see it from the city gate
+# is an invitation a new player cannot read — and two of them at the doorstep reads
+# as the whole game being dungeons. [TUNABLE]
+dungeon_min_distance = 250.0
 dungeon_depth_level_step = 25    # effective-distance added per floor descended (DG-3/DG-5)
 dungeon_trap_damage = 30         # base HP a sprung dungeon trap deals; scaled up by depth (DG-3b/DG-4)
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
