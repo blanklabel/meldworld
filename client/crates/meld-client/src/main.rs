@@ -370,6 +370,7 @@ fn main() {
                 unlock_banner,
                 menu::render_main_menu,
                 main_menu_click,
+                use_item_click,
                 return_to_town_click,
                 build_world_walls,
                 sync_chests,

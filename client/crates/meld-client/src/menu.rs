@@ -88,6 +88,9 @@ const GUIDE: [(&str, &[(&str, &str)]); 3] = [
 pub(crate) enum MenuPane {
     Equipment,
     Abilities,
+    /// "Who drinks it?" — the hero picker the Items column opens once a potion is
+    /// chosen. The only third column that hangs off something other than a hero.
+    UseOn,
 }
 
 /// The cascade's state. `section` opens column two, `pane` opens column three for
@@ -98,6 +101,8 @@ pub(crate) struct MainMenu {
     pub(crate) member: usize,
     pub(crate) pane: Option<MenuPane>,
     pub(crate) cursor: usize,
+    /// Which potion the [`MenuPane::UseOn`] picker is about to spend.
+    pub(crate) item_kind: Option<String>,
 }
 
 impl MainMenu {
@@ -116,6 +121,7 @@ impl MainMenu {
         self.cursor = 0;
         if self.pane.is_some() {
             self.pane = None;
+            self.item_kind = None;
             true
         } else if self.section.is_some() {
             self.section = None;
@@ -133,6 +139,30 @@ pub(crate) struct NavButton(pub(crate) MenuSection);
 /// The Map column's "Return to town" row — spends a Town Portal item.
 #[derive(Component)]
 pub(crate) struct ReturnToTownButton;
+
+/// A potion row in the Items column — clicking it opens the hero picker.
+#[derive(Component)]
+pub(crate) struct UseItemButton {
+    pub(crate) item_kind: String,
+}
+
+/// A hero row in the [`MenuPane::UseOn`] picker: the one who drinks it.
+#[derive(Component)]
+pub(crate) struct UseOnHeroButton {
+    pub(crate) slot: usize,
+}
+
+/// Whether a potion does anything OUTSIDE a fight. Barrier/Regen/Evasion/Adrenaline
+/// are combat state that would be gone by the next encounter, so the server refuses
+/// them out here (`run.use_item`) and the menu greys them rather than offering a
+/// button that can only fail. Kept in step with the server's own match.
+fn usable_in_field(item_kind: &str) -> bool {
+    use meld_proto::consumables::ConsumableEffect as E;
+    matches!(
+        meld_proto::consumables::consumable(item_kind).map(|c| c.effect),
+        Some(E::Heal | E::FullHeal | E::Revive | E::Experience)
+    )
+}
 
 /// An Equipment/Abilities button under a hero in the Party column.
 #[derive(Component)]
@@ -209,8 +239,9 @@ pub(crate) fn column_len(
             Some(_) => 0,
             None => GEAR_CATEGORIES.len(),
         },
+        (Some(MenuSection::Items), Some(MenuPane::UseOn)) => party_lines(roster, names).len(),
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
-        (Some(MenuSection::Items), None) => backpack.items.len().max(1),
+        (Some(MenuSection::Items), None) => held_potions(backpack).len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
         (Some(MenuSection::Map), None) => 1,
         // Reading only — the cursor has nothing to land on.
@@ -299,22 +330,41 @@ pub(crate) fn render_main_menu(
                             if backpack.items.is_empty() {
                                 col.spawn(glass::text("(carrying nothing)", 16.0, glass::DIM));
                             }
-                            for (kind, qty) in held_potions(&backpack) {
+                            for (i, (kind, qty)) in held_potions(&backpack).into_iter().enumerate()
+                            {
                                 let name = meld_proto::consumables::consumable(&kind)
                                     .map(|c| c.name.to_string())
                                     .unwrap_or_else(|| kind.clone());
-                                col.spawn(glass::text(
-                                    format!("{name}  x{qty}"),
-                                    18.0,
-                                    glass::TEXT,
-                                ));
-                                if let Some(def) = meld_proto::consumables::consumable(&kind) {
-                                    col.spawn(glass::text(
-                                        format!("   {}", def.description),
-                                        14.0,
-                                        glass::DIM,
+                                let field = usable_in_field(&kind);
+                                let focused = depth == 1 && menu.cursor == i;
+                                let chosen = menu.item_kind.as_deref() == Some(kind.as_str());
+                                col.spawn((
+                                    Button,
+                                    UseItemButton { item_kind: kind.clone() },
+                                    glass::inset(focused || chosen),
+                                ))
+                                .with_children(|row| {
+                                    row.spawn(glass::text(
+                                        format!("{name}  x{qty}"),
+                                        18.0,
+                                        if field { glass::TEXT } else { glass::DIM },
                                     ));
+                                });
+                                if let Some(def) = meld_proto::consumables::consumable(&kind) {
+                                    let sub = if field {
+                                        format!("   {}", def.description)
+                                    } else {
+                                        format!("   {}  (only in a fight)", def.description)
+                                    };
+                                    col.spawn(glass::text(sub, 14.0, glass::DIM));
                                 }
+                            }
+                            if !backpack.items.is_empty() {
+                                col.spawn(glass::text(
+                                    "pick a potion, then pick who drinks it",
+                                    14.0,
+                                    glass::DIM,
+                                ));
                             }
                         }
                         MenuSection::Materials => {
@@ -593,6 +643,43 @@ pub(crate) fn render_main_menu(
                             ));
                         }
                     }
+                    MenuPane::UseOn => {
+                        let kind = menu.item_kind.clone().unwrap_or_default();
+                        let def = meld_proto::consumables::consumable(&kind);
+                        col.spawn(glass::text("WHO DRINKS IT?", 26.0, glass::TITLE));
+                        col.spawn(glass::text(
+                            def.map(|c| c.name.to_string()).unwrap_or_else(|| kind.clone()),
+                            16.0,
+                            glass::DIM,
+                        ));
+                        col.spawn(glass::divider());
+                        // A revive aims at the FALLEN and every other potion at the
+                        // living, so the two lists are disjoint — showing the wrong
+                        // half as clickable would only earn a rejection.
+                        let reviving = def
+                            .map(|c| {
+                                c.effect == meld_proto::consumables::ConsumableEffect::Revive
+                            })
+                            .unwrap_or(false);
+                        for (i, h) in heroes.iter().enumerate() {
+                            let down = h.hp <= 0;
+                            let full = h.hp >= h.max_hp && h.max_hp > 0;
+                            let ok = if reviving { down } else { !down && !full };
+                            let focused = depth == 2 && menu.cursor == i;
+                            col.spawn((
+                                Button,
+                                UseOnHeroButton { slot: i },
+                                glass::inset(focused),
+                            ))
+                            .with_children(|row| {
+                                row.spawn(glass::text(
+                                    format!("{}   {}/{}", h.name, h.hp.max(0), h.max_hp),
+                                    19.0,
+                                    if ok { glass::TEXT } else { glass::DIM },
+                                ));
+                            });
+                        }
+                    }
                     MenuPane::Equipment => {
                         col.spawn(glass::text("EQUIPMENT", 26.0, glass::TITLE));
                         col.spawn(glass::text(hero.name.clone(), 16.0, glass::DIM));
@@ -750,6 +837,7 @@ mod tests {
             member: 2,
             pane: Some(MenuPane::Abilities),
             cursor: 4,
+            item_kind: None,
         };
         assert_eq!(m.depth(), 2);
         assert!(m.back());
@@ -866,6 +954,26 @@ pub(crate) fn main_menu_input(
                     overlay.kind = None;
                 }
             }
+            1 if menu.section == Some(MenuSection::Items) => {
+                let held = held_potions(&backpack);
+                if let Some((kind, _)) = held.get(menu.cursor).filter(|(k, _)| usable_in_field(k))
+                {
+                    menu.item_kind = Some(kind.clone());
+                    menu.pane = Some(MenuPane::UseOn);
+                    menu.cursor = 0;
+                }
+            }
+            2 if menu.pane == Some(MenuPane::UseOn) => {
+                if let Some(kind) = menu.item_kind.clone() {
+                    net.0.send(ClientCmd::UseItem {
+                        item_kind: kind,
+                        hero_slot: menu.cursor as i32,
+                    });
+                }
+                menu.pane = None;
+                menu.item_kind = None;
+                menu.cursor = 0;
+            }
             1 if menu.section == Some(MenuSection::Party) => {
                 // Stepping into a hero opens its gear; Abilities is a click or a
                 // second press away.
@@ -911,6 +1019,34 @@ pub(crate) fn return_to_town_click(
             net.0.send(ClientCmd::TownPortal);
             overlay.kind = None;
         }
+    }
+}
+
+/// Clicks in the Items column: a potion opens the hero picker, a hero drinks it.
+/// The server decides whether it lands — this only avoids offering the obviously
+/// hopeless (a fight-only potion, a full hero, a revive on someone standing).
+pub(crate) fn use_item_click(
+    potions: Query<(&Interaction, &UseItemButton), Changed<Interaction>>,
+    targets: Query<(&Interaction, &UseOnHeroButton), Changed<Interaction>>,
+    mut menu: ResMut<MainMenu>,
+    net: NonSend<NetRes>,
+) {
+    for (interaction, btn) in &potions {
+        if *interaction == Interaction::Pressed && usable_in_field(&btn.item_kind) {
+            menu.item_kind = Some(btn.item_kind.clone());
+            menu.pane = Some(MenuPane::UseOn);
+            menu.cursor = 0;
+        }
+    }
+    for (interaction, btn) in &targets {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let Some(kind) = menu.item_kind.clone() else { continue };
+        net.0.send(ClientCmd::UseItem { item_kind: kind, hero_slot: btn.slot as i32 });
+        menu.pane = None;
+        menu.item_kind = None;
+        menu.cursor = 0;
     }
 }
 
