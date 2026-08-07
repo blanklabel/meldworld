@@ -5957,11 +5957,17 @@ impl WorldActor {
                 },
             ));
         }
-        for pid in &leveled {
+        // Refresh the roster for EVERYONE who fought, not just whoever levelled. The
+        // roster is what carries `xp`/`xp_to_next`, so sending it only on a level-up
+        // left the party screen reading 0 XP for every fight in between — the progress
+        // was real and completely invisible, which reads as "my heroes get no XP".
+        for pid in &members {
             let heroes = self.party_views(pid);
             let (synergies, combos) = self.party_depth(pid);
             out.push(out_msg(pid, &wr::Party { heroes, synergies, combos }));
-            // Perk tiers scale with run level, so refresh them on level-up too.
+        }
+        // Perk tiers scale with run level, so they only change on a level-up.
+        for pid in &leveled {
             out.push(out_msg(pid, &self.perks_for(pid)));
         }
         (out, effects)
