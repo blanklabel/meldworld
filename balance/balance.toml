@@ -536,6 +536,9 @@ catalyst_tier_bonus = 1         # tiers the catalyst adds on top of forgeable_ti
 # in bulk, and the ore comes from the run backpack, so a field smith has to have
 # gathered for it. [TUNABLE]
 station_min_forging_level = 2    # the Forging level it takes to raise one
+station_min_alchemy_level = 2    # …and the Alchemy level an ALEMBIC takes (the Keeper's
+                                 # half of the same idea: a still you can set up in the
+                                 # field and brew at) [TUNABLE]
 station_ore_cost = 3             # ore from the backpack that a station is built from
 station_uses = 4                 # jobs it serves before it is spent
 station_radius = 3.0             # world units within which a station can be worked at
@@ -551,7 +554,9 @@ enhance_min_forging_level = 1    # an apprentice's trick, unlike a reroll
 # SMITHING TEMPO (MS-1). Working metal is a rhythm, not a purchase: the marker sweeps
 # the bar and the smith strikes on the hot bands. Quality is hits/strikes, and it is
 # what decides the affix pool a re-draw rolls from and how much a repair gives back —
-# so a master smith is someone who can hit a narrow band, not someone who clicked more.
+# so a master is someone who can hit a narrow band, not someone who clicked more. The
+# same block serves the Keeper's ALEMBIC: a brew is a cook you have to take off the heat
+# at the right moment, graded the same way.
 # Difficulty rides the PIECE: a deeper item takes more blows, on narrower bands, at a
 # faster sweep. [TUNABLE]
 [tempo]
@@ -568,13 +573,14 @@ sweep_ms_min = 650
 # party. A master with a crew gets a wide band and a slow sweep; a lone apprentice
 # working a deep piece gets a sliver moving fast. Difficulty is the piece MINUS the
 # smiths, which is what makes bringing a second smith worth a party slot. [TUNABLE]
-band_width_per_forging_level = 0.012
-band_width_per_extra_smith = 0.05
-sweep_ms_per_forging_level = 25   # added back to the sweep (slower = easier)
-sweep_ms_per_extra_smith = 120
-extra_smiths_max = 3              # beyond a full party of them, nothing more helps
+band_width_per_skill_level = 0.012
+band_width_per_extra_hand = 0.05
+sweep_ms_per_skill_level = 25   # added back to the sweep (slower = easier)
+sweep_ms_per_extra_hand = 120
+extra_hands_max = 3              # beyond a full party of them, nothing more helps
 grace_ms = 2000                 # slack after the last sweep before the server grades
                                 # whatever arrived (a smith who walks away gets that)
+cook_bonus_doses = 2            # extra doses a flawless COOK yields on a brew
 quality_epic = 0.999            # a flawless heat rolls the epic affix pool
 quality_rare = 0.5              # …a decent one the rare pool; below that, common
 repair_quality_floor = 0.5      # fraction of a repair you get for a wholly missed heat

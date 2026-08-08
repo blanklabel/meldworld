@@ -60,8 +60,15 @@ pub enum ClientCmd {
     EnterDungeon { entity_id: String },
     /// Raise a field workstation where the avatar stands (spends ore you carry).
     BuildStation { kind: String },
-    /// Ask the smith whose station this is to work a piece of YOUR OWN gear.
-    SmithRequest { entity_id: String, gear_id: String, service: String, material: String },
+    /// Ask whoever raised this station to do a piece of work for you: the smith's
+    /// services on YOUR OWN gear, or a brew at a Keeper's alembic.
+    SmithRequest {
+        entity_id: String,
+        gear_id: String,
+        service: String,
+        material: String,
+        recipe: String,
+    },
     /// A blow on the smithing bar, at the marker's position (0.0-1.0) when struck.
     Strike { job_id: String, at: f64 },
     /// Opt into the ongoing fight nearby (the server checks proximity).
@@ -1703,15 +1710,17 @@ impl Inner {
             ClientCmd::BuildStation { kind } => {
                 self.send_env(wr::BuildStation::TYPE, json!({ "kind": kind }))
             }
-            ClientCmd::SmithRequest { entity_id, gear_id, service, material } => self.send_env(
-                wr::SmithRequest::TYPE,
-                json!({
-                    "entity_id": entity_id,
-                    "gear_id": gear_id,
-                    "service": service,
-                    "material": material,
-                }),
-            ),
+            ClientCmd::SmithRequest { entity_id, gear_id, service, material, recipe } => self
+                .send_env(
+                    wr::SmithRequest::TYPE,
+                    json!({
+                        "entity_id": entity_id,
+                        "gear_id": gear_id,
+                        "service": service,
+                        "material": material,
+                        "recipe": recipe,
+                    }),
+                ),
             ClientCmd::Strike { job_id, at } => {
                 self.send_env(wr::Strike::TYPE, json!({ "job_id": job_id, "at": at }))
             }

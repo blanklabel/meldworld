@@ -6164,19 +6164,21 @@ pub mod tempo {
         }
     }
 
-    /// Lay out a heat for a piece of `tier`, worked by a smith of `forging_level` with
-    /// `extra_smiths` others helping. Deeper pieces are harder; better smiths and bigger
-    /// crews make them easier — the same number, from both ends.
+    /// Lay out a heat for work of difficulty `tier`, done by someone of `skill_level`
+    /// with `extra_hands` others helping. Deeper work is harder; better craftspeople and
+    /// bigger crews make it easier — the same number, from both ends. Used by the smith's
+    /// anvil (difficulty = the piece's tier) and the Keeper's alembic (= the recipe's
+    /// level), because it is the same idea wearing different words.
     pub fn schedule(
         balance: &Balance,
         tier: i32,
-        forging_level: i32,
-        extra_smiths: i32,
+        skill_level: i32,
+        extra_hands: i32,
         seed: u64,
     ) -> Heat {
         let t = &balance.tempo;
         let strikes = t.strikes(tier);
-        let width = t.band_width(tier, forging_level, extra_smiths);
+        let width = t.band_width(tier, skill_level, extra_hands);
         let mut rng = super::Rng(seed);
         let bands = (0..strikes)
             .map(|_| {
@@ -6188,7 +6190,7 @@ pub mod tempo {
             .collect();
         Heat {
             strikes,
-            sweep_ms: t.sweep_ms(tier, forging_level, extra_smiths),
+            sweep_ms: t.sweep_ms(tier, skill_level, extra_hands),
             bands,
         }
     }

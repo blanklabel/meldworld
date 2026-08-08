@@ -140,9 +140,11 @@ pub(crate) struct NavButton(pub(crate) MenuSection);
 #[derive(Component)]
 pub(crate) struct ReturnToTownButton;
 
-/// Tapping this raises a field smith station where you stand (MS-1).
+/// Tapping this raises a field station of `kind` where you stand (MS-1).
 #[derive(Component)]
-pub(crate) struct BuildStationButton;
+pub(crate) struct BuildStationButton {
+    pub kind: &'static str,
+}
 
 /// A potion row in the Items column — clicking it opens the hero picker.
 #[derive(Component)]
@@ -247,7 +249,7 @@ pub(crate) fn column_len(
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
         (Some(MenuSection::Items), None) => held_potions(backpack).len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
-        (Some(MenuSection::Map), None) => 2,
+        (Some(MenuSection::Map), None) => 3,
         // Reading only — the cursor has nothing to land on.
         (Some(MenuSection::Guide), None) => 0,
         (None, _) => MenuSection::ALL.len(),
@@ -422,22 +424,32 @@ pub(crate) fn render_main_menu(
                             // Raising a field forge is an ITEM-shaped choice like the
                             // Town Portal above it: it spends ore you gathered, so it
                             // belongs on a row a player can find and read, not a key.
-                            let ore = carried_ore(&backpack);
-                            let focused = depth == 1 && menu.cursor == 1;
-                            col.spawn((glass::inset(focused), BuildStationButton))
-                                .with_children(|row| {
-                                    let (label, tint) = match ore {
-                                        Some((kind, qty)) => (
-                                            format!("Set up a smith station   ({qty} {kind})"),
-                                            glass::TEXT,
-                                        ),
-                                        None => (
-                                            "Set up a smith station   (no ore carried)".to_string(),
-                                            glass::DIM,
-                                        ),
-                                    };
-                                    row.spawn(glass::text(label, 19.0, tint));
-                                });
+                            for (i, kind) in ["smith", "alembic"].into_iter().enumerate() {
+                                let stock = carried_for(&backpack, kind);
+                                let focused = depth == 1 && menu.cursor == 1 + i;
+                                col.spawn((glass::inset(focused), BuildStationButton { kind }))
+                                    .with_children(|row| {
+                                        let what = if kind == "smith" {
+                                            ("smith station", "ore")
+                                        } else {
+                                            ("Keeper's still", "reagents")
+                                        };
+                                        let (label, tint) = match stock {
+                                            Some((k, qty)) => (
+                                                format!("Set up a {}   ({qty} {k})", what.0),
+                                                glass::TEXT,
+                                            ),
+                                            None => (
+                                                format!(
+                                                    "Set up a {}   (no {} carried)",
+                                                    what.0, what.1
+                                                ),
+                                                glass::DIM,
+                                            ),
+                                        };
+                                        row.spawn(glass::text(label, 19.0, tint));
+                                    });
+                            }
                             for line in [
                                 format!("Distance   {}", stats.distance),
                                 format!("Tier       {}", stats.tier),
@@ -1072,11 +1084,12 @@ pub(crate) fn main_menu_input(
                 menu.section = MenuSection::ALL.get(menu.cursor).copied();
                 menu.cursor = 0;
             }
-            1 if menu.section == Some(MenuSection::Map) && menu.cursor == 1 => {
-                // The server checks the Forging level and takes the ore; the client
-                // only declines to ask when there is plainly nothing to build from.
-                if carried_ore(&backpack).is_some() {
-                    net.0.send(ClientCmd::BuildStation { kind: "smith".into() });
+            1 if menu.section == Some(MenuSection::Map) && menu.cursor >= 1 => {
+                // The server checks the skill level and takes the stock; the client only
+                // declines to ask when there is plainly nothing to build from.
+                let kind = if menu.cursor == 1 { "smith" } else { "alembic" };
+                if carried_for(&backpack, kind).is_some() {
+                    net.0.send(ClientCmd::BuildStation { kind: kind.into() });
                     overlay.kind = None;
                 }
             }
@@ -1139,20 +1152,19 @@ pub(crate) fn main_menu_input(
     }
 }
 
-/// The deepest ore stack the run backpack holds, as `(kind, quantity)`. A field forge
-/// is built from ore you gathered — the deepest first, so a smith who hauled good ore
-/// out of a deep section is not left spending it last.
-pub(crate) fn carried_ore(backpack: &RunBackpack) -> Option<(String, i32)> {
+/// The deepest stack of the stock this station is built from, as `(kind, quantity)`: ore
+/// for a smith's forge, reagents for a Keeper's still. Deepest first, so someone who
+/// hauled good stock out of a deep section is not left spending it last.
+pub(crate) fn carried_for(backpack: &RunBackpack, station: &str) -> Option<(String, i32)> {
+    let class = if station == "alembic" {
+        meld_proto::materials::MaterialClass::Reagent
+    } else {
+        meld_proto::materials::MaterialClass::Ore
+    };
     backpack
         .items
         .iter()
-        .filter(|(kind, qty)| {
-            *qty > 0
-                && meld_proto::materials::is_class(
-                    kind,
-                    meld_proto::materials::MaterialClass::Ore,
-                )
-        })
+        .filter(|(kind, qty)| *qty > 0 && meld_proto::materials::is_class(kind, class))
         .max_by_key(|(kind, _)| {
             meld_proto::materials::material(kind).map(|m| m.tier).unwrap_or(0)
         })
@@ -1162,14 +1174,14 @@ pub(crate) fn carried_ore(backpack: &RunBackpack) -> Option<(String, i32)> {
 /// Tapping the Map column's "Set up a smith station" row raises one — the touch twin of
 /// pressing Enter on it.
 pub(crate) fn build_station_click(
-    rows: Query<&Interaction, (Changed<Interaction>, With<BuildStationButton>)>,
+    rows: Query<(&Interaction, &BuildStationButton), Changed<Interaction>>,
     mut overlay: ResMut<Overlay>,
     backpack: Res<RunBackpack>,
     net: NonSend<NetRes>,
 ) {
-    for interaction in &rows {
-        if *interaction == Interaction::Pressed && carried_ore(&backpack).is_some() {
-            net.0.send(ClientCmd::BuildStation { kind: "smith".into() });
+    for (interaction, btn) in &rows {
+        if *interaction == Interaction::Pressed && carried_for(&backpack, btn.kind).is_some() {
+            net.0.send(ClientCmd::BuildStation { kind: btn.kind.into() });
             overlay.kind = None;
         }
     }

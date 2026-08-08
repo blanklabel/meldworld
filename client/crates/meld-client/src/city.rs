@@ -776,6 +776,7 @@ pub(crate) fn city_input(
                         gear_id: g.gear_id.clone(),
                         service: "repair".into(),
                         material: String::new(),
+                        recipe: String::new(),
                     });
                 }
                 None => craft.last = "nothing on the bench".to_string(),
@@ -792,6 +793,7 @@ pub(crate) fn city_input(
                         gear_id,
                         service: "reroll".into(),
                         material,
+                        recipe: String::new(),
                     });
                 }
                 (None, _) => craft.last = "nothing on the bench".to_string(),

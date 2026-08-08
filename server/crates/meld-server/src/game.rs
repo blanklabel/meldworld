@@ -865,6 +865,8 @@ struct WorldActor {
 struct SmithJob {
     requester: String,
     owner: String,
+    /// Which bench this is: `smith` (a forge) or `alembic` (a still). Empty = the city.
+    kind: String,
     smith_level: i32,
     /// Other smiths in the party lending a hand — they widen the yellow.
     crew: i32,
@@ -872,6 +874,8 @@ struct SmithJob {
     gear_id: String,
     service: String,
     material: String,
+    /// The recipe a brew cooks (alembic only).
+    recipe: String,
     client_seq: u32,
     /// The heat's quality once it has been struck and graded.
     quality: f64,
@@ -4460,12 +4464,14 @@ impl GameState {
         self.open_heat(SmithJob {
             requester: player_id.to_string(),
             owner: player_id.to_string(),
+            kind: "smith".to_string(),
             smith_level: level,
             crew: 0,
             station_id: String::new(),
             gear_id: req.gear_id,
             service: req.service,
             material: req.material,
+            recipe: String::new(),
             client_seq: seq,
             quality: 0.0,
         });
@@ -4515,6 +4521,11 @@ impl GameState {
     /// cannot know it mid-tick; the run's own depth band is the honest stand-in, and it
     /// says the same thing — deeper work is harder work.
     fn open_heat_tier(&self, job: &SmithJob) -> Option<i32> {
+        // A brew's difficulty is the recipe's own level — the alembic's answer to a
+        // piece's tier.
+        if job.service == "brew" {
+            return meld_proto::consumables::recipe(&job.recipe).map(|r| r.min_level);
+        }
         let w = self.world.as_ref()?;
         let run = w.run.runs.iter().find(|r| r.player_id == job.requester)?;
         Some(
@@ -4605,15 +4616,28 @@ impl GameState {
         for job in jobs {
             let forge = self.balance.forge.clone();
             let Ok(requester) = Uuid::parse_str(&job.requester) else { continue };
-            let Ok(gid) = Uuid::parse_str(&job.gear_id) else {
-                self.dispatch(vec![error(
-                    &job.requester,
-                    ErrorCode::ValidationError,
-                    "Unknown gear.",
-                    Some(job.client_seq),
-                )]);
-                continue;
+            let gid = match Uuid::parse_str(&job.gear_id) {
+                Ok(g) => g,
+                // A brew names a recipe rather than a piece, so a missing gear id is only
+                // an error for the smith's services.
+                Err(_) if job.service == "brew" => Uuid::nil(),
+                Err(_) => {
+                    self.dispatch(vec![error(
+                        &job.requester,
+                        ErrorCode::ValidationError,
+                        "Unknown gear.",
+                        Some(job.client_seq),
+                    )]);
+                    continue;
+                }
             };
+            // A brew has no piece in it — a pot is not a gear row — so the cook is
+            // resolved before anything reaches for the Vault's gear table.
+            if job.service == "brew" {
+                let outcome = self.cook(&job, requester).await;
+                self.finish_job(job, outcome).await;
+                continue;
+            }
             let row = match self.db.get_gear_by_id(requester, gid).await {
                 Ok(Some(r)) => r,
                 // Not owned by the requester is the same answer as not existing: a
@@ -4777,51 +4801,103 @@ impl GameState {
                     }
                 }
             };
-            // A station only pays for work that happened, and the XP goes to the SMITH
-            // whose station it is — a field forge is a service its owner provides.
-            let uses_left = match &outcome {
-                Ok(_) => {
-                    // The city anvil has no station to wear out (`station_id` empty).
-                    let left = self
-                        .world
-                        .as_mut()
-                        .filter(|_| !job.station_id.is_empty())
-                        .and_then(|w| w.arena.spend_station_use(&job.station_id))
-                        .unwrap_or(0);
-                    let _ = self.db_writes.send(DbWrite::SkillXp(
-                        job.owner.clone(),
-                        "forging".to_string(),
-                        self.balance.forge.forge_xp_per_craft,
-                    ));
-                    left
-                }
-                Err(_) => self
+            self.finish_job(job, outcome).await;
+        }
+    }
+
+    /// Bill the station and tell the requester. A station only pays for work that
+    /// happened, and the XP goes to the OWNER whose bench it is — a field station is a
+    /// service its owner provides, which is the whole reason to raise one for a party.
+    async fn finish_job(&mut self, job: SmithJob, outcome: Result<String, String>) {
+        let uses_left = match &outcome {
+            Ok(_) => {
+                // The city anvil has no station to wear out (`station_id` empty).
+                let left = self
                     .world
-                    .as_ref()
-                    .and_then(|w| {
-                        w.arena
-                            .stations
-                            .iter()
-                            .find(|s| s.entity_id == job.station_id)
-                            .map(|s| s.uses_left)
-                    })
-                    .unwrap_or(0),
-            };
-            let (ok, message) = match outcome {
-                Ok(m) => (true, m),
-                Err(m) => (false, m),
-            };
-            let result = wr::SmithResult {
-                player_id: job.requester.clone(),
-                entity_id: job.station_id.clone(),
-                gear_id: job.gear_id.clone(),
-                service: job.service.clone(),
-                ok,
-                message,
-                uses_left,
-                quality: job.quality,
-            };
-            self.dispatch(vec![out_msg(&job.requester, &result)]);
+                    .as_mut()
+                    .filter(|_| !job.station_id.is_empty())
+                    .and_then(|w| w.arena.spend_station_use(&job.station_id))
+                    .unwrap_or(0);
+                let skill = if job.kind == "alembic" { "alchemy" } else { "forging" };
+                let _ = self.db_writes.send(DbWrite::SkillXp(
+                    job.owner.clone(),
+                    skill.to_string(),
+                    self.balance.forge.forge_xp_per_craft,
+                ));
+                left
+            }
+            Err(_) => self
+                .world
+                .as_ref()
+                .and_then(|w| {
+                    w.arena
+                        .stations
+                        .iter()
+                        .find(|s| s.entity_id == job.station_id)
+                        .map(|s| s.uses_left)
+                })
+                .unwrap_or(0),
+        };
+        let (ok, message) = match outcome {
+            Ok(m) => (true, m),
+            Err(m) => (false, m),
+        };
+        let result = wr::SmithResult {
+            player_id: job.requester.clone(),
+            entity_id: job.station_id.clone(),
+            gear_id: job.gear_id.clone(),
+            service: job.service.clone(),
+            ok,
+            message,
+            uses_left,
+            quality: job.quality,
+        };
+        self.dispatch(vec![out_msg(&job.requester, &result)]);
+    }
+
+    /// A brew at a Keeper's alembic: the same cook the Apothecary's recipes run over
+    /// HTTP, except the COOK is graded — a good one feeds more people from the same
+    /// reagents (`[tempo] cook_bonus_doses`). The reagents and the doses are the
+    /// requester's; the Keeper's level is what gates the pot and takes the XP.
+    async fn cook(&mut self, job: &SmithJob, requester: Uuid) -> Result<String, String> {
+        let Some(r) = meld_proto::consumables::recipe(&job.recipe) else {
+            return Err("No such recipe.".to_string());
+        };
+        if r.skill != "alchemy" {
+            return Err(format!("{} is smith's work, not a brew.", r.name));
+        }
+        if job.smith_level < r.min_level {
+            return Err(format!(
+                "This Keeper is {} {} - {} wants {}.",
+                r.skill, job.smith_level, r.name, r.min_level
+            ));
+        }
+        let bonus = self.balance.tempo.bonus_doses(job.quality);
+        let qty = r.output_qty + bonus;
+        let inputs: Vec<(String, i32)> = r
+            .inputs
+            .iter()
+            .map(|(k, q)| ((*k).to_string(), *q))
+            .collect();
+        // XP goes to the Keeper, not the pot's owner, so it is credited by `finish_job`
+        // rather than here.
+        match self.db.craft(requester, &inputs, (r.output, qty), r.skill, 0).await {
+            Ok(true) => Ok(format!(
+                "brewed {qty}x {} ({:.0}% cook{})",
+                r.name,
+                job.quality * 100.0,
+                if bonus > 0 { format!(", +{bonus} dose") } else { String::new() }
+            )),
+            Ok(false) => Err(format!(
+                "{} wants {}.",
+                r.name,
+                inputs
+                    .iter()
+                    .map(|(k, q)| format!("{q} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            )),
+            Err(_) => Err("The pot cracked.".to_string()),
         }
     }
 
@@ -4895,22 +4971,35 @@ impl WorldActor {
             Ok(v) => v,
             Err(_) => return reject(ErrorCode::ValidationError, "bad build_station"),
         };
-        if req.kind != "smith" {
-            return reject(ErrorCode::ValidationError, "No such station.");
-        }
+        // Two benches, one idea: a smith's forge is built from ORE and gated on Forging,
+        // a Keeper's alembic from REAGENTS and gated on Alchemy.
+        let forge = self.balance.forge.clone();
+        let (skill, class, what) = match req.kind.as_str() {
+            "smith" => (
+                "forging",
+                meld_proto::materials::MaterialClass::Ore,
+                ("A field forge", forge.station_min_forging_level, "ore"),
+            ),
+            "alembic" => (
+                "alchemy",
+                meld_proto::materials::MaterialClass::Reagent,
+                ("A field still", forge.station_min_alchemy_level, "reagent"),
+            ),
+            _ => return reject(ErrorCode::ValidationError, "No such station."),
+        };
+        let (label, min_level, stock_word) = what;
         if self.battle_of_player(player_id).is_some() {
             return reject(ErrorCode::InvalidState, "Resolve the battle first.");
         }
-        let forge = &self.balance.forge;
-        let level = self.skill_levels.get(player_id).and_then(|m| m.get("forging")).copied();
+        let level = self.skill_levels.get(player_id).and_then(|m| m.get(skill)).copied();
         // No level loaded yet is not a pass: a station is a service, and the whole
         // point is that the smith's own skill is what the work is done at.
-        if level.unwrap_or(0) < forge.station_min_forging_level {
+        if level.unwrap_or(0) < min_level {
             return reject(
                 ErrorCode::InvalidState,
                 &format!(
-                    "Raising a forge in the field takes Forging level {}.",
-                    forge.station_min_forging_level
+                    "{label} takes {} level {min_level}.",
+                    meld_proto::affixes::pretty_class(skill)
                 ),
             );
         }
@@ -4924,12 +5013,7 @@ impl WorldActor {
             .backpack
             .iter()
             .enumerate()
-            .filter(|(_, i)| {
-                meld_proto::materials::is_class(
-                    &i.item_kind,
-                    meld_proto::materials::MaterialClass::Ore,
-                )
-            })
+            .filter(|(_, i)| meld_proto::materials::is_class(&i.item_kind, class))
             .map(|(idx, i)| {
                 (
                     idx,
@@ -4944,14 +5028,14 @@ impl WorldActor {
         else {
             return reject(
                 ErrorCode::InvalidState,
-                &format!("A field forge takes {need} of one ore you are carrying."),
+                &format!("{label} takes {need} of one {stock_word} you are carrying."),
             );
         };
         let ore_kind = run.backpack[idx].item_kind.clone();
         let uses = forge.station_uses;
         let radius = forge.station_radius;
-        if self.arena.place_station(player_id, "smith", uses, radius).is_none() {
-            return reject(ErrorCode::InvalidState, "There is already a forge here.");
+        if self.arena.place_station(player_id, &req.kind, uses, radius).is_none() {
+            return reject(ErrorCode::InvalidState, "There is already a bench here.");
         }
         let run = self
             .run
@@ -4995,7 +5079,7 @@ impl WorldActor {
             Ok(v) => v,
             Err(_) => return reject(ErrorCode::ValidationError, "bad smith_request"),
         };
-        if !matches!(req.service.as_str(), "reroll" | "repair" | "enhance") {
+        if !matches!(req.service.as_str(), "reroll" | "repair" | "enhance" | "brew") {
             return reject(ErrorCode::ValidationError, "No such service.");
         }
         if self.battle_of_player(player_id).is_some() {
@@ -5003,13 +5087,26 @@ impl WorldActor {
         }
         let radius = self.balance.forge.station_radius;
         let Some(station) = self.arena.station_at(player_id, &req.entity_id, radius) else {
-            return reject(ErrorCode::OutOfRange, "No forge in reach.");
+            return reject(ErrorCode::OutOfRange, "No bench in reach.");
         };
+        let kind = station.kind.clone();
         let owner = station.owner_player_id.clone();
+        // A forge cannot cook and a still cannot mend: the bench you are standing at is
+        // what decides what may be asked of it.
+        let (skill, allowed): (&str, &[&str]) = match kind.as_str() {
+            "alembic" => ("alchemy", &["brew"]),
+            _ => ("forging", &["reroll", "repair", "enhance"]),
+        };
+        if !allowed.contains(&req.service.as_str()) {
+            return reject(
+                ErrorCode::ValidationError,
+                &format!("A {kind} does not do that."),
+            );
+        }
         // The station OWNER's skill is the skill the job is done at — that is the whole
         // point of asking someone else's smith. An unloaded level counts as none.
         let smith_level =
-            self.skill_levels.get(&owner).and_then(|m| m.get("forging")).copied().unwrap_or(0);
+            self.skill_levels.get(&owner).and_then(|m| m.get(skill)).copied().unwrap_or(0);
         // A crew makes the bar easier to hit: every OTHER member of the party who could
         // have raised this station counts as a pair of hands on the piece.
         let gate = self.balance.forge.station_min_forging_level;
@@ -5021,7 +5118,7 @@ impl WorldActor {
             .filter(|r| {
                 self.skill_levels
                     .get(&r.player_id)
-                    .and_then(|m| m.get("forging"))
+                    .and_then(|m| m.get(skill))
                     .copied()
                     .unwrap_or(0)
                     >= gate
@@ -5032,12 +5129,14 @@ impl WorldActor {
             vec![WorldEffect::SmithJob(Box::new(SmithJob {
                 requester: player_id.to_string(),
                 owner,
+                kind,
                 smith_level,
                 crew,
                 station_id: req.entity_id.clone(),
                 gear_id: req.gear_id.clone(),
                 service: req.service.clone(),
                 material: req.material.clone(),
+                recipe: req.recipe.clone(),
                 client_seq: seq,
                 quality: 0.0,
             }))],

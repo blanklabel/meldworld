@@ -298,3 +298,144 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
         "the piece left its owner's Vault"
     );
 }
+
+/// The Keeper's half of the same idea: a still raised from reagents you carry, and a
+/// brew that is a COOK — graded like a smith's heat, and a good cook feeds more people
+/// from the same reagents.
+#[tokio::test]
+async fn a_keeper_raises_a_still_and_a_good_cook_yields_more() {
+    let addr = start_server().await;
+    let http = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (token, ticket, player_id) = account(&http, &base, "kp_").await;
+    let pid = uuid::Uuid::parse_str(&player_id).unwrap();
+
+    let db_url = std::env::var("MELD_DATABASE_URL").unwrap();
+    let balance = meld_balance::Balance::load_default().unwrap();
+    let db = meld_db::Db::connect(&db_url, balance.auth.bcrypt_cost).await.unwrap();
+    // Reagents to build the still with AND to brew from, plus the Alchemy to do both.
+    db.bank_extraction(pid, &[("bloom_herb".into(), 40)], 10_000).await.unwrap();
+    db.add_skill_xp(pid, "alchemy", 100_000).await.unwrap();
+    assert_eq!(
+        http.post(format!("{base}/v1/vault/materials/bloom_herb/withdraw"))
+            .bearer_auth(&token)
+            .json(&json!({ "quantity": 20 }))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
+    let mut seq = 1u32;
+    macro_rules! send {
+        ($t:expr, $p:tt) => {{
+            ws.send(Message::Text(
+                json!({"type":$t,"seq":seq,"ts":0,"payload":$p}).to_string(),
+            ))
+            .await
+            .unwrap();
+            seq += 1;
+        }};
+    }
+    ws.send(Message::Text(
+        json!({"type":"session.authenticate","seq":seq,"ts":0,"payload":{"ticket":ticket,"resume":null}}).to_string(),
+    ))
+    .await
+    .unwrap();
+    seq += 1;
+
+    let mut built = false;
+    let mut asked = false;
+    let mut jobs_seen: Option<i64> = None;
+    let mut result: Option<Value> = None;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while result.is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "timed out (built={built})");
+        let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("ws closed") };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        match v["type"].as_str().unwrap_or("") {
+            "session.authenticated" => send!("run.enter_maze", {"tutorial": true}),
+            "run.started" => send!("run.build_station", {"kind": "alembic"}),
+            "session.error" => panic!("refused: {v}"),
+            "run.backpack_update" => {
+                let changes = v["payload"]["changes"].as_array().cloned().unwrap_or_default();
+                if changes.iter().any(|c| {
+                    c["delta"] == json!("removed") && c["cause"] == json!("station")
+                }) {
+                    built = true;
+                }
+            }
+            "world.snapshot" if built && !asked => {
+                let ents = v["payload"]["entities"].as_array().cloned().unwrap_or_default();
+                if let Some(st) = ents.iter().find(|e| {
+                    e["avatar_state"]
+                        .as_str()
+                        .is_some_and(|s| s.starts_with("station:alembic:"))
+                }) {
+                    let tag = st["avatar_state"].as_str().unwrap();
+                    jobs_seen = tag.rsplit(':').next().and_then(|n| n.parse::<i64>().ok());
+                    asked = true;
+                    send!("run.smith_request", {
+                        "entity_id": st["entity_id"].as_str().unwrap(),
+                        "gear_id": "",
+                        "service": "brew",
+                        "material": "",
+                        "recipe": "bloom_salve"
+                    });
+                }
+            }
+            // A brew is a cook: the same bar, at the RECIPE's difficulty. Hit every band.
+            "run.tempo_started" => {
+                let p = &v["payload"];
+                assert_eq!(p["service"], json!("brew"), "{p}");
+                let job_id = p["job_id"].as_str().unwrap().to_string();
+                for b in p["bands"].as_array().cloned().unwrap_or_default() {
+                    let at = (b["lo"].as_f64().unwrap() + b["hi"].as_f64().unwrap()) / 2.0;
+                    send!("run.strike", {"job_id": job_id, "at": at});
+                }
+            }
+            "run.smith_result" => result = Some(v["payload"].clone()),
+            _ => {}
+        }
+    }
+
+    assert!(built, "the still should have been paid for out of the backpack");
+    assert_eq!(
+        jobs_seen,
+        Some(balance.forge.station_uses as i64),
+        "a fresh still advertises its full run of brews"
+    );
+    let result = result.expect("the Keeper answered");
+    assert_eq!(result["ok"], json!(true), "{result}");
+    assert_eq!(result["quality"].as_f64(), Some(1.0), "a clean cook grades 1.0: {result}");
+    let msg = result["message"].as_str().unwrap_or_default();
+    assert!(msg.contains("brewed"), "{msg}");
+    // A flawless cook yields the recipe's doses PLUS the bonus — the whole point of
+    // grading a cook rather than just charging for one.
+    let bonus = balance.tempo.bonus_doses(1.0);
+    assert!(bonus > 0, "a flawless cook should be worth something");
+    assert!(msg.contains(&format!("+{bonus} dose")), "{msg}");
+
+    // And the doses are in the Vault, where the requester's stock always was.
+    let vault: Value = http
+        .get(format!("{base}/v1/vault"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let salves = vault["materials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(vault["pending"].as_array().into_iter().flatten())
+        .find(|m| m["item_kind"] == json!("bloom_salve"))
+        .and_then(|m| m["quantity"].as_i64())
+        .unwrap_or(0);
+    assert!(salves >= 1 + bonus as i64, "the doses should be banked: {vault}");
+}

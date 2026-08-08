@@ -247,13 +247,14 @@ between them.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| kind | string (enum: `smith`) | Yes | Which bench to raise. Anything else is a validation error. |
+| kind | string (enum: `smith`, `alembic`) | Yes | Which bench to raise: a smith's forge (built from **ore**, gated on Forging) or a Keeper's still (built from **reagents**, gated on Alchemy). Anything else is a validation error. |
 
-**Server validation** — the builder's persistent **Forging level** must be at least
-`[forge] station_min_forging_level`; they must be carrying at least `[forge]
-station_ore_cost` of a single **ore**-class material in the run backpack (the deepest such
-stack is spent first); and there must be no live station already within `[forge]
-station_radius` on the same elevation. Each refusal says which of those it was.
+**Server validation** — the builder's persistent level in the bench's skill must be at
+least `[forge] station_min_forging_level` / `station_min_alchemy_level`; they must be
+carrying at least `[forge] station_ore_cost` of a single material of the bench's class
+(**ore** for a forge, **reagent** for a still — the deepest such stack is spent first); and
+there must be no live station already within `[forge] station_radius` on the same
+elevation. Each refusal says which of those it was.
 
 **Results in** — the ore leaving the backpack (`run.backpack_update`, `cause: "station"`)
 and the station appearing in `world.snapshot` as `station:<kind>:<jobs_left>` for
@@ -283,15 +284,20 @@ Forging level is the skill the job is done at (they also take the Forging XP).
 | Field | Type | Required | Description |
 |---|---|---|---|
 | entity_id | string | Yes | The station being worked at. |
-| gear_id | string (uuid) | Yes | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. |
+| gear_id | string (uuid) | For the smith's services | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. Ignored by a brew. |
+| recipe | string | For `brew` | The recipe to cook, at a Keeper's alembic. |
 | service | string (enum: `reroll`, `repair`, `enhance`) | Yes | Which service. `enhance` puts a temporary edge on a piece a hero is **wearing** that lasts the rest of the dive — never a Vault write, so it cannot carry power home; it is refused in town, where there is no dive to spend it on. |
 | material | string | For `reroll` | Material to spend on the re-draw; ignored by a repair. |
 
-**Server validation** — the same tier rules as the HTTP anvil (`repair` needs an
-**insured** piece; `reroll` refuses **ephemeral**), the same costs (`reroll` eats
-`reroll_material_cost + reroll_material_per_tier × tier`), and the station must have a job
-left. **Ownership never moves**: the Vault call is scoped to the sender's own player id, so
-a station cannot reach into another player's gear.
+**Server validation** — the bench decides what may be asked of it: a **forge** does
+`reroll` / `repair` / `enhance`, a **still** does `brew`, and anything else is refused. The
+smith's services keep the same tier rules as the HTTP anvil (`repair` needs an **insured**
+piece; `reroll` refuses **ephemeral**) and the same costs (`reroll` eats
+`reroll_material_cost + reroll_material_per_tier × tier`). A `brew` is gated on the
+**station owner's** Alchemy level against the recipe's own `min_level`, and spends the
+requester's reagents. The station must have a job left. **Ownership never moves**: every
+Vault call is scoped to the sender's own player id, so a station cannot reach into another
+player's gear or stock.
 
 **Results in** — `run.tempo_started`: the work is a **heat**, not an instant. The smith
 strikes with `run.strike`, and `run.smith_result` arrives once the last blow lands (or the

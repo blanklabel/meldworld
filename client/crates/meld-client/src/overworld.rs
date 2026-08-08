@@ -271,8 +271,12 @@ pub(crate) fn touch_action_buttons(
                         Some(Interact::EnterDungeon { entity_id }) => {
                             net.0.send(ClientCmd::EnterDungeon { entity_id })
                         }
-                        Some(Interact::UseStation { entity_id, jobs }) => {
+                        Some(Interact::UseStation { entity_id, kind, jobs }) => {
+                            if kind == "alembic" {
+                                net.0.fetch_recipes();
+                            }
                             station.open = Some(entity_id);
+                            station.kind = kind;
                             station.jobs = jobs;
                         }
                         Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
@@ -779,8 +783,14 @@ pub(crate) fn overworld_input(
         Interact::EnterDungeon { entity_id } => net.0.send(ClientCmd::EnterDungeon { entity_id }),
         // A station is a bench, not a one-shot: [E] opens it and the keys work from
         // there, the same way the city anvil does.
-        Interact::UseStation { entity_id, jobs } => {
+        Interact::UseStation { entity_id, kind, jobs } => {
+            // A still needs the recipe book; in the field the client may never have
+            // opened the city's Alembic, so ask for it on the way in.
+            if kind == "alembic" {
+                net.0.fetch_recipes();
+            }
             station.open = Some(entity_id);
+            station.kind = kind;
             station.jobs = jobs;
         }
         Interact::Extract => net.0.send(ClientCmd::Extract),
@@ -801,7 +811,7 @@ pub(crate) enum Interact {
     EnterDungeon { entity_id: String },
     /// Work at a field station someone raised. `jobs` is what it has left, so the
     /// prompt can say whether it is worth walking over to.
-    UseStation { entity_id: String, jobs: u8 },
+    UseStation { entity_id: String, kind: String, jobs: u8 },
     Extract,
 }
 
@@ -814,7 +824,10 @@ impl Interact {
             Interact::Harvest { label, .. } => format!("Gather {label}"),
             Interact::OpenChest { .. } => "Open the chest".into(),
             Interact::EnterDungeon { .. } => "Descend".into(),
-            Interact::UseStation { jobs, .. } => format!("Use the forge ({jobs} left)"),
+            Interact::UseStation { kind, jobs, .. } => {
+                let bench = if kind == "alembic" { "still" } else { "forge" };
+                format!("Use the {bench} ({jobs} left)")
+            }
             Interact::Extract => "Extract".into(),
         }
     }
@@ -859,6 +872,7 @@ pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<In
             EntityKind::Entrance => Some(Interact::EnterDungeon { entity_id: id.clone() }),
             EntityKind::Station => Some(Interact::UseStation {
                 entity_id: id.clone(),
+                kind: e.name.clone().unwrap_or_default(),
                 jobs: e.bodies_required,
             }),
             EntityKind::Portal => Some(Interact::Extract),
@@ -3673,6 +3687,8 @@ mod explored_map_tests {
 #[derive(Resource, Default)]
 pub(crate) struct StationUi {
     pub open: Option<String>,
+    /// Which bench it is: `smith` or `alembic`. They offer different work.
+    pub kind: String,
     pub jobs: u8,
 }
 
@@ -3684,8 +3700,35 @@ pub(crate) fn station_line(
     craft: &CraftData,
     inv: &InventoryData,
 ) -> Option<String> {
-    let id = station.open.as_ref()?;
-    let _ = id;
+    station.open.as_ref()?;
+    // A Keeper's still is a pot with a recipe on it, not a bench with a piece: the
+    // recipe book the city already fetched is the list, and up/down walks it.
+    if station.kind == "alembic" {
+        let head = format!("FIELD STILL  ({} brew(s) left)", station.jobs);
+        let Some(r) = craft.recipes.get(craft.cursor.min(craft.recipes.len().saturating_sub(1)))
+        else {
+            return Some(format!("{head}   no recipes known   [E] leave"));
+        };
+        let inputs: Vec<String> = r
+            .inputs
+            .iter()
+            .map(|(kind, need)| {
+                let have = inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q);
+                format!("{have}/{need} {kind}")
+            })
+            .collect();
+        let gate = if r.craftable {
+            String::new()
+        } else {
+            format!("  (needs {} {})", r.skill, r.required_level)
+        };
+        return Some(format!(
+            "{head}   up/down {} x{}  <- {}{gate}   [B] brew   [E] leave",
+            r.name,
+            r.output_quantity,
+            inputs.join(" + ")
+        ));
+    }
     let head = format!("FIELD FORGE  ({} job(s) left)", station.jobs);
     let Some(g) = crate::city::bench_gear(craft, inv) else {
         return Some(format!("{head}   nothing in your Vault to work on   [E] leave"));
@@ -3748,6 +3791,31 @@ pub(crate) fn station_input(
         craft.bench = (craft.bench + n - 1) % n;
         return;
     }
+    // A still brews: up/down walk the recipe book (fetched over HTTP like the city's),
+    // [B] puts the pot on. Its own keys, because a forge's make no sense at one.
+    if station.kind == "alembic" {
+        let n = craft.recipes.len();
+        if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
+            craft.cursor = (craft.cursor + 1) % n;
+            return;
+        }
+        if n > 0 && keys.just_pressed(KeyCode::ArrowUp) {
+            craft.cursor = (craft.cursor + n - 1) % n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyB) {
+            if let Some(r) = craft.recipes.get(craft.cursor) {
+                net.0.send(ClientCmd::SmithRequest {
+                    entity_id: id,
+                    gear_id: String::new(),
+                    service: "brew".into(),
+                    material: String::new(),
+                    recipe: r.recipe.clone(),
+                });
+            }
+        }
+        return;
+    }
     let repair = keys.just_pressed(KeyCode::KeyP);
     let reroll = keys.just_pressed(KeyCode::KeyR);
     let edge = keys.just_pressed(KeyCode::KeyN);
@@ -3777,6 +3845,7 @@ pub(crate) fn station_input(
         gear_id: g.gear_id.clone(),
         service: service.into(),
         material,
+        recipe: String::new(),
     });
 }
 
@@ -3819,7 +3888,11 @@ mod station_tests {
     // the services that tier can take — the same rules, wherever the anvil is.
     #[test]
     fn the_field_bench_offers_what_the_city_bench_would() {
-        let station = StationUi { open: Some("station-smith-0".into()), jobs: 3 };
+        let station = StationUi {
+            open: Some("station-smith-0".into()),
+            kind: "smith".into(),
+            jobs: 3,
+        };
         let craft = CraftData::default();
         let mut inv = InventoryData::default();
 
@@ -3877,8 +3950,8 @@ mod station_tests {
 
         let target = interact_target(&world, &session).expect("a forge in reach");
         assert!(
-            matches!(&target, Interact::UseStation { entity_id, jobs }
-                if entity_id == "station-smith-0" && *jobs == 2)
+            matches!(&target, Interact::UseStation { entity_id, kind, jobs }
+                if entity_id == "station-smith-0" && kind == "smith" && *jobs == 2)
         );
         // The prompt says how many jobs are left, so nobody walks over for nothing.
         assert_eq!(target.prompt(), "[E] Use the forge (2 left)");
@@ -3974,6 +4047,44 @@ pub(crate) fn heat_input(
 #[cfg(test)]
 mod heat_tests {
     use super::*;
+
+    // The Keeper's still is a pot with a RECIPE on it, not a bench with a piece: it
+    // reads out what the brew wants, what you carry, and the key that puts it on.
+    #[test]
+    fn a_field_still_reads_out_the_brew_rather_than_a_piece() {
+        let station = StationUi {
+            open: Some("station-alembic-0".into()),
+            kind: "alembic".into(),
+            jobs: 2,
+        };
+        let mut craft = CraftData { loaded: true, ..Default::default() };
+        let mut inv = InventoryData::default();
+
+        // No book yet is an answer, not a blank pot.
+        let bare = station_line(&station, &craft, &inv).expect("open");
+        assert!(bare.contains("FIELD STILL"), "{bare}");
+        assert!(bare.contains("2 brew(s) left"), "{bare}");
+        assert!(bare.contains("no recipes known"), "{bare}");
+
+        craft.recipes = vec![meld_client::net::RecipeLine {
+            recipe: "bloom_salve".into(),
+            name: "Bloom Salve".into(),
+            skill: "alchemy".into(),
+            required_level: 1,
+            skill_level: 1,
+            craftable: true,
+            output_quantity: 1,
+            inputs: vec![("bloom_herb".to_string(), 2)],
+        }];
+        inv.materials = vec![("bloom_herb".to_string(), 1)];
+        let line = station_line(&station, &craft, &inv).expect("open");
+        // have/need per input is the whole answer to "why can't I brew this".
+        assert!(line.contains("1/2 bloom_herb"), "{line}");
+        assert!(line.contains("[B] brew"), "{line}");
+        // A forge's keys have no meaning at a pot.
+        assert!(!line.contains("[R] reroll"), "{line}");
+        assert!(!line.contains("[P] repair"), "{line}");
+    }
 
     fn open(bands: &[(f64, f64)]) -> HeatUi {
         HeatUi {

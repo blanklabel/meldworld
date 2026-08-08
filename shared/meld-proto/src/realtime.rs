@@ -828,6 +828,10 @@ pub mod run {
         /// Material to spend on a reroll (ignored by a repair).
         #[serde(default)]
         pub material: String,
+        /// The recipe a **brew** cooks, at a Keeper's alembic. Ignored by the smith's
+        /// services, and `gear_id` is ignored by a brew — a pot has no piece in it.
+        #[serde(default)]
+        pub recipe: String,
     }
     impl Message for SmithRequest {
         const TYPE: &'static str = "run.smith_request";

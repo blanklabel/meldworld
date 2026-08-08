@@ -652,6 +652,14 @@ XP; harvesting exists but is instant.
     the bonus lives in the run and dies with it, so a temporary buff cannot become a way
     to launder power home, and it is worth asking a smith for on the way *in*. Kept apart
     from the gear mirror so re-equipping cannot wipe it. Knobs in `[forge] enhance_*`.
+  - 🟡 *The Keeper gets the same idea, as a cook:* the Open Flower's half of field
+    crafting. An **alembic** is raised from **reagents** you carry and gated on
+    **Alchemy** (`station_min_alchemy_level`), and brewing at one is a **cook** — the same
+    graded bar, at the **recipe's own level** instead of a gear tier — where quality buys
+    **extra doses** (`[tempo] cook_bonus_doses`): a good cook feeds more people from the
+    same reagents. A forge cannot cook and a still cannot mend; the bench you are standing
+    at decides what may be asked of it, and its owner's skill is what the work is done at.
+    The Map column now offers both benches, each naming the stock it wants.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first);
     and the crafting-depth layers the proposal scopes: recipe *discovery*,
