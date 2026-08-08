@@ -586,6 +586,13 @@ pub(crate) fn city_input(
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    // The Drill Yard is modal and full of text fields, so town hotkeys are off while
+    // it is open: `T` is a tutorial dive and `Enter` is a dive, and both sit in the
+    // middle of the alphabet you type a hero's name out of. Autoplay never opens the
+    // yard (`prompt_party_if_unset` skips it), so its dive path is untouched.
+    if city.party_open {
+        return;
+    }
     // Dive: ENTER anywhere, E while standing at The Threshold, or autoplay (which
     // ?city / CityIdle suppresses so the hub can be inspected).
     let at_threshold = city
@@ -802,11 +809,16 @@ pub(crate) fn city_move(
     keys: Res<ButtonInput<KeyCode>>,
     look: Res<hd2d::Look>,
     session: Res<Session>,
+    city: Res<CityUi>,
     mut q: Query<&mut Transform, With<CityPlayer>>,
 ) {
     let Ok(mut tf) = q.single_mut() else { return };
     if session.entered {
         return; // stepping through The Threshold — stop walking
+    }
+    // WASD is also four letters of a hero's name, so the yard holds you still.
+    if city.party_open {
+        return;
     }
     // Camera-relative planar basis (at yaw 0 the camera looks toward -z).
     let yaw = look.cam_yaw.to_radians();
@@ -1457,15 +1469,113 @@ pub(crate) struct LoadoutNameText;
 #[derive(Component)]
 pub(crate) struct PartySlotLabel(pub usize);
 
+/// The portrait on a party slot card.
+#[derive(Component)]
+pub(crate) struct PartySlotSprite(pub usize);
+
+/// A slot card's hero name — the editable one, not the class.
+#[derive(Component)]
+pub(crate) struct PartySlotHeroName(pub usize);
+
+/// The portrait on a palette class card.
+#[derive(Component)]
+pub(crate) struct PartyClassSprite(pub &'static str);
+
+/// The detail panel's parts, filled from [`CityUi::yard_focus`].
+#[derive(Component)]
+pub(crate) struct YardDetailSprite;
+#[derive(Component)]
+pub(crate) struct YardDetailName;
+#[derive(Component)]
+pub(crate) struct YardDetailRole;
+#[derive(Component)]
+pub(crate) struct YardDetailKit;
+
+/// One segment of one 0..5 stat bar in the detail panel.
+#[derive(Component)]
+pub(crate) struct YardStatFill {
+    pub stat: u8,
+    pub seg: u8,
+}
+
+/// Click to start renaming the focused hero.
+#[derive(Component)]
+pub(crate) struct YardRenameButton;
+
+/// The rename line's editable text.
+#[derive(Component)]
+pub(crate) struct YardRenameText;
+
+/// One framed card: a portrait over a label, optionally with a second line under it.
+/// Shared by the four party slots and the class palette, so a hero you have and a
+/// class you could field are literally the same object at two sizes.
+#[allow(clippy::too_many_arguments)]
+fn yard_card(
+    parent: &mut ChildSpawnerCommands,
+    sprite: Handle<Image>,
+    label: &str,
+    sub: &str,
+    w: f32,
+    tags: impl Bundle,
+    sprite_tag: impl Bundle,
+    label_tag: impl Bundle,
+    sub_tag: impl Bundle,
+) {
+    parent
+        .spawn((
+            Button,
+            tags,
+            Node {
+                width: Val::Px(w),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(3.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                border: UiRect::all(Val::Px(2.0)),
+                ..default()
+            },
+            BorderColor(glass::EDGE),
+            BackgroundColor(glass::GLASS_DEEP),
+            BorderRadius::all(Val::Px(10.0)),
+        ))
+        .with_children(|c| {
+            c.spawn((
+                ImageNode::new(sprite),
+                sprite_tag,
+                Node { width: Val::Px(w * 0.86), height: Val::Px(w * 0.86), ..default() },
+            ));
+            c.spawn((
+                Text::new(label.to_string()),
+                label_tag,
+                TextFont { font_size: 17.0, ..default() },
+                TextColor(Color::srgb(0.92, 0.94, 1.0)),
+            ));
+            c.spawn((
+                Text::new(sub.to_string()),
+                sub_tag,
+                TextFont { font_size: 13.0, ..default() },
+                TextColor(Color::srgb(0.6, 0.65, 0.8)),
+            ));
+        });
+}
+
 /// Build (or tear down) the Drill Yard's party panel as `city.party_open` flips.
 ///
 /// Spawned rather than drawn into the shared HUD line so the slots and classes are
 /// real buttons — mustering a party is pointing at heroes, not memorising [1]-[4].
+///
+/// This is the login screen's old party builder, brought into town and given the
+/// thing it never had: the heroes are *yours* here, with names you can change, so
+/// the panel shows portraits, a class's role and kit, and its stat shape — the
+/// reading a player actually wants before committing four slots to a dive.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn party_panel(
     mut commands: Commands,
     city: Res<CityUi>,
     unlocks: Res<UnlocksRes>,
     session: Res<Session>,
+    hero_names: Res<AccountHeroNames>,
+    wa: Option<Res<WorldAssets>>,
     loadouts: Res<LoadoutData>,
     existing: Query<Entity, With<PartyPanelRoot>>,
     mut was_open: Local<bool>,
@@ -1487,100 +1597,244 @@ pub(crate) fn party_panel(
     }
     let pool = fieldable_classes(&unlocks);
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
+    let sprite = |key: &str| -> Handle<Image> {
+        wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
+    };
+    let focus = class_info(if city.yard_focus.is_empty() {
+        session.party.first().map(|s| s.as_str()).unwrap_or("explorer")
+    } else {
+        city.yard_focus.as_str()
+    });
     commands
         .spawn((
             PartyPanelRoot,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(16.0),
-                bottom: Val::Px(16.0),
-                width: Val::Px(430.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
                 row_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(16.0)),
-                border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(glass::EDGE),
-            BorderRadius::all(Val::Px(10.0)),
-            BackgroundColor(glass::GLASS_DEEP),
+            BackgroundColor(glass::SCRIM),
         ))
         .with_children(|p| {
             p.spawn((
-                Text::new(format!("The Drill Yard \u{2014} {slots} of 4 slots earned")),
-                TextFont { font_size: 18.0, ..default() },
+                Text::new("THE DRILL YARD"),
+                TextFont { font_size: 34.0, ..default() },
                 TextColor(Color::srgb(0.98, 0.9, 0.68)),
             ));
-            for i in 0..4 {
-                if i < slots {
-                    let cls =
-                        session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
-                    p.spawn((
-                        Button,
-                        PartySlotButton(i),
-                        Node {
-                            padding: UiRect::axes(Val::Px(10.0), Val::Px(8.0)),
-                            border: UiRect::all(Val::Px(1.0)),
-                            ..default()
-                        },
-                        BorderColor(glass::EDGE_SOFT),
-                        BorderRadius::all(Val::Px(6.0)),
-                        BackgroundColor(glass::CHIP_OFF),
-                    ))
-                    .with_children(|b| {
-                        b.spawn((
-                            Text::new(format!("{}. {}", i + 1, class_info(&cls).name)),
-                            PartySlotLabel(i),
-                            TextFont { font_size: 15.0, ..default() },
-                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
-                        ));
-                    });
-                } else {
-                    // Named rather than omitted: the roster you are working toward is
-                    // more legible than a list that silently stops short.
-                    p.spawn((
-                        Text::new(format!("{}. locked", i + 1)),
-                        TextFont { font_size: 14.0, ..default() },
-                        TextColor(Color::srgb(0.45, 0.48, 0.58)),
-                    ));
-                }
-            }
             p.spawn((
-                Text::new("Pick a slot, then a class"),
-                TextFont { font_size: 13.0, ..default() },
+                Text::new(format!(
+                    "{slots} of 4 slots earned \u{2014} click a hero, then a class. [R] renames."
+                )),
+                TextFont { font_size: 16.0, ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
+
+            // The party itself: one card per slot, portrait + class + the hero's own
+            // name. A locked slot is drawn rather than omitted, so the roster you are
+            // working toward is legible instead of a list that stops short.
             p.spawn(Node {
                 flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(6.0),
-                flex_wrap: FlexWrap::Wrap,
-                row_gap: Val::Px(6.0),
+                column_gap: Val::Px(10.0),
+                margin: UiRect::top(Val::Px(4.0)),
                 ..default()
             })
             .with_children(|row| {
-                // Only what the account owns — the whole reason this lives in town
-                // rather than on the pre-authentication login screen.
+                for i in 0..4 {
+                    if i < slots {
+                        let cls =
+                            session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
+                        let name = hero_names
+                            .names
+                            .get(i)
+                            .cloned()
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| format!("Hero {}", i + 1));
+                        yard_card(
+                            row,
+                            sprite(&cls),
+                            class_info(&cls).name,
+                            &name,
+                            118.0,
+                            PartySlotButton(i),
+                            PartySlotSprite(i),
+                            PartySlotLabel(i),
+                            PartySlotHeroName(i),
+                        );
+                    } else {
+                        row.spawn((
+                            Node {
+                                width: Val::Px(118.0),
+                                flex_direction: FlexDirection::Column,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                padding: UiRect::all(Val::Px(8.0)),
+                                border: UiRect::all(Val::Px(2.0)),
+                                ..default()
+                            },
+                            BorderColor(glass::EDGE_SOFT),
+                            BackgroundColor(glass::CHIP_OFF),
+                            BorderRadius::all(Val::Px(10.0)),
+                        ))
+                        .with_children(|c| {
+                            c.spawn((
+                                Text::new(format!("{}\nlocked", i + 1)),
+                                TextFont { font_size: 14.0, ..default() },
+                                TextColor(Color::srgb(0.45, 0.48, 0.58)),
+                            ));
+                        });
+                    }
+                }
+            });
+
+            // Renaming lives beside the heroes it renames, rather than behind a menu
+            // in the middle of a dive — this is the screen where they are people.
+            p.spawn((
+                Button,
+                YardRenameButton,
+                Node {
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(6.0)),
+                BackgroundColor(glass::CHIP_OFF),
+            ))
+            .with_children(|b| {
+                b.spawn((
+                    Text::new("Rename this hero"),
+                    YardRenameText,
+                    TextFont { font_size: 14.0, ..default() },
+                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                ));
+            });
+
+            // Only what the account owns — the whole reason this lives in town rather
+            // than on the pre-authentication login screen.
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                flex_wrap: FlexWrap::Wrap,
+                row_gap: Val::Px(8.0),
+                justify_content: JustifyContent::Center,
+                margin: UiRect::top(Val::Px(2.0)),
+                ..default()
+            })
+            .with_children(|row| {
                 for key in &pool {
-                    row.spawn((
-                        Button,
+                    let ci = class_info(key);
+                    yard_card(
+                        row,
+                        sprite(key),
+                        ci.name,
+                        "",
+                        104.0,
                         PartyClassButton(key),
-                        Node {
-                            padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
-                            border: UiRect::all(Val::Px(1.0)),
+                        PartyClassSprite(key),
+                        (),
+                        (),
+                    );
+                }
+            });
+
+            // The detail panel: what a class actually is, at the moment you are
+            // deciding whether to field it.
+            p.spawn((
+                Node {
+                    width: Val::Px(780.0),
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(16.0),
+                    padding: UiRect::all(Val::Px(12.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor(glass::EDGE),
+                BackgroundColor(glass::GLASS_DEEP),
+                BorderRadius::all(Val::Px(12.0)),
+            ))
+            .with_children(|d| {
+                d.spawn((
+                    ImageNode::new(sprite(focus.key)),
+                    YardDetailSprite,
+                    Node { width: Val::Px(120.0), height: Val::Px(120.0), ..default() },
+                ));
+                d.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(5.0),
+                    flex_grow: 1.0,
+                    ..default()
+                })
+                .with_children(|col| {
+                    col.spawn((
+                        Text::new(focus.name.to_string()),
+                        YardDetailName,
+                        TextFont { font_size: 26.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.85, 0.45)),
+                    ));
+                    col.spawn((
+                        Text::new(focus.role.to_string()),
+                        YardDetailRole,
+                        TextFont { font_size: 15.0, ..default() },
+                        TextColor(Color::srgb(0.78, 0.82, 0.95)),
+                    ));
+                    col.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(24.0),
+                        margin: UiRect::top(Val::Px(3.0)),
+                        ..default()
+                    })
+                    .with_children(|body| {
+                        body.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(4.0),
                             ..default()
-                        },
-                        BorderColor(glass::EDGE_SOFT),
-                        BorderRadius::all(Val::Px(6.0)),
-                        BackgroundColor(glass::CHIP_OFF),
-                    ))
-                    .with_children(|b| {
-                        b.spawn((
-                            Text::new(class_info(key).name.to_string()),
-                            TextFont { font_size: 14.0, ..default() },
-                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                        })
+                        .with_children(|stats| {
+                            for (si, name) in
+                                ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate()
+                            {
+                                stats
+                                    .spawn(Node {
+                                        flex_direction: FlexDirection::Row,
+                                        align_items: AlignItems::Center,
+                                        column_gap: Val::Px(6.0),
+                                        ..default()
+                                    })
+                                    .with_children(|r| {
+                                        r.spawn((
+                                            Text::new(name.to_string()),
+                                            TextFont { font_size: 12.0, ..default() },
+                                            TextColor(Color::srgb(0.6, 0.65, 0.8)),
+                                            Node { width: Val::Px(34.0), ..default() },
+                                        ));
+                                        for seg in 0..5u8 {
+                                            r.spawn((
+                                                YardStatFill { stat: si as u8, seg },
+                                                Node {
+                                                    width: Val::Px(20.0),
+                                                    height: Val::Px(9.0),
+                                                    ..default()
+                                                },
+                                                BackgroundColor(glass::CHIP_OFF),
+                                                BorderRadius::all(Val::Px(2.0)),
+                                            ));
+                                        }
+                                    });
+                            }
+                        });
+                        body.spawn((
+                            Text::new(crate::screens::kit_text(focus)),
+                            YardDetailKit,
+                            TextFont { font_size: 13.0, ..default() },
+                            TextColor(Color::srgb(0.7, 0.85, 0.7)),
                         ));
                     });
-                }
+                });
             });
             // PT-2: the saved compositions. Named rather than numbered slots because
             // the point is recognising a team at a glance ("Delvers", "Boss squad").
@@ -1733,18 +1987,53 @@ pub(crate) fn party_panel(
 }
 
 /// Clicks inside the Drill Yard: pick a slot, assign a class, or close.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn party_panel_buttons(
     slots_q: Query<(&Interaction, &PartySlotButton), Changed<Interaction>>,
     class_q: Query<(&Interaction, &PartyClassButton), Changed<Interaction>>,
     done_q: Query<&Interaction, (Changed<Interaction>, With<PartyDoneButton>)>,
+    rename_q: Query<&Interaction, (Changed<Interaction>, With<YardRenameButton>)>,
+    keys: Res<ButtonInput<KeyCode>>,
     unlocks: Res<UnlocksRes>,
+    hero_names: Res<AccountHeroNames>,
+    mut rename: ResMut<HeroRename>,
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
 ) {
+    // Hovering reads, clicking commits. Pointing at a class you are only curious
+    // about should never quietly change who you are taking down.
     for (i, b) in &slots_q {
-        if *i == Interaction::Pressed {
-            session.party_cursor = b.0;
+        match *i {
+            Interaction::Pressed => {
+                session.party_cursor = b.0;
+                if let Some(k) = session.party.get(b.0) {
+                    city.yard_focus = k.clone();
+                }
+            }
+            Interaction::Hovered => {
+                if let Some(k) = session.party.get(b.0) {
+                    city.yard_focus = k.clone();
+                }
+            }
+            Interaction::None => {}
         }
+    }
+    for (i, b) in &class_q {
+        if *i == Interaction::Hovered {
+            city.yard_focus = b.0.to_string();
+        }
+    }
+    let start_rename = |rename: &mut HeroRename, slot: usize| {
+        rename.slot = Some(slot);
+        rename.buffer = hero_names.names.get(slot).cloned().unwrap_or_default();
+    };
+    for i in &rename_q {
+        if *i == Interaction::Pressed && rename.slot.is_none() {
+            start_rename(&mut rename, session.party_cursor);
+        }
+    }
+    if city.party_open && rename.slot.is_none() && keys.just_pressed(KeyCode::KeyR) {
+        start_rename(&mut rename, session.party_cursor);
     }
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
     for (i, b) in &class_q {
@@ -1774,10 +2063,13 @@ pub(crate) fn party_panel_buttons(
 /// rest of the time — the panel is the one place in town that swallows letter keys.
 pub(crate) fn loadout_name_input(
     keys: Res<ButtonInput<KeyCode>>,
+    rename: Res<HeroRename>,
     mut city: ResMut<CityUi>,
     mut q: Query<&mut Text, With<LoadoutNameText>>,
 ) {
-    if !city.party_open {
+    // Two text fields share one keyboard: while a hero is being renamed the letters
+    // belong to it, or naming a hero would also name the loadout.
+    if !city.party_open || rename.slot.is_some() {
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -1874,22 +2166,176 @@ pub(crate) fn loadout_buttons(
 }
 
 /// Keep the slot labels and the selected-slot highlight honest as clicks land.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn party_panel_refresh(
     session: Res<Session>,
-    mut labels: Query<(&PartySlotLabel, &mut Text)>,
-    mut slots: Query<(&PartySlotButton, &mut BackgroundColor)>,
+    city: Res<CityUi>,
+    rename: Res<HeroRename>,
+    hero_names: Res<AccountHeroNames>,
+    wa: Option<Res<WorldAssets>>,
+    mut labels: Query<(&PartySlotLabel, &mut Text), (Without<PartySlotHeroName>, Without<YardDetailName>, Without<YardDetailRole>, Without<YardDetailKit>, Without<YardRenameText>)>,
+    mut hero_name_q: Query<(&PartySlotHeroName, &mut Text), (Without<PartySlotLabel>, Without<YardDetailName>, Without<YardDetailRole>, Without<YardDetailKit>, Without<YardRenameText>)>,
+    mut slot_sprites: Query<(&PartySlotSprite, &mut ImageNode), (Without<PartyClassSprite>, Without<YardDetailSprite>)>,
+    mut class_sprites: Query<(&PartyClassSprite, &mut ImageNode), (Without<PartySlotSprite>, Without<YardDetailSprite>)>,
+    mut slot_borders: Query<(&PartySlotButton, &mut BorderColor)>,
+    mut det_sprite: Query<&mut ImageNode, (With<YardDetailSprite>, Without<PartySlotSprite>, Without<PartyClassSprite>)>,
+    mut det_name: Query<&mut Text, (With<YardDetailName>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailRole>, Without<YardDetailKit>, Without<YardRenameText>)>,
+    mut det_role: Query<&mut Text, (With<YardDetailRole>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailName>, Without<YardDetailKit>, Without<YardRenameText>)>,
+    mut det_kit: Query<&mut Text, (With<YardDetailKit>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailName>, Without<YardDetailRole>, Without<YardRenameText>)>,
+    mut rename_text: Query<&mut Text, (With<YardRenameText>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailName>, Without<YardDetailRole>, Without<YardDetailKit>)>,
+    mut stat_fills: Query<(&YardStatFill, &mut BackgroundColor), Without<PartySlotButton>>,
 ) {
     for (tag, mut t) in &mut labels {
         let cls = session.party.get(tag.0).cloned().unwrap_or_else(|| "explorer".into());
-        let want = format!("{}. {}", tag.0 + 1, class_info(&cls).name);
+        let want = class_info(&cls).name.to_string();
         if **t != want {
             **t = want;
         }
     }
-    for (tag, mut bg) in &mut slots {
-        let want = if tag.0 == session.party_cursor { glass::CHIP_ON } else { glass::CHIP_OFF };
+    // While typing, the card shows the buffer with a caret — you are editing the hero
+    // in front of you, not filling in a form somewhere else on screen.
+    for (tag, mut t) in &mut hero_name_q {
+        let want = match rename.slot {
+            Some(s) if s == tag.0 => format!("{}_", rename.buffer),
+            _ => hero_names
+                .names
+                .get(tag.0)
+                .cloned()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("Hero {}", tag.0 + 1)),
+        };
+        if **t != want {
+            **t = want;
+        }
+    }
+    for (tag, mut bc) in &mut slot_borders {
+        let want = if tag.0 == session.party_cursor {
+            Color::srgb(1.0, 0.85, 0.45)
+        } else {
+            glass::EDGE
+        };
+        if bc.0 != want {
+            *bc = BorderColor(want);
+        }
+    }
+    if let Ok(mut t) = rename_text.single_mut() {
+        let want = if rename.slot.is_some() {
+            "typing\u{2026}  Enter to keep, Esc to drop".to_string()
+        } else {
+            "Rename this hero".to_string()
+        };
+        if **t != want {
+            **t = want;
+        }
+    }
+
+    // Sprites re-assign every frame rather than once at spawn: the panel can open
+    // before the class art has finished loading, and a card that stayed blank until
+    // it was rebuilt is the bug that reads as "the portraits don't work".
+    let Some(wa) = wa else { return };
+    let img = |key: &str| wa.class_frames(key).idle[0].clone();
+    for (tag, mut node) in &mut slot_sprites {
+        if let Some(k) = session.party.get(tag.0) {
+            node.image = img(k);
+        }
+    }
+    for (tag, mut node) in &mut class_sprites {
+        node.image = img(tag.0);
+    }
+
+    let focus = class_info(if city.yard_focus.is_empty() {
+        session.party.first().map(|s| s.as_str()).unwrap_or("explorer")
+    } else {
+        city.yard_focus.as_str()
+    });
+    if let Ok(mut n) = det_sprite.single_mut() {
+        n.image = img(focus.key);
+    }
+    if let Ok(mut t) = det_name.single_mut() {
+        if **t != focus.name {
+            **t = focus.name.to_string();
+        }
+    }
+    if let Ok(mut t) = det_role.single_mut() {
+        if **t != focus.role {
+            **t = focus.role.to_string();
+        }
+    }
+    if let Ok(mut t) = det_kit.single_mut() {
+        let want = crate::screens::kit_text(focus);
+        if **t != want {
+            **t = want;
+        }
+    }
+    let vals = [focus.hp, focus.atk, focus.spd, focus.mag, focus.def];
+    let cols = [
+        Color::srgb(0.4, 0.75, 0.45),
+        Color::srgb(0.9, 0.5, 0.4),
+        Color::srgb(0.5, 0.8, 0.9),
+        Color::srgb(0.7, 0.55, 1.0),
+        Color::srgb(0.6, 0.65, 0.85),
+    ];
+    for (f, mut bg) in &mut stat_fills {
+        let on = f.seg < vals[f.stat as usize];
+        let want =
+            if on { cols[f.stat as usize] } else { Color::srgb(0.2, 0.22, 0.3) };
         if bg.0 != want {
             bg.0 = want;
+        }
+    }
+}
+
+/// Type a hero's name in the Drill Yard. Reuses the same [`HeroRename`] buffer and
+/// the same `run.rename_hero` message the in-dive party screen uses, so a name set
+/// here and a name set there are one thing.
+pub(crate) fn yard_rename_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    city: Res<CityUi>,
+    mut hero_names: ResMut<AccountHeroNames>,
+    mut rename: ResMut<HeroRename>,
+) {
+    if !city.party_open {
+        return;
+    }
+    let Some(slot) = rename.slot else { return };
+    if keys.just_pressed(KeyCode::Escape) {
+        rename.slot = None;
+        rename.buffer.clear();
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        let name = rename.buffer.trim().to_string();
+        if !name.is_empty() {
+            // Write the local copy too. Renaming from town has no run behind it, so
+            // the server persists the name and answers with an EMPTY roster — there
+            // is no party to describe yet — and the card would snap back to the old
+            // name the moment the edit buffer cleared. The server applies the same
+            // trim and the same 24-character cap this buffer does, so the optimistic
+            // copy and the stored one agree.
+            if hero_names.names.len() <= slot {
+                hero_names.names.resize(slot + 1, String::new());
+            }
+            hero_names.names[slot] = name.clone();
+            net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
+        }
+        rename.slot = None;
+        rename.buffer.clear();
+        return;
+    }
+    if keys.just_pressed(KeyCode::Backspace) {
+        rename.buffer.pop();
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if keys.just_pressed(KeyCode::Space) && rename.buffer.chars().count() < 24 {
+        rename.buffer.push(' ');
+    }
+    for key in keys.get_just_pressed() {
+        if let Some(c) = crate::screens::typed_char(*key, shift) {
+            if rename.buffer.chars().count() < 24 {
+                rename.buffer.push(c);
+            }
         }
     }
 }

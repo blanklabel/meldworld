@@ -72,7 +72,7 @@ pub(crate) fn class_info(key: &str) -> &'static ClassInfo {
 }
 
 /// The kit as a multi-line "Skills\n  Name — what it does" block for the detail panel.
-fn kit_text(ci: &ClassInfo) -> String {
+pub(crate) fn kit_text(ci: &ClassInfo) -> String {
     let mut s = String::from("Skills");
     for (name, desc) in ci.kit {
         s.push_str(&format!("\n  {name} \u{2014} {desc}"));
