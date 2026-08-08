@@ -746,12 +746,23 @@ pub(crate) fn render_loot_report(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut report: ResMut<LootReport>,
+    mut next: ResMut<NextState<Screen>>,
     existing: Query<Entity, With<LootReportRoot>>,
 ) {
     if report.active {
         report.elapsed += time.delta_secs();
-        if report.elapsed > LOOT_REPORT_DURATION || keys.just_pressed(KeyCode::Escape) {
+        // Rolls off on its own — a tally you already know the shape of should not
+        // ask for a keypress. Space/Enter just hurry it along.
+        let dismissed = report.elapsed > LOOT_REPORT_DURATION
+            || keys.just_pressed(KeyCode::Escape)
+            || keys.just_pressed(KeyCode::Space)
+            || keys.just_pressed(KeyCode::Enter);
+        if dismissed {
             report.active = false;
+            // Dismissing the results is what leaves the battle screen.
+            if std::mem::take(&mut report.gate_return) {
+                next.set(Screen::Overworld);
+            }
         }
     }
     for e in &existing {
@@ -1110,14 +1121,14 @@ mod equip_ux_tests {
     }
 }
 
-/// How long an unlock banner holds before it dismisses itself. Longer than the
-/// level-up hold: an unlock is rarer and its line is worth reading.
-pub(crate) const UNLOCK_HOLD: f32 = 4.0;
-
 /// CL-1 unlock banner, in the same shape as the level-up screen: one at a time,
-/// centred, dismissable with [Space]/[Enter]. Frosted glass rather than the
-/// level-up screen's solid panel — a banner should let you see the world it just
-/// changed.
+/// centred, dismissed with [Space]/[Enter]. Frosted glass rather than the level-up
+/// screen's solid panel — a banner should let you see the world it just changed.
+///
+/// It WAITS to be dismissed rather than timing out. This is the rarest screen in
+/// the game and usually the game teaching you something — the Resonant arrives on
+/// the wipe that explains why you wanted a healer — and a banner that fades on its
+/// own over a live overworld is the one a player blinks and misses.
 pub(crate) fn unlock_banner(
     mut commands: Commands,
     time: Res<Time>,
@@ -1143,8 +1154,7 @@ pub(crate) fn unlock_banner(
     un.elapsed += time.delta_secs();
     let dismiss = keys.just_pressed(KeyCode::Space)
         || keys.just_pressed(KeyCode::Enter)
-        || keys.just_pressed(KeyCode::Escape)
-        || (!un.hold && un.elapsed >= UNLOCK_HOLD);
+        || keys.just_pressed(KeyCode::Escape);
     if dismiss {
         un.current = None;
         for e in &existing {

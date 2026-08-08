@@ -373,8 +373,21 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
 
 ## Leveling & attributes
 
-- **XP curve doubles per level**: `xp_to_next(L) = xp_base × xp_growth_factor^(L-1)`
-  (`[runs]` in balance; `meld-run::xp_to_next`). `PlayerRun::award_xp` levels up on victory.
+- **The XP curve is stated in FIGHTS, not points**: level `L` costs
+  `fights_per_level_base` same-level encounters, plus one more every
+  `fights_per_level_ramp` levels (`[runs]` in balance; `meld-run::fights_per_level`).
+  `xp_to_next` multiplies that by what a same-level encounter actually pays, so
+  retuning creature XP retunes the ladder with it instead of silently desyncing.
+  At the shipped values a level costs 2 fights at first and level 10 — the gate on
+  your **second party slot** — costs 22, with the ramp biting later (65 to L20, 128
+  to L30). `PlayerRun::award_hero_xp` levels each hero on victory.
+- **Encounter XP is split across the party, once.** A four-hero party meets
+  creatures with `encounter_party_scale` more HP, so the encounter pays that same
+  multiple before the split — otherwise the scale is charged twice and a full party
+  earns at a fraction of the solo rate for the same effort. The split itself is the
+  intended cost of fielding more heroes. A co-op **joiner** does not re-scale the
+  creatures and so does not inflate the payout: more heroes splitting the same XP is
+  what pushes a full co-op group toward much harder fights.
 - **Four attributes** (`[player.<key>]`: base + `*_per_level`): **Str**→physical atk,
   **Mnd**→manifestation/spell power, **Dex**→ATB speed + dodge, **Wll**→HP + defence. A hero's
   attribute = base + per-level gain × (level−1). Each derived stat = *class base stat* +

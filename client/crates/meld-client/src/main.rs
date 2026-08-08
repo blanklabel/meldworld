@@ -480,6 +480,9 @@ fn main() {
                     hd2d::place_billboards,
                     hd2d::billboard,
                     render_status_icons,
+                    // The fight's own results screen — drawn here, over the battle
+                    // it belongs to, and it is what returns you to the overworld.
+                    render_loot_report,
                 ),
             )
                 .run_if(in_state(Screen::Battle)),
@@ -1658,6 +1661,11 @@ struct LootReport {
     items: Vec<(String, i32)>,
     gear: Vec<String>,
     elapsed: f32,
+    /// This report is the end of a FIGHT, so it is shown on the battle screen and
+    /// the walk back to the overworld waits for it to be dismissed. The tally for a
+    /// fight belongs on the screen the fight happened on, not on top of a world you
+    /// are already walking around in.
+    gate_return: bool,
 }
 
 /// Paces MoveIntents at a fixed cadence (see [`MOVE_INTENT_HZ`]) so walk speed
