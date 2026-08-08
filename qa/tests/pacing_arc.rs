@@ -108,7 +108,6 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
     let mut nav = meld_qa::Nav::default();
     let mut in_battle = false;
     let mut my_c = String::new();
-    let mut mon_c = String::new();
     let mut bid = String::new();
     let mut out = Dive {
         heroes,
@@ -153,17 +152,24 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
                         fight_started = Some(Instant::now());
                         my_c = v["payload"]["your_combatant_id"].as_str().unwrap_or_default().to_string();
                         bid = v["payload"]["battle_id"].as_str().unwrap_or_default().to_string();
-                        mon_c = v["payload"]["enemies"][0]["combatant_id"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string();
                     }
                     "battle.turn_ready"
                         if v["payload"]["combatant_id"].as_str() == Some(my_c.as_str()) =>
                     {
+                        // Name the target. An attack with an empty `target_ids` is
+                        // REJECTED, and a rejected order is not a fast no-op: the hero
+                        // keeps its turn until the 15s auto-act window expires, so a
+                        // bot that never named anyone spent the whole budget waiting
+                        // and reported "0 fights won" as if the game were unwinnable.
+                        let target = v["payload"]["valid_targets"]
+                            .as_array()
+                            .and_then(|a| a.first())
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         ws.send(Message::Text(json!({"type":"battle.submit_action","seq":seq,"ts":0,
                             "payload":{"battle_id":bid,"action_id":uuid::Uuid::new_v4().to_string(),
-                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[mon_c]}
+                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[target]}
                         }).to_string())).await.unwrap();
                         seq += 1;
                     }

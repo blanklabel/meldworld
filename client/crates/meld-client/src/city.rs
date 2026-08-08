@@ -1579,16 +1579,22 @@ pub(crate) fn party_panel(
     loadouts: Res<LoadoutData>,
     existing: Query<Entity, With<PartyPanelRoot>>,
     mut was_open: Local<bool>,
-    mut shown: Local<usize>,
+    mut shown: Local<(usize, usize, i64)>,
 ) {
     // Rebuild when the yard opens/closes OR when the saved list changes, so a save or
     // delete is reflected without closing and reopening the panel.
-    let n = loadouts.list.len();
-    if city.party_open == *was_open && (!city.party_open || n == *shown) {
+    //
+    // The unlock set is in that signature too, because the panel can OPEN before it
+    // has arrived: `prompt_party_if_unset` fires as soon as the hero roster loads,
+    // and a palette built a moment earlier would offer the Explorer alone and keep
+    // offering it for as long as the panel stayed up — a player looking straight at
+    // a class they own and cannot pick.
+    let sig = (loadouts.list.len(), unlocks.owned.len(), unlocks.party_slots as i64);
+    if city.party_open == *was_open && (!city.party_open || sig == *shown) {
         return;
     }
     *was_open = city.party_open;
-    *shown = n;
+    *shown = sig;
     for e in &existing {
         commands.entity(e).despawn();
     }
