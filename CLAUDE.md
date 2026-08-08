@@ -144,6 +144,17 @@ channel payout (per unit while gathering, once while extracting — `fill_ms` on
 `run.channel_started`). Touch gets the same thing as one contextual **Interact** button
 that hides when nothing is in reach.
 
+**Field stations (MS-1).** A crafter who carries the stock can raise a bench in the maze
+from the menu's **Map** column — a smith's **forge** (ore, gated on Forging) or a Keeper's
+**alembic** (reagents, gated on Alchemy). It then stands in the world for everyone
+(`station:<kind>:<jobs>`), and **anyone** standing at it can ask for work with `[E]`: the
+**station owner's** skill is what the job is done at and takes the XP, while the piece and
+the stock are always the requester's — ownership never moves. Working metal is a **heat**:
+a marker sweeps a red bar, each blow has one yellow band, and the blows that land decide
+what the work is worth (the affix pool a re-draw rolls, the durability a repair gives back,
+the size of a temporary edge, the doses a brew yields). Deeper work is harder; the
+crafter's own level and every other crafter in the party make it easier again.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a

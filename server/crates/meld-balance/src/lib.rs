@@ -28,6 +28,7 @@ pub struct Balance {
     pub requisition: Requisition,
     pub consumable: Consumable,
     pub forge: Forge,
+    pub tempo: Tempo,
     pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
@@ -336,6 +337,16 @@ pub struct Forge {
     pub forge_xp_per_craft: i64,
     pub catalyst_material_cost: i32,
     pub catalyst_tier_bonus: i32,
+    pub station_min_forging_level: i32,
+    pub station_min_alchemy_level: i32,
+    pub station_ore_cost: i32,
+    pub station_uses: i32,
+    pub station_radius: f64,
+    pub enhance_material_cost: i32,
+    pub enhance_chit_cost: i64,
+    pub enhance_bonus_base: i32,
+    pub enhance_bonus_per_quality: i32,
+    pub enhance_min_forging_level: i32,
 }
 
 impl Forge {
@@ -368,6 +379,91 @@ impl Forge {
     /// How many points of max durability one repair restores.
     pub fn repair_points(&self, forging_level: i32) -> i32 {
         self.repair_points_per_forging_level * forging_level.max(1)
+    }
+}
+
+/// The smithing tempo game (MS-1): how hard the bar is to hit, and what hitting it
+/// buys. Difficulty rides the piece being worked, so depth is the difficulty axis here
+/// exactly as it is everywhere else.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tempo {
+    pub strikes_base: i32,
+    pub strikes_per_tier: f64,
+    pub strikes_max: i32,
+    pub band_width_base: f64,
+    pub band_width_per_tier: f64,
+    pub band_width_min: f64,
+    pub sweep_ms_base: i64,
+    pub sweep_ms_per_tier: i64,
+    pub sweep_ms_min: i64,
+    pub band_width_per_skill_level: f64,
+    pub band_width_per_extra_hand: f64,
+    pub sweep_ms_per_skill_level: i64,
+    pub sweep_ms_per_extra_hand: i64,
+    pub extra_hands_max: i32,
+    pub grace_ms: i64,
+    pub cook_bonus_doses: i32,
+    pub quality_epic: f64,
+    pub quality_rare: f64,
+    pub repair_quality_floor: f64,
+}
+
+impl Tempo {
+    /// Blows this piece takes.
+    pub fn strikes(&self, tier: i32) -> i32 {
+        let t = tier.max(0) as f64;
+        ((self.strikes_base as f64 + self.strikes_per_tier * t).floor() as i32)
+            .clamp(1, self.strikes_max.max(1))
+    }
+
+    /// How wide the hot band is, as a fraction of the bar: the PIECE narrows it, the
+    /// smith and their crew widen it back. That subtraction is the whole difficulty
+    /// curve — a deep piece is only hard for a smith who cannot yet work it.
+    pub fn band_width(&self, tier: i32, skill_level: i32, extra_hands: i32) -> f64 {
+        let eased = self.band_width_per_skill_level * (skill_level.max(1) - 1) as f64
+            + self.band_width_per_extra_hand * self.crew(extra_hands) as f64;
+        (self.band_width_base - self.band_width_per_tier * tier.max(0) as f64 + eased)
+            .max(self.band_width_min)
+            .clamp(0.01, 1.0)
+    }
+
+    /// One full pass of the marker, in milliseconds. Same shape: deeper is faster,
+    /// a better smith with more help gets time back.
+    pub fn sweep_ms(&self, tier: i32, skill_level: i32, extra_hands: i32) -> i64 {
+        let eased = self.sweep_ms_per_skill_level * (skill_level.max(1) - 1) as i64
+            + self.sweep_ms_per_extra_hand * self.crew(extra_hands) as i64;
+        (self.sweep_ms_base - self.sweep_ms_per_tier * tier.max(0) as i64 + eased)
+            .max(self.sweep_ms_min)
+    }
+
+    /// Extra smiths that actually help. Past a full party of them there is nothing left
+    /// to hold, so the help caps.
+    fn crew(&self, extra_hands: i32) -> i32 {
+        extra_hands.clamp(0, self.extra_hands_max.max(0))
+    }
+
+    /// The affix pool a heat of this quality earns. A flawless heat reaches the epic
+    /// pool — the same reach a trophy catalyst buys, but paid for in skill.
+    pub fn rarity_for(&self, quality: f64) -> &'static str {
+        if quality >= self.quality_epic {
+            "epic"
+        } else if quality >= self.quality_rare {
+            "rare"
+        } else {
+            "common"
+        }
+    }
+
+    /// Extra doses a cook of this quality yields on a brew — the Keeper's side of the
+    /// same idea: a good cook feeds more people from the same reagents.
+    pub fn bonus_doses(&self, quality: f64) -> i32 {
+        (self.cook_bonus_doses.max(0) as f64 * quality.clamp(0.0, 1.0)).floor() as i32
+    }
+
+    /// The fraction of a repair a heat of this quality gives back.
+    pub fn repair_fraction(&self, quality: f64) -> f64 {
+        let floor = self.repair_quality_floor.clamp(0.0, 1.0);
+        floor + (1.0 - floor) * quality.clamp(0.0, 1.0)
     }
 }
 
@@ -522,6 +618,20 @@ pub struct Meld {
     pub alchemy_xp_per_extracted_stack: i64,
     pub forging_xp_per_craft: i64,
     pub mercantile_xp_per_sale: i64,
+}
+
+impl Meld {
+    /// A Meld skill's level from its banked XP.
+    pub fn skill_level(&self, xp: i64) -> i32 {
+        meld_skill_level(xp, self.xp_per_level)
+    }
+}
+
+/// A Meld skill's level from its banked XP. One definition, because both the HTTP
+/// crafting gates and the world's field-station gates read it — two copies of this
+/// would be two different games.
+pub fn meld_skill_level(xp: i64, xp_per_level: i64) -> i32 {
+    (1 + xp / xp_per_level.max(1)).clamp(1, 99) as i32
 }
 
 /// What the Broker pays for a material (MS-1 / EC-2). Deliberately a **floor

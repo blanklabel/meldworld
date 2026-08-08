@@ -36,9 +36,89 @@ pub(crate) struct ChannelBar;
 #[derive(Component)]
 pub(crate) struct ChannelBarFill;
 
+/// The smithing bar's frame: a bar of RED. Hidden unless a heat is open. Spawned on
+/// both the overworld and the city, since the anvil is in one and the stations in the
+/// other, and a heat has to look the same at either.
+#[derive(Component)]
+pub(crate) struct HeatBar;
+/// The YELLOW band on it — the hot part of this blow, positioned from the server's band.
+#[derive(Component)]
+pub(crate) struct HeatBarBand;
+/// The hammer: where the marker is right now.
+#[derive(Component)]
+pub(crate) struct HeatBarMark;
+
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
 #[derive(Component)]
 pub(crate) struct TouchActionButton(pub(crate) OverworldAct);
+
+/// Spawn the smithing bar (red track, yellow band, marker) as real coloured nodes —
+/// a text bar could only shade it, and "strike the yellow" has to BE yellow.
+pub(crate) fn spawn_heat_bar(p: &mut ChildSpawnerCommands) {
+    p.spawn((
+        HeatBar,
+        Node {
+            display: Display::None,
+            width: Val::Px(420.0),
+            height: Val::Px(16.0),
+            margin: UiRect::top(Val::Px(6.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            position_type: PositionType::Relative,
+            ..default()
+        },
+        BorderColor(Color::srgba(1.0, 0.85, 0.7, 0.5)),
+        // The cold bar: red, and dark enough that the yellow reads off it at a glance.
+        BackgroundColor(Color::srgb(0.42, 0.08, 0.06)),
+    ))
+    .with_children(|bar| {
+        bar.spawn((
+            HeatBarBand,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                width: Val::Percent(0.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgb(1.0, 0.83, 0.25)),
+        ));
+        bar.spawn((
+            HeatBarMark,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                width: Val::Px(3.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::WHITE),
+        ));
+    });
+}
+
+/// Keep the bar in step with the open heat: show/hide it, put the yellow where this
+/// blow's band is, and sweep the marker.
+pub(crate) fn update_heat_bar(
+    heat: Res<HeatUi>,
+    time: Res<Time>,
+    mut frame: Query<&mut Node, (With<HeatBar>, Without<HeatBarBand>, Without<HeatBarMark>)>,
+    mut band: Query<&mut Node, (With<HeatBarBand>, Without<HeatBarMark>)>,
+    mut mark: Query<&mut Node, With<HeatBarMark>>,
+) {
+    let open = heat.job_id.is_some().then(|| heat.band()).flatten();
+    for mut n in &mut frame {
+        n.display = if open.is_some() { Display::Flex } else { Display::None };
+    }
+    let Some((lo, hi)) = open else { return };
+    for mut n in &mut band {
+        n.left = Val::Percent((lo * 100.0) as f32);
+        n.width = Val::Percent(((hi - lo) * 100.0) as f32);
+    }
+    let at = heat.marker(time.elapsed_secs_f64());
+    for mut n in &mut mark {
+        n.left = Val::Percent((at * 100.0) as f32);
+    }
+}
 
 pub(crate) fn overworld_ui(mut commands: Commands) {
     commands
@@ -89,6 +169,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     BackgroundColor(Color::srgb(0.98, 0.86, 0.42)),
                 ));
             });
+            spawn_heat_bar(p);
             // Touch action bar (bottom-right). Also clickable with the mouse.
             p.spawn((
                 Node {
@@ -249,6 +330,7 @@ pub(crate) fn touch_action_buttons(
     session: Res<Session>,
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
+    mut station: ResMut<StationUi>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -269,6 +351,14 @@ pub(crate) fn touch_action_buttons(
                         }
                         Some(Interact::EnterDungeon { entity_id }) => {
                             net.0.send(ClientCmd::EnterDungeon { entity_id })
+                        }
+                        Some(Interact::UseStation { entity_id, kind, jobs }) => {
+                            if kind == "alembic" {
+                                net.0.fetch_recipes();
+                            }
+                            station.open = Some(entity_id);
+                            station.kind = kind;
+                            station.jobs = jobs;
                         }
                         Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
                         None => {}
@@ -542,9 +632,33 @@ pub(crate) fn update_overworld_hud(
     session: Res<Session>,
     notice: Res<Notice>,
     time: Res<Time>,
+    station: Res<StationUi>,
+    craft: Res<CraftData>,
+    inv: Res<InventoryData>,
+    heat: Res<HeatUi>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
+    // A heat in progress owns the HUD: the player is mid-blow and everything else can
+    // wait until the metal is worked.
+    if let Some(bar) = heat_line(&heat, time.elapsed_secs_f64()) {
+        if **t != bar {
+            **t = bar;
+        }
+        return;
+    }
+    // An open field bench IS the HUD while it is open — it is a panel the player is
+    // standing in, not a hint about what they could press.
+    if let Some(bench) = station_line(&station, &craft, &inv) {
+        let line = match notice.live(time.elapsed_secs_f64()) {
+            Some(why) => format!("{bench}\n\u{f0026} {why}"),
+            None => bench,
+        };
+        if **t != line {
+            **t = line;
+        }
+        return;
+    }
     // A refusal the player just earned outranks the prompt: they pressed a key and are
     // owed the reason before being told what they could press next.
     if let Some(why) = notice.live(time.elapsed_secs_f64()) {
@@ -698,8 +812,14 @@ pub(crate) fn overworld_input(
     session: Res<Session>,
     overlay: Res<Overlay>,
     time: Res<Time>,
+    mut station: ResMut<StationUi>,
     mut auto_cooldown: Local<f32>,
 ) {
+    // While a field bench is open its own keys own the keyboard (the bench's [E] is
+    // "leave", handled by `station_input`), so [E] must not also re-open it.
+    if station.open.is_some() {
+        return;
+    }
     if overlay.kind.is_some() {
         return;
     }
@@ -742,6 +862,18 @@ pub(crate) fn overworld_input(
         Interact::Harvest { entity_id, .. } => net.0.send(ClientCmd::Harvest { entity_id }),
         Interact::OpenChest { entity_id } => net.0.send(ClientCmd::OpenChest { entity_id }),
         Interact::EnterDungeon { entity_id } => net.0.send(ClientCmd::EnterDungeon { entity_id }),
+        // A station is a bench, not a one-shot: [E] opens it and the keys work from
+        // there, the same way the city anvil does.
+        Interact::UseStation { entity_id, kind, jobs } => {
+            // A still needs the recipe book; in the field the client may never have
+            // opened the city's Alembic, so ask for it on the way in.
+            if kind == "alembic" {
+                net.0.fetch_recipes();
+            }
+            station.open = Some(entity_id);
+            station.kind = kind;
+            station.jobs = jobs;
+        }
         Interact::Extract => net.0.send(ClientCmd::Extract),
     }
 }
@@ -758,6 +890,9 @@ pub(crate) enum Interact {
     Harvest { entity_id: String, label: String },
     OpenChest { entity_id: String },
     EnterDungeon { entity_id: String },
+    /// Work at a field station someone raised. `jobs` is what it has left, so the
+    /// prompt can say whether it is worth walking over to.
+    UseStation { entity_id: String, kind: String, jobs: u8 },
     Extract,
 }
 
@@ -770,6 +905,10 @@ impl Interact {
             Interact::Harvest { label, .. } => format!("Gather {label}"),
             Interact::OpenChest { .. } => "Open the chest".into(),
             Interact::EnterDungeon { .. } => "Descend".into(),
+            Interact::UseStation { kind, jobs, .. } => {
+                let bench = if kind == "alembic" { "still" } else { "forge" };
+                format!("Use the {bench} ({jobs} left)")
+            }
             Interact::Extract => "Extract".into(),
         }
     }
@@ -812,6 +951,11 @@ pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<In
             }),
             EntityKind::Chest if !e.opened => Some(Interact::OpenChest { entity_id: id.clone() }),
             EntityKind::Entrance => Some(Interact::EnterDungeon { entity_id: id.clone() }),
+            EntityKind::Station => Some(Interact::UseStation {
+                entity_id: id.clone(),
+                kind: e.name.clone().unwrap_or_default(),
+                jobs: e.bodies_required,
+            }),
             EntityKind::Portal => Some(Interact::Extract),
             _ => None,
         };
@@ -1379,6 +1523,23 @@ pub(crate) fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+            EntityKind::Station => {
+                // A field forge someone raised. Warm-lit with the portal's ground ring,
+                // because it has to read as "a thing that is HERE now" against terrain
+                // the player has already walked past.
+                let root = spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    1.8,
+                    Color::srgb(1.5, 1.0, 0.55),
+                    0.25,
+                );
+                add_ground_ring(&mut commands, &wa, root);
+            }
             EntityKind::Stair => {
                 // The way down, and it has to out-read the walls around it: dungeon
                 // wall blocks stand 3.2 units, so a 1.6 marker was hidden behind the
@@ -3597,5 +3758,490 @@ mod explored_map_tests {
         let (px, py) = map_to_px(18.0, 18.0, b1, w, h);
         assert!(px.is_finite() && py.is_finite());
         assert!((0.0..=w).contains(&px) && (0.0..=h).contains(&py), "{px},{py}");
+    }
+}
+
+// ---------------------------------------------------------- field stations --
+
+/// The field bench, while it is open. A station is a PLACE, so this holds the station
+/// being worked at rather than a screen: walk away and the world closes it.
+#[derive(Resource, Default)]
+pub(crate) struct StationUi {
+    pub open: Option<String>,
+    /// Which bench it is: `smith` or `alembic`. They offer different work.
+    pub kind: String,
+    pub jobs: u8,
+}
+
+/// The field bench's one line: which piece is on it, and the two keys. Deliberately
+/// the same shape as the city anvil's bench, because it is the same errand — the only
+/// difference is whose skill is doing it.
+pub(crate) fn station_line(
+    station: &StationUi,
+    craft: &CraftData,
+    inv: &InventoryData,
+) -> Option<String> {
+    station.open.as_ref()?;
+    // A Keeper's still is a pot with a recipe on it, not a bench with a piece: the
+    // recipe book the city already fetched is the list, and up/down walks it.
+    if station.kind == "alembic" {
+        let head = format!("FIELD STILL  ({} brew(s) left)", station.jobs);
+        let Some(r) = craft.recipes.get(craft.cursor.min(craft.recipes.len().saturating_sub(1)))
+        else {
+            return Some(format!("{head}   no recipes known   [E] leave"));
+        };
+        let inputs: Vec<String> = r
+            .inputs
+            .iter()
+            .map(|(kind, need)| {
+                let have = inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q);
+                format!("{have}/{need} {kind}")
+            })
+            .collect();
+        let gate = if r.craftable {
+            String::new()
+        } else {
+            format!("  (needs {} {})", r.skill, r.required_level)
+        };
+        return Some(format!(
+            "{head}   up/down {} x{}  <- {}{gate}   [B] brew   [E] leave",
+            r.name,
+            r.output_quantity,
+            inputs.join(" + ")
+        ));
+    }
+    let head = format!("FIELD FORGE  ({} job(s) left)", station.jobs);
+    let Some(g) = crate::city::bench_gear(craft, inv) else {
+        return Some(format!("{head}   nothing in your Vault to work on   [E] leave"));
+    };
+    let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    let mut keys = Vec::new();
+    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
+    }
+    if ins == Some(meld_proto::enums::Insurance::Insured) {
+        keys.push("[P] repair".to_string());
+    }
+    // The edge is the FIELD forge's own service: it lasts the rest of the dive, so it is
+    // only worth anything to someone already in one. It goes on what a hero is wearing.
+    if g.equipped_hero_slot.is_some() {
+        keys.push("[N] edge".to_string());
+    }
+    if keys.is_empty() {
+        keys.push("nothing a smith can do with this".to_string());
+    }
+    Some(format!(
+        "{head}   <-/-> {} T{} {}   {}   [E] leave",
+        g.name,
+        g.tier,
+        ins.map(|i| i.label()).unwrap_or("?"),
+        keys.join("   ")
+    ))
+}
+
+/// Keys for the field bench. Only live while a station is open, and the station closes
+/// the moment you step out of its reach — a bench you are not standing at is not yours
+/// to use, and the server would refuse anyway.
+pub(crate) fn station_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    inv: Res<InventoryData>,
+    mut craft: ResMut<CraftData>,
+    mut station: ResMut<StationUi>,
+) {
+    let Some(id) = station.open.clone() else { return };
+    // Out of reach (or the station is spent and gone from the snapshot) → closed.
+    let still_here = match (world.entities.get(&session.player_id), world.entities.get(&id)) {
+        (Some(me), Some(st)) => {
+            ((st.x - me.x).powi(2) + (st.y - me.y).powi(2)).sqrt() <= INTERACT_REACH * 2.0
+        }
+        _ => false,
+    };
+    if !still_here || keys.just_pressed(KeyCode::Escape) {
+        station.open = None;
+        return;
+    }
+    let n = inv.gear.len();
+    if n > 0 && keys.just_pressed(KeyCode::ArrowRight) {
+        craft.bench = (craft.bench + 1) % n;
+        return;
+    }
+    if n > 0 && keys.just_pressed(KeyCode::ArrowLeft) {
+        craft.bench = (craft.bench + n - 1) % n;
+        return;
+    }
+    // A still brews: up/down walk the recipe book (fetched over HTTP like the city's),
+    // [B] puts the pot on. Its own keys, because a forge's make no sense at one.
+    if station.kind == "alembic" {
+        let n = craft.recipes.len();
+        if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
+            craft.cursor = (craft.cursor + 1) % n;
+            return;
+        }
+        if n > 0 && keys.just_pressed(KeyCode::ArrowUp) {
+            craft.cursor = (craft.cursor + n - 1) % n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyB) {
+            if let Some(r) = craft.recipes.get(craft.cursor) {
+                net.0.send(ClientCmd::SmithRequest {
+                    entity_id: id,
+                    gear_id: String::new(),
+                    service: "brew".into(),
+                    material: String::new(),
+                    recipe: r.recipe.clone(),
+                });
+            }
+        }
+        return;
+    }
+    let repair = keys.just_pressed(KeyCode::KeyP);
+    let reroll = keys.just_pressed(KeyCode::KeyR);
+    let edge = keys.just_pressed(KeyCode::KeyN);
+    if !(repair || reroll || edge) {
+        return;
+    }
+    let Some(g) = crate::city::bench_gear(&craft, &inv) else { return };
+    let material = if reroll || edge {
+        // Same rule as the city anvil: spend the deepest refined stock rather than
+        // making anyone name a material at a bench in a maze.
+        match crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
+            Some(m) => m,
+            None => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    let service = if repair {
+        "repair"
+    } else if edge {
+        "enhance"
+    } else {
+        "reroll"
+    };
+    net.0.send(ClientCmd::SmithRequest {
+        entity_id: id,
+        gear_id: g.gear_id.clone(),
+        service: service.into(),
+        material,
+        recipe: String::new(),
+    });
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+
+    fn piece(insurance: &str, tier: i32) -> meld_client::net::GearLine {
+        meld_client::net::GearLine {
+            gear_id: "g1".into(),
+            name: "Wearing Blade".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            insurance: insurance.into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+            tier,
+            equipped_hero_slot: None,
+            max_durability: 8,
+            base_max_durability: 12,
+            atk_bonus: 4,
+            def_bonus: 0,
+            spd_bonus: 0,
+            reroll_cost: 3 + 2 * tier,
+        }
+    }
+
+    // A closed bench says nothing at all — the HUD is silent unless something is
+    // actually in front of you.
+    #[test]
+    fn a_closed_bench_prints_nothing() {
+        let station = StationUi::default();
+        assert!(station_line(&station, &CraftData::default(), &InventoryData::default()).is_none());
+    }
+
+    // Open, the field bench reads like the city anvil's: the piece, its tier, and only
+    // the services that tier can take — the same rules, wherever the anvil is.
+    #[test]
+    fn the_field_bench_offers_what_the_city_bench_would() {
+        let station = StationUi {
+            open: Some("station-smith-0".into()),
+            kind: "smith".into(),
+            jobs: 3,
+        };
+        let craft = CraftData::default();
+        let mut inv = InventoryData::default();
+
+        // An empty Vault is an answer, not a blank panel.
+        let empty = station_line(&station, &craft, &inv).expect("open");
+        assert!(empty.contains("3 job(s) left"), "{empty}");
+        assert!(empty.contains("nothing in your Vault"), "{empty}");
+        assert!(empty.contains("[E] leave"), "{empty}");
+
+        inv.gear = vec![piece("insured", 2)];
+        let insured = station_line(&station, &craft, &inv).expect("open");
+        assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
+        assert!(insured.contains("[P] repair"), "{insured}");
+
+        inv.gear = vec![piece("standard", 1)];
+        let standard = station_line(&station, &craft, &inv).expect("open");
+        assert!(standard.contains("[R] reroll (5 stock)"), "{standard}");
+        assert!(!standard.contains("[P] repair"), "{standard}");
+
+        inv.gear = vec![piece("ephemeral", 3)];
+        let ephemeral = station_line(&station, &craft, &inv).expect("open");
+        assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
+        assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
+    }
+
+    // [E] on a station opens the bench rather than firing a one-shot action: the two
+    // services are keys AT the bench, so the world's one interact key has to hand off.
+    #[test]
+    fn e_on_a_station_offers_the_forge_and_counts_its_jobs() {
+        let mut world = Overworld::default();
+        let session = Session { player_id: "me".into(), ..Default::default() };
+        let mut me = OwEntity {
+            x: 0.0,
+            y: 0.0,
+            kind: EntityKind::Player,
+            name: None,
+            faction: None,
+            radius: 0.0,
+            battling: false,
+            level: 0,
+            opened: false,
+            mob_level: None,
+            hp: None,
+            max_hp: None,
+            encounter_class: None,
+            aggression: None,
+            bodies_required: 1,
+        };
+        world.entities.insert("me".into(), me.clone());
+        me.kind = EntityKind::Station;
+        me.name = Some("smith".into());
+        me.bodies_required = 2;
+        me.x = 1.0;
+        world.entities.insert("station-smith-0".into(), me);
+
+        let target = interact_target(&world, &session).expect("a forge in reach");
+        assert!(
+            matches!(&target, Interact::UseStation { entity_id, kind, jobs }
+                if entity_id == "station-smith-0" && kind == "smith" && *jobs == 2)
+        );
+        // The prompt says how many jobs are left, so nobody walks over for nothing.
+        assert_eq!(target.prompt(), "[E] Use the forge (2 left)");
+    }
+}
+
+// ------------------------------------------------------- the smithing heat --
+
+/// An open heat (MS-1's smithing tempo game). The bar is **red** and the marker sweeps
+/// it; each blow has one **yellow** band, and hitting it is what quality is. The server
+/// laid the bands out and grades every blow — this is only where the bar is drawn and
+/// when the player pressed.
+#[derive(Resource, Default)]
+pub(crate) struct HeatUi {
+    pub job_id: Option<String>,
+    pub service: String,
+    pub strikes: i32,
+    pub sweep_ms: i64,
+    pub bands: Vec<(f64, f64)>,
+    /// Blows landed so far, so the bar knows which band is live.
+    pub struck: i32,
+    /// Client seconds when the heat opened, for the marker's position.
+    pub opened_at: f64,
+}
+
+impl HeatUi {
+    /// Where the marker is right now, as a fraction of the bar. The marker sweeps left
+    /// to right and wraps, one pass per `sweep_ms`.
+    pub(crate) fn marker(&self, now: f64) -> f64 {
+        let sweep = (self.sweep_ms.max(1) as f64) / 1000.0;
+        (((now - self.opened_at).max(0.0) / sweep) % 1.0).clamp(0.0, 1.0)
+    }
+
+    pub(crate) fn band(&self) -> Option<(f64, f64)> {
+        self.bands.get(self.struck.max(0) as usize).copied()
+    }
+}
+
+/// The heat's label: which blow this is, and whether the marker is on the yellow right
+/// now. The bar itself is real coloured nodes ([`spawn_heat_bar`]) — this is the line
+/// under it, in the same panel every other prompt uses.
+pub(crate) fn heat_line(heat: &HeatUi, now: f64) -> Option<String> {
+    heat.job_id.as_ref()?;
+    let (lo, hi) = heat.band()?;
+    let m = heat.marker(now);
+    Some(format!(
+        "  {} {}  blow {}/{}   [SPACE] strike",
+        heat.service.to_uppercase(),
+        if (lo..=hi).contains(&m) { "NOW" } else { "   " },
+        heat.struck + 1,
+        heat.strikes
+    ))
+}
+
+/// [SPACE] strikes the open heat. Nothing else here decides anything: the position is
+/// reported, the server owns the bands and the grade.
+pub(crate) fn heat_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    time: Res<Time>,
+    mut heat: ResMut<HeatUi>,
+) {
+    let Some(job_id) = heat.job_id.clone() else { return };
+    if !keys.just_pressed(KeyCode::Space) {
+        return;
+    }
+    let at = heat.marker(time.elapsed_secs_f64());
+    net.0.send(ClientCmd::Strike { job_id, at });
+    heat.struck += 1;
+    // The last blow closes the bar: the answer arrives as a smith result.
+    if heat.struck >= heat.strikes {
+        heat.job_id = None;
+    }
+}
+
+#[cfg(test)]
+mod heat_tests {
+    use super::*;
+
+    // The Keeper's still is a pot with a RECIPE on it, not a bench with a piece: it
+    // reads out what the brew wants, what you carry, and the key that puts it on.
+    #[test]
+    fn a_field_still_reads_out_the_brew_rather_than_a_piece() {
+        let station = StationUi {
+            open: Some("station-alembic-0".into()),
+            kind: "alembic".into(),
+            jobs: 2,
+        };
+        let mut craft = CraftData { loaded: true, ..Default::default() };
+        let mut inv = InventoryData::default();
+
+        // No book yet is an answer, not a blank pot.
+        let bare = station_line(&station, &craft, &inv).expect("open");
+        assert!(bare.contains("FIELD STILL"), "{bare}");
+        assert!(bare.contains("2 brew(s) left"), "{bare}");
+        assert!(bare.contains("no recipes known"), "{bare}");
+
+        craft.recipes = vec![meld_client::net::RecipeLine {
+            recipe: "bloom_salve".into(),
+            name: "Bloom Salve".into(),
+            skill: "alchemy".into(),
+            required_level: 1,
+            skill_level: 1,
+            craftable: true,
+            output_quantity: 1,
+            inputs: vec![("bloom_herb".to_string(), 2)],
+        }];
+        inv.materials = vec![("bloom_herb".to_string(), 1)];
+        let line = station_line(&station, &craft, &inv).expect("open");
+        // have/need per input is the whole answer to "why can't I brew this".
+        assert!(line.contains("1/2 bloom_herb"), "{line}");
+        assert!(line.contains("[B] brew"), "{line}");
+        // A forge's keys have no meaning at a pot.
+        assert!(!line.contains("[R] reroll"), "{line}");
+        assert!(!line.contains("[P] repair"), "{line}");
+    }
+
+    fn open(bands: &[(f64, f64)]) -> HeatUi {
+        HeatUi {
+            job_id: Some("heat-1".into()),
+            service: "reroll".into(),
+            strikes: bands.len() as i32,
+            sweep_ms: 1000,
+            bands: bands.to_vec(),
+            struck: 0,
+            opened_at: 0.0,
+        }
+    }
+
+    // No heat, no bar: the panel is silent unless there is metal on the anvil.
+    #[test]
+    fn a_closed_heat_draws_nothing() {
+        assert!(heat_line(&HeatUi::default(), 0.0).is_none());
+    }
+
+    // The marker sweeps the bar once per `sweep_ms` and wraps — a rhythm, not a
+    // one-way timer, so a missed blow comes round again.
+    // The bar is REAL coloured nodes, not shaded text: hidden with no heat, and with one
+    // open the yellow sits exactly where the server put the band while the marker sweeps
+    // across it. A percentage-positioned band is what makes "strike the yellow" honest —
+    // what the player aims at is what the server graded.
+    #[test]
+    fn the_bar_puts_the_yellow_where_the_server_said() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<HeatUi>();
+        app.add_systems(Update, update_heat_bar);
+        let bar = app
+            .world_mut()
+            .spawn((HeatBar, Node { display: Display::Flex, ..default() }))
+            .id();
+        let band = app
+            .world_mut()
+            .spawn((HeatBarBand, Node::default()))
+            .id();
+        let mark = app.world_mut().spawn((HeatBarMark, Node::default())).id();
+
+        // No heat → the bar is not on screen at all.
+        app.update();
+        assert_eq!(app.world().get::<Node>(bar).unwrap().display, Display::None);
+
+        *app.world_mut().resource_mut::<HeatUi>() = open(&[(0.25, 0.45)]);
+        app.update();
+        assert_eq!(app.world().get::<Node>(bar).unwrap().display, Display::Flex);
+        let b = app.world().get::<Node>(band).unwrap();
+        assert_eq!(b.left, Val::Percent(25.0));
+        assert_eq!(b.width, Val::Percent(20.0), "the band is the server's, to the point");
+
+        // The marker moves with the clock, and stays on the bar.
+        let first = app.world().get::<Node>(mark).unwrap().left;
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        app.update();
+        let later = app.world().get::<Node>(mark).unwrap().left;
+        assert_ne!(first, later, "the marker should sweep");
+        if let Val::Percent(p) = later {
+            assert!((0.0..=100.0).contains(&p), "{p}");
+        } else {
+            panic!("the marker should be positioned as a percentage: {later:?}");
+        }
+    }
+
+    #[test]
+    fn the_marker_sweeps_and_wraps() {
+        let heat = open(&[(0.4, 0.6)]);
+        assert!(heat.marker(0.0) < 0.01);
+        assert!((heat.marker(0.5) - 0.5).abs() < 0.01);
+        assert!(heat.marker(1.0) < 0.01, "one second in, it has wrapped");
+        assert!((heat.marker(1.25) - 0.25).abs() < 0.01);
+    }
+
+    // The bar reads as red with the live blow's yellow on it, the hammer wherever the
+    // marker is, and it says which blow this is out of how many.
+    #[test]
+    fn the_bar_shows_red_yellow_and_the_hammer() {
+        let mut heat = open(&[(0.0, 0.1), (0.45, 0.55)]);
+        let line = heat_line(&heat, 0.0).expect("open");
+        assert!(line.contains("blow 1/2"), "{line}");
+        // The marker is inside the first band at t=0, so the line calls it.
+        assert!(line.contains("NOW"), "{line}");
+
+        // The next blow has its OWN band, so a smith cannot learn one spot.
+        heat.struck = 1;
+        let second = heat_line(&heat, 0.0).expect("open");
+        assert!(second.contains("blow 2/2"), "{second}");
+        assert!(!second.contains("NOW"), "the second band is not where the first was");
+        assert_eq!(heat.band(), Some((0.45, 0.55)));
+
+        // Past the last blow there is nothing to draw.
+        heat.struck = 2;
+        assert!(heat_line(&heat, 0.0).is_none());
     }
 }

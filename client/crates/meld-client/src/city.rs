@@ -161,6 +161,7 @@ pub(crate) fn city_hud(
     mut inv: ResMut<InventoryData>,
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
+    mut heat: ResMut<crate::overworld::HeatUi>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
@@ -175,6 +176,19 @@ pub(crate) fn city_hud(
     city.craft_open = crate::flags::forge_preview_flag();
     if city.craft_open {
         net.0.fetch_recipes();
+    }
+    if crate::flags::heat_preview_flag() {
+        // A plausible heat, laid out the way the server would for a mid-tier piece:
+        // three blows, bands in different places, so the bar can be read at a glance.
+        *heat = crate::overworld::HeatUi {
+            job_id: Some("preview".into()),
+            service: "reroll".into(),
+            strikes: 3,
+            sweep_ms: 1600,
+            bands: vec![(0.18, 0.40), (0.55, 0.72), (0.30, 0.48)],
+            struck: 0,
+            opened_at: 0.0,
+        };
     }
     city.shop_open = crate::flags::shop_preview_flag();
     if city.shop_open {
@@ -229,6 +243,9 @@ pub(crate) fn city_hud(
                     TextFont { font_size: 18.0, ..default() },
                     TextColor(glass::TITLE),
                 ));
+                // The anvil's heat is struck here too, so the bar lives in the same
+                // panel the bench reads out of.
+                crate::overworld::spawn_heat_bar(panel);
             });
             // Always-available tap actions (bottom-right). Mirror the keyboard: Dive
             // (Enter), Vault (V), Co-op (C) — so the hub is fully click/tap driven
@@ -764,11 +781,20 @@ pub(crate) fn city_input(
             craft.bench = (craft.bench + bench_n - 1) % bench_n;
             return;
         }
+        // Both services go over the REALTIME channel rather than straight to HTTP,
+        // because smithing is a heat now: the server answers with a bar to strike and
+        // grades the blows. The HTTP endpoints stay for API callers.
         if keys.just_pressed(KeyCode::KeyP) {
             match bench_gear(&craft, &inv) {
                 Some(g) => {
-                    craft.last = format!("mending {}...", g.name);
-                    net.0.repair_gear(g.gear_id.clone());
+                    craft.last = format!("heating {}...", g.name);
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id: String::new(),
+                        gear_id: g.gear_id.clone(),
+                        service: "repair".into(),
+                        material: String::new(),
+                        recipe: String::new(),
+                    });
                 }
                 None => craft.last = "nothing on the bench".to_string(),
             }
@@ -778,8 +804,14 @@ pub(crate) fn city_input(
             let piece = bench_gear(&craft, &inv).map(|g| (g.gear_id.clone(), g.name.clone()));
             match (piece, best_stock(&inv, meld_proto::materials::MaterialClass::Refined)) {
                 (Some((gear_id, name)), Some(material)) => {
-                    craft.last = format!("re-drawing {name}'s affixes...");
-                    net.0.reroll_gear(gear_id, material);
+                    craft.last = format!("heating {name}...");
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id: String::new(),
+                        gear_id,
+                        service: "reroll".into(),
+                        material,
+                        recipe: String::new(),
+                    });
                 }
                 (None, _) => craft.last = "nothing on the bench".to_string(),
                 (_, None) => {
@@ -993,6 +1025,8 @@ pub(crate) fn render_city(
     shop: Res<ShopData>,
     unlocks: Res<UnlocksRes>,
     hero_names: Res<AccountHeroNames>,
+    heat: Res<crate::overworld::HeatUi>,
+    time: Res<Time>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
@@ -1017,7 +1051,12 @@ pub(crate) fn render_city(
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
-        **t = if city.craft_open {
+        // A heat in progress owns the panel: the player is mid-blow at the anvil.
+        **t = if let Some(bar) =
+            crate::overworld::heat_line(&heat, time.elapsed_secs_f64())
+        {
+            format!("{}\n{}", craft_text(&craft, &inv), bar)
+        } else if city.craft_open {
             format!("{}\n{prompt}", craft_text(&craft, &inv))
         } else if city.shop_open {
             format!("{}\n{prompt}", shop_text(&shop, &inv, shop_selling.0))

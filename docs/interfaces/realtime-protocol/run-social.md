@@ -234,6 +234,141 @@ to `active`. Units already handed over are **not** clawed back.
 
 ---
 
+### `run.build_station` (C2S)
+
+Raises a **field workstation** where the avatar stands (roadmap `MS-1`) — a smith's forge
+out in the maze, so a profession is a role *during* a dive rather than something you do
+between them.
+
+**Source:** roadmap `MS-1`; [`proposals/crafting-and-professions.md`](../../proposals/crafting-and-professions.md).
+**Direction:** C2S — legal only while in a run and not in a battle.
+
+**Payload**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| kind | string (enum: `smith`, `alembic`) | Yes | Which bench to raise: a smith's forge (built from **ore**, gated on Forging) or a Keeper's still (built from **reagents**, gated on Alchemy). Anything else is a validation error. |
+
+**Server validation** — the builder's persistent level in the bench's skill must be at
+least `[forge] station_min_forging_level` / `station_min_alchemy_level`; they must be
+carrying at least `[forge] station_ore_cost` of a single material of the bench's class
+(**ore** for a forge, **reagent** for a still — the deepest such stack is spent first); and
+there must be no live station already within `[forge] station_radius` on the same
+elevation. Each refusal says which of those it was.
+
+**Results in** — the ore leaving the backpack (`run.backpack_update`, `cause: "station"`)
+and the station appearing in `world.snapshot` as `station:<kind>:<jobs_left>` for
+**everyone** in the instance. A station with no jobs left is simply absent from the
+snapshot.
+
+**Example**
+
+```json
+{"type": "run.build_station", "seq": 540, "ts": 1783729020000, "payload": {"kind": "smith"}}
+```
+
+---
+
+### `run.smith_request` (C2S)
+
+Asks the smith whose station this is to work a piece of the **requester's own** gear.
+Anyone standing at a station may ask — the station is the permission, and its **owner's**
+Forging level is the skill the job is done at (they also take the Forging XP).
+
+**Source:** roadmap `MS-1`.
+**Direction:** C2S — legal only while in a run, not in a battle, and standing within
+`[forge] station_radius` of a live station on the same elevation.
+
+**Payload**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| entity_id | string | Yes | The station being worked at. |
+| gear_id | string (uuid) | For the smith's services | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. Ignored by a brew. |
+| recipe | string | For `brew` | The recipe to cook, at a Keeper's alembic. |
+| service | string (enum: `reroll`, `repair`, `enhance`) | Yes | Which service. `enhance` puts a temporary edge on a piece a hero is **wearing** that lasts the rest of the dive — never a Vault write, so it cannot carry power home; it is refused in town, where there is no dive to spend it on. |
+| material | string | For `reroll` | Material to spend on the re-draw; ignored by a repair. |
+
+**Server validation** — the bench decides what may be asked of it: a **forge** does
+`reroll` / `repair` / `enhance`, a **still** does `brew`, and anything else is refused. The
+smith's services keep the same tier rules as the HTTP anvil (`repair` needs an **insured**
+piece; `reroll` refuses **ephemeral**) and the same costs (`reroll` eats
+`reroll_material_cost + reroll_material_per_tier × tier`). A `brew` is gated on the
+**station owner's** Alchemy level against the recipe's own `min_level`, and spends the
+requester's reagents. The station must have a job left. **Ownership never moves**: every
+Vault call is scoped to the sender's own player id, so a station cannot reach into another
+player's gear or stock.
+
+**Results in** — `run.tempo_started`: the work is a **heat**, not an instant. The smith
+strikes with `run.strike`, and `run.smith_result` arrives once the last blow lands (or the
+heat's window runs out). A station job is only spent when work actually happened.
+
+### `run.tempo_started` (S2C)
+
+The heat is open. The bar is **red** and a marker sweeps it once per `sweep_ms`; each blow
+has one **yellow** band to strike on. The server laid the bands out from a seed it picked
+and it is the only thing that grades a blow.
+
+| Field | Type | Description |
+|---|---|---|
+| job_id | string | Identifies this heat, echoed on every `run.strike`. |
+| service | string | `reroll`, `repair` or `enhance`. |
+| strikes | integer (int32) | How many blows the piece takes. |
+| sweep_ms | integer (int64) | One full pass of the marker. |
+| bands | array of `{lo, hi}` | The yellow, one band per blow, as fractions of the bar (`0.0`–`1.0`). |
+
+Difficulty is the **piece minus the smiths**: `[tempo]` narrows the band and speeds the
+sweep with the piece's tier, and widens/slows it again with the smith's Forging level and
+every other smith in the party (`extra_smiths_max` caps the help).
+
+### `run.strike` (C2S)
+
+A blow, at the marker's position when the player struck.
+
+| Field | Type | Description |
+|---|---|---|
+| job_id | string | The open heat. |
+| at | number (double) | Where the marker was, `0.0`–`1.0`. Clamped server-side. |
+
+Only the heat's owner may strike it. Blows past the last one are **ignored** — spam can
+neither raise nor lower a heat's quality — and a heat left unstruck is graded on what
+arrived once `sweep_ms × strikes + grace_ms` has passed.
+
+**Example**
+
+```json
+{"type": "run.smith_request", "seq": 541, "ts": 1783729021000, "payload": {"entity_id": "station-smith-0", "gear_id": "0195d001-aaaa-7abc-8f01-23456789abcd", "service": "reroll", "material": "dune_ingot"}}
+```
+
+---
+
+### `run.smith_result` (S2C)
+
+What the smith did, or why they would not — one line, already written for the player.
+
+**Direction:** S2C — to the requester only.
+
+**Payload**
+
+| Field | Type | Description |
+|---|---|---|
+| player_id | string | The requester. |
+| entity_id | string | The station. |
+| gear_id | string (uuid) | The piece asked about. |
+| service | string | `reroll` or `repair`. |
+| ok | boolean | Whether work happened. |
+| message | string | Player-facing sentence (what changed and what it cost, or the refusal). |
+| uses_left | integer (int32) | Jobs the station has left — `0` means it is spent and gone from the snapshot (and is always `0` for the city anvil, which has none). |
+| quality | number (double) | The heat's quality, `0.0`–`1.0`: the blows that landed on yellow. What it bought depends on the service — the affix pool a re-draw rolled from, the points a repair gave back, the size of an edge. |
+
+**Example**
+
+```json
+{"type": "run.smith_result", "seq": 88, "ts": 1783729021500, "payload": {"player_id": "0195c9a2-1111-7c1a-9b3e-5f6a7b8c9d01", "entity_id": "station-smith-0", "gear_id": "0195d001-aaaa-7abc-8f01-23456789abcd", "service": "reroll", "ok": true, "message": "re-drew Novice Blade for 3 dune_ingot and 90c", "uses_left": 3}}
+```
+
+---
+
 ### `run.channel_started` (S2C)
 
 A channel began; the channeling avatar is visible and vulnerable for the duration. Covers

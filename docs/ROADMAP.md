@@ -613,6 +613,53 @@ XP; harvesting exists but is instant.
     number without owning the formula — and only advertises the keys the tier can
     actually take. **Ownership never moves**: both calls act on gear the caller already
     owns, asserted over the wire.
+  - 🟡 *The forge goes into the field, and a smith becomes a service:* crafting only
+    existed in Last City, so a profession was something you did between dives rather than
+    a role in one. A smith who **carries ore** can now raise a **field station**
+    (`run.build_station`) where they stand — an explicit menu choice in the Map column,
+    like the Town Portal, because it spends what you gathered. Once it stands it is a
+    place in the world (`station:smith:<jobs>`), and **anyone** standing at it can ask
+    for work (`run.smith_request` → `run.smith_result`): the STATION OWNER's Forging
+    level is the skill the job is done at and they take the XP, while the piece is always
+    the requester's own. **Ownership never moves** — structurally, not by rule: every
+    Vault call is scoped to the requester's player id, so a station cannot reach into
+    anyone else's gear. Finite `station_uses` keep the city anvil the cheaper place to
+    work in bulk. The world half is pure (`Arena::place_station` / `station_at` /
+    `spend_station_use` — one bench to a spot, same elevation, within reach); the DB half
+    runs off the tick in `flush_smith_jobs`, so the loop never parks on Postgres. Knobs:
+    `[forge] station_min_forging_level`, `station_ore_cost`, `station_uses`,
+    `station_radius`.
+  - 🟡 *Smithing is a rhythm, not a purchase:* every service was an instant
+    transaction — press the key, pay, done — so a master smith was someone who had
+    clicked more, not someone who was good at it. Working metal is now a **heat**: the
+    bar is **red**, a marker sweeps it, and each blow has one **yellow** band to strike
+    on. Quality is the blows that landed, and it is what the work is worth — a flawless
+    heat rolls a re-draw from the **epic** affix pool (the same reach a trophy catalyst
+    buys, paid in skill instead of monster parts), a missed one from `common`; a repair
+    gives back between `repair_quality_floor` and all of the smith's reach.
+    **Difficulty rides the piece MINUS the smiths**: a deeper item takes more blows on a
+    narrower band at a faster sweep, while the smith's own Forging level and every other
+    smith in the party widen the yellow and slow it down again — which is what makes
+    bringing a second smith worth a party slot. The schedule is the **server's** (seeded,
+    pure, in `meld_world::tempo`) and so is every grade; a client draws the bar and
+    reports where the marker was, and blows past the last one are ignored, so spam can
+    neither raise nor lower a heat. Both surfaces use it — the city anvil and a field
+    station, same message, same rules — and a smith who walks away mid-heat is graded on
+    what they actually struck. Knobs in `[tempo]`.
+  - 🟡 *A smith can put a temporary edge on your kit:* the third service, and the
+    field forge's own — `enhance` sharpens a piece a hero is **wearing** for the rest of
+    the dive, scaled by the heat's quality. It is deliberately **never a Vault write**:
+    the bonus lives in the run and dies with it, so a temporary buff cannot become a way
+    to launder power home, and it is worth asking a smith for on the way *in*. Kept apart
+    from the gear mirror so re-equipping cannot wipe it. Knobs in `[forge] enhance_*`.
+  - 🟡 *The Keeper gets the same idea, as a cook:* the Open Flower's half of field
+    crafting. An **alembic** is raised from **reagents** you carry and gated on
+    **Alchemy** (`station_min_alchemy_level`), and brewing at one is a **cook** — the same
+    graded bar, at the **recipe's own level** instead of a gear tier — where quality buys
+    **extra doses** (`[tempo] cook_bonus_doses`): a good cook feeds more people from the
+    same reagents. A forge cannot cook and a still cannot mend; the bench you are standing
+    at decides what may be asked of it, and its owner's skill is what the work is done at.
+    The Map column now offers both benches, each naming the stock it wants.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first);
     and the crafting-depth layers the proposal scopes: recipe *discovery*,

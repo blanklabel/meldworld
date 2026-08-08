@@ -530,6 +530,60 @@ forge_xp_per_craft = 30         # Forging XP for a forge/reroll/repair [TUNABLE]
 # it buys REACH, which is the one thing levelling otherwise gates. [TUNABLE]
 catalyst_material_cost = 2      # trophies consumed by a catalyzed forge
 catalyst_tier_bonus = 1         # tiers the catalyst adds on top of forgeable_tier
+# The FIELD STATION: a smith who carries ore can raise a rough forge out in the maze,
+# and then anyone standing at it can have a piece worked — the station's owner is the
+# skill doing the job. Uses are finite so the city anvil stays the cheaper way to work
+# in bulk, and the ore comes from the run backpack, so a field smith has to have
+# gathered for it. [TUNABLE]
+station_min_forging_level = 2    # the Forging level it takes to raise one
+station_min_alchemy_level = 2    # …and the Alchemy level an ALEMBIC takes (the Keeper's
+                                 # half of the same idea: a still you can set up in the
+                                 # field and brew at) [TUNABLE]
+station_ore_cost = 3             # ore from the backpack that a station is built from
+station_uses = 4                 # jobs it serves before it is spent
+station_radius = 3.0             # world units within which a station can be worked at
+# TEMP ENHANCE: a smith can put an edge on a piece that lasts the REST OF THE RUN. It is
+# never a Vault write, so it cannot be a way to launder power home — the enhancement dies
+# with the dive, which is what makes it worth asking a smith for on the way in. [TUNABLE]
+enhance_material_cost = 1        # refined stock one enhancement eats
+enhance_chit_cost = 30
+enhance_bonus_base = 2           # stat points at a wholly missed heat
+enhance_bonus_per_quality = 6    # …plus this much, scaled by the heat's quality
+enhance_min_forging_level = 1    # an apprentice's trick, unlike a reroll
+
+# SMITHING TEMPO (MS-1). Working metal is a rhythm, not a purchase: the marker sweeps
+# the bar and the smith strikes on the hot bands. Quality is hits/strikes, and it is
+# what decides the affix pool a re-draw rolls from and how much a repair gives back —
+# so a master is someone who can hit a narrow band, not someone who clicked more. The
+# same block serves the Keeper's ALEMBIC: a brew is a cook you have to take off the heat
+# at the right moment, graded the same way.
+# Difficulty rides the PIECE: a deeper item takes more blows, on narrower bands, at a
+# faster sweep. [TUNABLE]
+[tempo]
+strikes_base = 3                # blows a tier-0 piece takes
+strikes_per_tier = 0.5          # …plus this per tier (rounded down)
+strikes_max = 8
+band_width_base = 0.34          # the hot band, as a fraction of the bar, at tier 0
+band_width_per_tier = 0.04      # …narrowing with the piece's tier
+band_width_min = 0.09
+sweep_ms_base = 1700            # one full pass of the marker at tier 0
+sweep_ms_per_tier = 110         # …faster per tier
+sweep_ms_min = 650
+# …and it EASES with the smith: their own Forging level, and how many smiths are in the
+# party. A master with a crew gets a wide band and a slow sweep; a lone apprentice
+# working a deep piece gets a sliver moving fast. Difficulty is the piece MINUS the
+# smiths, which is what makes bringing a second smith worth a party slot. [TUNABLE]
+band_width_per_skill_level = 0.012
+band_width_per_extra_hand = 0.05
+sweep_ms_per_skill_level = 25   # added back to the sweep (slower = easier)
+sweep_ms_per_extra_hand = 120
+extra_hands_max = 3              # beyond a full party of them, nothing more helps
+grace_ms = 2000                 # slack after the last sweep before the server grades
+                                # whatever arrived (a smith who walks away gets that)
+cook_bonus_doses = 2            # extra doses a flawless COOK yields on a brew
+quality_epic = 0.999            # a flawless heat rolls the epic affix pool
+quality_rare = 0.5              # …a decent one the rare pool; below that, common
+repair_quality_floor = 0.5      # fraction of a repair you get for a wholly missed heat
 
 # Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
 # `meld_proto::consumables`; these are its numbers, plus the chit price of the

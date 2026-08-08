@@ -86,14 +86,19 @@ pub(crate) fn pump_net(
         ResMut<Notice>,
         Res<Time>,
         ResMut<CraftData>,
-        ResMut<crate::overworld::ExploredMap>,
+        // Nested so the tuple stays inside Bevy's 16-element system-param limit.
+        (
+            ResMut<crate::overworld::ExploredMap>,
+            ResMut<crate::overworld::StationUi>,
+            ResMut<crate::overworld::HeatUi>,
+        ),
     ),
     mut roster: ResMut<PartyRoster>,
     mut announce: Announce,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, explored) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -464,6 +469,27 @@ pub(crate) fn pump_net(
                 craft.recipes = recipes;
                 craft.loaded = true;
                 craft.cursor = craft.cursor.min(craft.recipes.len().saturating_sub(1));
+            }
+            ServerMsg::TempoStarted { job_id, service, strikes, sweep_ms, bands } => {
+                heat.job_id = Some(job_id);
+                heat.service = service;
+                heat.strikes = strikes;
+                heat.sweep_ms = sweep_ms;
+                heat.bands = bands;
+                heat.struck = 0;
+                heat.opened_at = clock.elapsed_secs_f64();
+            }
+            ServerMsg::SmithResult { message, ok, uses_left } => {
+                heat.job_id = None;
+                // The field bench has no panel of its own to print into, so the smith's
+                // answer lands where every other field refusal does — the notice line.
+                notice.say(message, clock.elapsed_secs_f64());
+                if ok {
+                    station.jobs = uses_left.max(0) as u8;
+                    if uses_left <= 0 {
+                        station.open = None;
+                    }
+                }
             }
             ServerMsg::CraftResult { text } => {
                 craft.last = text;

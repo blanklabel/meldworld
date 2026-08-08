@@ -1027,8 +1027,23 @@ pub fn reroll_affixes(
     biome: &str,
     seed: u64,
 ) -> Vec<aff::Affix> {
+    reroll_affixes_at(balance, tier, class_key, slot, biome, "rare", seed)
+}
+
+/// Same, at a chosen rarity pool. The smithing tempo game (MS-1) earns the pool with the
+/// heat's quality, so the rarity is an input rather than a constant.
+#[allow(clippy::too_many_arguments)]
+pub fn reroll_affixes_at(
+    balance: &Balance,
+    tier: i32,
+    class_key: &str,
+    slot: &str,
+    biome: &str,
+    rarity: &str,
+    seed: u64,
+) -> Vec<aff::Affix> {
     let mut rng = Rng(seed);
-    roll_affixes(balance, &mut rng, tier, "rare", false, class_key, slot, biome)
+    roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome)
 }
 
 /// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
@@ -1478,6 +1493,30 @@ pub struct Chest {
     pub elevation: u8,
 }
 
+/// A field workstation a player has raised in the maze (MS-1). A smith who carries
+/// ore can put one down and then ANYONE standing at it can have a piece worked — the
+/// station's owner is the skill doing the job, which is what makes a stacked
+/// profession party worth forming. Finite `uses_left`, so the city anvil stays the
+/// cheaper place to work in bulk.
+#[derive(Debug, Clone)]
+pub struct Station {
+    pub entity_id: Id,
+    /// What kind of bench it is (`smith` today; the Alembic's field twin is next).
+    pub kind: String,
+    pub position: Position,
+    pub elevation: u8,
+    /// Who raised it. Their Meld skill is the one the work is done at, and they take
+    /// the XP for it — a station is a service its owner provides, not a free anvil.
+    pub owner_player_id: Id,
+    pub uses_left: i32,
+}
+
+impl Station {
+    pub fn spent(&self) -> bool {
+        self.uses_left <= 0
+    }
+}
+
 /// A biome boundary the player funnels through: a wall of impassable geo across
 /// the corridor with a single **gap** (aligned to the guaranteed clear path). The
 /// server enforces the wall (movement can only cross `x` inside the gap); the
@@ -1592,6 +1631,8 @@ pub struct Arena {
     pub obstacles: Vec<Obstacle>,
     /// Hand-placed treasure chests scattered through the sections.
     pub chests: Vec<Chest>,
+    /// Player-raised field workstations (MS-1). Empty until someone builds one.
+    pub stations: Vec<Station>,
     /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
     pub seams: Vec<Seam>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
@@ -1788,6 +1829,7 @@ impl Arena {
             ground_loot: Vec::new(),
             obstacles: Vec::new(),
             chests: Vec::new(),
+            stations: Vec::new(),
             seams: Vec::new(),
             path: vec![Position::new(0.0, 0.0)],
             web: Vec::new(),
@@ -3531,6 +3573,64 @@ impl Arena {
         Some((chest.tier, chest.position.distance_floor()))
     }
 
+    /// Raise a field station where this player stands. Pure: the caller has already
+    /// checked the builder's skill and taken the ore — this only owns WHERE it lands
+    /// and refuses to stack two on the same spot (which would let one smith cover a
+    /// tile in benches and never walk again).
+    pub fn place_station(
+        &mut self,
+        player_id: &str,
+        kind: &str,
+        uses: i32,
+        radius: f64,
+    ) -> Option<&Station> {
+        let (position, elevation) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
+        if self.stations.iter().any(|s| {
+            !s.spent() && s.elevation == elevation && s.position.distance_to(&position) <= radius
+        }) {
+            return None;
+        }
+        let entity_id = format!("station-{}-{}", kind, self.stations.len());
+        self.stations.push(Station {
+            entity_id,
+            kind: kind.to_string(),
+            position,
+            elevation,
+            owner_player_id: player_id.to_string(),
+            uses_left: uses,
+        });
+        self.stations.last()
+    }
+
+    /// The station this player is standing at, if any — same elevation, within reach.
+    /// A station is a place, so working at one is a question about where you are.
+    pub fn station_at(&self, player_id: &str, entity_id: &str, radius: f64) -> Option<&Station> {
+        let (ppos, pelev) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
+        self.stations.iter().find(|s| {
+            s.entity_id == entity_id
+                && !s.spent()
+                && s.elevation == pelev
+                && ppos.distance_to(&s.position) <= radius
+        })
+    }
+
+    /// Spend one of a station's jobs. Returns what is left, or None if it is gone or
+    /// already spent — the caller reports the refusal.
+    pub fn spend_station_use(&mut self, entity_id: &str) -> Option<i32> {
+        let s = self
+            .stations
+            .iter_mut()
+            .find(|s| s.entity_id == entity_id && !s.spent())?;
+        s.uses_left -= 1;
+        Some(s.uses_left)
+    }
+
     /// Walkable bounds `(x_min, x_max, lateral)` — the client frames the map (edge
     /// cliffs/water + end walls) from these so it reads as contained, not endless.
     pub fn bounds(&self) -> (f64, f64, f64) {
@@ -3866,6 +3966,51 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    // A field station is a PLACE: it lands where its builder stands, only one to a
+    // spot, and it can only be worked from that spot and that elevation. Everything
+    // about who may build one lives in the server; this is the world's half.
+    #[test]
+    fn a_station_lands_where_you_stand_and_is_worked_from_there() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 4, false);
+        arena.add_avatar("smith".into(), 6.0);
+        arena.add_avatar("client".into(), 6.0);
+        let radius = 3.0;
+
+        let id = arena.place_station("smith", "smith", 2, radius).expect("raised").entity_id.clone();
+        let here = arena.avatar("smith").unwrap().position;
+        assert_eq!(arena.stations.len(), 1);
+        assert_eq!(arena.stations[0].owner_player_id, "smith");
+
+        // Anyone standing at it may work at it — the station is the permission, not
+        // the person. Its owner is only whose SKILL the job is done at.
+        assert!(arena.station_at("client", &id, radius).is_some());
+
+        // Not from across the maze, though.
+        if let Some(a) = arena.avatar_mut("client") {
+            a.position = Position { x: here.x + 50.0, y: here.y };
+        }
+        assert!(arena.station_at("client", &id, radius).is_none(), "reach is reach");
+
+        // Nor from a terrace above it: a bench is on the ground you built it on.
+        if let Some(a) = arena.avatar_mut("client") {
+            a.position = here;
+            a.elevation = 1;
+        }
+        assert!(arena.station_at("client", &id, radius).is_none(), "elevation counts");
+
+        // One to a spot: a smith cannot carpet a tile in benches.
+        assert!(arena.place_station("smith", "smith", 2, radius).is_none());
+
+        // Its jobs run out, and a spent station is no longer a station.
+        assert_eq!(arena.spend_station_use(&id), Some(1));
+        assert_eq!(arena.spend_station_use(&id), Some(0));
+        assert_eq!(arena.spend_station_use(&id), None, "spent is spent");
+        assert!(arena.station_at("smith", &id, radius).is_none());
+        // …which frees the ground for the next one.
+        assert!(arena.place_station("smith", "smith", 2, radius).is_some());
     }
 
     #[test]
@@ -5978,3 +6123,193 @@ mod tests {
 }
 
 
+
+/// The smithing tempo game (MS-1). Working metal is a rhythm: a marker sweeps a bar of
+/// **red** and the smith strikes on the **yellow** — the hot part of the heat. Hitting it
+/// is what quality is, and quality is what decides the affix pool a re-draw rolls from,
+/// how much a repair gives back, and how sharp a temporary edge comes out.
+///
+/// Pure and deterministic, like the rest of this crate: the schedule comes from a seed
+/// the SERVER picks and the grade is a function of it plus the strikes reported. A client
+/// renders the bar, but it never decides what the bar was or whether a blow landed.
+pub mod tempo {
+    use meld_balance::Balance;
+
+    /// One hot band, as fractions of a sweep (`0.0` = the bar's left edge).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Band {
+        pub lo: f64,
+        pub hi: f64,
+    }
+
+    impl Band {
+        pub fn holds(&self, at: f64) -> bool {
+            at >= self.lo && at <= self.hi
+        }
+    }
+
+    /// A heat: how many blows, how fast the marker sweeps, and where the yellow is on
+    /// each blow. One band per strike, so a smith cannot learn one spot and stop looking.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Heat {
+        pub strikes: i32,
+        pub sweep_ms: i64,
+        pub bands: Vec<Band>,
+    }
+
+    impl Heat {
+        /// How long the whole heat may take before the server grades what it has.
+        pub fn window_ms(&self, balance: &Balance) -> i64 {
+            self.sweep_ms * self.strikes.max(1) as i64 + balance.tempo.grace_ms.max(0)
+        }
+    }
+
+    /// Lay out a heat for work of difficulty `tier`, done by someone of `skill_level`
+    /// with `extra_hands` others helping. Deeper work is harder; better craftspeople and
+    /// bigger crews make it easier — the same number, from both ends. Used by the smith's
+    /// anvil (difficulty = the piece's tier) and the Keeper's alembic (= the recipe's
+    /// level), because it is the same idea wearing different words.
+    pub fn schedule(
+        balance: &Balance,
+        tier: i32,
+        skill_level: i32,
+        extra_hands: i32,
+        seed: u64,
+    ) -> Heat {
+        let t = &balance.tempo;
+        let strikes = t.strikes(tier);
+        let width = t.band_width(tier, skill_level, extra_hands);
+        let mut rng = super::Rng(seed);
+        let bands = (0..strikes)
+            .map(|_| {
+                // The band sits anywhere it fits whole: a band clipped by the bar's edge
+                // would be a quietly easier (or impossible) blow.
+                let lo = rng.unit() * (1.0 - width);
+                Band { lo, hi: lo + width }
+            })
+            .collect();
+        Heat {
+            strikes,
+            sweep_ms: t.sweep_ms(tier, skill_level, extra_hands),
+            bands,
+        }
+    }
+
+    /// Grade the blows a smith actually landed: the fraction that fell on yellow.
+    /// Strikes past the last blow are ignored rather than counted against — a client
+    /// that spams cannot lower someone's quality, and cannot raise it either.
+    pub fn grade(heat: &Heat, strikes: &[f64]) -> f64 {
+        if heat.strikes <= 0 {
+            return 0.0;
+        }
+        let hits = heat
+            .bands
+            .iter()
+            .zip(strikes.iter())
+            .filter(|(band, at)| band.holds(**at))
+            .count();
+        hits as f64 / heat.strikes as f64
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::tempo::*;
+    use meld_balance::Balance;
+
+    // The bar is the piece MINUS the smiths: a deep item is a sliver moving fast for an
+    // apprentice working alone, and a workable band for a master with a crew. That
+    // subtraction is the whole reason a second smith is worth a party slot.
+    #[test]
+    fn depth_makes_it_hard_and_smiths_make_it_easy_again() {
+        let b = Balance::load_default().unwrap();
+        let apprentice_shallow = schedule(&b, 0, 1, 0, 7);
+        let apprentice_deep = schedule(&b, 6, 1, 0, 7);
+        assert!(
+            apprentice_deep.bands[0].hi - apprentice_deep.bands[0].lo
+                < apprentice_shallow.bands[0].hi - apprentice_shallow.bands[0].lo,
+            "a deeper piece should be a narrower band"
+        );
+        assert!(
+            apprentice_deep.sweep_ms <= apprentice_shallow.sweep_ms,
+            "and a faster sweep"
+        );
+        assert!(
+            apprentice_deep.strikes >= apprentice_shallow.strikes,
+            "and take at least as many blows"
+        );
+
+        let master_deep = schedule(&b, 6, 20, 0, 7);
+        let width = |h: &Heat| h.bands[0].hi - h.bands[0].lo;
+        assert!(
+            width(&master_deep) > width(&apprentice_deep),
+            "a smith's own level should widen the yellow"
+        );
+        let crew_deep = schedule(&b, 6, 20, 3, 7);
+        assert!(width(&crew_deep) > width(&master_deep), "so should a crew");
+        assert!(crew_deep.sweep_ms > master_deep.sweep_ms, "a crew buys time too");
+
+        // Past a full party of smiths there is nothing left to hold.
+        assert_eq!(schedule(&b, 6, 20, 9, 7), schedule(&b, 6, 20, 3, 7));
+    }
+
+    // Every band has to fit the bar WHOLE: one clipped by an edge would be a quietly
+    // easier blow (or an impossible one), which is not a difficulty curve, it is a bug.
+    #[test]
+    fn every_band_fits_inside_the_bar() {
+        let b = Balance::load_default().unwrap();
+        for tier in 0..8 {
+            for seed in 0..64u64 {
+                let h = schedule(&b, tier, 1, 0, seed);
+                assert_eq!(h.bands.len(), h.strikes as usize, "one band per blow");
+                for band in &h.bands {
+                    assert!(band.lo >= 0.0 && band.hi <= 1.0, "tier {tier} seed {seed}: {band:?}");
+                    assert!(band.hi > band.lo);
+                }
+            }
+        }
+    }
+
+    // Same seed, same heat — the server can hand a client the bar and still be the only
+    // thing that knows whether a blow landed.
+    #[test]
+    fn a_heat_is_reproducible_from_its_seed() {
+        let b = Balance::load_default().unwrap();
+        assert_eq!(schedule(&b, 3, 4, 1, 99), schedule(&b, 3, 4, 1, 99));
+        assert_ne!(schedule(&b, 3, 4, 1, 99), schedule(&b, 3, 4, 1, 100));
+    }
+
+    #[test]
+    fn quality_is_the_blows_that_landed_on_yellow() {
+        let b = Balance::load_default().unwrap();
+        let h = schedule(&b, 2, 1, 0, 12);
+        let n = h.strikes as usize;
+
+        // Dead centre of every band: a flawless heat, and the epic pool.
+        let perfect: Vec<f64> = h.bands.iter().map(|x| (x.lo + x.hi) / 2.0).collect();
+        assert_eq!(grade(&h, &perfect), 1.0);
+        assert_eq!(b.tempo.rarity_for(grade(&h, &perfect)), "epic");
+
+        // Nowhere near it: no quality, the common pool, and a repair still gives back
+        // its floor — a missed heat is a bad job, not a robbery.
+        let missed: Vec<f64> = h.bands.iter().map(|x| if x.lo > 0.5 { 0.0 } else { 1.0 }).collect();
+        assert_eq!(grade(&h, &missed), 0.0);
+        assert_eq!(b.tempo.rarity_for(0.0), "common");
+        assert!(b.tempo.repair_fraction(0.0) > 0.0);
+        assert!(b.tempo.repair_fraction(1.0) > b.tempo.repair_fraction(0.0));
+
+        // Half the blows landed is half the quality.
+        let mut half = perfect.clone();
+        for i in (0..n).step_by(2) {
+            half[i] = if h.bands[i].lo > 0.5 { 0.0 } else { 1.0 };
+        }
+        let q = grade(&h, &half);
+        assert!(q > 0.0 && q < 1.0, "{q}");
+
+        // Spam cannot help: blows past the last one are ignored, not counted.
+        let mut spam = perfect.clone();
+        spam.extend(std::iter::repeat_n(perfect[0], 40));
+        assert_eq!(grade(&h, &spam), 1.0);
+        assert_eq!(grade(&h, &[]), 0.0, "a smith who never struck earned nothing");
+    }
+}

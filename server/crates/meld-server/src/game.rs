@@ -79,6 +79,9 @@ enum WorldEffect {
         player_id: String,
         milestone: meld_proto::unlocks::Milestone,
     },
+    /// MS-1: a smith job the world has accepted (who asked, where they stood, whose
+    /// skill). The Router owns the heat and the Vault, so it takes it from here.
+    SmithJob(Box<SmithJob>),
     /// Same, for the front/back-row formation flag.
     SetSessionHeroRow {
         player_id: String,
@@ -294,10 +297,21 @@ fn hash_str(s: &str) -> u64 {
 /// baseline for its own stat lane (main_hand→atk, protective pieces→def,
 /// accessory→spd) rather than stacking, mirroring the per-category capacity
 /// the Vault already enforces. `hero_slot` is the party slot index (0-based).
+/// A smith's temporary EDGE on a hero's kit (MS-1 `enhance`). Run-scoped: it lives in
+/// the world and dies with the dive, which is what keeps a temporary buff from becoming
+/// a way to launder power home.
+#[derive(Debug, Clone, Copy, Default)]
+struct Edge {
+    atk: i32,
+    def: i32,
+    spd: i32,
+}
+
 fn effective_gear_bonus(
     vault: meld_db::GearBonus,
     looted: &[LootGear],
     hero_slot: i32,
+    edge: Option<&Edge>,
 ) -> meld_run::GearBonus {
     let mut bonus = meld_run::GearBonus {
         atk: vault.atk,
@@ -327,6 +341,13 @@ fn effective_gear_bonus(
             "accessory" => bonus.spd = g.spd_bonus,
             _ => {}
         }
+    }
+    // The edge goes on LAST, so it sharpens whatever the hero actually ended up
+    // wearing rather than being overwritten by a piece of run loot.
+    if let Some(e) = edge {
+        bonus.atk += e.atk;
+        bonus.def += e.def;
+        bonus.spd += e.spd;
     }
     bonus
 }
@@ -398,6 +419,9 @@ struct Session {
     /// Per-hero-slot combat bonuses from equipped gear, loaded from the DB
     /// after connect (each hero can wear different gear).
     gear_bonuses: Vec<meld_db::GearBonus>,
+    /// The caller's persistent Forging level, loaded with their gear. The city anvil's
+    /// heat is laid out against it, so a master's bar in town is as wide as in the field.
+    forging_level: Option<i32>,
     /// Class chosen at the player's most recent `run.enter_maze` (default Explorer).
     /// This is the party *lead* (slot 0).
     character_class: CharacterClass,
@@ -823,6 +847,46 @@ struct WorldActor {
     /// (a descent, for one). Drained on the next `tick`, so a milestone is never
     /// lost just because its call path returns only messages.
     pending_effects: Vec<WorldEffect>,
+    /// player_id -> per-hero temporary edges a smith put on their kit this run (MS-1
+    /// `enhance`). Kept apart from `gear_bonuses` on purpose: that mirror is rebuilt
+    /// from Postgres whenever gear changes, and an edge must survive re-equipping.
+    edges: HashMap<String, Vec<Edge>>,
+    /// player_id -> persistent Meld skill levels, mirrored in at form_run. The world
+    /// gates the professions' field verbs on these (raising a station, and whose skill
+    /// a station's work is done at), so it must not have to ask Postgres mid-tick.
+    skill_levels: HashMap<String, HashMap<String, i32>>,
+}
+
+/// One queued request at a field station: everything the DB half needs, decided
+/// already by the world half. `owner`/`smith_level` are the STATION's smith — the
+/// skill the job is done at — while `requester` is whose gear it is. They are separate
+/// fields precisely because they are allowed to be different players, and because the
+/// only Vault ever touched is the requester's.
+struct SmithJob {
+    requester: String,
+    owner: String,
+    /// Which bench this is: `smith` (a forge) or `alembic` (a still). Empty = the city.
+    kind: String,
+    smith_level: i32,
+    /// Other smiths in the party lending a hand — they widen the yellow.
+    crew: i32,
+    station_id: String,
+    gear_id: String,
+    service: String,
+    material: String,
+    /// The recipe a brew cooks (alembic only).
+    recipe: String,
+    client_seq: u32,
+    /// The heat's quality once it has been struck and graded.
+    quality: f64,
+}
+
+/// A heat waiting on its blows: the bar the server laid out, and what has landed so far.
+struct OpenHeat {
+    job: SmithJob,
+    heat: meld_world::tempo::Heat,
+    strikes: Vec<f64>,
+    opened_at: u64,
 }
 
 /// A placed dungeon entrance in the overworld (DG-3).
@@ -1038,6 +1102,19 @@ impl WorldActor {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("resource:{}", n.kind)),
                 level: Some(n.elevation),
+                ..Default::default()
+            });
+        }
+        // Player-raised field stations, tagged `station:<kind>:<uses>` so the client can
+        // draw the bench and count its remaining jobs in the prompt. A spent station is
+        // gone from the snapshot, which is how it reads as used up.
+        for st in self.arena.stations.iter().filter(|s| !s.spent()) {
+            entities.push(wm::SnapshotEntity {
+                entity_id: st.entity_id.clone(),
+                position: st.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("station:{}:{}", st.kind, st.uses_left)),
+                level: Some(st.elevation),
                 ..Default::default()
             });
         }
@@ -1673,7 +1750,12 @@ impl WorldActor {
             .enumerate()
             .map(|(slot, c)| {
                 let b = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                (pid.to_string(), String::new(), *c, effective_gear_bonus(b, looted, slot as i32))
+                (
+                    pid.to_string(),
+                    String::new(),
+                    *c,
+                    effective_gear_bonus(b, looted, slot as i32, self.edge_for(pid, slot)),
+                )
             })
             .collect();
         let row_overrides: Vec<Option<bool>> = rows.iter().map(|r| Some(*r)).collect();
@@ -1887,6 +1969,7 @@ impl WorldActor {
         // Snapshot the world's own synced gear mirror before the mutable reborrow —
         // behaviour-identical to the old per-tick session read (see `gear_bonuses`).
         let bonuses = self.gear_bonuses.clone();
+        let edges = self.edges.clone();
         let inst = &mut *self;
 
         let battle_id = Uuid::now_v7().to_string();
@@ -1926,7 +2009,12 @@ impl WorldActor {
                 combatant_player.insert(cid.clone(), r.player_id.clone());
                 // Each hero wears their own gear (per-character equip slots).
                 let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
+                let bonus = effective_gear_bonus(
+                    vault_bonus,
+                    &r.looted_gear,
+                    slot as i32,
+                    edges.get(&r.player_id).and_then(|v| v.get(slot)),
+                );
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 // Some(row) forces the saved rank; None falls back to the class default.
@@ -2048,6 +2136,7 @@ impl WorldActor {
         let seed = now_ms();
         let balance = self.balance.clone();
         let bonuses = self.gear_bonuses.clone();
+        let edges = self.edges.clone();
         let Some(party_id) = self.party_id_of(pid) else {
             return Vec::new();
         };
@@ -2081,7 +2170,12 @@ impl WorldActor {
                 let cid = Uuid::now_v7().to_string();
                 combatant_player.insert(cid.clone(), r.player_id.clone());
                 let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                let bonus = effective_gear_bonus(vault_bonus, &r.looted_gear, slot as i32);
+                let bonus = effective_gear_bonus(
+                    vault_bonus,
+                    &r.looted_gear,
+                    slot as i32,
+                    edges.get(&r.player_id).and_then(|v| v.get(slot)),
+                );
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 row_overrides.push(row_vec.get(slot).copied());
@@ -2216,6 +2310,18 @@ struct GameState {
     /// Loads feed session state back, so they stay on the loop (they only await
     /// Postgres when a player actually connects — infrequent, not per-tick).
     pending_gear_load: Vec<String>,
+    /// Players whose persistent Meld skill levels the world still needs (MS-1 field
+    /// stations gate on them). Drained by `flush_skill_loads` after the tick.
+    pending_skill_load: Vec<String>,
+    /// Open heats (MS-1's smithing tempo game), keyed by job id. A heat holds the bar
+    /// the server laid out and the blows reported so far; it leaves here graded, either
+    /// when the last blow lands or when its window runs out.
+    open_heats: HashMap<String, OpenHeat>,
+    /// Graded smith jobs waiting for their Postgres half. Drained after the tick by
+    /// `flush_smith_jobs`, so the loop never parks on a round-trip.
+    pending_smith: Vec<SmithJob>,
+    /// Monotonic source of job ids.
+    next_job: u64,
     /// Players whose persistent hero names should be loaded from Postgres.
     pending_hero_load: Vec<String>,
     /// Fire-and-forget persistence sink, drained by [`run_db_writer`] off the loop.
@@ -2233,6 +2339,10 @@ impl GameState {
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
+            pending_skill_load: Vec::new(),
+            open_heats: HashMap::new(),
+            pending_smith: Vec::new(),
+            next_job: 0,
             pending_hero_load: Vec::new(),
             db_writes,
         }
@@ -2262,7 +2372,10 @@ impl GameState {
             // a fresh connect or a completed extraction, not every tick). Deaths,
             // harvest XP and renames are fire-and-forget and go to `run_db_writer`
             // off this task, so the tick never blocks on those round-trips.
+            self.expire_heats();
             self.flush_gear_loads().await;
+            self.flush_skill_loads().await;
+            self.flush_smith_jobs().await;
             self.flush_hero_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
@@ -2331,6 +2444,7 @@ impl GameState {
                         last_client_seq: 0,
                         in_instance: false,
                         gear_bonuses: Vec::new(),
+                        forging_level: None,
                         character_class: CharacterClass::Explorer,
                         party_comp: None,
                         hero_names: None,
@@ -2342,6 +2456,9 @@ impl GameState {
                 );
                 self.order.push(player_id.clone());
                 self.pending_gear_load.push(player_id.clone());
+                // The city anvil lays its heat out against the caller's own Forging
+                // level, so it is needed from the moment they connect, not just on a dive.
+                self.pending_skill_load.push(player_id.clone());
                 self.pending_hero_load.push(player_id);
                 Vec::new()
             }
@@ -2353,6 +2470,7 @@ impl GameState {
                 self.sessions.remove(&player_id);
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
+                self.pending_skill_load.retain(|p| p != &player_id);
                 self.pending_hero_load.retain(|p| p != &player_id);
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
@@ -2476,6 +2594,7 @@ impl GameState {
                         s.hero_names = Some(v);
                     }
                 }
+                WorldEffect::SmithJob(job) => self.open_heat(*job),
                 WorldEffect::SetSessionHeroRow {
                     player_id,
                     slot,
@@ -2532,6 +2651,37 @@ impl GameState {
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
                         Vec::new(),
                     ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::BuildStation::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_build_station(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::Strike::TYPE => self.handle_strike(player_id, raw),
+            wr::SmithRequest::TYPE => {
+                // In a run you work at a STATION someone raised; in town you work at the
+                // city anvil, where the only smith is you. Same message, same heat, same
+                // rules — the difference is only whose skill is doing it.
+                let in_run = self
+                    .world
+                    .as_ref()
+                    .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == player_id));
+                let (out, eff) = if in_run {
+                    self.world
+                        .as_mut()
+                        .map(|w| w.handle_smith_request(player_id, raw))
+                        .unwrap_or_default()
+                } else {
+                    (self.handle_anvil_request(player_id, raw), Vec::new())
                 };
                 self.apply_world_effects(eff);
                 out
@@ -2895,6 +3045,8 @@ impl GameState {
                 entrances_scanned: 0,
                 dungeon_scene_sent: HashMap::new(),
                 pending_effects: Vec::new(),
+                skill_levels: HashMap::new(),
+                edges: HashMap::new(),
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -3180,6 +3332,9 @@ impl GameState {
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
+        // The professions' field verbs gate on persistent Meld levels, so the world
+        // needs them in hand before anyone tries to raise a station.
+        self.pending_skill_load.extend(party_ids.iter().cloned());
         out
     }
 
@@ -3785,6 +3940,7 @@ impl WorldActor {
         // Read gear from the world's own synced mirror (same data a live session
         // read returned; see `WorldActor::gear_bonuses`).
         let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self.gear_bonuses.clone();
+        let edges = self.edges.clone();
         if self.battle_by_id(battle_id).is_none() {
             return Vec::new();
         }
@@ -3822,7 +3978,12 @@ impl WorldActor {
                 add_combatant_player.insert(cid.clone(), pid.clone());
                 // Each hero wears their own gear (per-character equip slots).
                 let vault_bonus = hero_bonuses.and_then(|v| v.get(slot)).cloned().unwrap_or_default();
-                let bonus = effective_gear_bonus(vault_bonus, looted, slot as i32);
+                let bonus = effective_gear_bonus(
+                    vault_bonus,
+                    looted,
+                    slot as i32,
+                    edges.get(pid).and_then(|v| v.get(slot)),
+                );
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
                 row_overrides.push(row_vec.get(slot).copied());
@@ -4272,6 +4433,474 @@ impl GameState {
         }
     }
 
+    /// A smith job at the CITY anvil: no station, and the caller is their own smith.
+    /// Their persistent Forging level is looked up on the flush like everything else,
+    /// so the only gate here is that the request is well-formed.
+    fn handle_anvil_request(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let seq = raw.seq;
+        let req: wr::SmithRequest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad smith_request", Some(seq))]
+            }
+        };
+        if !matches!(req.service.as_str(), "reroll" | "repair" | "enhance") {
+            return vec![error(player_id, ErrorCode::ValidationError, "No such service.", Some(seq))];
+        }
+        // An edge dies with the dive, so buying one in town would be buying nothing.
+        if req.service == "enhance" {
+            return vec![error(
+                player_id,
+                ErrorCode::InvalidState,
+                "An edge only lasts a dive - ask a smith in the field.",
+                Some(seq),
+            )];
+        }
+        let level = self
+            .sessions
+            .get(player_id)
+            .and_then(|s| s.forging_level)
+            .unwrap_or(1);
+        self.open_heat(SmithJob {
+            requester: player_id.to_string(),
+            owner: player_id.to_string(),
+            kind: "smith".to_string(),
+            smith_level: level,
+            crew: 0,
+            station_id: String::new(),
+            gear_id: req.gear_id,
+            service: req.service,
+            material: req.material,
+            recipe: String::new(),
+            client_seq: seq,
+            quality: 0.0,
+        });
+        Vec::new()
+    }
+
+    /// Open a heat for an accepted smith job: lay out the bar and hand it to the smith.
+    /// Nothing is spent yet — a heat that is never struck costs nothing but the walk.
+    fn open_heat(&mut self, job: SmithJob) {
+        let tier = self
+            .open_heat_tier(&job)
+            .unwrap_or(0);
+        self.next_job = self.next_job.wrapping_add(1);
+        let job_id = format!("heat-{}", self.next_job);
+        let heat = meld_world::tempo::schedule(
+            &self.balance,
+            tier,
+            job.smith_level,
+            job.crew,
+            now_ms() ^ hash_str(&job_id),
+        );
+        let started = wr::TempoStarted {
+            job_id: job_id.clone(),
+            service: job.service.clone(),
+            strikes: heat.strikes,
+            sweep_ms: heat.sweep_ms,
+            bands: heat
+                .bands
+                .iter()
+                .map(|b| wr::TempoBand { lo: b.lo, hi: b.hi })
+                .collect(),
+        };
+        let requester = job.requester.clone();
+        self.open_heats.insert(
+            job_id,
+            OpenHeat {
+                job,
+                heat,
+                strikes: Vec::new(),
+                opened_at: now_ms(),
+            },
+        );
+        self.dispatch(vec![out_msg(&requester, &started)]);
+    }
+
+    /// The tier the heat's difficulty rides. The gear row is in Postgres, so the world
+    /// cannot know it mid-tick; the run's own depth band is the honest stand-in, and it
+    /// says the same thing — deeper work is harder work.
+    fn open_heat_tier(&self, job: &SmithJob) -> Option<i32> {
+        // A brew's difficulty is the recipe's own level — the alembic's answer to a
+        // piece's tier.
+        if job.service == "brew" {
+            return meld_proto::consumables::recipe(&job.recipe).map(|r| r.min_level);
+        }
+        let w = self.world.as_ref()?;
+        let run = w.run.runs.iter().find(|r| r.player_id == job.requester)?;
+        Some(
+            meld_world::Scaling::new(&self.balance).tier(run.max_distance_reached.max(0) as i64)
+                as i32,
+        )
+    }
+
+    /// A blow. The client reports where the marker was; the server owns the bar, so a
+    /// strike is only ever a claim about timing, never about whether it counted.
+    fn handle_strike(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::Strike = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad strike", Some(raw.seq))]
+            }
+        };
+        let Some(open) = self.open_heats.get_mut(&req.job_id) else {
+            return vec![error(player_id, ErrorCode::InvalidState, "No heat open.", Some(raw.seq))];
+        };
+        // Someone else's heat is not yours to strike.
+        if open.job.requester != player_id {
+            return vec![error(player_id, ErrorCode::InvalidState, "Not your heat.", Some(raw.seq))];
+        }
+        if open.strikes.len() < open.heat.strikes.max(0) as usize {
+            open.strikes.push(req.at.clamp(0.0, 1.0));
+        }
+        if open.strikes.len() >= open.heat.strikes.max(0) as usize {
+            self.grade_heat(&req.job_id);
+        }
+        Vec::new()
+    }
+
+    /// Grade a heat and queue its Postgres half.
+    fn grade_heat(&mut self, job_id: &str) {
+        let Some(open) = self.open_heats.remove(job_id) else { return };
+        let mut job = open.job;
+        job.quality = meld_world::tempo::grade(&open.heat, &open.strikes);
+        self.pending_smith.push(job);
+    }
+
+    /// Grade any heat whose window has run out. A smith who walked away from the anvil
+    /// gets what they actually struck — the job still happens, just badly.
+    fn expire_heats(&mut self) {
+        if self.open_heats.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        let stale: Vec<String> = self
+            .open_heats
+            .iter()
+            .filter(|(_, h)| now.saturating_sub(h.opened_at) as i64 > h.heat.window_ms(&self.balance))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            self.grade_heat(&id);
+        }
+    }
+
+    /// Mirror each fresh diver's persistent Meld skill levels into the world, so the
+    /// field-station gates never have to ask Postgres mid-tick.
+    async fn flush_skill_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_skill_load);
+        for pid in loads {
+            let Ok(uid) = Uuid::parse_str(&pid) else { continue };
+            let Ok(skills) = self.db.get_skills(uid).await else { continue };
+            let per = self.balance.meld.xp_per_level;
+            let levels: HashMap<String, i32> = skills
+                .into_iter()
+                .map(|(kind, xp)| (kind, meld_balance::meld_skill_level(xp, per)))
+                .collect();
+            if let Some(s) = self.sessions.get_mut(&pid) {
+                s.forging_level = levels.get("forging").copied();
+            }
+            if let Some(w) = self.world.as_mut() {
+                w.skill_levels.insert(pid, levels);
+            }
+        }
+    }
+
+    /// Do the Postgres half of the smith jobs the world queued this tick. The world
+    /// already decided WHO may ask and WHERE they were standing; what is left is the
+    /// same atomic Vault call the HTTP anvil makes — which is what keeps "ownership
+    /// never moves" structural rather than a rule to remember: every call is scoped to
+    /// the REQUESTER's own player id, so a station cannot touch anyone else's gear.
+    async fn flush_smith_jobs(&mut self) {
+        let jobs: Vec<SmithJob> = std::mem::take(&mut self.pending_smith);
+        for job in jobs {
+            let forge = self.balance.forge.clone();
+            let Ok(requester) = Uuid::parse_str(&job.requester) else { continue };
+            let gid = match Uuid::parse_str(&job.gear_id) {
+                Ok(g) => g,
+                // A brew names a recipe rather than a piece, so a missing gear id is only
+                // an error for the smith's services.
+                Err(_) if job.service == "brew" => Uuid::nil(),
+                Err(_) => {
+                    self.dispatch(vec![error(
+                        &job.requester,
+                        ErrorCode::ValidationError,
+                        "Unknown gear.",
+                        Some(job.client_seq),
+                    )]);
+                    continue;
+                }
+            };
+            // A brew has no piece in it — a pot is not a gear row — so the cook is
+            // resolved before anything reaches for the Vault's gear table.
+            if job.service == "brew" {
+                let outcome = self.cook(&job, requester).await;
+                self.finish_job(job, outcome).await;
+                continue;
+            }
+            let row = match self.db.get_gear_by_id(requester, gid).await {
+                Ok(Some(r)) => r,
+                // Not owned by the requester is the same answer as not existing: a
+                // station is not a way to reach into someone else's Vault.
+                _ => {
+                    self.dispatch(vec![error(
+                        &job.requester,
+                        ErrorCode::NotFound,
+                        "That is not yours to work on.",
+                        Some(job.client_seq),
+                    )]);
+                    continue;
+                }
+            };
+            let ins = meld_proto::enums::Insurance::from_wire(&row.insurance);
+            let outcome: Result<String, String> = match job.service.as_str() {
+                // A temporary EDGE. It is never a Vault write — the bonus lives in the
+                // run and dies with the dive — so it cannot be a way to launder power
+                // home, which is what makes it worth asking for on the way IN.
+                "enhance" if job.smith_level < forge.enhance_min_forging_level => Err(format!(
+                    "This smith is Forging {} - an edge wants {}.",
+                    job.smith_level, forge.enhance_min_forging_level
+                )),
+                // An edge goes on what a hero is WEARING: there is nothing to sharpen
+                // about a piece sitting in the Vault at home.
+                "enhance" if row.equipped_hero_slot.is_none() => {
+                    Err("Only a piece a hero is wearing can take an edge.".to_string())
+                }
+                "enhance" => {
+                    let slot = row.equipped_hero_slot.unwrap_or(0);
+                    let in_run = self
+                        .world
+                        .as_ref()
+                        .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == job.requester));
+                    if !in_run {
+                        Err("An edge only lasts a dive - ask on the way in.".to_string())
+                    } else {
+                        let material = if job.material.is_empty() {
+                            "dune_ingot".to_string()
+                        } else {
+                            job.material.clone()
+                        };
+                        let materials = [(material.clone(), forge.enhance_material_cost)];
+                        match self
+                            .db
+                            .spend_for_service(requester, &materials, forge.enhance_chit_cost)
+                            .await
+                        {
+                            Ok(true) => {
+                                let amount = forge.enhance_bonus_base
+                                    + (forge.enhance_bonus_per_quality as f64 * job.quality).floor()
+                                        as i32;
+                                let edge = match row.slot.as_str() {
+                                    "main_hand" => Edge { atk: amount, ..Default::default() },
+                                    "accessory" => Edge { spd: amount, ..Default::default() },
+                                    _ => Edge { def: amount, ..Default::default() },
+                                };
+                                if let Some(w) = self.world.as_mut() {
+                                    let v = w.edges.entry(job.requester.clone()).or_default();
+                                    while v.len() <= slot as usize {
+                                        v.push(Edge::default());
+                                    }
+                                    let cur = &mut v[slot as usize];
+                                    cur.atk += edge.atk;
+                                    cur.def += edge.def;
+                                    cur.spd += edge.spd;
+                                }
+                                Ok(format!(
+                                    "put a +{amount} edge on {} for the rest of the dive ({:.0}% heat)",
+                                    row.name,
+                                    job.quality * 100.0
+                                ))
+                            }
+                            Ok(false) => Err(format!(
+                                "An edge needs {} {material} and {} chits.",
+                                forge.enhance_material_cost, forge.enhance_chit_cost
+                            )),
+                            Err(_) => Err("The forge went cold.".to_string()),
+                        }
+                    }
+                }
+                "reroll" if job.smith_level < forge.reroll_min_forging_level => Err(format!(
+                    "This smith is Forging {} - a reroll wants {}.",
+                    job.smith_level, forge.reroll_min_forging_level
+                )),
+                "reroll" if ins == Some(meld_proto::enums::Insurance::Ephemeral) => Err(
+                    "Ephemeral gear burns when you reach the city - a reroll would burn with it."
+                        .to_string(),
+                ),
+                "reroll" => {
+                    let class_key = if row.class_key.is_empty() {
+                        "explorer".to_string()
+                    } else {
+                        row.class_key.clone()
+                    };
+                    // The HEAT decides the pool: a flawless run reaches the epic
+                    // affixes, the same reach a trophy catalyst buys — paid in skill
+                    // instead of monster parts.
+                    let rarity = self.balance.tempo.rarity_for(job.quality);
+                    let rolled = meld_world::reroll_affixes_at(
+                        &self.balance,
+                        row.tier,
+                        &class_key,
+                        &row.slot,
+                        "forest",
+                        rarity,
+                        now_ms() ^ hash_str(&job.gear_id),
+                    );
+                    let need = forge.reroll_materials(row.tier);
+                    let materials = [(job.material.clone(), need)];
+                    match self
+                        .db
+                        .reroll_gear_affixes(
+                            requester,
+                            gid,
+                            &materials,
+                            forge.reroll_chit_cost,
+                            &meld_proto::affixes::to_json(&rolled),
+                        )
+                        .await
+                    {
+                        Ok(true) => Ok(format!(
+                            "re-drew {} ({rarity}, {:.0}% heat) for {} {} and {}c",
+                            row.name,
+                            job.quality * 100.0,
+                            need,
+                            job.material,
+                            forge.reroll_chit_cost
+                        )),
+                        Ok(false) => Err(format!(
+                            "A reroll on a tier {} piece needs {} {} and {} chits.",
+                            row.tier, need, job.material, forge.reroll_chit_cost
+                        )),
+                        Err(_) => Err("The forge went cold.".to_string()),
+                    }
+                }
+                _ if ins != Some(meld_proto::enums::Insurance::Insured) => Err(
+                    "Only insured gear wears down - there is nothing here to repair."
+                        .to_string(),
+                ),
+                _ => {
+                    // A missed heat still mends something (its floor) — a bad job, not a
+                    // robbery — and a clean one gives the smith's full reach back.
+                    let full = forge.repair_points(job.smith_level) as f64;
+                    let points =
+                        ((full * self.balance.tempo.repair_fraction(job.quality)).floor() as i32)
+                            .max(1);
+                    match self
+                        .db
+                        .repair_gear(requester, gid, points, forge.repair_chit_cost_per_point)
+                        .await
+                    {
+                        Ok(0) => Err("Nothing to repair, or not enough chits.".to_string()),
+                        Ok(restored) => Ok(format!(
+                            "mended {} +{restored} ({:.0}% heat) for {}c",
+                            row.name,
+                            job.quality * 100.0,
+                            restored as i64 * forge.repair_chit_cost_per_point
+                        )),
+                        Err(_) => Err("The forge went cold.".to_string()),
+                    }
+                }
+            };
+            self.finish_job(job, outcome).await;
+        }
+    }
+
+    /// Bill the station and tell the requester. A station only pays for work that
+    /// happened, and the XP goes to the OWNER whose bench it is — a field station is a
+    /// service its owner provides, which is the whole reason to raise one for a party.
+    async fn finish_job(&mut self, job: SmithJob, outcome: Result<String, String>) {
+        let uses_left = match &outcome {
+            Ok(_) => {
+                // The city anvil has no station to wear out (`station_id` empty).
+                let left = self
+                    .world
+                    .as_mut()
+                    .filter(|_| !job.station_id.is_empty())
+                    .and_then(|w| w.arena.spend_station_use(&job.station_id))
+                    .unwrap_or(0);
+                let skill = if job.kind == "alembic" { "alchemy" } else { "forging" };
+                let _ = self.db_writes.send(DbWrite::SkillXp(
+                    job.owner.clone(),
+                    skill.to_string(),
+                    self.balance.forge.forge_xp_per_craft,
+                ));
+                left
+            }
+            Err(_) => self
+                .world
+                .as_ref()
+                .and_then(|w| {
+                    w.arena
+                        .stations
+                        .iter()
+                        .find(|s| s.entity_id == job.station_id)
+                        .map(|s| s.uses_left)
+                })
+                .unwrap_or(0),
+        };
+        let (ok, message) = match outcome {
+            Ok(m) => (true, m),
+            Err(m) => (false, m),
+        };
+        let result = wr::SmithResult {
+            player_id: job.requester.clone(),
+            entity_id: job.station_id.clone(),
+            gear_id: job.gear_id.clone(),
+            service: job.service.clone(),
+            ok,
+            message,
+            uses_left,
+            quality: job.quality,
+        };
+        self.dispatch(vec![out_msg(&job.requester, &result)]);
+    }
+
+    /// A brew at a Keeper's alembic: the same cook the Apothecary's recipes run over
+    /// HTTP, except the COOK is graded — a good one feeds more people from the same
+    /// reagents (`[tempo] cook_bonus_doses`). The reagents and the doses are the
+    /// requester's; the Keeper's level is what gates the pot and takes the XP.
+    async fn cook(&mut self, job: &SmithJob, requester: Uuid) -> Result<String, String> {
+        let Some(r) = meld_proto::consumables::recipe(&job.recipe) else {
+            return Err("No such recipe.".to_string());
+        };
+        if r.skill != "alchemy" {
+            return Err(format!("{} is smith's work, not a brew.", r.name));
+        }
+        if job.smith_level < r.min_level {
+            return Err(format!(
+                "This Keeper is {} {} - {} wants {}.",
+                r.skill, job.smith_level, r.name, r.min_level
+            ));
+        }
+        let bonus = self.balance.tempo.bonus_doses(job.quality);
+        let qty = r.output_qty + bonus;
+        let inputs: Vec<(String, i32)> = r
+            .inputs
+            .iter()
+            .map(|(k, q)| ((*k).to_string(), *q))
+            .collect();
+        // XP goes to the Keeper, not the pot's owner, so it is credited by `finish_job`
+        // rather than here.
+        match self.db.craft(requester, &inputs, (r.output, qty), r.skill, 0).await {
+            Ok(true) => Ok(format!(
+                "brewed {qty}x {} ({:.0}% cook{})",
+                r.name,
+                job.quality * 100.0,
+                if bonus > 0 { format!(", +{bonus} dose") } else { String::new() }
+            )),
+            Ok(false) => Err(format!(
+                "{} wants {}.",
+                r.name,
+                inputs
+                    .iter()
+                    .map(|(k, q)| format!("{q} {k}"))
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            )),
+            Err(_) => Err("The pot cracked.".to_string()),
+        }
+    }
+
     /// Load persistent hero names + formation from Postgres for freshly-connected
     /// players.
     async fn flush_hero_loads(&mut self) {
@@ -4320,6 +4949,200 @@ impl WorldActor {
     /// Begin working a resource node (MS-2). This opens a **channel** rather than
     /// completing a gather: `advance_harvests` hands over one unit per tick while the
     /// player stays put and the node holds out.
+    /// The temporary edge a smith put on this hero's kit this run, if any.
+    fn edge_for(&self, player_id: &str, slot: usize) -> Option<&Edge> {
+        self.edges.get(player_id).and_then(|v| v.get(slot))
+    }
+
+    /// Raise a field station where the player stands (MS-1). The ore comes out of the
+    /// RUN backpack, so a field smith has to have gathered for it, and the Forging gate
+    /// is checked against the builder's persistent Meld level — the profession is the
+    /// skill, not the class (see `proposals/crafting-and-professions.md`).
+    fn handle_build_station(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| {
+            (vec![error(player_id, code, msg, Some(seq))], Vec::new())
+        };
+        let req: wr::BuildStation = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad build_station"),
+        };
+        // Two benches, one idea: a smith's forge is built from ORE and gated on Forging,
+        // a Keeper's alembic from REAGENTS and gated on Alchemy.
+        let forge = self.balance.forge.clone();
+        let (skill, class, what) = match req.kind.as_str() {
+            "smith" => (
+                "forging",
+                meld_proto::materials::MaterialClass::Ore,
+                ("A field forge", forge.station_min_forging_level, "ore"),
+            ),
+            "alembic" => (
+                "alchemy",
+                meld_proto::materials::MaterialClass::Reagent,
+                ("A field still", forge.station_min_alchemy_level, "reagent"),
+            ),
+            _ => return reject(ErrorCode::ValidationError, "No such station."),
+        };
+        let (label, min_level, stock_word) = what;
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let level = self.skill_levels.get(player_id).and_then(|m| m.get(skill)).copied();
+        // No level loaded yet is not a pass: a station is a service, and the whole
+        // point is that the smith's own skill is what the work is done at.
+        if level.unwrap_or(0) < min_level {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!(
+                    "{label} takes {} level {min_level}.",
+                    meld_proto::affixes::pretty_class(skill)
+                ),
+            );
+        }
+        // Built from ore you are carrying — the deepest stack first, so a smith who
+        // hauled good ore out does not have it spent last.
+        let need = forge.station_ore_cost;
+        let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
+            return reject(ErrorCode::InvalidState, "Not in a run.");
+        };
+        let mut ores: Vec<(usize, i32)> = run
+            .backpack
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| meld_proto::materials::is_class(&i.item_kind, class))
+            .map(|(idx, i)| {
+                (
+                    idx,
+                    meld_proto::materials::material(&i.item_kind).map(|m| m.tier).unwrap_or(0),
+                )
+            })
+            .collect();
+        ores.sort_by(|a, b| b.1.cmp(&a.1));
+        let Some((idx, _)) = ores
+            .into_iter()
+            .find(|(idx, _)| run.backpack[*idx].quantity >= need)
+        else {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!("{label} takes {need} of one {stock_word} you are carrying."),
+            );
+        };
+        let ore_kind = run.backpack[idx].item_kind.clone();
+        let uses = forge.station_uses;
+        let radius = forge.station_radius;
+        if self.arena.place_station(player_id, &req.kind, uses, radius).is_none() {
+            return reject(ErrorCode::InvalidState, "There is already a bench here.");
+        }
+        let run = self
+            .run
+            .runs
+            .iter_mut()
+            .find(|r| r.player_id == player_id)
+            .expect("checked above");
+        run.backpack[idx].quantity -= need;
+        run.backpack.retain(|i| i.quantity > 0);
+        let update = wr::BackpackUpdate {
+            changes: vec![wr::BackpackChange {
+                item: ItemStack {
+                    item_id: Uuid::now_v7().to_string(),
+                    item_kind: ore_kind.clone(),
+                    quantity: need,
+                    insurance: None,
+                },
+                delta: "removed".to_string(),
+                cause: "station".to_string(),
+            }],
+            chits_delta: 0,
+            gear_added: Vec::new(),
+        };
+        (vec![out_msg(player_id, &update)], Vec::new())
+    }
+
+    /// Ask the smith whose station this is to work a piece of the REQUESTER's gear.
+    /// Everything that decides whether it can happen is here (who is standing where,
+    /// whether the station has jobs left); the DB half runs off the tick in
+    /// `flush_smith_jobs`, because the loop must not park on Postgres.
+    fn handle_smith_request(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| {
+            (vec![error(player_id, code, msg, Some(seq))], Vec::new())
+        };
+        let req: wr::SmithRequest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad smith_request"),
+        };
+        if !matches!(req.service.as_str(), "reroll" | "repair" | "enhance" | "brew") {
+            return reject(ErrorCode::ValidationError, "No such service.");
+        }
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let radius = self.balance.forge.station_radius;
+        let Some(station) = self.arena.station_at(player_id, &req.entity_id, radius) else {
+            return reject(ErrorCode::OutOfRange, "No bench in reach.");
+        };
+        let kind = station.kind.clone();
+        let owner = station.owner_player_id.clone();
+        // A forge cannot cook and a still cannot mend: the bench you are standing at is
+        // what decides what may be asked of it.
+        let (skill, allowed): (&str, &[&str]) = match kind.as_str() {
+            "alembic" => ("alchemy", &["brew"]),
+            _ => ("forging", &["reroll", "repair", "enhance"]),
+        };
+        if !allowed.contains(&req.service.as_str()) {
+            return reject(
+                ErrorCode::ValidationError,
+                &format!("A {kind} does not do that."),
+            );
+        }
+        // The station OWNER's skill is the skill the job is done at — that is the whole
+        // point of asking someone else's smith. An unloaded level counts as none.
+        let smith_level =
+            self.skill_levels.get(&owner).and_then(|m| m.get(skill)).copied().unwrap_or(0);
+        // A crew makes the bar easier to hit: every OTHER member of the party who could
+        // have raised this station counts as a pair of hands on the piece.
+        let gate = self.balance.forge.station_min_forging_level;
+        let crew = self
+            .run
+            .runs
+            .iter()
+            .filter(|r| r.player_id != owner)
+            .filter(|r| {
+                self.skill_levels
+                    .get(&r.player_id)
+                    .and_then(|m| m.get(skill))
+                    .copied()
+                    .unwrap_or(0)
+                    >= gate
+            })
+            .count() as i32;
+        (
+            Vec::new(),
+            vec![WorldEffect::SmithJob(Box::new(SmithJob {
+                requester: player_id.to_string(),
+                owner,
+                kind,
+                smith_level,
+                crew,
+                station_id: req.entity_id.clone(),
+                gear_id: req.gear_id.clone(),
+                service: req.service.clone(),
+                material: req.material.clone(),
+                recipe: req.recipe.clone(),
+                client_seq: seq,
+                quality: 0.0,
+            }))],
+        )
+    }
+
     fn handle_harvest(
         &mut self,
         player_id: &str,

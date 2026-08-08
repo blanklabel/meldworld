@@ -84,6 +84,18 @@ pub(crate) fn forge_preview_flag() -> bool {
     query_has("forge")
 }
 
+/// Seed a fake open HEAT on arrival (with `MELD_CITY`) so the smithing bar can be
+/// screenshotted without diving, gathering and building a station first. Native:
+/// `MELD_HEAT`. Browser: `?heat`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn heat_preview_flag() -> bool {
+    std::env::var("MELD_HEAT").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn heat_preview_flag() -> bool {
+    query_has("heat")
+}
+
 /// Light the Vanguard Wall on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the seasonal board without having to walk over and press [E].
 /// Native: `MELD_WALL`. Browser: `?wall`.
