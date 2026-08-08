@@ -660,6 +660,33 @@ XP; harvesting exists but is instant.
     same reagents. A forge cannot cook and a still cannot mend; the bench you are standing
     at decides what may be asked of it, and its owner's skill is what the work is done at.
     The Map column now offers both benches, each naming the stock it wants.
+  - 🟡 *A bench is a commitment, and the boon is a button:* raising one was
+    instant, which made it a thing you dropped while running rather than a place you
+    chose. Setup and teardown are now **channels** (`station_setup_ms` /
+    `station_teardown_ms`) that break on movement, a battle or `[E]` like every other
+    channel, and they ride the same progress bar; the stock is spent up front, so an
+    interrupted build costs you the materials. Packing up is the owner's alone and hands
+    back `station_teardown_refund` of **the same stock it was built from** (the bench
+    remembers). The temporary boon moved out of the bench UI onto its own **prompt and
+    touch button** — `[N]` for a smith's edge or a Keeper's tonic — because it is a
+    one-press favour, not a screen to open.
+  - 🟡 *A set-up still is somewhere to rest:* an alembic radiates a **regen field**
+    (`alembic_field_radius` / `alembic_regen_per_sec`) that stacks with the Resonant's
+    perk, so a party with no healer has somewhere to stand; and its Keeper can pour a
+    **tonic** — the still's answer to the forge's edge, spread across the whole party as
+    +atk/+def/+regen scaled by the cook, for this dive only.
+  - 🟡 *The two profession classes are real:* `smithwright` and `keeper` are
+    playable, with their orders' own six-rung ladders from the lore
+    ([`lore/factions.md`](lore/factions.md)) — Indentured Extractor → Master of the
+    Foundry, Sprout → Terra. A Smithwright is a front-line support (staggering hammer,
+    party Barrier, and a buff that makes somebody *else* hit harder); a Keeper is a mender
+    whose damage rides **Mnd** and whose two attacks buy time rather than kills. Both are
+    **earned**: forge a piece rather than finding one, or work a node dry — the two things
+    those orders actually recruit on. `[player.smithwright]` / `[player.keeper]` stats,
+    `[smithwright]` / `[keeper]` kits. They are also what the station easing counts now:
+    a second Smithwright at a forge is a second pair of hands, which is the party-slot
+    payoff the professions design promised. *No sprites yet — both fall back to the
+    Explorer's until the art lands.*
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first);
     and the crafting-depth layers the proposal scopes: recipe *discovery*,

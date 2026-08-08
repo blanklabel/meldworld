@@ -542,6 +542,12 @@ station_min_alchemy_level = 2    # …and the Alchemy level an ALEMBIC takes (th
 station_ore_cost = 3             # ore from the backpack that a station is built from
 station_uses = 4                 # jobs it serves before it is spent
 station_radius = 3.0             # world units within which a station can be worked at
+# Raising and packing up a bench TAKE TIME, as a channel: a station is a commitment you
+# make in a dangerous place, not a thing you drop while running. Both are interruptible,
+# and teardown hands part of the stock back — packing up is thrift, not a penalty.
+station_setup_ms = 4000          # channel to raise one [TUNABLE]
+station_teardown_ms = 2500       # channel to pack one up
+station_teardown_refund = 1      # stock returned when you pack up a bench with jobs left
 # TEMP ENHANCE: a smith can put an edge on a piece that lasts the REST OF THE RUN. It is
 # never a Vault write, so it cannot be a way to launder power home — the enhancement dies
 # with the dive, which is what makes it worth asking a smith for on the way in. [TUNABLE]
@@ -550,6 +556,18 @@ enhance_chit_cost = 30
 enhance_bonus_base = 2           # stat points at a wholly missed heat
 enhance_bonus_per_quality = 6    # …plus this much, scaled by the heat's quality
 enhance_min_forging_level = 1    # an apprentice's trick, unlike a reroll
+# A set-up ALEMBIC is a place to stand as well as a place to brew: it radiates a slow
+# regen field over anyone near it, and its Keeper can hand out a TONIC — the still's
+# answer to the forge's edge, spread across the whole party instead of one piece, and
+# lasting the same single dive. [TUNABLE]
+alembic_field_radius = 7.0       # world units the regen field reaches
+alembic_regen_per_sec = 0.9      # HP/sec it restores to a party standing in it
+tonic_material_cost = 1          # reagents one tonic eats
+tonic_chit_cost = 25
+tonic_atk = 1                    # at a wholly missed cook…
+tonic_def = 1
+tonic_regen = 1
+tonic_per_quality = 3            # …plus this much of each, scaled by the cook's quality
 
 # SMITHING TEMPO (MS-1). Working metal is a rhythm, not a purchase: the marker sweeps
 # the bar and the smith strikes on the hot bands. Quality is hits/strikes, and it is
@@ -588,6 +606,33 @@ repair_quality_floor = 0.5      # fraction of a repair you get for a wholly miss
 # Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
 # `meld_proto::consumables`; these are its numbers, plus the chit price of the
 # lowest-tier stock one NPC keeps on the shelf.
+# SMITHWRIGHT + KEEPER kit coefficients (MS-1's two profession classes). Both are
+# support-shaped: a Smithwright buys the party time and a Keeper keeps it alive, so the
+# damage numbers are deliberately modest and the durations are where the value is.
+[smithwright]
+hammer_mult = 1.35               # Hammer Fall: heavy, staggering blow [TUNABLE]
+hammer_gauge_drain = 0.25        # …and the gauge it knocks off the target
+quench_barrier_fraction = 0.22   # Quench: Barrier as a fraction of own max HP
+bulwark_barrier_fraction = 0.14  # Plant the Bulwark: the same, for EVERY ally
+temper_atk_bonus = 4             # Tempering Blow: an ally's attack, for the fight
+slag_mult = 0.7                  # Slag Spray: all-enemy, armour-ignoring
+forge_heal_fraction = 0.2        # The One True Forge: party heal as a fraction of max HP
+forge_barrier_fraction = 0.18    # …and the Barrier that comes with it
+
+[keeper]
+thornlash_mult = 0.85            # Thornlash: modest damage [TUNABLE]
+thornlash_gauge_drain = 0.2      # …and the gauge the thorns cost it
+poultice_heal = 14               # Poultice: heal now…
+poultice_regen = 4               # …and Regen after
+bloomfield_regen = 3             # Bloomfield: Regen for the whole party
+root_snare_mult = 0.9            # Root Snare: damage…
+root_snare_gauge_drain = 0.6     # …and a long wait for its turn
+draught_barrier = 20             # Vital Draught: Barrier…
+draught_regen = 5                # …with Regen
+gift_heal = 18                   # Terra's Gift: party heal…
+gift_barrier = 14                # …Barrier…
+gift_gauge = 0.25                # …and a push on every ally's gauge
+
 [consumable]
 barrier_amount = 18             # Bulwark Tonic: Barrier granted [TUNABLE]
 regen_amount = 6                # Mending Draught: Regen per turn [TUNABLE]
@@ -1280,6 +1325,40 @@ str_per_level = 3
 mnd_per_level = 0
 dex_per_level = 0
 wll_per_level = 4
+
+# The Foundry's SMITHWRIGHT: a working smith on the front line. Nearly as dense as a
+# Phoenix Guard and hits nearly as hard, but the trade is tempo — its kit props the party
+# up rather than out-damaging anything. All Str and Wll, like anyone who lifts iron for a
+# living. [TUNABLE]
+[player.smithwright]
+base_hp = 50
+base_atk = 14
+base_def = 5
+speed_stat = 88
+str = 14
+mnd = 5
+dex = 7
+wll = 12
+str_per_level = 3
+mnd_per_level = 0
+dex_per_level = 1
+wll_per_level = 3
+
+# The Open Flower's KEEPER: a grower, not a duellist. Frail and slow to swing, with the
+# highest Mnd outside the Psyker because everything it does is medicine. [TUNABLE]
+[player.keeper]
+base_hp = 40
+base_atk = 8
+base_def = 3
+speed_stat = 96
+str = 6
+mnd = 13
+dex = 9
+wll = 10
+str_per_level = 0
+mnd_per_level = 3
+dex_per_level = 1
+wll_per_level = 2
 
 # The distance at which each biome starts appearing in a RANDOMIZED run (the tutorial
 # keeps its own hand-tuned Forest-first bands). Difficulty is distance-driven, but a

@@ -27,6 +27,11 @@ pub(crate) enum OverworldAct {
     /// "Return to town" live). Keyboard equivalent: C / I, or tapping your own
     /// character.
     Menu,
+    /// Ask the crafter at the bench you are standing at for their temporary boon — a
+    /// smith's **edge** on a worn piece, or a Keeper's **tonic** for the party. Its own
+    /// prompt and its own button, because it is a one-press favour rather than a screen
+    /// to open: [E] is for the bench, this is for the thing you actually want from it.
+    Boon,
 }
 
 /// The channel progress bar's frame (hidden unless a channel is running).
@@ -187,6 +192,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 // reach — `update_touch_interact` keeps its label and visibility in step
                 // with the [E] prompt) and Menu, which is where going home lives.
                 for (act, label) in [
+                    (OverworldAct::Boon, "\u{f0e6d} Boon"),
                     (OverworldAct::Interact, "\u{f0e6d} Interact"), // hand-pointing icon
                     (OverworldAct::Menu, "\u{f0214} Menu"),         // list icon
                 ] {
@@ -331,6 +337,7 @@ pub(crate) fn touch_action_buttons(
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
     mut station: ResMut<StationUi>,
+    inv: Res<InventoryData>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -363,6 +370,22 @@ pub(crate) fn touch_action_buttons(
                         Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
                         None => {}
                     }
+                }
+            }
+            OverworldAct::Boon => {
+                if let Some((entity_id, kind, _)) = boon_offer(&world, &session) {
+                    let (service, class) = if kind == "alembic" {
+                        ("tonic", meld_proto::materials::MaterialClass::Reagent)
+                    } else {
+                        ("enhance", meld_proto::materials::MaterialClass::Refined)
+                    };
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id,
+                        gear_id: worn_piece(&inv, 0).unwrap_or_default(),
+                        service: service.into(),
+                        material: crate::city::best_stock(&inv, class).unwrap_or_default(),
+                        recipe: String::new(),
+                    });
                 }
             }
             OverworldAct::Menu => {
@@ -675,6 +698,12 @@ pub(crate) fn update_overworld_hud(
             .map(|i| i.prompt())
             .unwrap_or_default()
     };
+    // The bench's boon is its own line, because it is its own key: [E] opens the bench,
+    // [N] asks for the one thing most people walk over for.
+    if let Some((_, _, what)) = boon_offer(&world, &session) {
+        let boon = format!("[N] {what}");
+        line = if line.is_empty() { boon } else { format!("{line}   {boon}") };
+    }
     // A door that wants more bodies than one says so BEFORE you are inside it (#190):
     // there is no Town Portal in a dungeon, so a party that finds out at the gate has
     // walked the whole way for nothing.
@@ -700,14 +729,22 @@ pub(crate) fn update_touch_interact(
     mut labels: Query<&mut Text>,
 ) {
     let target = interact_target(&world, &session);
+    let boon = boon_offer(&world, &session);
     for (btn, mut node, children) in &mut buttons {
-        if btn.0 != OverworldAct::Interact {
-            continue;
-        }
-        let label = if session.channeling {
-            Some("Stop".to_string())
-        } else {
-            target.as_ref().map(|t| t.verb())
+        let label = match btn.0 {
+            // The Boon button appears with the offer and vanishes with it, exactly as the
+            // Interact button tracks the [E] prompt.
+            OverworldAct::Boon => {
+                (!session.channeling).then(|| boon.as_ref().map(|(_, _, w)| w.clone())).flatten()
+            }
+            OverworldAct::Interact => {
+                if session.channeling {
+                    Some("Stop".to_string())
+                } else {
+                    target.as_ref().map(|t| t.verb())
+                }
+            }
+            OverworldAct::Menu => continue,
         };
         node.display = if label.is_some() { Display::Flex } else { Display::None };
         if let Some(text) = label {
@@ -812,6 +849,7 @@ pub(crate) fn overworld_input(
     session: Res<Session>,
     overlay: Res<Overlay>,
     time: Res<Time>,
+    inv: Res<InventoryData>,
     mut station: ResMut<StationUi>,
     mut auto_cooldown: Local<f32>,
 ) {
@@ -829,6 +867,26 @@ pub(crate) fn overworld_input(
     if session.channeling {
         if keys.just_pressed(KeyCode::KeyE) {
             net.0.send(ClientCmd::CancelHarvest);
+        }
+        return;
+    }
+
+    // [N] asks the bench in reach for its temporary boon. A one-press favour, so it is
+    // its own key and its own prompt rather than a row inside a screen.
+    if keys.just_pressed(KeyCode::KeyN) {
+        if let Some((entity_id, kind, _)) = boon_offer(&world, &session) {
+            let (service, class) = if kind == "alembic" {
+                ("tonic", meld_proto::materials::MaterialClass::Reagent)
+            } else {
+                ("enhance", meld_proto::materials::MaterialClass::Refined)
+            };
+            net.0.send(ClientCmd::SmithRequest {
+                entity_id,
+                gear_id: worn_piece(&inv, 0).unwrap_or_default(),
+                service: service.into(),
+                material: crate::city::best_stock(&inv, class).unwrap_or_default(),
+                recipe: String::new(),
+            });
         }
         return;
     }
@@ -921,6 +979,40 @@ impl Interact {
             _ => format!("[E] {}", self.verb()),
         }
     }
+}
+
+/// The temporary boon on offer at the bench in reach, as `(station id, kind, label)`.
+/// A forge sharpens something you are WEARING; a still pours for the whole party. Both
+/// last the dive and no longer, which the label says so nobody expects to carry it home.
+pub(crate) fn boon_offer(
+    world: &Overworld,
+    session: &Session,
+) -> Option<(String, String, String)> {
+    let me = world.entities.get(&session.player_id)?;
+    let (id, kind) = world
+        .entities
+        .iter()
+        .filter(|(_, e)| e.kind == EntityKind::Station && e.level == me.level)
+        .filter(|(_, e)| ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() <= INTERACT_REACH)
+        .map(|(id, e)| (id.clone(), e.name.clone().unwrap_or_default()))
+        .next()?;
+    let label = if kind == "alembic" {
+        "Ask for a tonic (party, this dive)"
+    } else {
+        "Ask for an edge (this dive)"
+    };
+    Some((id, kind, label.to_string()))
+}
+
+/// The piece the given hero is wearing in the hand — what a smith's edge goes on.
+/// `None` when that hero has nothing equipped there, which is the one case where an
+/// edge has nothing to bite.
+pub(crate) fn worn_piece(inv: &InventoryData, slot: usize) -> Option<String> {
+    inv.gear
+        .iter()
+        .find(|g| g.equipped_hero_slot == Some(slot) && g.slot == "main_hand")
+        .or_else(|| inv.gear.iter().find(|g| g.equipped_hero_slot == Some(slot)))
+        .map(|g| g.gear_id.clone())
 }
 
 /// Seconds autoplay waits between unattended interactions.
@@ -3804,7 +3896,7 @@ pub(crate) fn station_line(
             format!("  (needs {} {})", r.skill, r.required_level)
         };
         return Some(format!(
-            "{head}   up/down {} x{}  <- {}{gate}   [B] brew   [E] leave",
+            "{head}   up/down {} x{}  <- {}{gate}   [B] brew   [X] pack up   [E] leave",
             r.name,
             r.output_quantity,
             inputs.join(" + ")
@@ -3822,16 +3914,11 @@ pub(crate) fn station_line(
     if ins == Some(meld_proto::enums::Insurance::Insured) {
         keys.push("[P] repair".to_string());
     }
-    // The edge is the FIELD forge's own service: it lasts the rest of the dive, so it is
-    // only worth anything to someone already in one. It goes on what a hero is wearing.
-    if g.equipped_hero_slot.is_some() {
-        keys.push("[N] edge".to_string());
-    }
     if keys.is_empty() {
         keys.push("nothing a smith can do with this".to_string());
     }
     Some(format!(
-        "{head}   <-/-> {} T{} {}   {}   [E] leave",
+        "{head}   <-/-> {} T{} {}   {}   [X] pack up   [E] leave",
         g.name,
         g.tier,
         ins.map(|i| i.label()).unwrap_or("?"),
@@ -3872,6 +3959,13 @@ pub(crate) fn station_input(
         craft.bench = (craft.bench + n - 1) % n;
         return;
     }
+    // [X] packs the bench up: its own channel, and only its owner may do it — the server
+    // says so in its own words rather than the client guessing at ownership.
+    if keys.just_pressed(KeyCode::KeyX) {
+        net.0.send(ClientCmd::TeardownStation { entity_id: id });
+        station.open = None;
+        return;
+    }
     // A still brews: up/down walk the recipe book (fetched over HTTP like the city's),
     // [B] puts the pot on. Its own keys, because a forge's make no sense at one.
     if station.kind == "alembic" {
@@ -3899,12 +3993,11 @@ pub(crate) fn station_input(
     }
     let repair = keys.just_pressed(KeyCode::KeyP);
     let reroll = keys.just_pressed(KeyCode::KeyR);
-    let edge = keys.just_pressed(KeyCode::KeyN);
-    if !(repair || reroll || edge) {
+    if !(repair || reroll) {
         return;
     }
     let Some(g) = crate::city::bench_gear(&craft, &inv) else { return };
-    let material = if reroll || edge {
+    let material = if reroll {
         // Same rule as the city anvil: spend the deepest refined stock rather than
         // making anyone name a material at a bench in a maze.
         match crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
@@ -3914,13 +4007,7 @@ pub(crate) fn station_input(
     } else {
         String::new()
     };
-    let service = if repair {
-        "repair"
-    } else if edge {
-        "enhance"
-    } else {
-        "reroll"
-    };
+    let service = if repair { "repair" } else { "reroll" };
     net.0.send(ClientCmd::SmithRequest {
         entity_id: id,
         gear_id: g.gear_id.clone(),

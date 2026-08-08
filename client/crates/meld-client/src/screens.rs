@@ -30,7 +30,7 @@ pub(crate) struct ClassInfo {
     pub kit: &'static [(&'static str, &'static str)],
 }
 
-pub(crate) const CLASS_INFO: [ClassInfo; 6] = [
+pub(crate) const CLASS_INFO: [ClassInfo; 8] = [
     ClassInfo { key: "explorer", name: "Explorer", role: "The order that maps and anchors the world \u{2014} tempo and stability, not burst.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3, kit: &[
         ("Trailblaze", "a solid strike that costs nothing"),
         ("Field Dressing", "patch up an ally or yourself (Lv2)"),
@@ -64,6 +64,18 @@ pub(crate) const CLASS_INFO: [ClassInfo; 6] = [
         ("Rite of Rest", "a self Barrier stance (Lv2)"),
         ("Holy Censure", "heavy blow, zeroes the foe's gauge (Lv5)"),
         ("Purging Light", "light on ALL enemies (Lv9)"),
+    ] },
+    ClassInfo { key: "smithwright", name: "Smithwright", role: "The Foundry's builder \u{2014} raises the field forge, and buys the party time.", hp: 4, atk: 4, spd: 2, mag: 1, def: 4, kit: &[
+        ("Hammer Fall", "a staggering blow with the tool itself"),
+        ("Quench", "a self Barrier off your own HP (Lv2)"),
+        ("Plant the Bulwark", "Barrier for the WHOLE party (Lv5)"),
+        ("Tempering Blow", "an ally hits harder all fight (Lv9)"),
+    ] },
+    ClassInfo { key: "keeper", name: "Keeper", role: "Open Flower grower \u{2014} sets up the still, and keeps everyone standing.", hp: 2, atk: 1, spd: 4, mag: 5, def: 2, kit: &[
+        ("Thornlash", "modest damage, and it holds them there"),
+        ("Poultice", "heal an ally + Regen after (Lv2)"),
+        ("Bloomfield", "Regen for the whole party (Lv5)"),
+        ("Root Snare", "damage, and its turn is far off (Lv9)"),
     ] },
 ];
 

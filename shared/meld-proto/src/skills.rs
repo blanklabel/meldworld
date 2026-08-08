@@ -494,6 +494,119 @@ pub const SKILLS: &[SkillDef] = &[
         upgrades: None,
         rank: "Apotheosis",
     },
+    // ---- Smithwright: the Foundry's caste that BUILDS (docs/lore/factions.md). The kit
+    // is what a working smith carries into a dangerous place — a hammer, a bulwark, and
+    // the heat itself. The ladder is the Foundry's own, so every promotion is a new tool.
+    SkillDef {
+        key: "hammer_fall",
+        name: "Hammer Fall",
+        class: "smithwright",
+        unlock: 1,
+        description: "The tool, used as a tool. A two-handed blow that lands like dropped iron and staggers what it hits.",
+        upgrades: None,
+        rank: "Indentured Extractor",
+    },
+    SkillDef {
+        key: "quench",
+        name: "Quench",
+        class: "smithwright",
+        unlock: 4,
+        description: "Dunk the hot metal and stand in the steam: a Barrier off your own max HP. Smelters learn this before they learn to sleep.",
+        upgrades: None,
+        rank: "Smelter Apprentice",
+    },
+    SkillDef {
+        key: "bulwark",
+        name: "Plant the Bulwark",
+        class: "smithwright",
+        unlock: 12,
+        description: "Set a shield-wall section down in front of the line. Barrier for the whole party — the Foundry's actual job, done mid-fight.",
+        upgrades: None,
+        rank: "Journeyman Smithwright",
+    },
+    SkillDef {
+        key: "tempering_blow",
+        name: "Tempering Blow",
+        class: "smithwright",
+        unlock: 20,
+        description: "Strike the work, not the foe: an ally's next swing lands harder for the rest of the fight. Tempo, not damage.",
+        upgrades: None,
+        rank: "Smithwright",
+    },
+    SkillDef {
+        key: "slag_spray",
+        name: "Slag Spray",
+        class: "smithwright",
+        unlock: 28,
+        description: "Empty the crucible outward. Every enemy takes it, and armour is no help against molten waste.",
+        upgrades: None,
+        rank: "Master Smithwright",
+    },
+    SkillDef {
+        key: "one_true_forge",
+        name: "The One True Forge",
+        class: "smithwright",
+        unlock: 36,
+        description: "Work the whole party like metal: every ally is mended and shielded at once. The heresy the Foundry will not name out loud.",
+        upgrades: None,
+        rank: "Master of the Foundry",
+    },
+    // ---- Keeper: the Open Flower in the field. A mender, not a duellist: everything
+    // here keeps someone standing, and the ladder is the order's own growth ladder.
+    SkillDef {
+        key: "thornlash",
+        name: "Thornlash",
+        class: "keeper",
+        unlock: 1,
+        description: "A whip of bramble. Modest damage, and the thorns keep the target where it is by draining its gauge.",
+        upgrades: None,
+        rank: "Sprout",
+    },
+    SkillDef {
+        key: "poultice",
+        name: "Poultice",
+        class: "keeper",
+        unlock: 4,
+        description: "Pressed leaf and salt on the wound: heal an ally now, and keep healing them for the rest of the fight.",
+        upgrades: None,
+        rank: "Seedling",
+    },
+    SkillDef {
+        key: "bloomfield",
+        name: "Bloomfield",
+        class: "keeper",
+        unlock: 12,
+        description: "Coax growth out of the ground under the party. Regen for everyone — the field a Keeper's still makes permanent.",
+        upgrades: None,
+        rank: "Budling",
+    },
+    SkillDef {
+        key: "root_snare",
+        name: "Root Snare",
+        class: "keeper",
+        unlock: 20,
+        description: "The ground closes on one foe: damage, and its turn is a long way off.",
+        upgrades: None,
+        rank: "Flowerling",
+    },
+    SkillDef {
+        key: "vital_draught",
+        name: "Vital Draught",
+        class: "keeper",
+        unlock: 28,
+        description: "A draught brewed on the spot: a Barrier and Regen together on the ally who needs them most.",
+        upgrades: None,
+        rank: "Cultivator",
+    },
+    SkillDef {
+        key: "terras_gift",
+        name: "Terra's Gift",
+        class: "keeper",
+        unlock: 36,
+        description: "What the order is for. The whole party is mended, warded and quickened at once, as though the world wanted them alive.",
+        upgrades: None,
+        rank: "Terra",
+    },
 ];
 
 /// Each order's six-rank ladder, and the character level each rank is gated on.
@@ -540,6 +653,28 @@ pub const RANK_LADDERS: &[(&str, &[(&str, i32)])] = &[
             ("Luminary", 115),
             ("Redeemer", 165),
             ("Apotheosis", 215),
+        ],
+    ),
+    (
+        "smithwright",
+        &[
+            ("Indentured Extractor", 1),
+            ("Smelter Apprentice", 25),
+            ("Journeyman Smithwright", 65),
+            ("Smithwright", 115),
+            ("Master Smithwright", 165),
+            ("Master of the Foundry", 215),
+        ],
+    ),
+    (
+        "keeper",
+        &[
+            ("Sprout", 1),
+            ("Seedling", 25),
+            ("Budling", 65),
+            ("Flowerling", 115),
+            ("Cultivator", 165),
+            ("Terra", 215),
         ],
     ),
     (
@@ -719,7 +854,15 @@ mod tests {
             assert_eq!(pretty_skill(s.key), s.name);
         }
         // Every class has a kit, and every kit starts with something usable at 1.
-        for class in ["hunter", "psyker", "resonant", "shifter", "phoenix_guard"] {
+        for class in [
+            "hunter",
+            "psyker",
+            "resonant",
+            "shifter",
+            "phoenix_guard",
+            "smithwright",
+            "keeper",
+        ] {
             let kit = skills_for_class(class);
             assert!(kit.len() >= 3, "{class} has a thin kit: {}", kit.len());
             assert!(

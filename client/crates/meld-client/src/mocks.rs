@@ -9,8 +9,16 @@ use meld_client::net::{CombatantView, GearLine, SkillLine};
 use super::*;
 
 /// The classes the party builder cycles through.
-pub(crate) const PARTY_CLASSES: [&str; 6] =
-    ["explorer", "hunter", "psyker", "resonant", "shifter", "phoenix_guard"];
+pub(crate) const PARTY_CLASSES: [&str; 8] = [
+    "explorer",
+    "hunter",
+    "psyker",
+    "resonant",
+    "shifter",
+    "phoenix_guard",
+    "smithwright",
+    "keeper",
+];
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.

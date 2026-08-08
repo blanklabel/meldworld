@@ -185,6 +185,7 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
     let mut station_jobs_seen: Option<i64> = None;
     let mut result: Option<Value> = None;
     let mut heat_strikes = 0i64;
+    let mut saw_build_channel = false;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while result.is_none() {
@@ -198,6 +199,18 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
             "session.authenticated" => send!("run.enter_maze", {"tutorial": true}),
             "run.started" => send!("run.build_station", {"kind": "smith"}),
             "session.error" => panic!("refused: {v}"),
+            // Raising a bench TAKES TIME: the station must not exist until the channel
+            // completes, so the build announces itself like every other channel.
+            "run.channel_started" => {
+                let m = v["payload"]["method"].as_str().unwrap_or_default().to_string();
+                if m.starts_with("build:") {
+                    saw_build_channel = true;
+                    assert!(
+                        v["payload"]["fill_ms"].as_u64().unwrap_or(0) > 0,
+                        "a channel the client draws a bar for needs a fill: {v}"
+                    );
+                }
+            }
             "run.backpack_update" => {
                 // The ore it was built from leaves the backpack, named and itemised.
                 let changes = v["payload"]["changes"].as_array().cloned().unwrap_or_default();
@@ -254,6 +267,7 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
     }
 
     assert!(ore_removed, "the station should have been paid for out of the backpack");
+    assert!(saw_build_channel, "raising a bench should open a channel, not happen instantly");
     let station_id = station_id.expect("the station is in the world");
     assert!(station_id.starts_with("station-smith"), "{station_id}");
     assert_eq!(

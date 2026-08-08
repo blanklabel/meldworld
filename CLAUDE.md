@@ -144,8 +144,11 @@ channel payout (per unit while gathering, once while extracting — `fill_ms` on
 `run.channel_started`). Touch gets the same thing as one contextual **Interact** button
 that hides when nothing is in reach.
 
-**Field stations (MS-1).** A crafter who carries the stock can raise a bench in the maze
-from the menu's **Map** column — a smith's **forge** (ore, gated on Forging) or a Keeper's
+**Field stations (MS-1).** Raising one **takes time**: it is a channel like harvesting
+(`[forge] station_setup_ms`), the stock is spent up front, and stepping away loses the
+work — so where and when you build is a real decision. Packing one up is its own channel
+and hands back part of the stock, and only its owner may do it. A crafter who carries the
+stock can raise a bench in the maze from the menu's **Map** column — a smith's **forge** (ore, gated on Forging) or a Keeper's
 **alembic** (reagents, gated on Alchemy). It then stands in the world for everyone
 (`station:<kind>:<jobs>`), and **anyone** standing at it can ask for work with `[E]`: the
 **station owner's** skill is what the job is done at and takes the XP, while the piece and
@@ -153,7 +156,11 @@ the stock are always the requester's — ownership never moves. Working metal is
 a marker sweeps a red bar, each blow has one yellow band, and the blows that land decide
 what the work is worth (the affix pool a re-draw rolls, the durability a repair gives back,
 the size of a temporary edge, the doses a brew yields). Deeper work is harder; the
-crafter's own level and every other crafter in the party make it easier again.
+crafter's own level and every other **Smithwright** (at a forge) or **Keeper** (at a
+still) in the party make it easier again. The bench's temporary boon is its own prompt and
+its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keeper's
+**tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
+radiates a **regen field** over anyone standing near it.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
@@ -361,6 +368,21 @@ Use these terms consistently in code, comments, and UI.
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
   that pierces most armour), Flicker (L2, self **Evasion** blink), Ransack (L3, damage + drains the
   enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
+- **Smithwright** — **The Foundry's** builder, and the first of the two profession
+  classes (MS-1). A front-line support: Hammer Fall (a staggering blow with the tool
+  itself), Quench (L2, self **Barrier**), Plant the Bulwark (L5, **party** Barrier),
+  Tempering Blow (L9, an ally's atk for the fight), Slag Spray (L13, all-enemy,
+  armour-ignoring), The One True Forge (L17, party heal + Barrier). Out of combat it is
+  the class that **raises the field forge**, and a second Smithwright in the party makes
+  the anvil's rhythm easier for whoever is working it. See `Battle::resolve_smithwright`.
+- **Keeper** — the **Order of the Open Flower's** grower, the other profession class. A
+  between-fights mender: Thornlash (damage + gauge drain), Poultice (L2, heal + Regen),
+  Bloomfield (L5, **party** Regen), Root Snare (L9, damage + a long wait), Vital Draught
+  (L13, Barrier + Regen), Terra's Gift (L17, party heal + Barrier + gauge). Its damage
+  rides **Mnd**, not Str. Out of combat it **raises the alembic**, whose regen field is
+  the only rest a party without a Resonant gets. See `Battle::resolve_keeper`.
+  *Neither class has its own sprite set yet — `class_frames` falls back to the Explorer's
+  until the art lands.*
 - **Phoenix Guard** — the Last City's **anti-undead** order. The tankiest, slowest class
   (most HP + armour, no dodge), and every damaging ability of theirs hits **undead**
   `phoenix_guard_undead_mult` harder. Its ladder is the order's rank ladder: Silvered

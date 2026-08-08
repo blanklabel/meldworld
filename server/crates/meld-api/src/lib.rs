@@ -637,6 +637,21 @@ async fn forge(
                 .db
                 .add_skill_xp(player_id, "forging", st.balance.forge.forge_xp_per_craft)
                 .await;
+            // Making something instead of finding it is what the Foundry recruits on
+            // (CL-1). The realtime loop grants its milestones through the session; this
+            // one happens over HTTP, so it is granted straight against the Vault.
+            if let Ok(owned) = st.db.get_unlocks(player_id).await {
+                let keys: Vec<String> = meld_proto::unlocks::granted_by(
+                    meld_proto::unlocks::Milestone::GearForged,
+                    &owned,
+                )
+                .iter()
+                .map(|u| u.key.to_string())
+                .collect();
+                if !keys.is_empty() {
+                    let _ = st.db.grant_unlocks(player_id, &keys).await;
+                }
+            }
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
