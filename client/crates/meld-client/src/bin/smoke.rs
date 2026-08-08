@@ -112,6 +112,7 @@ fn main() {
                 | ServerMsg::ShopStock { .. }
                 | ServerMsg::GearShopStock { .. }
                 | ServerMsg::Recipes { .. }
+                | ServerMsg::BrokerQuotes { .. }
                 | ServerMsg::CraftResult { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }

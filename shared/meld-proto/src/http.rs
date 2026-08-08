@@ -112,6 +112,11 @@ pub struct GearView {
     pub unique_key: String,
     #[serde(default)]
     pub set_key: String,
+    /// Materials one affix reroll on this piece would eat. The cost climbs with the
+    /// piece's tier, and the formula is the server's ([`meld_balance`] `[forge]`), so
+    /// it rides the row rather than being re-derived by every client.
+    #[serde(default)]
+    pub reroll_cost: i32,
 }
 
 /// `GET /v1/vault/gear` response.

@@ -265,6 +265,8 @@ pub(crate) fn render_main_menu(
     hero_names: Res<AccountHeroNames>,
     stats: Res<RunStats>,
     backpack: Res<RunBackpack>,
+    perks: Res<PerksRes>,
+    explored: Res<crate::overworld::ExploredMap>,
     wa: Option<Res<WorldAssets>>,
     existing: Query<Entity, With<MainMenuRoot>>,
 ) {
@@ -420,6 +422,8 @@ pub(crate) fn render_main_menu(
                             ] {
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
+                            col.spawn(glass::divider());
+                            explored_map(col, &perks, &explored);
                         }
                         MenuSection::Guide => {
                             for (heading, rows) in GUIDE {
@@ -712,6 +716,104 @@ fn hero_resource(class_key: &str) -> Option<String> {
         "resonant" => Some("Pays in its own HP".to_string()),
         _ => None,
     }
+}
+
+/// The Map column's map: everywhere this dive has been, and the landmarks it saw on
+/// the way. It is the EXPLORER's — the order whose creed is "a world known" carries
+/// the map, so without one in the party the column keeps its readouts and says why
+/// there is nothing to look at.
+fn explored_map(
+    col: &mut ChildSpawnerCommands,
+    perks: &PerksRes,
+    explored: &crate::overworld::ExploredMap,
+) {
+    use crate::overworld::{landmark_color, map_bounds, map_to_px, MAP_CELL};
+
+    if perks.0.explorer_map == 0 {
+        col.spawn(glass::text(
+            "No map. An Explorer in the party keeps one.",
+            16.0,
+            glass::DIM,
+        ));
+        return;
+    }
+    if !explored.walked {
+        col.spawn(glass::text("Nothing walked yet.", 16.0, glass::DIM));
+        return;
+    }
+    const W: f32 = 460.0;
+    const H: f32 = 260.0;
+    let bounds = map_bounds(explored);
+    // One cell's footprint in pixels, floored to a visible minimum: early in a dive
+    // the walked rectangle is tiny and the scale enormous, and late in a dive it is
+    // the other way round — a fixed dot size would be a smear at one end and
+    // invisible at the other.
+    let step = {
+        let (sx, sy) = (bounds.2 - bounds.0, bounds.3 - bounds.1);
+        let scale = (W / sx.max(MAP_CELL)).min(H / sy.max(MAP_CELL));
+        (MAP_CELL * scale).clamp(2.0, 14.0)
+    };
+    let plot = |p: &mut ChildSpawnerCommands, x: f32, y: f32, size: f32, color: Color| {
+        let (px, py) = map_to_px(x, y, bounds, W, H);
+        p.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(px - size / 2.0),
+                top: Val::Px(py - size / 2.0),
+                width: Val::Px(size),
+                height: Val::Px(size),
+                ..default()
+            },
+            BackgroundColor(color),
+            BorderRadius::all(Val::Px(size / 2.0)),
+        ));
+    };
+    col.spawn((
+        Node {
+            width: Val::Px(W),
+            height: Val::Px(H),
+            position_type: PositionType::Relative,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.55)),
+    ))
+    .with_children(|panel| {
+        for (cx, cy) in &explored.visited {
+            let (x, y) = (*cx as f32 * MAP_CELL, *cy as f32 * MAP_CELL);
+            plot(panel, x, y, step, Color::srgba(0.55, 0.72, 0.85, 0.35));
+        }
+        for ((cx, cy), what) in &explored.seen {
+            let (x, y) = (*cx as f32 * MAP_CELL, *cy as f32 * MAP_CELL);
+            plot(panel, x, y, (step * 1.6).max(5.0), landmark_color(*what));
+        }
+        let (hx, hy) = explored.here;
+        plot(panel, hx, hy, (step * 1.8).max(7.0), Color::WHITE);
+    });
+    col.spawn(glass::text(map_legend(perks, explored), 15.0, glass::DIM));
+}
+
+/// What the map is showing, in words: how much ground it covers and which landmark
+/// classes this party's perks let it plot at all.
+pub(crate) fn map_legend(
+    perks: &PerksRes,
+    explored: &crate::overworld::ExploredMap,
+) -> String {
+    let mut plots = vec!["portal"];
+    if perks.0.explorer_map >= 2 {
+        plots.push("chests");
+    }
+    if perks.0.explorer_map >= 3 {
+        plots.push("nodes");
+    }
+    if perks.0.shifter_dungeon_radius > 0.0 {
+        plots.push("doors");
+    }
+    format!(
+        "{} cells walked, {} landmark(s) - plots {}",
+        explored.visited.len(),
+        explored.seen.len(),
+        plots.join(", ")
+    )
 }
 
 /// Column three's Equipment body: the six categories with what is worn, or — once a

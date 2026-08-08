@@ -314,6 +314,7 @@ pub(crate) fn mock_overlay_setup(
                 atk_bonus: 0,
                 def_bonus: 0,
                 spd_bonus: 0,
+                reroll_cost: 3,
             },
             GearLine {
                 gear_id: "mock-legendary".into(),
@@ -352,6 +353,7 @@ pub(crate) fn mock_overlay_setup(
                 atk_bonus: 0,
                 def_bonus: 11,
                 spd_bonus: 0,
+                reroll_cost: 3,
             },
             GearLine {
                 gear_id: "mock-plate".into(),
@@ -371,6 +373,7 @@ pub(crate) fn mock_overlay_setup(
                 atk_bonus: 0,
                 def_bonus: 6,
                 spd_bonus: 0,
+                reroll_cost: 3,
             },
             GearLine {
                 gear_id: "mock-weapon".into(),
@@ -390,6 +393,7 @@ pub(crate) fn mock_overlay_setup(
                 atk_bonus: 3,
                 def_bonus: 0,
                 spd_bonus: 0,
+                reroll_cost: 3,
             },
             GearLine {
                 gear_id: "mock-accessory".into(),
@@ -409,6 +413,7 @@ pub(crate) fn mock_overlay_setup(
                 atk_bonus: 0,
                 def_bonus: 0,
                 spd_bonus: 1,
+                reroll_cost: 9,
             },
         ];
         // Seed the run readouts that moved off the HUD into the Status tab, and open

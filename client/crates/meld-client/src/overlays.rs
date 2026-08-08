@@ -1011,6 +1011,7 @@ mod gear_label_tests {
             affixes: Vec::new(),
             unique_key: String::new(),
             set_key: String::new(),
+            reroll_cost: 3,
         }
     }
 
@@ -1073,6 +1074,7 @@ mod equip_ux_tests {
             affixes: Vec::new(),
             unique_key: String::new(),
             set_key: String::new(),
+            reroll_cost: 3,
         }
     }
 

@@ -739,6 +739,18 @@ async fn reroll(
             "Gear not owned by caller.",
         ));
     };
+    // Ephemeral gear burns the moment you reach the city, so a reroll on it is chits
+    // and stock spent on an item you cannot keep. Standard and Insured both stay,
+    // so both are worth re-drawing.
+    if meld_proto::enums::Insurance::from_wire(&row.insurance)
+        == Some(meld_proto::enums::Insurance::Ephemeral)
+    {
+        return Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Ephemeral gear burns when you reach the city - a reroll would burn with it.",
+        ));
+    }
     let class_key = if row.class_key.is_empty() {
         "explorer".to_string()
     } else {
@@ -753,7 +765,8 @@ async fn reroll(
         seed_now(),
     );
     let json = meld_proto::affixes::to_json(&rolled);
-    let materials = [(req.material.clone(), st.balance.forge.reroll_material_cost)];
+    let need = st.balance.forge.reroll_materials(row.tier);
+    let materials = [(req.material.clone(), need)];
     match st
         .db
         .reroll_gear_affixes(player_id, gid, &materials, st.balance.forge.reroll_chit_cost, &json)
@@ -769,6 +782,10 @@ async fn reroll(
                 Json(serde_json::json!({
                     "gear_id": gear_id,
                     "affixes": rolled,
+                    "spent": {
+                        "materials": [{ "item_kind": req.material, "quantity": need }],
+                        "chits": st.balance.forge.reroll_chit_cost,
+                    },
                 })),
             )
                 .into_response())
@@ -777,8 +794,8 @@ async fn reroll(
             StatusCode::CONFLICT,
             "conflict",
             format!(
-                "A reroll needs {} {} and {} chits.",
-                st.balance.forge.reroll_material_cost, req.material, st.balance.forge.reroll_chit_cost
+                "A reroll on a tier {} piece needs {} {} and {} chits.",
+                row.tier, need, req.material, st.balance.forge.reroll_chit_cost
             ),
         )),
         Err(e) => Err(ApiReject::internal(e)),
@@ -796,6 +813,40 @@ async fn repair(
     let player_id = authenticate(&st, &headers)?;
     let gid = Uuid::parse_str(&gear_id)
         .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
+    // Only INSURED gear can be repaired, because it is the only tier that erodes:
+    // insured gear is yours forever and loses a little max durability every death
+    // (CANON: `Insurance::Insured`), which is exactly what a repair buys back.
+    // Standard gear never degrades, so there is nothing to mend, and Ephemeral gear
+    // burns on the walk home — mending either is chits into a hole.
+    let Some(row) = st
+        .db
+        .get_gear_by_id(player_id, gid)
+        .await
+        .map_err(ApiReject::internal)?
+    else {
+        return Err(ApiReject::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Gear not owned by caller.",
+        ));
+    };
+    match meld_proto::enums::Insurance::from_wire(&row.insurance) {
+        Some(meld_proto::enums::Insurance::Insured) => {}
+        Some(meld_proto::enums::Insurance::Standard) => {
+            return Err(ApiReject::new(
+                StatusCode::CONFLICT,
+                "conflict",
+                "Standard gear never wears down - there is nothing to repair.",
+            ));
+        }
+        _ => {
+            return Err(ApiReject::new(
+                StatusCode::CONFLICT,
+                "conflict",
+                "Ephemeral gear burns when you reach the city - a repair would burn with it.",
+            ));
+        }
+    }
     let level = forging_level(&st, player_id).await?;
     let points = st.balance.forge.repair_points(level);
     match st
@@ -1318,6 +1369,7 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     affixes: meld_proto::affixes::from_json(&g.affixes),
                     unique_key: g.unique_key,
                     set_key: g.set_key,
+                    reroll_cost: st.balance.forge.reroll_materials(g.tier),
                 })
                 .collect();
             Ok((StatusCode::OK, Json(GearListResponse { data })).into_response())

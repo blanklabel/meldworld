@@ -17,6 +17,7 @@ The Vault is the per-player persistent store: chits, extracted crafting material
 | tier | integer (int32) | No | v0.1 | No | Loot tier band of the item (`tier(d) = floor(d / 100)`, CANON.md §B). |
 | stats | object (map of string → integer int32) | No | v0.1 | No | Content-defined stat key → value map (e.g. `{"attack": 42, "speed_stat": 11}`). Stat variance is rolled at craft time (GDD.md §4.1). |
 | base_max_durability | integer (int32) | No | v0.1 | No | The as-crafted maximum durability. Upper bound for any repair. |
+| reroll_cost | integer (int32) | No | v0.1 | No | Materials one affix reroll on this piece would eat, scaled to its `tier` (`[forge] reroll_material_cost` + `reroll_material_per_tier × tier`). Server-computed so no client re-derives it. |
 | max_durability | integer (int32) | No | v0.1 | No | Current maximum durability. Reduced by 10% (rounded down) per death while equipped [TUNABLE] (CANON.md §D6, §B). At `0` the item is unequippable until repaired. |
 | socket_count | integer (int32, 0–3) | No | v0.1 | No | Number of gem sockets on this item (content-defined per item). |
 | sockets | array of object | No | v0.1 | No | One entry per socket, index-ordered. |
@@ -423,6 +424,22 @@ HTTP/1.1 200 OK
 ---
 
 ### POST /v1/vault/gear/{gear_id}/repair
+
+**Shipped today (MS-1):** the shipped call takes no body — the caller is the smith, and
+their own Forging level sets how much one repair restores
+(`[forge] repair_points_per_forging_level`), billed at
+`[forge] repair_chit_cost_per_point` for **what it actually restored**. It is refused
+`409` on anything but an **insured** piece, because insured is the only tier that
+erodes: `standard` gear never wears down ("there is nothing to repair") and `ephemeral`
+gear burns on the walk home. Its sibling `POST /v1/vault/gear/{gear_id}/reroll {material}`
+buys another draw on a piece's **affixes** (stats untouched), works on `standard` and
+`insured` but not `ephemeral`, and eats
+`reroll_material_cost + reroll_material_per_tier × tier` of `material` — so a deep
+piece costs more to re-draw than a starter blade. The number for each piece rides its
+row as `reroll_cost`, so no client re-derives the formula. Neither call moves
+**ownership**: both act only on gear the caller already owns.
+
+The v0.1 target below is the crafter-mediated version.
 
 Restores a gear item's max durability via a crafter, transferring an agreed chits fee from the gear owner to the crafter. The repair ceiling depends on the crafter's Forging level: `floor(base_max_durability × (0.5 + forging_level / 198))`, so a level-99 crafter restores to 100% of `base_max_durability` (CANON.md §B, Death & durability). The repair sets `max_durability` to that ceiling in a single operation.
 

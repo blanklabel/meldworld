@@ -3296,3 +3296,306 @@ mod tests {
         assert_eq!(creature_kind("Sporeling"), "sporeling");
     }
 }
+
+// ------------------------------------------------------------ explored map --
+
+/// World units per map cell. The map is a memory of where a party has BEEN, so its
+/// grain is a stride rather than a step: fine enough that a corridor reads as a
+/// corridor, coarse enough that a whole dive fits one panel.
+pub(crate) const MAP_CELL: f32 = 6.0;
+
+/// What a remembered cell holds. A cell keeps only its most notable landmark —
+/// the portal you are trying to reach outranks a bush you walked past.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+pub(crate) enum Landmark {
+    Resource,
+    Chest,
+    Entrance,
+    Portal,
+}
+
+/// This run's map: the cells the party has walked and the landmarks it has seen.
+/// Client-side by design — it is a record of what THIS player witnessed, not world
+/// state, so the server has nothing to say about it (CANON §S is about authority
+/// over the world, and a memory of a walk is not the world).
+#[derive(Resource, Default)]
+pub(crate) struct ExploredMap {
+    pub visited: std::collections::HashSet<(i32, i32)>,
+    pub seen: HashMap<(i32, i32), Landmark>,
+    /// Where the avatar is right now, in world units.
+    pub here: (f32, f32),
+    pub walked: bool,
+}
+
+impl ExploredMap {
+    pub(crate) fn forget(&mut self) {
+        self.visited.clear();
+        self.seen.clear();
+        self.here = (0.0, 0.0);
+        self.walked = false;
+    }
+}
+
+pub(crate) fn map_cell(x: f32, y: f32) -> (i32, i32) {
+    ((x / MAP_CELL).floor() as i32, (y / MAP_CELL).floor() as i32)
+}
+
+/// Record where the party has been and what it has seen. Gated by the Explorer's
+/// map perk on BOTH counts: without one in the party nothing is drawn, so nothing
+/// needs remembering, and a landmark is only remembered from inside the map's own
+/// reach — otherwise the map would know the whole instance the moment it loaded,
+/// which is the opposite of exploring.
+pub(crate) fn remember_explored(
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut map: ResMut<ExploredMap>,
+) {
+    let tier = perks.0.explorer_map;
+    if tier == 0 {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else {
+        return;
+    };
+    map.here = (me.x, me.y);
+    map.walked = true;
+    map.visited.insert(map_cell(me.x, me.y));
+    let reach = perks.0.explorer_map_radius.max(1.0);
+    let shifter_sense = perks.0.shifter_dungeon_radius;
+    for e in world.entities.values() {
+        // Creatures roam, so a remembered mob dot would be a lie the moment it moved.
+        // Only what stays put earns a place on the map.
+        let what = match e.kind {
+            EntityKind::Portal => Landmark::Portal,
+            EntityKind::Chest if tier >= 2 => Landmark::Chest,
+            EntityKind::Resource if tier >= 3 => Landmark::Resource,
+            EntityKind::Entrance if shifter_sense > 0.0 => Landmark::Entrance,
+            _ => continue,
+        };
+        let limit = if what == Landmark::Entrance { shifter_sense } else { reach };
+        if ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt() > limit {
+            continue;
+        }
+        let cell = map_cell(e.x, e.y);
+        let slot = map.seen.entry(cell).or_insert(what);
+        *slot = (*slot).max(what);
+    }
+}
+
+/// The rectangle the map has to cover, in world units, always including where the
+/// avatar stands so "you" never falls off the edge of your own map.
+pub(crate) fn map_bounds(map: &ExploredMap) -> (f32, f32, f32, f32) {
+    let mut min = (map.here.0, map.here.1);
+    let mut max = min;
+    for (cx, cy) in map.visited.iter().chain(map.seen.keys()) {
+        let (x, y) = (*cx as f32 * MAP_CELL, *cy as f32 * MAP_CELL);
+        min.0 = min.0.min(x);
+        min.1 = min.1.min(y);
+        max.0 = max.0.max(x + MAP_CELL);
+        max.1 = max.1.max(y + MAP_CELL);
+    }
+    (min.0, min.1, max.0, max.1)
+}
+
+/// Project a world point into panel pixels, fitting the walked rectangle inside
+/// `(w, h)` on ONE scale for both axes — a map that stretched each axis to fill
+/// the panel would report a straight march as a diagonal.
+pub(crate) fn map_to_px(
+    x: f32,
+    y: f32,
+    bounds: (f32, f32, f32, f32),
+    w: f32,
+    h: f32,
+) -> (f32, f32) {
+    let (span_x, span_y) = ((bounds.2 - bounds.0).max(MAP_CELL), (bounds.3 - bounds.1).max(MAP_CELL));
+    let scale = (w / span_x).min(h / span_y);
+    let (draw_w, draw_h) = (span_x * scale, span_y * scale);
+    (
+        (w - draw_w) / 2.0 + (x - bounds.0) * scale,
+        (h - draw_h) / 2.0 + (y - bounds.1) * scale,
+    )
+}
+
+/// The colour a landmark plots in, matching the corner minimap's palette so the
+/// two readings of the same world agree.
+pub(crate) fn landmark_color(what: Landmark) -> Color {
+    match what {
+        Landmark::Portal => Color::srgb(0.4, 0.85, 1.0),
+        Landmark::Entrance => Color::srgb(0.85, 0.55, 1.0),
+        Landmark::Chest => Color::srgb(1.0, 0.82, 0.3),
+        Landmark::Resource => Color::srgb(0.5, 0.95, 0.5),
+    }
+}
+
+#[cfg(test)]
+mod explored_map_tests {
+    use super::*;
+
+    fn at(kind: EntityKind, x: f32, y: f32) -> OwEntity {
+        OwEntity {
+            x,
+            y,
+            kind,
+            name: None,
+            faction: None,
+            radius: 0.0,
+            battling: false,
+            level: 0,
+            opened: false,
+            mob_level: None,
+            hp: None,
+            max_hp: None,
+            encounter_class: None,
+            aggression: None,
+            bodies_required: 1,
+        }
+    }
+
+    fn app_with(perks: meld_client::net::PerksLine) -> App {
+        let mut app = App::new();
+        app.insert_resource(PerksRes(perks));
+        app.insert_resource(Session { player_id: "me".into(), ..Default::default() });
+        app.init_resource::<Overworld>();
+        app.init_resource::<ExploredMap>();
+        app.add_systems(Update, remember_explored);
+        app
+    }
+
+    fn walk_to(app: &mut App, x: f32, y: f32) {
+        app.world_mut()
+            .resource_mut::<Overworld>()
+            .entities
+            .insert("me".into(), at(EntityKind::Player, x, y));
+        app.update();
+    }
+
+    // The map is the Explorer's. Without one there is nothing to draw, so there is
+    // nothing to record either — and a recorded walk from a party that cannot read it
+    // would light up the moment an Explorer joined a LATER run.
+    #[test]
+    fn without_an_explorer_nothing_is_remembered() {
+        let mut app = app_with(meld_client::net::PerksLine::default());
+        walk_to(&mut app, 10.0, 4.0);
+        let map = app.world().resource::<ExploredMap>();
+        assert!(!map.walked);
+        assert!(map.visited.is_empty());
+    }
+
+    #[test]
+    fn walking_fills_cells_and_landmarks_are_only_learned_within_reach() {
+        let perks = meld_client::net::PerksLine {
+            explorer_map: 3,
+            explorer_map_radius: 30.0,
+            ..Default::default()
+        };
+        let mut app = app_with(perks);
+        // A portal far out of reach is not on the map just because the instance holds it.
+        app.world_mut()
+            .resource_mut::<Overworld>()
+            .entities
+            .insert("portal".into(), at(EntityKind::Portal, 400.0, 0.0));
+        walk_to(&mut app, 0.0, 0.0);
+        assert!(app.world().resource::<ExploredMap>().seen.is_empty(), "no clairvoyance");
+
+        // Walking a line lays down one cell per stride, and every step is kept.
+        for step in 1..=6 {
+            walk_to(&mut app, step as f32 * MAP_CELL, 0.0);
+        }
+        let cells = app.world().resource::<ExploredMap>().visited.len();
+        assert_eq!(cells, 7, "one cell per stride walked, including where we started");
+
+        // Come within the map's reach and the portal is learned — and stays learned
+        // after walking away, which is the whole point of a map.
+        walk_to(&mut app, 380.0, 0.0);
+        assert_eq!(
+            app.world().resource::<ExploredMap>().seen.values().copied().collect::<Vec<_>>(),
+            vec![Landmark::Portal]
+        );
+        walk_to(&mut app, 0.0, 0.0);
+        assert_eq!(app.world().resource::<ExploredMap>().seen.len(), 1, "a map remembers");
+
+        // A new dive is a new world: the map is blanked, not merged.
+        app.world_mut().resource_mut::<ExploredMap>().forget();
+        let map = app.world().resource::<ExploredMap>();
+        assert!(map.visited.is_empty() && map.seen.is_empty() && !map.walked);
+    }
+
+    // Tiers gate what may be plotted, exactly as the corner minimap's do: a chest at
+    // tier 1 is not on the map, and a node needs tier 3.
+    #[test]
+    fn the_map_plots_only_what_the_party_s_perks_allow() {
+        for (tier, want) in [(1u8, 0), (2, 1), (3, 2)] {
+            let perks = meld_client::net::PerksLine {
+                explorer_map: tier,
+                explorer_map_radius: 30.0,
+                ..Default::default()
+            };
+            let mut app = app_with(perks);
+            {
+                let mut world = app.world_mut().resource_mut::<Overworld>();
+                world.entities.insert("chest".into(), at(EntityKind::Chest, 4.0, 0.0));
+                world.entities.insert("node".into(), at(EntityKind::Resource, 8.0, 0.0));
+            }
+            walk_to(&mut app, 0.0, 0.0);
+            assert_eq!(
+                app.world().resource::<ExploredMap>().seen.len(),
+                want,
+                "map tier {tier} plotted the wrong set"
+            );
+        }
+    }
+
+    // A cell keeps its most notable landmark: two things in one cell must not make the
+    // portal you are marching towards disappear behind a bush.
+    #[test]
+    fn a_crowded_cell_keeps_the_landmark_that_matters() {
+        let perks = meld_client::net::PerksLine {
+            explorer_map: 3,
+            explorer_map_radius: 30.0,
+            ..Default::default()
+        };
+        let mut app = app_with(perks);
+        {
+            let mut world = app.world_mut().resource_mut::<Overworld>();
+            world.entities.insert("node".into(), at(EntityKind::Resource, 1.0, 1.0));
+            world.entities.insert("portal".into(), at(EntityKind::Portal, 2.0, 2.0));
+        }
+        walk_to(&mut app, 0.0, 0.0);
+        let map = app.world().resource::<ExploredMap>();
+        assert_eq!(map.seen.get(&map_cell(1.0, 1.0)), Some(&Landmark::Portal));
+    }
+
+    // One scale for both axes: a straight march has to read as a straight line, and
+    // whatever the walk's shape, everything drawn lands inside the panel.
+    #[test]
+    fn the_projection_keeps_its_aspect_and_stays_in_the_panel() {
+        let mut map = ExploredMap::default();
+        map.walked = true;
+        for step in 0..20 {
+            map.visited.insert((step, 0));
+        }
+        map.here = (0.0, 0.0);
+        let bounds = map_bounds(&map);
+        let (w, h) = (400.0, 200.0);
+
+        let a = map_to_px(0.0, 0.0, bounds, w, h);
+        let b = map_to_px(20.0 * MAP_CELL, 0.0, bounds, w, h);
+        assert!((a.1 - b.1).abs() < 0.001, "a walk along y=0 must not tilt: {a:?} {b:?}");
+        assert!(b.0 > a.0, "and it must run left to right");
+        for (x, y) in [(0.0, 0.0), (20.0 * MAP_CELL, 0.0), (10.0 * MAP_CELL, 0.0)] {
+            let (px, py) = map_to_px(x, y, bounds, w, h);
+            assert!((0.0..=w).contains(&px) && (0.0..=h).contains(&py), "{px},{py} escaped");
+        }
+
+        // A single cell walked is the degenerate case — it must not divide by a zero
+        // span and fling the dot off the panel.
+        let mut one = ExploredMap { walked: true, ..Default::default() };
+        one.visited.insert((3, 3));
+        one.here = (18.0, 18.0);
+        let b1 = map_bounds(&one);
+        let (px, py) = map_to_px(18.0, 18.0, b1, w, h);
+        assert!(px.is_finite() && py.is_finite());
+        assert!((0.0..=w).contains(&px) && (0.0..=h).contains(&py), "{px},{py}");
+    }
+}

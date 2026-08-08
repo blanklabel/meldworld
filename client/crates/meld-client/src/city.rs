@@ -178,7 +178,12 @@ pub(crate) fn city_hud(
     }
     city.shop_open = crate::flags::shop_preview_flag();
     if city.shop_open {
+        // All three halves, as [E] does — the preview flag exists to frame the WHOLE
+        // counter, and fetching only the shelf left the Requisition and the Broker
+        // missing from every screenshot taken with it.
         net.0.fetch_shop();
+        net.0.fetch_gear_shop();
+        net.0.fetch_broker();
     }
     session.entered = false;
     session.status.clear();
@@ -583,6 +588,7 @@ pub(crate) fn city_input(
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
+    mut shop_selling: ResMut<ShopSelling>,
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -690,11 +696,23 @@ pub(crate) fn city_input(
             KeyCode::Digit7,
             KeyCode::Digit8,
         ];
+        // [B] turns the counter around. Buying and selling are the same errand from
+        // opposite sides, so they share one button and one set of number keys rather
+        // than doubling the key space.
+        if keys.just_pressed(KeyCode::KeyB) {
+            shop_selling.0 = !shop_selling.0;
+            return;
+        }
         for (i, key) in KEYS.iter().enumerate() {
             if !keys.just_pressed(*key) {
                 continue;
             }
-            if i < ITEM_ROWS {
+            if shop_selling.0 {
+                if let Some((kind, price)) = sellable(&shop, &inv).get(i) {
+                    net.0.sell_material(kind.clone(), 1);
+                    city.notice = format!("sold 1 {kind} for {price}c");
+                }
+            } else if i < ITEM_ROWS {
                 if let Some(line) = shop.items.get(i) {
                     net.0.buy_item(line.item_kind.clone(), 1);
                     city.notice = format!("bought {}", line.name);
@@ -732,6 +750,42 @@ pub(crate) fn city_input(
         }
         if keys.just_pressed(KeyCode::KeyC) {
             craft.catalyze = !craft.catalyze;
+            return;
+        }
+        // Left/right walk the bench; [R] and [P] are the smith's two services on
+        // whatever is on it. Both go over HTTP against the Vault, so the reply comes
+        // back through the same `craft.last` line every other refusal uses.
+        let bench_n = inv.gear.len();
+        if bench_n > 0 && keys.just_pressed(KeyCode::ArrowRight) {
+            craft.bench = (craft.bench + 1) % bench_n;
+            return;
+        }
+        if bench_n > 0 && keys.just_pressed(KeyCode::ArrowLeft) {
+            craft.bench = (craft.bench + bench_n - 1) % bench_n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyP) {
+            match bench_gear(&craft, &inv) {
+                Some(g) => {
+                    craft.last = format!("mending {}...", g.name);
+                    net.0.repair_gear(g.gear_id.clone());
+                }
+                None => craft.last = "nothing on the bench".to_string(),
+            }
+            return;
+        }
+        if keys.just_pressed(KeyCode::KeyR) {
+            let piece = bench_gear(&craft, &inv).map(|g| (g.gear_id.clone(), g.name.clone()));
+            match (piece, best_stock(&inv, meld_proto::materials::MaterialClass::Refined)) {
+                (Some((gear_id, name)), Some(material)) => {
+                    craft.last = format!("re-drawing {name}'s affixes...");
+                    net.0.reroll_gear(gear_id, material);
+                }
+                (None, _) => craft.last = "nothing on the bench".to_string(),
+                (_, None) => {
+                    craft.last = "a reroll needs refined stock - smelt an ore first".to_string();
+                }
+            }
             return;
         }
         if keys.just_pressed(KeyCode::KeyF) {
@@ -775,9 +829,11 @@ pub(crate) fn city_input(
                     if city.shop_open {
                         city.notice.clear();
                         net.0.fetch_shop();
-                        // Both halves of the counter: the Apothecary's basics and the
-                        // Requisition's plain gear, in one panel.
+                        // Every half of the counter: the Apothecary's basics, the
+                        // Requisition's plain gear, and what the Broker pays for what
+                        // you carried home.
                         net.0.fetch_gear_shop();
+                        net.0.fetch_broker();
                     }
                 }
                 CityAction::Craft => {
@@ -932,6 +988,7 @@ pub(crate) fn render_city(
     session: Res<Session>,
     city: Res<CityUi>,
     board: Res<VanguardBoardData>,
+    shop_selling: Res<ShopSelling>,
     craft: Res<CraftData>,
     shop: Res<ShopData>,
     unlocks: Res<UnlocksRes>,
@@ -963,7 +1020,7 @@ pub(crate) fn render_city(
         **t = if city.craft_open {
             format!("{}\n{prompt}", craft_text(&craft, &inv))
         } else if city.shop_open {
-            format!("{}\n{prompt}", shop_text(&shop, &inv))
+            format!("{}\n{prompt}", shop_text(&shop, &inv, shop_selling.0))
         } else if city.board_open {
             format!("{}\n{prompt}", vanguard_wall_text(&board))
         } else if city.notice.is_empty() {
@@ -1057,9 +1114,36 @@ mod tests {
 
 /// The Apothecary's shelf as the city's one status line can carry it: name, price,
 /// and what the player can currently afford (EC-2). Buying is `[1]`-`[4]`.
-pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData) -> String {
+pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData, selling: bool) -> String {
     if !shop.loaded {
         return "The Apothecary is unpacking crates...".to_string();
+    }
+    if selling {
+        // The SELL side: what the Broker pays for what you carried home. Priced as a
+        // floor, so this is the answer to "I will never use this" rather than a living.
+        let rows = sellable(shop, inv);
+        if rows.is_empty() {
+            return format!(
+                "The Broker - {} chits    nothing in the Vault it wants    [B] buy instead",
+                inv.chits
+            );
+        }
+        let held = |kind: &str| -> i32 {
+            inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
+        };
+        let listed: Vec<String> = rows
+            .iter()
+            .take(ITEM_ROWS + GEAR_ROWS)
+            .enumerate()
+            .map(|(i, (kind, price))| {
+                format!("[{}] {kind} x{} @{price}c", i + 1, held(kind))
+            })
+            .collect();
+        return format!(
+            "The Broker - {} chits    {}    [B] buy instead",
+            inv.chits,
+            listed.join("   ")
+        );
     }
     if shop.items.is_empty() {
         return "The Apothecary has nothing on the shelf.".to_string();
@@ -1102,7 +1186,29 @@ pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData) -> String {
         line.push_str("    |  Requisition: ");
         line.push_str(&gear.join("   "));
     }
+    line.push_str("    [B] sell");
     line
+}
+
+/// The materials the counter will buy that the player actually holds, richest first.
+///
+/// Intersecting the Broker's quotes with the Vault is the whole list: a price for
+/// something you do not carry is noise, and the most valuable stack is the one you came
+/// to sell.
+pub(crate) fn sellable(shop: &ShopData, inv: &InventoryData) -> Vec<(String, i64)> {
+    let mut rows: Vec<(String, i64)> = inv
+        .materials
+        .iter()
+        .filter(|(_, qty)| *qty > 0)
+        .filter_map(|(kind, _)| {
+            shop.quotes
+                .iter()
+                .find(|q| &q.item_kind == kind)
+                .map(|q| (kind.clone(), q.price_chits))
+        })
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    rows
 }
 
 /// The deepest-band material of `class` the Vault holds, or `None`.
@@ -1180,12 +1286,56 @@ pub(crate) fn craft_text(craft: &CraftData, inv: &InventoryData) -> String {
 ",
         FORGE_SLOTS[craft.slot]
     ));
+    out.push_str(&bench_line(craft, inv));
     out.push_str("  up/down choose   ENTER craft");
     if !craft.last.is_empty() {
         out.push_str(&format!("
   {}", craft.last));
     }
     out
+}
+
+/// The smith's other half: the two things they do to a piece you already own —
+/// another draw on its affixes, and durability bought back. Both need a CHOSEN piece,
+/// so the anvil keeps one on the bench and left/right walk the Vault.
+pub(crate) fn bench_line(craft: &CraftData, inv: &InventoryData) -> String {
+    let Some(g) = bench_gear(craft, inv) else {
+        return "  BENCH  nothing in the Vault to work on\n".to_string();
+    };
+    // Only advertise the service the piece can actually take: repair buys back the
+    // max durability a death chewed off, which only INSURED gear ever loses, and a
+    // reroll on ephemeral gear would burn with it on the walk home. Offering a key
+    // that is certain to be refused is worse than not offering it.
+    let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    let mut keys = Vec::new();
+    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
+    }
+    if ins == Some(meld_proto::enums::Insurance::Insured) {
+        keys.push("[P] repair".to_string());
+    }
+    let offer = if keys.is_empty() {
+        "nothing a smith can do with this".to_string()
+    } else {
+        keys.join("   ")
+    };
+    format!(
+        "  BENCH  <-/-> {} T{} {}  ({}/{} dur, {} affix)   {offer}\n",
+        g.name,
+        g.tier,
+        ins.map(|i| i.label()).unwrap_or("?"),
+        g.max_durability,
+        g.base_max_durability,
+        g.affixes.len()
+    )
+}
+
+/// The piece the bench cursor sits on, or None when the Vault is empty.
+pub(crate) fn bench_gear<'a>(craft: &CraftData, inv: &'a InventoryData) -> Option<&'a GearLine> {
+    if inv.gear.is_empty() {
+        return None;
+    }
+    inv.gear.get(craft.bench % inv.gear.len())
 }
 
 /// Recipe rows the book shows at once, so the book fits the city's status block.
@@ -1212,15 +1362,15 @@ mod shop_tests {
     fn the_shelf_prices_every_row_and_flags_what_you_cannot_afford() {
         let mut shop = ShopData::default();
         let mut inv = InventoryData::default();
-        assert!(shop_text(&shop, &inv).contains("unpacking"));
+        assert!(shop_text(&shop, &inv, false).contains("unpacking"));
 
         shop.loaded = true;
-        assert!(shop_text(&shop, &inv).contains("nothing on the shelf"));
+        assert!(shop_text(&shop, &inv, false).contains("nothing on the shelf"));
 
         shop.vendor = "The Apothecary".into();
         shop.items = vec![line("bloom_salve", "Bloom Salve", 25), line("town_portal", "Town Portal", 60)];
         inv.chits = 30;
-        let text = shop_text(&shop, &inv);
+        let text = shop_text(&shop, &inv, false);
         assert!(text.contains("The Apothecary"), "{text}");
         assert!(text.contains("[1] Bloom Salve 25c"), "{text}");
         // 30 chits buys the salve but not the portal, and the row says so BEFORE the
@@ -1305,6 +1455,150 @@ mod shop_tests {
         assert!(text.contains("[C] quench: off"), "{text}");
     }
 
+    // Selling is the same counter turned around: only what you HOLD and it WANTS, the
+    // richest stack first (that is the one you came to sell), and it says plainly when
+    // there is nothing it will take.
+    #[test]
+    fn the_counter_turns_around_and_buys_what_you_carried_home() {
+        let mut shop = ShopData::default();
+        let mut inv = InventoryData::default();
+        shop.loaded = true;
+        shop.vendor = "The Apothecary".into();
+        shop.quotes = vec![
+            meld_client::net::BrokerQuote {
+                item_kind: "bloom_herb".into(),
+                name: "Bloom Herb".into(),
+                price_chits: 5,
+            },
+            meld_client::net::BrokerQuote {
+                item_kind: "bog_ichor".into(),
+                name: "Bog Ichor".into(),
+                price_chits: 66,
+            },
+        ];
+
+        // Nothing in the Vault → it says so rather than showing an empty list.
+        let empty = shop_text(&shop, &inv, true);
+        assert!(empty.contains("nothing in the Vault it wants"), "{empty}");
+
+        inv.chits = 12;
+        inv.materials = vec![
+            ("bloom_herb".to_string(), 4),
+            ("bog_ichor".to_string(), 2),
+            ("mystery_rock".to_string(), 9), // not a material the Broker quotes
+        ];
+        let text = shop_text(&shop, &inv, true);
+        assert!(text.contains("The Broker"), "{text}");
+        // Richest first, with the stack you hold and the price each.
+        assert!(text.contains("[1] bog_ichor x2 @66c"), "{text}");
+        assert!(text.contains("[2] bloom_herb x4 @5c"), "{text}");
+        // A price for something you do not carry is noise.
+        assert!(!text.contains("mystery_rock"), "{text}");
+        // And the way back is on the row.
+        assert!(text.contains("[B] buy instead"), "{text}");
+        assert!(sellable(&shop, &inv).len() == 2);
+
+        // The buy side advertises the other half too.
+        shop.items = vec![line("bloom_salve", "Bloom Salve", 25)];
+        assert!(shop_text(&shop, &inv, false).contains("[B] sell"));
+    }
+
+    fn bench_piece(id: &str, name: &str, dur: i32, base: i32) -> GearLine {
+        bench_piece_of("insured", 1, id, name, dur, base)
+    }
+
+    fn bench_piece_of(
+        insurance: &str,
+        tier: i32,
+        id: &str,
+        name: &str,
+        dur: i32,
+        base: i32,
+    ) -> GearLine {
+        GearLine {
+            gear_id: id.into(),
+            name: name.into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            insurance: insurance.into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+            tier,
+            equipped_hero_slot: None,
+            max_durability: dur,
+            base_max_durability: base,
+            atk_bonus: 4,
+            def_bonus: 0,
+            spd_bonus: 0,
+            reroll_cost: 3 + 2 * tier,
+        }
+    }
+
+    #[test]
+    fn the_bench_names_the_piece_it_would_work_on_and_wraps_around_the_vault() {
+        let mut craft = CraftData { loaded: true, ..Default::default() };
+        craft.recipes = vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])];
+        let mut inv = InventoryData::default();
+
+        // An empty Vault says so, rather than offering services on nothing.
+        assert!(craft_text(&craft, &inv).contains("nothing in the Vault"));
+        assert!(bench_gear(&craft, &inv).is_none());
+
+        inv.gear = vec![
+            bench_piece("g1", "Worn Warblade", 6, 10),
+            bench_piece("g2", "Issued Cuirass", 10, 10),
+        ];
+        let text = craft_text(&craft, &inv);
+        // Both services are advertised, and the piece's state is the reason to use them.
+        assert!(text.contains("Worn Warblade"), "{text}");
+        assert!(text.contains("6/10 dur"), "{text}");
+        assert!(text.contains("[R] reroll"), "{text}");
+        assert!(text.contains("[P] repair"), "{text}");
+        // The reroll names the stock it eats, which is the server's number for THIS
+        // piece's tier — a deep item costs more to re-draw than a starter blade.
+        assert!(text.contains("[R] reroll (5 stock)"), "{text}");
+
+        // The cursor is taken modulo the Vault, so a stale index left by a smaller
+        // Vault (a piece sold, or lost on a death) can never index out of range.
+        craft.bench = 1;
+        assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Issued Cuirass");
+        craft.bench = 6;
+        assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Worn Warblade");
+    }
+
+    // A smith's two services do not apply to every tier, and a key that is certain to
+    // be refused is worse than no key at all. Repair buys back max durability, which
+    // only INSURED gear ever loses; a reroll on ephemeral gear would burn with it on
+    // the walk home.
+    #[test]
+    fn the_bench_offers_only_the_service_the_tier_can_take() {
+        let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
+        let mut inv = InventoryData::default();
+
+        inv.gear = vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)];
+        let insured = bench_line(&craft, &inv);
+        assert!(insured.contains("Insured"), "{insured}");
+        assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
+        assert!(insured.contains("[P] repair"), "{insured}");
+
+        // Standard never degrades, so there is nothing to mend — but it is yours, so
+        // it is worth re-drawing.
+        inv.gear = vec![bench_piece_of("standard", 0, "g", "Issued Blade", 20, 20)];
+        let standard = bench_line(&craft, &inv);
+        assert!(standard.contains("[R] reroll (3 stock)"), "{standard}");
+        assert!(!standard.contains("[P] repair"), "{standard}");
+
+        // Ephemeral burns on the walk home: neither service is worth a chit.
+        inv.gear = vec![bench_piece_of("ephemeral", 4, "g", "Cinderglass Edge", 30, 30)];
+        let ephemeral = bench_line(&craft, &inv);
+        assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
+        assert!(!ephemeral.contains("[P] repair"), "{ephemeral}");
+        assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
+    }
+
     #[test]
     fn the_counter_stocks_plain_gear_on_the_keys_after_the_items() {
         let mut shop = ShopData::default();
@@ -1322,7 +1616,7 @@ mod shop_tests {
             spd: 0,
         }];
         inv.chits = 300;
-        let text = shop_text(&shop, &inv);
+        let text = shop_text(&shop, &inv, false);
         // Items keep [1]-[4]; gear starts on the key after them, so a row's number
         // never moves when the shelf is short.
         assert!(text.contains("[1] Bloom Salve"), "{text}");
@@ -1334,7 +1628,7 @@ mod shop_tests {
 
         // …and when it does not, the row says so before a keypress is spent.
         inv.chits = 10;
-        assert!(shop_text(&shop, &inv).contains("220c (short)"));
+        assert!(shop_text(&shop, &inv, false).contains("220c (short)"));
     }
 }
 

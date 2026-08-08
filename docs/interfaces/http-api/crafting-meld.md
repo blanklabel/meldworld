@@ -34,7 +34,7 @@ target is the direction of travel:
 | `GET /v1/crafting/recipes` | `GET /v1/recipes` | Unpaginated. Rows carry `recipe`, `name`, `skill`, `required_level`, `skill_level` (the caller's), `craftable`, `output`, `output_quantity`, `inputs[]` (`item_kind`, `quantity`, `material_class`). Sorted by `required_level`, then key. |
 | `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. Answers `{crafted, name, quantity, skill, skill_level, spent: [{item_kind, quantity}]}`. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
 | `POST /v1/crafting/forge {slot, class_key?, material, catalyst?}` | — | Rolls a whole piece of gear for a slot; not recipe-driven. `material` must be an **ore**-class material and `catalyst`, if given, a **trophy** (400 otherwise). See [Materials](#materials) and [The Forge](#the-forge-and-the-catalyst). |
-| `POST /v1/vault/gear/{gear_id}/reroll`, `/repair` | — | See [vault-gear.md](vault-gear.md). |
+| `POST /v1/vault/gear/{gear_id}/reroll`, `/repair` | — | See [vault-gear.md](vault-gear.md). Both are gated by the piece's **insurance tier**, and neither ever moves ownership. |
 | `GET /v1/vendors/broker`, `POST /v1/vendors/broker/sell` | — | See [The Broker](#the-broker). |
 
 ### Materials
