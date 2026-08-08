@@ -126,6 +126,12 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
         CharacterClass::Resonant => &[ItemFamily::Staff],
         CharacterClass::Psyker => &[ItemFamily::Globe],
         CharacterClass::PhoenixGuard => &[ItemFamily::Gauntlet, ItemFamily::Shield],
+        // A Smithwright fights with the tool of the trade: a hammer in one hand, a
+        // shield-sized bulwark in the other.
+        CharacterClass::Smithwright => &[ItemFamily::Gauntlet, ItemFamily::Shield],
+        // A Keeper's staff is a walking stick, a pestle and a splint — two-handed, so
+        // the order that carries the medicine carries nothing else.
+        CharacterClass::Keeper => &[ItemFamily::Staff],
         CharacterClass::Shifter => &[ItemFamily::Dagger, ItemFamily::ParryBlade],
         // The unbuilt roster classes inherit the martial baseline until each gets
         // its own kit — never an empty set, which would lock a hero out of gear.
@@ -137,6 +143,8 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
 pub fn armor_weights(class: CharacterClass) -> &'static [ArmorWeight] {
     match class {
         CharacterClass::PhoenixGuard => &[ArmorWeight::Heavy, ArmorWeight::Medium],
+        CharacterClass::Smithwright => &[ArmorWeight::Heavy, ArmorWeight::Medium],
+        CharacterClass::Keeper => &[ArmorWeight::Light, ArmorWeight::Robe],
         CharacterClass::Explorer => &[ArmorWeight::Medium, ArmorWeight::Light],
         CharacterClass::Shifter => &[ArmorWeight::Light],
         CharacterClass::Resonant => &[ArmorWeight::Robe, ArmorWeight::Light],
@@ -167,6 +175,8 @@ pub fn class_from_key(key: &str) -> Option<CharacterClass> {
         "resonant" => CharacterClass::Resonant,
         "shifter" => CharacterClass::Shifter,
         "phoenix_guard" => CharacterClass::PhoenixGuard,
+        "smithwright" => CharacterClass::Smithwright,
+        "keeper" => CharacterClass::Keeper,
         _ => return None,
     })
 }
@@ -274,6 +284,8 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Resonant => "resonant",
         CharacterClass::Shifter => "shifter",
         CharacterClass::PhoenixGuard => "phoenix_guard",
+        CharacterClass::Smithwright => "smithwright",
+        CharacterClass::Keeper => "keeper",
     }
 }
 

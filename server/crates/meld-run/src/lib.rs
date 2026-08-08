@@ -281,6 +281,8 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::Resonant => "resonant",
         CharacterClass::Shifter => "shifter",
         CharacterClass::PhoenixGuard => "phoenix_guard",
+        CharacterClass::Smithwright => "smithwright",
+        CharacterClass::Keeper => "keeper",
     }
 }
 

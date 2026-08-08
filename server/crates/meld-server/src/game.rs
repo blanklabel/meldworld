@@ -305,6 +305,9 @@ struct Edge {
     atk: i32,
     def: i32,
     spd: i32,
+    /// HP restored at the start of the holder's turn — the still's line, since a tonic
+    /// is not an edge on a blade.
+    regen: i32,
 }
 
 fn effective_gear_bonus(
@@ -348,6 +351,7 @@ fn effective_gear_bonus(
         bonus.atk += e.atk;
         bonus.def += e.def;
         bonus.spd += e.spd;
+        bonus.regen += e.regen;
     }
     bonus
 }
@@ -723,6 +727,20 @@ struct Harvest {
     tick_ms: u64,
 }
 
+/// Raising or packing up a bench (MS-1). A station is a commitment you make in a
+/// dangerous place, so both ends of its life are channels: interruptible, and visible to
+/// the whole instance while you are crouched over it.
+struct Building {
+    completes_at: u64,
+    /// `smith` / `alembic` — which bench is going up.
+    kind: String,
+    /// Set when packing UP: the station being dismantled.
+    tearing_down: Option<String>,
+    /// The stock already taken for it, which the raised bench then remembers so a
+    /// teardown hands back the same material rather than something guessed at.
+    stock: String,
+}
+
 /// An in-progress extraction channel (interruptible; completes → bank).
 struct Extraction {
     completes_at: u64,
@@ -817,6 +835,8 @@ struct WorldActor {
     extraction: HashMap<String, Extraction>,
     /// player -> in-progress harvest channel (MS-2).
     harvest: HashMap<String, Harvest>,
+    /// player -> in-progress station setup/teardown channel (MS-1).
+    building: HashMap<String, Building>,
     /// player_id -> fractional HP carried over between ticks for the Resonant
     /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
     /// bank the sub-1 remainder here and apply whole HP as it accrues).
@@ -1812,7 +1832,11 @@ impl WorldActor {
                 if in_battle.contains(&r.party_id) {
                     continue;
                 }
-                let regen = self.perks_for(&r.player_id).resonant_regen;
+                // The Resonant's perk and a Keeper's field stack: both are "someone is
+                // looking after you out here", and standing in a still's warmth should
+                // matter to a party that has no healer at all.
+                let regen = self.perks_for(&r.player_id).resonant_regen
+                    + self.alembic_field_regen(&r.player_id);
                 if regen <= 0.0 {
                     continue;
                 }
@@ -1856,6 +1880,25 @@ impl WorldActor {
                 hps[i] += 1;
                 budget -= 1;
             }
+        }
+    }
+
+    /// The regen a live alembic is pouring over this player right now. A field is a
+    /// PLACE: it only reaches `alembic_field_radius`, only on its own level, and only
+    /// while the still still has brews in it — a spent bench is cold.
+    fn alembic_field_regen(&self, player_id: &str) -> f32 {
+        let Some(a) = self.arena.avatar(player_id) else { return 0.0 };
+        let f = &self.balance.forge;
+        let warm = self.arena.stations.iter().any(|s| {
+            s.kind == "alembic"
+                && !s.spent()
+                && s.elevation == a.elevation
+                && a.position.distance_to(&s.position) <= f.alembic_field_radius
+        });
+        if warm {
+            f.alembic_regen_per_sec
+        } else {
+            0.0
         }
     }
 
@@ -1947,6 +1990,7 @@ impl WorldActor {
         // START one mid-battle, so surviving into a battle was never intended. The
         // Town Portal is only consumed on completion, so an interrupted one is kept.
         let mut broke = self.end_harvest(toucher, "battle_started");
+        broke.extend(self.end_building(toucher, "battle_started"));
         if self.extraction.remove(toucher).is_some() {
             if let Some(a) = self.arena.avatar_mut(toucher) {
                 if a.state == "channeling" {
@@ -2383,6 +2427,10 @@ impl GameState {
                 let harvested = w.advance_harvests();
                 self.dispatch(harvested);
             }
+            if let Some(w) = self.world.as_mut() {
+                let built = w.advance_building();
+                self.dispatch(built);
+            }
         }
     }
 
@@ -2667,6 +2715,17 @@ impl GameState {
                 out
             }
             wr::Strike::TYPE => self.handle_strike(player_id, raw),
+            wr::TeardownStation::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_teardown_station(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::SmithRequest::TYPE => {
                 // In a run you work at a STATION someone raised; in town you work at the
                 // city anvil, where the only smith is you. Same message, same heat, same
@@ -3036,6 +3095,7 @@ impl GameState {
                 hero_rows: HashMap::new(),
                 extraction: HashMap::new(),
                 harvest: HashMap::new(),
+                building: HashMap::new(),
                 regen_accum: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
@@ -3586,6 +3646,12 @@ impl WorldActor {
         let harvest_broke = self.end_harvest(player_id, "moved");
         if !harvest_broke.is_empty() {
             return (harvest_broke, Vec::new());
+        }
+        // Raising a bench is a channel like any other: step away and it comes to nothing
+        // (the stock stays spent — the materials went into the ground).
+        let build_broke = self.end_building(player_id, "moved");
+        if !build_broke.is_empty() {
+            return (build_broke, Vec::new());
         }
         // Any movement interrupts an in-progress extraction channel (D15).
         if self.extraction.remove(player_id).is_some() {
@@ -4620,7 +4686,7 @@ impl GameState {
                 Ok(g) => g,
                 // A brew names a recipe rather than a piece, so a missing gear id is only
                 // an error for the smith's services.
-                Err(_) if job.service == "brew" => Uuid::nil(),
+                Err(_) if job.service == "brew" || job.service == "tonic" => Uuid::nil(),
                 Err(_) => {
                     self.dispatch(vec![error(
                         &job.requester,
@@ -4635,6 +4701,12 @@ impl GameState {
             // resolved before anything reaches for the Vault's gear table.
             if job.service == "brew" {
                 let outcome = self.cook(&job, requester).await;
+                self.finish_job(job, outcome).await;
+                continue;
+            }
+            // A tonic is poured for the whole party, so it names no piece either.
+            if job.service == "tonic" {
+                let outcome = self.pour_tonic(&job, requester).await;
                 self.finish_job(job, outcome).await;
                 continue;
             }
@@ -4855,6 +4927,56 @@ impl GameState {
         self.dispatch(vec![out_msg(&job.requester, &result)]);
     }
 
+    /// A tonic at a Keeper's alembic: the still's answer to the forge's edge, poured
+    /// across the requester's WHOLE party instead of onto one piece. Like the edge it is
+    /// never a Vault write — it lasts the dive and dies with it.
+    async fn pour_tonic(&mut self, job: &SmithJob, requester: Uuid) -> Result<String, String> {
+        let f = self.balance.forge.clone();
+        let in_run = self
+            .world
+            .as_ref()
+            .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == job.requester));
+        if !in_run {
+            return Err("A tonic only lasts a dive - ask on the way in.".to_string());
+        }
+        let material = if job.material.is_empty() {
+            "bloom_herb".to_string()
+        } else {
+            job.material.clone()
+        };
+        let materials = [(material.clone(), f.tonic_material_cost)];
+        match self.db.spend_for_service(requester, &materials, f.tonic_chit_cost).await {
+            Ok(true) => {
+                let (atk, def, regen) = (
+                    f.tonic_amount(f.tonic_atk, job.quality),
+                    f.tonic_amount(f.tonic_def, job.quality),
+                    f.tonic_amount(f.tonic_regen, job.quality),
+                );
+                let size = self.balance.battle.party_size_per_player;
+                if let Some(w) = self.world.as_mut() {
+                    let v = w.edges.entry(job.requester.clone()).or_default();
+                    while v.len() < size {
+                        v.push(Edge::default());
+                    }
+                    for e in v.iter_mut() {
+                        e.atk += atk;
+                        e.def += def;
+                        e.regen += regen;
+                    }
+                }
+                Ok(format!(
+                    "poured a tonic for the party: +{atk} atk, +{def} def, +{regen} regen for the rest of the dive ({:.0}% cook)",
+                    job.quality * 100.0
+                ))
+            }
+            Ok(false) => Err(format!(
+                "A tonic needs {} {material} and {} chits.",
+                f.tonic_material_cost, f.tonic_chit_cost
+            )),
+            Err(_) => Err("The pot cracked.".to_string()),
+        }
+    }
+
     /// A brew at a Keeper's alembic: the same cook the Apothecary's recipes run over
     /// HTTP, except the COOK is graded — a good one feeds more people from the same
     /// reagents (`[tempo] cook_bonus_doses`). The reagents and the doses are the
@@ -5032,10 +5154,17 @@ impl WorldActor {
             );
         };
         let ore_kind = run.backpack[idx].item_kind.clone();
-        let uses = forge.station_uses;
         let radius = forge.station_radius;
-        if self.arena.place_station(player_id, &req.kind, uses, radius).is_none() {
+        // Refuse before charging anyone: a spot that is already taken, or a channel
+        // already running, must not cost stock.
+        if self.station_here(player_id, radius) {
             return reject(ErrorCode::InvalidState, "There is already a bench here.");
+        }
+        if self.extraction.contains_key(player_id)
+            || self.harvest.contains_key(player_id)
+            || self.building.contains_key(player_id)
+        {
+            return reject(ErrorCode::InvalidState, "Already channeling.");
         }
         let run = self
             .run
@@ -5045,6 +5174,22 @@ impl WorldActor {
             .expect("checked above");
         run.backpack[idx].quantity -= need;
         run.backpack.retain(|i| i.quantity > 0);
+        // The stock goes in NOW and the bench arrives when the channel completes — an
+        // interrupted setup costs you the materials, which is what makes choosing the
+        // moment (and the ground) a real decision.
+        let now = now_ms();
+        self.building.insert(
+            player_id.to_string(),
+            Building {
+                completes_at: now + forge.station_setup_ms,
+                kind: req.kind.clone(),
+                tearing_down: None,
+                stock: ore_kind.clone(),
+            },
+        );
+        if let Some(a) = self.arena.avatar_mut(player_id) {
+            a.state = "channeling".to_string();
+        }
         let update = wr::BackpackUpdate {
             changes: vec![wr::BackpackChange {
                 item: ItemStack {
@@ -5059,7 +5204,244 @@ impl WorldActor {
             chits_delta: 0,
             gear_added: Vec::new(),
         };
-        (vec![out_msg(player_id, &update)], Vec::new())
+        let mut out = vec![out_msg(player_id, &update)];
+        out.extend(self.announce_channel(
+            player_id,
+            &format!("build:{}", req.kind),
+            now + forge.station_setup_ms,
+            forge.station_setup_ms,
+            Some(seq),
+        ));
+        (out, Vec::new())
+    }
+
+    /// How many OTHER pairs of the right hands are in the party. A Smithwright helps at a
+    /// forge and a Keeper at a still; anyone else is standing around holding a lamp. The
+    /// requester's own party is what counts, since that is who is actually there.
+    fn crew_for(&self, kind: &str) -> i32 {
+        let want = if kind == "alembic" {
+            CharacterClass::Keeper
+        } else {
+            CharacterClass::Smithwright
+        };
+        let hands = self
+            .party_classes
+            .values()
+            .flatten()
+            .filter(|c| **c == want)
+            .count() as i32;
+        // The first pair of hands IS the crafter — their own level is already the bar's
+        // other input — so only the rest are a crew. Four Smithwrights is three extra
+        // pairs of hands, which is exactly `extra_hands_max`.
+        (hands - 1).max(0)
+    }
+
+    /// Is there a live bench within reach of where this player stands?
+    fn station_here(&self, player_id: &str, radius: f64) -> bool {
+        let Some(a) = self.arena.avatar(player_id) else { return false };
+        self.arena.stations.iter().any(|s| {
+            !s.spent() && s.elevation == a.elevation && a.position.distance_to(&s.position) <= radius
+        })
+    }
+
+    /// Tell the instance a channel opened. Every channel in the game says the same thing
+    /// the same way, so the client's one progress bar covers all of them.
+    fn announce_channel(
+        &self,
+        player_id: &str,
+        method: &str,
+        completes_at: u64,
+        fill_ms: u64,
+        client_seq: Option<u32>,
+    ) -> Vec<Outgoing> {
+        self.run
+            .runs
+            .iter()
+            .map(|r| r.player_id.clone())
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelStarted {
+                        client_seq: if pid == player_id { client_seq } else { None },
+                        player_id: player_id.to_string(),
+                        method: method.to_string(),
+                        completes_at,
+                        fill_ms,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Pack up a bench you are standing at: its own channel, and it hands part of the
+    /// stock back. Anyone may work at a station, but only its OWNER may take it down.
+    fn handle_teardown_station(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| {
+            (vec![error(player_id, code, msg, Some(seq))], Vec::new())
+        };
+        let req: wr::TeardownStation = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad teardown_station"),
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        if self.extraction.contains_key(player_id)
+            || self.harvest.contains_key(player_id)
+            || self.building.contains_key(player_id)
+        {
+            return reject(ErrorCode::InvalidState, "Already channeling.");
+        }
+        let radius = self.balance.forge.station_radius;
+        let Some(station) = self.arena.station_at(player_id, &req.entity_id, radius) else {
+            return reject(ErrorCode::OutOfRange, "No bench in reach.");
+        };
+        if station.owner_player_id != player_id {
+            return reject(ErrorCode::InvalidState, "That bench is not yours to move.");
+        }
+        let kind = station.kind.clone();
+        let now = now_ms();
+        let ms = self.balance.forge.station_teardown_ms;
+        self.building.insert(
+            player_id.to_string(),
+            Building {
+                completes_at: now + ms,
+                kind: kind.clone(),
+                tearing_down: Some(req.entity_id.clone()),
+                stock: String::new(),
+            },
+        );
+        if let Some(a) = self.arena.avatar_mut(player_id) {
+            a.state = "channeling".to_string();
+        }
+        (
+            self.announce_channel(player_id, &format!("pack:{kind}"), now + ms, ms, Some(seq)),
+            Vec::new(),
+        )
+    }
+
+    /// Finish any setup/teardown channel whose time is up: the bench appears, or comes
+    /// apart and hands back what `station_teardown_refund` says.
+    fn advance_building(&mut self) -> Vec<Outgoing> {
+        let now = now_ms();
+        let due: Vec<String> = self
+            .building
+            .iter()
+            .filter(|(_, b)| b.completes_at <= now)
+            .map(|(pid, _)| pid.clone())
+            .collect();
+        let mut out = Vec::new();
+        for pid in due {
+            let Some(b) = self.building.remove(&pid) else { continue };
+            if let Some(a) = self.arena.avatar_mut(&pid) {
+                if a.state == "channeling" {
+                    a.state = "active".to_string();
+                }
+            }
+            let forge = self.balance.forge.clone();
+            match &b.tearing_down {
+                None => {
+                    if self
+                        .arena
+                        .place_station(
+                            &pid,
+                            &b.kind,
+                            forge.station_uses,
+                            forge.station_radius,
+                            &b.stock,
+                        )
+                        .is_none()
+                    {
+                        // Someone else raised one here while this was going up. The stock
+                        // is already gone, so say so rather than swallowing it.
+                        out.push(error(
+                            &pid,
+                            ErrorCode::InvalidState,
+                            "Someone raised a bench here first.",
+                            None,
+                        ));
+                    }
+                }
+                Some(id) => {
+                    // Only a bench with work left in it is worth salvaging, and it hands
+                    // back the same stock it was built from.
+                    let salvage = self
+                        .arena
+                        .remove_station(id)
+                        .filter(|(left, _)| *left > 0)
+                        .map(|(_, stock)| (forge.station_teardown_refund.max(0), stock));
+                    if let Some((refund, kind)) = salvage.filter(|(r, _)| *r > 0) {
+                        let kind = kind.as_str();
+                        if let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
+                            match run.backpack.iter_mut().find(|i| i.item_kind == kind) {
+                                Some(slot) => slot.quantity += refund,
+                                None => run.backpack.push(ItemStack {
+                                    item_id: Uuid::now_v7().to_string(),
+                                    item_kind: kind.to_string(),
+                                    quantity: refund,
+                                    insurance: None,
+                                }),
+                            }
+                        }
+                        out.push(out_msg(
+                            &pid,
+                            &wr::BackpackUpdate {
+                                changes: vec![wr::BackpackChange {
+                                    item: ItemStack {
+                                        item_id: Uuid::now_v7().to_string(),
+                                        item_kind: kind.to_string(),
+                                        quantity: refund,
+                                        insurance: None,
+                                    },
+                                    delta: "added".to_string(),
+                                    cause: "station".to_string(),
+                                }],
+                                chits_delta: 0,
+                                gear_added: Vec::new(),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// End a setup/teardown channel early. An interrupted SETUP keeps the stock spent —
+    /// the materials went into the ground — which is what makes where and when you build
+    /// a real choice rather than a free action.
+    fn end_building(&mut self, player_id: &str, reason: &str) -> Vec<Outgoing> {
+        if self.building.remove(player_id).is_none() {
+            return Vec::new();
+        }
+        if let Some(a) = self.arena.avatar_mut(player_id) {
+            if a.state == "channeling" {
+                a.state = "active".to_string();
+            }
+        }
+        self.run
+            .runs
+            .iter()
+            .map(|r| r.player_id.clone())
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|pid| {
+                out_msg(
+                    pid,
+                    &wr::ChannelInterrupted {
+                        player_id: player_id.to_string(),
+                        reason: reason.to_string(),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Ask the smith whose station this is to work a piece of the REQUESTER's gear.
@@ -5079,7 +5461,10 @@ impl WorldActor {
             Ok(v) => v,
             Err(_) => return reject(ErrorCode::ValidationError, "bad smith_request"),
         };
-        if !matches!(req.service.as_str(), "reroll" | "repair" | "enhance" | "brew") {
+        if !matches!(
+            req.service.as_str(),
+            "reroll" | "repair" | "enhance" | "brew" | "tonic"
+        ) {
             return reject(ErrorCode::ValidationError, "No such service.");
         }
         if self.battle_of_player(player_id).is_some() {
@@ -5094,7 +5479,7 @@ impl WorldActor {
         // A forge cannot cook and a still cannot mend: the bench you are standing at is
         // what decides what may be asked of it.
         let (skill, allowed): (&str, &[&str]) = match kind.as_str() {
-            "alembic" => ("alchemy", &["brew"]),
+            "alembic" => ("alchemy", &["brew", "tonic"]),
             _ => ("forging", &["reroll", "repair", "enhance"]),
         };
         if !allowed.contains(&req.service.as_str()) {
@@ -5107,23 +5492,10 @@ impl WorldActor {
         // point of asking someone else's smith. An unloaded level counts as none.
         let smith_level =
             self.skill_levels.get(&owner).and_then(|m| m.get(skill)).copied().unwrap_or(0);
-        // A crew makes the bar easier to hit: every OTHER member of the party who could
-        // have raised this station counts as a pair of hands on the piece.
-        let gate = self.balance.forge.station_min_forging_level;
-        let crew = self
-            .run
-            .runs
-            .iter()
-            .filter(|r| r.player_id != owner)
-            .filter(|r| {
-                self.skill_levels
-                    .get(&r.player_id)
-                    .and_then(|m| m.get(skill))
-                    .copied()
-                    .unwrap_or(0)
-                    >= gate
-            })
-            .count() as i32;
+        // A crew makes the bar easier to hit, and a crew is a party of the RIGHT PEOPLE:
+        // every other Smithwright at a forge, every other Keeper at a still. This is what
+        // the profession classes buy — hands on the work, not a bigger number.
+        let crew = self.crew_for(&kind);
         (
             Vec::new(),
             vec![WorldEffect::SmithJob(Box::new(SmithJob {
@@ -5249,12 +5621,16 @@ impl WorldActor {
 
     /// Put the tool down on purpose (the "click away" gesture). Already-banked units
     /// stay banked; there is nothing to lose but the tick in flight.
+    /// [E] while channeling stops whatever is running, so the cancel path covers a
+    /// half-raised bench as well as a gather.
     fn handle_cancel_harvest(
         &mut self,
         player_id: &str,
         _raw: RawEnvelope,
     ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
-        (self.end_harvest(player_id, "cancelled"), Vec::new())
+        let mut out = self.end_harvest(player_id, "cancelled");
+        out.extend(self.end_building(player_id, "cancelled"));
+        (out, Vec::new())
     }
 
     /// Drink a potion in the field (out of combat) — the overworld half of the
@@ -5541,6 +5917,13 @@ impl WorldActor {
                 .map(|n| n.depleted())
                 .unwrap_or(true);
             if dry {
+                // Taking the whole vein rather than skimming it is what the Open Flower
+                // recruits on (CL-1's milestone shape: the world reports the fact, the
+                // Router decides what it earns).
+                self.pending_effects.push(WorldEffect::Milestone {
+                    player_id: pid.clone(),
+                    milestone: meld_proto::unlocks::Milestone::NodeExhausted,
+                });
                 out.extend(self.end_harvest(&pid, "exhausted"));
             } else if let Some(h) = self.harvest.get_mut(&pid) {
                 h.next_at = now + h.tick_ms;

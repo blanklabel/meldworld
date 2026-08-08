@@ -256,10 +256,27 @@ carrying at least `[forge] station_ore_cost` of a single material of the bench's
 there must be no live station already within `[forge] station_radius` on the same
 elevation. Each refusal says which of those it was.
 
-**Results in** — the ore leaving the backpack (`run.backpack_update`, `cause: "station"`)
-and the station appearing in `world.snapshot` as `station:<kind>:<jobs_left>` for
-**everyone** in the instance. A station with no jobs left is simply absent from the
-snapshot.
+**Results in** — the stock leaving the backpack (`run.backpack_update`,
+`cause: "station"`) and a **channel** (`run.channel_started`, `method: "build:<kind>"`,
+`[forge] station_setup_ms`). The bench appears in `world.snapshot` as
+`station:<kind>:<jobs_left>` for **everyone** in the instance only when that channel
+completes; movement, a battle or `run.cancel_harvest` interrupt it and the stock stays
+spent, because the materials went into the ground. A station with no jobs left is simply
+absent from the snapshot.
+
+### `run.teardown_station` (C2S)
+
+Packs up a bench you raised — its own channel (`[forge] station_teardown_ms`), and a bench
+with work still in it hands back `station_teardown_refund` of **the same stock it was built
+from**. Anyone may *work* at a station; only its owner may take it down (`409`-equivalent
+refusal otherwise).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| entity_id | string | Yes | The bench to pack up. |
+
+**Results in** — `run.channel_started` (`method: "pack:<kind>"`), then the bench leaving
+the snapshot and a `run.backpack_update` for the salvage.
 
 **Example**
 
@@ -286,7 +303,7 @@ Forging level is the skill the job is done at (they also take the Forging XP).
 | entity_id | string | Yes | The station being worked at. |
 | gear_id | string (uuid) | For the smith's services | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. Ignored by a brew. |
 | recipe | string | For `brew` | The recipe to cook, at a Keeper's alembic. |
-| service | string (enum: `reroll`, `repair`, `enhance`) | Yes | Which service. `enhance` puts a temporary edge on a piece a hero is **wearing** that lasts the rest of the dive — never a Vault write, so it cannot carry power home; it is refused in town, where there is no dive to spend it on. |
+| service | string (enum: `reroll`, `repair`, `enhance`, `brew`, `tonic`) | Yes | Which service. A **forge** does `reroll` / `repair` / `enhance`; a **still** does `brew` / `tonic` (the still's answer to an edge: +atk/+def/+regen across the whole party for this dive). `enhance` puts a temporary edge on a piece a hero is **wearing** that lasts the rest of the dive — never a Vault write, so it cannot carry power home; it is refused in town, where there is no dive to spend it on. |
 | material | string | For `reroll` | Material to spend on the re-draw; ignored by a repair. |
 
 **Server validation** — the bench decides what may be asked of it: a **forge** does

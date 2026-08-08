@@ -27,6 +27,8 @@ pub struct Balance {
     pub gear_rarity: GearRarity,
     pub requisition: Requisition,
     pub consumable: Consumable,
+    pub smithwright: Smithwright,
+    pub keeper: Keeper,
     pub forge: Forge,
     pub tempo: Tempo,
     pub adventure: Adventure,
@@ -342,11 +344,30 @@ pub struct Forge {
     pub station_ore_cost: i32,
     pub station_uses: i32,
     pub station_radius: f64,
+    pub station_setup_ms: u64,
+    pub station_teardown_ms: u64,
+    pub station_teardown_refund: i32,
     pub enhance_material_cost: i32,
     pub enhance_chit_cost: i64,
     pub enhance_bonus_base: i32,
     pub enhance_bonus_per_quality: i32,
     pub enhance_min_forging_level: i32,
+    pub alembic_field_radius: f64,
+    pub alembic_regen_per_sec: f32,
+    pub tonic_material_cost: i32,
+    pub tonic_chit_cost: i64,
+    pub tonic_atk: i32,
+    pub tonic_def: i32,
+    pub tonic_regen: i32,
+    pub tonic_per_quality: i32,
+}
+
+impl Forge {
+    /// One line of a tonic, at this cook's quality: the base plus a share of
+    /// `tonic_per_quality`, so a Keeper who can time a pot hands out a better draught.
+    pub fn tonic_amount(&self, base: i32, quality: f64) -> i32 {
+        base + (self.tonic_per_quality.max(0) as f64 * quality.clamp(0.0, 1.0)).floor() as i32
+    }
 }
 
 impl Forge {
@@ -465,6 +486,36 @@ impl Tempo {
         let floor = self.repair_quality_floor.clamp(0.0, 1.0);
         floor + (1.0 - floor) * quality.clamp(0.0, 1.0)
     }
+}
+
+/// The Foundry Smithwright's kit (MS-1): tempo and shielding rather than damage.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Smithwright {
+    pub hammer_mult: f64,
+    pub hammer_gauge_drain: f64,
+    pub quench_barrier_fraction: f64,
+    pub bulwark_barrier_fraction: f64,
+    pub temper_atk_bonus: i32,
+    pub slag_mult: f64,
+    pub forge_heal_fraction: f64,
+    pub forge_barrier_fraction: f64,
+}
+
+/// The Open Flower Keeper's kit (MS-1): everything here keeps someone standing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Keeper {
+    pub thornlash_mult: f64,
+    pub thornlash_gauge_drain: f64,
+    pub poultice_heal: i32,
+    pub poultice_regen: i32,
+    pub bloomfield_regen: i32,
+    pub root_snare_mult: f64,
+    pub root_snare_gauge_drain: f64,
+    pub draught_barrier: i32,
+    pub draught_regen: i32,
+    pub gift_heal: i32,
+    pub gift_barrier: i32,
+    pub gift_gauge: f64,
 }
 
 /// Potion magnitudes + Apothecary prices (GR-4 / EC-2).

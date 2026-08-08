@@ -368,11 +368,11 @@ pub struct CreatureLoot {
     pub gear: Option<GearDrop>,
 }
 
-/// The ten playable classes' content keys, matching `meld_run::class_key`'s
-/// exact spelling. Kept as a plain literal list here (rather than depending on
-/// meld-run's `CharacterClass` enum) since this crate only ever needs the
-/// strings, to pick which class a gear drop belongs to.
-pub const CLASS_KEYS: [&str; 10] = [
+/// The playable classes' content keys, matching `meld_run::class_key`'s exact
+/// spelling. Kept as a plain literal list here (rather than depending on meld-run's
+/// `CharacterClass` enum) since this crate only ever needs the strings, to pick which
+/// class a gear drop belongs to.
+pub const CLASS_KEYS: [&str; 12] = [
     "explorer",
     "dragoon",
     "sage",
@@ -383,6 +383,8 @@ pub const CLASS_KEYS: [&str; 10] = [
     "resonant",
     "shifter",
     "phoenix_guard",
+    "smithwright",
+    "keeper",
 ];
 
 /// The universal 20-step power ladder (weakest → strongest), shared by every
@@ -451,6 +453,20 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("phoenix_guard", "main_hand") => "Kinetic Gauntlet",
         ("phoenix_guard", "chest") => "Bulwark Plate",
         ("phoenix_guard", "accessory") => "Aggro Band",
+        // The two profession classes (MS-1): a Smithwright's kit is the trade's tools
+        // worn as armour, a Keeper's is the garden carried on your back.
+        ("smithwright", "main_hand") => "Forge Hammer",
+        ("smithwright", "off_hand") => "Anvil Shield",
+        ("smithwright", "head") => "Smelter's Mask",
+        ("smithwright", "chest") => "Foundry Apron",
+        ("smithwright", "legs") => "Slag Boots",
+        ("smithwright", "accessory") => "Quench Ring",
+        ("keeper", "main_hand") => "Grafting Stave",
+        ("keeper", "off_hand") => "Seed Satchel",
+        ("keeper", "head") => "Sunhood",
+        ("keeper", "chest") => "Bloomweave",
+        ("keeper", "legs") => "Roothose",
+        ("keeper", "accessory") => "Terra Locket",
         // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
         ("explorer", "off_hand") => "Targe",
         ("explorer", "head") => "Warhelm",
@@ -1509,6 +1525,9 @@ pub struct Station {
     /// the XP for it — a station is a service its owner provides, not a free anvil.
     pub owner_player_id: Id,
     pub uses_left: i32,
+    /// The material it was built from, so packing it up hands back the same stock rather
+    /// than something the world had to guess at.
+    pub stock: String,
 }
 
 impl Station {
@@ -3577,12 +3596,14 @@ impl Arena {
     /// checked the builder's skill and taken the ore — this only owns WHERE it lands
     /// and refuses to stack two on the same spot (which would let one smith cover a
     /// tile in benches and never walk again).
+    #[allow(clippy::too_many_arguments)]
     pub fn place_station(
         &mut self,
         player_id: &str,
         kind: &str,
         uses: i32,
         radius: f64,
+        stock: &str,
     ) -> Option<&Station> {
         let (position, elevation) = {
             let a = self.avatar(player_id)?;
@@ -3601,6 +3622,7 @@ impl Arena {
             elevation,
             owner_player_id: player_id.to_string(),
             uses_left: uses,
+            stock: stock.to_string(),
         });
         self.stations.last()
     }
@@ -3618,6 +3640,14 @@ impl Arena {
                 && s.elevation == pelev
                 && ppos.distance_to(&s.position) <= radius
         })
+    }
+
+    /// Take a bench out of the world. Returns `(jobs left, the stock it was built from)`,
+    /// so the caller can decide whether packing it up was worth anything back.
+    pub fn remove_station(&mut self, entity_id: &str) -> Option<(i32, String)> {
+        let i = self.stations.iter().position(|s| s.entity_id == entity_id)?;
+        let s = self.stations.remove(i);
+        Some((s.uses_left, s.stock))
     }
 
     /// Spend one of a station's jobs. Returns what is left, or None if it is gone or
@@ -3979,7 +4009,7 @@ mod tests {
         arena.add_avatar("client".into(), 6.0);
         let radius = 3.0;
 
-        let id = arena.place_station("smith", "smith", 2, radius).expect("raised").entity_id.clone();
+        let id = arena.place_station("smith", "smith", 2, radius, "dune_iron").expect("raised").entity_id.clone();
         let here = arena.avatar("smith").unwrap().position;
         assert_eq!(arena.stations.len(), 1);
         assert_eq!(arena.stations[0].owner_player_id, "smith");
@@ -4002,7 +4032,7 @@ mod tests {
         assert!(arena.station_at("client", &id, radius).is_none(), "elevation counts");
 
         // One to a spot: a smith cannot carpet a tile in benches.
-        assert!(arena.place_station("smith", "smith", 2, radius).is_none());
+        assert!(arena.place_station("smith", "smith", 2, radius, "dune_iron").is_none());
 
         // Its jobs run out, and a spent station is no longer a station.
         assert_eq!(arena.spend_station_use(&id), Some(1));
@@ -4010,7 +4040,7 @@ mod tests {
         assert_eq!(arena.spend_station_use(&id), None, "spent is spent");
         assert!(arena.station_at("smith", &id, radius).is_none());
         // …which frees the ground for the next one.
-        assert!(arena.place_station("smith", "smith", 2, radius).is_some());
+        assert!(arena.place_station("smith", "smith", 2, radius, "dune_iron").is_some());
     }
 
     #[test]

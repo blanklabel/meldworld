@@ -813,10 +813,24 @@ pub mod run {
         const TYPE: &'static str = "run.build_station";
     }
 
-    /// C2S — ask the smith whose station this is to work a piece of YOUR gear. Anyone
-    /// standing at a station may ask; the station owner's Forging level is the skill
-    /// the job is done at, and they take the XP. **Ownership never moves**: the server
-    /// only ever touches gear the requester already owns.
+    /// C2S — pack up a bench you raised. Its own channel (`[forge] station_teardown_ms`),
+    /// and a bench with work left in it hands back part of the stock. Anyone may WORK at
+    /// a station; only its owner may take it down.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct TeardownStation {
+        pub entity_id: Id,
+    }
+    impl Message for TeardownStation {
+        const TYPE: &'static str = "run.teardown_station";
+    }
+
+    /// C2S — ask whoever raised this station to do a piece of work for you. Anyone
+    /// standing at one may ask; the station **owner's** skill is what the job is done at,
+    /// and they take the XP — a station is a service its owner provides. **Ownership never
+    /// moves**: the server only ever touches the requester's own gear and Vault.
+    ///
+    /// A smith's forge does `reroll` / `repair` / `enhance` on a piece; a Keeper's alembic
+    /// does `brew` on a recipe.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct SmithRequest {
         /// The station being worked at (a `station:<kind>:<uses>` snapshot entity).
@@ -1186,6 +1200,7 @@ mod tests {
     #[test]
     fn the_field_station_messages_round_trip() {
         assert_eq!(run::BuildStation::TYPE, "run.build_station");
+        assert_eq!(run::TeardownStation::TYPE, "run.teardown_station");
         assert_eq!(run::SmithRequest::TYPE, "run.smith_request");
         assert_eq!(run::SmithResult::TYPE, "run.smith_result");
 

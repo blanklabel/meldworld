@@ -49,6 +49,11 @@ pub enum Trigger {
     /// A full party wipe with at least `heroes` heroes in the party. The
     /// consolation prize for the worst night.
     PartyWipe { heroes: i32 },
+    /// A piece of gear is FORGED — the first time you made something instead of
+    /// finding it. The Foundry notices people who make things.
+    GearForged,
+    /// A resource node is worked dry. The Open Flower notices people who tend.
+    NodeExhausted,
 }
 
 /// One earnable thing.
@@ -158,6 +163,30 @@ pub const UNLOCKS: &[UnlockDef] = &[
         requires: Some("party_slot_3"),
     },
     UnlockDef {
+        key: "class_smithwright",
+        name: "Smithwright",
+        kind: UnlockKind::Class(CharacterClass::Smithwright),
+        trigger: Trigger::GearForged,
+        trigger_text: "Forge a piece of gear at the anvil, rather than finding one.",
+        banner: "You made something. The Foundry only ever recruits people who have. A \
+                 Smithwright fights with the trade's own tools — a hammer that staggers, a \
+                 bulwark planted in front of the line — and raises the field forge, so the \
+                 party stops walking home to mend.",
+        requires: Some("party_slot_3"),
+    },
+    UnlockDef {
+        key: "class_keeper",
+        name: "Keeper",
+        kind: UnlockKind::Class(CharacterClass::Keeper),
+        trigger: Trigger::NodeExhausted,
+        trigger_text: "Work a resource node dry — take everything it had.",
+        banner: "You took the whole vein and left nothing rotting. The Open Flower has been \
+                 waiting for someone patient. A Keeper mends between fights instead of \
+                 during them, and its still turns a patch of ground into somewhere the party \
+                 can actually rest.",
+        requires: Some("party_slot_3"),
+    },
+    UnlockDef {
         key: "class_psyker",
         name: "Psyker",
         kind: UnlockKind::Class(CharacterClass::Psyker),
@@ -250,6 +279,8 @@ pub enum Milestone {
     SurvivedUndeadRite,
     Extracted,
     PartyWiped { heroes: i32 },
+    GearForged,
+    NodeExhausted,
 }
 
 /// Which unlocks a milestone grants, given what's already owned. Returns only
@@ -270,6 +301,8 @@ pub fn granted_by(milestone: Milestone, owned: &[String]) -> Vec<&'static Unlock
             (Trigger::SurvivedUndeadRite, Milestone::SurvivedUndeadRite) => true,
             (Trigger::Extracted, Milestone::Extracted) => true,
             (Trigger::PartyWipe { heroes }, Milestone::PartyWiped { heroes: got }) => got >= heroes,
+            (Trigger::GearForged, Milestone::GearForged) => true,
+            (Trigger::NodeExhausted, Milestone::NodeExhausted) => true,
             _ => false,
         })
         .collect()
@@ -321,7 +354,7 @@ mod tests {
         assert_eq!(slots, vec![2, 3, 4], "slot 1 needs no unlock");
         assert_eq!(
             UNLOCKS.iter().filter(|u| matches!(u.kind, UnlockKind::Class(_))).count(),
-            6
+            8
         );
     }
 
@@ -410,7 +443,7 @@ mod tests {
         let all: Vec<String> = UNLOCKS.iter().map(|u| u.key.to_string()).collect();
         assert_eq!(party_slots(&all), 4);
         let classes = owned_classes(&all);
-        assert_eq!(classes.len(), 6, "{classes:?}");
+        assert_eq!(classes.len(), 8, "{classes:?}");
         for c in [
             CharacterClass::Explorer,
             CharacterClass::Hunter,
@@ -418,6 +451,8 @@ mod tests {
             CharacterClass::Shifter,
             CharacterClass::PhoenixGuard,
             CharacterClass::Psyker,
+            CharacterClass::Smithwright,
+            CharacterClass::Keeper,
         ] {
             assert!(classes.contains(&c), "{c:?} not fieldable with everything owned");
             assert!(unlock_for_class(c).is_some(), "{c:?} has no unlock");

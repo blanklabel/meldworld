@@ -71,6 +71,8 @@ pub enum ClientCmd {
     },
     /// A blow on the smithing bar, at the marker's position (0.0-1.0) when struck.
     Strike { job_id: String, at: f64 },
+    /// Pack up a bench you raised (its own channel; hands back part of the stock).
+    TeardownStation { entity_id: String },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
@@ -1721,6 +1723,9 @@ impl Inner {
                         "recipe": recipe,
                     }),
                 ),
+            ClientCmd::TeardownStation { entity_id } => {
+                self.send_env(wr::TeardownStation::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::Strike { job_id, at } => {
                 self.send_env(wr::Strike::TYPE, json!({ "job_id": job_id, "at": at }))
             }

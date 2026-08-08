@@ -521,6 +521,10 @@ pub struct Battle {
     explorer_anchor_barrier_fraction: f64,
     explorer_safe_passage_regen: i32,
     explorer_world_known_gauge: f64,
+    /// The two profession classes' kits (MS-1). Held whole rather than flattened field
+    /// by field: they arrived together and read better as the two blocks they are.
+    smith: meld_balance::Smithwright,
+    keeper: meld_balance::Keeper,
     resonant_deep: ResonantDeep,
     shifter_steal_drain: f64,
     shifter_mug_mult: f64,
@@ -752,6 +756,8 @@ impl Battle {
             phoenix_guard_eradication_missing_bonus: balance
                 .battle
                 .phoenix_guard_eradication_missing_bonus,
+            smith: balance.smithwright.clone(),
+            keeper: balance.keeper.clone(),
             explorer_trailblaze_mult: balance.battle.explorer_trailblaze_mult,
             explorer_field_dressing_fraction: balance.battle.explorer_field_dressing_fraction,
             explorer_read_ground_mult: balance.battle.explorer_read_ground_mult,
@@ -1431,6 +1437,243 @@ impl Battle {
     /// - `swell_strike`     — a heavy blow that also drains the target's ATB gauge.
     /// - `kinetic_shock`    — a heavier blow that fully resets the target's gauge (hard stagger).
     /// - `toll_of_the_deep` — an AoE shockwave hitting EVERY living enemy.
+    /// The Foundry Smithwright's kit (MS-1). A working smith on the line: heavy staggering
+    /// blows, shielding for the party, and one buff that makes somebody ELSE hit harder.
+    /// Nothing here costs a resource — the class pays in tempo, since its own turn is
+    /// slow and it spends turns propping others up.
+    fn resolve_smithwright(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        let living_allies = |b: &Self| -> Vec<usize> {
+            b.fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let mut effects = Vec::new();
+        match skill {
+            "quench" => {
+                let raw = ((self.fighters[actor_i].max_hp as f64)
+                    * self.smith.quench_barrier_fraction)
+                    .round() as i32;
+                effects.extend(self.grant_barrier(actor_i, raw));
+            }
+            "bulwark" => {
+                for a in living_allies(self) {
+                    let raw = ((self.fighters[a].max_hp as f64)
+                        * self.smith.bulwark_barrier_fraction)
+                        .round() as i32;
+                    effects.extend(self.grant_barrier(a, raw));
+                }
+            }
+            "tempering_blow" => {
+                // The work, not the foe: an ally's attack for the rest of the fight.
+                let t = self
+                    .ally_target(target_id)
+                    .unwrap_or_else(|| self.most_wounded_ally(actor_i));
+                self.fighters[t].atk += self.smith.temper_atk_bonus;
+                let atk = self.fighters[t].atk;
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: Some(atk),
+                    status: Some("tempered".to_string()),
+                    hp_after: self.fighters[t].hp,
+                });
+            }
+            "one_true_forge" => {
+                for a in living_allies(self) {
+                    let heal = ((self.fighters[a].max_hp as f64)
+                        * self.smith.forge_heal_fraction)
+                        .round() as i32;
+                    effects.extend(self.apply_heal(a, heal));
+                    let raw = ((self.fighters[a].max_hp as f64)
+                        * self.smith.forge_barrier_fraction)
+                        .round() as i32;
+                    effects.extend(self.grant_barrier(a, raw));
+                }
+            }
+            "slag_spray" => {
+                // Molten waste: armour is no help, so this ignores def entirely.
+                let atk = self.fighters[actor_i].atk;
+                let enemies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                for t in enemies {
+                    let dmg = (atk as f64 * self.smith.slag_mult).round().max(1.0) as i32;
+                    effects.extend(self.apply_damage(t, dmg));
+                }
+            }
+            "hammer_fall" => {
+                let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+                let target_i = match self.idx(target) {
+                    Some(t) if self.fighters[t].alive => t,
+                    _ => self
+                        .fighters
+                        .iter()
+                        .position(|f| f.alive && f.kind != CombatantKind::Player)
+                        .ok_or(Reject::NotFound)?,
+                };
+                let scaled =
+                    (self.fighters[actor_i].atk as f64 * self.smith.hammer_mult).round() as i32;
+                let def = self.fighters[target_i].def;
+                let defending = self.fighters[target_i].defending;
+                effects = match self.roll_dodge(target_i) {
+                    Some(dodge) => dodge,
+                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
+                };
+                // Dropped iron staggers: the blow costs the target part of its turn.
+                if self.fighters[target_i].alive {
+                    self.fighters[target_i].gauge =
+                        (self.fighters[target_i].gauge - self.smith.hammer_gauge_drain).max(0.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[target_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("staggered".to_string()),
+                        hp_after: self.fighters[target_i].hp,
+                    });
+                }
+            }
+            _ => return Err(Reject::ValidationError("unknown smithwright skill")),
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// The Open Flower Keeper's kit (MS-1). A mender: two of these do damage at all, and
+    /// both of those buy time rather than kills. Everything else keeps the party upright.
+    fn resolve_keeper(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        let living_allies = |b: &Self| -> Vec<usize> {
+            b.fighters
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let mut effects = Vec::new();
+        match skill {
+            "poultice" => {
+                let t = self
+                    .ally_target(target_id)
+                    .unwrap_or_else(|| self.most_wounded_ally(actor_i));
+                effects.extend(self.apply_heal(t, self.keeper.poultice_heal));
+                self.fighters[t].regen += self.keeper.poultice_regen;
+                let regen = self.fighters[t].regen;
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: Some(regen),
+                    status: Some("regen".to_string()),
+                    hp_after: self.fighters[t].hp,
+                });
+            }
+            "bloomfield" => {
+                for a in living_allies(self) {
+                    self.fighters[a].regen += self.keeper.bloomfield_regen;
+                    let regen = self.fighters[a].regen;
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[a].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: Some(regen),
+                        status: Some("regen".to_string()),
+                        hp_after: self.fighters[a].hp,
+                    });
+                }
+            }
+            "vital_draught" => {
+                let t = self
+                    .ally_target(target_id)
+                    .unwrap_or_else(|| self.most_wounded_ally(actor_i));
+                effects.extend(self.grant_barrier(t, self.keeper.draught_barrier));
+                self.fighters[t].regen += self.keeper.draught_regen;
+                let regen = self.fighters[t].regen;
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: Some(regen),
+                    status: Some("regen".to_string()),
+                    hp_after: self.fighters[t].hp,
+                });
+            }
+            "terras_gift" => {
+                for a in living_allies(self) {
+                    effects.extend(self.apply_heal(a, self.keeper.gift_heal));
+                    effects.extend(self.grant_barrier(a, self.keeper.gift_barrier));
+                    if a != actor_i {
+                        self.fighters[a].gauge =
+                            (self.fighters[a].gauge + self.keeper.gift_gauge).min(1.0);
+                    }
+                }
+            }
+            "thornlash" | "root_snare" => {
+                let (mult, drain) = if skill == "root_snare" {
+                    (self.keeper.root_snare_mult, self.keeper.root_snare_gauge_drain)
+                } else {
+                    (self.keeper.thornlash_mult, self.keeper.thornlash_gauge_drain)
+                };
+                let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+                let target_i = match self.idx(target) {
+                    Some(t) if self.fighters[t].alive => t,
+                    _ => self
+                        .fighters
+                        .iter()
+                        .position(|f| f.alive && f.kind != CombatantKind::Player)
+                        .ok_or(Reject::NotFound)?,
+                };
+                // A Keeper's damage rides Mnd, like every other kit that is really
+                // medicine: the staff is a pestle, not a sword.
+                let power = self.fighters[actor_i].spell_power.max(1);
+                let scaled = (power as f64 * mult).round() as i32;
+                let def = self.fighters[target_i].def;
+                let defending = self.fighters[target_i].defending;
+                effects = match self.roll_dodge(target_i) {
+                    Some(dodge) => dodge,
+                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
+                };
+                if drain > 0.0 && self.fighters[target_i].alive {
+                    self.fighters[target_i].gauge =
+                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[target_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("rooted".to_string()),
+                        hp_after: self.fighters[target_i].hp,
+                    });
+                }
+            }
+            _ => return Err(Reject::ValidationError("unknown keeper skill")),
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
     fn resolve_phoenix_guard(
         &mut self,
         actor_i: usize,
@@ -1604,6 +1847,31 @@ impl Battle {
                 | Some("eradication")
         ) {
             return self.resolve_phoenix_guard(actor_i, skill_kind.unwrap(), target_id, action_id);
+        }
+        // The Foundry's Smithwright: hammer, bulwark, and the buff that makes someone
+        // else hit harder.
+        if matches!(
+            skill_kind,
+            Some("hammer_fall")
+                | Some("quench")
+                | Some("bulwark")
+                | Some("tempering_blow")
+                | Some("slag_spray")
+                | Some("one_true_forge")
+        ) {
+            return self.resolve_smithwright(actor_i, skill_kind.unwrap(), target_id, action_id);
+        }
+        // The Open Flower's Keeper: medicine, and two ways to make something wait.
+        if matches!(
+            skill_kind,
+            Some("thornlash")
+                | Some("poultice")
+                | Some("bloomfield")
+                | Some("root_snare")
+                | Some("vital_draught")
+                | Some("terras_gift")
+        ) {
+            return self.resolve_keeper(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
         // Resonant healer skills. Aim at the chosen living ally if the player picked
         // one, else auto-target the most-wounded living ally (the classic default).
@@ -5460,5 +5728,120 @@ mod tests {
 
         let plain = monster("m2", 500, 300);
         assert!(!plain.to_wire().statuses.iter().any(|s| s.starts_with("boss:")));
+    }
+}
+
+#[cfg(test)]
+mod profession_class_tests {
+    use super::*;
+
+    /// Two heroes and one slow creature. The classes are only a label here — the kits
+    /// are resolved by skill key, so the resolver is what is under test.
+    fn bench(count: usize) -> Battle {
+        let b = Balance::load_default().unwrap();
+        let allies: Vec<Fighter> = (0..count)
+            .map(|i| {
+                Fighter::new(
+                    format!("h{i}"),
+                    CombatantKind::Player,
+                    Some("p".to_string()),
+                    None,
+                    1,
+                    40,
+                    12,
+                    3,
+                    10,
+                )
+            })
+            .collect();
+        let mut mob = Fighter::new(
+            "m0".to_string(),
+            CombatantKind::Monster,
+            None,
+            Some("beast".to_string()),
+            1,
+            200,
+            5,
+            2,
+            1,
+        );
+        mob.faction = "beast".to_string();
+        Battle::new("b".into(), EncounterClass::Standard, allies, vec![mob], &b, 7)
+    }
+
+    // A Smithwright's job in a fight is to keep everyone else upright: the Bulwark is
+    // Barrier for the WHOLE party, and Tempering Blow makes somebody ELSE hit harder.
+    // Neither costs a resource, because the class pays in its own slow turns.
+    #[test]
+    fn a_smithwright_shields_the_party_and_sharpens_an_ally() {
+        let mut b = bench(2);
+        let (smith, ally) = (0usize, 1usize);
+
+        b.fighters[smith].level = 255; // the whole ladder, so every rung is testable
+        b.fighters[smith].gauge = 1.0;
+        let before = b.fighters[ally].atk;
+        b.resolve_smithwright(smith, "tempering_blow", Some(&b.fighters[ally].combatant_id.clone()), None)
+            .expect("temper");
+        assert!(b.fighters[ally].atk > before, "an ally should swing harder");
+
+        b.fighters[smith].gauge = 1.0;
+        b.resolve_smithwright(smith, "bulwark", None, None).expect("bulwark");
+        assert!(b.fighters[smith].barrier > 0, "the smith is behind it too");
+        assert!(b.fighters[ally].barrier > 0, "and so is everyone else");
+
+        // Hammer Fall staggers: it costs the target part of its turn, not just HP.
+        let mob = b.fighters.iter().position(|f| f.kind != CombatantKind::Player).unwrap();
+        b.fighters[mob].gauge = 0.9;
+        b.fighters[smith].gauge = 1.0;
+        b.resolve_smithwright(smith, "hammer_fall", Some(&b.fighters[mob].combatant_id.clone()), None)
+            .expect("hammer");
+        assert!(b.fighters[mob].gauge < 0.9, "dropped iron should stagger");
+    }
+
+    // A Keeper mends. Its damage rides Mnd rather than Str — the staff is a pestle —
+    // and both of its damaging skills buy time rather than kills.
+    #[test]
+    fn a_keeper_mends_the_party_and_its_damage_rides_mnd() {
+        let mut b = bench(2);
+        let (keeper, ally) = (0usize, 1usize);
+        b.fighters[keeper].level = 255;
+
+        // Poultice heals AND leaves Regen behind.
+        b.fighters[ally].hp = 5;
+        b.fighters[keeper].gauge = 1.0;
+        b.resolve_keeper(keeper, "poultice", Some(&b.fighters[ally].combatant_id.clone()), None)
+            .expect("poultice");
+        assert!(b.fighters[ally].hp > 5, "the ally should be mended");
+        assert!(b.fighters[ally].regen > 0, "and keep mending");
+
+        // Bloomfield is Regen for everyone.
+        b.fighters[keeper].gauge = 1.0;
+        b.resolve_keeper(keeper, "bloomfield", None, None).expect("bloomfield");
+        assert!(b.fighters[keeper].regen > 0 && b.fighters[ally].regen > 0);
+
+        // Root Snare pushes a foe's turn a long way off.
+        let mob = b.fighters.iter().position(|f| f.kind != CombatantKind::Player).unwrap();
+        b.fighters[mob].gauge = 0.95;
+        b.fighters[keeper].gauge = 1.0;
+        b.resolve_keeper(keeper, "root_snare", Some(&b.fighters[mob].combatant_id.clone()), None)
+            .expect("snare");
+        assert!(b.fighters[mob].gauge < 0.5, "the ground should hold it");
+    }
+
+    // Both kits are gated by the same ladder as every other class: a level-1 hero has
+    // its first rung and nothing else, and the server is the backstop.
+    #[test]
+    fn the_new_ladders_gate_like_every_other() {
+        for (class, first, later) in [
+            ("smithwright", "hammer_fall", "one_true_forge"),
+            ("keeper", "thornlash", "terras_gift"),
+        ] {
+            let at_one = meld_proto::skills::skills_for_class_at(class, 1);
+            assert_eq!(at_one.len(), 1, "{class} should open with one rung");
+            assert_eq!(at_one[0].key, first);
+            assert!(meld_proto::skills::is_unlocked(first, 1));
+            assert!(!meld_proto::skills::is_unlocked(later, 1), "{later} is not a level-1 tool");
+            assert_eq!(meld_proto::skills::skills_for_class_at(class, 255).len(), 6);
+        }
     }
 }

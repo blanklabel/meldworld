@@ -39,6 +39,17 @@ pub enum CharacterClass {
     /// Hull is a separate monastic order whose own kit is already authored
     /// (docs/lore/factions.md), and it will claim that key when it lands.
     PhoenixGuard,
+    /// **The Foundry's Smithwright.** The order that keeps the world standing — walls,
+    /// Anchors, and every blade the rest of it swings. A front-line class built around
+    /// what it CARRIES: a heavy hammer, a bulwark it plants, and the field forge it
+    /// raises (MS-1). A Smithwright in the party makes the anvil's rhythm easier for
+    /// everyone at it, because there are more hands on the piece.
+    Smithwright,
+    /// **The Order of the Open Flower's Keeper.** Growers and menders. A support class
+    /// that keeps a party alive between fights rather than during them: reagents,
+    /// tonics, and the still it sets up in the field (MS-1). A Keeper in the party makes
+    /// a cook easier the way a Smithwright makes a heat easier.
+    Keeper,
 }
 
 /// Damage typing (Creature AI/Combat/Gear spec §1). Every damaging effect
