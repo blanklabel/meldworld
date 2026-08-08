@@ -583,10 +583,13 @@ XP; harvesting exists but is instant.
     type a material name. Every refusal comes back in the server's own words. Screenshot
     flag: `MELD_FORGE` / `?forge`.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
-    mercantile tax / stall-gate effects (want `EC-1` stalls first); the Forge/Alembic/
-    Broker **client UIs** (all of the above is HTTP-only — `LC-4`); and the crafting-depth
-    layers the proposal scopes: recipe *discovery*, *experimentation*, and the
-    **maker's mark** that gives a master crafter a reputation instead of a spreadsheet.
+    mercantile tax / stall-gate effects (want `EC-1` stalls first); **repair and affix
+    reroll have no UI** — both need a chosen piece, so they belong on a gear row in the
+    inventory overlay rather than in the crafting panel; a **Broker panel** (selling is
+    still HTTP-only, though the Requisition counter and the Forge & Alembic now ship);
+    and the crafting-depth layers the proposal scopes: recipe *discovery*,
+    *experimentation* (the volatility gamble on smelting), and the **maker's mark** that
+    gives a master crafter a reputation instead of a spreadsheet.
   - 🟡 *Trophy supply tracks the fight:* a trophy was a flat **one per encounter** at any
     depth against any pack, while chits in the same roll scaled with both — so the new
     crafting inputs had no supply curve. `CreatureLoot` now carries a `material_qty`
