@@ -11,8 +11,23 @@
 //! actually happened, then asserts the shape the design claims:
 //!
 //! - a party of any size can win fights (the floor — a wipe at any size is a bug),
-//! - a lone hero levels FASTER per fight than a full party (the XP split),
+//! - a lone hero banks MORE XP per fight than a full party (the XP split),
 //! - a full party's fights take LONGER than a lone hero's (the encounter ramp).
+//!
+//! Each size gets a budget scaled to its own party, because "a full party's fights
+//! are long" is the claim — timing every size against the same stopwatch would fail
+//! the full party for being exactly as slow as it is meant to be.
+//!
+//! **What it measures today (seed 1, two fights each):** 11.7 / 25.8 / 37.5 / 54.0
+//! seconds per fight at one, two, three and four heroes. The encounter ramp is real
+//! and close to linear in party size.
+//!
+//! The XP split is **not** visible at run level: all four sizes banked the same 124
+//! XP. `award_hero_xp` divides an encounter by party size, but XP and level are
+//! tracked per PLAYER rather than per hero, so the division is undone by the time it
+//! reaches the run. The assertion below is `>=` and passes on that equality — it is
+//! a guard against the split INVERTING, not evidence that it happens. Making a lone
+//! hero genuinely level faster needs per-hero XP, which the run model does not have.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 
@@ -32,6 +47,10 @@ struct Dive {
     fights_won: usize,
     /// Highest level any hero reached inside the dive.
     level: i32,
+    /// Run XP banked by the end of the dive. The XP SPLIT is a change in XP, not in
+    /// level: four heroes sharing an encounter still sit at level 1 for a while, and
+    /// a level-based rate then just rewards whoever won the fewest fights.
+    xp: i64,
     /// Mean wall-clock seconds from `battle.started` to `battle.ended`.
     secs_per_fight: f64,
     wiped: bool,
@@ -113,6 +132,7 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
         heroes,
         fights_won: 0,
         level: 1,
+        xp: 0,
         secs_per_fight: 0.0,
         wiped: false,
     };
@@ -145,6 +165,7 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
                     "run.party" => {
                         for h in v["payload"]["heroes"].as_array().into_iter().flatten() {
                             out.level = out.level.max(h["level"].as_i64().unwrap_or(1) as i32);
+                            out.xp = out.xp.max(h["xp"].as_i64().unwrap_or(0));
                         }
                     }
                     "battle.started" => {
@@ -204,15 +225,21 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
 
 #[tokio::test]
 async fn the_pacing_arc_holds_from_one_hero_to_four() {
-    let budget = Duration::from_secs(50);
+    // The budget SCALES with party size, because the thing under test is that a full
+    // party's fights are long. Measured on seed 1: 14s a fight solo, 23.5s at two,
+    // 37.5s at three — so a four-hero fight lands past 50s, and a flat 50s budget
+    // failed the full party for taking exactly as long as it is designed to take.
+    // Giving every size the same wall-clock is giving the full party a quarter of a
+    // dive and calling the game unwinnable.
+    let budget = |heroes: usize| Duration::from_secs(45 + 35 * (heroes as u64 - 1));
     let mut runs = Vec::new();
     for heroes in [1usize, 2, 3, 4] {
-        runs.push(dive(heroes, budget).await);
+        runs.push(dive(heroes, budget(heroes)).await);
     }
     for d in &runs {
         println!(
-            "  {} hero(es): {} fights won, level {}, {:.1}s per fight, wiped={}",
-            d.heroes, d.fights_won, d.level, d.secs_per_fight, d.wiped
+            "  {} hero(es): {} fights won, level {} ({} xp), {:.1}s per fight, wiped={}",
+            d.heroes, d.fights_won, d.level, d.xp, d.secs_per_fight, d.wiped
         );
     }
 
@@ -222,30 +249,28 @@ async fn the_pacing_arc_holds_from_one_hero_to_four() {
     for d in &runs {
         assert!(
             d.fights_won > 0,
-            "a party of {} won nothing in {budget:?} (wiped={})",
+            "a party of {} won nothing in {:?} (wiped={})",
             d.heroes,
+            budget(d.heroes),
             d.wiped
         );
         assert!(!d.wiped, "a party of {} was wiped out", d.heroes);
     }
 
-    // The XP split: a lone hero absorbs a whole encounter, four share it, so a lone
-    // hero should be at least as high a level as a full party after the same
-    // wall-clock.
+    // The XP split: a lone hero absorbs a whole encounter, four share it, so the solo
+    // dive should bank more XP PER FIGHT than the full party's.
     //
-    // Deliberately NOT a per-fight rate. Nobody reaches level 2 in this budget at hub
-    // distance, so `level / fights_won` collapses to `1 / fights_won` — which asserts
-    // the solo hero won FEWER fights than the full party, the opposite of the claim,
-    // and is otherwise pure noise. Comparing the levels reached says what was meant and
-    // stays true when neither party levels.
+    // Measured in XP rather than level. At these depths nobody clears level 1 inside
+    // the budget, and `level / fights_won` with every level pinned at 1 does not
+    // measure the split at all — it just rewards whichever size won the FEWEST
+    // fights, which made the solo dive fail for being the most productive.
     let solo = &runs[0];
     let full = &runs[3];
+    let solo_rate = solo.xp as f64 / solo.fights_won.max(1) as f64;
+    let full_rate = full.xp as f64 / full.fights_won.max(1) as f64;
     assert!(
-        solo.level >= full.level,
-        "a full party out-levelled a lone hero on the same clock ({} vs {}) — the XP \
-         split is supposed to make the solo era the fast one",
-        full.level,
-        solo.level
+        solo_rate >= full_rate,
+        "a lone hero banked less XP per fight than a full party: {solo_rate:.1} vs {full_rate:.1}"
     );
 
     // The encounter ramp: creature health scales superlinearly with party size, so a
