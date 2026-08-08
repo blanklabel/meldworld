@@ -167,6 +167,7 @@ fn main() {
         .init_resource::<ShopData>()
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
+        .init_resource::<ShopSelling>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -1551,6 +1552,11 @@ struct CityUi {
     yard_focus: String,
 }
 
+/// Which way the counter is facing: `false` = what it sells, `true` = what it buys.
+/// UI state, so it lives apart from [`ShopData`], which holds only the server's answer.
+#[derive(Resource, Default)]
+pub(crate) struct ShopSelling(pub bool);
+
 /// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).
 #[derive(Resource, Default)]
 pub(crate) struct CraftData {
@@ -1562,6 +1568,8 @@ pub(crate) struct CraftData {
     pub slot: usize,
     /// Whether the next forge quenches the piece in a trophy.
     pub catalyze: bool,
+    /// Which Vault piece is on the bench for the smith's two services (reroll, repair).
+    pub bench: usize,
     /// The last thing the workshop said — a made item, or why it refused.
     pub last: String,
 }
@@ -1603,6 +1611,8 @@ pub(crate) struct ShopData {
     /// The Requisition's plain-gear stock, shown in the same panel: one shop button,
     /// both halves of "spend chits to make the next dive easier" (EC-2).
     pub gear: Vec<meld_client::net::GearShopLine>,
+    /// What the Broker pays per material — the SELL side of the same counter (MS-1).
+    pub quotes: Vec<meld_client::net::BrokerQuote>,
     pub loaded: bool,
 }
 

@@ -590,11 +590,19 @@ XP; harvesting exists but is instant.
     with `[F]`, spending the deepest refined stock in the Vault rather than making anyone
     type a material name. Every refusal comes back in the server's own words. Screenshot
     flag: `MELD_FORGE` / `?forge`.
+  - 🟡 *The counter turns around, and the smith takes work in:* the last two HTTP-only
+    corners of the economy are reachable. **Selling** is the Requisition counter viewed
+    from the other side — `[B]` flips it, and the sell list is the Broker's quotes
+    **intersected with what the Vault actually holds**, richest stack first, because a
+    price for something you do not carry is noise. **Reroll and repair** are the smith's
+    two services on a piece you already own, so the anvil keeps one on a **bench**:
+    left/right walk the Vault, `[R]` buys another draw on its affixes (spending the
+    deepest refined stock, as `[F]` does), `[P]` buys back the max durability a death
+    chewed off. The bench index is taken modulo the Vault, so a stale cursor left by a
+    sold or lost piece cannot index out of range. Both replies come back through the
+    same line every other refusal uses — a re-drawn affix list, or what the mend cost.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
-    mercantile tax / stall-gate effects (want `EC-1` stalls first); **repair and affix
-    reroll have no UI** — both need a chosen piece, so they belong on a gear row in the
-    inventory overlay rather than in the crafting panel; a **Broker panel** (selling is
-    still HTTP-only, though the Requisition counter and the Forge & Alembic now ship);
+    mercantile tax / stall-gate effects (want `EC-1` stalls first);
     and the crafting-depth layers the proposal scopes: recipe *discovery*,
     *experimentation* (the volatility gamble on smelting), and the **maker's mark** that
     gives a master crafter a reputation instead of a spreadsheet.

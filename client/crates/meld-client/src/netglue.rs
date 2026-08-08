@@ -453,6 +453,9 @@ pub(crate) fn pump_net(
             ServerMsg::GearShopStock { gear } => {
                 shop.gear = gear;
             }
+            ServerMsg::BrokerQuotes { quotes } => {
+                shop.quotes = quotes;
+            }
             ServerMsg::Recipes { recipes } => {
                 craft.recipes = recipes;
                 craft.loaded = true;

@@ -290,6 +290,14 @@ pub struct ShopLine {
     pub price_chits: i64,
 }
 
+/// What the Broker pays for one material, at the caller's Mercantile level (MS-1).
+#[derive(Clone, Debug, Default)]
+pub struct BrokerQuote {
+    pub item_kind: String,
+    pub name: String,
+    pub price_chits: i64,
+}
+
 /// One craftable recipe as the Forge & Alembic lists it (MS-1). The server owns the
 /// level gate and the input list, so the panel never holds a second copy of the recipe
 /// table that could drift from the real one.
@@ -562,6 +570,8 @@ pub enum ServerMsg {
     GearShopStock { gear: Vec<GearShopLine> },
     /// The recipe book, for the Forge & Alembic (MS-1).
     Recipes { recipes: Vec<RecipeLine> },
+    /// The Broker's standing offer on every material (MS-1).
+    BrokerQuotes { quotes: Vec<BrokerQuote> },
     /// The result of a craft or a forge, in the player's words.
     CraftResult { text: String },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
@@ -627,6 +637,7 @@ struct Inner {
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
     gear_shop_rx: Option<mpsc::Receiver<Vec<GearShopLine>>>,
     recipes_rx: Option<mpsc::Receiver<Vec<RecipeLine>>>,
+    broker_rx: Option<mpsc::Receiver<Vec<BrokerQuote>>>,
     craft_rx: Option<mpsc::Receiver<String>>,
     ticket: String,
     player_id: String,
@@ -670,6 +681,7 @@ pub fn start(base: String) -> Net {
         shop_rx: None,
             gear_shop_rx: None,
             recipes_rx: None,
+            broker_rx: None,
             craft_rx: None,
         ticket: String::new(),
         player_id: String::new(),
@@ -736,6 +748,26 @@ impl Net {
     /// Vault so the chit balance the player sees is the server's, not a guess.
     pub fn buy_item(&self, item_kind: String, qty: i32) {
         self.0.borrow_mut().buy_item(item_kind, qty);
+    }
+
+    /// Buy another draw on a piece's affixes (MS-1).
+    pub fn reroll_gear(&self, gear_id: String, material: String) {
+        self.0.borrow_mut().reroll_gear(gear_id, material);
+    }
+
+    /// Buy back max durability a death chewed off (MS-1 / GR-2's repair sink).
+    pub fn repair_gear(&self, gear_id: String) {
+        self.0.borrow_mut().repair_gear(gear_id);
+    }
+
+    /// Kick off an authenticated GET of the Broker's price list (MS-1).
+    pub fn fetch_broker(&self) {
+        self.0.borrow_mut().fetch_broker();
+    }
+
+    /// Sell `qty` of a material to the Broker, then refresh the Vault.
+    pub fn sell_material(&self, item_kind: String, qty: i32) {
+        self.0.borrow_mut().sell_material(item_kind, qty);
     }
 
     /// Kick off an authenticated GET of the recipe book (MS-1).
@@ -895,6 +927,12 @@ impl Inner {
             if let Ok(recipes) = rx.try_recv() {
                 self.recipes_rx = None;
                 self.out.push_back(ServerMsg::Recipes { recipes });
+            }
+        }
+        if let Some(rx) = &self.broker_rx {
+            if let Ok(quotes) = rx.try_recv() {
+                self.broker_rx = None;
+                self.out.push_back(ServerMsg::BrokerQuotes { quotes });
             }
         }
         if let Some(rx) = &self.craft_rx {
@@ -1157,6 +1195,99 @@ impl Inner {
             .unwrap_or_default();
         let mut req =
             ehttp::Request::post(format!("{base}/v1/vendors/apothecary/buy"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// POST `/v1/vault/gear/:id/reroll` — buy another draw on a piece's affixes. The
+    /// stats are untouched: what a smith sells is a chance, not a better item.
+    fn reroll_gear(&mut self, gear_id: String, material: String) {
+        if self.session_token.is_empty() || gear_id.is_empty() || material.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "material": material })).unwrap_or_default();
+        let mut req =
+            ehttp::Request::post(format!("{base}/v1/vault/gear/{gear_id}/reroll"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.craft_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(reroll_reply_text(&res));
+            spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// POST `/v1/vault/gear/:id/repair` — buy back max durability a death chewed off.
+    fn repair_gear(&mut self, gear_id: String) {
+        if self.session_token.is_empty() || gear_id.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/vault/gear/{gear_id}/repair"),
+            Vec::new(),
+        );
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        let (tx, rx) = mpsc::channel();
+        self.craft_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(repair_reply_text(&res));
+            spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// GET `/v1/vendors/broker` — what the Broker pays for each material, already
+    /// scaled to the caller's Mercantile level by the server (MS-1).
+    fn fetch_broker(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.broker_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/vendors/broker", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut quotes = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for q in v["data"].as_array().into_iter().flatten() {
+                        quotes.push(BrokerQuote {
+                            item_kind: q["item_kind"].as_str().unwrap_or("").to_string(),
+                            name: q["name"].as_str().unwrap_or("").to_string(),
+                            price_chits: q["price_chits"].as_i64().unwrap_or(0),
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(quotes);
+        });
+    }
+
+    /// POST a sale, then re-read the Vault — the chits and the remaining stack a player
+    /// sees must be the server's answer, never the client's arithmetic.
+    fn sell_material(&mut self, item_kind: String, qty: i32) {
+        if self.session_token.is_empty() || item_kind.is_empty() || qty <= 0 {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "item_kind": item_kind, "quantity": qty }))
+            .unwrap_or_default();
+        let mut req = ehttp::Request::post(format!("{base}/v1/vendors/broker/sell"), body);
         req.headers.insert("Authorization", format!("Bearer {token}"));
         req.headers.insert("Content-Type", "application/json");
         let (tx, rx) = mpsc::channel();
@@ -2257,6 +2388,55 @@ fn forge_reply_text(res: &Result<ehttp::Response, String>) -> String {
     )
 }
 
+/// A reroll's reply as one line: the affixes it drew, or why it refused (a Forging
+/// level too low, or a bill it could not pay).
+fn reroll_reply_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the smith did not answer".to_string();
+    };
+    reroll_line(&v)
+}
+
+pub fn reroll_line(v: &Value) -> String {
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    // The reply carries affixes in their wire form (key + magnitude), so let the
+    // registry read them out — the same `describe` the gear tooltip shows.
+    let names: Vec<String> = serde_json::from_value::<Vec<meld_proto::affixes::Affix>>(
+        v["affixes"].clone(),
+    )
+    .unwrap_or_default()
+    .iter()
+    .map(|a| a.describe())
+    .collect();
+    if names.is_empty() {
+        "rerolled - it came up bare".to_string()
+    } else {
+        format!("rerolled: {}", names.join(", "))
+    }
+}
+
+/// A repair's reply as one line. It bills only for what it actually restored, so the
+/// number is worth showing.
+fn repair_reply_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the smith did not answer".to_string();
+    };
+    repair_line(&v)
+}
+
+pub fn repair_line(v: &Value) -> String {
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    format!(
+        "repaired +{} durability for {}c",
+        v["restored"].as_i64().unwrap_or(0),
+        v["spent_chits"].as_i64().unwrap_or(0)
+    )
+}
+
 fn reply_json(res: &Result<ehttp::Response, String>) -> Option<Value> {
     res.as_ref().ok()?.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
 }
@@ -2388,4 +2568,60 @@ fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<Log
         });
     });
     rx
+}
+
+#[cfg(test)]
+mod smith_reply_tests {
+    use super::*;
+
+    #[test]
+    fn a_reroll_reads_out_the_affixes_it_actually_drew() {
+        // The server answers with affixes in WIRE form — `key` + `magnitude`, no
+        // display name — so the line has to go through the registry to say anything.
+        let drew = serde_json::json!({
+            "gear_id": "g1",
+            "affixes": [
+                { "key": "atk_flat", "magnitude": 4 },
+                { "key": "def_flat", "magnitude": 2 },
+            ],
+        });
+        let line = reroll_line(&drew);
+        assert!(line.starts_with("rerolled: "), "{line}");
+        assert!(line.contains(','), "both affixes belong on the line: {line}");
+        for a in [
+            meld_proto::affixes::Affix {
+                key: "atk_flat".into(),
+                magnitude: 4,
+                element: None,
+                ally_class: None,
+            },
+            meld_proto::affixes::Affix {
+                key: "def_flat".into(),
+                magnitude: 2,
+                element: None,
+                ally_class: None,
+            },
+        ] {
+            assert!(line.contains(&a.describe()), "{line} is missing {}", a.describe());
+        }
+
+        // A bare draw is still an answer, and a refusal is the server's own sentence.
+        assert!(reroll_line(&serde_json::json!({ "affixes": [] })).contains("came up bare"));
+        let refused = serde_json::json!({
+            "error": { "code": "conflict", "message": "A reroll needs 1 dune_ingot and 40 chits." }
+        });
+        assert_eq!(reroll_line(&refused), "A reroll needs 1 dune_ingot and 40 chits.");
+    }
+
+    #[test]
+    fn a_repair_says_what_it_restored_and_what_it_cost() {
+        // It bills only for what it actually restored, so both numbers are the answer
+        // to "was that worth it".
+        let done = serde_json::json!({ "restored": 6, "spent_chits": 120 });
+        assert_eq!(repair_line(&done), "repaired +6 durability for 120c");
+        let refused = serde_json::json!({
+            "error": { "code": "conflict", "message": "Nothing to repair, or not enough chits." }
+        });
+        assert_eq!(repair_line(&refused), "Nothing to repair, or not enough chits.");
+    }
 }
