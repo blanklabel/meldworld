@@ -161,6 +161,7 @@ pub(crate) fn city_hud(
     mut inv: ResMut<InventoryData>,
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
+    mut heat: ResMut<crate::overworld::HeatUi>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
@@ -175,6 +176,19 @@ pub(crate) fn city_hud(
     city.craft_open = crate::flags::forge_preview_flag();
     if city.craft_open {
         net.0.fetch_recipes();
+    }
+    if crate::flags::heat_preview_flag() {
+        // A plausible heat, laid out the way the server would for a mid-tier piece:
+        // three blows, bands in different places, so the bar can be read at a glance.
+        *heat = crate::overworld::HeatUi {
+            job_id: Some("preview".into()),
+            service: "reroll".into(),
+            strikes: 3,
+            sweep_ms: 1600,
+            bands: vec![(0.18, 0.40), (0.55, 0.72), (0.30, 0.48)],
+            struck: 0,
+            opened_at: 0.0,
+        };
     }
     city.shop_open = crate::flags::shop_preview_flag();
     if city.shop_open {
@@ -229,6 +243,9 @@ pub(crate) fn city_hud(
                     TextFont { font_size: 18.0, ..default() },
                     TextColor(glass::TITLE),
                 ));
+                // The anvil's heat is struck here too, so the bar lives in the same
+                // panel the bench reads out of.
+                crate::overworld::spawn_heat_bar(panel);
             });
             // Always-available tap actions (bottom-right). Mirror the keyboard: Dive
             // (Enter), Vault (V), Co-op (C) — so the hub is fully click/tap driven

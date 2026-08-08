@@ -36,9 +36,89 @@ pub(crate) struct ChannelBar;
 #[derive(Component)]
 pub(crate) struct ChannelBarFill;
 
+/// The smithing bar's frame: a bar of RED. Hidden unless a heat is open. Spawned on
+/// both the overworld and the city, since the anvil is in one and the stations in the
+/// other, and a heat has to look the same at either.
+#[derive(Component)]
+pub(crate) struct HeatBar;
+/// The YELLOW band on it — the hot part of this blow, positioned from the server's band.
+#[derive(Component)]
+pub(crate) struct HeatBarBand;
+/// The hammer: where the marker is right now.
+#[derive(Component)]
+pub(crate) struct HeatBarMark;
+
 /// Marks a tappable on-screen action button (touch-native via Bevy UI `Interaction`).
 #[derive(Component)]
 pub(crate) struct TouchActionButton(pub(crate) OverworldAct);
+
+/// Spawn the smithing bar (red track, yellow band, marker) as real coloured nodes —
+/// a text bar could only shade it, and "strike the yellow" has to BE yellow.
+pub(crate) fn spawn_heat_bar(p: &mut ChildSpawnerCommands) {
+    p.spawn((
+        HeatBar,
+        Node {
+            display: Display::None,
+            width: Val::Px(420.0),
+            height: Val::Px(16.0),
+            margin: UiRect::top(Val::Px(6.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            position_type: PositionType::Relative,
+            ..default()
+        },
+        BorderColor(Color::srgba(1.0, 0.85, 0.7, 0.5)),
+        // The cold bar: red, and dark enough that the yellow reads off it at a glance.
+        BackgroundColor(Color::srgb(0.42, 0.08, 0.06)),
+    ))
+    .with_children(|bar| {
+        bar.spawn((
+            HeatBarBand,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                width: Val::Percent(0.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgb(1.0, 0.83, 0.25)),
+        ));
+        bar.spawn((
+            HeatBarMark,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(0.0),
+                width: Val::Px(3.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::WHITE),
+        ));
+    });
+}
+
+/// Keep the bar in step with the open heat: show/hide it, put the yellow where this
+/// blow's band is, and sweep the marker.
+pub(crate) fn update_heat_bar(
+    heat: Res<HeatUi>,
+    time: Res<Time>,
+    mut frame: Query<&mut Node, (With<HeatBar>, Without<HeatBarBand>, Without<HeatBarMark>)>,
+    mut band: Query<&mut Node, (With<HeatBarBand>, Without<HeatBarMark>)>,
+    mut mark: Query<&mut Node, With<HeatBarMark>>,
+) {
+    let open = heat.job_id.is_some().then(|| heat.band()).flatten();
+    for mut n in &mut frame {
+        n.display = if open.is_some() { Display::Flex } else { Display::None };
+    }
+    let Some((lo, hi)) = open else { return };
+    for mut n in &mut band {
+        n.left = Val::Percent((lo * 100.0) as f32);
+        n.width = Val::Percent(((hi - lo) * 100.0) as f32);
+    }
+    let at = heat.marker(time.elapsed_secs_f64());
+    for mut n in &mut mark {
+        n.left = Val::Percent((at * 100.0) as f32);
+    }
+}
 
 pub(crate) fn overworld_ui(mut commands: Commands) {
     commands
@@ -89,6 +169,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     BackgroundColor(Color::srgb(0.98, 0.86, 0.42)),
                 ));
             });
+            spawn_heat_bar(p);
             // Touch action bar (bottom-right). Also clickable with the mouse.
             p.spawn((
                 Node {
@@ -3990,32 +4071,15 @@ impl HeatUi {
     }
 }
 
-/// Cells in the drawn bar. Odd so a centred band has a centre to sit on.
-const HEAT_CELLS: usize = 41;
-
-/// The heat as one line: a bar of red with the live blow's yellow on it, the marker
-/// where it is, and the blows left. Text, because both the city anvil and the field
-/// bench are text panels — the same reading in both places.
+/// The heat's label: which blow this is, and whether the marker is on the yellow right
+/// now. The bar itself is real coloured nodes ([`spawn_heat_bar`]) — this is the line
+/// under it, in the same panel every other prompt uses.
 pub(crate) fn heat_line(heat: &HeatUi, now: f64) -> Option<String> {
     heat.job_id.as_ref()?;
     let (lo, hi) = heat.band()?;
     let m = heat.marker(now);
-    let cell = |f: f64| ((f * HEAT_CELLS as f64) as usize).min(HEAT_CELLS - 1);
-    let (blo, bhi) = (cell(lo), cell(hi));
-    let mark = cell(m);
-    let bar: String = (0..HEAT_CELLS)
-        .map(|i| {
-            if i == mark {
-                '\u{2588}' // the hammer, wherever it is right now
-            } else if i >= blo && i <= bhi {
-                '\u{2593}' // yellow: the hot part of the heat
-            } else {
-                '\u{2591}' // red: everything else
-            }
-        })
-        .collect();
     Some(format!(
-        "  {} {}  [{bar}]  blow {}/{}   [SPACE] strike",
+        "  {} {}  blow {}/{}   [SPACE] strike",
         heat.service.to_uppercase(),
         if (lo..=hi).contains(&m) { "NOW" } else { "   " },
         heat.struck + 1,
@@ -4106,6 +4170,50 @@ mod heat_tests {
 
     // The marker sweeps the bar once per `sweep_ms` and wraps — a rhythm, not a
     // one-way timer, so a missed blow comes round again.
+    // The bar is REAL coloured nodes, not shaded text: hidden with no heat, and with one
+    // open the yellow sits exactly where the server put the band while the marker sweeps
+    // across it. A percentage-positioned band is what makes "strike the yellow" honest —
+    // what the player aims at is what the server graded.
+    #[test]
+    fn the_bar_puts_the_yellow_where_the_server_said() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<HeatUi>();
+        app.add_systems(Update, update_heat_bar);
+        let bar = app
+            .world_mut()
+            .spawn((HeatBar, Node { display: Display::Flex, ..default() }))
+            .id();
+        let band = app
+            .world_mut()
+            .spawn((HeatBarBand, Node::default()))
+            .id();
+        let mark = app.world_mut().spawn((HeatBarMark, Node::default())).id();
+
+        // No heat → the bar is not on screen at all.
+        app.update();
+        assert_eq!(app.world().get::<Node>(bar).unwrap().display, Display::None);
+
+        *app.world_mut().resource_mut::<HeatUi>() = open(&[(0.25, 0.45)]);
+        app.update();
+        assert_eq!(app.world().get::<Node>(bar).unwrap().display, Display::Flex);
+        let b = app.world().get::<Node>(band).unwrap();
+        assert_eq!(b.left, Val::Percent(25.0));
+        assert_eq!(b.width, Val::Percent(20.0), "the band is the server's, to the point");
+
+        // The marker moves with the clock, and stays on the bar.
+        let first = app.world().get::<Node>(mark).unwrap().left;
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        app.update();
+        let later = app.world().get::<Node>(mark).unwrap().left;
+        assert_ne!(first, later, "the marker should sweep");
+        if let Val::Percent(p) = later {
+            assert!((0.0..=100.0).contains(&p), "{p}");
+        } else {
+            panic!("the marker should be positioned as a percentage: {later:?}");
+        }
+    }
+
     #[test]
     fn the_marker_sweeps_and_wraps() {
         let heat = open(&[(0.4, 0.6)]);
@@ -4122,9 +4230,6 @@ mod heat_tests {
         let mut heat = open(&[(0.0, 0.1), (0.45, 0.55)]);
         let line = heat_line(&heat, 0.0).expect("open");
         assert!(line.contains("blow 1/2"), "{line}");
-        assert!(line.contains('\u{2591}'), "the cold bar: {line}");
-        assert!(line.contains('\u{2593}'), "the yellow: {line}");
-        assert!(line.contains('\u{2588}'), "the hammer: {line}");
         // The marker is inside the first band at t=0, so the line calls it.
         assert!(line.contains("NOW"), "{line}");
 

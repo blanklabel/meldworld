@@ -280,7 +280,7 @@ fn main() {
                 city::party_panel_refresh,
                 city_input,
                 // The anvil's heat is struck in town as well as in the field.
-                heat_input,
+                (heat_input, update_heat_bar),
                 city_action_buttons,
                 render_city,
                 pulse_magitech,
@@ -389,7 +389,7 @@ fn main() {
                 update_mob_nameplates,
                 update_minimap,
                 update_minimap_distance,
-                (remember_explored, station_input, heat_input),
+                (remember_explored, station_input, heat_input, update_heat_bar),
             )
                 .run_if(in_state(Screen::Overworld)),
         )
