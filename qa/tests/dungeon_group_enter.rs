@@ -22,6 +22,9 @@ async fn start_server() -> String {
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1;
     balance.worldgen.dungeon_spawn_chance = 1.0;
+    // This test is about what happens INSIDE a dungeon, not where doors are allowed
+    // to be, so it opts out of the hub exclusion that keeps them off the doorstep.
+    balance.worldgen.dungeon_min_distance = 0.0;
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),

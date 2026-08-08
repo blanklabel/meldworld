@@ -172,6 +172,45 @@ Meld skill.
 
 ---
 
+### `run.use_item` (C2S)
+
+Drinks a potion on the overworld, out of combat — the same registry and the same
+backpack as the battle Item command. Without it a wounded party had to find a fight
+before it could heal, so the walk to the next monster was where it died.
+
+**Source:** GDD.md §4.1; [consumables registry](../../../shared/meld-proto/src/consumables.rs).
+**Direction:** C2S.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| item_kind | string | Yes | No | — | A `CONSUMABLES` key held in the run backpack (`bloom_salve`, `elixir`, `waking_salt`, `insight_mote`). |
+| hero_slot | int | Yes | No | — | Which of the sender's heroes drinks it (0-based party slot). |
+
+**Server validation** — the sender's party is in a battle → `validation_error` (use the
+battle Item command, which costs a turn); unknown `item_kind` → `validation_error`;
+an effect that only exists inside a fight (`Barrier`/`Regen`/`Evasion`/`Adrenaline`) →
+`validation_error`, checked **before** the stock check because it is a property of the
+potion rather than of the pack; slot out of range → `validation_error`; none held →
+`validation_error`. An item that would change nothing — a heal on a hero at full HP, a
+revive on a hero still standing — is **refused and not consumed**.
+
+The request names only *what* and *on whom*: the dose, the HP cap, and whether the
+effect applies at all are computed server-side from the registry and `balance.toml`, so
+an edited client can ask for the impossible but cannot receive it.
+
+**Results in** — `run.backpack_update` (`cause: "field_item"`) and a refreshed
+`run.party` carrying the new HP; an Insight Mote may also produce `run.level_up`.
+
+**Example**
+
+```json
+{"type": "run.use_item", "seq": 530, "ts": 1783729010000, "payload": {"item_kind": "bloom_salve", "hero_slot": 2}}
+```
+
+---
+
 ### `run.cancel_harvest` (C2S)
 
 Puts the tool down on purpose, keeping every unit already banked.

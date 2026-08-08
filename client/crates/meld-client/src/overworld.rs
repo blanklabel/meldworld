@@ -1299,7 +1299,7 @@ pub(crate) fn sync_overworld_sprites(
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so
                 // it still reads as a glowing exit at a distance.
-                spawn_billboard_entity(
+                let root = spawn_billboard_entity(
                     &mut commands,
                     &mut mats,
                     &wa,
@@ -1310,13 +1310,7 @@ pub(crate) fn sync_overworld_sprites(
                     Color::srgb(1.2, 1.2, 1.3),
                     0.0,
                 );
-                commands.spawn((
-                    WorldEntity(id.clone()),
-                    Mesh3d(wa.portal_mesh.clone()),
-                    MeshMaterial3d(wa.portal_mat.clone()),
-                    Transform::from_translation(world_pos(e.x, e.y, 0.08))
-                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-                ));
+                add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Resource => {
                 // A real 3D harvest-node model that draws the eye by slowly pulsing
@@ -1386,19 +1380,24 @@ pub(crate) fn sync_overworld_sprites(
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
             EntityKind::Stair => {
-                // The way down. Drawn as a cool, low marker — a floor whose exit you
-                // cannot see is a floor you wander.
-                spawn_billboard_entity(
+                // The way down, and it has to out-read the walls around it: dungeon
+                // wall blocks stand 3.2 units, so a 1.6 marker was hidden behind the
+                // nearest corridor from every angle a player actually looks from. Same
+                // arch as the exit but cool-lit, with the exit's ground ring so it
+                // glows through a dim floor — a floor whose way down you cannot see is
+                // a floor you wander until something kills you.
+                let root = spawn_billboard_entity(
                     &mut commands,
                     &mut mats,
                     &wa,
                     id,
                     e,
                     wa.portal_sprite.clone(),
-                    1.6,
-                    Color::srgb(0.55, 0.85, 1.1),
+                    2.8,
+                    Color::srgb(0.75, 1.15, 1.5),
                     0.3,
                 );
+                add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Trap => {
                 // A trap the party's Shifter has read. Drawn low and hot-red so it
@@ -2732,7 +2731,7 @@ pub(crate) fn spawn_billboard_entity(
     height: f32,
     tint: Color,
     shadow: f32,
-) {
+) -> Entity {
     // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
     // lift it so the sprite's feet sit on the ground plane.
     let scale = height / 2.2;
@@ -2759,7 +2758,28 @@ pub(crate) fn spawn_billboard_entity(
                         .with_scale(Vec3::new(shadow, shadow * 0.55, shadow)),
                 ));
             }
-        });
+        })
+        .id()
+}
+
+/// Lay a flat, faintly emissive disc on the ground under an already-spawned world
+/// entity, so a way out reads as a glowing marker from across the floor rather than
+/// only at arm's length.
+///
+/// It goes on as a CHILD deliberately. Spawned as a second root carrying the same
+/// [`WorldEntity`] id, `sync_entities`' one-sprite-per-id guard would despawn one of
+/// the pair on the very next frame — arbitrarily the arch or the ring — so a portal
+/// rendered as half of itself, and a portal reduced to its flat ground disc is a
+/// portal a player walks straight past.
+fn add_ground_ring(commands: &mut Commands, wa: &WorldAssets, root: Entity) {
+    commands.entity(root).with_children(|p| {
+        p.spawn((
+            Mesh3d(wa.portal_mesh.clone()),
+            MeshMaterial3d(wa.portal_mat.clone()),
+            Transform::from_xyz(0.0, 0.08, 0.0)
+                .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ));
+    });
 }
 
 /// Spawn a terrain obstacle sized to its world radius. Vegetation and rock kinds are

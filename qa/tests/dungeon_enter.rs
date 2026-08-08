@@ -25,6 +25,9 @@ async fn start_server() -> String {
     balance.battle.party_size_per_player = 1;
     // Force an entrance on every streamed section so the test is fast + deterministic.
     balance.worldgen.dungeon_spawn_chance = 1.0;
+    // This test is about what happens INSIDE a dungeon, not where doors are allowed
+    // to be, so it opts out of the hub exclusion that keeps them off the doorstep.
+    balance.worldgen.dungeon_min_distance = 0.0;
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
@@ -176,6 +179,7 @@ async fn a_bot_enters_a_hand_designed_dungeon() {
                     }
                     "world.snapshot" => {
                         let empty = vec![];
+                        let mut ways_out = 0usize;
                         for e in v["payload"]["entities"].as_array().unwrap_or(&empty) {
                             let state = e["avatar_state"].as_str().unwrap_or("");
                             let (ex, ey) = (
@@ -194,8 +198,22 @@ async fn a_bot_enters_a_hand_designed_dungeon() {
                             if state.starts_with("obstacle:dungeon_wall") {
                                 entered = true;
                             }
+                            if state == "portal" {
+                                ways_out += 1;
+                            }
                         }
                         if entered {
+                            // A dungeon refuses a Town Portal, so the marked way out is
+                            // the ONLY way out that isn't dying. `at_exit` has always
+                            // accepted the door you came in by as one — but the snapshot
+                            // drew only the authored far exit, so on a floor whose exit
+                            // you hadn't found yet there was nothing on screen to walk
+                            // back to. Floor 0 always holds the entrance, so a floor-0
+                            // snapshot with no portal at all is that bug.
+                            assert!(
+                                ways_out > 0,
+                                "a dungeon floor must show at least one way out"
+                            );
                             return;
                         }
                     }

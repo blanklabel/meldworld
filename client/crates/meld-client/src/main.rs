@@ -272,6 +272,7 @@ fn main() {
                 city::party_panel_buttons,
                 city::loadout_buttons,
                 city::loadout_name_input,
+                city::yard_rename_input,
                 city::party_panel_refresh,
                 city_input,
                 city_action_buttons,
@@ -370,6 +371,7 @@ fn main() {
                 unlock_banner,
                 menu::render_main_menu,
                 main_menu_click,
+                use_item_click,
                 return_to_town_click,
                 build_world_walls,
                 sync_chests,
@@ -1543,6 +1545,10 @@ struct CityUi {
     /// take down). Opens by itself the first time an account reaches town without a
     /// party of its own, so nobody dives with the newcomer default by accident.
     party_open: bool,
+    /// Which class the Drill Yard's detail panel is describing — the last one
+    /// hovered or clicked. Separate from the party itself, so you can read a class
+    /// before deciding to field it.
+    yard_focus: String,
 }
 
 /// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).

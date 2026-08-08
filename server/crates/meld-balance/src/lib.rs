@@ -584,6 +584,8 @@ pub struct WorldGen {
     pub dungeon_door_half: f64,
     /// DG-3: per-streamed-section chance of a hand-designed dungeon entrance.
     pub dungeon_spawn_chance: f64,
+    /// No dungeon entrance closer to the hub than this.
+    pub dungeon_min_distance: f64,
     /// DG-3/DG-5: effective-distance (difficulty + loot) added per dungeon floor.
     pub dungeon_depth_level_step: i64,
     /// DG-3b/DG-4: base HP a sprung dungeon trap deals (scaled up by dungeon depth).

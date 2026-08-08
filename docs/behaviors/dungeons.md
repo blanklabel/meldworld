@@ -1,6 +1,6 @@
 # Dungeons (Hand-Designed Sub-Spaces)
 
-A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole from the infinite seeded overworld. As you roam the streaming overworld, a biome section can host a **dungeon entrance**; stepping up to it and choosing to descend drops your group into the dungeon's own space, laid out by a designer with **puzzles, stairs, traps, a boss, and treasure**. It is a **committed space**: once inside, you leave only by reaching the authored **end-exit** or by **dying**. Every dungeon is a **per-entry-fresh** copy shared by the group that entered it (up to 4), so co-op parties each get their own run at the content.
+A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole from the infinite seeded overworld. As you roam the streaming overworld, a biome section can host a **dungeon entrance**; stepping up to it and choosing to descend drops your group into the dungeon's own space, laid out by a designer with **puzzles, stairs, traps, a boss, and treasure**. It is a **committed space**: no Town Portal reaches inside, so you leave only by walking to a **marked door** — the authored end-exit, or the entrance you came in by — or by **dying**. Every dungeon is a **per-entry-fresh** copy shared by the group that entered it (up to 4), so co-op parties each get their own run at the content.
 
 **Source:** GDD.md §2.1 (the maze); CANON.md §D25 (dungeons), §D6 (death/durability), §S (server-authoritative); ROADMAP WG-1. Design of record: [`../proposals/dungeons.md`](../proposals/dungeons.md).
 
@@ -35,8 +35,11 @@ A **dungeon** is a hand-authored, multi-floor sub-space — the opposite pole fr
 - **No Town Portal inside a dungeon.** `run.begin_extraction` is rejected while you are in a dungeon.
 - You leave only by:
   - the authored **end-exit** — stepping onto it returns you (and only you) to the overworld at your entry position; or
+  - **the door you came in by** — the floor-0 entrance is also a way out (`at_exit`). Turning back is not a reward: you leave with exactly what you are carrying, and you have not extracted. It exists so that *losing the thread* stops being fatal in a space that refuses a Town Portal; or
   - **death** — a wipe ends the run exactly like an overworld death (see below).
-- Moving **up/down among floors** (via stairs) is free; only *leaving* is gated. The overworld entrance is effectively sealed behind you until you clear the dungeon.
+- Both kinds of way out are **drawn** — each rides the floor snapshot as a `portal` prop. An exit a player cannot see is an exit that does not exist, and floor 0 always carries the entrance, so every floor a group can reach shows at least one marked way home.
+- The entrance is **disarmed on arrival** (`Occupant::arrived_on`), so descending does not bounce you straight back out; it re-arms once you step off the cell.
+- Moving **up/down among floors** (via stairs) is free; only *leaving* is gated.
 
 ## Traversal — movement, puzzles, stairs
 

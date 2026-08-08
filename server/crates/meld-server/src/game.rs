@@ -1564,7 +1564,19 @@ impl WorldActor {
                         }
                     }
                 }
-                for (n, e) in def.exits.iter().filter(|e| e.floor == floor).enumerate() {
+                // Both KINDS of way out, because `DungeonInstance::at_exit` accepts
+                // both: the authored far exit, and the door you walked in through.
+                // The entrance was never drawn, so the one exit that is always
+                // reachable — the whole point of it, since a dungeon refuses a Town
+                // Portal — was invisible, and a player who lost the thread had no
+                // marked way back to it.
+                for (n, e) in def
+                    .exits
+                    .iter()
+                    .chain(def.entrances.iter())
+                                        .filter(|e| e.floor == floor)
+                    .enumerate()
+                {
                     let pos = Position::new(e.x as f64 + 0.5, e.y as f64 + 0.5);
                     entities.push(dungeon_prop(format!("dexit-{floor}-{n}"), pos, "portal"));
                 }
@@ -2511,6 +2523,17 @@ impl GameState {
             wr::Harvest::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_harvest(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::UseItem::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_use_item(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
                         Vec::new(),
@@ -4395,6 +4418,188 @@ impl WorldActor {
         (self.end_harvest(player_id, "cancelled"), Vec::new())
     }
 
+    /// Drink a potion in the field (out of combat) — the overworld half of the
+    /// battle Item command. Before this, a wounded party had to FIND a fight before
+    /// it could heal, which is exactly backwards: you died on the walk there.
+    ///
+    /// Server-authoritative in the way that matters for a client someone has edited:
+    /// the request names only an item kind and a hero slot, and every number — the
+    /// dose, the cap, whether the effect even applies — is computed here from the
+    /// registry and balance. A hacked client can ask to drink what it doesn't have,
+    /// or heal a hero that doesn't exist; it gets an error, not an effect.
+    fn handle_use_item(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        use meld_proto::consumables::{self as con, ConsumableEffect as E};
+        let seq = raw.seq;
+        let reject = |msg: &str| {
+            (
+                vec![error(player_id, ErrorCode::ValidationError, msg, Some(seq))],
+                Vec::new(),
+            )
+        };
+        let req: wr::UseItem = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject("bad use_item"),
+        };
+
+        // In a fight the battle Item command is the one that works: it runs on the
+        // actor's turn, spends the gauge, and is visible to everyone in the fight.
+        let in_battle = self.parties_in_battle();
+        let fighting = self
+            .run
+            .runs
+            .iter()
+            .any(|r| r.player_id == player_id && in_battle.contains(&r.party_id));
+        if fighting {
+            return reject("Use it on your turn.");
+        }
+
+        let Some(def) = con::consumable(&req.item_kind) else {
+            return reject("Not a potion.");
+        };
+        let dose = self.balance.consumable.potency_mult(def.potency);
+        // Whether a potion works out here is a property of the POTION, so it is
+        // answered before anything about this particular pack. "Save that one for a
+        // fight" is the useful reply either way; "out of bulwark tonic" would send a
+        // player looking for more of something that was never going to help.
+        if matches!(def.effect, E::Barrier | E::Regen | E::Evasion | E::Adrenaline) {
+            return reject("Save that one for a fight.");
+        }
+
+        let heroes = self.party_views(player_id);
+        let slot = req.hero_slot;
+        if slot < 0 || slot as usize >= heroes.len() {
+            return reject("No such hero.");
+        }
+        let slot = slot as usize;
+        let max_hp = heroes[slot].max_hp;
+        let hp_now = heroes[slot].hp;
+
+        let have = self
+            .run
+            .run_mut(player_id)
+            .map(|r| {
+                r.backpack
+                    .iter()
+                    .find(|i| i.item_kind == req.item_kind)
+                    .map_or(0, |i| i.quantity)
+            })
+            .unwrap_or(0);
+        if have <= 0 {
+            return reject(&format!("Out of {}.", req.item_kind.replace('_', " ")));
+        }
+
+        // Work out the new HP (and any XP) BEFORE spending anything, so a bottle that
+        // would do nothing stays corked. A no-op that still consumed the item would be
+        // the cruellest possible reading of "you can use items in the field".
+        let mut new_hp: Option<i32> = None;
+        let mut grant_xp: i64 = 0;
+        match def.effect {
+            E::Heal | E::FullHeal => {
+                if hp_now <= 0 {
+                    return reject("They're down — that needs a revive.");
+                }
+                if hp_now >= max_hp {
+                    return reject("Already at full health.");
+                }
+                let raw_heal = match def.effect {
+                    E::FullHeal => max_hp,
+                    _ => ((max_hp as f64) * self.balance.battle.item_heal_fraction * dose).round()
+                        as i32,
+                };
+                new_hp = Some((hp_now + raw_heal).min(max_hp));
+            }
+            E::Revive => {
+                if hp_now > 0 {
+                    return reject("They're still standing.");
+                }
+                let fraction = (self.balance.consumable.revive_hp_fraction * dose).min(1.0);
+                new_hp = Some((((max_hp as f64) * fraction).round() as i32).clamp(1, max_hp));
+            }
+            E::Experience => {
+                grant_xp = self.balance.consumable.insight_mote_xp;
+                if grant_xp <= 0 {
+                    return reject("Nothing to learn.");
+                }
+            }
+            E::Barrier | E::Regen | E::Evasion | E::Adrenaline => {
+                return reject("Save that one for a fight.")
+            }
+        }
+
+        let mut out = Vec::new();
+        if let Some(hp) = new_hp {
+            let hps = self.hero_hp.entry(player_id.to_string()).or_default();
+            if hps.len() < heroes.len() {
+                hps.resize(heroes.len(), 0);
+                for (i, h) in heroes.iter().enumerate() {
+                    if hps[i] == 0 && h.hp > 0 {
+                        hps[i] = h.hp;
+                    }
+                }
+            }
+            hps[slot] = hp;
+        }
+        if grant_xp > 0 {
+            let balance = self.balance.clone();
+            let size = heroes.len().max(1);
+            let mut leveled: Option<(i32, i32)> = None;
+            if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) {
+                let old = r.run_level;
+                // `award_hero_xp` divides by party size (the encounter split); a mote
+                // is drunk by one hero and pays out whole, so pre-multiply to cancel
+                // it — same reasoning as `bank_insight`.
+                if r.award_hero_xp(slot, size, grant_xp * size as i64, &balance) > 0 {
+                    leveled = Some((old, r.run_level));
+                }
+            }
+            if let Some((old, new)) = leveled {
+                let hero_ups = self.hero_level_ups(player_id, old, new);
+                out.push(out_msg(
+                    player_id,
+                    &wr::LevelUp {
+                        new_run_level: new,
+                        levels_gained: new - old,
+                        heroes: hero_ups,
+                    },
+                ));
+            }
+        }
+
+        if let Some(r) = self.run.run_mut(player_id) {
+            if let Some(stack) = r.backpack.iter_mut().find(|i| i.item_kind == req.item_kind) {
+                stack.quantity -= 1;
+            }
+            r.backpack.retain(|i| i.quantity > 0);
+        }
+        out.push(out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item: ItemStack {
+                        item_id: String::new(),
+                        item_kind: req.item_kind,
+                        quantity: 1,
+                        insurance: None,
+                    },
+                    delta: "removed".to_string(),
+                    cause: "field_item".to_string(),
+                }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        ));
+        // The roster is how the client learns the new HP (and level) — same message
+        // the party panel already listens to.
+        let refreshed = self.party_views(player_id);
+        let (synergies, combos) = self.party_depth(player_id);
+        out.push(out_msg(player_id, &wr::Party { heroes: refreshed, synergies, combos }));
+        (out, Vec::new())
+    }
+
     /// The channel tick rate for a node kind, from its material class (`[harvest]`).
     fn harvest_tick_ms(&self, kind: &str) -> Option<u64> {
         let res = self.balance.resource.get(kind)?;
@@ -4987,7 +5192,15 @@ impl WorldActor {
                 let p0 = self.arena.path.get(i).copied().unwrap_or(portal);
                 let p1 = self.arena.path.get(i + 1).copied().unwrap_or(p0);
                 let seed = meld_world::section_seed(self.arena.seed, i);
-                if let Some(pl) = meld_dungeon_run::place_entrance(seed, biome, chance, p0, p1) {
+                // Never on the doorstep: a dungeon takes no Town Portal, so one you
+                // can see from the city gate is a committed space a new player has no
+                // way to read as one.
+                let too_close =
+                    p0.distance_floor() < self.balance.worldgen.dungeon_min_distance as i64;
+                if let Some(pl) = (!too_close)
+                    .then(|| meld_dungeon_run::place_entrance(seed, biome, chance, p0, p1))
+                    .flatten()
+                {
                     self.entrances.push(DungeonEntrance {
                         entity_id: format!("dungeon-entrance-{i}"),
                         dungeon: pl.dungeon,
@@ -5818,10 +6031,22 @@ impl WorldActor {
                 let frac = balance.battle.flee_chit_loss_fraction.clamp(0.0, 1.0);
                 let drop_chance = balance.battle.flee_item_drop_chance.clamp(0.0, 1.0);
                 let seed = inst.arena.seed ^ now_ms();
-                // Everyone who was in the fight is roaming again (they didn't die).
+                // Everyone who was in the fight is roaming again (they didn't die) —
+                // and BOLTS clear of the creature. Setting the state back to `active`
+                // without moving them left them standing on top of it, so the next
+                // tick's `resolve_touches` pulled them straight back into the fight
+                // they had just paid to escape. Fleeing was a death sentence.
+                let flee_dist = balance.world.touch_radius_tiles * 4.0;
                 for pid in &members {
                     if let Some(a) = inst.arena.avatar_mut(pid) {
                         a.state = "active".to_string();
+                        let (dx, dy) = (a.position.x - battle_pos.x, a.position.y - battle_pos.y);
+                        let len = (dx * dx + dy * dy).sqrt();
+                        // Standing exactly on it means no direction to flee in; fall
+                        // back to west, which is the way home.
+                        let (ux, uy) = if len > 1e-6 { (dx / len, dy / len) } else { (-1.0, 0.0) };
+                        a.position.x = battle_pos.x + ux * flee_dist;
+                        a.position.y = battle_pos.y + uy * flee_dist;
                     }
                 }
                 let mut losses: Vec<FleeLoss> = Vec::new();
@@ -5937,11 +6162,17 @@ impl WorldActor {
                 },
             ));
         }
-        for pid in &leveled {
+        // Refresh the roster for EVERYONE who fought, not just whoever levelled. The
+        // roster is what carries `xp`/`xp_to_next`, so sending it only on a level-up
+        // left the party screen reading 0 XP for every fight in between — the progress
+        // was real and completely invisible, which reads as "my heroes get no XP".
+        for pid in &members {
             let heroes = self.party_views(pid);
             let (synergies, combos) = self.party_depth(pid);
             out.push(out_msg(pid, &wr::Party { heroes, synergies, combos }));
-            // Perk tiers scale with run level, so refresh them on level-up too.
+        }
+        // Perk tiers scale with run level, so they only change on a level-up.
+        for pid in &leveled {
             out.push(out_msg(pid, &self.perks_for(pid)));
         }
         (out, effects)

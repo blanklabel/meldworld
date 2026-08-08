@@ -42,6 +42,9 @@ pub enum ClientCmd {
     /// charges a toll (dropped chits + a chance to lose non-permanent items), so
     /// it's a real escape decision, not a free reset (combat-atb.md).
     Flee { battle_id: String, actor: String },
+    /// Drink a potion out of combat, from the overworld menu's Items column. Only
+    /// the effects that outlive a fight work; the server refuses the rest.
+    UseItem { item_kind: String, hero_slot: i32 },
     /// Begin an extraction channel at the single deep fixed portal.
     Extract,
     /// Consume a Town Portal item to extract from anywhere (the primary way out).
@@ -1520,6 +1523,10 @@ impl Inner {
                     "item_id": item_id,
                     "target_ids": [target]
                 }),
+            ),
+            ClientCmd::UseItem { item_kind, hero_slot } => self.send_env(
+                wr::UseItem::TYPE,
+                json!({ "item_kind": item_kind, "hero_slot": hero_slot }),
             ),
             ClientCmd::Extract => self.send_env(
                 wr::BeginExtraction::TYPE,

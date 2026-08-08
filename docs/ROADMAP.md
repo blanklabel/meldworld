@@ -279,6 +279,14 @@ burns on death/leave; some is single-use. See
   **consumed on use** (decrement + destroy at zero). Wire into the existing async
   battle-injection path (GDD §6; [`behaviors/async-interaction.md`](behaviors/async-interaction.md))
   and direct self-use. Stackable in the backpack; add `[TUNABLE]` heal amounts.
+  - Battle use ships (finite, inventory-backed; `qa/tests/potions_are_finite.rs`).
+  - **Field use ships** — `run.use_item { item_kind, hero_slot }` heals / full-heals /
+    revives / pours an Insight Mote out of combat, from the menu's Items column.
+    Effects that only exist inside a fight (Barrier/Regen/Evasion/Adrenaline) are
+    refused, and a potion that would change nothing is refused rather than consumed
+    (`qa/tests/field_item.rs`).
+  - Still open: the **async battle-injection** path (a teammate posting an item into
+    someone else's fight) — that is what keeps this box unticked.
 
 ---
 

@@ -860,6 +860,27 @@ pub mod run {
         const TYPE: &'static str = "run.begin_extraction";
     }
 
+    /// C2S — drink a potion on the overworld, out of combat. Same item menu, same
+    /// backpack, same registry as the battle Item command — you just don't have to
+    /// be bleeding in front of a monster to use one.
+    ///
+    /// Only the potions whose effect OUTLIVES a fight work here: heals, a full heal,
+    /// a revive, an Insight Mote. Barrier/Regen/Evasion/Adrenaline are battle state
+    /// that would evaporate before the next encounter, so the server refuses them
+    /// rather than letting a player waste the bottle.
+    ///
+    /// The client sends only *what* and *on whom*; the server owns the magnitude,
+    /// the stock check, and whether the effect applies at all.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct UseItem {
+        pub item_kind: String,
+        /// Which of the caller's heroes drinks it (0-based party slot).
+        pub hero_slot: i32,
+    }
+    impl Message for UseItem {
+        const TYPE: &'static str = "run.use_item";
+    }
+
     /// C2S — stop an in-progress harvest channel on purpose (the "click away"
     /// gesture). Movement stops one too; this is for putting the tool down while
     /// standing still.
