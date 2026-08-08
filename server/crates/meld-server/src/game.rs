@@ -733,6 +733,20 @@ struct BattleSlot {
     /// Drives the post-battle fixups (victory ⇒ `boss_dead`, defeat ⇒ dungeon
     /// cleanup) in `finish_dungeon_battle`. `None` for every overworld battle.
     dungeon: Option<DungeonBattle>,
+    /// The `encounter_party_scale` these creatures were actually built with, so the
+    /// XP can be paid against the health the party really had to chew through.
+    ///
+    /// Without it the two halves of the party rule disagreed: a four-hero party met
+    /// creatures with 4.4x the HP and then SPLIT the unscaled XP four ways, so each
+    /// hero earned at 0.057x the solo rate per point of health destroyed. The split
+    /// alone is the intended cost (a lone hero absorbs the whole lesson); the 4.4x
+    /// on top of it was not.
+    ///
+    /// Captured at BUILD time on purpose. A co-op joiner does not re-scale the
+    /// creatures — the mob stays crushable — so joining must not inflate the payout
+    /// either: more heroes splitting the same XP is exactly the pressure that sends
+    /// a full co-op group looking for a much harder fight.
+    party_scale: f64,
 }
 
 /// Dungeon context carried by a boss-fight [`BattleSlot`] (DG-3b).
@@ -1971,6 +1985,7 @@ impl WorldActor {
                 .map(|m| m.position)
                 .unwrap_or_else(|| Position::new(0.0, 0.0)),
             dungeon: None,
+            party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
         inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
@@ -2097,6 +2112,7 @@ impl WorldActor {
             parties: std::iter::once(party_id).collect(),
             pos: Position::new(0.0, 0.0),
             dungeon: Some(DungeonBattle { key, boss_id: boss_id.to_string() }),
+            party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
         inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
@@ -5629,12 +5645,17 @@ impl WorldActor {
         };
         let monster_ids = inst.battles[bidx].monster_ids.clone();
         let battle_pos = inst.battles[bidx].pos;
-        // Combined XP for the whole encounter (touched creature + its group).
-        let xp_reward: i64 = monster_ids
+        // Combined XP for the whole encounter (touched creature + its group), paid
+        // against the health it was actually built with: `BattleSlot::party_scale`
+        // is the same multiplier its HP wears, so a fight that took four times the
+        // chewing pays four times the lesson before the party splits it.
+        let base_xp: i64 = monster_ids
             .iter()
             .filter_map(|id| inst.arena.monster_by_id(id))
             .map(|m| m.xp_reward)
             .sum();
+        let xp_reward: i64 =
+            ((base_xp as f64) * inst.battles[bidx].party_scale).round().max(0.0) as i64;
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
         // The outcome applies to every party merged into THIS battle (raid).
         let bp = inst.battles[bidx].parties.clone();

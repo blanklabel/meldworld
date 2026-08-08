@@ -86,7 +86,8 @@ pub struct Runs {
     pub hero_pouch_slots: i32,
     pub extraction_channel_ms: u64,
 
-    pub fights_per_level_offset: i32,
+    pub fights_per_level_base: i32,
+    pub fights_per_level_ramp: i32,
     pub xp_reference_creature: f64,
     pub xp_reference_group: f64,
     pub max_hero_level: i32,

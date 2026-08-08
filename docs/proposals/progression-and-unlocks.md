@@ -18,12 +18,20 @@ the two structural changes that have to happen first.
 
 **Level 255 was impossible on the old curve.** `xp_to_next(L) = xp_base ×
 growth_factor^(L-1)` doubled every level: level 255 needed `80 × 2^254` XP. The curve is
-now the **design statement itself** — *level L takes `L + 1` fights against a same-level
-encounter*. Two fights clear level 1, three clear level 2, four clear level 3. The XP
+now the **design statement itself** — *level L takes `fights_per_level_base` fights
+against a same-level encounter, plus one more every `fights_per_level_ramp` levels*. The XP
 number is **derived** from the encounter tables (a same-level encounter sits at
 `d = 12.5 × L`, since `mlevel(d) = round(d / 12.5)`), so retuning creature XP retunes the
 ladder with it instead of letting the two drift apart. Punch above your level and you
 climb faster; that falls out of the same maths rather than needing a rule.
+
+The ramp is deliberately gentle through the first act. The gate on the **second party
+slot** is a hero at level 10, so everything before it is played solo — and a straight
+`L + 1` shape charged **54** at-level fights for it, which is most of a first session
+spent in the game's least interesting configuration. At the shipped values it costs
+**22**, while level 20 costs 65 and level 30 costs 128 (the old shape wanted 209 and
+464). The goal the curve is tuned against: *most players reach doubles before the run
+that kills them.*
 
 **What is reachable today, and what waits on hubs.** `departure_hub_distance` is
 hard-coded to the Center Hub, so `base_run_level` is always 1: a dive starts at level

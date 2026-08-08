@@ -56,18 +56,21 @@ hero_pouch_slots = 10                 # per hero, on top of the bag
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]
 extraction_channel_ms = 2500
-# Level curve: XP to advance from level L is xp_base * L^xp_curve_exponent — a
-# POLYNOMIAL ladder, because the old "double every level" curve made anything past
-# ~level 30 unreachable by construction (level 255 would have wanted 80 * 2^254 XP)
-# and the cap is now 255. Steep enough that a level is felt, shallow enough that the
-# whole ladder can be climbed. [TUNABLE]
 # Level curve, expressed the way it is designed rather than as a magic constant:
-# LEVEL L TAKES (L + fights_per_level_offset) FIGHTS against a same-level encounter.
-# Two fights clear level 1, three clear level 2, four clear level 3, and so on — the
-# ramp a player feels. The XP number is DERIVED from the encounter tables (a
-# same-level encounter sits at `d = 12.5 x L`, since mlevel(d) = round(d / 12.5)), so
-# retuning creature XP retunes the ladder with it instead of silently desyncing.
-fights_per_level_offset = 1
+# LEVEL L TAKES `fights_per_level_base` FIGHTS against a same-level encounter, plus
+# one more every `fights_per_level_ramp` levels. The XP number is DERIVED from the
+# encounter tables (a same-level encounter sits at `d = 12.5 x L`, since
+# mlevel(d) = round(d / 12.5)), so retuning creature XP retunes the ladder with it
+# instead of silently desyncing.
+#
+# The ramp is gentle through the first act on purpose. Level 10 is the gate on your
+# SECOND party slot, so everything before it is played solo — and the old (L + 1)
+# shape charged 54 at-level fights for it, most of a first session spent in the
+# game's least interesting configuration. Here it costs 22, while level 20 costs 65
+# and level 30 costs 128 (the old shape wanted 209 and 464). The goal this is tuned
+# against: most players reach doubles before the run that kills them. [TUNABLE]
+fights_per_level_base = 2
+fights_per_level_ramp = 5
 xp_reference_creature = 60       # the XP a mid-table creature pays at distance 0 [TUNABLE]
 xp_reference_group = 2.0         # creatures in a typical encounter (see the group ramp) [TUNABLE]
 max_hero_level = 255             # the ceiling a party is expected to reach before a world boss

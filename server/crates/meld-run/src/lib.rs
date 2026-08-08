@@ -23,11 +23,7 @@ pub fn base_run_level(distance: i32, balance: &Balance) -> i32 {
 /// XP needed to advance from level `L`: `xp_base × xp_growth_factor^(L-1)`
 /// (CANON.md §B) — the classic "double the requirement each level" curve.
 pub fn xp_to_next(level: i32, balance: &Balance) -> i64 {
-    // The curve IS its design statement: level L takes (L + offset) fights against a
-    // same-level encounter. Two fights clear level 1, three clear level 2, four clear
-    // level 3. The XP number is derived from the encounter tables rather than tuned
-    // separately, so creature XP and the ladder cannot drift apart.
-    let fights = (level.max(1) + balance.runs.fights_per_level_offset).max(1) as f64;
+    let fights = fights_per_level(level, balance) as f64;
     (fights * same_level_encounter_xp(level, balance) as f64).round().max(1.0) as i64
 }
 
@@ -44,9 +40,17 @@ pub fn same_level_encounter_xp(level: i32, balance: &Balance) -> i64 {
         .max(1.0) as i64
 }
 
-/// How many same-level fights level `level` costs — the design statement itself.
+/// How many same-level fights level `level` costs — the design statement itself:
+/// `base` fights, plus one more every `ramp` levels.
+///
+/// The ramp is deliberately gentle through the first act. The gate on your second
+/// party slot is a hero at level 10, and under the old `(L + 1)` shape that cost 54
+/// at-level fights — the entire opening of the game spent as one hero alone, which
+/// is the least interesting configuration the game has. Here it costs 22, and the
+/// ramp still has teeth further out (65 to level 20, 128 to level 30).
 pub fn fights_per_level(level: i32, balance: &Balance) -> i32 {
-    (level.max(1) + balance.runs.fights_per_level_offset).max(1)
+    let r = &balance.runs;
+    (r.fights_per_level_base + (level.max(1) - 1) / r.fights_per_level_ramp.max(1)).max(1)
 }
 
 /// Total XP to climb from level 1 to `level`.
@@ -730,12 +734,24 @@ mod tests {
     #[test]
     fn a_level_costs_exactly_its_number_of_same_level_fights() {
         let b = Balance::load_default().unwrap();
-        // The design statement, asserted directly: two fights clear level 1, three
-        // clear level 2, four clear level 3.
+        // The design statement, asserted directly: a level costs `base` fights, plus
+        // one more every `ramp` levels.
         assert_eq!(fights_per_level(1, &b), 2);
-        assert_eq!(fights_per_level(2, &b), 3);
-        assert_eq!(fights_per_level(3, &b), 4);
-        assert_eq!(fights_per_level(30, &b), 31);
+        assert_eq!(fights_per_level(5, &b), 2);
+        assert_eq!(fights_per_level(6, &b), 3);
+        assert_eq!(fights_per_level(11, &b), 4);
+
+        // The gate that actually matters: level 10 opens your SECOND party slot, so
+        // the whole first act is spent alone until you reach it. It has to land
+        // inside a session — the old (L + 1) shape wanted 54 at-level fights for it.
+        let to_ten: i32 = (1..10).map(|l| fights_per_level(l, &b)).sum();
+        assert!(
+            (15..=30).contains(&to_ten),
+            "level 10 should cost 15-30 at-level fights, not {to_ten}"
+        );
+        // The ramp still has to bite later, or the ladder is flat.
+        let to_thirty: i32 = (1..30).map(|l| fights_per_level(l, &b)).sum();
+        assert!(to_thirty > to_ten * 4, "the ramp went missing: {to_ten} -> {to_thirty}");
 
         // And the XP cost is exactly that many same-level encounters — so a player
         // who fights at their own level advances on schedule rather than on a curve
