@@ -800,6 +800,55 @@ pub mod run {
         const TYPE: &'static str = "run.open_chest";
     }
 
+    /// C2S — raise a field workstation where the avatar stands (MS-1). Costs ore from
+    /// the run backpack and a Meld skill level in the trade, both checked server-side.
+    /// Deliberate and explicit (a menu choice, not a hotkey) because it spends what you
+    /// gathered — the same reasoning that put the Town Portal on the menu.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct BuildStation {
+        /// Which bench to raise (`smith`).
+        pub kind: String,
+    }
+    impl Message for BuildStation {
+        const TYPE: &'static str = "run.build_station";
+    }
+
+    /// C2S — ask the smith whose station this is to work a piece of YOUR gear. Anyone
+    /// standing at a station may ask; the station owner's Forging level is the skill
+    /// the job is done at, and they take the XP. **Ownership never moves**: the server
+    /// only ever touches gear the requester already owns.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SmithRequest {
+        /// The station being worked at (a `station:<kind>:<uses>` snapshot entity).
+        pub entity_id: Id,
+        /// The requester's own Vault gear.
+        pub gear_id: Id,
+        /// `reroll` or `repair`.
+        pub service: String,
+        /// Material to spend on a reroll (ignored by a repair).
+        #[serde(default)]
+        pub material: String,
+    }
+    impl Message for SmithRequest {
+        const TYPE: &'static str = "run.smith_request";
+    }
+
+    /// S2C — what the smith did, or why they would not: one line, already written for
+    /// the player, plus the station's remaining jobs so the prompt can count down.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SmithResult {
+        pub player_id: Id,
+        pub entity_id: Id,
+        pub gear_id: Id,
+        pub service: String,
+        pub ok: bool,
+        pub message: String,
+        pub uses_left: i32,
+    }
+    impl Message for SmithResult {
+        const TYPE: &'static str = "run.smith_result";
+    }
+
     /// C2S — descend into a hand-designed dungeon whose entrance (`entity_id`, an
     /// `entrance:<dungeon>` snapshot entity) the avatar is standing next to
     /// (WG-1/DG-3b). A committed space: you leave by the exit or by dying, never a
@@ -1082,6 +1131,37 @@ mod tests {
         assert_eq!(session::Authenticate::TYPE, "session.authenticate");
         assert_eq!(battle::SubmitAction::TYPE, "battle.submit_action");
         assert_eq!(run::EnterMaze::TYPE, "run.enter_maze");
+    }
+
+    // The field-station pair, on the wire: a build is a kind, a request names the
+    // station AND the requester's own gear (never anyone else's), and the reply is a
+    // sentence plus the jobs the station has left.
+    #[test]
+    fn the_field_station_messages_round_trip() {
+        assert_eq!(run::BuildStation::TYPE, "run.build_station");
+        assert_eq!(run::SmithRequest::TYPE, "run.smith_request");
+        assert_eq!(run::SmithResult::TYPE, "run.smith_result");
+
+        let json = r#"{"type":"run.smith_request","seq":7,"ts":1,"payload":{"entity_id":"station-smith-0","gear_id":"0195d001-aaaa-7abc-8f01-23456789abcd","service":"reroll","material":"dune_ingot"}}"#;
+        let env: Envelope<run::SmithRequest> = serde_json::from_str(json).unwrap();
+        assert_eq!(env.payload.entity_id, "station-smith-0");
+        assert_eq!(env.payload.service, "reroll");
+        let back: run::SmithRequest =
+            serde_json::from_str(&serde_json::to_string(&env.payload).unwrap()).unwrap();
+        assert_eq!(back.material, "dune_ingot");
+
+        // A repair carries no material, so the field is optional on the wire.
+        let repair: run::SmithRequest = serde_json::from_str(
+            r#"{"entity_id":"station-smith-0","gear_id":"g","service":"repair"}"#,
+        )
+        .unwrap();
+        assert!(repair.material.is_empty());
+
+        let reply: run::SmithResult = serde_json::from_str(
+            r#"{"player_id":"p","entity_id":"station-smith-0","gear_id":"g","service":"repair","ok":true,"message":"mended +6 for 24c","uses_left":3}"#,
+        )
+        .unwrap();
+        assert!(reply.ok && reply.uses_left == 3);
     }
 
     #[test]

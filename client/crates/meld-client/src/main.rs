@@ -169,6 +169,7 @@ fn main() {
         .init_resource::<CraftData>()
         .init_resource::<ShopSelling>()
         .init_resource::<ExploredMap>()
+        .init_resource::<StationUi>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -374,7 +375,9 @@ fn main() {
                 menu::render_main_menu,
                 main_menu_click,
                 use_item_click,
-                return_to_town_click,
+                // The Map column's two explicit choices, grouped so this tuple stays
+                // inside Bevy's per-call system-tuple arity limit.
+                (return_to_town_click, build_station_click),
                 build_world_walls,
                 sync_chests,
                 pulse_collectibles,
@@ -383,7 +386,7 @@ fn main() {
                 update_mob_nameplates,
                 update_minimap,
                 update_minimap_distance,
-                remember_explored,
+                (remember_explored, station_input),
             )
                 .run_if(in_state(Screen::Overworld)),
         )

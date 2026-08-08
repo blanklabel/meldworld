@@ -234,6 +234,101 @@ to `active`. Units already handed over are **not** clawed back.
 
 ---
 
+### `run.build_station` (C2S)
+
+Raises a **field workstation** where the avatar stands (roadmap `MS-1`) — a smith's forge
+out in the maze, so a profession is a role *during* a dive rather than something you do
+between them.
+
+**Source:** roadmap `MS-1`; [`proposals/crafting-and-professions.md`](../../proposals/crafting-and-professions.md).
+**Direction:** C2S — legal only while in a run and not in a battle.
+
+**Payload**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| kind | string (enum: `smith`) | Yes | Which bench to raise. Anything else is a validation error. |
+
+**Server validation** — the builder's persistent **Forging level** must be at least
+`[forge] station_min_forging_level`; they must be carrying at least `[forge]
+station_ore_cost` of a single **ore**-class material in the run backpack (the deepest such
+stack is spent first); and there must be no live station already within `[forge]
+station_radius` on the same elevation. Each refusal says which of those it was.
+
+**Results in** — the ore leaving the backpack (`run.backpack_update`, `cause: "station"`)
+and the station appearing in `world.snapshot` as `station:<kind>:<jobs_left>` for
+**everyone** in the instance. A station with no jobs left is simply absent from the
+snapshot.
+
+**Example**
+
+```json
+{"type": "run.build_station", "seq": 540, "ts": 1783729020000, "payload": {"kind": "smith"}}
+```
+
+---
+
+### `run.smith_request` (C2S)
+
+Asks the smith whose station this is to work a piece of the **requester's own** gear.
+Anyone standing at a station may ask — the station is the permission, and its **owner's**
+Forging level is the skill the job is done at (they also take the Forging XP).
+
+**Source:** roadmap `MS-1`.
+**Direction:** C2S — legal only while in a run, not in a battle, and standing within
+`[forge] station_radius` of a live station on the same elevation.
+
+**Payload**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| entity_id | string | Yes | The station being worked at. |
+| gear_id | string (uuid) | Yes | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. |
+| service | string (enum: `reroll`, `repair`) | Yes | Which of the smith's two services. |
+| material | string | For `reroll` | Material to spend on the re-draw; ignored by a repair. |
+
+**Server validation** — the same tier rules as the HTTP anvil (`repair` needs an
+**insured** piece; `reroll` refuses **ephemeral**), the same costs (`reroll` eats
+`reroll_material_cost + reroll_material_per_tier × tier`), and the station must have a job
+left. **Ownership never moves**: the Vault call is scoped to the sender's own player id, so
+a station cannot reach into another player's gear.
+
+**Results in** — `run.smith_result`. A job is only spent when work actually happened.
+
+**Example**
+
+```json
+{"type": "run.smith_request", "seq": 541, "ts": 1783729021000, "payload": {"entity_id": "station-smith-0", "gear_id": "0195d001-aaaa-7abc-8f01-23456789abcd", "service": "reroll", "material": "dune_ingot"}}
+```
+
+---
+
+### `run.smith_result` (S2C)
+
+What the smith did, or why they would not — one line, already written for the player.
+
+**Direction:** S2C — to the requester only.
+
+**Payload**
+
+| Field | Type | Description |
+|---|---|---|
+| player_id | string | The requester. |
+| entity_id | string | The station. |
+| gear_id | string (uuid) | The piece asked about. |
+| service | string | `reroll` or `repair`. |
+| ok | boolean | Whether work happened. |
+| message | string | Player-facing sentence (what changed and what it cost, or the refusal). |
+| uses_left | integer (int32) | Jobs the station has left — `0` means it is spent and gone from the snapshot. |
+
+**Example**
+
+```json
+{"type": "run.smith_result", "seq": 88, "ts": 1783729021500, "payload": {"player_id": "0195c9a2-1111-7c1a-9b3e-5f6a7b8c9d01", "entity_id": "station-smith-0", "gear_id": "0195d001-aaaa-7abc-8f01-23456789abcd", "service": "reroll", "ok": true, "message": "re-drew Novice Blade for 3 dune_ingot and 90c", "uses_left": 3}}
+```
+
+---
+
 ### `run.channel_started` (S2C)
 
 A channel began; the channeling avatar is visible and vulnerable for the duration. Covers

@@ -336,6 +336,10 @@ pub struct Forge {
     pub forge_xp_per_craft: i64,
     pub catalyst_material_cost: i32,
     pub catalyst_tier_bonus: i32,
+    pub station_min_forging_level: i32,
+    pub station_ore_cost: i32,
+    pub station_uses: i32,
+    pub station_radius: f64,
 }
 
 impl Forge {
@@ -522,6 +526,20 @@ pub struct Meld {
     pub alchemy_xp_per_extracted_stack: i64,
     pub forging_xp_per_craft: i64,
     pub mercantile_xp_per_sale: i64,
+}
+
+impl Meld {
+    /// A Meld skill's level from its banked XP.
+    pub fn skill_level(&self, xp: i64) -> i32 {
+        meld_skill_level(xp, self.xp_per_level)
+    }
+}
+
+/// A Meld skill's level from its banked XP. One definition, because both the HTTP
+/// crafting gates and the world's field-station gates read it — two copies of this
+/// would be two different games.
+pub fn meld_skill_level(xp: i64, xp_per_level: i64) -> i32 {
+    (1 + xp / xp_per_level.max(1)).clamp(1, 99) as i32
 }
 
 /// What the Broker pays for a material (MS-1 / EC-2). Deliberately a **floor

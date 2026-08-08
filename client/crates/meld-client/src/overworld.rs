@@ -249,6 +249,7 @@ pub(crate) fn touch_action_buttons(
     session: Res<Session>,
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
+    mut station: ResMut<StationUi>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -269,6 +270,10 @@ pub(crate) fn touch_action_buttons(
                         }
                         Some(Interact::EnterDungeon { entity_id }) => {
                             net.0.send(ClientCmd::EnterDungeon { entity_id })
+                        }
+                        Some(Interact::UseStation { entity_id, jobs }) => {
+                            station.open = Some(entity_id);
+                            station.jobs = jobs;
                         }
                         Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
                         None => {}
@@ -542,9 +547,24 @@ pub(crate) fn update_overworld_hud(
     session: Res<Session>,
     notice: Res<Notice>,
     time: Res<Time>,
+    station: Res<StationUi>,
+    craft: Res<CraftData>,
+    inv: Res<InventoryData>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
+    // An open field bench IS the HUD while it is open — it is a panel the player is
+    // standing in, not a hint about what they could press.
+    if let Some(bench) = station_line(&station, &craft, &inv) {
+        let line = match notice.live(time.elapsed_secs_f64()) {
+            Some(why) => format!("{bench}\n\u{f0026} {why}"),
+            None => bench,
+        };
+        if **t != line {
+            **t = line;
+        }
+        return;
+    }
     // A refusal the player just earned outranks the prompt: they pressed a key and are
     // owed the reason before being told what they could press next.
     if let Some(why) = notice.live(time.elapsed_secs_f64()) {
@@ -698,8 +718,14 @@ pub(crate) fn overworld_input(
     session: Res<Session>,
     overlay: Res<Overlay>,
     time: Res<Time>,
+    mut station: ResMut<StationUi>,
     mut auto_cooldown: Local<f32>,
 ) {
+    // While a field bench is open its own keys own the keyboard (the bench's [E] is
+    // "leave", handled by `station_input`), so [E] must not also re-open it.
+    if station.open.is_some() {
+        return;
+    }
     if overlay.kind.is_some() {
         return;
     }
@@ -742,6 +768,12 @@ pub(crate) fn overworld_input(
         Interact::Harvest { entity_id, .. } => net.0.send(ClientCmd::Harvest { entity_id }),
         Interact::OpenChest { entity_id } => net.0.send(ClientCmd::OpenChest { entity_id }),
         Interact::EnterDungeon { entity_id } => net.0.send(ClientCmd::EnterDungeon { entity_id }),
+        // A station is a bench, not a one-shot: [E] opens it and the keys work from
+        // there, the same way the city anvil does.
+        Interact::UseStation { entity_id, jobs } => {
+            station.open = Some(entity_id);
+            station.jobs = jobs;
+        }
         Interact::Extract => net.0.send(ClientCmd::Extract),
     }
 }
@@ -758,6 +790,9 @@ pub(crate) enum Interact {
     Harvest { entity_id: String, label: String },
     OpenChest { entity_id: String },
     EnterDungeon { entity_id: String },
+    /// Work at a field station someone raised. `jobs` is what it has left, so the
+    /// prompt can say whether it is worth walking over to.
+    UseStation { entity_id: String, jobs: u8 },
     Extract,
 }
 
@@ -770,6 +805,7 @@ impl Interact {
             Interact::Harvest { label, .. } => format!("Gather {label}"),
             Interact::OpenChest { .. } => "Open the chest".into(),
             Interact::EnterDungeon { .. } => "Descend".into(),
+            Interact::UseStation { jobs, .. } => format!("Use the forge ({jobs} left)"),
             Interact::Extract => "Extract".into(),
         }
     }
@@ -812,6 +848,10 @@ pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<In
             }),
             EntityKind::Chest if !e.opened => Some(Interact::OpenChest { entity_id: id.clone() }),
             EntityKind::Entrance => Some(Interact::EnterDungeon { entity_id: id.clone() }),
+            EntityKind::Station => Some(Interact::UseStation {
+                entity_id: id.clone(),
+                jobs: e.bodies_required,
+            }),
             EntityKind::Portal => Some(Interact::Extract),
             _ => None,
         };
@@ -1379,6 +1419,23 @@ pub(crate) fn sync_overworld_sprites(
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
             EntityKind::Chest => {}
+            EntityKind::Station => {
+                // A field forge someone raised. Warm-lit with the portal's ground ring,
+                // because it has to read as "a thing that is HERE now" against terrain
+                // the player has already walked past.
+                let root = spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    1.8,
+                    Color::srgb(1.5, 1.0, 0.55),
+                    0.25,
+                );
+                add_ground_ring(&mut commands, &wa, root);
+            }
             EntityKind::Stair => {
                 // The way down, and it has to out-read the walls around it: dungeon
                 // wall blocks stand 3.2 units, so a 1.6 marker was hidden behind the
@@ -3597,5 +3654,211 @@ mod explored_map_tests {
         let (px, py) = map_to_px(18.0, 18.0, b1, w, h);
         assert!(px.is_finite() && py.is_finite());
         assert!((0.0..=w).contains(&px) && (0.0..=h).contains(&py), "{px},{py}");
+    }
+}
+
+// ---------------------------------------------------------- field stations --
+
+/// The field bench, while it is open. A station is a PLACE, so this holds the station
+/// being worked at rather than a screen: walk away and the world closes it.
+#[derive(Resource, Default)]
+pub(crate) struct StationUi {
+    pub open: Option<String>,
+    pub jobs: u8,
+}
+
+/// The field bench's one line: which piece is on it, and the two keys. Deliberately
+/// the same shape as the city anvil's bench, because it is the same errand — the only
+/// difference is whose skill is doing it.
+pub(crate) fn station_line(
+    station: &StationUi,
+    craft: &CraftData,
+    inv: &InventoryData,
+) -> Option<String> {
+    let id = station.open.as_ref()?;
+    let _ = id;
+    let head = format!("FIELD FORGE  ({} job(s) left)", station.jobs);
+    let Some(g) = crate::city::bench_gear(craft, inv) else {
+        return Some(format!("{head}   nothing in your Vault to work on   [E] leave"));
+    };
+    let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    let mut keys = Vec::new();
+    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
+    }
+    if ins == Some(meld_proto::enums::Insurance::Insured) {
+        keys.push("[P] repair".to_string());
+    }
+    if keys.is_empty() {
+        keys.push("nothing a smith can do with this".to_string());
+    }
+    Some(format!(
+        "{head}   <-/-> {} T{} {}   {}   [E] leave",
+        g.name,
+        g.tier,
+        ins.map(|i| i.label()).unwrap_or("?"),
+        keys.join("   ")
+    ))
+}
+
+/// Keys for the field bench. Only live while a station is open, and the station closes
+/// the moment you step out of its reach — a bench you are not standing at is not yours
+/// to use, and the server would refuse anyway.
+pub(crate) fn station_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    inv: Res<InventoryData>,
+    mut craft: ResMut<CraftData>,
+    mut station: ResMut<StationUi>,
+) {
+    let Some(id) = station.open.clone() else { return };
+    // Out of reach (or the station is spent and gone from the snapshot) → closed.
+    let still_here = match (world.entities.get(&session.player_id), world.entities.get(&id)) {
+        (Some(me), Some(st)) => {
+            ((st.x - me.x).powi(2) + (st.y - me.y).powi(2)).sqrt() <= INTERACT_REACH * 2.0
+        }
+        _ => false,
+    };
+    if !still_here || keys.just_pressed(KeyCode::Escape) {
+        station.open = None;
+        return;
+    }
+    let n = inv.gear.len();
+    if n > 0 && keys.just_pressed(KeyCode::ArrowRight) {
+        craft.bench = (craft.bench + 1) % n;
+        return;
+    }
+    if n > 0 && keys.just_pressed(KeyCode::ArrowLeft) {
+        craft.bench = (craft.bench + n - 1) % n;
+        return;
+    }
+    let repair = keys.just_pressed(KeyCode::KeyP);
+    let reroll = keys.just_pressed(KeyCode::KeyR);
+    if !(repair || reroll) {
+        return;
+    }
+    let Some(g) = crate::city::bench_gear(&craft, &inv) else { return };
+    let material = if reroll {
+        // Same rule as the city anvil: spend the deepest refined stock rather than
+        // making anyone name a material at a bench in a maze.
+        match crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
+            Some(m) => m,
+            None => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    net.0.send(ClientCmd::SmithRequest {
+        entity_id: id,
+        gear_id: g.gear_id.clone(),
+        service: if repair { "repair".into() } else { "reroll".into() },
+        material,
+    });
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+
+    fn piece(insurance: &str, tier: i32) -> meld_client::net::GearLine {
+        meld_client::net::GearLine {
+            gear_id: "g1".into(),
+            name: "Wearing Blade".into(),
+            slot: "main_hand".into(),
+            class_key: String::new(),
+            insurance: insurance.into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+            tier,
+            equipped_hero_slot: None,
+            max_durability: 8,
+            base_max_durability: 12,
+            atk_bonus: 4,
+            def_bonus: 0,
+            spd_bonus: 0,
+            reroll_cost: 3 + 2 * tier,
+        }
+    }
+
+    // A closed bench says nothing at all — the HUD is silent unless something is
+    // actually in front of you.
+    #[test]
+    fn a_closed_bench_prints_nothing() {
+        let station = StationUi::default();
+        assert!(station_line(&station, &CraftData::default(), &InventoryData::default()).is_none());
+    }
+
+    // Open, the field bench reads like the city anvil's: the piece, its tier, and only
+    // the services that tier can take — the same rules, wherever the anvil is.
+    #[test]
+    fn the_field_bench_offers_what_the_city_bench_would() {
+        let station = StationUi { open: Some("station-smith-0".into()), jobs: 3 };
+        let craft = CraftData::default();
+        let mut inv = InventoryData::default();
+
+        // An empty Vault is an answer, not a blank panel.
+        let empty = station_line(&station, &craft, &inv).expect("open");
+        assert!(empty.contains("3 job(s) left"), "{empty}");
+        assert!(empty.contains("nothing in your Vault"), "{empty}");
+        assert!(empty.contains("[E] leave"), "{empty}");
+
+        inv.gear = vec![piece("insured", 2)];
+        let insured = station_line(&station, &craft, &inv).expect("open");
+        assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
+        assert!(insured.contains("[P] repair"), "{insured}");
+
+        inv.gear = vec![piece("standard", 1)];
+        let standard = station_line(&station, &craft, &inv).expect("open");
+        assert!(standard.contains("[R] reroll (5 stock)"), "{standard}");
+        assert!(!standard.contains("[P] repair"), "{standard}");
+
+        inv.gear = vec![piece("ephemeral", 3)];
+        let ephemeral = station_line(&station, &craft, &inv).expect("open");
+        assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
+        assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
+    }
+
+    // [E] on a station opens the bench rather than firing a one-shot action: the two
+    // services are keys AT the bench, so the world's one interact key has to hand off.
+    #[test]
+    fn e_on_a_station_offers_the_forge_and_counts_its_jobs() {
+        let mut world = Overworld::default();
+        let session = Session { player_id: "me".into(), ..Default::default() };
+        let mut me = OwEntity {
+            x: 0.0,
+            y: 0.0,
+            kind: EntityKind::Player,
+            name: None,
+            faction: None,
+            radius: 0.0,
+            battling: false,
+            level: 0,
+            opened: false,
+            mob_level: None,
+            hp: None,
+            max_hp: None,
+            encounter_class: None,
+            aggression: None,
+            bodies_required: 1,
+        };
+        world.entities.insert("me".into(), me.clone());
+        me.kind = EntityKind::Station;
+        me.name = Some("smith".into());
+        me.bodies_required = 2;
+        me.x = 1.0;
+        world.entities.insert("station-smith-0".into(), me);
+
+        let target = interact_target(&world, &session).expect("a forge in reach");
+        assert!(
+            matches!(&target, Interact::UseStation { entity_id, jobs }
+                if entity_id == "station-smith-0" && *jobs == 2)
+        );
+        // The prompt says how many jobs are left, so nobody walks over for nothing.
+        assert_eq!(target.prompt(), "[E] Use the forge (2 left)");
     }
 }

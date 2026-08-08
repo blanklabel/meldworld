@@ -58,6 +58,10 @@ pub enum ClientCmd {
     OpenChest { entity_id: String },
     /// Descend into a hand-designed dungeon whose entrance the avatar is next to.
     EnterDungeon { entity_id: String },
+    /// Raise a field workstation where the avatar stands (spends ore you carry).
+    BuildStation { kind: String },
+    /// Ask the smith whose station this is to work a piece of YOUR OWN gear.
+    SmithRequest { entity_id: String, gear_id: String, service: String, material: String },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
@@ -141,6 +145,9 @@ pub enum EntityKind {
     Entrance,
     /// A dungeon staircase — the way to the next floor.
     Stair,
+    /// A player-raised field workstation (`monster_kind` carries its kind, `level`
+    /// its elevation, `bodies_required` the jobs it has left). Press [E] to work at it.
+    Station,
     /// An ARMED dungeon trap a Shifter has read (`monster_kind` carries its kind).
     /// Only ever sent when the party's Shift-sense reaches it — the server decides
     /// what is visible, so an unaccompanied party genuinely cannot see these.
@@ -578,6 +585,8 @@ pub enum ServerMsg {
     BrokerQuotes { quotes: Vec<BrokerQuote> },
     /// The result of a craft or a forge, in the player's words.
     CraftResult { text: String },
+    /// A field station answered: what the smith did (or would not), and the jobs left.
+    SmithResult { message: String, ok: bool, uses_left: i32 },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     VanguardBoard {
@@ -1681,6 +1690,18 @@ impl Inner {
             ClientCmd::EnterDungeon { entity_id } => {
                 self.send_env(wr::EnterDungeon::TYPE, json!({ "entity_id": entity_id }))
             }
+            ClientCmd::BuildStation { kind } => {
+                self.send_env(wr::BuildStation::TYPE, json!({ "kind": kind }))
+            }
+            ClientCmd::SmithRequest { entity_id, gear_id, service, material } => self.send_env(
+                wr::SmithRequest::TYPE,
+                json!({
+                    "entity_id": entity_id,
+                    "gear_id": gear_id,
+                    "service": service,
+                    "material": material,
+                }),
+            ),
             ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
@@ -2108,6 +2129,16 @@ impl Inner {
                                     radius = r.parse().unwrap_or(1.0);
                                     (EntityKind::Obstacle, Some(k.to_string()), None)
                                 }
+                                Some(s) if s.starts_with("station:") => {
+                                    // station:<kind>:<uses_left> — the remaining jobs
+                                    // ride `bodies_required`, the existing "how many"
+                                    // field, rather than growing the wire a number that
+                                    // only one tag uses.
+                                    let rest = &s["station:".len()..];
+                                    let (k, u) = rest.rsplit_once(':').unwrap_or((rest, "0"));
+                                    bodies_required = u.parse().unwrap_or(0);
+                                    (EntityKind::Station, Some(k.to_string()), None)
+                                }
                                 Some(s) if s.starts_with("entrance:") => {
                                     // entrance:<dungeon>:<bodies>
                                     let rest = &s["entrance:".len()..];
@@ -2312,6 +2343,20 @@ impl Inner {
                 }
             }
             "run.channel_interrupted" => self.out.push_back(ServerMsg::ChannelInterrupted),
+            "run.smith_result" => {
+                if let Ok(r) = serde_json::from_value::<wr::SmithResult>(raw.payload) {
+                    // The gear itself changed in the Vault, so the inventory the bench
+                    // is reading has to catch up before the next keypress.
+                    if r.ok {
+                        self.fetch_inventory();
+                    }
+                    self.out.push_back(ServerMsg::SmithResult {
+                        message: r.message,
+                        ok: r.ok,
+                        uses_left: r.uses_left,
+                    });
+                }
+            }
             "run.member_result" => {
                 if let Ok(m) = serde_json::from_value::<wr::MemberResult>(raw.payload) {
                     // Only our own copy carries `banked`; others are notifications.

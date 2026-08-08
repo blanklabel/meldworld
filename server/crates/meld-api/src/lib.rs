@@ -1280,7 +1280,7 @@ fn skill_entries(skills: Vec<(String, i64)>, xp_per_level: i64) -> Vec<MeldSkill
     skills
         .into_iter()
         .map(|(skill_kind, xp)| MeldSkillEntry {
-            level: (1 + xp / per).clamp(1, 99) as i32,
+            level: meld_balance::meld_skill_level(xp, per),
             xp,
             skill_kind,
         })

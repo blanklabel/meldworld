@@ -114,6 +114,7 @@ fn main() {
                 | ServerMsg::Recipes { .. }
                 | ServerMsg::BrokerQuotes { .. }
                 | ServerMsg::CraftResult { .. }
+                | ServerMsg::SmithResult { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }

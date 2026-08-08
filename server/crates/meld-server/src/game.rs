@@ -823,6 +823,30 @@ struct WorldActor {
     /// (a descent, for one). Drained on the next `tick`, so a milestone is never
     /// lost just because its call path returns only messages.
     pending_effects: Vec<WorldEffect>,
+    /// player_id -> persistent Meld skill levels, mirrored in at form_run. The world
+    /// gates the professions' field verbs on these (raising a station, and whose skill
+    /// a station's work is done at), so it must not have to ask Postgres mid-tick.
+    skill_levels: HashMap<String, HashMap<String, i32>>,
+    /// Smith jobs waiting for their Postgres half. Filled by `handle_smith_request`
+    /// (which owns every world-side check) and drained after the tick by
+    /// `flush_smith_jobs`, so the loop never parks on a round-trip.
+    pending_smith: Vec<SmithJob>,
+}
+
+/// One queued request at a field station: everything the DB half needs, decided
+/// already by the world half. `owner`/`smith_level` are the STATION's smith — the
+/// skill the job is done at — while `requester` is whose gear it is. They are separate
+/// fields precisely because they are allowed to be different players, and because the
+/// only Vault ever touched is the requester's.
+struct SmithJob {
+    requester: String,
+    owner: String,
+    smith_level: i32,
+    station_id: String,
+    gear_id: String,
+    service: String,
+    material: String,
+    client_seq: u32,
 }
 
 /// A placed dungeon entrance in the overworld (DG-3).
@@ -1038,6 +1062,19 @@ impl WorldActor {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("resource:{}", n.kind)),
                 level: Some(n.elevation),
+                ..Default::default()
+            });
+        }
+        // Player-raised field stations, tagged `station:<kind>:<uses>` so the client can
+        // draw the bench and count its remaining jobs in the prompt. A spent station is
+        // gone from the snapshot, which is how it reads as used up.
+        for st in self.arena.stations.iter().filter(|s| !s.spent()) {
+            entities.push(wm::SnapshotEntity {
+                entity_id: st.entity_id.clone(),
+                position: st.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!("station:{}:{}", st.kind, st.uses_left)),
+                level: Some(st.elevation),
                 ..Default::default()
             });
         }
@@ -2216,6 +2253,9 @@ struct GameState {
     /// Loads feed session state back, so they stay on the loop (they only await
     /// Postgres when a player actually connects — infrequent, not per-tick).
     pending_gear_load: Vec<String>,
+    /// Players whose persistent Meld skill levels the world still needs (MS-1 field
+    /// stations gate on them). Drained by `flush_skill_loads` after the tick.
+    pending_skill_load: Vec<String>,
     /// Players whose persistent hero names should be loaded from Postgres.
     pending_hero_load: Vec<String>,
     /// Fire-and-forget persistence sink, drained by [`run_db_writer`] off the loop.
@@ -2233,6 +2273,7 @@ impl GameState {
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
+            pending_skill_load: Vec::new(),
             pending_hero_load: Vec::new(),
             db_writes,
         }
@@ -2263,6 +2304,8 @@ impl GameState {
             // harvest XP and renames are fire-and-forget and go to `run_db_writer`
             // off this task, so the tick never blocks on those round-trips.
             self.flush_gear_loads().await;
+            self.flush_skill_loads().await;
+            self.flush_smith_jobs().await;
             self.flush_hero_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
@@ -2528,6 +2571,28 @@ impl GameState {
             wr::BeginExtraction::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_begin_extraction(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::BuildStation::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_build_station(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::SmithRequest::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_smith_request(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
                         Vec::new(),
@@ -2895,6 +2960,8 @@ impl GameState {
                 entrances_scanned: 0,
                 dungeon_scene_sent: HashMap::new(),
                 pending_effects: Vec::new(),
+                skill_levels: HashMap::new(),
+                pending_smith: Vec::new(),
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -3180,6 +3247,9 @@ impl GameState {
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
+        // The professions' field verbs gate on persistent Meld levels, so the world
+        // needs them in hand before anyone tries to raise a station.
+        self.pending_skill_load.extend(party_ids.iter().cloned());
         out
     }
 
@@ -4272,6 +4342,174 @@ impl GameState {
         }
     }
 
+    /// Mirror each fresh diver's persistent Meld skill levels into the world, so the
+    /// field-station gates never have to ask Postgres mid-tick.
+    async fn flush_skill_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_skill_load);
+        for pid in loads {
+            let Ok(uid) = Uuid::parse_str(&pid) else { continue };
+            let Ok(skills) = self.db.get_skills(uid).await else { continue };
+            let per = self.balance.meld.xp_per_level;
+            let levels: HashMap<String, i32> = skills
+                .into_iter()
+                .map(|(kind, xp)| (kind, meld_balance::meld_skill_level(xp, per)))
+                .collect();
+            if let Some(w) = self.world.as_mut() {
+                w.skill_levels.insert(pid, levels);
+            }
+        }
+    }
+
+    /// Do the Postgres half of the smith jobs the world queued this tick. The world
+    /// already decided WHO may ask and WHERE they were standing; what is left is the
+    /// same atomic Vault call the HTTP anvil makes — which is what keeps "ownership
+    /// never moves" structural rather than a rule to remember: every call is scoped to
+    /// the REQUESTER's own player id, so a station cannot touch anyone else's gear.
+    async fn flush_smith_jobs(&mut self) {
+        let jobs: Vec<SmithJob> = match self.world.as_mut() {
+            Some(w) => std::mem::take(&mut w.pending_smith),
+            None => return,
+        };
+        for job in jobs {
+            let forge = self.balance.forge.clone();
+            let Ok(requester) = Uuid::parse_str(&job.requester) else { continue };
+            let Ok(gid) = Uuid::parse_str(&job.gear_id) else {
+                self.dispatch(vec![error(
+                    &job.requester,
+                    ErrorCode::ValidationError,
+                    "Unknown gear.",
+                    Some(job.client_seq),
+                )]);
+                continue;
+            };
+            let row = match self.db.get_gear_by_id(requester, gid).await {
+                Ok(Some(r)) => r,
+                // Not owned by the requester is the same answer as not existing: a
+                // station is not a way to reach into someone else's Vault.
+                _ => {
+                    self.dispatch(vec![error(
+                        &job.requester,
+                        ErrorCode::NotFound,
+                        "That is not yours to work on.",
+                        Some(job.client_seq),
+                    )]);
+                    continue;
+                }
+            };
+            let ins = meld_proto::enums::Insurance::from_wire(&row.insurance);
+            let outcome: Result<String, String> = match job.service.as_str() {
+                "reroll" if job.smith_level < forge.reroll_min_forging_level => Err(format!(
+                    "This smith is Forging {} - a reroll wants {}.",
+                    job.smith_level, forge.reroll_min_forging_level
+                )),
+                "reroll" if ins == Some(meld_proto::enums::Insurance::Ephemeral) => Err(
+                    "Ephemeral gear burns when you reach the city - a reroll would burn with it."
+                        .to_string(),
+                ),
+                "reroll" => {
+                    let class_key = if row.class_key.is_empty() {
+                        "explorer".to_string()
+                    } else {
+                        row.class_key.clone()
+                    };
+                    let rolled = meld_world::reroll_affixes(
+                        &self.balance,
+                        row.tier,
+                        &class_key,
+                        &row.slot,
+                        "forest",
+                        now_ms() ^ hash_str(&job.gear_id),
+                    );
+                    let need = forge.reroll_materials(row.tier);
+                    let materials = [(job.material.clone(), need)];
+                    match self
+                        .db
+                        .reroll_gear_affixes(
+                            requester,
+                            gid,
+                            &materials,
+                            forge.reroll_chit_cost,
+                            &meld_proto::affixes::to_json(&rolled),
+                        )
+                        .await
+                    {
+                        Ok(true) => Ok(format!(
+                            "re-drew {} for {} {} and {}c",
+                            row.name, need, job.material, forge.reroll_chit_cost
+                        )),
+                        Ok(false) => Err(format!(
+                            "A reroll on a tier {} piece needs {} {} and {} chits.",
+                            row.tier, need, job.material, forge.reroll_chit_cost
+                        )),
+                        Err(_) => Err("The forge went cold.".to_string()),
+                    }
+                }
+                _ if ins != Some(meld_proto::enums::Insurance::Insured) => Err(
+                    "Only insured gear wears down - there is nothing here to repair."
+                        .to_string(),
+                ),
+                _ => {
+                    let points = forge.repair_points(job.smith_level);
+                    match self
+                        .db
+                        .repair_gear(requester, gid, points, forge.repair_chit_cost_per_point)
+                        .await
+                    {
+                        Ok(0) => Err("Nothing to repair, or not enough chits.".to_string()),
+                        Ok(restored) => Ok(format!(
+                            "mended {} +{restored} for {}c",
+                            row.name,
+                            restored as i64 * forge.repair_chit_cost_per_point
+                        )),
+                        Err(_) => Err("The forge went cold.".to_string()),
+                    }
+                }
+            };
+            // A station only pays for work that happened, and the XP goes to the SMITH
+            // whose station it is — a field forge is a service its owner provides.
+            let uses_left = match &outcome {
+                Ok(_) => {
+                    let left = self
+                        .world
+                        .as_mut()
+                        .and_then(|w| w.arena.spend_station_use(&job.station_id))
+                        .unwrap_or(0);
+                    let _ = self.db_writes.send(DbWrite::SkillXp(
+                        job.owner.clone(),
+                        "forging".to_string(),
+                        self.balance.forge.forge_xp_per_craft,
+                    ));
+                    left
+                }
+                Err(_) => self
+                    .world
+                    .as_ref()
+                    .and_then(|w| {
+                        w.arena
+                            .stations
+                            .iter()
+                            .find(|s| s.entity_id == job.station_id)
+                            .map(|s| s.uses_left)
+                    })
+                    .unwrap_or(0),
+            };
+            let (ok, message) = match outcome {
+                Ok(m) => (true, m),
+                Err(m) => (false, m),
+            };
+            let result = wr::SmithResult {
+                player_id: job.requester.clone(),
+                entity_id: job.station_id.clone(),
+                gear_id: job.gear_id.clone(),
+                service: job.service.clone(),
+                ok,
+                message,
+                uses_left,
+            };
+            self.dispatch(vec![out_msg(&job.requester, &result)]);
+        }
+    }
+
     /// Load persistent hero names + formation from Postgres for freshly-connected
     /// players.
     async fn flush_hero_loads(&mut self) {
@@ -4320,6 +4558,151 @@ impl WorldActor {
     /// Begin working a resource node (MS-2). This opens a **channel** rather than
     /// completing a gather: `advance_harvests` hands over one unit per tick while the
     /// player stays put and the node holds out.
+    /// Raise a field station where the player stands (MS-1). The ore comes out of the
+    /// RUN backpack, so a field smith has to have gathered for it, and the Forging gate
+    /// is checked against the builder's persistent Meld level — the profession is the
+    /// skill, not the class (see `proposals/crafting-and-professions.md`).
+    fn handle_build_station(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| {
+            (vec![error(player_id, code, msg, Some(seq))], Vec::new())
+        };
+        let req: wr::BuildStation = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad build_station"),
+        };
+        if req.kind != "smith" {
+            return reject(ErrorCode::ValidationError, "No such station.");
+        }
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let forge = &self.balance.forge;
+        let level = self.skill_levels.get(player_id).and_then(|m| m.get("forging")).copied();
+        // No level loaded yet is not a pass: a station is a service, and the whole
+        // point is that the smith's own skill is what the work is done at.
+        if level.unwrap_or(0) < forge.station_min_forging_level {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!(
+                    "Raising a forge in the field takes Forging level {}.",
+                    forge.station_min_forging_level
+                ),
+            );
+        }
+        // Built from ore you are carrying — the deepest stack first, so a smith who
+        // hauled good ore out does not have it spent last.
+        let need = forge.station_ore_cost;
+        let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
+            return reject(ErrorCode::InvalidState, "Not in a run.");
+        };
+        let mut ores: Vec<(usize, i32)> = run
+            .backpack
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| {
+                meld_proto::materials::is_class(
+                    &i.item_kind,
+                    meld_proto::materials::MaterialClass::Ore,
+                )
+            })
+            .map(|(idx, i)| {
+                (
+                    idx,
+                    meld_proto::materials::material(&i.item_kind).map(|m| m.tier).unwrap_or(0),
+                )
+            })
+            .collect();
+        ores.sort_by(|a, b| b.1.cmp(&a.1));
+        let Some((idx, _)) = ores
+            .into_iter()
+            .find(|(idx, _)| run.backpack[*idx].quantity >= need)
+        else {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!("A field forge takes {need} of one ore you are carrying."),
+            );
+        };
+        let ore_kind = run.backpack[idx].item_kind.clone();
+        let uses = forge.station_uses;
+        let radius = forge.station_radius;
+        if self.arena.place_station(player_id, "smith", uses, radius).is_none() {
+            return reject(ErrorCode::InvalidState, "There is already a forge here.");
+        }
+        let run = self
+            .run
+            .runs
+            .iter_mut()
+            .find(|r| r.player_id == player_id)
+            .expect("checked above");
+        run.backpack[idx].quantity -= need;
+        run.backpack.retain(|i| i.quantity > 0);
+        let update = wr::BackpackUpdate {
+            changes: vec![wr::BackpackChange {
+                item: ItemStack {
+                    item_id: Uuid::now_v7().to_string(),
+                    item_kind: ore_kind.clone(),
+                    quantity: need,
+                    insurance: None,
+                },
+                delta: "removed".to_string(),
+                cause: "station".to_string(),
+            }],
+            chits_delta: 0,
+            gear_added: Vec::new(),
+        };
+        (vec![out_msg(player_id, &update)], Vec::new())
+    }
+
+    /// Ask the smith whose station this is to work a piece of the REQUESTER's gear.
+    /// Everything that decides whether it can happen is here (who is standing where,
+    /// whether the station has jobs left); the DB half runs off the tick in
+    /// `flush_smith_jobs`, because the loop must not park on Postgres.
+    fn handle_smith_request(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| {
+            (vec![error(player_id, code, msg, Some(seq))], Vec::new())
+        };
+        let req: wr::SmithRequest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad smith_request"),
+        };
+        if !matches!(req.service.as_str(), "reroll" | "repair") {
+            return reject(ErrorCode::ValidationError, "No such service.");
+        }
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let radius = self.balance.forge.station_radius;
+        let Some(station) = self.arena.station_at(player_id, &req.entity_id, radius) else {
+            return reject(ErrorCode::OutOfRange, "No forge in reach.");
+        };
+        let owner = station.owner_player_id.clone();
+        // The station OWNER's skill is the skill the job is done at — that is the whole
+        // point of asking someone else's smith. An unloaded level counts as none.
+        let smith_level =
+            self.skill_levels.get(&owner).and_then(|m| m.get("forging")).copied().unwrap_or(0);
+        self.pending_smith.push(SmithJob {
+            requester: player_id.to_string(),
+            owner,
+            smith_level,
+            station_id: req.entity_id.clone(),
+            gear_id: req.gear_id.clone(),
+            service: req.service.clone(),
+            material: req.material.clone(),
+            client_seq: seq,
+        });
+        (Vec::new(), Vec::new())
+    }
+
     fn handle_harvest(
         &mut self,
         player_id: &str,

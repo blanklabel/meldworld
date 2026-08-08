@@ -530,6 +530,15 @@ forge_xp_per_craft = 30         # Forging XP for a forge/reroll/repair [TUNABLE]
 # it buys REACH, which is the one thing levelling otherwise gates. [TUNABLE]
 catalyst_material_cost = 2      # trophies consumed by a catalyzed forge
 catalyst_tier_bonus = 1         # tiers the catalyst adds on top of forgeable_tier
+# The FIELD STATION: a smith who carries ore can raise a rough forge out in the maze,
+# and then anyone standing at it can have a piece worked — the station's owner is the
+# skill doing the job. Uses are finite so the city anvil stays the cheaper way to work
+# in bulk, and the ore comes from the run backpack, so a field smith has to have
+# gathered for it. [TUNABLE]
+station_min_forging_level = 2    # the Forging level it takes to raise one
+station_ore_cost = 3             # ore from the backpack that a station is built from
+station_uses = 4                 # jobs it serves before it is spent
+station_radius = 3.0             # world units within which a station can be worked at
 
 # Potions (GR-4) and the Apothecary (EC-2). What each potion DOES is content in
 # `meld_proto::consumables`; these are its numbers, plus the chit price of the

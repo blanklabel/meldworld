@@ -1478,6 +1478,30 @@ pub struct Chest {
     pub elevation: u8,
 }
 
+/// A field workstation a player has raised in the maze (MS-1). A smith who carries
+/// ore can put one down and then ANYONE standing at it can have a piece worked — the
+/// station's owner is the skill doing the job, which is what makes a stacked
+/// profession party worth forming. Finite `uses_left`, so the city anvil stays the
+/// cheaper place to work in bulk.
+#[derive(Debug, Clone)]
+pub struct Station {
+    pub entity_id: Id,
+    /// What kind of bench it is (`smith` today; the Alembic's field twin is next).
+    pub kind: String,
+    pub position: Position,
+    pub elevation: u8,
+    /// Who raised it. Their Meld skill is the one the work is done at, and they take
+    /// the XP for it — a station is a service its owner provides, not a free anvil.
+    pub owner_player_id: Id,
+    pub uses_left: i32,
+}
+
+impl Station {
+    pub fn spent(&self) -> bool {
+        self.uses_left <= 0
+    }
+}
+
 /// A biome boundary the player funnels through: a wall of impassable geo across
 /// the corridor with a single **gap** (aligned to the guaranteed clear path). The
 /// server enforces the wall (movement can only cross `x` inside the gap); the
@@ -1592,6 +1616,8 @@ pub struct Arena {
     pub obstacles: Vec<Obstacle>,
     /// Hand-placed treasure chests scattered through the sections.
     pub chests: Vec<Chest>,
+    /// Player-raised field workstations (MS-1). Empty until someone builds one.
+    pub stations: Vec<Station>,
     /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
     pub seams: Vec<Seam>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
@@ -1788,6 +1814,7 @@ impl Arena {
             ground_loot: Vec::new(),
             obstacles: Vec::new(),
             chests: Vec::new(),
+            stations: Vec::new(),
             seams: Vec::new(),
             path: vec![Position::new(0.0, 0.0)],
             web: Vec::new(),
@@ -3531,6 +3558,64 @@ impl Arena {
         Some((chest.tier, chest.position.distance_floor()))
     }
 
+    /// Raise a field station where this player stands. Pure: the caller has already
+    /// checked the builder's skill and taken the ore — this only owns WHERE it lands
+    /// and refuses to stack two on the same spot (which would let one smith cover a
+    /// tile in benches and never walk again).
+    pub fn place_station(
+        &mut self,
+        player_id: &str,
+        kind: &str,
+        uses: i32,
+        radius: f64,
+    ) -> Option<&Station> {
+        let (position, elevation) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
+        if self.stations.iter().any(|s| {
+            !s.spent() && s.elevation == elevation && s.position.distance_to(&position) <= radius
+        }) {
+            return None;
+        }
+        let entity_id = format!("station-{}-{}", kind, self.stations.len());
+        self.stations.push(Station {
+            entity_id,
+            kind: kind.to_string(),
+            position,
+            elevation,
+            owner_player_id: player_id.to_string(),
+            uses_left: uses,
+        });
+        self.stations.last()
+    }
+
+    /// The station this player is standing at, if any — same elevation, within reach.
+    /// A station is a place, so working at one is a question about where you are.
+    pub fn station_at(&self, player_id: &str, entity_id: &str, radius: f64) -> Option<&Station> {
+        let (ppos, pelev) = {
+            let a = self.avatar(player_id)?;
+            (a.position, a.elevation)
+        };
+        self.stations.iter().find(|s| {
+            s.entity_id == entity_id
+                && !s.spent()
+                && s.elevation == pelev
+                && ppos.distance_to(&s.position) <= radius
+        })
+    }
+
+    /// Spend one of a station's jobs. Returns what is left, or None if it is gone or
+    /// already spent — the caller reports the refusal.
+    pub fn spend_station_use(&mut self, entity_id: &str) -> Option<i32> {
+        let s = self
+            .stations
+            .iter_mut()
+            .find(|s| s.entity_id == entity_id && !s.spent())?;
+        s.uses_left -= 1;
+        Some(s.uses_left)
+    }
+
     /// Walkable bounds `(x_min, x_max, lateral)` — the client frames the map (edge
     /// cliffs/water + end walls) from these so it reads as contained, not endless.
     pub fn bounds(&self) -> (f64, f64, f64) {
@@ -3866,6 +3951,51 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    // A field station is a PLACE: it lands where its builder stands, only one to a
+    // spot, and it can only be worked from that spot and that elevation. Everything
+    // about who may build one lives in the server; this is the world's half.
+    #[test]
+    fn a_station_lands_where_you_stand_and_is_worked_from_there() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 4, false);
+        arena.add_avatar("smith".into(), 6.0);
+        arena.add_avatar("client".into(), 6.0);
+        let radius = 3.0;
+
+        let id = arena.place_station("smith", "smith", 2, radius).expect("raised").entity_id.clone();
+        let here = arena.avatar("smith").unwrap().position;
+        assert_eq!(arena.stations.len(), 1);
+        assert_eq!(arena.stations[0].owner_player_id, "smith");
+
+        // Anyone standing at it may work at it — the station is the permission, not
+        // the person. Its owner is only whose SKILL the job is done at.
+        assert!(arena.station_at("client", &id, radius).is_some());
+
+        // Not from across the maze, though.
+        if let Some(a) = arena.avatar_mut("client") {
+            a.position = Position { x: here.x + 50.0, y: here.y };
+        }
+        assert!(arena.station_at("client", &id, radius).is_none(), "reach is reach");
+
+        // Nor from a terrace above it: a bench is on the ground you built it on.
+        if let Some(a) = arena.avatar_mut("client") {
+            a.position = here;
+            a.elevation = 1;
+        }
+        assert!(arena.station_at("client", &id, radius).is_none(), "elevation counts");
+
+        // One to a spot: a smith cannot carpet a tile in benches.
+        assert!(arena.place_station("smith", "smith", 2, radius).is_none());
+
+        // Its jobs run out, and a spent station is no longer a station.
+        assert_eq!(arena.spend_station_use(&id), Some(1));
+        assert_eq!(arena.spend_station_use(&id), Some(0));
+        assert_eq!(arena.spend_station_use(&id), None, "spent is spent");
+        assert!(arena.station_at("smith", &id, radius).is_none());
+        // …which frees the ground for the next one.
+        assert!(arena.place_station("smith", "smith", 2, radius).is_some());
     }
 
     #[test]
