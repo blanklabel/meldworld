@@ -367,9 +367,8 @@ pub(crate) fn pump_net(
                 // Victory returns to the overworld (go extract!) and pops up the
                 // after-action report; defeat ends the run.
                 if outcome == "victory" {
-                    if *state.get() == Screen::Battle {
-                        next.set(Screen::Overworld);
-                    }
+                    // Stay on the battle screen and show the tally THERE; dismissing
+                    // it is what walks you back out (`render_loot_report`).
                     report.active = true;
                     report.title = "VICTORY".to_string();
                     report.xp = Some(xp);
@@ -377,6 +376,7 @@ pub(crate) fn pump_net(
                     report.items = items;
                     report.gear = gear_drops;
                     report.elapsed = 0.0;
+                    report.gate_return = *state.get() == Screen::Battle;
                 } else if outcome == "fled" {
                     // Fleeing keeps the run alive — back to the overworld, not the
                     // death screen. The server already charged the toll and mirrored
