@@ -32,7 +32,7 @@ target is the direction of travel:
 | Shipped | Target below | Notes |
 |---|---|---|
 | `GET /v1/crafting/recipes` | `GET /v1/recipes` | Unpaginated. Rows carry `recipe`, `name`, `skill`, `required_level`, `skill_level` (the caller's), `craftable`, `output`, `output_quantity`, `inputs[]` (`item_kind`, `quantity`, `material_class`). Sorted by `required_level`, then key. |
-| `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
+| `POST /v1/crafting/craft {recipe}` | `POST /v1/crafting/craft {recipe_id}` | Runs **any** recipe (Alchemy or Forging) rather than splitting craft/synthesize; there is no `Gem` model yet. Answers `{crafted, name, quantity, skill, skill_level, spent: [{item_kind, quantity}]}`. **403 `forbidden`** when the caller's level in the recipe's skill is below `required_level` (matches the target), **409** on missing materials, **404** on an unknown recipe. |
 | `POST /v1/crafting/forge {slot, class_key?, material, catalyst?}` | — | Rolls a whole piece of gear for a slot; not recipe-driven. `material` must be an **ore**-class material and `catalyst`, if given, a **trophy** (400 otherwise). See [Materials](#materials) and [The Forge](#the-forge-and-the-catalyst). |
 | `POST /v1/vault/gear/{gear_id}/reroll`, `/repair` | — | See [vault-gear.md](vault-gear.md). |
 | `GET /v1/vendors/broker`, `POST /v1/vendors/broker/sell` | — | See [The Broker](#the-broker). |
@@ -46,7 +46,8 @@ Forge gate on:
 | Class | Comes from | Consumed by |
 |---|---|---|
 | `reagent` | harvest nodes (plants, salts) | Alchemy recipes |
-| `ore` | harvest nodes (ore, wood) | the Forge, as the **body** of a piece |
+| `ore` | harvest nodes (ore, wood) | the **smelt** recipes (2 raw → 1 refined) |
+| `refined` | smelting an ore (Forging, gated by band) | the Forge, as the **body** of a piece |
 | `trophy` | **felled creatures** (`run.backpack_update` on a kill) | the trophy recipe line, and the Forge as a **catalyst** |
 
 `GET /v1/crafting/recipes` reports each input's `material_class` so a UI can explain
@@ -56,19 +57,54 @@ registry is a bug — it is loot nothing can spend, and unit tests in `meld-prot
 
 ### The Forge and the catalyst
 
-`POST /v1/crafting/forge` spends `[forge] gear_material_cost` of `material` (an ore)
-plus `gear_chit_cost`, and rolls a piece at `forgeable_tier(forging_level)`.
+`POST /v1/crafting/forge` spends `[forge] gear_material_cost` of `material` — a
+**`refined`**-class material, *not* raw ore, since a Smelter stands between the ground
+and the anvil — plus `gear_chit_cost`, and rolls a piece at
+`forgeable_tier(forging_level)`. Passing raw ore is a `400` whose message names the smelt
+to run.
 
 Passing `catalyst` (a trophy) additionally spends `[forge] catalyst_material_cost` of
 it and forges at `catalyzed_tier` = `forgeable_tier + catalyst_tier_bonus`, rolling
 the **epic** affix pool instead of rare. Levelling Forging raises the floor a smith
 can reach; monster parts raise the ceiling.
 
-**Response** — `200 OK`: `{forged, slot, tier, rarity, catalyzed, forging_level}`.
+**Response** — `200 OK`. Describes both what was made and what it cost, so a caller
+never has to re-read the Vault to report a result:
 
-**Errors** — 400 `validation_error` (unknown slot/class, `material` not an ore,
+| Field | Description |
+|---|---|
+| `forged`, `gear_id`, `slot`, `class_key`, `tier`, `rarity` | the piece |
+| `stats` | `{atk, def, spd}` — the rolled bonuses |
+| `max_durability`, `family`, `armor_weight` | the rest of the piece's shape |
+| `affixes` | the rolled affixes (`AD-1`) |
+| `catalyzed`, `forging_level` | whether a trophy was quenched in, and the smith's level |
+| `spent` | `{materials: [{item_kind, quantity}], chits}` — itemised cost |
+
+**Errors** — 400 `validation_error` (unknown slot/class, `material` not refined stock,
 `catalyst` not a trophy); 409 `conflict` (materials or chits short — the message
 names both halves of the bill).
+
+### The Requisition
+
+`GET /v1/vendors/requisition` — Silas's off-the-books counter at the Foundry
+([lore/factions.md](../../lore/factions.md)): the plainest gear in the game, for chits.
+Stocks one piece per legal slot for each class on the caller's roster (falling back to
+the starting class for a fresh account, since an empty shop is useless to exactly the
+player it exists for).
+
+**Response** — `200 OK`: `{vendor: "requisition", name, data: [{slot, class_key, name, price_chits, tier, rarity, insurance, family, armor_weight, stats}]}`.
+
+`POST /v1/vendors/requisition/buy {slot, class_key?}` — chits for one piece, atomically.
+
+**Response** — `200 OK`: `{bought, gear_id, slot, class_key, insurance, stats, spent_chits}`.
+
+**Errors** — 400 `validation_error` (slot not stocked, unknown class); 409 `conflict`
+(not enough chits — the message names the price).
+
+Every piece is **tier 0, common, affix-free, `standard` insurance**, priced from
+`[requisition]`. Deliberately the dullest gear in the game: the counter is a floor to
+stand on after a bad death, never a way for chits to buy past the loot chase, so what a
+clerk sells must always lose to what a smith forges or a creature drops.
 
 ### The Broker
 

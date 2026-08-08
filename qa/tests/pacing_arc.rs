@@ -92,6 +92,7 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
     let mut nav = meld_qa::Nav::default();
     let mut in_battle = false;
     let mut my_c = String::new();
+    let mut mon_c = String::new();
     let mut bid = String::new();
     let mut out = Dive {
         heroes,
@@ -136,15 +137,26 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
                         fight_started = Some(Instant::now());
                         my_c = v["payload"]["your_combatant_id"].as_str().unwrap_or_default().to_string();
                         bid = v["payload"]["battle_id"].as_str().unwrap_or_default().to_string();
+                        mon_c = v["payload"]["enemies"][0]["combatant_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
                     }
                     "battle.turn_ready"
                         if v["payload"]["combatant_id"].as_str() == Some(my_c.as_str()) =>
                     {
                         ws.send(Message::Text(json!({"type":"battle.submit_action","seq":seq,"ts":0,
                             "payload":{"battle_id":bid,"action_id":uuid::Uuid::new_v4().to_string(),
-                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[]}
+                                       "action":"attack","skill_kind":null,"item_id":null,"target_ids":[mon_c]}
                         }).to_string())).await.unwrap();
                         seq += 1;
+                    }
+                    // A `validation_error` means this bot is speaking the protocol
+                    // wrong; failing here names the cause instead of letting the dive
+                    // score zero and look like a balance regression. (`invalid_state`
+                    // is expected: the mover sends intents before the run starts.)
+                    "session.error" if v["payload"]["code"] == json!("validation_error") => {
+                        panic!("server refused a bot action: {}", v["payload"]);
                     }
                     "battle.ended" => {
                         in_battle = false;
@@ -195,15 +207,23 @@ async fn the_pacing_arc_holds_from_one_hero_to_four() {
         assert!(!d.wiped, "a party of {} was wiped out", d.heroes);
     }
 
-    // The XP split: a lone hero absorbs a whole encounter, four share it, so the solo
-    // dive should climb at least as fast per fight as the full party's.
+    // The XP split: a lone hero absorbs a whole encounter, four share it, so a lone
+    // hero should be at least as high a level as a full party after the same
+    // wall-clock.
+    //
+    // Deliberately NOT a per-fight rate. Nobody reaches level 2 in this budget at hub
+    // distance, so `level / fights_won` collapses to `1 / fights_won` — which asserts
+    // the solo hero won FEWER fights than the full party, the opposite of the claim,
+    // and is otherwise pure noise. Comparing the levels reached says what was meant and
+    // stays true when neither party levels.
     let solo = &runs[0];
     let full = &runs[3];
-    let solo_rate = solo.level as f64 / solo.fights_won.max(1) as f64;
-    let full_rate = full.level as f64 / full.fights_won.max(1) as f64;
     assert!(
-        solo_rate >= full_rate,
-        "a lone hero levelled slower per fight than a full party: {solo_rate:.2} vs {full_rate:.2}"
+        solo.level >= full.level,
+        "a full party out-levelled a lone hero on the same clock ({} vs {}) — the XP \
+         split is supposed to make the solo era the fast one",
+        full.level,
+        solo.level
     );
 
     // The encounter ramp: creature health scales superlinearly with party size, so a

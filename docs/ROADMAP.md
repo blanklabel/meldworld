@@ -562,6 +562,26 @@ XP; harvesting exists but is instant.
     `[consumable] potency_per_step`, `[meld] mercantile_xp_per_sale`; new economy source
     **S3** in [`behaviors/economy.md`](behaviors/economy.md). Design of record:
     [`proposals/crafting-and-professions.md`](proposals/crafting-and-professions.md).
+  - 🟡 *The smelt line — Forging finally has a craft ladder:* Forging had **one** recipe
+    in the entire game (the Town Portal) against Alchemy's thirteen, and the Foundry's
+    **Smelter** caste had no mechanic at all. Raw ore is now volatile: a fourth material
+    class **`refined`** (one form per ore, each in its ore's own band so smelting cannot
+    launder shallow material into deep gear), five `forging` smelt recipes at **two raw
+    for one refined**, and **the Forge builds from refined stock** — refusing raw ore
+    with a message naming the smelt to run. A Smithwright's pipeline is now
+    `harvest ore → smelt → forge`. The `min_level` ladder rises by band (1/2/4/6/8),
+    which is the decision: ore you cannot yet work is ore worth banking. Refined stock
+    out-prices its ore at the Broker (`[material] sale_refined_mult`) because a Smelter's
+    labour is in it.
+  - 🟡 *The Forge & Alembic is open (the client half):* crafting was HTTP-only — every
+    recipe, the anvil and the Broker were unreachable from the game. The district in Last
+    City now opens a real panel: the recipe book from `GET /v1/crafting/recipes` with the
+    cursor on a row, **have/need per input** (`1/2 dune_iron` is the whole answer to
+    "what am I missing"), a locked row naming the level it wants, and ENTER to craft. The
+    **anvil** line cycles the slot with `[S]`, arms a trophy quench with `[C]`, and forges
+    with `[F]`, spending the deepest refined stock in the Vault rather than making anyone
+    type a material name. Every refusal comes back in the server's own words. Screenshot
+    flag: `MELD_FORGE` / `?forge`.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first); the Forge/Alembic/
     Broker **client UIs** (all of the above is HTTP-only — `LC-4`); and the crafting-depth

@@ -165,6 +165,8 @@ fn main() {
         .init_resource::<AccountHeroNames>()
         .init_resource::<VanguardBoardData>()
         .init_resource::<ShopData>()
+        .init_resource::<Notice>()
+        .init_resource::<CraftData>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -421,7 +423,7 @@ fn main() {
         // Battle
         .add_systems(
             OnEnter(Screen::Battle),
-            (clear_overworld_sprites, despawn::<PartyFollower>, enter_battle),
+            (clear_overworld_sprites, hide_field_decor, despawn::<PartyFollower>, enter_battle),
         )
         .add_systems(
             OnExit(Screen::Battle),
@@ -1529,6 +1531,8 @@ struct CityUi {
     near: Option<usize>,
     /// True while the Apothecary's shelf is open (EC-2).
     shop_open: bool,
+    /// True while the Forge & Alembic's recipe book is open (MS-1).
+    craft_open: bool,
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
@@ -1541,11 +1545,58 @@ struct CityUi {
     party_open: bool,
 }
 
+/// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).
+#[derive(Resource, Default)]
+pub(crate) struct CraftData {
+    pub recipes: Vec<meld_client::net::RecipeLine>,
+    pub loaded: bool,
+    /// Which recipe row the cursor sits on.
+    pub cursor: usize,
+    /// Which equipment slot the Forge half would make.
+    pub slot: usize,
+    /// Whether the next forge quenches the piece in a trophy.
+    pub catalyze: bool,
+    /// The last thing the workshop said — a made item, or why it refused.
+    pub last: String,
+}
+
+/// The slots the Forge half cycles through, in loadout order.
+pub(crate) const FORGE_SLOTS: [&str; 6] =
+    ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
+
+/// A short-lived line of feedback for something the player just tried and the server
+/// refused. With walk-into interactions a refusal could be silent — you simply kept
+/// walking — but **[E] is a button**, and a button that does nothing reads as broken.
+/// The server already writes good refusals ("The vault is sealed — defeat the boss
+/// first."); this is where they get seen.
+#[derive(Resource, Default)]
+pub(crate) struct Notice {
+    pub(crate) text: String,
+    /// Client-clock seconds after which it fades.
+    pub(crate) until: f64,
+}
+
+impl Notice {
+    pub(crate) fn say(&mut self, text: impl Into<String>, now: f64) {
+        self.text = text.into();
+        self.until = now + NOTICE_SECS;
+    }
+    pub(crate) fn live(&self, now: f64) -> Option<&str> {
+        (now < self.until && !self.text.is_empty()).then_some(self.text.as_str())
+    }
+}
+
+/// How long a refusal stays on screen.
+pub(crate) const NOTICE_SECS: f64 = 3.5;
+
 /// The Apothecary's shelf as last read from `GET /v1/vendors/apothecary` (EC-2).
 #[derive(Resource, Default)]
 pub(crate) struct ShopData {
     pub vendor: String,
     pub items: Vec<meld_client::net::ShopLine>,
+    /// The Requisition's plain-gear stock, shown in the same panel: one shop button,
+    /// both halves of "spend chits to make the next dive easier" (EC-2).
+    pub gear: Vec<meld_client::net::GearShopLine>,
     pub loaded: bool,
 }
 

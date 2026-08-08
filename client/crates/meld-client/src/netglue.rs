@@ -83,13 +83,16 @@ pub(crate) fn pump_net(
         ResMut<crate::world_render::DungeonSceneRes>,
         ResMut<VanguardBoardData>,
         ResMut<ShopData>,
+        ResMut<Notice>,
+        Res<Time>,
+        ResMut<CraftData>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut announce: Announce,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -447,6 +450,20 @@ pub(crate) fn pump_net(
                 shop.items = items;
                 shop.loaded = true;
             }
+            ServerMsg::GearShopStock { gear } => {
+                shop.gear = gear;
+            }
+            ServerMsg::Recipes { recipes } => {
+                craft.recipes = recipes;
+                craft.loaded = true;
+                craft.cursor = craft.cursor.min(craft.recipes.len().saturating_sub(1));
+            }
+            ServerMsg::CraftResult { text } => {
+                craft.last = text;
+                // The book's `craftable` flags are the server's answer at fetch time, so
+                // a craft that changed a level or a stack invalidates them.
+                net.0.fetch_recipes();
+            }
             ServerMsg::VanguardBoard { season, entries, you } => {
                 vanguard.season = season;
                 vanguard.entries = entries;
@@ -479,6 +496,9 @@ pub(crate) fn pump_net(
                     };
                 } else {
                     session.status = format!("error: {message}");
+                    // In a run, a refusal has to be VISIBLE: the player pressed a key
+                    // and is owed a reason. The server's own wording is the message.
+                    notice.say(message.clone(), clock.elapsed_secs_f64());
                 }
             }
             ServerMsg::Disconnected => {

@@ -280,6 +280,55 @@ pub const RECIPES: &[RecipeDef] = &[
         skill: "forging",
         min_level: 1,
     },
+    // --- The SMELT line (`MS-1`): raw ore is volatile, so a Smelter boils it down to
+    // stock the anvil can take. Two raw for one refined — the loss IS the cost of
+    // stabilising it — and the deep bands need a better smith, so ore you cannot yet
+    // work is ore worth banking until you can.
+    RecipeDef {
+        key: "heartoak_stave",
+        name: "Heartoak Stave",
+        inputs: &[("heartoak_bark", 2)],
+        output: "heartoak_stave",
+        output_qty: 1,
+        skill: "forging",
+        min_level: 1,
+    },
+    RecipeDef {
+        key: "dune_ingot",
+        name: "Dune Ingot",
+        inputs: &[("dune_iron", 2)],
+        output: "dune_ingot",
+        output_qty: 1,
+        skill: "forging",
+        min_level: 2,
+    },
+    RecipeDef {
+        key: "cinder_ingot",
+        name: "Cinder Ingot",
+        inputs: &[("cinder_ore", 2)],
+        output: "cinder_ingot",
+        output_qty: 1,
+        skill: "forging",
+        min_level: 4,
+    },
+    RecipeDef {
+        key: "rime_ingot",
+        name: "Rime Ingot",
+        inputs: &[("rime_ore", 2)],
+        output: "rime_ingot",
+        output_qty: 1,
+        skill: "forging",
+        min_level: 6,
+    },
+    RecipeDef {
+        key: "peat_ingot",
+        name: "Peat Ingot",
+        inputs: &[("peat_iron", 2)],
+        output: "peat_ingot",
+        output_qty: 1,
+        skill: "forging",
+        min_level: 8,
+    },
     // --- The trophy line. Every one of these is keyed on a monster part, which is
     // the point: a creature felled anywhere in the world now has something a
     // crafter wants, and the deep bands' parts open the strongest doses.
@@ -379,10 +428,13 @@ mod tests {
                 r.key,
                 r.skill
             );
-            // An output nobody can use is a dead recipe: it must be a potion, or a
-            // known utility item (the Town Portal).
+            // An output nobody can use is a dead recipe: it must be a potion, a known
+            // utility item (the Town Portal), or a registered material — the smelt line
+            // makes refined stock, which the Forge builds from.
             assert!(
-                is_consumable(r.output) || r.output == "town_portal",
+                is_consumable(r.output)
+                    || r.output == "town_portal"
+                    || crate::materials::is_material(r.output),
                 "{} makes {} which nothing can use",
                 r.key,
                 r.output
@@ -421,9 +473,11 @@ mod tests {
         // went unspent, so they get the strictest form of the check.
         use crate::materials::{MaterialClass, MATERIALS};
         for m in MATERIALS {
-            // An ore's sink is the Forge, which takes any ore by class rather than
-            // by name — so a recipe is not the bar for those.
-            if m.class == MaterialClass::Ore {
+            // Ore and refined stock are spent at the Forge, which gates by CLASS
+            // rather than by name — a recipe is not the bar for those. (Ore is also
+            // consumed by the smelt recipes below, but the Forge is the reason it
+            // exists.)
+            if matches!(m.class, MaterialClass::Ore | MaterialClass::Refined) {
                 continue;
             }
             assert!(
@@ -439,6 +493,25 @@ mod tests {
                 "{} is only good for the capstone: {line:?}",
                 t.key
             );
+        }
+    }
+
+    #[test]
+    fn no_potion_uses_an_effect_that_ignores_potency() {
+        // Every effect scales with `potency` in `Battle::resolve_item` EXCEPT
+        // `Experience`: the XP a mote carries is banked by the run (which reads only
+        // the status, not its amount), so a "greater mote" would silently pay the
+        // standard dose. Rather than build scaling no content asks for, this pins the
+        // invariant — if you author one, this test tells you to wire it up first.
+        for c in CONSUMABLES {
+            if c.effect == ConsumableEffect::Experience {
+                assert_eq!(
+                    c.potency, 0,
+                    "{} is an Experience potion with potency {}; the run banks a flat \
+                     `insight_mote_xp` and would ignore it — scale it in `bank_insight` first",
+                    c.key, c.potency
+                );
+            }
         }
     }
 
@@ -477,14 +550,48 @@ mod tests {
     }
 
     #[test]
-    fn potions_credit_alchemy_not_forging() {
+    fn potions_credit_alchemy_and_metalwork_credits_forging() {
+        // The rule, not a headcount: what a recipe MAKES decides which skill it grows.
         for r in RECIPES {
             if is_consumable(r.output) {
                 assert_eq!(r.skill, "alchemy", "{} is a potion", r.key);
+            } else {
+                assert_eq!(r.skill, "forging", "{} is metalwork", r.key);
             }
         }
         assert!(recipes_for_skill("alchemy").len() >= 5);
-        assert_eq!(recipes_for_skill("forging").len(), 1);
+        // Forging had exactly ONE recipe (the Town Portal) before the smelt line; a
+        // profession with a single craft is not a profession.
+        assert!(
+            recipes_for_skill("forging").len() > 1,
+            "Forging needs a craft line of its own"
+        );
+    }
+
+    #[test]
+    fn every_ore_can_be_smelted_and_every_refined_form_is_made_by_exactly_one_recipe() {
+        use crate::materials::{materials_of_class, refined_form, MaterialClass};
+        for ore in materials_of_class(MaterialClass::Ore) {
+            let refined = refined_form(ore.key).expect("every ore smelts");
+            let makers: Vec<&str> = RECIPES
+                .iter()
+                .filter(|r| r.output == refined)
+                .map(|r| r.key)
+                .collect();
+            assert_eq!(makers.len(), 1, "{refined} is made by {makers:?}");
+            let r = recipe(makers[0]).unwrap();
+            assert_eq!(r.skill, "forging", "smelting is the Foundry's trade");
+            assert!(
+                r.inputs.iter().any(|(k, q)| *k == ore.key && *q > 1),
+                "{} should cost more than one {} — the loss is the cost of stabilising it",
+                r.key,
+                ore.key
+            );
+        }
+        // Deep ore needs a better smith, so ore you cannot yet work is worth banking.
+        let shallow = recipe(refined_form("heartoak_bark").unwrap()).unwrap();
+        let deep = recipe(refined_form("peat_iron").unwrap()).unwrap();
+        assert!(deep.min_level > shallow.min_level, "the deep bands should gate harder");
     }
 
     #[test]

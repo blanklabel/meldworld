@@ -110,6 +110,9 @@ fn main() {
                 | ServerMsg::HeroNames { .. }
                 | ServerMsg::VanguardBoard { .. }
                 | ServerMsg::ShopStock { .. }
+                | ServerMsg::GearShopStock { .. }
+                | ServerMsg::Recipes { .. }
+                | ServerMsg::CraftResult { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }

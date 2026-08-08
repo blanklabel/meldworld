@@ -7,6 +7,9 @@
 //! - [`MaterialClass::Reagent`] — harvested plant/mineral matter. Alchemy's input.
 //! - [`MaterialClass::Ore`] — harvested ore/wood. The Forge's *body*: what a piece
 //!   of gear is actually made out of.
+//! - [`MaterialClass::Refined`] — raw ore with the volatility boiled out of it. What
+//!   the Forge actually builds with: the Foundry's Smelter caste stands between the
+//!   ground and the anvil, and so does this class.
 //! - [`MaterialClass::Trophy`] — cut from a felled creature. Alchemy's **trophy
 //!   line** (potions only monster parts make) and the Forge's **catalyst** (quench
 //!   a piece in a trophy and it comes out a tier better).
@@ -25,6 +28,7 @@ use serde::{Deserialize, Serialize};
 pub enum MaterialClass {
     Reagent,
     Ore,
+    Refined,
     Trophy,
 }
 
@@ -33,6 +37,7 @@ impl MaterialClass {
         match self {
             MaterialClass::Reagent => "reagent",
             MaterialClass::Ore => "ore",
+            MaterialClass::Refined => "refined",
             MaterialClass::Trophy => "trophy",
         }
     }
@@ -160,7 +165,58 @@ pub const MATERIALS: &[MaterialDef] = &[
         tier: 4,
         description: "Drawn from a serpent that had swallowed the deep. Handle it sealed.",
     },
+    // --- Refined stock (`MS-1`): what a Smelter hands the anvil. One per ore, same
+    // band as the ore it came out of — smelting stabilises material, it does not move
+    // it up the world.
+    MaterialDef {
+        key: "heartoak_stave",
+        name: "Heartoak Stave",
+        class: MaterialClass::Refined,
+        tier: 0,
+        description: "Seasoned until it stopped arguing. Takes a haft or a bow-back.",
+    },
+    MaterialDef {
+        key: "dune_ingot",
+        name: "Dune Ingot",
+        class: MaterialClass::Refined,
+        tier: 1,
+        description: "The sand cooked out of it. What is left rings when struck.",
+    },
+    MaterialDef {
+        key: "cinder_ingot",
+        name: "Cinder Ingot",
+        class: MaterialClass::Refined,
+        tier: 2,
+        description: "It came out of the furnace hotter than it went in. Nobody asks why.",
+    },
+    MaterialDef {
+        key: "rime_ingot",
+        name: "Rime Ingot",
+        class: MaterialClass::Refined,
+        tier: 3,
+        description: "Smelted cold, which should not work. The Foundry stopped filing reports.",
+    },
+    MaterialDef {
+        key: "peat_ingot",
+        name: "Peat Ingot",
+        class: MaterialClass::Refined,
+        tier: 4,
+        description: "Black iron with the drowning boiled off. Holds an edge like a grudge.",
+    },
 ];
+
+/// The **refined** form of a raw ore, or `None` for anything that isn't smeltable.
+/// Structural: the Smelter's whole job as a lookup.
+pub fn refined_form(ore: &str) -> Option<&'static str> {
+    Some(match ore {
+        "heartoak_bark" => "heartoak_stave",
+        "dune_iron" => "dune_ingot",
+        "cinder_ore" => "cinder_ingot",
+        "rime_ore" => "rime_ingot",
+        "peat_iron" => "peat_ingot",
+        _ => return None,
+    })
+}
 
 pub fn material(key: &str) -> Option<&'static MaterialDef> {
     MATERIALS.iter().find(|m| m.key == key)
@@ -213,5 +269,28 @@ mod tests {
             }
         }
         assert_eq!(materials_of_class(MaterialClass::Trophy).len(), 5);
+    }
+
+    #[test]
+    fn every_ore_has_exactly_one_refined_form_in_its_own_band() {
+        // The Forge builds from refined stock, so an ore with no refined form is an
+        // ore nothing can be made of — and a refined form in the wrong band would let
+        // smelting launder shallow material into deep gear.
+        let ores = materials_of_class(MaterialClass::Ore);
+        let refined = materials_of_class(MaterialClass::Refined);
+        assert_eq!(ores.len(), refined.len(), "one refined form per ore");
+        for ore in &ores {
+            let out = refined_form(ore.key)
+                .unwrap_or_else(|| panic!("{} cannot be smelted into anything", ore.key));
+            let def = material(out).unwrap_or_else(|| panic!("{out} is not registered"));
+            assert_eq!(def.class, MaterialClass::Refined, "{out}");
+            assert_eq!(def.tier, ore.tier, "{out} left {}'s band", ore.key);
+        }
+        // Nothing else claims to be smeltable.
+        for m in MATERIALS {
+            if m.class != MaterialClass::Ore {
+                assert!(refined_form(m.key).is_none(), "{} is not an ore", m.key);
+            }
+        }
     }
 }

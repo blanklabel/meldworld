@@ -540,9 +540,20 @@ pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Optio
 pub(crate) fn update_overworld_hud(
     world: Res<Overworld>,
     session: Res<Session>,
+    notice: Res<Notice>,
+    time: Res<Time>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
+    // A refusal the player just earned outranks the prompt: they pressed a key and are
+    // owed the reason before being told what they could press next.
+    if let Some(why) = notice.live(time.elapsed_secs_f64()) {
+        let line = format!("\u{f0026} {why}");
+        if **t != line {
+            **t = line;
+        }
+        return;
+    }
     let mut line = if session.channeling {
         "gathering\u{2026}  [E] stop".to_string()
     } else {
@@ -2953,6 +2964,27 @@ pub(crate) fn faction_color(faction: &str) -> Color {
     Color::hsl((h % 360) as f32, 0.62, 0.56)
 }
 
+/// Hide the field's decorative scatter when a battle opens.
+///
+/// The grass blades ([`crate::ambient::GrassBlade`]) and ground props
+/// ([`crate::world_render::GroundDetail`]) are a persistent pool that follows the
+/// player and is repositioned by systems gated to `Screen::Overworld`. They are not
+/// snapshot entities, so `clear_overworld_sprites` never touched them — on entering a
+/// battle they simply froze where they stood and kept drawing, which put grass and
+/// mushrooms **in front of** the combatants. Their own systems make them visible again
+/// on the way back out, so hiding is all this needs to do.
+pub(crate) fn hide_field_decor(
+    mut grass: Query<&mut Visibility, With<crate::ambient::GrassBlade>>,
+    mut props: Query<&mut Visibility, (With<crate::world_render::GroundDetail>, Without<crate::ambient::GrassBlade>)>,
+) {
+    for mut v in &mut grass {
+        *v = Visibility::Hidden;
+    }
+    for mut v in &mut props {
+        *v = Visibility::Hidden;
+    }
+}
+
 pub(crate) fn clear_overworld_sprites(mut commands: Commands, q: Query<Entity, With<WorldEntity>>) {
     for e in &q {
         commands.entity(e).despawn();
@@ -3074,6 +3106,22 @@ mod tests {
         assert!(matches!(&t, Interact::Harvest { entity_id, .. } if entity_id == "res-1"));
         assert_eq!(t.prompt(), "[E] Gather Bloom Herb");
 
+        // A chest in reach is offered — including a DUNGEON chest, which arrives as the
+        // same `chest:<tier>:<open>` snapshot tag as an overworld one.
+        world.entities.remove("res-1");
+        world.entities.insert("dchest-vault".into(), ent(EntityKind::Chest, 0.5, 0.0));
+        assert!(
+            matches!(interact_target(&world, &session), Some(Interact::OpenChest { entity_id }) if entity_id == "dchest-vault"),
+            "a chest in reach should be offered"
+        );
+        // An already-opened chest is not offered again.
+        let mut done = ent(EntityKind::Chest, 0.5, 0.0);
+        done.opened = true;
+        world.entities.insert("dchest-vault".into(), done);
+        assert!(interact_target(&world, &session).is_none(), "an opened chest is done");
+        world.entities.remove("dchest-vault");
+        world.entities.insert("res-1".into(), ent(EntityKind::Resource, 1.0, 0.0));
+
         // A closer portal wins over the node.
         world.entities.insert("portal".into(), ent(EntityKind::Portal, 0.2, 0.0));
         assert!(matches!(interact_target(&world, &session), Some(Interact::Extract)));
@@ -3108,6 +3156,104 @@ mod tests {
         assert!((half - 50.0).abs() < 1.0, "{half}");
         // A zero/absent fill length can never divide by zero or overflow the bar.
         assert!((0.0..=100.0).contains(&channel_fill_pct(3.0, 0)));
+    }
+
+    // Running the REAL system, because the thing that can silently break is the wiring
+    // (does `channeling` reach the bar, does the frame un-hide, does the fill widen?),
+    // not the arithmetic. Driving autoplay to a node for a screenshot proved unreliable
+    // — the bot steers at creatures — so the bar is pinned here instead, where it is
+    // deterministic and runs in CI.
+    #[test]
+    fn the_real_bar_hides_when_idle_and_fills_while_channeling() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Session::default())
+            .add_systems(Update, update_channel_bar);
+        let fill = app
+            .world_mut()
+            .spawn((ChannelBarFill, Node { width: Val::Percent(0.0), ..default() }))
+            .id();
+        let frame = app
+            .world_mut()
+            .spawn((ChannelBar, Node { display: Display::None, ..default() }))
+            .id();
+
+        // Idle: the bar stays out of the way.
+        app.update();
+        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
+
+        // A channel starts → the frame appears.
+        {
+            let mut s = app.world_mut().resource_mut::<Session>();
+            s.channeling = true;
+            s.channel_fill_ms = 1000;
+        }
+        app.update();
+        assert_eq!(
+            app.world().get::<Node>(frame).unwrap().display,
+            Display::Flex,
+            "a running channel should show the bar"
+        );
+
+        // …and it fills as time passes, rather than sitting at zero.
+        let width_of = |app: &App| match app.world().get::<Node>(fill).unwrap().width {
+            Val::Percent(p) => p,
+            other => panic!("fill width should be a percentage, got {other:?}"),
+        };
+        let start = width_of(&app);
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            app.update();
+        }
+        let later = width_of(&app);
+        assert!(later > start, "the bar should fill over time: {start} -> {later}");
+        assert!((0.0..=100.0).contains(&later), "{later}");
+
+        // The channel ends → the bar goes away again.
+        app.world_mut().resource_mut::<Session>().channeling = false;
+        app.update();
+        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
+    }
+
+    // A button that does nothing reads as broken. When the server refuses ("The vault
+    // is sealed — defeat the boss first."), the reason has to reach the screen and then
+    // get out of the way.
+    // The field's decorative pool is persistent and follows the player, so a battle
+    // used to open with grass and mushrooms still drawing — in FRONT of the
+    // combatants, because they are billboards nearer the camera than the arena.
+    #[test]
+    fn a_battle_hides_the_fields_decoration() {
+        let mut app = App::new();
+        app.add_systems(Update, hide_field_decor);
+        let blade = app
+            .world_mut()
+            .spawn((crate::ambient::GrassBlade::for_test(), Visibility::Visible))
+            .id();
+        let prop = app
+            .world_mut()
+            .spawn((crate::world_render::GroundDetail::for_test(), Visibility::Visible))
+            .id();
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(blade).unwrap(),
+            Visibility::Hidden,
+            "grass must not draw over the combatants"
+        );
+        assert_eq!(
+            *app.world().get::<Visibility>(prop).unwrap(),
+            Visibility::Hidden,
+            "ground props must not draw over the combatants"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_shown_and_then_expires() {
+        let mut n = Notice::default();
+        assert_eq!(n.live(0.0), None, "nothing to say at rest");
+        n.say("The vault is sealed - defeat the boss first.", 100.0);
+        assert_eq!(n.live(100.0), Some("The vault is sealed - defeat the boss first."));
+        assert_eq!(n.live(100.0 + NOTICE_SECS - 0.1).is_some(), true, "still on screen");
+        assert_eq!(n.live(100.0 + NOTICE_SECS + 0.1), None, "and then it gets out of the way");
     }
 
     #[test]

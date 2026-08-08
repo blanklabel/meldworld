@@ -1035,6 +1035,15 @@ pub(crate) struct GroundDetail {
     last: IVec2,
 }
 
+impl GroundDetail {
+    /// A prop with no cell assigned — enough for tests that only care that the pool
+    /// can be hidden.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self { slot: IVec2::ZERO, last: IVec2::ZERO }
+    }
+}
+
 /// A firefly: a soft glowing dot pinned to a FIXED world spot (`pos`) that shimmers in
 /// place — you walk past it, it does not follow. When it falls far behind the player it
 /// re-scatters to a fresh random spot around them (via `seed`), keeping a lively

@@ -187,7 +187,8 @@ client/scripts/trunk-serve.sh --port 9080 --address 127.0.0.1 --no-autoreload &
 ```
 
 `?party=…` / `?class=…` preset the party, `?autoplay` self-drives the loop, and `?city`
-(+ `?wall` to light the Vanguard Wall) parks in Last City — handy for deterministic
+(+ `?wall` for the Vanguard Wall, `?shop` for the counter, `?forge` for the Forge &
+Alembic) parks in Last City — handy for deterministic
 screenshot states. The `meld-web` entry in `.claude/launch.json`
 runs the trunk step for the browser-preview tooling. Pre-build the wasm once
 (`trunk-build.sh`) so the preview server starts fast instead of timing out on the
@@ -438,12 +439,14 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   battle, `run.cancel_harvest` or walking out of range ends it and keeps every banked
   unit. Biome→node ids in `resources_for_biome`; stats under `[resource.<kind>]`.
 - **Materials are one registry** ([`meld_proto::materials`](shared/meld-proto/src/materials.rs)):
-  every material key with a **class** — `reagent`/`ore` (harvest nodes) and **`trophy`**
-  (the combat drop a felled creature banks, `combat_material_for_biome`) — plus a tier
-  per biome band. The class is what recipes and the Forge gate on: Alchemy's **trophy
-  line** takes monster parts, the Forge takes an *ore* for the body and an optional
-  *trophy* **catalyst** (a tier past the smith's own reach), and the **Broker**
-  (`/v1/vendors/broker`) buys any material for chits + Mercantile XP. A drop key missing
+  every material key with a **class** — `reagent`/`ore` (harvest nodes), **`refined`**
+  (smelted stock) and **`trophy`** (the combat drop a felled creature banks,
+  `combat_material_for_biome`) — plus a tier per biome band. The class is what recipes
+  and the Forge gate on: Alchemy's **trophy line** takes monster parts; the **smelt
+  line** turns 2 raw ore into 1 `refined` (Forging, gated by band); the Forge builds
+  from *refined* stock plus an optional *trophy* **catalyst** (a tier past the smith's
+  own reach); and the **Broker** (`/v1/vendors/broker`) buys any material for chits +
+  Mercantile XP. So Forging's pipeline is `harvest ore → smelt → forge`. A drop key missing
   from the registry is loot nothing can spend, and unit tests fail on it. Design:
   [`proposals/crafting-and-professions.md`](docs/proposals/crafting-and-professions.md).
 - The run backpack rides the wire on `run.backpack_update` (added/removed changes with

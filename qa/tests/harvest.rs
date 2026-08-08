@@ -106,6 +106,7 @@ async fn harvesting_is_a_channel_that_pays_as_it_goes() {
     let mut units = 0usize;
     let mut units_at_interrupt = 0usize;
     let mut saw_exhausted = false;
+    let mut channel_started: Option<(String, u64)> = None;
     let mut requested_at: Option<tokio::time::Instant> = None;
     let mut first_unit_took: Option<Duration> = None;
     let mut in_battle = false;
@@ -214,6 +215,12 @@ async fn harvesting_is_a_channel_that_pays_as_it_goes() {
                             phase = Phase::ToNode;
                         }
                     }
+                    "run.channel_started" if channel_started.is_none() => {
+                        channel_started = Some((
+                            v["payload"]["method"].as_str().unwrap_or_default().to_string(),
+                            v["payload"]["fill_ms"].as_u64().unwrap_or(0),
+                        ));
+                    }
                     "run.backpack_update" => {
                         for ch in v["payload"]["changes"].as_array().into_iter().flatten() {
                             if ch["cause"].as_str().map(|c| c.starts_with("harvest")).unwrap_or(false) {
@@ -275,6 +282,15 @@ async fn harvesting_is_a_channel_that_pays_as_it_goes() {
 
     let material = harvested_kind.expect("a resource node was worked");
     let took = first_unit_took.expect("timed the first unit");
+
+    // The client's progress bar is driven entirely by what this message carries, so the
+    // wire has to name the gather and say how long one payout takes.
+    let (method, fill_ms) = channel_started.expect("a harvest announces its channel");
+    assert!(
+        method.starts_with("harvest:"),
+        "the channel should name the node it is working, got `{method}`"
+    );
+    assert!(fill_ms > 0, "a harvest channel must report its fill length, got {fill_ms}");
 
     // 1. Harvesting takes time — the first unit is not free on the same tick.
     assert!(

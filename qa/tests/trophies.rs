@@ -165,6 +165,16 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
         400,
         "forged a blade out of herbs"
     );
+    // Raw ore is refused too — a Smelter stands between the ground and the anvil — and
+    // the refusal names the smelt so the player is not left guessing.
+    let raw = forge(json!({ "slot": "main_hand", "material": "dune_iron" })).await;
+    assert_eq!(raw.status(), 400, "forged a blade out of unsmelted ore");
+    let err: Value = raw.json().await.unwrap();
+    let msg = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("dune_ingot"),
+        "the refusal should name the smelt to run: {msg}"
+    );
     assert_eq!(
         forge(json!({ "slot": "main_hand", "material": "bog_ichor" })).await.status(),
         400,
@@ -173,8 +183,8 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     assert_eq!(
         forge(json!({
             "slot": "main_hand",
-            "material": "dune_iron",
-            "catalyst": "dune_iron",
+            "material": "dune_ingot",
+            "catalyst": "dune_ingot",
         }))
         .await
         .status(),
@@ -185,7 +195,7 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     // refusal names both halves of it.
     let res = forge(json!({
         "slot": "main_hand",
-        "material": "dune_iron",
+        "material": "dune_ingot",
         "catalyst": "bog_ichor",
     }))
     .await;
@@ -193,8 +203,61 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
     let err: Value = res.json().await.unwrap();
     let msg = err["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("dune_iron") && msg.contains("bog_ichor"),
+        msg.contains("dune_ingot") && msg.contains("bog_ichor"),
         "the refusal should name the catalyst too: {msg}"
+    );
+
+    // The SMELT line: Forging's own craft ladder. Every ore has a smelt, the deep ones
+    // are gated behind a better smith, and the Forge builds from what they produce — so
+    // a Smithwright's pipeline is harvest ore -> smelt -> forge rather than a single tap.
+    let forging_recipes: Vec<&Value> =
+        listed.iter().filter(|r| r["skill"] == "forging").collect();
+    assert!(
+        forging_recipes.len() > 1,
+        "Forging had one recipe (the Town Portal) and needs a craft line: {:?}",
+        forging_recipes.iter().map(|r| &r["recipe"]).collect::<Vec<_>>()
+    );
+    for (ore, refined) in [
+        ("heartoak_bark", "heartoak_stave"),
+        ("dune_iron", "dune_ingot"),
+        ("cinder_ore", "cinder_ingot"),
+        ("rime_ore", "rime_ingot"),
+        ("peat_iron", "peat_ingot"),
+    ] {
+        let r = listed
+            .iter()
+            .find(|r| r["output"] == json!(refined))
+            .unwrap_or_else(|| panic!("no recipe makes {refined}"));
+        assert_eq!(r["skill"], "forging", "{refined} should credit Forging");
+        let takes_raw = r["inputs"].as_array().into_iter().flatten().any(|i| {
+            i["item_kind"] == json!(ore)
+                && i["material_class"] == json!("ore")
+                && i["quantity"].as_i64().unwrap_or(0) > 1
+        });
+        assert!(takes_raw, "{refined} should cost several raw {ore}: {r}");
+        // Refined stock is worth more at the Broker than the ore it came from — a
+        // Smelter's labour is in it.
+        assert!(
+            price(refined) > price(ore),
+            "{refined} ({}) should out-price {ore} ({})",
+            price(refined),
+            price(ore)
+        );
+    }
+    // A fresh smith can run the shallow smelt (only materials are missing → 409) but
+    // the deep bands are locked (403). That gate is the reason to bank ore you cannot
+    // yet work.
+    assert_eq!(craft("heartoak_stave").await.status(), 409, "the first smelt should be open");
+    assert_eq!(craft("peat_ingot").await.status(), 403, "deep ore needs a better smith");
+
+    // A craft says what it MADE and what it COST, so a caller never has to hold the
+    // recipe table or re-read the Vault to report a result.
+    let smelt_refusal = craft("heartoak_stave").await;
+    assert_eq!(smelt_refusal.status(), 409);
+    let err: Value = smelt_refusal.json().await.unwrap();
+    assert!(
+        err["error"]["message"].as_str().unwrap_or_default().contains("heartoak_bark"),
+        "a refusal should name what is missing: {err}"
     );
 
     // The Broker refuses what it does not deal in, refuses a sale the Vault cannot
@@ -238,11 +301,62 @@ async fn every_combat_drop_has_a_recipe_a_forge_use_and_a_price() {
         .unwrap();
     assert_eq!(vault["chits"].as_i64().unwrap(), 0, "a failed sale minted chits");
 
-    // And the whole surface is authenticated.
-    assert_eq!(
-        http.get(format!("{base}/v1/vendors/broker")).send().await.unwrap().status(),
-        401
+    // THE REQUISITION (EC-2): chits buy the plainest gear in the game, so a player who
+    // died with nothing can walk back out equipped.
+    let stock: Value = http
+        .get(format!("{base}/v1/vendors/requisition"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = stock["data"].as_array().expect("the counter has stock");
+    assert!(!rows.is_empty(), "a fresh account should be able to buy something: {stock}");
+    for row in rows {
+        assert!(row["price_chits"].as_i64().unwrap_or(0) > 0, "unpriced stock: {row}");
+        // Shop gear is the FLOOR: tier 0, common, and never insured against a wipe the
+        // way found or forged gear is. Chits must not buy a way past the loot chase.
+        assert_eq!(row["tier"], json!(0), "shop gear should be the baseline: {row}");
+        assert_eq!(row["rarity"], json!("common"), "{row}");
+        assert_eq!(row["insurance"], json!("standard"), "{row}");
+    }
+
+    // A penniless player is refused and told the price.
+    let res = http
+        .post(format!("{base}/v1/vendors/requisition/buy"))
+        .bearer_auth(&token)
+        .json(&json!({ "slot": "main_hand" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409, "bought a blade with no chits");
+    let err: Value = res.json().await.unwrap();
+    assert!(
+        err["error"]["message"].as_str().unwrap_or_default().contains("chits"),
+        "the refusal should name the price: {err}"
     );
+    // Nonsense slots are validation errors rather than surprises.
+    for bad in [json!({ "slot": "hat" }), json!({ "slot": "main_hand", "class_key": "wizard" })] {
+        let res = http
+            .post(format!("{base}/v1/vendors/requisition/buy"))
+            .bearer_auth(&token)
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "accepted {bad}");
+    }
+
+    // And the whole surface is authenticated.
+    for path in ["/v1/vendors/broker", "/v1/vendors/requisition"] {
+        assert_eq!(
+            http.get(format!("{base}{path}")).send().await.unwrap().status(),
+            401,
+            "{path} served an unauthenticated caller"
+        );
+    }
     assert_eq!(
         http.post(format!("{base}/v1/vendors/broker/sell"))
             .json(&json!({ "item_kind": "bog_ichor", "quantity": 1 }))

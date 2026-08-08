@@ -287,6 +287,34 @@ pub struct ShopLine {
     pub price_chits: i64,
 }
 
+/// One craftable recipe as the Forge & Alembic lists it (MS-1). The server owns the
+/// level gate and the input list, so the panel never holds a second copy of the recipe
+/// table that could drift from the real one.
+#[derive(Clone, Debug, Default)]
+pub struct RecipeLine {
+    pub recipe: String,
+    pub name: String,
+    pub skill: String,
+    pub required_level: i32,
+    pub skill_level: i32,
+    pub craftable: bool,
+    pub output_quantity: i32,
+    /// `(item_kind, quantity)` per input, in the server's order.
+    pub inputs: Vec<(String, i32)>,
+}
+
+/// One piece the Requisition counter stocks (EC-2): plain city-made gear for chits.
+#[derive(Clone, Debug, Default)]
+pub struct GearShopLine {
+    pub slot: String,
+    pub class_key: String,
+    pub name: String,
+    pub price_chits: i64,
+    pub atk: i32,
+    pub def: i32,
+    pub spd: i32,
+}
+
 /// One active class-pair synergy or runnable combo (AD-2), as the party screen
 /// renders it — the server describes them so the words never drift from the rules.
 #[derive(Clone, Debug, Default)]
@@ -527,6 +555,12 @@ pub enum ServerMsg {
     },
     /// The Apothecary's shelf (`GET /v1/vendors/apothecary`), for the shop panel.
     ShopStock { vendor: String, items: Vec<ShopLine> },
+    /// The Requisition counter's plain-gear stock (EC-2).
+    GearShopStock { gear: Vec<GearShopLine> },
+    /// The recipe book, for the Forge & Alembic (MS-1).
+    Recipes { recipes: Vec<RecipeLine> },
+    /// The result of a craft or a forge, in the player's words.
+    CraftResult { text: String },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     VanguardBoard {
@@ -588,6 +622,9 @@ struct Inner {
     loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
+    gear_shop_rx: Option<mpsc::Receiver<Vec<GearShopLine>>>,
+    recipes_rx: Option<mpsc::Receiver<Vec<RecipeLine>>>,
+    craft_rx: Option<mpsc::Receiver<String>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -628,6 +665,9 @@ pub fn start(base: String) -> Net {
         loadouts_rx: None,
         vanguard_rx: None,
         shop_rx: None,
+            gear_shop_rx: None,
+            recipes_rx: None,
+            craft_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -693,6 +733,31 @@ impl Net {
     /// Vault so the chit balance the player sees is the server's, not a guess.
     pub fn buy_item(&self, item_kind: String, qty: i32) {
         self.0.borrow_mut().buy_item(item_kind, qty);
+    }
+
+    /// Kick off an authenticated GET of the recipe book (MS-1).
+    pub fn fetch_recipes(&self) {
+        self.0.borrow_mut().fetch_recipes();
+    }
+
+    /// Run one recipe, then refresh the Vault.
+    pub fn craft(&self, recipe: String) {
+        self.0.borrow_mut().craft(recipe);
+    }
+
+    /// Forge one piece of gear from refined stock, optionally quenched in a trophy.
+    pub fn forge(&self, slot: String, material: String, catalyst: Option<String>) {
+        self.0.borrow_mut().forge(slot, material, catalyst);
+    }
+
+    /// Kick off an authenticated GET of the Requisition counter's gear stock (EC-2).
+    pub fn fetch_gear_shop(&self) {
+        self.0.borrow_mut().fetch_gear_shop();
+    }
+
+    /// Buy one plain piece of gear for chits, then refresh the Vault.
+    pub fn buy_gear(&self, slot: String, class_key: String) {
+        self.0.borrow_mut().buy_gear(slot, class_key);
     }
 
     /// Kick off an authenticated GET of the account's saved party loadouts (PT-2).
@@ -815,6 +880,24 @@ impl Inner {
             if let Ok((vendor, items)) = rx.try_recv() {
                 self.shop_rx = None;
                 self.out.push_back(ServerMsg::ShopStock { vendor, items });
+            }
+        }
+        if let Some(rx) = &self.gear_shop_rx {
+            if let Ok(gear) = rx.try_recv() {
+                self.gear_shop_rx = None;
+                self.out.push_back(ServerMsg::GearShopStock { gear });
+            }
+        }
+        if let Some(rx) = &self.recipes_rx {
+            if let Ok(recipes) = rx.try_recv() {
+                self.recipes_rx = None;
+                self.out.push_back(ServerMsg::Recipes { recipes });
+            }
+        }
+        if let Some(rx) = &self.craft_rx {
+            if let Ok(text) = rx.try_recv() {
+                self.craft_rx = None;
+                self.out.push_back(ServerMsg::CraftResult { text });
             }
         }
         if let Some(rx) = &self.vanguard_rx {
@@ -1071,6 +1154,151 @@ impl Inner {
             .unwrap_or_default();
         let mut req =
             ehttp::Request::post(format!("{base}/v1/vendors/apothecary/buy"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.inv_rx = Some(rx);
+        ehttp::fetch(req, move |_res| {
+            spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// GET `/v1/crafting/recipes` — the recipe book with the caller's own level gates
+    /// already resolved by the server (MS-1).
+    fn fetch_recipes(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.recipes_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/crafting/recipes", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut recipes = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for r in v["data"].as_array().into_iter().flatten() {
+                        recipes.push(RecipeLine {
+                            recipe: r["recipe"].as_str().unwrap_or("").to_string(),
+                            name: r["name"].as_str().unwrap_or("").to_string(),
+                            skill: r["skill"].as_str().unwrap_or("").to_string(),
+                            required_level: r["required_level"].as_i64().unwrap_or(1) as i32,
+                            skill_level: r["skill_level"].as_i64().unwrap_or(1) as i32,
+                            craftable: r["craftable"].as_bool().unwrap_or(false),
+                            output_quantity: r["output_quantity"].as_i64().unwrap_or(1) as i32,
+                            inputs: r["inputs"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .map(|i| {
+                                    (
+                                        i["item_kind"].as_str().unwrap_or("").to_string(),
+                                        i["quantity"].as_i64().unwrap_or(0) as i32,
+                                    )
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(recipes);
+        });
+    }
+
+    /// POST a craft, then re-read the Vault. The reply is turned into one line of
+    /// player-facing text here so the panel never has to parse JSON — and a REFUSAL is
+    /// reported just as loudly as a success, because "nothing happened" is the worst
+    /// answer a crafting screen can give.
+    fn craft(&mut self, recipe: String) {
+        if self.session_token.is_empty() || recipe.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "recipe": recipe })).unwrap_or_default();
+        let mut req = ehttp::Request::post(format!("{base}/v1/crafting/craft"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.craft_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(craft_reply_text(&res));
+            spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// POST a forge, then re-read the Vault. Same one-line reply as `craft`, but the
+    /// success case names the STATS, since that is the whole reason to forge.
+    fn forge(&mut self, slot: String, material: String, catalyst: Option<String>) {
+        if self.session_token.is_empty() || slot.is_empty() || material.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut payload = json!({ "slot": slot, "material": material });
+        if let Some(c) = catalyst {
+            payload["catalyst"] = json!(c);
+        }
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
+        let mut req = ehttp::Request::post(format!("{base}/v1/crafting/forge"), body);
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.craft_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(forge_reply_text(&res));
+            spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// GET `/v1/vendors/requisition` — the counter's plain-gear stock for the caller's
+    /// own roster (EC-2).
+    fn fetch_gear_shop(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.gear_shop_rx = Some(rx);
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::get(format!("{}/v1/vendors/requisition", self.base));
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        ehttp::fetch(req, move |res| {
+            let mut gear = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for g in v["data"].as_array().into_iter().flatten() {
+                        gear.push(GearShopLine {
+                            slot: g["slot"].as_str().unwrap_or("").to_string(),
+                            class_key: g["class_key"].as_str().unwrap_or("").to_string(),
+                            name: g["name"].as_str().unwrap_or("").to_string(),
+                            price_chits: g["price_chits"].as_i64().unwrap_or(0),
+                            atk: g["stats"]["atk"].as_i64().unwrap_or(0) as i32,
+                            def: g["stats"]["def"].as_i64().unwrap_or(0) as i32,
+                            spd: g["stats"]["spd"].as_i64().unwrap_or(0) as i32,
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(gear);
+        });
+    }
+
+    /// POST a gear purchase, then re-read the Vault so the chits and the new piece the
+    /// player sees are the server's answer rather than the client's arithmetic.
+    fn buy_gear(&mut self, slot: String, class_key: String) {
+        if self.session_token.is_empty() || slot.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let body = serde_json::to_vec(&json!({ "slot": slot, "class_key": class_key }))
+            .unwrap_or_default();
+        let mut req = ehttp::Request::post(format!("{base}/v1/vendors/requisition/buy"), body);
         req.headers.insert("Authorization", format!("Bearer {token}"));
         req.headers.insert("Content-Type", "application/json");
         let (tx, rx) = mpsc::channel();
@@ -1967,6 +2195,65 @@ impl Inner {
 /// GET `/v1/vault` then `/v1/vault/gear` (Bearer auth) and deliver the combined
 /// (chits, materials, gear) tuple on `tx`. Shared by the initial inventory open
 /// and the post-equip refresh.
+/// Turn a craft reply into one line for the panel. A refusal is reported as loudly as
+/// a success: the server's own message ("Insufficient materials (need 2 heartoak_bark)",
+/// "alchemy level 1 is below the required level 9") is already the right sentence.
+fn craft_reply_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the workshop did not answer".to_string();
+    };
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    let name = v["name"].as_str().or(v["crafted"].as_str()).unwrap_or("something");
+    let qty = v["quantity"].as_i64().unwrap_or(1);
+    let spent: Vec<String> = v["spent"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| {
+            format!(
+                "{} {}",
+                m["quantity"].as_i64().unwrap_or(0),
+                m["item_kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    if spent.is_empty() {
+        format!("made {qty}x {name}")
+    } else {
+        format!("made {qty}x {name} from {}", spent.join(" + "))
+    }
+}
+
+/// Same, for a forge — the success case names the STATS, since that is the whole
+/// reason to forge rather than buy.
+fn forge_reply_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the forge did not answer".to_string();
+    };
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    let name = v["forged"].as_str().unwrap_or("a piece");
+    let stats = [("atk", &v["stats"]["atk"]), ("def", &v["stats"]["def"]), ("spd", &v["stats"]["spd"])]
+        .into_iter()
+        .filter_map(|(n, val)| val.as_i64().filter(|v| *v > 0).map(|v| format!("+{v} {n}")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let quenched = if v["catalyzed"].as_bool().unwrap_or(false) { " (quenched)" } else { "" };
+    let affixes = v["affixes"].as_array().map(|a| a.len()).unwrap_or(0);
+    let affix_note = if affixes > 0 { format!(", {affixes} affix(es)") } else { String::new() };
+    format!(
+        "forged {name}{quenched} - tier {} {stats}{affix_note}",
+        v["tier"].as_i64().unwrap_or(0)
+    )
+}
+
+fn reply_json(res: &Result<ehttp::Response, String>) -> Option<Value> {
+    res.as_ref().ok()?.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
+}
+
 fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayload>) {
     let gear_url = format!("{base}/v1/vault/gear");
     let mut req = ehttp::Request::get(format!("{base}/v1/vault"));

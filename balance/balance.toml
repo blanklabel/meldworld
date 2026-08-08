@@ -549,6 +549,15 @@ price_markup_per_tier = 2.5     # each shop tier above 0 costs this much more [T
 # the reagent line without moving any number a player already knows. [TUNABLE]
 potency_per_step = 1.6
 
+# THE REQUISITION (EC-2): Silas's off-the-books counter at the Foundry, where chits buy
+# the plainest gear in the game (tier 0, common, no affixes, `normal` insurance). Priced
+# so it is a floor to stand on after a bad death, never a shortcut past the loot chase —
+# a forged or found piece must always beat what a clerk will sell you. [TUNABLE]
+[requisition]
+weapon_price = 220        # main_hand / off_hand
+armor_price = 180         # head / chest / legs
+accessory_price = 140
+
 [gear_rarity]
 rare_weight = 0.28               # base P(Rare) on a standard drop
 epic_weight = 0.09
@@ -580,6 +589,7 @@ mercantile_xp_per_sale = 8            # selling a material stack to the Broker (
 sale_base_chits = 5              # what a tier-0 (forest) material fetches [TUNABLE]
 sale_growth_per_tier = 1.7       # each biome band deeper is worth this much more
 sale_trophy_mult = 1.6           # a monster part costs a fight, not a walk
+sale_refined_mult = 2.4          # refined stock has a Smelter's labour in it (2 raw → 1)
 sale_haggle_pct_per_level = 2.0  # Mercantile level improves the price by this %/level…
 sale_haggle_max_pct = 60.0       # …capped here, so a master haggler is better, not rich
 
