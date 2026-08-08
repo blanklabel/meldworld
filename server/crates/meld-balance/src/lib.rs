@@ -28,6 +28,7 @@ pub struct Balance {
     pub requisition: Requisition,
     pub consumable: Consumable,
     pub forge: Forge,
+    pub tempo: Tempo,
     pub adventure: Adventure,
     pub affix: Affix,
     pub meld: Meld,
@@ -340,6 +341,11 @@ pub struct Forge {
     pub station_ore_cost: i32,
     pub station_uses: i32,
     pub station_radius: f64,
+    pub enhance_material_cost: i32,
+    pub enhance_chit_cost: i64,
+    pub enhance_bonus_base: i32,
+    pub enhance_bonus_per_quality: i32,
+    pub enhance_min_forging_level: i32,
 }
 
 impl Forge {
@@ -372,6 +378,84 @@ impl Forge {
     /// How many points of max durability one repair restores.
     pub fn repair_points(&self, forging_level: i32) -> i32 {
         self.repair_points_per_forging_level * forging_level.max(1)
+    }
+}
+
+/// The smithing tempo game (MS-1): how hard the bar is to hit, and what hitting it
+/// buys. Difficulty rides the piece being worked, so depth is the difficulty axis here
+/// exactly as it is everywhere else.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tempo {
+    pub strikes_base: i32,
+    pub strikes_per_tier: f64,
+    pub strikes_max: i32,
+    pub band_width_base: f64,
+    pub band_width_per_tier: f64,
+    pub band_width_min: f64,
+    pub sweep_ms_base: i64,
+    pub sweep_ms_per_tier: i64,
+    pub sweep_ms_min: i64,
+    pub band_width_per_forging_level: f64,
+    pub band_width_per_extra_smith: f64,
+    pub sweep_ms_per_forging_level: i64,
+    pub sweep_ms_per_extra_smith: i64,
+    pub extra_smiths_max: i32,
+    pub grace_ms: i64,
+    pub quality_epic: f64,
+    pub quality_rare: f64,
+    pub repair_quality_floor: f64,
+}
+
+impl Tempo {
+    /// Blows this piece takes.
+    pub fn strikes(&self, tier: i32) -> i32 {
+        let t = tier.max(0) as f64;
+        ((self.strikes_base as f64 + self.strikes_per_tier * t).floor() as i32)
+            .clamp(1, self.strikes_max.max(1))
+    }
+
+    /// How wide the hot band is, as a fraction of the bar: the PIECE narrows it, the
+    /// smith and their crew widen it back. That subtraction is the whole difficulty
+    /// curve — a deep piece is only hard for a smith who cannot yet work it.
+    pub fn band_width(&self, tier: i32, forging_level: i32, extra_smiths: i32) -> f64 {
+        let eased = self.band_width_per_forging_level * (forging_level.max(1) - 1) as f64
+            + self.band_width_per_extra_smith * self.crew(extra_smiths) as f64;
+        (self.band_width_base - self.band_width_per_tier * tier.max(0) as f64 + eased)
+            .max(self.band_width_min)
+            .clamp(0.01, 1.0)
+    }
+
+    /// One full pass of the marker, in milliseconds. Same shape: deeper is faster,
+    /// a better smith with more help gets time back.
+    pub fn sweep_ms(&self, tier: i32, forging_level: i32, extra_smiths: i32) -> i64 {
+        let eased = self.sweep_ms_per_forging_level * (forging_level.max(1) - 1) as i64
+            + self.sweep_ms_per_extra_smith * self.crew(extra_smiths) as i64;
+        (self.sweep_ms_base - self.sweep_ms_per_tier * tier.max(0) as i64 + eased)
+            .max(self.sweep_ms_min)
+    }
+
+    /// Extra smiths that actually help. Past a full party of them there is nothing left
+    /// to hold, so the help caps.
+    fn crew(&self, extra_smiths: i32) -> i32 {
+        extra_smiths.clamp(0, self.extra_smiths_max.max(0))
+    }
+
+    /// The affix pool a heat of this quality earns. A flawless heat reaches the epic
+    /// pool — the same reach a trophy catalyst buys, but paid for in skill.
+    pub fn rarity_for(&self, quality: f64) -> &'static str {
+        if quality >= self.quality_epic {
+            "epic"
+        } else if quality >= self.quality_rare {
+            "rare"
+        } else {
+            "common"
+        }
+    }
+
+    /// The fraction of a repair a heat of this quality gives back.
+    pub fn repair_fraction(&self, quality: f64) -> f64 {
+        let floor = self.repair_quality_floor.clamp(0.0, 1.0);
+        floor + (1.0 - floor) * quality.clamp(0.0, 1.0)
     }
 }
 

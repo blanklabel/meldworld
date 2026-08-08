@@ -284,7 +284,7 @@ Forging level is the skill the job is done at (they also take the Forging XP).
 |---|---|---|---|
 | entity_id | string | Yes | The station being worked at. |
 | gear_id | string (uuid) | Yes | Gear the **sender** owns. A piece owned by anyone else answers as though it does not exist. |
-| service | string (enum: `reroll`, `repair`) | Yes | Which of the smith's two services. |
+| service | string (enum: `reroll`, `repair`, `enhance`) | Yes | Which service. `enhance` puts a temporary edge on a piece a hero is **wearing** that lasts the rest of the dive — never a Vault write, so it cannot carry power home; it is refused in town, where there is no dive to spend it on. |
 | material | string | For `reroll` | Material to spend on the re-draw; ignored by a repair. |
 
 **Server validation** — the same tier rules as the HTTP anvil (`repair` needs an
@@ -293,7 +293,40 @@ Forging level is the skill the job is done at (they also take the Forging XP).
 left. **Ownership never moves**: the Vault call is scoped to the sender's own player id, so
 a station cannot reach into another player's gear.
 
-**Results in** — `run.smith_result`. A job is only spent when work actually happened.
+**Results in** — `run.tempo_started`: the work is a **heat**, not an instant. The smith
+strikes with `run.strike`, and `run.smith_result` arrives once the last blow lands (or the
+heat's window runs out). A station job is only spent when work actually happened.
+
+### `run.tempo_started` (S2C)
+
+The heat is open. The bar is **red** and a marker sweeps it once per `sweep_ms`; each blow
+has one **yellow** band to strike on. The server laid the bands out from a seed it picked
+and it is the only thing that grades a blow.
+
+| Field | Type | Description |
+|---|---|---|
+| job_id | string | Identifies this heat, echoed on every `run.strike`. |
+| service | string | `reroll`, `repair` or `enhance`. |
+| strikes | integer (int32) | How many blows the piece takes. |
+| sweep_ms | integer (int64) | One full pass of the marker. |
+| bands | array of `{lo, hi}` | The yellow, one band per blow, as fractions of the bar (`0.0`–`1.0`). |
+
+Difficulty is the **piece minus the smiths**: `[tempo]` narrows the band and speeds the
+sweep with the piece's tier, and widens/slows it again with the smith's Forging level and
+every other smith in the party (`extra_smiths_max` caps the help).
+
+### `run.strike` (C2S)
+
+A blow, at the marker's position when the player struck.
+
+| Field | Type | Description |
+|---|---|---|
+| job_id | string | The open heat. |
+| at | number (double) | Where the marker was, `0.0`–`1.0`. Clamped server-side. |
+
+Only the heat's owner may strike it. Blows past the last one are **ignored** — spam can
+neither raise nor lower a heat's quality — and a heat left unstruck is graded on what
+arrived once `sweep_ms × strikes + grace_ms` has passed.
 
 **Example**
 
@@ -319,7 +352,8 @@ What the smith did, or why they would not — one line, already written for the 
 | service | string | `reroll` or `repair`. |
 | ok | boolean | Whether work happened. |
 | message | string | Player-facing sentence (what changed and what it cost, or the refusal). |
-| uses_left | integer (int32) | Jobs the station has left — `0` means it is spent and gone from the snapshot. |
+| uses_left | integer (int32) | Jobs the station has left — `0` means it is spent and gone from the snapshot (and is always `0` for the city anvil, which has none). |
+| quality | number (double) | The heat's quality, `0.0`–`1.0`: the blows that landed on yellow. What it bought depends on the service — the affix pool a re-draw rolled from, the points a repair gave back, the size of an edge. |
 
 **Example**
 

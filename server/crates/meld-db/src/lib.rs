@@ -1522,6 +1522,80 @@ impl Db {
 
     /// Replace one piece's affixes for `materials` + `chits` (MS-1). Atomic, and a
     /// no-op that reports `false` when the smith cannot pay.
+    /// Spend materials + chits on a service that leaves no row behind — MS-1's temporary
+    /// **enhance**, whose effect lives in the run rather than the Vault. Atomic and
+    /// all-or-nothing, so a smith who cannot pay keeps their stock.
+    pub async fn spend_for_service(
+        &self,
+        player_id: Uuid,
+        materials: &[(String, i32)],
+        chits: i64,
+    ) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                for (kind, need) in materials {
+                    let spent = sqlx::query(
+                        "UPDATE vault_items SET quantity = quantity - $3
+                         WHERE player_id = $1 AND item_kind = $2 AND quantity >= $3",
+                    )
+                    .bind(player_id)
+                    .bind(kind)
+                    .bind(need)
+                    .execute(&mut *tx)
+                    .await?;
+                    if spent.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                sqlx::query("DELETE FROM vault_items WHERE player_id = $1 AND quantity <= 0")
+                    .bind(player_id)
+                    .execute(&mut *tx)
+                    .await?;
+                if chits > 0 {
+                    let paid = sqlx::query(
+                        "UPDATE vaults SET chits = chits - $2 WHERE player_id = $1 AND chits >= $2",
+                    )
+                    .bind(player_id)
+                    .bind(chits)
+                    .execute(&mut *tx)
+                    .await?;
+                    if paid.rows_affected() == 0 {
+                        tx.rollback().await?;
+                        return Ok(false);
+                    }
+                }
+                tx.commit().await?;
+                Ok(true)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                for (kind, need) in materials {
+                    if m.vault_items.get(&(player_id, kind.clone())).copied().unwrap_or(0) < *need {
+                        return Ok(false);
+                    }
+                }
+                if chits > 0 && m.chits.get(&player_id).copied().unwrap_or(0) < chits {
+                    return Ok(false);
+                }
+                for (kind, need) in materials {
+                    let key = (player_id, kind.clone());
+                    if let Some(q) = m.vault_items.get_mut(&key) {
+                        *q -= *need;
+                        if *q <= 0 {
+                            m.vault_items.remove(&key);
+                        }
+                    }
+                }
+                if chits > 0 {
+                    *m.chits.entry(player_id).or_insert(0) -= chits;
+                }
+                Ok(true)
+            }
+        }
+    }
+
     pub async fn reroll_gear_affixes(
         &self,
         player_id: Uuid,

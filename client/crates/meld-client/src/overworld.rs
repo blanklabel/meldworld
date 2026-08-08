@@ -550,9 +550,18 @@ pub(crate) fn update_overworld_hud(
     station: Res<StationUi>,
     craft: Res<CraftData>,
     inv: Res<InventoryData>,
+    heat: Res<HeatUi>,
     mut q: Query<&mut Text, With<HudText>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
+    // A heat in progress owns the HUD: the player is mid-blow and everything else can
+    // wait until the metal is worked.
+    if let Some(bar) = heat_line(&heat, time.elapsed_secs_f64()) {
+        if **t != bar {
+            **t = bar;
+        }
+        return;
+    }
     // An open field bench IS the HUD while it is open — it is a panel the player is
     // standing in, not a hint about what they could press.
     if let Some(bench) = station_line(&station, &craft, &inv) {
@@ -3689,6 +3698,11 @@ pub(crate) fn station_line(
     if ins == Some(meld_proto::enums::Insurance::Insured) {
         keys.push("[P] repair".to_string());
     }
+    // The edge is the FIELD forge's own service: it lasts the rest of the dive, so it is
+    // only worth anything to someone already in one. It goes on what a hero is wearing.
+    if g.equipped_hero_slot.is_some() {
+        keys.push("[N] edge".to_string());
+    }
     if keys.is_empty() {
         keys.push("nothing a smith can do with this".to_string());
     }
@@ -3736,11 +3750,12 @@ pub(crate) fn station_input(
     }
     let repair = keys.just_pressed(KeyCode::KeyP);
     let reroll = keys.just_pressed(KeyCode::KeyR);
-    if !(repair || reroll) {
+    let edge = keys.just_pressed(KeyCode::KeyN);
+    if !(repair || reroll || edge) {
         return;
     }
     let Some(g) = crate::city::bench_gear(&craft, &inv) else { return };
-    let material = if reroll {
+    let material = if reroll || edge {
         // Same rule as the city anvil: spend the deepest refined stock rather than
         // making anyone name a material at a bench in a maze.
         match crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
@@ -3750,10 +3765,17 @@ pub(crate) fn station_input(
     } else {
         String::new()
     };
+    let service = if repair {
+        "repair"
+    } else if edge {
+        "enhance"
+    } else {
+        "reroll"
+    };
     net.0.send(ClientCmd::SmithRequest {
         entity_id: id,
         gear_id: g.gear_id.clone(),
-        service: if repair { "repair".into() } else { "reroll".into() },
+        service: service.into(),
         material,
     });
 }
@@ -3860,5 +3882,150 @@ mod station_tests {
         );
         // The prompt says how many jobs are left, so nobody walks over for nothing.
         assert_eq!(target.prompt(), "[E] Use the forge (2 left)");
+    }
+}
+
+// ------------------------------------------------------- the smithing heat --
+
+/// An open heat (MS-1's smithing tempo game). The bar is **red** and the marker sweeps
+/// it; each blow has one **yellow** band, and hitting it is what quality is. The server
+/// laid the bands out and grades every blow — this is only where the bar is drawn and
+/// when the player pressed.
+#[derive(Resource, Default)]
+pub(crate) struct HeatUi {
+    pub job_id: Option<String>,
+    pub service: String,
+    pub strikes: i32,
+    pub sweep_ms: i64,
+    pub bands: Vec<(f64, f64)>,
+    /// Blows landed so far, so the bar knows which band is live.
+    pub struck: i32,
+    /// Client seconds when the heat opened, for the marker's position.
+    pub opened_at: f64,
+}
+
+impl HeatUi {
+    /// Where the marker is right now, as a fraction of the bar. The marker sweeps left
+    /// to right and wraps, one pass per `sweep_ms`.
+    pub(crate) fn marker(&self, now: f64) -> f64 {
+        let sweep = (self.sweep_ms.max(1) as f64) / 1000.0;
+        (((now - self.opened_at).max(0.0) / sweep) % 1.0).clamp(0.0, 1.0)
+    }
+
+    pub(crate) fn band(&self) -> Option<(f64, f64)> {
+        self.bands.get(self.struck.max(0) as usize).copied()
+    }
+}
+
+/// Cells in the drawn bar. Odd so a centred band has a centre to sit on.
+const HEAT_CELLS: usize = 41;
+
+/// The heat as one line: a bar of red with the live blow's yellow on it, the marker
+/// where it is, and the blows left. Text, because both the city anvil and the field
+/// bench are text panels — the same reading in both places.
+pub(crate) fn heat_line(heat: &HeatUi, now: f64) -> Option<String> {
+    heat.job_id.as_ref()?;
+    let (lo, hi) = heat.band()?;
+    let m = heat.marker(now);
+    let cell = |f: f64| ((f * HEAT_CELLS as f64) as usize).min(HEAT_CELLS - 1);
+    let (blo, bhi) = (cell(lo), cell(hi));
+    let mark = cell(m);
+    let bar: String = (0..HEAT_CELLS)
+        .map(|i| {
+            if i == mark {
+                '\u{2588}' // the hammer, wherever it is right now
+            } else if i >= blo && i <= bhi {
+                '\u{2593}' // yellow: the hot part of the heat
+            } else {
+                '\u{2591}' // red: everything else
+            }
+        })
+        .collect();
+    Some(format!(
+        "  {} {}  [{bar}]  blow {}/{}   [SPACE] strike",
+        heat.service.to_uppercase(),
+        if (lo..=hi).contains(&m) { "NOW" } else { "   " },
+        heat.struck + 1,
+        heat.strikes
+    ))
+}
+
+/// [SPACE] strikes the open heat. Nothing else here decides anything: the position is
+/// reported, the server owns the bands and the grade.
+pub(crate) fn heat_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
+    time: Res<Time>,
+    mut heat: ResMut<HeatUi>,
+) {
+    let Some(job_id) = heat.job_id.clone() else { return };
+    if !keys.just_pressed(KeyCode::Space) {
+        return;
+    }
+    let at = heat.marker(time.elapsed_secs_f64());
+    net.0.send(ClientCmd::Strike { job_id, at });
+    heat.struck += 1;
+    // The last blow closes the bar: the answer arrives as a smith result.
+    if heat.struck >= heat.strikes {
+        heat.job_id = None;
+    }
+}
+
+#[cfg(test)]
+mod heat_tests {
+    use super::*;
+
+    fn open(bands: &[(f64, f64)]) -> HeatUi {
+        HeatUi {
+            job_id: Some("heat-1".into()),
+            service: "reroll".into(),
+            strikes: bands.len() as i32,
+            sweep_ms: 1000,
+            bands: bands.to_vec(),
+            struck: 0,
+            opened_at: 0.0,
+        }
+    }
+
+    // No heat, no bar: the panel is silent unless there is metal on the anvil.
+    #[test]
+    fn a_closed_heat_draws_nothing() {
+        assert!(heat_line(&HeatUi::default(), 0.0).is_none());
+    }
+
+    // The marker sweeps the bar once per `sweep_ms` and wraps — a rhythm, not a
+    // one-way timer, so a missed blow comes round again.
+    #[test]
+    fn the_marker_sweeps_and_wraps() {
+        let heat = open(&[(0.4, 0.6)]);
+        assert!(heat.marker(0.0) < 0.01);
+        assert!((heat.marker(0.5) - 0.5).abs() < 0.01);
+        assert!(heat.marker(1.0) < 0.01, "one second in, it has wrapped");
+        assert!((heat.marker(1.25) - 0.25).abs() < 0.01);
+    }
+
+    // The bar reads as red with the live blow's yellow on it, the hammer wherever the
+    // marker is, and it says which blow this is out of how many.
+    #[test]
+    fn the_bar_shows_red_yellow_and_the_hammer() {
+        let mut heat = open(&[(0.0, 0.1), (0.45, 0.55)]);
+        let line = heat_line(&heat, 0.0).expect("open");
+        assert!(line.contains("blow 1/2"), "{line}");
+        assert!(line.contains('\u{2591}'), "the cold bar: {line}");
+        assert!(line.contains('\u{2593}'), "the yellow: {line}");
+        assert!(line.contains('\u{2588}'), "the hammer: {line}");
+        // The marker is inside the first band at t=0, so the line calls it.
+        assert!(line.contains("NOW"), "{line}");
+
+        // The next blow has its OWN band, so a smith cannot learn one spot.
+        heat.struck = 1;
+        let second = heat_line(&heat, 0.0).expect("open");
+        assert!(second.contains("blow 2/2"), "{second}");
+        assert!(!second.contains("NOW"), "the second band is not where the first was");
+        assert_eq!(heat.band(), Some((0.45, 0.55)));
+
+        // Past the last blow there is nothing to draw.
+        heat.struck = 2;
+        assert!(heat_line(&heat, 0.0).is_none());
     }
 }

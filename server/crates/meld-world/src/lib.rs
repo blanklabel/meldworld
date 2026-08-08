@@ -1027,8 +1027,23 @@ pub fn reroll_affixes(
     biome: &str,
     seed: u64,
 ) -> Vec<aff::Affix> {
+    reroll_affixes_at(balance, tier, class_key, slot, biome, "rare", seed)
+}
+
+/// Same, at a chosen rarity pool. The smithing tempo game (MS-1) earns the pool with the
+/// heat's quality, so the rarity is an input rather than a constant.
+#[allow(clippy::too_many_arguments)]
+pub fn reroll_affixes_at(
+    balance: &Balance,
+    tier: i32,
+    class_key: &str,
+    slot: &str,
+    biome: &str,
+    rarity: &str,
+    seed: u64,
+) -> Vec<aff::Affix> {
     let mut rng = Rng(seed);
-    roll_affixes(balance, &mut rng, tier, "rare", false, class_key, slot, biome)
+    roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome)
 }
 
 /// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
@@ -6108,3 +6123,191 @@ mod tests {
 }
 
 
+
+/// The smithing tempo game (MS-1). Working metal is a rhythm: a marker sweeps a bar of
+/// **red** and the smith strikes on the **yellow** — the hot part of the heat. Hitting it
+/// is what quality is, and quality is what decides the affix pool a re-draw rolls from,
+/// how much a repair gives back, and how sharp a temporary edge comes out.
+///
+/// Pure and deterministic, like the rest of this crate: the schedule comes from a seed
+/// the SERVER picks and the grade is a function of it plus the strikes reported. A client
+/// renders the bar, but it never decides what the bar was or whether a blow landed.
+pub mod tempo {
+    use meld_balance::Balance;
+
+    /// One hot band, as fractions of a sweep (`0.0` = the bar's left edge).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Band {
+        pub lo: f64,
+        pub hi: f64,
+    }
+
+    impl Band {
+        pub fn holds(&self, at: f64) -> bool {
+            at >= self.lo && at <= self.hi
+        }
+    }
+
+    /// A heat: how many blows, how fast the marker sweeps, and where the yellow is on
+    /// each blow. One band per strike, so a smith cannot learn one spot and stop looking.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Heat {
+        pub strikes: i32,
+        pub sweep_ms: i64,
+        pub bands: Vec<Band>,
+    }
+
+    impl Heat {
+        /// How long the whole heat may take before the server grades what it has.
+        pub fn window_ms(&self, balance: &Balance) -> i64 {
+            self.sweep_ms * self.strikes.max(1) as i64 + balance.tempo.grace_ms.max(0)
+        }
+    }
+
+    /// Lay out a heat for a piece of `tier`, worked by a smith of `forging_level` with
+    /// `extra_smiths` others helping. Deeper pieces are harder; better smiths and bigger
+    /// crews make them easier — the same number, from both ends.
+    pub fn schedule(
+        balance: &Balance,
+        tier: i32,
+        forging_level: i32,
+        extra_smiths: i32,
+        seed: u64,
+    ) -> Heat {
+        let t = &balance.tempo;
+        let strikes = t.strikes(tier);
+        let width = t.band_width(tier, forging_level, extra_smiths);
+        let mut rng = super::Rng(seed);
+        let bands = (0..strikes)
+            .map(|_| {
+                // The band sits anywhere it fits whole: a band clipped by the bar's edge
+                // would be a quietly easier (or impossible) blow.
+                let lo = rng.unit() * (1.0 - width);
+                Band { lo, hi: lo + width }
+            })
+            .collect();
+        Heat {
+            strikes,
+            sweep_ms: t.sweep_ms(tier, forging_level, extra_smiths),
+            bands,
+        }
+    }
+
+    /// Grade the blows a smith actually landed: the fraction that fell on yellow.
+    /// Strikes past the last blow are ignored rather than counted against — a client
+    /// that spams cannot lower someone's quality, and cannot raise it either.
+    pub fn grade(heat: &Heat, strikes: &[f64]) -> f64 {
+        if heat.strikes <= 0 {
+            return 0.0;
+        }
+        let hits = heat
+            .bands
+            .iter()
+            .zip(strikes.iter())
+            .filter(|(band, at)| band.holds(**at))
+            .count();
+        hits as f64 / heat.strikes as f64
+    }
+}
+
+#[cfg(test)]
+mod tempo_tests {
+    use super::tempo::*;
+    use meld_balance::Balance;
+
+    // The bar is the piece MINUS the smiths: a deep item is a sliver moving fast for an
+    // apprentice working alone, and a workable band for a master with a crew. That
+    // subtraction is the whole reason a second smith is worth a party slot.
+    #[test]
+    fn depth_makes_it_hard_and_smiths_make_it_easy_again() {
+        let b = Balance::load_default().unwrap();
+        let apprentice_shallow = schedule(&b, 0, 1, 0, 7);
+        let apprentice_deep = schedule(&b, 6, 1, 0, 7);
+        assert!(
+            apprentice_deep.bands[0].hi - apprentice_deep.bands[0].lo
+                < apprentice_shallow.bands[0].hi - apprentice_shallow.bands[0].lo,
+            "a deeper piece should be a narrower band"
+        );
+        assert!(
+            apprentice_deep.sweep_ms <= apprentice_shallow.sweep_ms,
+            "and a faster sweep"
+        );
+        assert!(
+            apprentice_deep.strikes >= apprentice_shallow.strikes,
+            "and take at least as many blows"
+        );
+
+        let master_deep = schedule(&b, 6, 20, 0, 7);
+        let width = |h: &Heat| h.bands[0].hi - h.bands[0].lo;
+        assert!(
+            width(&master_deep) > width(&apprentice_deep),
+            "a smith's own level should widen the yellow"
+        );
+        let crew_deep = schedule(&b, 6, 20, 3, 7);
+        assert!(width(&crew_deep) > width(&master_deep), "so should a crew");
+        assert!(crew_deep.sweep_ms > master_deep.sweep_ms, "a crew buys time too");
+
+        // Past a full party of smiths there is nothing left to hold.
+        assert_eq!(schedule(&b, 6, 20, 9, 7), schedule(&b, 6, 20, 3, 7));
+    }
+
+    // Every band has to fit the bar WHOLE: one clipped by an edge would be a quietly
+    // easier blow (or an impossible one), which is not a difficulty curve, it is a bug.
+    #[test]
+    fn every_band_fits_inside_the_bar() {
+        let b = Balance::load_default().unwrap();
+        for tier in 0..8 {
+            for seed in 0..64u64 {
+                let h = schedule(&b, tier, 1, 0, seed);
+                assert_eq!(h.bands.len(), h.strikes as usize, "one band per blow");
+                for band in &h.bands {
+                    assert!(band.lo >= 0.0 && band.hi <= 1.0, "tier {tier} seed {seed}: {band:?}");
+                    assert!(band.hi > band.lo);
+                }
+            }
+        }
+    }
+
+    // Same seed, same heat — the server can hand a client the bar and still be the only
+    // thing that knows whether a blow landed.
+    #[test]
+    fn a_heat_is_reproducible_from_its_seed() {
+        let b = Balance::load_default().unwrap();
+        assert_eq!(schedule(&b, 3, 4, 1, 99), schedule(&b, 3, 4, 1, 99));
+        assert_ne!(schedule(&b, 3, 4, 1, 99), schedule(&b, 3, 4, 1, 100));
+    }
+
+    #[test]
+    fn quality_is_the_blows_that_landed_on_yellow() {
+        let b = Balance::load_default().unwrap();
+        let h = schedule(&b, 2, 1, 0, 12);
+        let n = h.strikes as usize;
+
+        // Dead centre of every band: a flawless heat, and the epic pool.
+        let perfect: Vec<f64> = h.bands.iter().map(|x| (x.lo + x.hi) / 2.0).collect();
+        assert_eq!(grade(&h, &perfect), 1.0);
+        assert_eq!(b.tempo.rarity_for(grade(&h, &perfect)), "epic");
+
+        // Nowhere near it: no quality, the common pool, and a repair still gives back
+        // its floor — a missed heat is a bad job, not a robbery.
+        let missed: Vec<f64> = h.bands.iter().map(|x| if x.lo > 0.5 { 0.0 } else { 1.0 }).collect();
+        assert_eq!(grade(&h, &missed), 0.0);
+        assert_eq!(b.tempo.rarity_for(0.0), "common");
+        assert!(b.tempo.repair_fraction(0.0) > 0.0);
+        assert!(b.tempo.repair_fraction(1.0) > b.tempo.repair_fraction(0.0));
+
+        // Half the blows landed is half the quality.
+        let mut half = perfect.clone();
+        for i in (0..n).step_by(2) {
+            half[i] = if h.bands[i].lo > 0.5 { 0.0 } else { 1.0 };
+        }
+        let q = grade(&h, &half);
+        assert!(q > 0.0 && q < 1.0, "{q}");
+
+        // Spam cannot help: blows past the last one are ignored, not counted.
+        let mut spam = perfect.clone();
+        spam.extend(std::iter::repeat_n(perfect[0], 40));
+        assert_eq!(grade(&h, &spam), 1.0);
+        assert_eq!(grade(&h, &[]), 0.0, "a smith who never struck earned nothing");
+    }
+}

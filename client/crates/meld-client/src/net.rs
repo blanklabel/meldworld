@@ -62,6 +62,8 @@ pub enum ClientCmd {
     BuildStation { kind: String },
     /// Ask the smith whose station this is to work a piece of YOUR OWN gear.
     SmithRequest { entity_id: String, gear_id: String, service: String, material: String },
+    /// A blow on the smithing bar, at the marker's position (0.0-1.0) when struck.
+    Strike { job_id: String, at: f64 },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
     /// Rename one of the caller's heroes (persistent, per-account).
@@ -587,6 +589,14 @@ pub enum ServerMsg {
     CraftResult { text: String },
     /// A field station answered: what the smith did (or would not), and the jobs left.
     SmithResult { message: String, ok: bool, uses_left: i32 },
+    /// The heat is open: strike on the yellow. `bands` are fractions of the bar.
+    TempoStarted {
+        job_id: String,
+        service: String,
+        strikes: i32,
+        sweep_ms: i64,
+        bands: Vec<(f64, f64)>,
+    },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     VanguardBoard {
@@ -1702,6 +1712,9 @@ impl Inner {
                     "material": material,
                 }),
             ),
+            ClientCmd::Strike { job_id, at } => {
+                self.send_env(wr::Strike::TYPE, json!({ "job_id": job_id, "at": at }))
+            }
             ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
@@ -2343,6 +2356,17 @@ impl Inner {
                 }
             }
             "run.channel_interrupted" => self.out.push_back(ServerMsg::ChannelInterrupted),
+            "run.tempo_started" => {
+                if let Ok(t) = serde_json::from_value::<wr::TempoStarted>(raw.payload) {
+                    self.out.push_back(ServerMsg::TempoStarted {
+                        job_id: t.job_id,
+                        service: t.service,
+                        strikes: t.strikes,
+                        sweep_ms: t.sweep_ms,
+                        bands: t.bands.iter().map(|b| (b.lo, b.hi)).collect(),
+                    });
+                }
+            }
             "run.smith_result" => {
                 if let Ok(r) = serde_json::from_value::<wr::SmithResult>(raw.payload) {
                     // The gear itself changed in the Vault, so the inventory the bench

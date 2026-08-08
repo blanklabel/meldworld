@@ -823,7 +823,7 @@ pub mod run {
         pub entity_id: Id,
         /// The requester's own Vault gear.
         pub gear_id: Id,
-        /// `reroll` or `repair`.
+        /// `reroll`, `repair` or `enhance` (a temporary edge that dies with the run).
         pub service: String,
         /// Material to spend on a reroll (ignored by a repair).
         #[serde(default)]
@@ -831,6 +831,44 @@ pub mod run {
     }
     impl Message for SmithRequest {
         const TYPE: &'static str = "run.smith_request";
+    }
+
+    /// S2C — the heat is open: strike on the yellow. The bar is **red** and each blow
+    /// has one **yellow** band on it; the marker sweeps the bar in `sweep_ms`. The server
+    /// laid this out (from a seed it picked) and it is the only thing that grades a blow —
+    /// a client renders the bar, it does not decide what happened on it.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct TempoStarted {
+        pub job_id: Id,
+        /// What is being worked, for the panel's own words.
+        pub service: String,
+        /// How many blows the piece takes.
+        pub strikes: i32,
+        /// One full pass of the marker, in milliseconds.
+        pub sweep_ms: i64,
+        /// The yellow, one band per blow, as fractions of the bar (`0.0`–`1.0`).
+        pub bands: Vec<TempoBand>,
+    }
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    pub struct TempoBand {
+        pub lo: f64,
+        pub hi: f64,
+    }
+    impl Message for TempoStarted {
+        const TYPE: &'static str = "run.tempo_started";
+    }
+
+    /// C2S — a blow, at the marker's position on the bar when the player struck.
+    /// Out-of-range values are clamped, and blows past the last one are ignored: spam
+    /// can neither raise nor lower a heat's quality.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Strike {
+        pub job_id: Id,
+        /// Where the marker was, as a fraction of the bar.
+        pub at: f64,
+    }
+    impl Message for Strike {
+        const TYPE: &'static str = "run.strike";
     }
 
     /// S2C — what the smith did, or why they would not: one line, already written for
@@ -844,6 +882,11 @@ pub mod run {
         pub ok: bool,
         pub message: String,
         pub uses_left: i32,
+        /// The heat's quality, `0.0`–`1.0` — the blows that landed on yellow. What it
+        /// bought depends on the service (the affix pool, the points restored, the size
+        /// of a temporary edge).
+        #[serde(default)]
+        pub quality: f64,
     }
     impl Message for SmithResult {
         const TYPE: &'static str = "run.smith_result";
@@ -1162,6 +1205,20 @@ mod tests {
         )
         .unwrap();
         assert!(reply.ok && reply.uses_left == 3);
+        assert_eq!(reply.quality, 0.0, "an old reply without a quality still parses");
+
+        // The heat: the server hands over the bar, the client hands back blows.
+        assert_eq!(run::TempoStarted::TYPE, "run.tempo_started");
+        assert_eq!(run::Strike::TYPE, "run.strike");
+        let heat: run::TempoStarted = serde_json::from_str(
+            r#"{"job_id":"j1","service":"reroll","strikes":2,"sweep_ms":1400,"bands":[{"lo":0.1,"hi":0.4},{"lo":0.5,"hi":0.8}]}"#,
+        )
+        .unwrap();
+        assert_eq!(heat.bands.len(), 2);
+        assert!((heat.bands[1].hi - 0.8).abs() < 1e-9);
+        let blow: run::Strike =
+            serde_json::from_str(r#"{"job_id":"j1","at":0.25}"#).unwrap();
+        assert!((blow.at - 0.25).abs() < 1e-9);
     }
 
     #[test]

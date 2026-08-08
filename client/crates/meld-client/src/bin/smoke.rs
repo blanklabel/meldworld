@@ -115,6 +115,7 @@ fn main() {
                 | ServerMsg::BrokerQuotes { .. }
                 | ServerMsg::CraftResult { .. }
                 | ServerMsg::SmithResult { .. }
+                | ServerMsg::TempoStarted { .. }
                 | ServerMsg::RunGear { .. }
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }

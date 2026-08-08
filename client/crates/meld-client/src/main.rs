@@ -170,6 +170,7 @@ fn main() {
         .init_resource::<ShopSelling>()
         .init_resource::<ExploredMap>()
         .init_resource::<StationUi>()
+        .init_resource::<HeatUi>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -278,6 +279,8 @@ fn main() {
                 city::yard_rename_input,
                 city::party_panel_refresh,
                 city_input,
+                // The anvil's heat is struck in town as well as in the field.
+                heat_input,
                 city_action_buttons,
                 render_city,
                 pulse_magitech,
@@ -386,7 +389,7 @@ fn main() {
                 update_mob_nameplates,
                 update_minimap,
                 update_minimap_distance,
-                (remember_explored, station_input),
+                (remember_explored, station_input, heat_input),
             )
                 .run_if(in_state(Screen::Overworld)),
         )

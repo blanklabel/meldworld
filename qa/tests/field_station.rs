@@ -184,6 +184,7 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
     let mut station_id: Option<String> = None;
     let mut station_jobs_seen: Option<i64> = None;
     let mut result: Option<Value> = None;
+    let mut heat_strikes = 0i64;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while result.is_none() {
@@ -228,6 +229,25 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
                     });
                 }
             }
+            // Smithing is a HEAT now: the server hands over a bar of red with a yellow
+            // band per blow, and the smith strikes. A bot can hit the middle of every
+            // band, which is what a player with a good ear does — so this run should
+            // grade as flawless.
+            "run.tempo_started" => {
+                let p = &v["payload"];
+                let job_id = p["job_id"].as_str().unwrap().to_string();
+                heat_strikes = p["strikes"].as_i64().unwrap_or(0);
+                let bands = p["bands"].as_array().cloned().unwrap_or_default();
+                assert!(heat_strikes > 0, "a heat with no blows is not a heat: {p}");
+                assert_eq!(bands.len() as i64, heat_strikes, "one band per blow: {p}");
+                assert!(p["sweep_ms"].as_i64().unwrap_or(0) > 0, "{p}");
+                for b in &bands {
+                    let (lo, hi) = (b["lo"].as_f64().unwrap(), b["hi"].as_f64().unwrap());
+                    assert!(lo >= 0.0 && hi <= 1.0 && hi > lo, "band off the bar: {b}");
+                    let at = (lo + hi) / 2.0;
+                    send!("run.strike", {"job_id": job_id, "at": at});
+                }
+            }
             "run.smith_result" => result = Some(v["payload"].clone()),
             _ => {}
         }
@@ -248,6 +268,14 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
     assert!(
         result["message"].as_str().unwrap_or_default().contains("re-drew"),
         "the reply should say what changed: {result}"
+    );
+    // Every blow landed on yellow, so the heat is flawless — and a flawless heat is what
+    // buys the epic affix pool, the same reach a trophy catalyst buys.
+    assert!(heat_strikes > 0, "no heat was ever opened");
+    assert_eq!(result["quality"].as_f64(), Some(1.0), "a clean run should grade 1.0: {result}");
+    assert!(
+        result["message"].as_str().unwrap_or_default().contains("epic"),
+        "a flawless heat should reach the epic pool: {result}"
     );
     assert_eq!(
         result["uses_left"].as_i64(),
