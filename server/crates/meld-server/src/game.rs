@@ -1564,7 +1564,19 @@ impl WorldActor {
                         }
                     }
                 }
-                for (n, e) in def.exits.iter().filter(|e| e.floor == floor).enumerate() {
+                // Both KINDS of way out, because `DungeonInstance::at_exit` accepts
+                // both: the authored far exit, and the door you walked in through.
+                // The entrance was never drawn, so the one exit that is always
+                // reachable — the whole point of it, since a dungeon refuses a Town
+                // Portal — was invisible, and a player who lost the thread had no
+                // marked way back to it.
+                for (n, e) in def
+                    .exits
+                    .iter()
+                    .chain(def.entrances.iter())
+                                        .filter(|e| e.floor == floor)
+                    .enumerate()
+                {
                     let pos = Position::new(e.x as f64 + 0.5, e.y as f64 + 0.5);
                     entities.push(dungeon_prop(format!("dexit-{floor}-{n}"), pos, "portal"));
                 }
