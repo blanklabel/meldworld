@@ -279,6 +279,10 @@ pub struct GearLine {
     pub atk_bonus: i32,
     pub def_bonus: i32,
     pub spd_bonus: i32,
+    /// Materials one affix reroll on this piece would eat — the server's number,
+    /// scaled to the piece's tier (`[forge] reroll_material_per_tier`). 0 on run
+    /// loot, which is not in the Vault for a smith to work on.
+    pub reroll_cost: i32,
 }
 
 /// One row on a town vendor's shelf (EC-2) — the server prices and describes it.
@@ -1910,6 +1914,7 @@ impl Inner {
                         atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
                         def_bonus: g["def_bonus"].as_i64().unwrap_or(0) as i32,
                         spd_bonus: g["spd_bonus"].as_i64().unwrap_or(0) as i32,
+                        reroll_cost: g["reroll_cost"].as_i64().unwrap_or(0) as i32,
                     })
                     .collect();
                 self.run_loot_gear = gear.clone();
@@ -2410,10 +2415,30 @@ pub fn reroll_line(v: &Value) -> String {
     .iter()
     .map(|a| a.describe())
     .collect();
-    if names.is_empty() {
-        "rerolled - it came up bare".to_string()
+    // What it ate belongs on the line too: the cost climbs with the piece's tier, so
+    // "3 stock" on a starter blade and "11" on a deep one is the reading a smith wants.
+    let cost = v["spent"]["materials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| {
+            format!(
+                "{} {}",
+                m["quantity"].as_i64().unwrap_or(0),
+                m["item_kind"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let bill = if cost.is_empty() {
+        String::new()
     } else {
-        format!("rerolled: {}", names.join(", "))
+        format!(" (spent {cost})")
+    };
+    if names.is_empty() {
+        format!("rerolled - it came up bare{bill}")
+    } else {
+        format!("rerolled: {}{bill}", names.join(", "))
     }
 }
 
@@ -2498,6 +2523,7 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
                                 atk_bonus: g["atk_bonus"].as_i64().unwrap_or(0) as i32,
                                 def_bonus: g["def_bonus"].as_i64().unwrap_or(0) as i32,
                                 spd_bonus: g["spd_bonus"].as_i64().unwrap_or(0) as i32,
+                                reroll_cost: g["reroll_cost"].as_i64().unwrap_or(0) as i32,
                             })
                             .collect();
                     }
@@ -2584,9 +2610,14 @@ mod smith_reply_tests {
                 { "key": "atk_flat", "magnitude": 4 },
                 { "key": "def_flat", "magnitude": 2 },
             ],
+            "spent": {
+                "materials": [{ "item_kind": "dune_ingot", "quantity": 7 }],
+                "chits": 90,
+            },
         });
         let line = reroll_line(&drew);
         assert!(line.starts_with("rerolled: "), "{line}");
+        assert!(line.contains("spent 7 dune_ingot"), "the bill belongs on the line: {line}");
         assert!(line.contains(','), "both affixes belong on the line: {line}");
         for a in [
             meld_proto::affixes::Affix {

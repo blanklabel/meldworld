@@ -513,6 +513,9 @@ gear_variance = 0.35            # +/- fraction on a forged stat at Forging level
 gear_variance_floor = 0.08      # …shrinking to this as Forging level climbs: a master smith is consistent
 gear_variance_per_level = 0.03
 reroll_material_cost = 3        # materials to reroll a piece's affixes [TUNABLE]
+reroll_material_per_tier = 2    # …plus this per TIER of the piece: re-drawing a deep
+                                # item's affixes is a bigger job than a starter blade's,
+                                # so the deeper the piece the more stock it eats [TUNABLE]
 reroll_chit_cost = 90
 reroll_min_forging_level = 3    # rerolling is a smith's trick, not a beginner's
 repair_chit_cost_per_point = 4  # chits per point of max durability restored [TUNABLE]

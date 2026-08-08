@@ -86,13 +86,14 @@ pub(crate) fn pump_net(
         ResMut<Notice>,
         Res<Time>,
         ResMut<CraftData>,
+        ResMut<crate::overworld::ExploredMap>,
     ),
     mut roster: ResMut<PartyRoster>,
     mut announce: Announce,
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, explored) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -200,6 +201,9 @@ pub(crate) fn pump_net(
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();
+                // A new dive is a blank map: the previous run's walk belonged to a
+                // world that no longer exists (instances are discarded on close).
+                explored.forget();
                 // The dive can start from the City (solo, via The Threshold) or
                 // the Lobby (co-op).
                 lobby.in_lobby = false;

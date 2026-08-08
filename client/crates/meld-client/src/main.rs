@@ -168,6 +168,7 @@ fn main() {
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
         .init_resource::<ShopSelling>()
+        .init_resource::<ExploredMap>()
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
@@ -382,6 +383,7 @@ fn main() {
                 update_mob_nameplates,
                 update_minimap,
                 update_minimap_distance,
+                remember_explored,
             )
                 .run_if(in_state(Screen::Overworld)),
         )

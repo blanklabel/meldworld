@@ -601,6 +601,18 @@ XP; harvesting exists but is instant.
     chewed off. The bench index is taken modulo the Vault, so a stale cursor left by a
     sold or lost piece cannot index out of range. Both replies come back through the
     same line every other refusal uses — a re-drawn affix list, or what the mend cost.
+  - 🟡 *A smith takes only the work the tier allows, and charges by depth:* both
+    services were tier-blind and flat-priced. **Repair is now insured-only** — insured
+    is the only tier that erodes (yours forever, a little less whole each death), so
+    `standard` gear is refused with "never wears down" and `ephemeral` with "burns when
+    you reach the city". **Reroll** takes `standard` or `insured` but not `ephemeral`
+    (a re-draw that burns on the walk home is chits into a hole), and its material cost
+    now **climbs with the piece's tier** (`[forge] reroll_material_per_tier`): re-drawing
+    a deep item is a bigger job than a starter blade. The server computes each piece's
+    cost and it rides the gear row as `reroll_cost`, so the client advertises the real
+    number without owning the formula — and only advertises the keys the tier can
+    actually take. **Ownership never moves**: both calls act on gear the caller already
+    owns, asserted over the wire.
   - **Remains:** gem/materia synthesis + socketing (no socket model exists yet); the
     mercantile tax / stall-gate effects (want `EC-1` stalls first);
     and the crafting-depth layers the proposal scopes: recipe *discovery*,
@@ -650,9 +662,18 @@ XP; harvesting exists but is instant.
   Portal is an item, so it is now an explicit "Return to town" row in the menu's Map
   column. Spec: [`behaviors/run-lifecycle.md`](behaviors/run-lifecycle.md)
   "Flow: Harvesting".
-  - *Next for this surface (stage 2):* click/tap a node directly to target it, node stock
-    in the HUD, and the Map column's readouts becoming a real **explored world map** when
-    the party has an Explorer (its minimap perk already gates what the map may show).
+  - 🟡 *The Map column carries a real map:* the column was three readouts
+    (distance / tier / biome). It now draws **where this dive has been** — a per-run
+    memory of walked cells plus the landmarks seen on the way (portal always, chests at
+    map tier 2, nodes at 3, dungeon doors while a Runner's Shift-sense is in the party),
+    projected on one scale for both axes so a straight march reads as a straight line.
+    It is the **Explorer's**: `explorer_map` gates both what is drawn *and* what is
+    recorded, and a landmark is only learned from inside the map's own reach — otherwise
+    a map would know the whole instance the moment it loaded, which is the opposite of
+    exploring. Client-side by design (a memory of a walk is not world state), and blanked
+    on `run.started`, because the previous run's world no longer exists.
+  - *Next for this surface (stage 2):* click/tap a node directly to target it, and node
+    stock in the HUD.
   - *Found and fixed on the way:* an in-flight **extraction** channel survived a battle
     start (`start_battle` never cleared it), so you could Town-Portal out *mid-fight*
     and bank the backpack — a free escape past `flee_chit_loss_fraction` /

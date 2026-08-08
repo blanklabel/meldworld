@@ -327,6 +327,7 @@ pub struct Forge {
     pub gear_variance_floor: f64,
     pub gear_variance_per_level: f64,
     pub reroll_material_cost: i32,
+    pub reroll_material_per_tier: i32,
     pub reroll_chit_cost: i64,
     pub reroll_min_forging_level: i32,
     pub repair_chit_cost_per_point: i64,
@@ -354,6 +355,13 @@ impl Forge {
     pub fn variance_at(&self, forging_level: i32) -> f64 {
         (self.gear_variance - self.gear_variance_per_level * (forging_level.max(1) - 1) as f64)
             .max(self.gear_variance_floor)
+    }
+
+    /// The materials one reroll eats on a piece of this tier. Re-drawing a deep
+    /// item's affixes is a bigger job than a starter blade's, so the cost climbs
+    /// with the piece rather than sitting flat at every depth.
+    pub fn reroll_materials(&self, tier: i32) -> i32 {
+        (self.reroll_material_cost + self.reroll_material_per_tier * tier.max(0)).max(1)
     }
 
     /// How many points of max durability one repair restores.

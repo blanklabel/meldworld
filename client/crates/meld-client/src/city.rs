@@ -1302,9 +1302,28 @@ pub(crate) fn bench_line(craft: &CraftData, inv: &InventoryData) -> String {
     let Some(g) = bench_gear(craft, inv) else {
         return "  BENCH  nothing in the Vault to work on\n".to_string();
     };
+    // Only advertise the service the piece can actually take: repair buys back the
+    // max durability a death chewed off, which only INSURED gear ever loses, and a
+    // reroll on ephemeral gear would burn with it on the walk home. Offering a key
+    // that is certain to be refused is worse than not offering it.
+    let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    let mut keys = Vec::new();
+    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
+    }
+    if ins == Some(meld_proto::enums::Insurance::Insured) {
+        keys.push("[P] repair".to_string());
+    }
+    let offer = if keys.is_empty() {
+        "nothing a smith can do with this".to_string()
+    } else {
+        keys.join("   ")
+    };
     format!(
-        "  BENCH  <-/-> {}  ({}/{} dur, {} affix)   [R] reroll   [P] repair\n",
+        "  BENCH  <-/-> {} T{} {}  ({}/{} dur, {} affix)   {offer}\n",
         g.name,
+        g.tier,
+        ins.map(|i| i.label()).unwrap_or("?"),
         g.max_durability,
         g.base_max_durability,
         g.affixes.len()
@@ -1485,24 +1504,36 @@ mod shop_tests {
     }
 
     fn bench_piece(id: &str, name: &str, dur: i32, base: i32) -> GearLine {
+        bench_piece_of("insured", 1, id, name, dur, base)
+    }
+
+    fn bench_piece_of(
+        insurance: &str,
+        tier: i32,
+        id: &str,
+        name: &str,
+        dur: i32,
+        base: i32,
+    ) -> GearLine {
         GearLine {
             gear_id: id.into(),
             name: name.into(),
             slot: "main_hand".into(),
             class_key: String::new(),
-            insurance: "standard".into(),
+            insurance: insurance.into(),
             family: String::new(),
             armor_weight: String::new(),
             affixes: Vec::new(),
             unique_key: String::new(),
             set_key: String::new(),
-            tier: 1,
+            tier,
             equipped_hero_slot: None,
             max_durability: dur,
             base_max_durability: base,
             atk_bonus: 4,
             def_bonus: 0,
             spd_bonus: 0,
+            reroll_cost: 3 + 2 * tier,
         }
     }
 
@@ -1526,6 +1557,9 @@ mod shop_tests {
         assert!(text.contains("6/10 dur"), "{text}");
         assert!(text.contains("[R] reroll"), "{text}");
         assert!(text.contains("[P] repair"), "{text}");
+        // The reroll names the stock it eats, which is the server's number for THIS
+        // piece's tier — a deep item costs more to re-draw than a starter blade.
+        assert!(text.contains("[R] reroll (5 stock)"), "{text}");
 
         // The cursor is taken modulo the Vault, so a stale index left by a smaller
         // Vault (a piece sold, or lost on a death) can never index out of range.
@@ -1533,6 +1567,36 @@ mod shop_tests {
         assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Issued Cuirass");
         craft.bench = 6;
         assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Worn Warblade");
+    }
+
+    // A smith's two services do not apply to every tier, and a key that is certain to
+    // be refused is worse than no key at all. Repair buys back max durability, which
+    // only INSURED gear ever loses; a reroll on ephemeral gear would burn with it on
+    // the walk home.
+    #[test]
+    fn the_bench_offers_only_the_service_the_tier_can_take() {
+        let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
+        let mut inv = InventoryData::default();
+
+        inv.gear = vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)];
+        let insured = bench_line(&craft, &inv);
+        assert!(insured.contains("Insured"), "{insured}");
+        assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
+        assert!(insured.contains("[P] repair"), "{insured}");
+
+        // Standard never degrades, so there is nothing to mend — but it is yours, so
+        // it is worth re-drawing.
+        inv.gear = vec![bench_piece_of("standard", 0, "g", "Issued Blade", 20, 20)];
+        let standard = bench_line(&craft, &inv);
+        assert!(standard.contains("[R] reroll (3 stock)"), "{standard}");
+        assert!(!standard.contains("[P] repair"), "{standard}");
+
+        // Ephemeral burns on the walk home: neither service is worth a chit.
+        inv.gear = vec![bench_piece_of("ephemeral", 4, "g", "Cinderglass Edge", 30, 30)];
+        let ephemeral = bench_line(&craft, &inv);
+        assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
+        assert!(!ephemeral.contains("[P] repair"), "{ephemeral}");
+        assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
     }
 
     #[test]
