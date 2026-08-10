@@ -580,7 +580,7 @@ pub(crate) fn animate_battle_actors(
 
         // Explorer "rage": as banked Adrenaline climbs toward max, redden the sprite
         // and add a faint hot glow so a Explorer *looks* angrier the more it's built.
-        // Only Explorers carry adrenaline_max > 0, so every other class stays neutral.
+        // Only Hunters carry adrenaline_max > 0, so every other class stays neutral.
         let rage = battle
             .view(&s.id)
             .map(|c| {

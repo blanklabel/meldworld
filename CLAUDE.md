@@ -350,7 +350,7 @@ Use these terms consistently in code, comments, and UI.
 | **Barrier** | Temp HP: a pool that absorbs damage **before** HP and decays a fixed amount at the start of the holder's turn. |
 | **Regen** | HP restored at the start of the holder's turn. |
 | **Evasion** | A temporary dodge bonus (added to a fighter's Dex dodge) that decays a fixed amount at the start of the holder's turn. Granted by the Shifter's Flicker. |
-| **Adrenaline** | Explorer mechanic: a banked resource (0…`explorer_adrenaline_max`) that basic **attacks** build and **skills** spend. A Explorer skill is rejected unless its cost is banked. Rides the wire as `adrenaline:<cur>` + `adrenaline_max:<max>`. |
+| **Adrenaline** | **Hunter** mechanic: a banked resource (0…`hunter_adrenaline_max`) that basic **attacks** build and **skills** spend. A Hunter skill is rejected unless its cost is banked. Rides the wire as `adrenaline:<cur>` + `adrenaline_max:<max>`. Every ability that spends it is a Hunter ability, so the class that earns it must be the class that owns them — see `a_class_that_pays_in_adrenaline_is_the_class_that_earns_it`. |
 | **Focus / Manifestation** | Psyker mechanic: a Psyker has N Focus slots (grows with level); each holds a persistent Manifestation that fires every Psyker turn. Each turn it also casts / reinforces / revokes one. |
 
 **Classes** (per-hero; stats in `[player.<key>]`, kit in `meld-battle`):
@@ -365,7 +365,7 @@ Use these terms consistently in code, comments, and UI.
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —
   Power Strike (heavy hit), Second Wind (L2, self-heal), Snare (L2, damage + ATB-gauge drain),
   Frenzy (L3, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
-  See `Battle::resolve_explorer` (the Adrenaline resolver, shared with nothing else).
+  See `Battle::resolve_hunter` (the Adrenaline resolver, shared with nothing else).
 - **Psyker** — psychic channeler. Instead of the martial kit it manages **Foci**: Gravity Well
   (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L3, stronger),
   Temporal Anchor (L5, drains the enemy's ATB gauge). See `Battle::resolve_psyker`.
