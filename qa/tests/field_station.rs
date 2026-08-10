@@ -451,5 +451,5 @@ async fn a_keeper_raises_a_still_and_a_good_cook_yields_more() {
         .find(|m| m["item_kind"] == json!("bloom_salve"))
         .and_then(|m| m["quantity"].as_i64())
         .unwrap_or(0);
-    assert!(salves >= 1 + bonus as i64, "the doses should be banked: {vault}");
+    assert!(salves > bonus as i64, "the doses should be banked: {vault}");
 }

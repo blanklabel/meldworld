@@ -72,7 +72,10 @@ extraction_channel_ms = 2500
 fights_per_level_base = 2
 fights_per_level_ramp = 5
 xp_reference_creature = 60       # the XP a mid-table creature pays at distance 0 [TUNABLE]
-xp_reference_group = 2.0         # creatures in a typical encounter (see the group ramp) [TUNABLE]
+# NOTE: how many creatures an encounter holds is DERIVED from `[[encounters.group_ramp]]`
+# (`Encounters::expected_group_size`) rather than stated twice. A constant here drifted
+# from the ramp and priced level 1 — which the ramp keeps as a duel — as a two-creature
+# pack, so the first level cost ~6 fights instead of the 2 this section promises.
 max_hero_level = 255             # the ceiling a party is expected to reach before a world boss
 # Extraction is mostly the Town Portal item: each dive starts with this many, and
 # felled creatures sometimes drop one. There is only ONE fixed portal (deep in),

@@ -30,6 +30,14 @@ pub(crate) fn overlay_input(
 ) {
     // While renaming a hero on the party screen, capture text and swallow the
     // other overlay hotkeys (so typing a name doesn't toggle screens).
+    //
+    // Only while the OVERLAY owns the screen. This system is registered in the City as
+    // well as the Overworld, and the City's Drill Yard has its own rename field
+    // (`yard_rename_input`): with both live, every letter landed twice ("NNOoOo") and
+    // whichever won ENTER decided whether the new name stuck at all.
+    if rename.slot.is_some() && overlay.kind != Some(OverlayKind::Inventory) {
+        return;
+    }
     if let Some(slot) = rename.slot {
         if keys.just_pressed(KeyCode::Escape) {
             rename.slot = None;
@@ -318,38 +326,7 @@ pub(crate) fn render_overlay(
     // so the vault/backpack lists read like DQ3's item panel. Falls back to a
     // nerdfont glyph when a material has no node art (e.g. consumables).
     let mat_icon = |row: &mut ChildSpawnerCommands, kind: &str| {
-        if let Some(tex) = wa
-            .as_ref()
-            .and_then(|w| w.prop_sprites.get(&format!("resource_{kind}")))
-        {
-            row.spawn((
-                ImageNode::new(tex.clone()),
-                Node {
-                    width: Val::Px(28.0),
-                    height: Val::Px(28.0),
-                    ..default()
-                },
-            ));
-        } else {
-            let glyph = match kind {
-                "town_portal" => "\u{f0f10}", // portal
-                k if meld_proto::consumables::is_consumable(k) => "\u{f0f04}", // flask
-                "chits" => "\u{f0114}",       // coin
-                _ => "\u{f0a7d}",              // generic cube
-            };
-            row.spawn(Node {
-                width: Val::Px(28.0),
-                justify_content: JustifyContent::Center,
-                ..default()
-            })
-            .with_children(|b| {
-                b.spawn((
-                    Text::new(glyph),
-                    TextFont { font_size: 18.0, ..default() },
-                    TextColor(dim),
-                ));
-            });
-        }
+        spawn_item_icon(row, wa.as_deref(), kind, 28.0);
     };
     commands
         .spawn((
@@ -741,6 +718,66 @@ pub(crate) fn rarity_color(name: &str) -> Color {
     }
 }
 
+/// A small item icon for a material/consumable key: the material's own harvest-node
+/// sprite reused from the world, falling back to a nerdfont glyph for things with no
+/// node art (consumables, chits, a Town Portal). Shared by the inventory panel and the
+/// extraction tally so a stack of bloom herb looks the same wherever it is counted.
+pub(crate) fn spawn_item_icon(
+    row: &mut ChildSpawnerCommands,
+    wa: Option<&WorldAssets>,
+    kind: &str,
+    px: f32,
+) {
+    let dim = Color::srgb(0.72, 0.78, 0.9);
+    if let Some(tex) = wa.and_then(|w| w.prop_sprites.get(&format!("resource_{kind}"))) {
+        row.spawn((
+            ImageNode::new(tex.clone()),
+            Node { width: Val::Px(px), height: Val::Px(px), ..default() },
+        ));
+        return;
+    }
+    // No node art for this one (a trophy, a consumable, a piece of gear). Draw a small
+    // tinted chip rather than a nerdfont glyph: the UI font has no icon coverage, so a
+    // glyph fallback rendered as a tofu box — worse than no icon at all.
+    let tint = match kind {
+        "town_portal" => Color::srgb(0.65, 0.5, 0.95),
+        "chits" => Color::srgb(0.95, 0.82, 0.35),
+        "gear" => Color::srgb(0.75, 0.82, 0.95),
+        k if meld_proto::consumables::is_consumable(k) => Color::srgb(0.45, 0.85, 0.55),
+        _ => Color::srgb(0.62, 0.58, 0.5),
+    };
+    let _ = dim;
+    row.spawn((
+        Node {
+            width: Val::Px(px * 0.62),
+            height: Val::Px(px * 0.62),
+            margin: UiRect::all(Val::Px(px * 0.19)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(tint.with_alpha(0.55)),
+        BorderColor(tint),
+        BorderRadius::all(Val::Px(3.0)),
+    ));
+}
+
+/// A gear row's icon: a chip in the piece's own rarity colour, so a legendary reads as
+/// one at a glance in the haul.
+pub(crate) fn spawn_gear_chip(row: &mut ChildSpawnerCommands, rarity: Color, px: f32) {
+    row.spawn((
+        Node {
+            width: Val::Px(px * 0.62),
+            height: Val::Px(px * 0.62),
+            margin: UiRect::all(Val::Px(px * 0.19)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(rarity.with_alpha(0.55)),
+        BorderColor(rarity),
+        BorderRadius::all(Val::Px(3.0)),
+    ));
+}
+
 pub(crate) fn render_loot_report(
     mut commands: Commands,
     time: Res<Time>,
@@ -748,6 +785,7 @@ pub(crate) fn render_loot_report(
     mut report: ResMut<LootReport>,
     mut next: ResMut<NextState<Screen>>,
     existing: Query<Entity, With<LootReportRoot>>,
+    wa: Option<Res<WorldAssets>>,
 ) {
     if report.active {
         report.elapsed += time.delta_secs();
@@ -821,19 +859,44 @@ pub(crate) fn render_loot_report(
                     TextFont { font_size: 20.0, ..default() },
                     TextColor(Color::srgb(0.85, 0.92, 1.0)),
                 ));
+                // What you hauled out, as a row per stack: the thing's own icon, then
+                // how many. A tally is the payoff of the whole dive, so it should read
+                // like a loot list rather than a paragraph of text.
+                let row_node = || Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(8.0),
+                    ..default()
+                };
                 for (kind, qty) in &report.items {
-                    p.spawn((
-                        Text::new(format!("+{} {}", qty, kind.replace('_', " "))),
-                        TextFont { font_size: 16.0, ..default() },
-                        TextColor(dim),
-                    ));
+                    p.spawn(row_node()).with_children(|row| {
+                        spawn_item_icon(row, wa.as_deref(), kind, 24.0);
+                        row.spawn((
+                            Text::new(format!("x{qty}")),
+                            TextFont { font_size: 17.0, ..default() },
+                            TextColor(Color::srgb(0.95, 0.85, 0.5)),
+                        ));
+                        row.spawn((
+                            Text::new(kind.replace('_', " ")),
+                            TextFont { font_size: 16.0, ..default() },
+                            TextColor(dim),
+                        ));
+                    });
                 }
                 for name in &report.gear {
-                    p.spawn((
-                        Text::new(format!("+1 {name}")),
-                        TextFont { font_size: 16.0, ..default() },
-                        TextColor(rarity_color(name)),
-                    ));
+                    p.spawn(row_node()).with_children(|row| {
+                        spawn_gear_chip(row, rarity_color(name), 24.0);
+                        row.spawn((
+                            Text::new("x1".to_string()),
+                            TextFont { font_size: 17.0, ..default() },
+                            TextColor(Color::srgb(0.95, 0.85, 0.5)),
+                        ));
+                        row.spawn((
+                            Text::new(name.clone()),
+                            TextFont { font_size: 16.0, ..default() },
+                            TextColor(rarity_color(name)),
+                        ));
+                    });
                 }
             });
         });

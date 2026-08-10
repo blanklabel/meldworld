@@ -228,6 +228,16 @@ impl Fighter {
         if self.kind != CombatantKind::Player && !self.faction.is_empty() {
             v.push(format!("faction:{}", self.faction));
         }
+        // A pack's leader carries 1.7x HP and its minions 0.45x (`[encounters]`), so two
+        // members of the SAME species can sit 3.8x apart. The role has driven combat
+        // (pack rout) since packs landed but never reached the client, so they drew at
+        // identical size and the spread read as a bug rather than "one big spider with
+        // four little ones".
+        match self.pack_role {
+            PackRole::Leader => v.push("pack:leader".to_string()),
+            PackRole::Minion => v.push("pack:minion".to_string()),
+            PackRole::None => {}
+        }
         if self.barrier > 0 {
             v.push(format!("barrier:{}", self.barrier));
         }
@@ -1432,11 +1442,6 @@ impl Battle {
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
     }
 
-    /// Resolve a Phoenix Guard skill:
-    /// - `root`             — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
-    /// - `swell_strike`     — a heavy blow that also drains the target's ATB gauge.
-    /// - `kinetic_shock`    — a heavier blow that fully resets the target's gauge (hard stagger).
-    /// - `toll_of_the_deep` — an AoE shockwave hitting EVERY living enemy.
     /// The Foundry Smithwright's kit (MS-1). A working smith on the line: heavy staggering
     /// blows, shielding for the party, and one buff that makes somebody ELSE hit harder.
     /// Nothing here costs a resource — the class pays in tempo, since its own turn is
@@ -1674,6 +1679,14 @@ impl Battle {
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
     }
 
+    /// Resolve a Phoenix Guard skill:
+    ///
+    /// - `rite_of_rest`   — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
+    /// - `silvered_strike` — a heavy blow that also drains the target's ATB gauge.
+    /// - `holy_censure`   — a heavier blow that fully resets the target's gauge.
+    /// - `purging_light`  — hits EVERY living enemy.
+    /// - `unbroken_vigil` — Barrier for the whole party.
+    /// - `eradication`    — an execute: the more hurt the foe, the harder it lands.
     fn resolve_phoenix_guard(
         &mut self,
         actor_i: usize,

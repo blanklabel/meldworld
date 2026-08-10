@@ -92,7 +92,6 @@ pub struct Runs {
     pub fights_per_level_base: i32,
     pub fights_per_level_ramp: i32,
     pub xp_reference_creature: f64,
-    pub xp_reference_group: f64,
     pub max_hero_level: i32,
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
@@ -318,6 +317,19 @@ impl Encounters {
             .iter()
             .filter(|b| distance >= b.from_distance)
             .max_by(|a, b| a.from_distance.total_cmp(&b.from_distance))
+    }
+
+    /// How many creatures one encounter at `distance` is worth ON AVERAGE — a
+    /// leader plus however many minions the band's `chance` actually produces.
+    ///
+    /// This is what the XP ladder has to be priced against. The first ~150 tiles are
+    /// duels, so pricing a level there as a two-creature pack makes the opening of the
+    /// game take twice the fights the design asks for.
+    pub fn expected_group_size(&self, distance: f64) -> f64 {
+        match self.group_band_at(distance) {
+            Some(b) => 1.0 + (b.size.max(1) - 1) as f64 * b.chance.clamp(0.0, 1.0),
+            None => 1.0,
+        }
     }
 }
 

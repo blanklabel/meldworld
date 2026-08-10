@@ -1119,6 +1119,98 @@ pub(crate) fn vanguard_wall_text(board: &VanguardBoardData) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// The Drill Yard is the one screen in town with TWO text fields and a save button
+    /// sharing one keyboard, so the thing that breaks is the wiring, not the arithmetic.
+    /// These run the real systems.
+    fn yard_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_non_send_resource(NetRes(crate::net::start("http://127.0.0.1:1".into())))
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(CityUi { party_open: true, ..Default::default() })
+            .insert_resource(HeroRename::default())
+            .insert_resource(AccountHeroNames {
+                names: vec!["Ash".into(), "Bex".into()],
+                classes: vec!["explorer".into(), "hunter".into()],
+                ..Default::default()
+            })
+            .insert_resource(Session { party: vec!["explorer".into()], ..Default::default() })
+            .insert_resource(UnlocksRes::default())
+            .insert_resource(LoadoutData::default())
+            .add_systems(Update, (party_panel_buttons, yard_rename_input, loadout_name_input));
+        app
+    }
+
+    fn press(app: &mut App, key: KeyCode) {
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+    }
+
+    /// Open the rename the way the yard actually offers it: the button.
+    fn open_rename(app: &mut App) {
+        app.world_mut().resource_mut::<HeroRename>().slot = Some(0);
+        app.world_mut().resource_mut::<HeroRename>().buffer = "Ash".into();
+    }
+
+    #[test]
+    fn letters_land_in_the_hero_name_while_it_is_open() {
+        let mut app = yard_app();
+        open_rename(&mut app);
+        for k in [KeyCode::KeyZ, KeyCode::KeyO, KeyCode::KeyE] {
+            press(&mut app, k);
+        }
+        assert_eq!(
+            app.world().resource::<HeroRename>().buffer,
+            "Ashzoe",
+            "each keystroke should land ONCE - two capture systems gave 'NNOoOo'"
+        );
+    }
+
+    #[test]
+    fn a_renamed_hero_keeps_the_name_locally_and_the_field_closes() {
+        let mut app = yard_app();
+        open_rename(&mut app);
+        press(&mut app, KeyCode::KeyX);
+        press(&mut app, KeyCode::Enter);
+        let names = app.world().resource::<AccountHeroNames>();
+        assert_eq!(names.names[0], "Ashx", "the name should stick without a run behind it");
+        assert!(app.world().resource::<HeroRename>().slot.is_none(), "field should close");
+    }
+
+    /// Every letter has to reach the party-name field, including the "r" that used to
+    /// open a rename dialog instead — a party called "Reapers" was untypeable.
+    #[test]
+    fn letters_name_the_party_when_no_hero_is_being_renamed() {
+        let mut app = yard_app();
+        for k in [KeyCode::KeyR, KeyCode::KeyE, KeyCode::KeyD] {
+            press(&mut app, k);
+        }
+        assert_eq!(app.world().resource::<CityUi>().loadout_name, "red");
+        assert!(
+            app.world().resource::<HeroRename>().slot.is_none(),
+            "typing a name must not open a rename dialog"
+        );
+    }
+
+    /// The two fields must not both eat the same keystroke: typing a hero's name should
+    /// never also be typing the party's, or one of them is always wrong.
+    #[test]
+    fn the_two_text_fields_never_share_a_keystroke() {
+        let mut app = yard_app();
+        open_rename(&mut app);
+        for k in [KeyCode::KeyQ, KeyCode::KeyW] {
+            press(&mut app, k);
+        }
+        assert_eq!(app.world().resource::<HeroRename>().buffer, "Ashqw");
+        assert_eq!(
+            app.world().resource::<CityUi>().loadout_name,
+            "",
+            "the loadout name must stay empty while a hero is being renamed"
+        );
+    }
+
     use super::*;
     use meld_client::net::VanguardLine;
 
@@ -2371,9 +2463,12 @@ pub(crate) fn party_panel_buttons(
             start_rename(&mut rename, session.party_cursor);
         }
     }
-    if city.party_open && rename.slot.is_none() && keys.just_pressed(KeyCode::KeyR) {
-        start_rename(&mut rename, session.party_cursor);
-    }
+    // NO bare [R] shortcut here, deliberately. The yard is the one screen in town with
+    // a text field in it, and a letter key that also opens a dialog means a party named
+    // "Reapers" can never be typed — the R opened a rename instead, and typed an "r"
+    // into the name field on the way. The visible Rename button is the way in; the
+    // in-dive party screen keeps its [R], where there is no field to type into.
+    let _ = &keys;
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
     for (i, b) in &class_q {
         if *i != Interaction::Pressed {

@@ -35,9 +35,12 @@ pub fn same_level_encounter_xp(level: i32, balance: &Balance) -> i64 {
     let sc = &balance.world_scaling;
     let distance = 12.5 * level.max(1) as f64;
     let mult = (1.0 + distance / sc.stat_mult_base_divisor).powf(sc.xp_distance_exp);
-    (r.xp_reference_creature * mult * r.xp_reference_group)
-        .round()
-        .max(1.0) as i64
+    // How big an encounter IS at that depth comes from the group ramp itself, not a
+    // second constant that can drift from it. A flat 2.0 priced every level as a pack,
+    // but the ramp keeps the first 150 tiles as duels — so level 1 cost twice the
+    // fights the design statement promises.
+    let group = balance.encounters.expected_group_size(distance);
+    (r.xp_reference_creature * mult * group).round().max(1.0) as i64
 }
 
 /// How many same-level fights level `level` costs — the design statement itself:
@@ -695,6 +698,49 @@ pub fn build_battle(
 
 #[cfg(test)]
 mod tests {
+
+    /// The design statement is in FIGHTS, so the check has to be too — and against
+    /// what a creature at that depth ACTUALLY pays, not against the reference constant
+    /// the ladder is built from. Checking the ladder against its own constant is how a
+    /// flat `xp_reference_group = 2.0` sat next to a group ramp that keeps the first
+    /// 150 tiles as duels, quietly making level 1 cost ~4 fights instead of 2.
+    #[test]
+    fn a_level_costs_the_fights_it_says_it_does_against_real_creatures() {
+        let b = Balance::load_default().unwrap();
+        let xp: Vec<i64> = b.creature.values().map(|c| c.xp_reward).collect();
+        assert!(!xp.is_empty(), "no creatures to price the ladder against");
+        let lo = *xp.iter().min().unwrap() as f64;
+        let hi = *xp.iter().max().unwrap() as f64;
+        for level in [1, 2, 3, 5] {
+            let need = xp_to_next(level, &b) as f64;
+            let want = fights_per_level(level, &b) as f64;
+            let d = 12.5 * level as f64;
+            let mult = (1.0 + d / b.world_scaling.stat_mult_base_divisor)
+                .powf(b.world_scaling.xp_distance_exp);
+            let group = b.encounters.expected_group_size(d);
+            // Cheapest creature in the table → the MOST fights this level can take;
+            // richest → the fewest. The promise has to hold across that whole spread.
+            let most = need / (lo * mult * group);
+            let fewest = need / (hi * mult * group);
+            assert!(
+                most <= want * 1.5 && fewest >= want * 0.5,
+                "level {level} promises {want} fights but real creatures make it                  {fewest:.1}-{most:.1}"
+            );
+        }
+    }
+
+    /// The first 150 tiles are duels (`[[encounters.group_ramp]]` starts at 150), so
+    /// the ladder must price level 1 as one creature, not a pack.
+    #[test]
+    fn the_opening_of_the_game_is_priced_as_duels() {
+        let b = Balance::load_default().unwrap();
+        assert_eq!(b.encounters.expected_group_size(12.5), 1.0, "level 1 is a duel");
+        assert!(
+            b.encounters.expected_group_size(250.0) > 1.0,
+            "the ramp still grows further out"
+        );
+    }
+
     use super::*;
 
     #[test]

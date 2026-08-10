@@ -185,6 +185,31 @@ pub(crate) fn spawn_hero_actor(
 
 /// Spawn one enemy billboard at `root`, `h` world-units tall (shrunk when the party
 /// surrounds them), with its hidden target reticle.
+/// How much bigger or smaller a pack member draws than a lone creature of its species.
+/// The leader is the "one big spider", its minions the "little ones" — the shape the
+/// `[encounters]` stat multipliers already assume but nothing drew.
+pub(crate) fn pack_scale(statuses: &[String]) -> f32 {
+    if statuses.iter().any(|s| s == "pack:leader") {
+        1.3
+    } else if statuses.iter().any(|s| s == "pack:minion") {
+        0.75
+    } else {
+        1.0
+    }
+}
+
+/// A pack member's name says which one it is, so two rows of the same species with very
+/// different health read as a hierarchy instead of a glitch.
+pub(crate) fn pack_label(name: &str, statuses: &[String]) -> String {
+    if statuses.iter().any(|s| s == "pack:leader") {
+        format!("{name} (leader)")
+    } else if statuses.iter().any(|s| s == "pack:minion") {
+        format!("{name} (runt)")
+    } else {
+        name.to_string()
+    }
+}
+
 pub(crate) fn spawn_enemy_actor(
     commands: &mut Commands,
     wa: &WorldAssets,
@@ -202,6 +227,10 @@ pub(crate) fn spawn_enemy_actor(
     let boss_key = c.statuses.iter().find_map(|s| s.strip_prefix("boss:"));
     let boss_frames = boss_key.and_then(|k| wa.boss_frames(k));
     let h = if boss_frames.is_some() { h * 1.5 } else { h };
+    // A pack's leader and its minions are the SAME species at 1.7x and 0.45x HP, so
+    // drawing them identically made a 3.8x health gap look broken. Size is the read the
+    // balance table already assumes ("one big spider with four little ones").
+    let h = h * pack_scale(&c.statuses);
     // PG-2: the same boss met deeper wears a darker palette (`boss_band:<n>`,
     // server-assigned from the level it is met at). Only a named boss has a band,
     // so an ordinary creature keeps the neutral tint.
@@ -813,7 +842,11 @@ pub(crate) fn valid_targets(battle: &BattleData, side: Side) -> Vec<(String, Str
         .iter()
         .filter(|c| c.hp > 0 && (side == Side::Ally) == c.is_player)
         .map(|c| {
-            let name = if c.is_player { battle.hero_label(&c.id) } else { c.name.clone() };
+            let name = if c.is_player {
+                battle.hero_label(&c.id)
+            } else {
+                pack_label(&c.name, &c.statuses)
+            };
             (format!("{}  {}/{}", name, c.hp, c.max_hp), c.id.clone())
         })
         .collect()
@@ -1857,7 +1890,12 @@ pub(crate) fn render_enemy_panel(
                 })
                 .with_children(|e| {
                     e.spawn((
-                        Text::new(format!("{}  {}/{}", c.name, c.hp, c.max_hp)),
+                        Text::new(format!(
+                            "{}  {}/{}",
+                            pack_label(&c.name, &c.statuses),
+                            c.hp,
+                            c.max_hp
+                        )),
                         TextFont { font_size: 14.0, ..default() },
                         TextColor(name_color),
                     ));
@@ -2661,4 +2699,31 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
         age: 0.0,
         scale,
     });
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+
+    /// A leader and its minions are the same species at 1.7x and 0.45x HP, so the only
+    /// thing telling them apart on screen is size and the name. Both come from the
+    /// `pack:` status the server now sends.
+    #[test]
+    fn a_pack_leader_draws_bigger_than_its_runts_and_says_which_it_is() {
+        let leader = vec!["faction:fungal".to_string(), "pack:leader".to_string()];
+        let minion = vec!["faction:fungal".to_string(), "pack:minion".to_string()];
+        let lone: Vec<String> = vec!["faction:fungal".to_string()];
+
+        assert!(pack_scale(&leader) > pack_scale(&lone));
+        assert!(pack_scale(&minion) < pack_scale(&lone));
+        assert_eq!(pack_scale(&lone), 1.0, "a lone creature is the reference size");
+
+        assert_eq!(pack_label("myconid brute", &leader), "myconid brute (leader)");
+        assert_eq!(pack_label("myconid brute", &minion), "myconid brute (runt)");
+        assert_eq!(
+            pack_label("myconid brute", &lone),
+            "myconid brute",
+            "a creature not in a pack gets no mark"
+        );
+    }
 }

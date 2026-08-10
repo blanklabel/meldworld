@@ -25,6 +25,16 @@ number is **derived** from the encounter tables (a same-level encounter sits at
 ladder with it instead of letting the two drift apart. Punch above your level and you
 climb faster; that falls out of the same maths rather than needing a rule.
 
+**"Derived" has to mean derived from everything, including how many creatures a fight
+holds.** The encounter size came from a flat `xp_reference_group = 2.0` sitting next to a
+`[[encounters.group_ramp]]` that keeps the first ~150 tiles as **duels**. So level 1 was
+priced as a two-creature pack while the world only ever handed you one: a fight paid ~44
+and the level wanted 250, about **6 fights instead of the promised 2**. The group size now
+comes from the ramp itself (`Encounters::expected_group_size`) and the constant is gone.
+The check is in fights, against the real creature table rather than the reference constant
+the ladder is built from — checking a derivation against its own input is what let the two
+drift in the first place.
+
 The ramp is deliberately gentle through the first act. The gate on the **second party
 slot** is a hero at level 10, so everything before it is played solo — and a straight
 `L + 1` shape charged **54** at-level fights for it, which is most of a first session
