@@ -1934,31 +1934,43 @@ pub(crate) fn spent_tokens(battle: &BattleData, id: &str) -> Vec<String> {
 /// (nerdfont glyph, colour, label). Class resources (adrenaline / focus) and the
 /// row/faction/class/attribute tokens are intentionally excluded — those show in the
 /// HUD cells, not as an aura over the sprite.
-/// How far LEFT an icon glyph must be nudged to sit centred in its badge, in px at the
-/// badge's 18px font size.
+/// The ink width of each badge glyph, in px at the badge's 18px font size.
 ///
-/// Flex centring centres a glyph's ADVANCE box. These are Nerd Font icons patched into a
-/// monospace face, so every one of them advances the same 10.80px cell while its ink starts
-/// at x=0 and runs *past* the cell — the eye is 16.52px of ink in a 10.80px advance. So the
-/// ink's centre sits (ink_width - advance)/2 to the right of the badge's centre, and that
-/// gap is what reads as "the skull is off centre".
+/// Needed because flex centring centres a glyph's ADVANCE box, and these are Nerd Font
+/// icons patched into a monospace face: every one advances the same 10.80px cell while its
+/// ink starts at x=0 and runs *past* the cell — the crosshair is 16.52px of ink in a 10.80px
+/// advance. Centring the advance therefore leaves the ink sitting `(ink - advance)/2` to the
+/// right, which is what reads as "the skull is off centre".
 ///
-/// Values are `(advance/2 - ink_centre)` read straight out of the font's `hmtx` and `glyf`
-/// tables, so they are measurements rather than taste. Vertical needs no nudge at all: the
-/// same measurement shows every one of these glyphs already has its ink centred on the line
-/// box (see `status_icon_offset`'s test).
-fn status_icon_offset(glyph: &str) -> f32 {
+/// So the glyph is positioned absolutely from the badge's left edge instead of being flex
+/// centred with a corrective margin: `left = badge/2 - ink/2` puts the INK's centre on the
+/// badge's centre exactly, with no fractional margin for the layout to round away. Values
+/// are read out of the font's `glyf` table.
+fn status_icon_ink(glyph: &str) -> f32 {
     match glyph {
-        "\u{f0208}" => -2.86, // eye        (ink 16.52)
-        "\u{f046e}" => -2.09, // run-fast   (ink 14.98)
-        "\u{f068c}" => -1.35, // skull      (ink 13.50)
-        "\u{f0498}" => -1.35, // shield     (ink 13.50)
-        "\u{f05bf}" => -0.96, // target     (ink 12.73)
-        "\u{f060c}" => -0.23, // bolt       (ink 11.25)
-        "\u{f0238}" => -0.06, // fire       (ink 10.85)
-        "\u{f05f5}" => 0.03,  // heart-pulse(ink 10.67)
-        _ => 0.0,
+        "\u{f01a4}" => 16.52, // crosshairs
+        "\u{f0208}" => 16.52, // eye
+        "\u{f046e}" => 14.98, // run-fast
+        "\u{f068c}" => 13.50, // skull
+        "\u{f0498}" => 13.50, // shield
+        "\u{f060c}" => 11.25, // lightning-bolt
+        "\u{f0238}" => 10.85, // fire
+        "\u{f05f5}" => 10.67, // heart-pulse
+        _ => 10.80,            // the monospace advance: assume ink fills its cell
     }
+}
+
+/// The badge is this wide and tall, in logical px, with this much border. Both matter:
+/// `position_type: Absolute` is resolved against the PADDING box, so `left` is measured
+/// from inside the border — placing the ink by the outer width put every glyph a border's
+/// width too far right, which a screenshot measurement caught after the maths said it
+/// should be centred.
+const STATUS_BADGE: f32 = 30.0;
+const STATUS_BADGE_BORDER: f32 = 1.5;
+
+/// Where a glyph's text node goes so its INK sits centred on the badge.
+fn status_icon_left(glyph: &str) -> f32 {
+    STATUS_BADGE / 2.0 - STATUS_BADGE_BORDER - status_icon_ink(glyph) / 2.0
 }
 
 fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str)> {
@@ -1974,7 +1986,7 @@ fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str
     // A blazed target takes more from EVERY ally, so it has to be visible on the creature
     // — the whole value of the Explorer's opener is the party knowing where to swing.
     if has("marked") {
-        v.push(("\u{f05bf}", Color::srgb(1.0, 0.82, 0.35), "Blazed")); // target
+        v.push(("\u{f01a4}", Color::srgb(1.0, 0.82, 0.35), "Blazed")); // crosshairs
     }
     // A distracted creature is missing on purpose. If that is invisible the player reads a
     // string of misses as luck rather than as the Explorer's doing.
@@ -2064,13 +2076,14 @@ pub(crate) fn render_status_icons(
                         Text::new(glyph),
                         TextFont { font_size: 18.0, ..default() },
                         TextColor(color),
-                        // Vertically: no nudge needed — measured, every one of these glyphs
-                        // already has its ink centred on the line box, and the 2px of
-                        // "optical centring" that used to live here was what pushed them off.
-                        // Horizontally it DOES need one, because the ink is wider than the
-                        // monospace cell it advances (see `status_icon_offset`).
+                        // Placed, not centred. `left` puts the INK's centre on the badge's
+                        // centre (see `status_icon_ink`); vertical needs nothing, because
+                        // measured against the font every one of these glyphs already has
+                        // its ink centred on the line box — the 2px of "optical centring"
+                        // that once lived here was itself the thing pushing them off.
                         Node {
-                            margin: UiRect::left(Val::Px(status_icon_offset(glyph))),
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(status_icon_left(glyph)),
                             ..default()
                         },
                     ));
@@ -2771,7 +2784,7 @@ mod pack_tests {
     /// flex centring alone leaves the glyph pushed right — the skull sat 1.35px off and the
     /// eye 2.86px. A new icon added without an entry here would silently do the same.
     #[test]
-    fn every_status_icon_has_a_measured_centring_offset() {
+    fn every_status_icon_has_a_measured_ink_width() {
         // One combatant carrying everything the badge can draw.
         let all = vec![
             "marked".to_string(),
@@ -2786,15 +2799,19 @@ mod pack_tests {
         let icons = status_effects(&all);
         assert_eq!(icons.len(), 8, "all eight badges should be offered: {icons:?}");
         for (glyph, _, label) in icons {
-            let off = status_icon_offset(glyph);
+            let ink = status_icon_ink(glyph);
             assert!(
-                off != 0.0 || label == "Regen",
-                "{label} has no measured offset - read it out of the font's hmtx/glyf like \
-                 the others rather than leaving it at 0"
+                (10.0..=18.0).contains(&ink),
+                "{label}'s ink width {ink} is not something an 18px glyph can be - read it \
+                 out of the font's glyf table like the others"
             );
+            // The placement it implies must put the ink's centre on the badge's centre,
+            // measured from the OUTER edge (absolute `left` starts inside the border).
+            let ink_centre = STATUS_BADGE_BORDER + status_icon_left(glyph) + ink / 2.0;
             assert!(
-                (-4.0..=1.0).contains(&off),
-                "{label}'s offset {off} is outside anything the 10.8px cell can explain"
+                (ink_centre - STATUS_BADGE / 2.0).abs() < 0.01,
+                "{label}'s ink would centre at {ink_centre}, not {}",
+                STATUS_BADGE / 2.0
             );
         }
     }
