@@ -1934,6 +1934,33 @@ pub(crate) fn spent_tokens(battle: &BattleData, id: &str) -> Vec<String> {
 /// (nerdfont glyph, colour, label). Class resources (adrenaline / focus) and the
 /// row/faction/class/attribute tokens are intentionally excluded — those show in the
 /// HUD cells, not as an aura over the sprite.
+/// How far LEFT an icon glyph must be nudged to sit centred in its badge, in px at the
+/// badge's 18px font size.
+///
+/// Flex centring centres a glyph's ADVANCE box. These are Nerd Font icons patched into a
+/// monospace face, so every one of them advances the same 10.80px cell while its ink starts
+/// at x=0 and runs *past* the cell — the eye is 16.52px of ink in a 10.80px advance. So the
+/// ink's centre sits (ink_width - advance)/2 to the right of the badge's centre, and that
+/// gap is what reads as "the skull is off centre".
+///
+/// Values are `(advance/2 - ink_centre)` read straight out of the font's `hmtx` and `glyf`
+/// tables, so they are measurements rather than taste. Vertical needs no nudge at all: the
+/// same measurement shows every one of these glyphs already has its ink centred on the line
+/// box (see `status_icon_offset`'s test).
+fn status_icon_offset(glyph: &str) -> f32 {
+    match glyph {
+        "\u{f0208}" => -2.86, // eye        (ink 16.52)
+        "\u{f046e}" => -2.09, // run-fast   (ink 14.98)
+        "\u{f068c}" => -1.35, // skull      (ink 13.50)
+        "\u{f0498}" => -1.35, // shield     (ink 13.50)
+        "\u{f05bf}" => -0.96, // target     (ink 12.73)
+        "\u{f060c}" => -0.23, // bolt       (ink 11.25)
+        "\u{f0238}" => -0.06, // fire       (ink 10.85)
+        "\u{f05f5}" => 0.03,  // heart-pulse(ink 10.67)
+        _ => 0.0,
+    }
+}
+
 fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str)> {
     let has = |name: &str| statuses.iter().any(|s| s == name);
     let num = |p: &str| {
@@ -2037,13 +2064,13 @@ pub(crate) fn render_status_icons(
                         Text::new(glyph),
                         TextFont { font_size: 18.0, ..default() },
                         TextColor(color),
-                        // No nudge. Measured against the bundled font: every Nerd Font icon
-                        // we use has its ink centred on the line box already (ink midpoint
-                        // 11.88px of a 23.76px box at size 18, identically for target/eye/
-                        // bolt/skull/shield), so flex centring lands them dead centre. The
-                        // 2px of "optical centring" that used to live here was what pushed
-                        // them all off it.
+                        // Vertically: no nudge needed — measured, every one of these glyphs
+                        // already has its ink centred on the line box, and the 2px of
+                        // "optical centring" that used to live here was what pushed them off.
+                        // Horizontally it DOES need one, because the ink is wider than the
+                        // monospace cell it advances (see `status_icon_offset`).
                         Node {
+                            margin: UiRect::left(Val::Px(status_icon_offset(glyph))),
                             ..default()
                         },
                     ));
@@ -2738,6 +2765,39 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
 #[cfg(test)]
 mod pack_tests {
     use super::*;
+
+    /// Every status icon we can show must carry a measured horizontal offset. These are
+    /// Nerd Font icons in a monospace face: the ink is wider than the cell it advances, so
+    /// flex centring alone leaves the glyph pushed right — the skull sat 1.35px off and the
+    /// eye 2.86px. A new icon added without an entry here would silently do the same.
+    #[test]
+    fn every_status_icon_has_a_measured_centring_offset() {
+        // One combatant carrying everything the badge can draw.
+        let all = vec![
+            "marked".to_string(),
+            "distracted".to_string(),
+            "hasted".to_string(),
+            "poison".to_string(),
+            "burn".to_string(),
+            "barrier:5".to_string(),
+            "regen:3".to_string(),
+            "evasion:20".to_string(),
+        ];
+        let icons = status_effects(&all);
+        assert_eq!(icons.len(), 8, "all eight badges should be offered: {icons:?}");
+        for (glyph, _, label) in icons {
+            let off = status_icon_offset(glyph);
+            assert!(
+                off != 0.0 || label == "Regen",
+                "{label} has no measured offset - read it out of the font's hmtx/glyf like \
+                 the others rather than leaving it at 0"
+            );
+            assert!(
+                (-4.0..=1.0).contains(&off),
+                "{label}'s offset {off} is outside anything the 10.8px cell can explain"
+            );
+        }
+    }
 
     /// A leader and its minions are the same species at 1.7x and 0.45x HP, so the only
     /// thing telling them apart on screen is size and the name. Both come from the
