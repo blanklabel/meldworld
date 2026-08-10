@@ -162,6 +162,15 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**The three-column convention.** Every cascade screen is **nav | main | detail** at fixed
+fractions of the window — **1/6, 1/2, 1/3**, which tile it exactly (asserted at compile time
+in [`glass.rs`](client/crates/meld-client/src/glass.rs)). Fractions, not content-sizing,
+and every column's SLOT is spawned even when empty: the menu's row used to have no width at
+all, so opening a third column re-centred the whole thing and clicking a nav item moved the
+nav item you just clicked. Nothing shrinks; only `main` grows, so it absorbs whatever the
+minimum widths leave over. Build new panels out of `glass::columns()` + `glass::column()`
+rather than hand-rolled widths.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a

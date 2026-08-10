@@ -209,6 +209,104 @@ pub fn text(content: impl Into<String>, size: f32, color: Color) -> impl Bundle 
     )
 }
 
+// ---------------------------------------------------------------- columns --
+//
+// THE THREE-COLUMN CONVENTION. Every cascade screen (the menu, equipment, the town
+// counters) is nav | main | detail, at fixed FRACTIONS of the window: 1/6, 1/2, 1/3, which
+// sum to exactly 1.
+//
+// Fractions, not content-sizing, because content-sized columns move. The menu's row had no
+// width at all and was centred by the scrim, so every time a third column appeared the whole
+// thing shifted sideways under the cursor — clicking a nav item moved the nav item you just
+// clicked. A column that is 1/6 of the window is 1/6 of the window whether or not its
+// neighbours have anything in them.
+//
+// The detail column's SLOT is always spawned, empty if there is nothing to say, for the same
+// reason: a panel that appears must not push its siblings.
+
+/// Nav: the section list. Small, and never the place content grows.
+pub const COL_NAV: f32 = 100.0 / 6.0;
+/// Main: the column the screen is actually about. Always the biggest, and it absorbs any
+/// slack left by the other two's minimum widths.
+pub const COL_MAIN: f32 = 50.0;
+/// Detail: the fine print for whatever is focused in `main`.
+pub const COL_DETAIL: f32 = 100.0 / 3.0;
+
+// The three columns must tile the window exactly. Checked at COMPILE time: a split that
+// does not add up leaves a gap the row re-centres into, which is the drift this whole
+// convention exists to stop — so it should fail to build, not fail a test.
+const _: () = assert!(COL_NAV + COL_MAIN + COL_DETAIL == 100.0);
+const _: () = assert!(COL_MAIN > COL_DETAIL);
+const _: () = assert!(COL_DETAIL > COL_NAV);
+
+/// Floors, so a narrow window degrades instead of crushing. At 800px wide the detail column
+/// is only ~18 monospace characters, which wraps the longest ability description to nine
+/// lines — legible, but the floors keep the nav readable and let `main` give up width first.
+const COL_NAV_MIN: f32 = 172.0;
+const COL_DETAIL_MIN: f32 = 240.0;
+
+/// The full-width row the three columns live in. Full width is the point: the row cannot
+/// resize with its contents, so nothing inside it can shift sideways.
+pub fn columns() -> impl Bundle {
+    Node {
+        // VIEWPORT width, not percent: as a flex item of the scrim a percentage width still
+        // got shrunk to fit its own content, so the columns came out at about half the share
+        // they claim. `Vw` is measured against the window and cannot be negotiated away.
+        width: Val::Vw(100.0),
+        flex_shrink: 0.0,
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::FlexStart,
+        justify_content: JustifyContent::Center,
+        column_gap: Val::Px(14.0),
+        padding: UiRect::axes(Val::Px(18.0), Val::Px(0.0)),
+        ..default()
+    }
+}
+
+/// One column of the convention, as a frosted panel. `frac` is one of the `COL_*` constants.
+pub fn column(frac: f32) -> impl Bundle {
+    // Nothing shrinks. A column that can shrink does, the moment its neighbour has more
+    // content than it — which is the drift this convention exists to stop. Main is the only
+    // one that GROWS, so it absorbs whatever the floors leave over.
+    let (min, grow) = if frac == COL_MAIN {
+        (Val::Px(0.0), 1.0)
+    } else if frac == COL_NAV {
+        (Val::Px(COL_NAV_MIN), 0.0)
+    } else {
+        (Val::Px(COL_DETAIL_MIN), 0.0)
+    };
+    let shrink = 0.0;
+    (
+        Node {
+            width: Val::Percent(frac),
+            min_width: min,
+            flex_grow: grow,
+            flex_shrink: shrink,
+            max_height: Val::Vh(92.0),
+            overflow: Overflow::scroll_y(),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(8.0),
+            padding: UiRect::all(Val::Px(18.0)),
+            border: UiRect::all(Val::Px(BORDER)),
+            ..default()
+        },
+        BackgroundColor(GLASS),
+        BorderColor(EDGE),
+        BorderRadius::all(Val::Px(RADIUS)),
+    )
+}
+
+/// A column slot that holds nothing — same width as `column`, no frosting. Keeps the
+/// geometry when a detail panel has nothing to show, so its neighbours never move.
+pub fn column_empty(frac: f32) -> impl Bundle {
+    Node {
+        width: Val::Percent(frac),
+        min_width: if frac == COL_DETAIL { Val::Px(COL_DETAIL_MIN) } else { Val::Px(0.0) },
+        flex_shrink: 0.0,
+        ..default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +339,24 @@ mod tests {
         assert!(on.red > off.red && on.blue < on.red, "the selected chip is not a gold wash");
         assert!(CHIP_HOVER.alpha() > CHIP_OFF.alpha());
         assert_eq!(CHIP_ON, ACTIVE, "two definitions of 'selected'");
+    }
+
+    /// And the floors have to fit inside the fractions they belong to at the smallest window
+    /// we care about, or a column stops being the size it claims.
+    #[test]
+    fn the_column_floors_leave_main_something_to_work_with() {
+        // 1280 logical px is the reference window.
+        let w = 1280.0;
+        let nav = (w * COL_NAV / 100.0).max(COL_NAV_MIN);
+        let detail = (w * COL_DETAIL / 100.0).max(COL_DETAIL_MIN);
+        let main = w - nav - detail;
+        assert!(main > detail, "main should still be the widest at 1280: {main} vs {detail}");
+        assert!(nav >= COL_NAV_MIN && detail >= COL_DETAIL_MIN);
+
+        // And at a cramped 800 the floors bite without eating main entirely.
+        let w = 800.0;
+        let nav = (w * COL_NAV / 100.0).max(COL_NAV_MIN);
+        let detail = (w * COL_DETAIL / 100.0).max(COL_DETAIL_MIN);
+        assert!(w - nav - detail > 200.0, "main must survive a narrow window");
     }
 }

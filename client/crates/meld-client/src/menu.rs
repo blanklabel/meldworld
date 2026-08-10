@@ -308,16 +308,10 @@ pub(crate) fn render_main_menu(
     commands
         .spawn((MainMenuRoot, glass::scrim()))
         .with_children(|root| {
-            root.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                align_items: AlignItems::FlexStart,
-                column_gap: Val::Px(14.0),
-                ..default()
-            })
-            .with_children(|cols| {
+            root.spawn(glass::columns()).with_children(|cols| {
                 // ---- column one: the nav. Always present, so you can always see
                 // where you are and step back out.
-                cols.spawn(glass::panel(Val::Px(240.0))).with_children(|nav| {
+                cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
                     nav.spawn(glass::text("MENU", 26.0, glass::TITLE));
                     nav.spawn(glass::divider());
                     for (i, s) in MenuSection::ALL.iter().enumerate() {
@@ -335,9 +329,15 @@ pub(crate) fn render_main_menu(
                     nav.spawn(glass::text("[Esc] close", 14.0, glass::DIM));
                 });
 
-                // ---- column two: whatever the nav opened.
-                let Some(section) = menu.section else { return };
-                cols.spawn(glass::panel(Val::Px(520.0))).with_children(|col| {
+                // ---- column two: whatever the nav opened. Its SLOT is spawned either
+                // way — an empty column keeps the geometry, so opening a section does not
+                // shove the nav sideways under the cursor that just clicked it.
+                let Some(section) = menu.section else {
+                    cols.spawn(glass::column_empty(glass::COL_MAIN));
+                    cols.spawn(glass::column_empty(glass::COL_DETAIL));
+                    return;
+                };
+                cols.spawn(glass::column(glass::COL_MAIN)).with_children(|col| {
                     col.spawn(glass::text(section.label().to_uppercase(), 26.0, glass::TITLE));
                     col.spawn(glass::divider());
                     match section {
@@ -671,10 +671,13 @@ pub(crate) fn render_main_menu(
                     }
                 });
 
-                // ---- column three: a hero's gear, or a hero's abilities.
-                let Some(pane) = menu.pane else { return };
-                let Some(hero) = heroes.get(menu.member) else { return };
-                cols.spawn(glass::panel(Val::Px(520.0))).with_children(|col| match pane {
+                // ---- column three: a hero's gear, or a hero's abilities. Also always a
+                // slot, for the same reason.
+                let (Some(pane), Some(hero)) = (menu.pane, heroes.get(menu.member)) else {
+                    cols.spawn(glass::column_empty(glass::COL_DETAIL));
+                    return;
+                };
+                cols.spawn(glass::column(glass::COL_DETAIL)).with_children(|col| match pane {
                     MenuPane::Abilities => {
                         col.spawn(glass::text("ABILITIES", 26.0, glass::TITLE));
                         col.spawn(glass::text(
