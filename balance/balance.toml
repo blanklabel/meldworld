@@ -662,6 +662,21 @@ gift_heal = 18                   # Terra's Gift: party heal…
 gift_barrier = 14                # …Barrier…
 gift_gauge = 0.25                # …and a push on every ally's gauge
 
+# "EQUIP BEST" weights: how much each class wants attack / defence / speed out of a piece
+# of gear. Gear only carries those three bonuses, so this is the whole scoring axis — and a
+# flat sum would be wrong for most of the roster: a Psyker's damage rides Mnd, so `atk` on a
+# staff is nearly dead weight to it, while a Phoenix Guard would rather have the armour than
+# anything. Highest weighted score per slot wins. [TUNABLE]
+[equip_best]
+explorer = [1.0, 0.9, 0.7]        # tempo and standing up: wants a bit of everything
+hunter = [1.3, 0.7, 0.6]          # its damage is the point
+psyker = [0.3, 0.9, 1.0]          # atk does nothing for a Focus; speed casts sooner
+resonant = [0.3, 1.0, 1.1]        # act sooner, survive longer; its heals ride Mnd
+shifter = [1.1, 0.4, 1.3]         # fast and fragile, and dodge rides Dex
+phoenix_guard = [0.8, 1.4, 0.2]   # the wall. Slow on purpose
+smithwright = [1.0, 1.2, 0.4]     # front line that props others up
+keeper = [0.3, 1.0, 1.0]          # a mender: its damage rides Mnd too
+
 [consumable]
 barrier_amount = 18             # Bulwark Tonic: Barrier granted [TUNABLE]
 regen_amount = 6                # Mending Draught: Regen per turn [TUNABLE]

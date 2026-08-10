@@ -54,6 +54,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vault/gear", get(vault_gear))
         .route("/v1/vault/gear/:gear_id/equip", post(equip))
         .route("/v1/vault/gear/:gear_id/unequip", post(unequip))
+        .route("/v1/party/heroes/:slot/equip-best", post(equip_best))
         .route("/v1/meld-skills", get(meld_skills))
         .route("/v1/heroes", get(heroes))
         .route("/v1/heroes/:slot", axum::routing::put(rename_hero))
@@ -1396,6 +1397,107 @@ async fn vault_gear(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
 #[derive(serde::Deserialize)]
 struct EquipRequest {
     hero_slot: i32,
+}
+
+
+/// `POST /v1/party/heroes/:slot/equip-best` — dress one hero from the SPARE gear.
+///
+/// Server-side on purpose. Every rule this needs already lives here — slot/family/weight
+/// legality, the two-handed off-hand rule, "a broken piece cannot be worn" — and doing it in
+/// the client would mean firing one equip call per slot and hoping they all land, which is
+/// the same race that made saving a party look broken.
+///
+/// Deliberately narrow: it considers gear NOBODY is wearing (plus what this hero already has
+/// on) and never strips a teammate, so a press is predictable and easy to undo. "Best" is the
+/// class-weighted score in `[equip_best]`, because gear only carries atk/def/spd and a flat
+/// sum would hand a Psyker a warhammer.
+async fn equip_best(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(slot): Path<i32>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if !(0..st.party_size_per_player).contains(&slot) {
+        return Err(ApiReject::validation("No such hero slot."));
+    }
+    let classes = st.db.get_hero_classes(player_id).await.map_err(ApiReject::internal)?;
+    let class_key = classes
+        .get(slot as usize)
+        .filter(|k| !k.is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_CLASS_KEY.to_string());
+    let class = meld_proto::equipment::class_from_key(&class_key)
+        .ok_or_else(|| ApiReject::validation("That hero has no class."))?;
+    let weights = st
+        .balance
+        .equip_best
+        .get(&class_key)
+        .copied()
+        .unwrap_or([1.0, 1.0, 1.0]);
+
+    let gear = st.db.get_gear(player_id).await.map_err(ApiReject::internal)?;
+    // Candidates: unworn, or already on THIS hero. Never a teammate's.
+    let spare: Vec<&meld_db::GearRow> = gear
+        .iter()
+        .filter(|g| g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(slot))
+        .filter(|g| g.max_durability > 0)
+        .filter(|g| {
+            meld_proto::equipment::can_wear(class, &g.slot, &g.class_key, &g.family, &g.armor_weight)
+        })
+        .collect();
+
+    let score = |g: &meld_db::GearRow| {
+        meld_proto::equipment::gear_score(g.atk_bonus, g.def_bonus, g.spd_bonus, g.tier, weights)
+    };
+    let mut picks: Vec<(&meld_db::GearRow, &str)> = Vec::new();
+    for wear_slot in meld_proto::equipment::SLOTS {
+        if let Some(best) = spare
+            .iter()
+            .filter(|g| g.slot == wear_slot)
+            .max_by(|a, b| score(a).total_cmp(&score(b)))
+        {
+            picks.push((best, wear_slot));
+        }
+    }
+    // A two-hander reserves the off-hand, so drop the off-hand pick rather than leaving the
+    // equip call to refuse one of the two (GR-5).
+    let two_handed = picks.iter().any(|(g, wear_slot)| {
+        *wear_slot == "main_hand"
+            && meld_proto::equipment::ItemFamily::from_wire(&g.family)
+                .is_some_and(|f| f.reserves_off_hand())
+    });
+    if two_handed {
+        picks.retain(|(_, wear_slot)| *wear_slot != "off_hand");
+    }
+
+    let mut changed = Vec::new();
+    for (g, wear_slot) in &picks {
+        if g.equipped_hero_slot == Some(slot) {
+            continue; // already wearing the best thing available
+        }
+        match st.db.set_equipped(player_id, g.gear_id, Some(slot)).await {
+            Ok(_) => changed.push(serde_json::json!({
+                "slot": wear_slot,
+                "gear_id": g.gear_id.to_string(),
+                "name": g.name.clone(),
+            })),
+            // A refusal here is not fatal: take what did fit and report honestly.
+            Err(e) => tracing::warn!("equip-best could not wear {}: {e}", g.gear_id),
+        }
+    }
+    // If a two-hander went on, the off-hand it displaces has to come off.
+    if two_handed {
+        for g in gear.iter().filter(|g| g.slot == "off_hand" && g.equipped_hero_slot == Some(slot)) {
+            let _ = st.db.set_equipped(player_id, g.gear_id, None).await;
+        }
+    }
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "data": { "hero_slot": slot, "class_key": class_key, "changed": changed }
+        })),
+    )
+        .into_response())
 }
 
 async fn equip(

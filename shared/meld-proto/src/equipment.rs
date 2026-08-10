@@ -289,8 +289,103 @@ pub fn class_key(class: CharacterClass) -> &'static str {
     }
 }
 
+/// Every equipment slot, in loadout order. One list, so "equip best" and the client's
+/// category columns cannot disagree about what a hero wears.
+pub const SLOTS: [&str; 6] = ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
+
+/// Score a piece for a class, given that class's `[atk, def, spd]` weights (`[equip_best]`).
+///
+/// Gear carries only those three bonuses, so they are the whole axis. A flat sum would be
+/// wrong for most of the roster — a Psyker's damage rides Mnd, so `atk` on its staff is
+/// nearly dead weight, while a Phoenix Guard would rather have the armour than anything.
+/// Tier breaks ties, so between two pieces that score the same the deeper one wins.
+pub fn gear_score(atk: i32, def: i32, spd: i32, tier: i32, w: [f64; 3]) -> f64 {
+    atk as f64 * w[0] + def as f64 * w[1] + spd as f64 * w[2] + tier as f64 * 0.001
+}
+
+/// Whether `class` may wear this piece at all: right slot, allowed family, allowed weight,
+/// and not restricted to somebody else's class. The same four rules `set_equipped` enforces,
+/// so a picker can never propose a piece the equip call would refuse.
+pub fn can_wear(
+    class: CharacterClass,
+    slot: &str,
+    class_key: &str,
+    family: &str,
+    armor_weight: &str,
+) -> bool {
+    if !class_key.is_empty() && class_from_key(class_key) != Some(class) {
+        return false;
+    }
+    if let Some(f) = ItemFamily::from_wire(family) {
+        if !f.fits_slot(slot) || !allows_family(class, f) {
+            return false;
+        }
+    }
+    if let Some(w) = ArmorWeight::from_wire(armor_weight) {
+        if !allows_weight(class, w) {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// "Best" has to mean best FOR THAT CLASS. Gear carries only atk/def/spd, so a flat sum
+    /// would hand a Psyker the warhammer and a Phoenix Guard the dagger.
+    #[test]
+    fn a_class_wants_the_gear_its_own_kit_uses() {
+        // A heavy hitter vs a light, quick piece.
+        let hammer = (9, 1, 0);
+        let charm = (0, 2, 8);
+
+        let psyker = [0.3, 0.9, 1.0];
+        let hunter = [1.3, 0.7, 0.6];
+        let score = |g: (i32, i32, i32), w: [f64; 3]| gear_score(g.0, g.1, g.2, 1, w);
+
+        assert!(
+            score(charm, psyker) > score(hammer, psyker),
+            "a Psyker's damage rides Mnd - raw attack is nearly dead weight to it"
+        );
+        assert!(
+            score(hammer, hunter) > score(charm, hunter),
+            "a Hunter's damage IS the point"
+        );
+        // Tier only breaks ties, it does not outrank the stats.
+        assert!(
+            gear_score(9, 1, 0, 1, hunter) > gear_score(0, 0, 0, 40, hunter),
+            "a tier-40 blank must not beat a tier-1 piece that actually helps"
+        );
+    }
+
+    /// The picker must never propose a piece the equip call would refuse, so it asks the
+    /// same four questions `set_equipped` does.
+    #[test]
+    fn can_wear_agrees_with_the_equip_rules() {
+        use CharacterClass::*;
+        // A Phoenix Guard takes gauntlets and heavy armour, not a spear or a robe.
+        assert!(can_wear(PhoenixGuard, "main_hand", "", "gauntlet", ""));
+        assert!(!can_wear(PhoenixGuard, "main_hand", "", "spear", ""));
+        assert!(can_wear(PhoenixGuard, "chest", "", "", "heavy"));
+        assert!(!can_wear(PhoenixGuard, "chest", "", "", "robe"));
+        // Class-locked gear stays with its class.
+        assert!(!can_wear(PhoenixGuard, "main_hand", "shifter", "", ""));
+        assert!(can_wear(Shifter, "main_hand", "shifter", "", ""));
+        // And a family in the wrong slot is refused whoever asks.
+        assert!(!can_wear(Shifter, "head", "", "sword", ""));
+    }
+
+    /// Every slot a hero can wear needs a name "equip best" and the client's columns agree on.
+    #[test]
+    fn the_slot_list_covers_every_wearable_family() {
+        assert_eq!(SLOTS.len(), 6);
+        for s in SLOTS {
+            assert!(!s.is_empty());
+        }
+        assert!(SLOTS.contains(&"main_hand") && SLOTS.contains(&"off_hand"));
+    }
+
     use super::*;
 
     #[test]

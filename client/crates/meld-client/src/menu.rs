@@ -170,6 +170,12 @@ fn usable_in_field(item_kind: &str) -> bool {
     )
 }
 
+/// Tapping this asks the SERVER to dress this hero from the spare gear (GR-5).
+#[derive(Component, Clone, Copy)]
+pub(crate) struct EquipBestButton {
+    pub member: usize,
+}
+
 /// An Equipment/Abilities button under a hero in the Party column.
 #[derive(Component)]
 pub(crate) struct PaneButton {
@@ -243,7 +249,8 @@ pub(crate) fn column_len(
         (Some(MenuSection::Party), Some(MenuPane::Equipment)) => match picker.category {
             // The picker's own rows are counted by the equip flow that owns them.
             Some(_) => 0,
-            None => GEAR_CATEGORIES.len(),
+            // The six slots plus the "Equip best" row under them.
+            None => GEAR_CATEGORIES.len() + 1,
         },
         (Some(MenuSection::Items), Some(MenuPane::UseOn)) => party_lines(roster, names).len(),
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
@@ -908,7 +915,13 @@ fn equipment_pane(
                         ));
                     });
             }
-            col.spawn(glass::text("[Enter] change  [Esc] back", 14.0, glass::DIM));
+            // One press to dress the hero from the SPARE gear. The server picks (it owns
+            // every legality rule already), so this row only has to ask.
+            col.spawn((Button, EquipBestButton { member }, glass::chip(depth == 2 && cursor == GEAR_CATEGORIES.len())))
+                .with_children(|b| {
+                    b.spawn(glass::text("Equip best   [B]", 18.0, glass::WARN));
+                });
+            col.spawn(glass::text("[Enter] change  [B] equip best  [Esc] back", 14.0, glass::DIM));
         }
         Some(cat) => {
             col.spawn(glass::text(gear_category_label(cat), 19.0, glass::WARN));
@@ -1072,7 +1085,11 @@ pub(crate) fn main_menu_input(
                 menu.cursor = 0;
             }
             2 if menu.pane == Some(MenuPane::Equipment) && picker.category.is_none() => {
-                picker.category = GEAR_CATEGORIES.get(menu.cursor).copied();
+                match GEAR_CATEGORIES.get(menu.cursor).copied() {
+                    Some(cat) => picker.category = Some(cat),
+                    // The row under the six slots: ask the server to dress this hero.
+                    None => net.0.equip_best(menu.member),
+                }
             }
             _ => {}
         }
@@ -1085,6 +1102,14 @@ pub(crate) fn main_menu_input(
     {
         rename.slot = Some(menu.cursor);
         rename.buffer.clear();
+    }
+    // [B] dresses the focused hero from the spare gear, from anywhere in its Equipment
+    // pane — the row is there to be found, the key is there once you know it.
+    if keys.just_pressed(KeyCode::KeyB)
+        && menu.pane == Some(MenuPane::Equipment)
+        && picker.category.is_none()
+    {
+        net.0.equip_best(menu.member);
     }
     // [A] jumps straight to the focused hero's abilities — the thing a player opens
     // the menu to read.
@@ -1176,6 +1201,18 @@ pub(crate) fn use_item_click(
 
 /// Clicks on the nav rows and the per-hero Equipment/Abilities buttons. The gear
 /// rows themselves are handled by the equip flow's own click systems.
+/// Tapping the Equipment pane's "Equip best" row — the touch twin of [B].
+pub(crate) fn equip_best_click(
+    rows: Query<(&Interaction, &EquipBestButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
+) {
+    for (interaction, btn) in &rows {
+        if *interaction == Interaction::Pressed {
+            net.0.equip_best(btn.member);
+        }
+    }
+}
+
 pub(crate) fn main_menu_click(
     nav: Query<(&Interaction, &NavButton), Changed<Interaction>>,
     panes: Query<(&Interaction, &PaneButton), Changed<Interaction>>,
