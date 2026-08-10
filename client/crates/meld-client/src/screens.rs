@@ -193,57 +193,6 @@ fn field_box(
         });
 }
 
-/// One class card (used for both the 4 party slots and the 5-class palette): a
-/// framed sprite over a label. `sprite` is the class's front idle frame.
-fn class_card(
-    parent: &mut ChildSpawnerCommands,
-    sprite: Handle<Image>,
-    label: &str,
-    sub: &str,
-    w: f32,
-    tags: impl Bundle,
-    sprite_tag: impl Bundle,
-    name_tag: impl Bundle,
-) {
-    parent
-        .spawn((
-            Button,
-            tags,
-            Node {
-                width: Val::Px(w),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                row_gap: Val::Px(4.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                border: UiRect::all(Val::Px(2.0)),
-                ..default()
-            },
-            BorderColor(glass::EDGE_SOFT),
-            BackgroundColor(glass::GLASS_DEEP),
-            BorderRadius::all(Val::Px(10.0)),
-        ))
-        .with_children(|c| {
-            if !sub.is_empty() {
-                c.spawn((
-                    Text::new(sub.to_string()),
-                    TextFont { font_size: 15.0, ..default() },
-                    TextColor(Color::srgb(0.55, 0.6, 0.75)),
-                ));
-            }
-            c.spawn((
-                ImageNode::new(sprite),
-                sprite_tag,
-                Node { width: Val::Px(w * 0.9), height: Val::Px(w * 0.9), ..default() },
-            ));
-            c.spawn((
-                Text::new(label.to_string()),
-                name_tag,
-                TextFont { font_size: 19.0, ..default() },
-                TextColor(Color::srgb(0.9, 0.93, 1.0)),
-            ));
-        });
-}
-
 #[allow(clippy::type_complexity)]
 pub(crate) fn join_ui(
     mut commands: Commands,

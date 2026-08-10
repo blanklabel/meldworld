@@ -2334,7 +2334,7 @@ impl Inner {
             }
             "battle.ended" => {
                 if let Ok(e) = serde_json::from_value::<wb::Ended>(raw.payload) {
-                    let outcome = serde_json::to_value(&e.outcome)
+                    let outcome = serde_json::to_value(e.outcome)
                         .ok()
                         .and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_else(|| "over".to_string());

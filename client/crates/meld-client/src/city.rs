@@ -620,7 +620,7 @@ pub(crate) fn city_input(
     // ?city / CityIdle suppresses so the hub can be inspected).
     let at_threshold = city
         .near
-        .map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Dive));
+        .is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Dive));
     let dive = keys.just_pressed(KeyCode::Enter)
         || (keys.just_pressed(KeyCode::KeyE) && at_threshold)
         || (autoplay.0 && !city_idle.0);
@@ -653,7 +653,7 @@ pub(crate) fn city_input(
     // since there's no active run's `PartyRoster` to source names from here).
     if keys.just_pressed(KeyCode::KeyV)
         || (keys.just_pressed(KeyCode::KeyE)
-            && city.near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Vault)))
+            && city.near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Vault)))
     {
         if overlay.kind == Some(OverlayKind::Inventory) {
             overlay.kind = None;
@@ -995,20 +995,20 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
     let mut best: Option<(usize, f32)> = None;
     for (i, d) in CITY_DISTRICTS.iter().enumerate() {
         let dist = pos.distance(Vec2::new(d.x, d.z));
-        if dist <= d.radius && best.map_or(true, |(_, b)| dist < b) {
+        if dist <= d.radius && best.is_none_or(|(_, b)| dist < b) {
             best = Some((i, dist));
         }
     }
     let near = best.map(|(i, _)| i);
     if city.shop_open
         && !crate::flags::shop_preview_flag()
-        && !near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Shop))
+        && !near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Shop))
     {
         city.shop_open = false;
     }
     if city.board_open
         && !crate::flags::wall_preview_flag()
-        && !near.map_or(false, |i| matches!(CITY_DISTRICTS[i].action, CityAction::Vanguard))
+        && !near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Vanguard))
     {
         city.board_open = false;
     }
@@ -1023,8 +1023,8 @@ pub(crate) fn render_city(
     shop_selling: Res<ShopSelling>,
     craft: Res<CraftData>,
     shop: Res<ShopData>,
-    unlocks: Res<UnlocksRes>,
-    hero_names: Res<AccountHeroNames>,
+    _unlocks: Res<UnlocksRes>,
+    _hero_names: Res<AccountHeroNames>,
     heat: Res<crate::overworld::HeatUi>,
     time: Res<Time>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
@@ -1577,9 +1577,11 @@ mod shop_tests {
         inv.materials = vec![("peat_ingot".to_string(), 0)];
         assert_eq!(best_stock(&inv, MaterialClass::Refined), None);
 
-        let mut craft = CraftData::default();
-        craft.loaded = true;
-        craft.recipes = vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])];
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
         let text = craft_text(&craft, &inv);
         assert!(text.contains("nothing refined"), "the anvil should say it is empty: {text}");
         assert!(text.contains("[S] slot: main_hand"), "{text}");
@@ -1707,9 +1709,10 @@ mod shop_tests {
     #[test]
     fn the_bench_offers_only_the_service_the_tier_can_take() {
         let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
-        let mut inv = InventoryData::default();
-
-        inv.gear = vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)];
+        let mut inv = InventoryData {
+            gear: vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)],
+            ..Default::default()
+        };
         let insured = bench_line(&craft, &inv);
         assert!(insured.contains("Insured"), "{insured}");
         assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");

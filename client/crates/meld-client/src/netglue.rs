@@ -289,6 +289,7 @@ pub(crate) fn pump_net(
                 // A monster shouted a channeled cast (spec §3/§6): flash the
                 // bubble for the channel window and put the caster in its
                 // charging pose. Bubble TTL ~ the longest telegraph (3 s).
+                hitfx.callouts.retain(|c| c.combatant_id != combatant_id);
                 hitfx.callouts.push(Callout {
                     combatant_id: combatant_id.clone(),
                     text,
@@ -307,6 +308,7 @@ pub(crate) fn pump_net(
                 // An instant monster ability's shout pops briefly over the
                 // arena (telegraphed ones already arrived via `Telegraph`).
                 if let Some(text) = callout {
+                    hitfx.callouts.retain(|c| c.combatant_id != actor);
                     hitfx.callouts.push(Callout {
                         combatant_id: actor.clone(),
                         text,

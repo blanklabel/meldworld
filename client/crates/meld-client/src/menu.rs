@@ -900,10 +900,10 @@ fn equipment_pane(
                     b.spawn(glass::text("Remove", 18.0, glass::TEXT));
                 });
             for g in category_gear(&inv.gear, cat, member, class) {
-                gear_row(col, g, member, GearSource::Vault, class);
+                gear_row(col, g, member, GearSource::Vault, class, &inv.gear);
             }
             for g in category_gear(&run_gear.gear, cat, member, class) {
-                gear_row(col, g, member, GearSource::RunLoot, class);
+                gear_row(col, g, member, GearSource::RunLoot, class, &run_gear.gear);
             }
             col.spawn((Button, PickerBackButton, glass::chip(false))).with_children(|b| {
                 b.spawn(glass::text("Back", 18.0, glass::DIM));
@@ -920,6 +920,8 @@ fn gear_row(
     member: usize,
     source: GearSource,
     class: Option<&str>,
+    // Everything this hero could be wearing, so a two-hander knows what it displaces.
+    worn_pool: &[GearLine],
 ) {
     let blocked = gear_block_reason(g, class);
     let worn = g.equipped_hero_slot == Some(member);
@@ -931,7 +933,10 @@ fn gear_row(
             target_hero_slot: member,
             worn,
             blocked: blocked.is_some(),
-            free_first: None,
+            // GR-5: a two-hander puts the off-hand away first rather than bouncing the
+            // player off a 409. This was hardcoded `None` here, so the rule only existed
+            // in a helper nothing called and a test nobody noticed was the sole caller.
+            free_first: off_hand_in_the_way(worn_pool, g, member),
         },
         glass::chip(worn),
     ))
@@ -960,84 +965,6 @@ fn gear_category_label(cat: &str) -> &'static str {
         "chest" => "Chest",
         "legs" => "Legs",
         _ => "Accessory",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_cascade_closes_one_column_at_a_time() {
-        let mut m = MainMenu {
-            section: Some(MenuSection::Party),
-            member: 2,
-            pane: Some(MenuPane::Abilities),
-            cursor: 4,
-            item_kind: None,
-        };
-        assert_eq!(m.depth(), 2);
-        assert!(m.back());
-        assert_eq!(m.depth(), 1, "Back should close the third column, not both");
-        assert_eq!(m.cursor, 0, "the cursor belongs to the column, not the menu");
-        assert_eq!(m.member, 2, "stepping back must not forget which hero");
-        assert!(m.back());
-        assert_eq!(m.depth(), 0);
-        // Nothing left to close: the caller shuts the whole menu.
-        assert!(!m.back());
-    }
-
-    #[test]
-    fn a_rank_rides_beside_the_class_and_a_class_without_an_order_shows_none() {
-        assert_eq!(class_and_rank("phoenix_guard", 1), "Phoenix Guard - Initiate");
-        assert_eq!(class_and_rank("phoenix_guard", 255), "Phoenix Guard - Apotheosis");
-        // The Resonant has no order, so it is just a class — no empty separator.
-        assert_eq!(class_and_rank("resonant", 40), class_display("resonant"));
-    }
-
-    #[test]
-    fn every_section_is_reachable_from_the_nav() {
-        // The nav renders `ALL` and opening a row indexes into it, so a variant
-        // missing from `ALL` is a column no player can ever reach.
-        for s in [
-            MenuSection::Items,
-            MenuSection::Materials,
-            MenuSection::Party,
-            MenuSection::Map,
-            MenuSection::Guide,
-        ] {
-            assert!(MenuSection::ALL.contains(&s), "{s:?} is off the nav");
-            assert!(!s.label().is_empty());
-        }
-    }
-
-    #[test]
-    fn the_guide_names_a_key_and_what_it_does_on_every_row() {
-        assert!(!GUIDE.is_empty());
-        for (heading, rows) in GUIDE {
-            assert!(!heading.is_empty());
-            assert!(!rows.is_empty(), "{heading} lists nothing");
-            for (key, what) in rows {
-                assert!(!key.is_empty() && !what.is_empty(), "{heading} has a half-row");
-            }
-        }
-    }
-
-    #[test]
-    fn the_guide_column_is_reading_only() {
-        // Nothing to select, so `column_len` is 0 — the cursor arithmetic in
-        // `main_menu_input` divides by it, and only its `.max(1)` keeps that safe.
-        let menu = MainMenu { section: Some(MenuSection::Guide), ..default() };
-        let len = column_len(
-            &menu,
-            &PartyRoster::default(),
-            &AccountHeroNames::default(),
-            &InventoryData::default(),
-            &RunBackpack::default(),
-            &EquipPicker::default(),
-        );
-        assert_eq!(len, 0);
-        assert_eq!(len.max(1), 1, "the guard the cursor relies on");
     }
 }
 
@@ -1093,13 +1020,12 @@ pub(crate) fn main_menu_input(
                     overlay.kind = None;
                 }
             }
-            1 if menu.section == Some(MenuSection::Map) && menu.cursor == 0 => {
+            1 if menu.section == Some(MenuSection::Map) && menu.cursor == 0
                 // Explicit, and only when you actually hold one.
-                if backpack.count("town_portal") > 0 {
+                && backpack.count("town_portal") > 0 => {
                     net.0.send(ClientCmd::TownPortal);
                     overlay.kind = None;
                 }
-            }
             1 if menu.section == Some(MenuSection::Items) => {
                 let held = held_potions(&backpack);
                 if let Some((kind, _)) = held.get(menu.cursor).filter(|(k, _)| usable_in_field(k))
@@ -1263,5 +1189,127 @@ pub(crate) fn main_menu_click(
             menu.cursor = 0;
             picker.category = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// GR-5's free-the-off-hand-first rule reaches the rows the player actually clicks.
+    /// It was computed by a helper whose only caller was its own unit test, while the
+    /// live menu hardcoded `free_first: None` — so picking up a two-hander with a shield
+    /// on took a 409 instead of putting the shield away.
+    #[test]
+    fn a_two_hander_row_knows_which_off_hand_it_displaces() {
+        let piece = |id: &str, slot: &str, family: &str, worn: Option<usize>| GearLine {
+            gear_id: id.into(),
+            name: id.into(),
+            slot: slot.into(),
+            class_key: String::new(),
+            insurance: "insured".into(),
+            family: family.into(),
+            armor_weight: String::new(),
+            tier: 1,
+            equipped_hero_slot: worn,
+            max_durability: 20,
+            base_max_durability: 20,
+            atk_bonus: 2,
+            def_bonus: 2,
+            spd_bonus: 0,
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+            reroll_cost: 3,
+        };
+        let shield = piece("shield-1", "off_hand", "shield", Some(1));
+        let spear = piece("spear-1", "main_hand", "spear", None);
+        let sword = piece("sword-1", "main_hand", "sword", None);
+        let pool = vec![shield.clone()];
+
+        assert_eq!(
+            off_hand_in_the_way(&pool, &spear, 1).as_deref(),
+            Some("shield-1"),
+            "a two-hander must name the off-hand it displaces"
+        );
+        assert!(off_hand_in_the_way(&pool, &sword, 1).is_none(), "one-handers displace nothing");
+        assert!(
+            off_hand_in_the_way(&pool, &spear, 0).is_none(),
+            "another hero's off-hand is not in the way"
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn the_cascade_closes_one_column_at_a_time() {
+        let mut m = MainMenu {
+            section: Some(MenuSection::Party),
+            member: 2,
+            pane: Some(MenuPane::Abilities),
+            cursor: 4,
+            item_kind: None,
+        };
+        assert_eq!(m.depth(), 2);
+        assert!(m.back());
+        assert_eq!(m.depth(), 1, "Back should close the third column, not both");
+        assert_eq!(m.cursor, 0, "the cursor belongs to the column, not the menu");
+        assert_eq!(m.member, 2, "stepping back must not forget which hero");
+        assert!(m.back());
+        assert_eq!(m.depth(), 0);
+        // Nothing left to close: the caller shuts the whole menu.
+        assert!(!m.back());
+    }
+
+    #[test]
+    fn a_rank_rides_beside_the_class_and_a_class_without_an_order_shows_none() {
+        assert_eq!(class_and_rank("phoenix_guard", 1), "Phoenix Guard - Initiate");
+        assert_eq!(class_and_rank("phoenix_guard", 255), "Phoenix Guard - Apotheosis");
+        // The Resonant has no order, so it is just a class — no empty separator.
+        assert_eq!(class_and_rank("resonant", 40), class_display("resonant"));
+    }
+
+    #[test]
+    fn every_section_is_reachable_from_the_nav() {
+        // The nav renders `ALL` and opening a row indexes into it, so a variant
+        // missing from `ALL` is a column no player can ever reach.
+        for s in [
+            MenuSection::Items,
+            MenuSection::Materials,
+            MenuSection::Party,
+            MenuSection::Map,
+            MenuSection::Guide,
+        ] {
+            assert!(MenuSection::ALL.contains(&s), "{s:?} is off the nav");
+            assert!(!s.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_guide_names_a_key_and_what_it_does_on_every_row() {
+        assert!(!GUIDE.is_empty());
+        for (heading, rows) in GUIDE {
+            assert!(!heading.is_empty());
+            assert!(!rows.is_empty(), "{heading} lists nothing");
+            for (key, what) in rows {
+                assert!(!key.is_empty() && !what.is_empty(), "{heading} has a half-row");
+            }
+        }
+    }
+
+    #[test]
+    fn the_guide_column_is_reading_only() {
+        // Nothing to select, so `column_len` is 0 — the cursor arithmetic in
+        // `main_menu_input` divides by it, and only its `.max(1)` keeps that safe.
+        let menu = MainMenu { section: Some(MenuSection::Guide), ..default() };
+        let len = column_len(
+            &menu,
+            &PartyRoster::default(),
+            &AccountHeroNames::default(),
+            &InventoryData::default(),
+            &RunBackpack::default(),
+            &EquipPicker::default(),
+        );
+        assert_eq!(len, 0);
+        assert_eq!(len.max(1), 1, "the guard the cursor relies on");
     }
 }

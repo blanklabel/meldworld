@@ -9,6 +9,14 @@
 //! Config: `MELD_SERVER` (default `http://127.0.0.1:8080`) and `MELD_NAME`
 //! (default a random guest name).
 
+// Two clippy lints fire on essentially every Bevy system in this crate and neither is
+// telling us anything: a system's parameters ARE its dependency list (`too_many_arguments`
+// counts them), and a `Query` with filters is a type by construction (`type_complexity`).
+// Allowed crate-wide and named here rather than sprinkled over ~30 individual items, so
+// the rest of clippy's output stays worth reading.
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
@@ -680,7 +688,6 @@ struct Overworld {
 struct InterpSample {
     x: f32,
     y: f32,
-    level: f32,
     t: f32,
 }
 
@@ -888,10 +895,6 @@ struct Announce<'w> {
 /// Marker for spawned path-trail dots (despawned when the path changes).
 #[derive(Component)]
 struct PathTrail;
-
-/// Marker for spawned WEB-trail dots (the branch/loop/spur trails off the backbone).
-#[derive(Component)]
-struct WebTrail;
 
 #[derive(Resource, Default)]
 struct BattleData {
@@ -1231,25 +1234,6 @@ enum GearSource {
     RunLoot,
 }
 
-/// One keyboard/click-navigable row in the Equip tab's main (per-hero)
-/// screen: a hero-switcher button, or one equipment category — activating a
-/// category opens the picker screen for it (`EquipPicker`).
-#[derive(Clone)]
-enum EquipRow {
-    Hero(usize),
-    Category(&'static str),
-}
-
-/// One keyboard/click-navigable row in the Equip tab's picker screen (opened
-/// by activating a category on the main screen): an explicit unequip, or one
-/// candidate piece of gear. Selecting a `Gear` row is the only thing that
-/// equips it — nothing equips just by being found or browsed past.
-#[derive(Clone)]
-enum PickerRow {
-    Unequip,
-    Gear { gear_id: String, source: GearSource },
-}
-
 /// The Equip tab's optional second screen. `None` shows the per-hero summary
 /// (current item per category); `Some(category)` shows every candidate for
 /// that category — the picker is what a category row opens when activated.
@@ -1266,17 +1250,6 @@ struct RunGearData {
     gear: Vec<GearLine>,
 }
 
-/// How many heroes the Equip/Status tabs have to show: the active run's
-/// `PartyRoster` when there is one, else the caller's persistent account names
-/// (e.g. opening the storage chest from the City, with no run in progress).
-fn hero_count(roster: &PartyRoster, names: &AccountHeroNames) -> usize {
-    if !roster.heroes.is_empty() {
-        roster.heroes.len()
-    } else {
-        names.names.len()
-    }
-}
-
 /// The display name for hero slot `i`, from whichever source `hero_count` used.
 fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Option<String> {
     if !roster.heroes.is_empty() {
@@ -1284,26 +1257,6 @@ fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Opt
     } else {
         names.names.get(i).cloned()
     }
-}
-
-/// Hero slot `i`'s class this dive, if known — only the roster (populated
-/// during an active run) carries class; browsing gear from the City with no
-/// dive in progress has no class to filter by (`category_gear` shows
-/// everything in that case rather than guessing).
-/// The class of hero `i`: the live run's roster when there is one, else the
-/// account's persisted classes (GR-7) so the Equip tab knows the rules in town
-/// too. `None` only when neither source has ever recorded that slot.
-fn hero_class_at<'a>(
-    roster: &'a PartyRoster,
-    names: &'a AccountHeroNames,
-    i: usize,
-) -> Option<&'a str> {
-    roster
-        .heroes
-        .get(i)
-        .map(|h| h.class_key.as_str())
-        .or_else(|| names.classes.get(i).map(|c| c.as_str()))
-        .filter(|c| !c.is_empty())
 }
 
 /// Why this hero may not wear this item, in the words the player sees. `None`
@@ -1366,7 +1319,7 @@ fn category_gear<'a>(
         .filter(|g| {
             g.slot == category
                 && (g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(selected))
-                && (g.class_key.is_empty() || hero_class.map_or(true, |c| c == g.class_key))
+                && (g.class_key.is_empty() || hero_class.is_none_or(|c| c == g.class_key))
         })
         .collect();
     items.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1378,63 +1331,6 @@ fn category_gear<'a>(
 /// category (the server enforces the ×2 capacity).
 pub(crate) const GEAR_CATEGORIES: [&str; 6] =
     ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
-
-/// The Equip tab main screen's navigable row list: hero switcher buttons,
-/// then the six equipment categories (each opens the picker screen).
-fn equip_main_rows(hero_count: usize) -> Vec<EquipRow> {
-    let mut rows: Vec<EquipRow> = (0..hero_count).map(EquipRow::Hero).collect();
-    for c in GEAR_CATEGORIES {
-        rows.push(EquipRow::Category(c));
-    }
-    rows
-}
-
-/// The Equip tab picker screen's navigable row list for `category` +
-/// `selected`: an explicit unequip, then every candidate from the Vault and
-/// this run's not-yet-banked loot (`GearSource`) — Vault rows first.
-fn equip_picker_rows(
-    inv: &InventoryData,
-    run_gear: &RunGearData,
-    category: &str,
-    selected: usize,
-    hero_class: Option<&str>,
-) -> Vec<PickerRow> {
-    let mut rows = vec![PickerRow::Unequip];
-    rows.extend(category_gear(&inv.gear, category, selected, hero_class).into_iter().map(|g| {
-        PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::Vault }
-    }));
-    rows.extend(category_gear(&run_gear.gear, category, selected, hero_class).into_iter().map(|g| {
-        PickerRow::Gear { gear_id: g.gear_id.clone(), source: GearSource::RunLoot }
-    }));
-    rows
-}
-
-/// Whichever item is actually contributing to combat for `selected` in
-/// `category` right now: a run-loot equip in that category overrides the
-/// Vault baseline (mirrors the server's `effective_gear_bonus`), so this is
-/// what the main screen displays as "currently worn" and what the picker's
-/// arrows compare against.
-fn effective_worn_item<'a>(
-    inv: &'a InventoryData,
-    run_gear: &'a RunGearData,
-    category: &str,
-    selected: usize,
-) -> Option<&'a GearLine> {
-    run_gear
-        .gear
-        .iter()
-        .find(|g| g.slot == category && g.equipped_hero_slot == Some(selected))
-        .or_else(|| inv.gear.iter().find(|g| g.slot == category && g.equipped_hero_slot == Some(selected)))
-}
-
-fn effective_baseline_stat(
-    inv: &InventoryData,
-    run_gear: &RunGearData,
-    category: &str,
-    selected: usize,
-) -> i32 {
-    effective_worn_item(inv, run_gear, category, selected).map(gear_slot_stat).unwrap_or(0)
-}
 
 /// Clear `selected`'s equipped item(s) in `category` — both the Vault's (if
 /// any) and this run's loot equip (if any), so the slot is genuinely empty
@@ -1506,6 +1402,8 @@ struct Hit {
 }
 /// A monster's ability shout bubble (see `HitFx::callouts`).
 struct Callout {
+    /// Who shouted. One bubble per speaker, and the row it draws on comes from its
+    /// place in the list.
     combatant_id: String,
     text: String,
     age: f32,
@@ -1967,12 +1865,6 @@ struct FormationButton {
     slot: i32,
     back_row: bool,
 }
-/// One vertical tab button on the inventory overlay (Items / Equip / Status).
-#[derive(Component)]
-struct TabButton(OverlayTab);
-/// One hero-switcher button on the Equip tab.
-#[derive(Component)]
-struct HeroSwitchButton(usize);
 /// A "Withdraw" button on a material row in the Items tab: takes 1 unit out of
 /// the Vault into the pending-backpack queue for the next dive.
 #[derive(Component)]
