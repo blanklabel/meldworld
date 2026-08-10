@@ -389,7 +389,7 @@ fn main() {
                 use_item_click,
                 // The Map column's two explicit choices, grouped so this tuple stays
                 // inside Bevy's per-call system-tuple arity limit.
-                (return_to_town_click, build_station_click),
+                (return_to_town_click, build_station_click, menu::equip_best_click),
                 build_world_walls,
                 sync_chests,
                 pulse_collectibles,

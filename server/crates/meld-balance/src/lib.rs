@@ -26,6 +26,7 @@ pub struct Balance {
     pub encounters: Encounters,
     pub gear_rarity: GearRarity,
     pub requisition: Requisition,
+    pub equip_best: EquipBest,
     pub consumable: Consumable,
     pub smithwright: Smithwright,
     pub keeper: Keeper,
@@ -536,6 +537,10 @@ pub struct Keeper {
     pub gift_barrier: i32,
     pub gift_gauge: f64,
 }
+
+/// Per-class `[atk, def, spd]` weights for "equip best" (GR-5). Keyed by class key so a new
+/// class is a row here rather than a code change.
+pub type EquipBest = std::collections::HashMap<String, [f64; 3]>;
 
 /// Potion magnitudes + Apothecary prices (GR-4 / EC-2).
 #[derive(Debug, Clone, Deserialize)]

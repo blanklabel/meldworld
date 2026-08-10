@@ -838,6 +838,11 @@ impl Net {
         self.0.borrow_mut().save_loadout(name, classes);
     }
 
+    /// Dress one hero from the spare gear (GR-5 "equip best").
+    pub fn equip_best(&self, hero_slot: usize) {
+        self.0.borrow_mut().equip_best(hero_slot);
+    }
+
     /// Forget a named loadout, then refresh.
     pub fn delete_loadout(&self, name: String) {
         self.0.borrow_mut().delete_loadout(name);
@@ -1245,6 +1250,30 @@ impl Inner {
         self.inv_rx = Some(irx);
         ehttp::fetch(req, move |res| {
             let _ = tx.send(reroll_reply_text(&res));
+            spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// POST `/v1/party/heroes/:slot/equip-best` — let the SERVER dress this hero from the
+    /// spare gear. One call, one atomic answer: doing the picking here would mean firing an
+    /// equip per slot and hoping, which is the race that made saving a party look broken.
+    fn equip_best(&mut self, hero_slot: usize) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/party/heroes/{hero_slot}/equip-best"),
+            Vec::new(),
+        );
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        let (tx, rx) = mpsc::channel();
+        self.craft_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(equip_best_reply(&res));
             spawn_inventory_fetch(base, token, itx);
         });
     }
@@ -2537,6 +2566,36 @@ pub fn repair_line(v: &Value) -> String {
 
 fn reply_json(res: &Result<ehttp::Response, String>) -> Option<Value> {
     res.as_ref().ok()?.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
+}
+
+/// What "equip best" did, in a line: which slots changed, or that nothing better was spare.
+fn equip_best_reply(res: &Result<ehttp::Response, String>) -> String {
+    if let Some(msg) = save_refusal(res) {
+        return msg;
+    }
+    let Some(v) = res
+        .as_ref()
+        .ok()
+        .and_then(|r| r.text())
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+    else {
+        return "equipped".to_string();
+    };
+    let rows = v["data"]["changed"].as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        return "nothing spare beats what this hero already wears".to_string();
+    }
+    let what: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{} -> {}",
+                r["slot"].as_str().unwrap_or("?").replace('_', " "),
+                r["name"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    format!("equipped {}: {}", rows.len(), what.join(", "))
 }
 
 /// The server's own words when a write is refused, or `None` when it went through.
