@@ -258,17 +258,43 @@ phoenix_guard_eradication_missing_bonus = 2.2
 # keeps the party moving and standing. No Adrenaline — nothing here has a resource
 # cost, so the multipliers sit below the Hunter's paid strikes. [TUNABLE]
 explorer_trailblaze_mult = 1.15
+# TRAILBLAZE MARKS ITS TARGET. The Explorers' whole brief is that nobody accomplishes it
+# alone (docs/lore/factions.md), so the order's opener is not a bigger hit — it is the hit
+# that makes everyone else's better. A blazed creature takes more from EVERY ally for a
+# window, which is what makes the L1 button worth pressing over a plain Attack. [TUNABLE]
+explorer_mark_damage_mult = 1.2   # damage taken by a blazed target, from anyone
+explorer_mark_ticks = 60          # ~6s at the 100ms tick — the party has to follow the trail
 # Field Dressing (Traveler, L2): a modest self/ally heal as a fraction of max HP.
-explorer_field_dressing_fraction = 0.2
+explorer_field_dressing_fraction = 0.12
 # Read the Ground (Scout, L5): damage plus an ATB-gauge steal.
 explorer_read_ground_mult = 1.1
-explorer_read_ground_drain = 0.35
-# Set Anchor (Pioneer, L9): party-wide Barrier, per ally's own max HP.
-explorer_anchor_barrier_fraction = 0.12
+explorer_read_ground_drain = 0.5
+# MISDIRECTION (was Read the Ground): the creature is DISTRACTED. A dazzled foe swings wide — the
+# bonus is added to whoever it attacks — and a party that cannot be pinned down can leave,
+# so it lifts the flee chance too. Blind/dazzle in other games; here it is the mapping
+# order making a creature lose the thread. [TUNABLE]
+explorer_misdirection_miss = 0.3      # added to the defender's dodge while the attacker is dazzled
+explorer_misdirection_flee_bonus = 0.25   # added to flee chance while any foe is dazzled
+explorer_misdirection_ticks = 60      # ~6s at the 100ms tick
+# Stable Ground (Pioneer): party-wide Barrier, per ally's own max HP. NOT an Anchor.
+explorer_stable_ground_fraction = 0.12
 # Safe Passage (Discoverer, L13): party-wide Regen, flat HP per turn.
-explorer_safe_passage_regen = 6
+# SAFE PASSAGE is the order's whole promise, so it makes the party HARD TO HIT rather than
+# slowly healed: the Guides move people through the Meld without a scratch, they do not
+# bandage them afterwards. Reuses the Evasion pool the Shifter's Flicker uses, so it decays
+# the same way and stacks with a hero's own Dex dodge. [TUNABLE]
+explorer_safe_passage_evasion = 0.22   # dodge chance added to EVERY ally
 # A World Known (Globemaster, L17): fill every living ally's ATB gauge by this much.
-explorer_world_known_gauge = 0.5
+# A WORLD KNOWN is a real HASTE, not a one-off nudge: for its window every ally's gauge
+# fills faster, which is the top of the tempo ladder the class is built on. (It used to add
+# a flat +0.5 gauge once, which is the same shape as the L49 capstone below and made the
+# two rungs read as one idea twice.) [TUNABLE]
+explorer_haste_mult = 1.6        # gauge fill rate multiplier while hastened
+explorer_haste_ticks = 100       # ~10s at the 100ms tick
+# NOW: the Globemaster's once-per-battle call. Every ally acts immediately — not faster,
+# NOW — and it can be spent exactly once per fight, so it is the answer to one moment
+# rather than a rotation.
+explorer_now_ticks = 0           # reserved: `Now` is instantaneous, it grants no window
 
 # The Resonant's deep kit. It is a CASTER (meld_proto::skills::Archetype): almost no
 # gear curve, so the ladder runs to level 100 and these are its late game. Every

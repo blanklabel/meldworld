@@ -1068,7 +1068,8 @@ pub(crate) fn select_entry(
     }
 
     let hero_level = battle.view(&active).map(|c| c.level).unwrap_or(1);
-    let entries = menu_entries(menu.level, class, hero_level, held);
+    let spent = spent_tokens(battle, &active);
+    let entries = menu_entries(menu.level, class, hero_level, held, &spent);
     let Some(entry) = entries.get(index) else {
         return;
     };
@@ -1130,10 +1131,11 @@ pub(crate) fn page_len(
     class: &str,
     hero_level: i32,
     held: &[(String, i32)],
+    spent: &[String],
 ) -> usize {
     match menu.level {
         MenuLevel::Target | MenuLevel::Revoke => menu.rows.len() + 1,
-        level => menu_entries(level, class, hero_level, held).len(),
+        level => menu_entries(level, class, hero_level, held, spent).len(),
     }
 }
 
@@ -1264,7 +1266,8 @@ pub(crate) fn menu_keyboard(
     // Sub-page (or a Psyker's list root): ↑/↓ move the highlight, digits jump to a
     // row, ENTER/SPACE selects.
     let hero_level = battle.active_level();
-    let n = page_len(&menu, &class, hero_level, &held).max(1);
+    let spent = battle.active.clone().map(|a| spent_tokens(&battle, &a)).unwrap_or_default();
+    let n = page_len(&menu, &class, hero_level, &held, &spent).max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % n;
     }
@@ -1404,6 +1407,7 @@ pub(crate) fn rebuild_command_menu(
     let class = battle.active_class();
     let is_psyker = class == "psyker";
     let hero_level = battle.active_level();
+    let spent = spent_tokens(&battle, &active_id);
     let commanding = battle.hero_label(&active_id);
     let can_switch = next_commandable(&battle).is_some();
 
@@ -1423,7 +1427,7 @@ pub(crate) fn rebuild_command_menu(
             .map(|(l, _)| l.clone())
             .chain(std::iter::once("Back".to_string()))
             .collect(),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack))
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
             .into_iter()
             .map(|e| e.label.to_string())
             .collect(),
@@ -1433,7 +1437,7 @@ pub(crate) fn rebuild_command_menu(
     // which is also what the server gates on.
     let tooltip: String = match level {
         MenuLevel::Target | MenuLevel::Revoke => String::new(),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack))
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
             .get(menu.cursor)
             .map(|e| e.tooltip.clone())
             .unwrap_or_default(),
@@ -1915,6 +1919,17 @@ pub(crate) fn render_enemy_panel(
 #[derive(Component)]
 pub(crate) struct StatusIconLayer;
 
+/// The `spent:<skill>` tokens a combatant carries — which once-per-battle calls it has
+/// already made this fight.
+pub(crate) fn spent_tokens(battle: &BattleData, id: &str) -> Vec<String> {
+    battle
+        .view(id)
+        .map(|c| {
+            c.statuses.iter().filter_map(|s| s.strip_prefix("spent:").map(String::from)).collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The visible status effects on a combatant, in a stable display order, each as
 /// (nerdfont glyph, colour, label). Class resources (adrenaline / focus) and the
 /// row/faction/class/attribute tokens are intentionally excluded — those show in the
@@ -1929,6 +1944,19 @@ fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str
     };
     let mut v = Vec::new();
     // Debuffs first (the ones you most need to notice), then buffs.
+    // A blazed target takes more from EVERY ally, so it has to be visible on the creature
+    // — the whole value of the Explorer's opener is the party knowing where to swing.
+    if has("marked") {
+        v.push(("\u{f05bf}", Color::srgb(1.0, 0.82, 0.35), "Blazed")); // target
+    }
+    // A distracted creature is missing on purpose. If that is invisible the player reads a
+    // string of misses as luck rather than as the Explorer's doing.
+    if has("distracted") {
+        v.push(("\u{f0208}", Color::srgb(0.85, 0.8, 1.0), "Distracted")); // eye
+    }
+    if has("hasted") {
+        v.push(("\u{f060c}", Color::srgb(1.0, 0.9, 0.55), "Haste")); // lightning-bolt
+    }
     if has("poison") {
         v.push(("\u{f068c}", Color::srgb(0.58, 0.9, 0.4), "Poison")); // skull
     }
@@ -2009,11 +2037,13 @@ pub(crate) fn render_status_icons(
                         Text::new(glyph),
                         TextFont { font_size: 18.0, ..default() },
                         TextColor(color),
-                        // The glyph's font baseline sits high in its line box, so flex
-                        // centring alone leaves it looking top-heavy in the circle — a
-                        // hair of top margin drops it to the badge's optical centre.
+                        // No nudge. Measured against the bundled font: every Nerd Font icon
+                        // we use has its ink centred on the line box already (ink midpoint
+                        // 11.88px of a 23.76px box at size 18, identically for target/eye/
+                        // bolt/skull/shield), so flex centring lands them dead centre. The
+                        // 2px of "optical centring" that used to live here was what pushed
+                        // them all off it.
                         Node {
-                            margin: UiRect::top(Val::Px(2.0)),
                             ..default()
                         },
                     ));

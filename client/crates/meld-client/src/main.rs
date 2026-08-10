@@ -1664,13 +1664,23 @@ struct MenuEntry {
 /// The class's kit as menu rows, keeping only what the hero has leveled into. Read
 /// straight from the shared registry: the name, the order, the unlock level and the
 /// tooltip are all one definition (`meld_proto::skills`).
-fn skill_entries(class: &str, hero_level: i32) -> Vec<MenuEntry> {
+fn skill_entries(class: &str, hero_level: i32, spent: &[String]) -> Vec<MenuEntry> {
     meld_proto::skills::skills_for_class_at(class, hero_level)
         .into_iter()
-        .map(|d| MenuEntry {
-            label: d.name.to_string(),
-            action: EntryAction::Skill(d.key),
-            tooltip: d.description.to_string(),
+        .map(|d| {
+            // A once-per-battle call that has been made says so on the row. The server
+            // refuses it either way; this is so the player is not left guessing why.
+            let gone = meld_proto::skills::is_once_per_battle(d.key)
+                && spent.iter().any(|s| s == d.key);
+            MenuEntry {
+                label: if gone {
+                    format!("{} (spent)", d.name)
+                } else {
+                    d.name.to_string()
+                },
+                action: EntryAction::Skill(d.key),
+                tooltip: d.description.to_string(),
+            }
         })
         .collect()
 }
@@ -1687,6 +1697,9 @@ fn menu_entries(
     class: &str,
     hero_level: i32,
     held: &[(String, i32)],
+    // The acting hero's `spent:<skill>` tokens, so a once-per-battle call that is gone
+    // says so on its row instead of only being refused when pressed.
+    spent: &[String],
 ) -> Vec<MenuEntry> {
     let e = |label: &str, action| MenuEntry {
         label: label.to_string(),
@@ -1715,7 +1728,7 @@ fn menu_entries(
         // tooltips — all come from `meld_proto::skills`, so a class's kit is defined
         // in exactly one place instead of once per surface.
         MenuLevel::Skills => {
-            let mut v = skill_entries(class, hero_level);
+            let mut v = skill_entries(class, hero_level, spent);
             v.push(e("Back", EntryAction::Back));
             v
         }
@@ -2049,7 +2062,7 @@ mod potion_menu_tests {
     fn the_items_page_offers_only_potions_the_party_carries() {
         // Nothing held: one dead row plus Back, so the page cannot offer a potion
         // the server would refuse with "Out of …".
-        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[]);
+        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[], &[]);
         assert_eq!(empty.len(), 2, "{:?}", empty.iter().map(|e| &e.label).collect::<Vec<_>>());
         assert!(empty[0].label.contains("no potions"));
 
@@ -2059,6 +2072,7 @@ mod potion_menu_tests {
             "explorer",
             5,
             &held(&[("bloom_salve", 3), ("bulwark_tonic", 1)]),
+            &[],
         );
         let labels: Vec<&str> = rows.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(labels, vec!["Bloom Salve x3", "Bulwark Tonic x1", "Back"]);
@@ -2071,11 +2085,38 @@ mod potion_menu_tests {
             "explorer",
             5,
             &held(&[("bloom_herb", 9), ("town_portal", 2)]),
+            &[],
         );
         assert!(rows[0].label.contains("no potions"), "{:?}", rows[0].label);
 
         // A zero stack is not an offer.
-        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]));
+        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]), &[]);
         assert!(rows[0].label.contains("no potions"));
+    }
+
+    /// A once-per-battle call that has been spent says so on its own row. The server
+    /// refuses it either way, but a row that looks available and then refuses is the same
+    /// "the rule exists and the screen never says so" problem as an invisible status.
+    #[test]
+    fn a_spent_once_per_battle_row_says_so() {
+        let lvl = meld_proto::skills::unlock_level("now");
+        let fresh = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &[]);
+        let now = fresh.iter().find(|e| matches!(e.action, EntryAction::Skill("now")));
+        assert!(now.is_some(), "a Globemaster should be offered Now");
+        assert_eq!(now.unwrap().label, "Now");
+
+        let after = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &["now".to_string()]);
+        let now = after
+            .iter()
+            .find(|e| matches!(e.action, EntryAction::Skill("now")))
+            .expect("the row stays visible");
+        assert!(now.label.contains("spent"), "a used call should read as used: {}", now.label);
+
+        // An ability that is not once-per-battle is untouched by the same token.
+        let tb = after
+            .iter()
+            .find(|e| matches!(e.action, EntryAction::Skill("trailblaze")))
+            .expect("Trailblaze is still there");
+        assert_eq!(tb.label, "Trailblaze");
     }
 }
