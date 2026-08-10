@@ -501,10 +501,15 @@ pub fn party_fighters(
                     f.regen = balance.battle.resonant_regen_per_turn;
                     f.back_row = true;
                 }
-                // The Explorer (martial baseline) earns Adrenaline through basic attacks
-                // and spends it on skills; it holds the front line. Starts at 0.
-                CharacterClass::Explorer => {
-                    f.adrenaline_max = balance.battle.explorer_adrenaline_max;
+                // Adrenaline belongs to the HUNTER, which is where every ability that
+                // spends it lives (`meld_proto::skills`: power_strike, second_wind,
+                // snare, frenzy). It was granted to the Explorer instead, which broke
+                // both classes at once: the Explorer banked a resource its tempo kit
+                // never spends, and the Hunter — whose six skills all cost 30-80 — had a
+                // cap of 0, so `resolve_hunter` refused every one of them for the whole
+                // life of the class.
+                CharacterClass::Hunter => {
+                    f.adrenaline_max = balance.battle.hunter_adrenaline_max;
                     // AD-1 "of Fury": walk in with Adrenaline already banked, so the
                     // first turn can be a skill instead of a wind-up attack.
                     f.adrenaline = bonus.adrenaline.min(f.adrenaline_max);
@@ -695,6 +700,48 @@ pub fn build_battle(
 
 #[cfg(test)]
 mod tests {
+
+    /// A class's abilities and the resource they spend have to be granted to the SAME
+    /// class. Adrenaline was handed to the Explorer while every ability that spends it
+    /// belongs to the Hunter, so the Explorer banked a resource it could not use and the
+    /// Hunter — cap 0, costs 30-80 — had every one of its six skills refused. Both classes
+    /// were shipped broken and each looked individually plausible; only the pairing is
+    /// wrong, so the pairing is what gets asserted.
+    #[test]
+    fn a_class_that_pays_in_adrenaline_is_the_class_that_earns_it() {
+        let b = Balance::load_default().unwrap();
+        let spends_adrenaline = ["power_strike", "second_wind", "snare", "frenzy"];
+        // The eight fieldable classes (mirrors `unlocks::owned_classes`).
+        for class in [
+            CharacterClass::Explorer,
+            CharacterClass::Hunter,
+            CharacterClass::Resonant,
+            CharacterClass::Shifter,
+            CharacterClass::PhoenixGuard,
+            CharacterClass::Psyker,
+            CharacterClass::Smithwright,
+            CharacterClass::Keeper,
+        ] {
+            let key = class_key(class);
+            let runs = {
+                let mut r = InstanceRun::new("i".into(), 0, &b);
+                r.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
+                r
+            };
+            let party: Vec<PartyMember> = vec![("p".into(), "r".into(), class, Default::default())];
+            let cap = party_fighters(&party, &runs, &b, &[])[0].adrenaline_max;
+            let owns_paid_skill = meld_proto::skills::skills_for_class(key)
+                .iter()
+                .any(|s| spends_adrenaline.contains(&s.key));
+            assert_eq!(
+                owns_paid_skill,
+                cap > 0,
+                "{key}: owns adrenaline-paid skills = {owns_paid_skill}, but its \
+                 adrenaline cap is {cap} - a class must earn what its abilities spend"
+            );
+        }
+    }
+
 
     /// The design statement is in FIGHTS, so the check has to be too — and against
     /// what a creature at that depth ACTUALLY pays, not against the reference constant
@@ -897,14 +944,30 @@ mod tests {
     }
 
     #[test]
-    fn explorer_starts_with_an_empty_adrenaline_pool() {
+    fn the_hunter_starts_with_an_empty_adrenaline_pool() {
         // The martial baseline earns its resource in-battle: the pool exists (max
         // from balance) but starts empty, and it holds the front line.
+        //
+        // This test used to assert the pool belonged to the EXPLORER, which is how the
+        // wrong pairing survived — a test can hold a bug in place as firmly as it holds a
+        // feature. The invariant that matters is
+        // `a_class_that_pays_in_adrenaline_is_the_class_that_earns_it`.
         let b = Balance::load_default().unwrap();
-        let h = solo_fighter(CharacterClass::Explorer, 1, &b);
-        assert_eq!(h.adrenaline_max, b.battle.explorer_adrenaline_max);
+        let h = solo_fighter(CharacterClass::Hunter, 1, &b);
+        assert_eq!(h.adrenaline_max, b.battle.hunter_adrenaline_max);
         assert_eq!(h.adrenaline, 0, "Adrenaline is banked in-fight, not granted");
-        assert!(!h.back_row, "the Explorer holds the front line");
+        assert!(!h.back_row, "the Hunter holds the front line");
+    }
+
+    /// And the Explorer, whose kit costs nothing, must not be handed a resource it has no
+    /// way to spend — an Adrenaline bar filling to full and never being usable reads as a
+    /// broken class.
+    #[test]
+    fn the_explorer_carries_no_resource_it_cannot_spend() {
+        let b = Balance::load_default().unwrap();
+        let e = solo_fighter(CharacterClass::Explorer, 1, &b);
+        assert_eq!(e.adrenaline_max, 0, "the Explorer's kit spends nothing");
+        assert!(!e.back_row, "the Explorer holds the front line");
     }
 
     #[test]

@@ -75,8 +75,8 @@ pub struct Fighter {
     /// decaying a fixed amount at the start of each of this fighter's turns. Granted
     /// by the Shifter's Flicker blink.
     pub evasion: f64,
-    /// Adrenaline: the Explorer's resource. Basic attacks bank it (up to `adrenaline_max`)
-    /// and skills spend it. Zero/`adrenaline_max == 0` for every non-Explorer.
+    /// Adrenaline: the Hunter's resource. Basic attacks bank it (up to `adrenaline_max`)
+    /// and skills spend it. Zero/`adrenaline_max == 0` for every non-Hunter.
     pub adrenaline: i32,
     pub adrenaline_max: i32,
     /// Battle faction — `"player"` for heroes, else the creature's faction. Drives
@@ -505,15 +505,15 @@ pub struct Battle {
     shifter_flicker_decay: f64,
     shifter_ransack_mult: f64,
     shifter_ransack_drain: f64,
-    // Note: the Adrenaline *cap* rides on each Explorer `Fighter.adrenaline_max`
+    // Note: the Adrenaline *cap* rides on each Hunter `Fighter.adrenaline_max`
     // (set from balance in meld-run); the engine only needs the per-attack gain.
-    explorer_adrenaline_per_attack: i32,
-    explorer_power_strike_cost: i32,
-    explorer_second_wind_cost: i32,
-    explorer_snare_cost: i32,
+    hunter_adrenaline_per_attack: i32,
+    hunter_power_strike_cost: i32,
+    hunter_second_wind_cost: i32,
+    hunter_snare_cost: i32,
     explorer_snare_mult: f64,
     explorer_snare_drain: f64,
-    explorer_frenzy_cost: i32,
+    hunter_frenzy_cost: i32,
     explorer_frenzy_mult: f64,
     phoenix_guard_swell_mult: f64,
     phoenix_guard_swell_drain: f64,
@@ -745,13 +745,13 @@ impl Battle {
             shifter_flicker_decay: balance.battle.shifter_flicker_decay,
             shifter_ransack_mult: balance.battle.shifter_ransack_mult,
             shifter_ransack_drain: balance.battle.shifter_ransack_drain,
-            explorer_adrenaline_per_attack: balance.battle.explorer_adrenaline_per_attack,
-            explorer_power_strike_cost: balance.battle.explorer_power_strike_cost,
-            explorer_second_wind_cost: balance.battle.explorer_second_wind_cost,
-            explorer_snare_cost: balance.battle.explorer_snare_cost,
+            hunter_adrenaline_per_attack: balance.battle.hunter_adrenaline_per_attack,
+            hunter_power_strike_cost: balance.battle.hunter_power_strike_cost,
+            hunter_second_wind_cost: balance.battle.hunter_second_wind_cost,
+            hunter_snare_cost: balance.battle.hunter_snare_cost,
             explorer_snare_mult: balance.battle.explorer_snare_mult,
             explorer_snare_drain: balance.battle.explorer_snare_drain,
-            explorer_frenzy_cost: balance.battle.explorer_frenzy_cost,
+            hunter_frenzy_cost: balance.battle.hunter_frenzy_cost,
             explorer_frenzy_mult: balance.battle.explorer_frenzy_mult,
             phoenix_guard_swell_mult: balance.battle.phoenix_guard_swell_mult,
             phoenix_guard_swell_drain: balance.battle.phoenix_guard_swell_drain,
@@ -1210,7 +1210,7 @@ impl Battle {
                 fx
             }
         };
-        // The Explorer banks Adrenaline on every basic attack (see `gain_adrenaline`).
+        // The Hunter banks Adrenaline on every basic attack (see `gain_adrenaline`).
         effects.extend(self.gain_adrenaline(actor_i));
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
@@ -1224,7 +1224,7 @@ impl Battle {
         })
     }
 
-    /// Bank `explorer_adrenaline_per_attack` Adrenaline on a Explorer's basic attack,
+    /// Bank `hunter_adrenaline_per_attack` Adrenaline on a Hunter's basic attack,
     /// clamped to `adrenaline_max`. A no-op (empty effects) for every other class
     /// (`adrenaline_max == 0`). Reported as a StatusApplied so the client can react.
     fn gain_adrenaline(&mut self, actor_i: usize) -> Vec<ResolvedEffect> {
@@ -1233,7 +1233,7 @@ impl Battle {
             return Vec::new();
         }
         let before = f.adrenaline;
-        f.adrenaline = (f.adrenaline + self.explorer_adrenaline_per_attack).min(f.adrenaline_max);
+        f.adrenaline = (f.adrenaline + self.hunter_adrenaline_per_attack).min(f.adrenaline_max);
         if f.adrenaline == before {
             return Vec::new(); // already capped
         }
@@ -1250,7 +1250,7 @@ impl Battle {
     /// Adrenaline and is rejected unless the cost is met (the client also greys
     /// unaffordable rows). `second_wind` is a self-heal; `power_strike`/`snare`/
     /// `frenzy` strike an enemy (Snare also drains the target's ATB gauge).
-    fn resolve_explorer(
+    fn resolve_hunter(
         &mut self,
         actor_i: usize,
         skill: &str,
@@ -1260,10 +1260,10 @@ impl Battle {
         let cost = match skill {
             // An upgrade costs what the ability it replaced cost: the Hunter's rows get
             // better, its Adrenaline economy does not change.
-            "power_strike" | "crushing_blow" => self.explorer_power_strike_cost,
-            "second_wind" => self.explorer_second_wind_cost,
-            "snare" | "pin_the_prey" => self.explorer_snare_cost,
-            "frenzy" => self.explorer_frenzy_cost,
+            "power_strike" | "crushing_blow" => self.hunter_power_strike_cost,
+            "second_wind" => self.hunter_second_wind_cost,
+            "snare" | "pin_the_prey" => self.hunter_snare_cost,
+            "frenzy" => self.hunter_frenzy_cost,
             _ => return Err(Reject::ValidationError("unknown hunter skill")),
         };
         if self.fighters[actor_i].adrenaline < cost {
@@ -1804,7 +1804,7 @@ impl Battle {
     }
 
     /// Class skills (slice content). The Explorer's `power_strike`/`second_wind`/
-    /// `snare`/`frenzy` all spend banked Adrenaline (see [`Battle::resolve_explorer`]);
+    /// `snare`/`frenzy` all spend banked Adrenaline (see [`Battle::resolve_hunter`]);
     /// the Phoenix Guard, Shifter, and Resonant arms handle their own kits. An unknown
     /// skill is rejected. (The Psyker does not use this path — it channels Foci via
     /// [`Battle::resolve_psyker`].)
@@ -1822,7 +1822,7 @@ impl Battle {
                 return Err(Reject::ValidationError("skill not unlocked at this level"));
             }
         }
-        // Explorer (martial baseline): every skill spends banked Adrenaline. Handled
+        // Hunter (martial baseline): every skill spends banked Adrenaline. Handled
         // first so the affordability check runs before any other path.
         if matches!(
             skill_kind,
@@ -1833,7 +1833,7 @@ impl Battle {
                 | Some("pin_the_prey")
                 | Some("frenzy")
         ) {
-            return self.resolve_explorer(actor_i, skill_kind.unwrap(), target_id, action_id);
+            return self.resolve_hunter(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
         // Explorer (the mapping order): tempo and stability rather than burst. Nothing
         // here costs a resource, so the multipliers sit below the Hunter's paid strikes.
@@ -3405,6 +3405,75 @@ impl Battle {
 
 #[cfg(test)]
 mod tests {
+
+    /// End to end through the engine, because what was broken was the PAIRING of a
+    /// resource to a kit and each half looked fine alone: bank Adrenaline with basic
+    /// attacks the way a Hunter does, then spend it on the ability it is for. With the cap
+    /// at 0 (as shipped) no attack banks anything and Power Strike is refused "not enough
+    /// adrenaline" forever — every Hunter skill, for the life of the class.
+    #[test]
+    fn a_hunter_banks_adrenaline_by_attacking_and_then_spends_it() {
+        let b = Balance::load_default().unwrap();
+        let mut hero = player("h1", 10);
+        // What `party_fighters` grants a Hunter.
+        hero.adrenaline_max = b.battle.hunter_adrenaline_max;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hero],
+            vec![monster("m1", 4000, 1)],
+            &b,
+            7,
+        );
+        assert!(battle.fighters[0].adrenaline_max > 0, "a Hunter needs a pool to bank into");
+
+        let act = |n: u32| format!("00000000-0000-7000-8000-{n:012}");
+        let ready = |bt: &mut Battle| {
+            bt.fighters[0].gauge = 1.0;
+            bt.fighters[0].awaiting = true;
+        };
+
+        // Refused while the pool is short of the cost.
+        ready(&mut battle);
+        assert!(
+            battle
+                .submit(
+                    "h1",
+                    act(1),
+                    BattleActionKind::Skill,
+                    Some(vec!["m1".into()]),
+                    Some("power_strike".into()),
+                    None,
+                )
+                .is_err(),
+            "an unaffordable skill is refused, not quietly free"
+        );
+
+        // Basic attacks bank it; then the same skill lands and draws the pool down.
+        let cost = b.battle.hunter_power_strike_cost;
+        let mut n = 10;
+        while battle.fighters[0].adrenaline < cost {
+            ready(&mut battle);
+            battle
+                .submit("h1", act(n), BattleActionKind::Attack, Some(vec!["m1".into()]), None, None)
+                .expect("a basic attack always works");
+            n += 1;
+        }
+        let banked = battle.fighters[0].adrenaline;
+        ready(&mut battle);
+        battle
+            .submit(
+                "h1",
+                act(n),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some("power_strike".into()),
+                None,
+            )
+            .expect("Power Strike must land once its Adrenaline is banked");
+        assert!(battle.fighters[0].adrenaline < banked, "the skill should spend the pool");
+    }
+
     use super::*;
 
     fn balance() -> Balance {
@@ -4479,7 +4548,7 @@ mod tests {
         let b = balance();
         let mut f = leveled_player(id, speed, level);
         f.class_key = "explorer".into();
-        f.adrenaline_max = b.battle.explorer_adrenaline_max;
+        f.adrenaline_max = b.battle.hunter_adrenaline_max;
         f
     }
 
@@ -4496,7 +4565,7 @@ mod tests {
             &b,
             7,
         );
-        // Two attacks → 2 × explorer_adrenaline_per_attack (25) = 50.
+        // Two attacks → 2 × hunter_adrenaline_per_attack (25) = 50.
         for n in 1..=2 {
             tick_to_ready(&mut battle, "h");
             battle
