@@ -126,10 +126,10 @@ async fn a_smithwright_and_a_keeper_are_earned_and_then_fieldable() {
                 "tutorial": true
             }),
             "session.error" => panic!("refused a party it had earned: {v}"),
-            "run.party" => {
-                if v["payload"]["heroes"].as_array().is_some_and(|h| !h.is_empty()) {
-                    roster = Some(v["payload"].clone());
-                }
+            "run.party"
+                if v["payload"]["heroes"].as_array().is_some_and(|h| !h.is_empty()) =>
+            {
+                roster = Some(v["payload"].clone());
             }
             _ => {}
         }

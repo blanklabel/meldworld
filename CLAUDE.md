@@ -204,6 +204,9 @@ client/scripts/trunk-serve.sh --port 9080 --address 127.0.0.1 --no-autoreload &
 # → open http://127.0.0.1:9080 and screenshot the canvas
 ```
 
+`?tally` (`MELD_TALLY`) holds an extraction haul on screen — the real one rolls off on a
+timer, which is long enough to be gone before a capture lands.
+
 `?party=…` / `?class=…` preset the party, `?autoplay` self-drives the loop, and `?city`
 (+ `?wall` for the Vanguard Wall, `?shop` for the counter, `?forge` for the Forge &
 Alembic) parks in Last City — handy for deterministic
@@ -320,7 +323,11 @@ only if you respect two shared, machine-global resources: the **server port** an
 - **Extending combatant state without a proto change:** per-combatant extras ride the
   `Combatant.statuses: Vec<String>` field as `key:value` tokens the client parses —
   `class:<key>`, `barrier:<n>`, `regen:<n>`, `evasion:<pct>`, `adrenaline:<n>`, `adrenaline_max:<n>`,
-  `focus_slots:<n>`, `focus:<kind>:<stacks>`.
+  `focus_slots:<n>`, `focus:<kind>:<stacks>`, `pack:<leader|minion>`.
+  A token nothing renders is a token that does not exist to the player: `pack:` drove
+  combat (pack rout) for a long time without reaching the client, so a leader at 1.7x HP
+  and its minion at 0.45x — the same species, 3.8x apart — drew at identical size and read
+  as a bug.
   Prefer this over adding wire fields for slice-scoped additions.
 - **Distance is the difficulty axis.** `tier(d)=floor(d/100)`, `mlevel(d)=max(1,round(d/12.5))`,
   `stat_mult(d)=(1+d/500)^1.25`. All threshold checks use the **floored integer** distance.

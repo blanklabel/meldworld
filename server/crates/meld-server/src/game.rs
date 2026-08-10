@@ -5143,7 +5143,7 @@ impl WorldActor {
                 )
             })
             .collect();
-        ores.sort_by(|a, b| b.1.cmp(&a.1));
+        ores.sort_by_key(|(_, tier)| std::cmp::Reverse(*tier));
         let Some((idx, _)) = ores
             .into_iter()
             .find(|(idx, _)| run.backpack[*idx].quantity >= need)

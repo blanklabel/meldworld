@@ -96,6 +96,17 @@ pub(crate) fn heat_preview_flag() -> bool {
     query_has("heat")
 }
 
+/// Seed a fake extraction TALLY on arrival so the haul screen (icons + counts) can be
+/// screenshotted without completing a dive. Native: `MELD_TALLY`. Browser: `?tally`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn tally_preview_flag() -> bool {
+    std::env::var("MELD_TALLY").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn tally_preview_flag() -> bool {
+    query_has("tally")
+}
+
 /// Light the Vanguard Wall on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the seasonal board without having to walk over and press [E].
 /// Native: `MELD_WALL`. Browser: `?wall`.

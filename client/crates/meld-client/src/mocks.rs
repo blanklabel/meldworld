@@ -185,6 +185,34 @@ pub(crate) fn mock_battle_setup(
 /// to the overworld with that screen open — so the overlays are viewable on their
 /// own without a server.
 #[allow(clippy::too_many_arguments)]
+/// Seed the extraction tally for a screenshot: a few stacks with real material keys so
+/// the icons resolve, plus a piece of gear. Runs every frame under the flag and re-arms
+/// itself, because the real tally rolls off on a timer — which is exactly long enough to
+/// be gone by the time a capture lands.
+pub(crate) fn mock_tally_setup(mut report: ResMut<LootReport>) {
+    if !crate::flags::tally_preview_flag() {
+        return;
+    }
+    if report.active && report.elapsed < 1.0 {
+        return;
+    }
+    *report = LootReport {
+        active: true,
+        title: "Extracted".to_string(),
+        xp: Some(248),
+        chits: 137,
+        items: vec![
+            ("bloom_herb".to_string(), 7),
+            ("heartoak_bark".to_string(), 4),
+            ("myconid_cap".to_string(), 2),
+            ("town_portal".to_string(), 1),
+        ],
+        gear: vec!["Rare Dune Ingot Blade".to_string()],
+        elapsed: 0.0,
+        gate_return: false,
+    };
+}
+
 pub(crate) fn mock_overlay_setup(
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,

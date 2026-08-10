@@ -373,6 +373,7 @@ fn main() {
                 main_menu_input,
                 withdraw_click,
                 render_loot_report,
+                mocks::mock_tally_setup,
                 level_up_screen,
                 unlock_banner,
                 menu::render_main_menu,
@@ -489,6 +490,7 @@ fn main() {
                     // The fight's own results screen — drawn here, over the battle
                     // it belongs to, and it is what returns you to the overworld.
                     render_loot_report,
+                    mocks::mock_tally_setup,
                 ),
             )
                 .run_if(in_state(Screen::Battle)),
