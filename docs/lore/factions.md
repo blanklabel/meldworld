@@ -84,7 +84,22 @@ natural world must be protected.
 
 **Why its kit is tempo and stability, not damage.** An order defined by *safe
 passage* and *anchoring* fights by keeping its party moving and standing, which is
-mechanically distinct from the Hunter's burst and the Resonant's healing.
+mechanically distinct from the Hunter's burst and the Resonant's healing. The belief
+that **nobody accomplishes it alone** is the mechanic: Trailblaze *blazes* what it hits
+so every ally strikes it harder, which is why the order's opener is worth a turn even
+though it barely out-damages a plain swing.
+
+**Safe Passage** makes the party hard to *hit* rather than slowly healed, and **Misdirection**
+distracts a creature so it swings wide and can be walked away from — an order that moves
+people through the Meld deals in not being touched and not being followed, which is also
+why neither ability competes with the Resonant's healing.
+
+The party Barrier at Pioneer is **Stable Ground**, not an Anchor. An Anchor is the
+world's load-bearing artifact — three orders co-author one, and only those of Serin may
+set it — so it cannot also be a thing a hero does twice a minute for a shield.
+
+A Globemaster's last word is **Now** — once per fight, the whole party acts immediately.
+It is the order's authority made mechanical: not a bigger hit, a decision about *when*.
 
 Ranks: Recruit (0) · Walker 1 · Traveler 2 · Scout **5** · Pioneer **9** ·
 Discoverer **13** · Globemaster **17**.

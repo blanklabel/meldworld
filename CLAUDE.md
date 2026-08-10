@@ -323,7 +323,10 @@ only if you respect two shared, machine-global resources: the **server port** an
 - **Extending combatant state without a proto change:** per-combatant extras ride the
   `Combatant.statuses: Vec<String>` field as `key:value` tokens the client parses —
   `class:<key>`, `barrier:<n>`, `regen:<n>`, `evasion:<pct>`, `adrenaline:<n>`, `adrenaline_max:<n>`,
-  `focus_slots:<n>`, `focus:<kind>:<stacks>`, `pack:<leader|minion>`.
+  `focus_slots:<n>`, `focus:<kind>:<stacks>`, `pack:<leader|minion>`, and the timed tokens
+  `marked` (Explorer Trailblaze: everyone hits it harder) and `distracted` (Explorer
+  Misdirection: it swings wide, and the party can flee), `hasted` (a real haste — the gauge
+  fills faster while it holds).
   A token nothing renders is a token that does not exist to the player: `pack:` drove
   combat (pack rout) for a long time without reaching the client, so a leader at 1.7x HP
   and its minion at 0.45x — the same species, 3.8x apart — drew at identical size and read
@@ -357,9 +360,18 @@ Use these terms consistently in code, comments, and UI.
 
 - **Explorer** — the **default** class: the Explorers map and anchor the unstable world
   ([`docs/lore/factions.md`](docs/lore/factions.md)). Its kit is **tempo and stability**
-  rather than burst — Trailblaze, Field Dressing (L2), Read the Ground (L5), Set Anchor
-  (L9, party Barrier), Safe Passage (L13, party Regen), A World Known (L17, fills every
-  ally's gauge). See `Battle::resolve_explorer_kit`.
+  rather than burst, and its opener is a **mark**, not a bigger hit: Trailblaze blazes its
+  target so *every* ally hits it harder for a window (`marked`, `[battle] explorer_mark_*`)
+  — the order whose belief is that nobody accomplishes it alone should be paid for helping.
+  Then Field Dressing (L2), Misdirection (L5, the creature is **distracted**: it swings wide and
+  the party can leave), Stable Ground
+  (L9, party Barrier — deliberately **not** an Anchor: that is the setting's load-bearing
+  artifact, takes three orders to make, and only an Explorer of Serin may set one), Safe
+  Passage (L13, party **Evasion** — the Guides get you through untouched, they do not
+  bandage you afterwards), A World Known (L17, a real **haste** — every ally's gauge fills faster while it holds),
+  and **Now** (L49, the Globemaster's one call per fight: every ally acts *immediately*,
+  refused on the second ask). See
+  `Battle::resolve_explorer_kit`.
 - **Hunter** — the martial baseline (disposal-of-dangerous-creatures guild).
   Front-line bruiser with the standard Attack / Defend / Item / Skill menu. It has no resource
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —

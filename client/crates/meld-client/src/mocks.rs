@@ -148,8 +148,11 @@ pub(crate) fn mock_battle_setup(
         }
     };
     add(&mut battle, "h1", &["barrier:8", "regen:3"]);
+
     add(&mut battle, "h3", &["evasion:20"]);
-    add(&mut battle, "grendel", &["poison", "burn"]);
+    // Grendel carries the Explorer's work too, so the new badges are screenshottable:
+    // blazed by Trailblaze and distracted by Misdirection (the icon cycles through them).
+    add(&mut battle, "grendel", &["poison", "burn", "marked", "distracted"]);
     // `MELD_BATTLE=coop` seeds a few joined allied parties so the surround layout
     // (each player's lineup on its own edge, enemies shrunk in the middle) can be
     // screenshotted. `MELD_BATTLE=1` stays a solo fight.

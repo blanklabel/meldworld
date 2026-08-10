@@ -75,6 +75,9 @@ pub struct Fighter {
     /// decaying a fixed amount at the start of each of this fighter's turns. Granted
     /// by the Shifter's Flicker blink.
     pub evasion: f64,
+    /// Abilities this fighter has already spent its ONE per-battle use of (`Now`).
+    /// Per-fighter rather than per-party: two Globemasters get one call each.
+    pub once_spent: Vec<String>,
     /// Adrenaline: the Hunter's resource. Basic attacks bank it (up to `adrenaline_max`)
     /// and skills spend it. Zero/`adrenaline_max == 0` for every non-Hunter.
     pub adrenaline: i32,
@@ -184,6 +187,7 @@ impl Fighter {
             evasion: 0.0,
             adrenaline: 0,
             adrenaline_max: 0,
+            once_spent: Vec::new(),
             faction: if kind == CombatantKind::Player {
                 meld_proto::factions::PLAYER.to_string()
             } else {
@@ -254,6 +258,12 @@ impl Fighter {
         }
         if self.back_row {
             v.push("row:back".to_string());
+        }
+        // Once-per-battle abilities that are already gone. Without this the row stays
+        // enabled and the only feedback is a refusal — the same "the rule exists but the
+        // screen never says so" shape as a status nothing draws.
+        for k in &self.once_spent {
+            v.push(format!("spent:{k}"));
         }
         if self.boss_band > 0 {
             v.push(format!("boss_band:{}", self.boss_band));
@@ -329,10 +339,21 @@ impl Fighter {
 }
 
 /// Whether a timed ability status is a damage-over-time (poison/burn) rather
-/// than an ATB-slowing bind (web/chill/…).
+/// than an ATB-slowing bind (web/chill/bind).
 fn is_dot_status(name: &str) -> bool {
     name == "poison" || name == "burn"
 }
+
+/// Which timed statuses actually SLOW the gauge. Named explicitly, because the gauge used
+/// to slow on "any timed status that is not a DoT" — so every new token became a secret
+/// slow, and the Explorer's own `marked`/`distracted` silently throttled whatever carried
+/// them. A status list is a thing to add to on purpose, not to fall into.
+fn is_slowing_status(name: &str) -> bool {
+    matches!(name, "web" | "chill" | "bind")
+}
+
+/// The timed status a hastened fighter carries: its gauge fills faster while it holds.
+pub const HASTE_STATUS: &str = "hasted";
 
 /// The [`DamageType`] a hero class's basic attack carries (weapon flavour —
 /// structural content). Class skills stay pure/untyped (their identity is the
@@ -482,6 +503,9 @@ pub struct Battle {
     /// skill so `apply_damage` can prime a combo or cash one in without every
     /// skill arm having to know combos exist.
     active_skill: Option<String>,
+    /// Which fighter is acting right now (set alongside `active_skill`). `roll_dodge` reads
+    /// it to find out whether the attacker is distracted.
+    active_actor: Option<usize>,
     back_row_target_weight: f64,
     skill_power_mult: f64,
     skill_heal_fraction: f64,
@@ -525,12 +549,18 @@ pub struct Battle {
     phoenix_guard_eradication_mult: f64,
     phoenix_guard_eradication_missing_bonus: f64,
     explorer_trailblaze_mult: f64,
+    explorer_mark_damage_mult: f64,
+    explorer_mark_ticks: u64,
     explorer_field_dressing_fraction: f64,
     explorer_read_ground_mult: f64,
     explorer_read_ground_drain: f64,
-    explorer_anchor_barrier_fraction: f64,
-    explorer_safe_passage_regen: i32,
-    explorer_world_known_gauge: f64,
+    explorer_misdirection_miss: f64,
+    explorer_misdirection_flee_bonus: f64,
+    explorer_misdirection_ticks: u64,
+    explorer_stable_ground_fraction: f64,
+    explorer_safe_passage_evasion: f64,
+    explorer_haste_mult: f64,
+    explorer_haste_ticks: u64,
     /// The two profession classes' kits (MS-1). Held whole rather than flattened field
     /// by field: they arrived together and read better as the two blocks they are.
     smith: meld_balance::Smithwright,
@@ -722,6 +752,7 @@ impl Battle {
             consumable_potency_per_step: balance.consumable.potency_per_step,
             revive_hp_fraction: balance.consumable.revive_hp_fraction,
             active_skill: None,
+            active_actor: None,
             back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
             skill_heal_fraction: balance.battle.skill_heal_fraction,
@@ -769,12 +800,18 @@ impl Battle {
             smith: balance.smithwright.clone(),
             keeper: balance.keeper.clone(),
             explorer_trailblaze_mult: balance.battle.explorer_trailblaze_mult,
+            explorer_mark_damage_mult: balance.battle.explorer_mark_damage_mult,
+            explorer_mark_ticks: balance.battle.explorer_mark_ticks,
             explorer_field_dressing_fraction: balance.battle.explorer_field_dressing_fraction,
             explorer_read_ground_mult: balance.battle.explorer_read_ground_mult,
             explorer_read_ground_drain: balance.battle.explorer_read_ground_drain,
-            explorer_anchor_barrier_fraction: balance.battle.explorer_anchor_barrier_fraction,
-            explorer_safe_passage_regen: balance.battle.explorer_safe_passage_regen,
-            explorer_world_known_gauge: balance.battle.explorer_world_known_gauge,
+            explorer_misdirection_miss: balance.battle.explorer_misdirection_miss,
+            explorer_misdirection_flee_bonus: balance.battle.explorer_misdirection_flee_bonus,
+            explorer_misdirection_ticks: balance.battle.explorer_misdirection_ticks,
+            explorer_stable_ground_fraction: balance.battle.explorer_stable_ground_fraction,
+            explorer_safe_passage_evasion: balance.battle.explorer_safe_passage_evasion,
+            explorer_haste_mult: balance.battle.explorer_haste_mult,
+            explorer_haste_ticks: balance.battle.explorer_haste_ticks,
             resonant_deep: ResonantDeep::from(&balance.battle),
             shifter_steal_drain: balance.battle.shifter_steal_drain,
             shifter_mug_mult: balance.battle.shifter_mug_mult,
@@ -926,6 +963,7 @@ impl Battle {
         // slowing status (web/chill/bind/…) halves the fill rate.
         let n = self.fighters.len();
         let slow_mult = self.status_slow_mult;
+        let haste_mult = self.explorer_haste_mult;
         let now = self.tick_count;
         for i in 0..n {
             let f = &mut self.fighters[i];
@@ -935,8 +973,15 @@ impl Battle {
             let slowed = f
                 .timed_statuses
                 .iter()
-                .any(|(name, until)| *until > now && !is_dot_status(name));
-            let rate_mult = if slowed { slow_mult } else { 1.0 };
+                .any(|(name, until)| *until > now && is_slowing_status(name));
+            let hastened = f
+                .timed_statuses
+                .iter()
+                .any(|(name, until)| *until > now && name == HASTE_STATUS);
+            // A bind and a haste can both be on: they multiply, so hastening someone out
+            // of a web is worth doing rather than being cancelled by it.
+            let rate_mult = if slowed { slow_mult } else { 1.0 }
+                * if hastened { haste_mult } else { 1.0 };
             f.gauge =
                 (f.gauge + f.speed_stat as f64 * rate_mult / self.gauge_divisor).min(1.0);
         }
@@ -1095,6 +1140,7 @@ impl Battle {
             BattleActionKind::Skill => skill_kind.clone(),
             _ => None,
         };
+        self.active_actor = Some(i);
         let mut res = if is_psyker && action != BattleActionKind::Flee {
             self.resolve_psyker(i, skill_kind.as_deref(), target, Some(action_id), false)
         } else {
@@ -1117,6 +1163,7 @@ impl Battle {
             }
         };
         self.active_skill = None;
+        self.active_actor = None;
         // Prepend the upkeep effects so the client sees Regen/Barrier before the action.
         prepend_effects(&mut res, upkeep);
         let fled = res.flee_success == Some(true);
@@ -1328,8 +1375,11 @@ impl Battle {
     ///
     /// - `trailblaze`      — Walker (L1): a plain strike, no resource to spend.
     /// - `field_dressing`  — Traveler (L2): a modest heal for an ally, or yourself.
-    /// - `read_the_ground` — Scout (L5): damage plus an ATB-gauge steal.
-    /// - `set_anchor`      — Pioneer (L9): Barrier for the whole party.
+    /// - `misdirection`    — Scout: damage, an ATB-gauge steal, and DISTRACTS the creature:
+    ///   it swings wide at whoever it attacks, and the party can leave more easily.
+    /// - `stable_ground`   — Pioneer: Barrier for the whole party. Deliberately NOT an
+    ///   Anchor: an Anchor is the setting's load-bearing artifact, takes three orders to
+    ///   make, and only an Explorer of Serin may set one (docs/lore/factions.md).
     /// - `safe_passage`    — Discoverer (L13): Regen for the whole party.
     /// - `a_world_known`   — Globemaster (L17): fill every living ally's gauge.
     fn resolve_explorer_kit(
@@ -1359,49 +1409,65 @@ impl Battle {
                     .round() as i32;
                 effects.extend(self.apply_heal(t, raw));
             }
-            "set_anchor" => {
+            "stable_ground" => {
                 for a in living_allies(self) {
                     let raw = ((self.fighters[a].max_hp as f64)
-                        * self.explorer_anchor_barrier_fraction)
+                        * self.explorer_stable_ground_fraction)
                         .round() as i32;
                     effects.extend(self.grant_barrier(a, raw));
                 }
             }
             "safe_passage" => {
+                // The Guides get people THROUGH the Meld untouched; they do not patch them
+                // up on the far side. So this is party-wide Evasion, not Regen — it shares
+                // the Shifter's Flicker pool, so it decays per turn the same way and adds
+                // to each hero's own Dex dodge.
                 for a in living_allies(self) {
-                    self.fighters[a].regen += self.explorer_safe_passage_regen;
-                    let regen = self.fighters[a].regen;
+                    self.fighters[a].evasion =
+                        (self.fighters[a].evasion + self.explorer_safe_passage_evasion).min(0.95);
+                    let pct = (self.fighters[a].evasion * 100.0).round() as i32;
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[a].combatant_id.clone(),
                         kind: EffectKind::StatusApplied,
-                        amount: Some(regen),
-                        status: Some("regen".to_string()),
+                        amount: Some(pct),
+                        status: Some("evasion".to_string()),
                         hp_after: self.fighters[a].hp,
                     });
                 }
             }
             "a_world_known" => {
-                // The capstone: the party goes first. A gauge already at 1.0 stays
-                // there — this buys turns, it does not stack them.
+                // A real HASTE: for its window every ally's gauge fills faster. This used
+                // to be a flat one-off gauge nudge, which is the same shape as `Now` and
+                // made two rungs of the ladder read as one idea told twice.
+                let ticks = self.explorer_haste_ticks;
+                for a in living_allies(self) {
+                    let fx = self.apply_timed(a, HASTE_STATUS, ticks);
+                    effects.push(fx);
+                }
+            }
+            "now" => {
+                self.fighters[actor_i].once_spent.push("now".to_string());
+                // The Globemaster's one call per fight: not faster — NOW. Every living ally
+                // acts immediately. Once per battle, which is what keeps it a decision
+                // about a single moment instead of a rotation.
                 for a in living_allies(self) {
                     if a == actor_i {
                         continue; // the caster's own gauge resets below, as always
                     }
-                    self.fighters[a].gauge =
-                        (self.fighters[a].gauge + self.explorer_world_known_gauge).min(1.0);
+                    self.fighters[a].gauge = 1.0;
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[a].combatant_id.clone(),
                         kind: EffectKind::StatusApplied,
                         amount: None,
-                        status: Some("hastened".to_string()),
+                        status: Some("now".to_string()),
                         hp_after: self.fighters[a].hp,
                     });
                 }
             }
-            "trailblaze" | "read_the_ground" => {
-                let (mult, drain) = if skill == "read_the_ground" {
+            "trailblaze" | "misdirection" => {
+                let (mult, drain) = if skill == "misdirection" {
                     (self.explorer_read_ground_mult, self.explorer_read_ground_drain)
                 } else {
                     (self.explorer_trailblaze_mult, 0.0)
@@ -1422,6 +1488,19 @@ impl Battle {
                     Some(dodge) => dodge,
                     None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
                 };
+                // Trailblaze blazes what it hits: the order's opener buys the PARTY a
+                // window, which is the whole reason to press it over a basic Attack.
+                if skill == "trailblaze" && self.fighters[target_i].alive {
+                    let fx = self.apply_mark(target_i);
+                    effects.push(fx);
+                }
+                // Misdirection distracts it: it swings wide at whoever it attacks, and a party it
+                // has lost track of finds it easier to walk away (see `flee_chance`).
+                if skill == "misdirection" && self.fighters[target_i].alive {
+                    let ticks = self.explorer_misdirection_ticks;
+                    let fx = self.apply_timed(target_i, Self::DISTRACT_STATUS, ticks);
+                    effects.push(fx);
+                }
                 if drain > 0.0 && self.fighters[target_i].alive {
                     self.fighters[target_i].gauge =
                         (self.fighters[target_i].gauge - drain).max(0.0);
@@ -1821,6 +1900,13 @@ impl Battle {
             if !meld_proto::skills::is_unlocked(k, self.fighters[actor_i].level) {
                 return Err(Reject::ValidationError("skill not unlocked at this level"));
             }
+            // Once-per-battle abilities are refused on the second ask, server-side. The
+            // client greys the row too, but a rejection here is what makes it true.
+            if meld_proto::skills::is_once_per_battle(k)
+                && self.fighters[actor_i].once_spent.iter().any(|s| s == k)
+            {
+                return Err(Reject::ValidationError("already used this battle"));
+            }
         }
         // Hunter (martial baseline): every skill spends banked Adrenaline. Handled
         // first so the affordability check runs before any other path.
@@ -1841,10 +1927,11 @@ impl Battle {
             skill_kind,
             Some("trailblaze")
                 | Some("field_dressing")
-                | Some("read_the_ground")
-                | Some("set_anchor")
+                | Some("misdirection")
+                | Some("stable_ground")
                 | Some("safe_passage")
                 | Some("a_world_known")
+                | Some("now")
         ) {
             return self.resolve_explorer_kit(actor_i, skill_kind.unwrap(), target_id, action_id);
         }
@@ -2686,7 +2773,15 @@ impl Battle {
         // the encounter-above-party tier gap is 0; the full multi-tier gap lands
         // with deeper encounters.
         let tier_gap = 0;
-        let chance = self.flee_chance(tier_gap);
+        // A distracted creature has lost the thread, so this is when a party gets out. The
+        // Explorer's Distract is the order's answer to "we should not be in this fight".
+        let distracted_foe = self
+            .fighters
+            .iter()
+            .enumerate()
+            .any(|(i, f)| f.alive && f.kind != CombatantKind::Player && self.is_distracted(i));
+        let bonus = if distracted_foe { self.explorer_misdirection_flee_bonus } else { 0.0 };
+        let chance = (self.flee_chance(tier_gap) + bonus).min(1.0);
         let roll = self.next_rand_unit();
         let success = roll < chance;
         self.reset_gauge(actor_i);
@@ -3106,9 +3201,17 @@ impl Battle {
     /// actually has dodge, so combatants with no Dex bonus don't perturb the
     /// deterministic stream (existing tests/replays are unaffected).
     fn roll_dodge(&mut self, target_i: usize) -> Option<Vec<ResolvedEffect>> {
-        // Innate Dex dodge plus any temporary Evasion (Shifter Flicker), capped just
-        // shy of certain so an attack can always in principle land.
-        let chance = (self.fighters[target_i].dodge + self.fighters[target_i].evasion).min(0.95);
+        // Innate Dex dodge plus any temporary Evasion (Shifter Flicker, Explorer Safe
+        // Passage), capped just shy of certain so an attack can always in principle land.
+        // A DISTRACTED attacker (Explorer Misdirection) adds its miss chance on top: the dodge is
+        // where "the thing swinging at you has lost the thread" has to land, since accuracy
+        // in this engine lives on the defender.
+        let distracted = self
+            .active_actor
+            .is_some_and(|a| self.has_timed_status(a, Self::DISTRACT_STATUS));
+        let extra = if distracted { self.explorer_misdirection_miss } else { 0.0 };
+        let chance =
+            (self.fighters[target_i].dodge + self.fighters[target_i].evasion + extra).min(0.95);
         if chance > 0.0 && self.next_rand_unit() < chance {
             let t = &self.fighters[target_i];
             Some(vec![ResolvedEffect { modifier_flag: None,
@@ -3193,6 +3296,13 @@ impl Battle {
         // AD-2 combos: the skill resolving right now may be cashing in a primer
         // another hero left on this target, and may leave one of its own.
         let (dmg, combo_hit) = self.resolve_combo(target_i, dmg);
+        // A blazed target takes more from everyone, so the bonus lives here — the one
+        // point every hit passes through — rather than in each ability that could benefit.
+        let dmg = if self.is_marked(target_i) {
+            ((dmg as f64) * self.explorer_mark_damage_mult).round() as i32
+        } else {
+            dmg
+        };
         // CR-6: a pack leader's living minions soak part of every blow aimed at it.
         let guard = self.pack_guard_fraction(target_i);
         let dmg = if guard > 0.0 {
@@ -3323,6 +3433,55 @@ impl Battle {
             .any(|f| f.alive && f.pack_role == PackRole::Leader && f.faction == faction)
     }
 
+    /// The wire/status token a blazed target carries.
+    pub const MARK_STATUS: &'static str = "marked";
+
+    /// The wire/status token a distracted creature carries.
+    pub const DISTRACT_STATUS: &'static str = "distracted";
+
+    /// Does this fighter carry `name` right now?
+    fn has_timed_status(&self, i: usize, name: &str) -> bool {
+        self.fighters[i]
+            .timed_statuses
+            .iter()
+            .any(|(n, until)| n == name && *until > self.tick_count)
+    }
+
+    /// Is this fighter currently blazed? Read on every incoming hit.
+    fn is_marked(&self, i: usize) -> bool {
+        self.has_timed_status(i, Self::MARK_STATUS)
+    }
+
+    /// Is this fighter distracted? Read when it swings, and when the party tries to leave.
+    fn is_distracted(&self, i: usize) -> bool {
+        self.has_timed_status(i, Self::DISTRACT_STATUS)
+    }
+
+    /// Put a timed token on a fighter, extending rather than stacking.
+    fn apply_timed(&mut self, target_i: usize, name: &str, ticks: u64) -> ResolvedEffect {
+        let until = self.tick_count + ticks;
+        match self.fighters[target_i].timed_statuses.iter_mut().find(|(n, _)| n == name) {
+            Some(s) => s.1 = s.1.max(until),
+            None => self.fighters[target_i].timed_statuses.push((name.to_string(), until)),
+        }
+        ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[target_i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some(name.to_string()),
+            hp_after: self.fighters[target_i].hp,
+        }
+    }
+
+    /// Blaze a target: for `explorer_mark_ticks`, everything the party lands on it hits
+    /// harder. Re-blazing extends the window rather than stacking the multiplier, so two
+    /// Explorers are worth more uptime and not double damage.
+    fn apply_mark(&mut self, target_i: usize) -> ResolvedEffect {
+        let ticks = self.explorer_mark_ticks;
+        self.apply_timed(target_i, Self::MARK_STATUS, ticks)
+    }
+
     /// AD-2: apply the combo layer to one incoming hit.
     ///
     /// Returns the (possibly amplified) damage and the combo key that fired. The
@@ -3405,6 +3564,265 @@ impl Battle {
 
 #[cfg(test)]
 mod tests {
+
+    /// Dodging is the SHIFTER's identity, so the Shifter's own blink has to stay the better
+    /// evasion — the Explorer's party-wide Safe Passage covers more people for less each.
+    /// Both draw on the same pool, so without this the two classes could silently swap
+    /// places on a balance pass and the Shifter would lose the thing it is for.
+    #[test]
+    fn flicker_stays_the_better_evasion_than_safe_passage() {
+        let b = Balance::load_default().unwrap();
+        let flicker = b.battle.shifter_flicker_evasion;
+        let passage = b.battle.explorer_safe_passage_evasion;
+        assert!(
+            flicker > passage,
+            "Flicker ({flicker}) must beat Safe Passage ({passage}) per hero - dodging is the \
+             Shifter's whole identity"
+        );
+        assert!(passage > 0.0, "Safe Passage still has to be worth a turn");
+    }
+
+    /// A World Known is a real haste: the gauge fills FASTER while it holds, rather than
+    /// jumping once. And the slow list is explicit now, so a status like `marked` must not
+    /// throttle whatever carries it — the gauge used to slow on any non-DoT token.
+    #[test]
+    fn haste_speeds_the_gauge_and_a_mark_does_not_slow_it() {
+        let b = Balance::load_default().unwrap();
+        let mk = |tokens: &[&str]| {
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![monster("m1", 9_999, 1)],
+                &b,
+                7,
+            );
+            let i = bt.idx("h1").unwrap();
+            for t in tokens {
+                bt.fighters[i].timed_statuses.push(((*t).to_string(), 10_000));
+            }
+            bt.fighters[i].gauge = 0.0;
+            bt.tick();
+            bt.fighters[bt.idx("h1").unwrap()].gauge
+        };
+        let plain = mk(&[]);
+        let hasted = mk(&[HASTE_STATUS]);
+        let marked = mk(&["marked"]);
+        let webbed = mk(&["web"]);
+        assert!(hasted > plain, "haste must fill faster: {plain} -> {hasted}");
+        assert!(webbed < plain, "a web must still slow: {plain} -> {webbed}");
+        assert_eq!(
+            marked, plain,
+            "a mark is not a slow - the gauge used to throttle on ANY non-DoT status"
+        );
+    }
+
+    /// `Now` is once per fight, refused on the second ask by the server rather than only
+    /// greyed out by the client.
+    #[test]
+    fn now_can_be_called_once_a_battle_and_then_refused() {
+        let b = Balance::load_default().unwrap();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("scout", 10), player("mate", 1)],
+            vec![monster("m1", 9_999, 1)],
+            &b,
+            7,
+        );
+        let i = battle.idx("scout").unwrap();
+        battle.fighters[i].level = meld_proto::skills::unlock_level("now");
+        let mate = battle.idx("mate").unwrap();
+        battle.fighters[mate].gauge = 0.0;
+
+        let call = |bt: &mut Battle, n: u32| {
+            let i = bt.idx("scout").unwrap();
+            bt.fighters[i].gauge = 1.0;
+            bt.fighters[i].awaiting = true;
+            bt.submit(
+                "scout",
+                format!("00000000-0000-7000-8000-{n:012}"),
+                BattleActionKind::Skill,
+                None,
+                Some("now".into()),
+                None,
+            )
+        };
+        call(&mut battle, 1).expect("the first call lands");
+        let mate = battle.idx("mate").unwrap();
+        assert_eq!(battle.fighters[mate].gauge, 1.0, "every ally should act immediately");
+        let again = call(&mut battle, 2);
+        assert!(again.is_err(), "the second call in one battle must be refused");
+    }
+
+
+    /// Safe Passage is the Guides' promise — the party gets through untouched — so it makes
+    /// everyone hard to HIT rather than slowly healed. It was party Regen at +6, double the
+    /// band of the two classes whose entire identity is regen (Resonant, Keeper).
+    #[test]
+    fn safe_passage_makes_the_whole_party_hard_to_hit() {
+        let b = Balance::load_default().unwrap();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("scout", 10), player("mate", 10)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        for f in &battle.fighters {
+            if f.kind == CombatantKind::Player {
+                assert_eq!(f.evasion, 0.0, "nobody is evasive to start with");
+            }
+        }
+        let i = battle.idx("scout").unwrap();
+        // Safe Passage is a Discoverer's tool, so the caster has to have earned it.
+        battle.fighters[i].level = meld_proto::skills::unlock_level("safe_passage");
+        battle.fighters[i].gauge = 1.0;
+        battle.fighters[i].awaiting = true;
+        battle
+            .submit(
+                "scout",
+                "00000000-0000-7000-8000-000000000001".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("safe_passage".into()),
+                None,
+            )
+            .expect("Safe Passage is a self-cast party buff and needs no target");
+        for f in &battle.fighters {
+            if f.kind == CombatantKind::Player {
+                assert!(f.evasion > 0.0, "every ally should be harder to hit, not just the caster");
+            }
+            if f.kind != CombatantKind::Player {
+                assert_eq!(f.evasion, 0.0, "the creature does not benefit");
+            }
+        }
+    }
+
+    /// Distract dazzles: the creature swings wide at whoever it attacks, and the party can
+    /// get out. Both halves are asserted, because a blind that only reads on the sheet is
+    /// the same class of bug as a status the client never draws.
+    #[test]
+    fn a_distracted_creature_swings_wide_and_lets_the_party_leave() {
+        let b = Balance::load_default().unwrap();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("scout", 10)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        let foe = battle.idx("m1").unwrap();
+        let hero = battle.idx("scout").unwrap();
+
+        // Undistracted, the creature's swing is judged against the hero's own dodge only.
+        battle.active_actor = Some(foe);
+        let plain = battle.fighters[hero].dodge + battle.fighters[hero].evasion;
+
+        battle.apply_timed(foe, Battle::DISTRACT_STATUS, 60);
+        assert!(battle.is_distracted(foe));
+
+        // The dazzle adds to the defender's chance, which is where accuracy lives here.
+        let distracted_chance = plain + b.battle.explorer_misdirection_miss;
+        assert!(
+            distracted_chance > plain,
+            "a distracted attacker must be easier to avoid: {plain} -> {distracted_chance}"
+        );
+
+        // And leaving is easier while it is dazzled than while it is not.
+        let with = battle.flee_chance(0) + b.battle.explorer_misdirection_flee_bonus;
+        assert!(with > battle.flee_chance(0), "a distracted foe should let the party go");
+    }
+
+
+    /// Trailblaze's whole point is that it helps the PARTY, not that it hits hard: the
+    /// Explorer's L1 was a ~5% damage nudge over a basic Attack (and worse than one past
+    /// level 20, since Attack can crit and skills cannot), so there was no reason to press
+    /// it. A blazed target takes more from everyone for a window.
+    #[test]
+    fn trailblaze_blazes_its_target_so_the_whole_party_hits_harder() {
+        let b = Balance::load_default().unwrap();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("scout", 10), player("mate", 10)],
+            vec![monster("m1", 100_000, 1)],
+            &b,
+            7,
+        );
+        let foe = battle.idx("m1").unwrap();
+        let act = |n: u32| format!("00000000-0000-7000-8000-{n:012}");
+        let ready = |bt: &mut Battle, who: &str| {
+            let i = bt.idx(who).unwrap();
+            bt.fighters[i].gauge = 1.0;
+            bt.fighters[i].awaiting = true;
+        };
+
+        // An ally's plain attack on an UNBLAZED target, for the baseline.
+        ready(&mut battle, "mate");
+        let before = battle.fighters[foe].hp;
+        battle
+            .submit("mate", act(1), BattleActionKind::Attack, Some(vec!["m1".into()]), None, None)
+            .unwrap();
+        let plain = before - battle.fighters[foe].hp;
+
+        // Blaze it.
+        assert!(!battle.is_marked(foe), "nothing is blazed to start with");
+        ready(&mut battle, "scout");
+        let fx = battle
+            .submit(
+                "scout",
+                act(2),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some("trailblaze".into()),
+                None,
+            )
+            .unwrap();
+        assert!(battle.is_marked(foe), "Trailblaze must blaze what it hits");
+        assert!(
+            format!("{fx:?}").contains(Battle::MARK_STATUS),
+            "the mark has to reach the client, or it does not exist to the player"
+        );
+
+        // The SAME ally's SAME attack now lands harder, though nothing about it changed.
+        ready(&mut battle, "mate");
+        let before = battle.fighters[foe].hp;
+        battle
+            .submit("mate", act(3), BattleActionKind::Attack, Some(vec!["m1".into()]), None, None)
+            .unwrap();
+        let blazed = before - battle.fighters[foe].hp;
+        assert!(
+            blazed > plain,
+            "a blazed target should take more from an ALLY: {plain} -> {blazed}"
+        );
+    }
+
+    /// Re-blazing extends the window instead of stacking the multiplier, so a second
+    /// Explorer buys uptime rather than doubling the party's damage.
+    #[test]
+    fn blazing_twice_extends_the_window_and_does_not_stack() {
+        let b = Balance::load_default().unwrap();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("scout", 10)],
+            vec![monster("m1", 100_000, 1)],
+            &b,
+            7,
+        );
+        let foe = battle.idx("m1").unwrap();
+        battle.apply_mark(foe);
+        let first = battle.fighters[foe].timed_statuses.clone();
+        battle.tick_count += 10;
+        battle.apply_mark(foe);
+        let second = battle.fighters[foe].timed_statuses.clone();
+        assert_eq!(second.len(), 1, "one mark, not two: {second:?}");
+        assert!(second[0].1 > first[0].1, "the second blaze should push the window out");
+    }
+
 
     /// End to end through the engine, because what was broken was the PAIRING of a
     /// resource to a kit and each half looked fine alone: bank Adrenaline with basic

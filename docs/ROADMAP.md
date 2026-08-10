@@ -366,7 +366,7 @@ burns on death/leave; some is single-use. See
     loop, so it carries the martial Adrenaline kit. Unlocked by **extracting** (the
     hall pays on evidence, not stories). The **Explorer** keeps the starting slot and
     gains its own order-true kit: tempo and stability (Trailblaze → Field Dressing →
-    Read the Ground → Set Anchor → Safe Passage → **A World Known**, which fills every
+    Read the Ground → Stable Ground → Safe Passage → **A World Known**, which fills every
     ally's gauge).
   - *Also shipped:* the **Phoenix Guard's anti-undead kit** — Silvered Strike, Rite of
     Rest, Holy Censure, Purging Light, Unbroken Vigil (party Barrier), Eradication (an

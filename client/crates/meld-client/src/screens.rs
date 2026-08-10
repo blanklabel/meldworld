@@ -26,71 +26,43 @@ pub(crate) struct ClassInfo {
     pub spd: u8,
     pub mag: u8,
     pub def: u8,
-    /// The class kit as `(skill name, what it does)` — shown in the detail panel.
-    pub kit: &'static [(&'static str, &'static str)],
 }
 
 pub(crate) const CLASS_INFO: [ClassInfo; 8] = [
-    ClassInfo { key: "explorer", name: "Explorer", role: "The order that maps and anchors the world \u{2014} tempo and stability, not burst.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3, kit: &[
-        ("Trailblaze", "a solid strike that costs nothing"),
-        ("Field Dressing", "patch up an ally or yourself (Lv2)"),
-        ("Read the Ground", "damage + steal the foe's tempo (Lv5)"),
-        ("Set Anchor", "Barrier for the WHOLE party (Lv9)"),
-    ] },
-    ClassInfo { key: "hunter", name: "Hunter", role: "The guild that disposes of dangerous creatures \u{2014} the martial baseline.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3, kit: &[
-        ("Power Strike", "a heavy blow; spends Adrenaline"),
-        ("Second Wind", "heal yourself for Adrenaline (Lv2)"),
-        ("Snare", "damage + steal the foe's turn (Lv2)"),
-        ("Frenzy", "your biggest hit, biggest cost (Lv5)"),
-    ] },
-    ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2, kit: &[
-        ("Gravity Well", "armour-ignoring damage every turn"),
-        ("Kinetic Aegis", "shield an ally (Barrier)"),
-        ("Mind Spike", "a stronger damage Focus (Lv3)"),
-        ("Temporal Anchor", "drain the enemy's ATB gauge (Lv5)"),
-    ] },
-    ClassInfo { key: "resonant", name: "Resonant", role: "Healer. Innate Regen keeps the party standing.", hp: 3, atk: 2, spd: 3, mag: 4, def: 2, kit: &[
-        ("Transfuse", "heal an ally, paid from your own HP"),
-        ("Regen Boon", "grant an ally Regen (Lv2)"),
-        ("Ward", "shield an ally (Barrier) (Lv3)"),
-    ] },
-    ClassInfo { key: "shifter", name: "Shifter", role: "Rogue skirmisher. Fast, fragile, the only innate dodge.", hp: 2, atk: 4, spd: 5, mag: 1, def: 1, kit: &[
-        ("Backstab", "a heavy strike that pierces armour"),
-        ("Flicker", "blink for self Evasion (Lv2)"),
-        ("Ransack", "hit + drain the enemy's ATB (Lv3)"),
-    ] },
-    ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "The Last City's anti-undead order \u{2014} a wall that hits the risen hardest.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5, kit: &[
-        ("Silvered Strike", "a staggering blow; far worse for undead"),
-        ("Rite of Rest", "a self Barrier stance (Lv2)"),
-        ("Holy Censure", "heavy blow, zeroes the foe's gauge (Lv5)"),
-        ("Purging Light", "light on ALL enemies (Lv9)"),
-    ] },
-    ClassInfo { key: "smithwright", name: "Smithwright", role: "The Foundry's builder \u{2014} raises the field forge, and buys the party time.", hp: 4, atk: 4, spd: 2, mag: 1, def: 4, kit: &[
-        ("Hammer Fall", "a staggering blow with the tool itself"),
-        ("Quench", "a self Barrier off your own HP (Lv2)"),
-        ("Plant the Bulwark", "Barrier for the WHOLE party (Lv5)"),
-        ("Tempering Blow", "an ally hits harder all fight (Lv9)"),
-    ] },
-    ClassInfo { key: "keeper", name: "Keeper", role: "Open Flower grower \u{2014} sets up the still, and keeps everyone standing.", hp: 2, atk: 1, spd: 4, mag: 5, def: 2, kit: &[
-        ("Thornlash", "modest damage, and it holds them there"),
-        ("Poultice", "heal an ally + Regen after (Lv2)"),
-        ("Bloomfield", "Regen for the whole party (Lv5)"),
-        ("Root Snare", "damage, and its turn is far off (Lv9)"),
-    ] },
+    ClassInfo { key: "explorer", name: "Explorer", role: "The order that maps and anchors the world \u{2014} tempo and stability, not burst.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3 },
+    ClassInfo { key: "hunter", name: "Hunter", role: "The guild that disposes of dangerous creatures \u{2014} the martial baseline.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3 },
+    ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2 },
+    ClassInfo { key: "resonant", name: "Resonant", role: "Healer. Innate Regen keeps the party standing.", hp: 3, atk: 2, spd: 3, mag: 4, def: 2 },
+    ClassInfo { key: "shifter", name: "Shifter", role: "Rogue skirmisher. Fast, fragile, the only innate dodge.", hp: 2, atk: 4, spd: 5, mag: 1, def: 1 },
+    ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "The Last City's anti-undead order \u{2014} a wall that hits the risen hardest.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5 },
+    ClassInfo { key: "smithwright", name: "Smithwright", role: "The Foundry's builder \u{2014} raises the field forge, and buys the party time.", hp: 4, atk: 4, spd: 2, mag: 1, def: 4 },
+    ClassInfo { key: "keeper", name: "Keeper", role: "Open Flower grower \u{2014} sets up the still, and keeps everyone standing.", hp: 2, atk: 1, spd: 4, mag: 5, def: 2 },
 ];
 
 pub(crate) fn class_info(key: &str) -> &'static ClassInfo {
     CLASS_INFO.iter().find(|c| c.key == key).unwrap_or(&CLASS_INFO[0])
 }
 
-/// The kit as a multi-line "Skills\n  Name — what it does" block for the detail panel.
+/// The kit as a multi-line "Skills\n  Name — what it does" block for the detail panel,
+/// read from [`meld_proto::skills`] — the one registry the server gates on and the battle
+/// menu builds from. It used to be a hand-copied list on each `ClassInfo`, which had
+/// already drifted: the Explorer's card still named "Set Anchor" and put its rungs at
+/// Lv2/5/9 when the registry says 4/9/16.
 pub(crate) fn kit_text(ci: &ClassInfo) -> String {
     let mut s = String::from("Skills");
-    for (name, desc) in ci.kit {
-        s.push_str(&format!("\n  {name} \u{2014} {desc}"));
+    for def in meld_proto::skills::skills_for_class(ci.key).iter().take(KIT_ROWS) {
+        let at = if def.unlock > 1 {
+            format!(" (Lv{})", def.unlock)
+        } else {
+            String::new()
+        };
+        s.push_str(&format!("\n  {} \u{2014} {}{at}", def.name, def.description));
     }
     s
 }
+
+/// Kit rows the Join screen's card shows before it runs out of room.
+const KIT_ROWS: usize = 4;
 
 
 /// Which account-login field is being typed into: 0 = username, 1 = password, None =
@@ -973,6 +945,42 @@ pub(crate) fn ended_buttons(
 
 #[cfg(test)]
 mod tests {
+
+    /// Every class card's kit comes from the ONE registry, so a card can never again name
+    /// an ability that was renamed or put its unlocks at the wrong level — the Explorer's
+    /// card still said "Set Anchor" at Lv9 long after the registry said otherwise.
+    #[test]
+    fn every_class_card_reads_its_kit_from_the_registry() {
+        for ci in CLASS_INFO.iter() {
+            let defs = meld_proto::skills::skills_for_class(ci.key);
+            assert!(!defs.is_empty(), "{} has no abilities in the registry", ci.key);
+            let text = kit_text(ci);
+            for def in defs.iter().take(KIT_ROWS) {
+                assert!(
+                    text.contains(def.name),
+                    "{}'s card omits {} - the card and the registry have drifted",
+                    ci.key,
+                    def.name
+                );
+            }
+        }
+    }
+
+    /// And the ability that used to be called "Set Anchor" is gone from the setting: an
+    /// Anchor takes three orders to make and only an Explorer of Serin may set one, so a
+    /// routine party Barrier must not borrow the name (docs/lore/factions.md).
+    #[test]
+    fn no_class_claims_to_set_an_anchor() {
+        for ci in CLASS_INFO.iter() {
+            let text = kit_text(ci);
+            assert!(!text.contains("Set Anchor"), "{} still claims to set Anchors", ci.key);
+        }
+        assert!(
+            kit_text(class_info("explorer")).contains("Stable Ground"),
+            "the Explorer should offer Stable Ground instead"
+        );
+    }
+
     use super::*;
 
     fn keys(typed: &[KeyCode]) -> LoginKeys<'_> {

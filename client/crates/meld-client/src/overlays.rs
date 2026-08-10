@@ -555,8 +555,9 @@ pub(crate) fn spawn_item_icon(
         return;
     }
     // No node art for this one (a trophy, a consumable, a piece of gear). Draw a small
-    // tinted chip rather than a nerdfont glyph: the UI font has no icon coverage, so a
-    // glyph fallback rendered as a tofu box — worse than no icon at all.
+    // tinted chip rather than a nerdfont glyph: the glyphs ARE in the bundled font, but at
+    // this size they read as ambiguous squiggles next to the real 24px item sprites, so a
+    // flat colour-coded chip carries more meaning than a tiny icon nobody can identify.
     let tint = match kind {
         "town_portal" => Color::srgb(0.65, 0.5, 0.95),
         "chits" => Color::srgb(0.95, 0.82, 0.35),

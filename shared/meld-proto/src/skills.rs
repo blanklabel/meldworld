@@ -114,20 +114,20 @@ pub const SKILLS: &[SkillDef] = &[
         rank: "Traveler",
     },
     SkillDef {
-        key: "read_the_ground",
-        name: "Read the Ground",
+        key: "misdirection",
+        name: "Misdirection",
         class: "explorer",
         unlock: 9,
-        description: "You know this terrain and it does not: damage plus a steal from the foe's ATB gauge.",
+        description: "Something moves where it should not. A distracted creature swings wide at whoever it attacks, and a party it has lost track of finds it much easier to leave.",
         upgrades: None,
         rank: "Scout",
     },
     SkillDef {
-        key: "set_anchor",
-        name: "Set Anchor",
+        key: "stable_ground",
+        name: "Stable Ground",
         class: "explorer",
         unlock: 16,
-        description: "Fix a point of stability in the chaos: Barrier for the WHOLE party.",
+        description: "Not an Anchor - just enough certainty underfoot to stand on. Barrier for the WHOLE party.",
         upgrades: None,
         rank: "Pioneer",
     },
@@ -136,9 +136,18 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Safe Passage",
         class: "explorer",
         unlock: 25,
-        description: "Nobody walks it alone: Regen for the whole party, turn after turn.",
+        description: "The Guides' whole promise: the party moves through untouched. Every ally becomes much harder to hit.",
         upgrades: None,
         rank: "Discoverer",
+    },
+    SkillDef {
+        key: "now",
+        name: "Now",
+        class: "explorer",
+        unlock: 49,
+        description: "One word, once a fight. Every ally acts immediately - not sooner, not faster: now.",
+        upgrades: None,
+        rank: "Globemaster",
     },
     SkillDef {
         key: "a_world_known",
@@ -759,6 +768,13 @@ pub fn upgrade_chain(key: &str) -> Vec<&'static SkillDef> {
 /// The level at which `skill` unlocks. Returns 1 for always-available actions
 /// (Attack/Defend/Item) and for anything unknown, so a caller that asks about a
 /// non-skill gets "usable" rather than "locked forever".
+/// Abilities that may be used ONCE per battle. A once-per-fight call is a decision about
+/// one moment, so it lives in the registry beside the unlock level rather than as a rule
+/// the server and the client each remember separately.
+pub fn is_once_per_battle(skill: &str) -> bool {
+    matches!(skill, "now")
+}
+
 pub fn unlock_level(skill: &str) -> i32 {
     self::skill(skill).map(|s| s.unlock).unwrap_or(1)
 }
