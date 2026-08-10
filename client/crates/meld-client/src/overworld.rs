@@ -1642,8 +1642,15 @@ pub(crate) fn pulse_collectibles(
 ) {
     // ~2.5 s breathe; `strength` scales each material's own colour into its emissive,
     // so a blue gem glows blue and a gold trophy glows gold.
+    //
+    // Turned down to a quarter of what it was (0.5..2.7 -> 0.125..0.675). The HD-2D nodes
+    // are BILLBOARDS on a white base colour, so emissive above ~1.0 is white light over
+    // the whole quad: the pulse did not glow the sprite, it erased it, and a bog myrrh and
+    // a peat iron were the same white blob. Under 1.0 the texture survives the breathe.
+    const GLOW_FLOOR: f32 = 0.125;
+    const GLOW_SWING: f32 = 0.55;
     let phase = (time.elapsed_secs() * std::f32::consts::TAU * 0.4).sin() * 0.5 + 0.5;
-    let strength = 0.5 + 2.2 * phase;
+    let strength = GLOW_FLOOR + GLOW_SWING * phase;
     for root in &roots {
         for e in std::iter::once(root).chain(child_q.iter_descendants::<Children>(root)) {
             let Ok(mm) = mat_of.get(e) else { continue };
