@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy::gltf::GltfAssetLabel;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
-use bevy::render::render_resource::{AsBindGroup, ShaderRef, ShaderType};
+use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 
 use meld_client::hd2d::{self, CharacterFrames};
 
@@ -32,57 +32,72 @@ pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 
 /// matches each section's real biome (radius ring) instead of fixed distance bands.
 /// `rings[i] = (outer_radius, biome_index, _, _)`, sorted by radius; `count` entries
 /// are live. `update_ground_biome_rings` rebuilds it from the streamed sections.
-#[derive(Clone, Copy, ShaderType, Debug)]
-pub(crate) struct BiomeParams {
-    rings: [Vec4; MAX_BIOME_RINGS],
-    count: u32,
-    uv_scale: f32,
-    blend_half: f32,
-    /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
-    /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
-    terrain_amp: f32,
-    /// This run's terrain offset (mirrors `world_render::terrain_offset` / the server's
-    /// `run.started.terrain_offset`), so the displaced ground matches every entity's Y and
-    /// the world looks different every run.
-    terrain_off: Vec2,
-    /// Explicit pad so `peaks` (a vec4 array, 16-aligned) starts on a 16-byte boundary in
-    /// BOTH the Rust (encase) and WGSL uniform layouts — no implicit padding to mismatch.
-    _pad_peaks: Vec2,
-    /// Authored CLIMBABLE peaks (`[cx, cz, radius, height]`), summed onto the displaced
-    /// ground so each mountain renders (mirrors `terrain::peak_height`). Windowed to
-    /// `MAX_PEAKS`; `peak_count` live entries.
-    peaks: [Vec4; PEAK_SLOTS],
-    peak_count: u32,
-    // Three SCALAR pads (not a `[u32; 3]` — a u32 array needs a 16-byte stride in a
-    // uniform, which fails validation) to round the struct out to a 16-byte multiple.
-    _pad_pc0: u32,
-    _pad_pc1: u32,
-    _pad_pc2: u32,
-}
-
+// `dead_code` here is about the `check` fn the ShaderType derive generates per field,
+// not about the fields: every one of them is read by the WGSL side of this uniform.
 /// Shader uniform peak slots (must equal `meld_proto::terrain::MAX_PEAKS`).
 const PEAK_SLOTS: usize = 24;
 
-impl Default for BiomeParams {
-    fn default() -> Self {
-        BiomeParams {
-            rings: [Vec4::ZERO; MAX_BIOME_RINGS],
-            count: 0,
-            uv_scale: 1.0 / 3.0,
-            blend_half: 18.0,
-            // Default flat: menus/join/city render level ground. The Overworld flips it
-            // to 1.0 on entry (`set_ground_terrain_amp`).
-            terrain_amp: 0.0,
-            terrain_off: Vec2::ZERO,
-            _pad_peaks: Vec2::ZERO,
-            peaks: [Vec4::ZERO; PEAK_SLOTS],
-            peak_count: 0,
-            _pad_pc0: 0,
-            _pad_pc1: 0,
-            _pad_pc2: 0,
+/// `dead_code` is allowed for exactly this one item: the `ShaderType` derive generates a
+/// per-field `check` fn that nothing ever calls, and there is no way to annotate code a
+/// macro emits. Scoped to a submodule so the rest of this file still reports its own dead
+/// code honestly — every field here IS read, by the WGSL side of the uniform.
+mod biome_params {
+    #![allow(dead_code)]
+    use super::{MAX_BIOME_RINGS, PEAK_SLOTS};
+    use bevy::prelude::*;
+    use bevy::render::render_resource::ShaderType;
+
+    #[derive(Clone, Copy, ShaderType, Debug)]
+    pub(crate) struct BiomeParams {
+        pub(crate) rings: [Vec4; MAX_BIOME_RINGS],
+        pub(crate) count: u32,
+        pub(crate) uv_scale: f32,
+        pub(crate) blend_half: f32,
+        /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
+        /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
+        pub(crate) terrain_amp: f32,
+        /// This run's terrain offset (mirrors `world_render::terrain_offset` / the server's
+        /// `run.started.terrain_offset`), so the displaced ground matches every entity's Y and
+        /// the world looks different every run.
+        pub(crate) terrain_off: Vec2,
+        /// Explicit pad so `peaks` (a vec4 array, 16-aligned) starts on a 16-byte boundary in
+        /// BOTH the Rust (encase) and WGSL uniform layouts — no implicit padding to mismatch.
+        pub(crate) _pad_peaks: Vec2,
+        /// Authored CLIMBABLE peaks (`[cx, cz, radius, height]`), summed onto the displaced
+        /// ground so each mountain renders (mirrors `terrain::peak_height`). Windowed to
+        /// `MAX_PEAKS`; `peak_count` live entries.
+        pub(crate) peaks: [Vec4; PEAK_SLOTS],
+        pub(crate) peak_count: u32,
+        // Three SCALAR pads (not a `[u32; 3]` — a u32 array needs a 16-byte stride in a
+        // uniform, which fails validation) to round the struct out to a 16-byte multiple.
+        pub(crate) _pad_pc0: u32,
+        pub(crate) _pad_pc1: u32,
+        pub(crate) _pad_pc2: u32,
+    }
+
+    impl Default for BiomeParams {
+        fn default() -> Self {
+            BiomeParams {
+                rings: [Vec4::ZERO; MAX_BIOME_RINGS],
+                count: 0,
+                uv_scale: 1.0 / 3.0,
+                blend_half: 18.0,
+                // Default flat: menus/join/city render level ground. The Overworld flips it
+                // to 1.0 on entry (`set_ground_terrain_amp`).
+                terrain_amp: 0.0,
+                terrain_off: Vec2::ZERO,
+                _pad_peaks: Vec2::ZERO,
+                peaks: [Vec4::ZERO; PEAK_SLOTS],
+                peak_count: 0,
+                _pad_pc0: 0,
+                _pad_pc1: 0,
+                _pad_pc2: 0,
+            }
         }
     }
 }
+pub(crate) use biome_params::BiomeParams;
+
 
 /// Ground material extension: blends the five biome ground textures by the fragment's
 /// world position so biome transitions fade in ahead of the player (see
@@ -165,14 +180,6 @@ pub(crate) struct WorldAssets {
     pub(crate) portal_sprite: Handle<Image>,
     pub(crate) portal_mesh: Handle<Mesh>,
     pub(crate) portal_mat: Handle<StandardMaterial>,
-    /// Floating "target" marker: a small faceted diamond that hovers, bounces, and
-    /// slowly spins over the currently-targeted enemy (see [`highlight_target`]).
-    /// Shared across enemies; per-enemy `Visibility` gates which one shows.
-    pub(crate) target_diamond_mesh: Handle<Mesh>,
-    pub(crate) target_diamond_mat: Handle<StandardMaterial>,
-    // Capsule stand-in for enemies in the HD-2D battle diorama (PR #21); the
-    // overworld uses creature billboards from `monster_sprites` instead.
-    pub(crate) monster_mesh: Handle<Mesh>,
     pub(crate) rock_mesh: Handle<Mesh>,
     /// Unit cube (origin at its base) for solid dungeon walls — adjacent wall tiles
     /// stamped with this merge into a continuous masonry wall (DG-6b), unlike the
@@ -218,17 +225,6 @@ impl WorldAssets {
             .get(class)
             .or_else(|| self.class_chars.get("explorer"))
             .expect("explorer class sprite always loaded")
-    }
-}
-
-/// Biome → index into `WorldAssets::ground_tex` (Forest/Desert/Ashfall/Tundra/Mire).
-pub(crate) fn biome_index(d: i64) -> usize {
-    match biome_display(d) {
-        "Forest" => 0,
-        "Desert" => 1,
-        "Ashfall" => 2,
-        "Tundra" => 3,
-        _ => 4,
     }
 }
 
@@ -603,19 +599,6 @@ pub(crate) fn setup(
             emissive: LinearRgba::rgb(0.4, 5.0, 6.0),
             ..default()
         }),
-        // Target marker: a small gold diamond gem that floats over the picked foe.
-        // Lit + emissive so its facets glint and bloom as it slowly spins; drawn
-        // double-sided so a facet never disappears.
-        target_diamond_mesh: meshes.add(hd2d::diamond_mesh(0.32, 0.5)),
-        target_diamond_mat: mats.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.88, 0.4),
-            emissive: LinearRgba::rgb(2.2, 1.6, 0.5),
-            perceptual_roughness: 0.35,
-            metallic: 0.1,
-            cull_mode: None,
-            ..default()
-        }),
-        monster_mesh: meshes.add(Capsule3d::new(0.38, 0.6)),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         wall_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), // unit cube for solid dungeon walls
         wall_tex: load_tiled(&assets, "ground/tile_street.png"), // cobblestone masonry for walls
@@ -1375,7 +1358,7 @@ pub(crate) fn update_ground_biome_rings(
     let pr = world
         .entities
         .get(&session.player_id)
-        .map(|e| (e.x.hypot(e.y)) as f32)
+        .map(|e| e.x.hypot(e.y))
         .unwrap_or(0.0);
     let start = if rings.len() <= MAX_BIOME_RINGS {
         0
@@ -1604,7 +1587,7 @@ pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
             let mut z = (sky.cycle as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
             z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             z ^= z >> 31;
-            sky.super_storm = z % 5 == 0;
+            sky.super_storm = z.is_multiple_of(5);
         } else if sky.phase == 0 {
             sky.super_storm = false;
         }
@@ -1672,7 +1655,7 @@ pub(crate) fn manage_dungeon_scene(
     scene.dirty = false;
     // Tear down any prior enclosure (floor change rebuilds it for the new bounds).
     for e in &decor {
-        commands.entity(e).despawn_recursive();
+        commands.entity(e).despawn();
     }
     // Overworld terraces/cliffs streamed before descent would poke through the forest
     // — hide them underground, restore them on exit.

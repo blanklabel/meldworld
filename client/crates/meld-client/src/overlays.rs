@@ -111,150 +111,6 @@ pub(crate) fn overlay_input(
     }
 }
 
-/// Arrow-key navigation + Space-to-activate for the inventory overlay.
-/// Up/Down move the cursor through the active screen's navigable rows (down
-/// is down, up is up); Left/Right switch tabs (and reset the cursor). Space
-/// activates whatever the cursor is on — mirrors what a click on that same
-/// row would do. The Equip tab has two screens (see `EquipPicker`): the main
-/// per-hero summary, and — once a category is activated — a picker of every
-/// candidate for it, so nothing ever equips just by being found or browsed
-/// past.
-pub(crate) fn overlay_nav_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    net: NonSend<NetRes>,
-    overlay: Res<Overlay>,
-    mut tab: ResMut<OverlayTab>,
-    mut cursor: ResMut<OverlayCursor>,
-    mut equip_sel: ResMut<EquipSelection>,
-    mut picker: ResMut<EquipPicker>,
-    mut rename: ResMut<HeroRename>,
-    inv: Res<InventoryData>,
-    run_gear: Res<RunGearData>,
-    roster: Res<PartyRoster>,
-    hero_names: Res<AccountHeroNames>,
-) {
-    if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
-        return;
-    }
-    // Left/Right cycles tabs. Blocked while the Equip picker is open —
-    // switching tabs mid-pick would be disorienting; Escape (handled in
-    // `overlay_input`) backs out of the picker instead.
-    if picker.category.is_none()
-        && (keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::ArrowRight))
-    {
-        let order = [OverlayTab::Items, OverlayTab::Equip, OverlayTab::Status];
-        let i = order.iter().position(|t| *t == *tab).unwrap_or(0);
-        let next = if keys.just_pressed(KeyCode::ArrowRight) {
-            (i + 1) % order.len()
-        } else {
-            (i + order.len() - 1) % order.len()
-        };
-        *tab = order[next];
-        cursor.index = 0;
-        return;
-    }
-    let row_count = match *tab {
-        OverlayTab::Items => 0,
-        OverlayTab::Equip => match picker.category {
-            Some(cat) => equip_picker_rows(
-                &inv,
-                &run_gear,
-                cat,
-                equip_sel.hero_slot,
-                hero_class_at(&roster, &hero_names, equip_sel.hero_slot),
-            )
-            .len(),
-            None => equip_main_rows(hero_count(&roster, &hero_names)).len(),
-        },
-        OverlayTab::Status => hero_count(&roster, &hero_names),
-    };
-    // Up/Down moves the row cursor — down is down, up is up.
-    if row_count > 0 {
-        if keys.just_pressed(KeyCode::ArrowUp) {
-            cursor.index = (cursor.index + row_count - 1) % row_count;
-        } else if keys.just_pressed(KeyCode::ArrowDown) {
-            cursor.index = (cursor.index + 1) % row_count;
-        }
-    }
-    if keys.just_pressed(KeyCode::Space) {
-        match *tab {
-            OverlayTab::Equip => {
-                if let Some(cat) = picker.category {
-                    let rows = equip_picker_rows(
-                        &inv,
-                        &run_gear,
-                        cat,
-                        equip_sel.hero_slot,
-                        hero_class_at(&roster, &hero_names, equip_sel.hero_slot),
-                    );
-                    match rows.get(cursor.index) {
-                        Some(PickerRow::Unequip) => {
-                            unequip_category(&net.0, &inv, &run_gear, cat, equip_sel.hero_slot);
-                            picker.category = None;
-                            cursor.index = 0;
-                        }
-                        Some(PickerRow::Gear { gear_id, source }) => {
-                            let target = Some(equip_sel.hero_slot);
-                            // Same two rules as the mouse path (GR-5): a row this
-                            // hero's class can't wear does nothing, and a
-                            // two-hander frees the off-hand on its way in.
-                            let line = inv
-                                .gear
-                                .iter()
-                                .chain(run_gear.gear.iter())
-                                .find(|g| &g.gear_id == gear_id);
-                            let hero_class =
-                                hero_class_at(&roster, &hero_names, equip_sel.hero_slot);
-                            if line
-                                .map(|l| gear_block_reason(l, hero_class).is_some())
-                                .unwrap_or(false)
-                            {
-                                return;
-                            }
-                            let free_first = line
-                                .and_then(|l| off_hand_in_the_way(&inv.gear, l, equip_sel.hero_slot));
-                            match source {
-                                GearSource::Vault => match free_first {
-                                    Some(off) => net.0.equip_gear_freeing(
-                                        off,
-                                        gear_id.clone(),
-                                        equip_sel.hero_slot,
-                                    ),
-                                    None => net.0.equip_gear(gear_id.clone(), target),
-                                },
-                                GearSource::RunLoot => net.0.send(ClientCmd::EquipLoot {
-                                    gear_id: gear_id.clone(),
-                                    hero_slot: target.map(|s| s as i32),
-                                }),
-                            }
-                            picker.category = None;
-                            cursor.index = 0;
-                        }
-                        None => {}
-                    }
-                } else {
-                    let rows = equip_main_rows(hero_count(&roster, &hero_names));
-                    match rows.get(cursor.index) {
-                        Some(EquipRow::Hero(i)) => equip_sel.hero_slot = *i,
-                        Some(EquipRow::Category(cat)) => {
-                            picker.category = Some(cat);
-                            cursor.index = 0;
-                        }
-                        None => {}
-                    }
-                }
-            }
-            OverlayTab::Status => {
-                if let Some(name) = hero_name_at(&roster, &hero_names, cursor.index) {
-                    rename.slot = Some(cursor.index);
-                    rename.buffer = name;
-                }
-            }
-            OverlayTab::Items => {}
-        }
-    }
-}
-
 /// Immediate-mode: draw the open overlay (inventory or level-up) as a centered
 /// window over a dimmed overworld. The inventory panel has three vertical
 /// tabs — Items (materials), Equip (per-hero gear loadout), Status (per-hero
@@ -317,15 +173,15 @@ pub(crate) fn render_overlay(
     };
     let gold = Color::srgb(0.95, 0.85, 0.5);
     let dim = Color::srgb(0.72, 0.78, 0.9);
-    let green = Color::srgb(0.5, 0.9, 0.55);
-    let red = Color::srgb(0.9, 0.45, 0.45);
+    let _green = Color::srgb(0.5, 0.9, 0.55);
+    let _red = Color::srgb(0.9, 0.45, 0.45);
     // Keyboard cursor highlight: a bright border on whatever row Up/Down is on.
-    let focus_border = Color::srgb(1.0, 0.9, 0.5);
-    let no_border = Color::NONE;
+    let _focus_border = Color::srgb(1.0, 0.9, 0.5);
+    let _no_border = Color::NONE;
     // A small item icon: the material's harvest-node sprite reused from the world,
     // so the vault/backpack lists read like DQ3's item panel. Falls back to a
     // nerdfont glyph when a material has no node art (e.g. consumables).
-    let mat_icon = |row: &mut ChildSpawnerCommands, kind: &str| {
+    let _mat_icon = |row: &mut ChildSpawnerCommands, kind: &str| {
         spawn_item_icon(row, wa.as_deref(), kind, 28.0);
     };
     commands
@@ -376,20 +232,6 @@ pub(crate) fn gear_slot_stat(g: &GearLine) -> i32 {
         "main_hand" => g.atk_bonus,
         "accessory" => g.spd_bonus,
         _ => g.def_bonus,
-    }
-}
-
-/// A small Nerd Font glyph for a gear slot (sword/armor/gem), prefixed onto
-/// item names so they're recognizable at a glance in the Equip screens.
-/// Shares the same `TextFont` as the surrounding label text (see
-/// `netglue::apply_ui_font`), so it always renders at the same size.
-fn gear_slot_icon(slot: &str) -> &'static str {
-    match slot {
-        "main_hand" => "\u{f04e5}",              // nf-md-sword
-        "off_hand" | "chest" => "\u{f132}",      // nf-fa-shield
-        "head" => "\u{f02fc}",                   // nf-md-hard_hat
-        "legs" => "\u{f0552}",                   // nf-md-shoe_print
-        _ => "\u{f3a5}",                         // nf-fa-gem (accessory/jewelry)
     }
 }
 
@@ -650,30 +492,6 @@ pub(crate) fn formation_click(
             Interaction::None => {
                 *bg = BackgroundColor(Color::NONE);
             }
-        }
-    }
-}
-
-/// Click on an inventory tab button (Items/Equip/Status).
-pub(crate) fn overlay_tab_click(
-    mut tab: ResMut<OverlayTab>,
-    rows: Query<(&Interaction, &TabButton), Changed<Interaction>>,
-) {
-    for (interaction, t) in &rows {
-        if *interaction == Interaction::Pressed {
-            *tab = t.0;
-        }
-    }
-}
-
-/// Click on a hero-switcher button on the Equip tab.
-pub(crate) fn equip_hero_switch_click(
-    mut sel: ResMut<EquipSelection>,
-    rows: Query<(&Interaction, &HeroSwitchButton), Changed<Interaction>>,
-) {
-    for (interaction, h) in &rows {
-        if *interaction == Interaction::Pressed {
-            sel.hero_slot = h.0;
         }
     }
 }

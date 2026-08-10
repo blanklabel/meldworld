@@ -2593,18 +2593,22 @@ pub(crate) fn render_hit_fx(
 
             // Monster ability shout bubbles (spec §3/§6): a channeling
             // telegraph flashes for its whole window; an instant callout fades.
-            for c in &hitfx.callouts {
+            for (i, c) in hitfx.callouts.iter().enumerate() {
                 let alpha = if c.flashing {
                     // Flash between bright and dim while channeling.
                     0.55 + 0.45 * (c.age * 9.0).sin().abs()
                 } else {
                     (1.0 - c.age / c.ttl).clamp(0.0, 1.0)
                 };
+                // One row per speaker. Every bubble used to be pinned to the same spot,
+                // so two monsters shouting at once drew on top of each other and neither
+                // was readable — which is also why `combatant_id` was being recorded and
+                // then ignored.
                 p.spawn((
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(w * 0.5 - 90.0),
-                        top: Val::Px(h * 0.12),
+                        top: Val::Px(h * 0.12 + i as f32 * 34.0),
                         padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
                         border: UiRect::all(Val::Px(2.0)),
                         ..default()

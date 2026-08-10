@@ -1178,7 +1178,7 @@ impl WorldActor {
                 avatar_state: Some(format!(
                     "entrance:{}:{}",
                     e.dungeon,
-                    meld_dungeon_content::by_name(&e.dungeon)
+                    meld_dungeon_content::by_name(e.dungeon)
                         .map(|d| d.bodies_required())
                         .unwrap_or(1)
                 )),

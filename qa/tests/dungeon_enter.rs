@@ -66,13 +66,12 @@ struct Bot {
     ws: Ws,
     seq: u32,
     input_seq: u32,
-    pid: String,
 }
 
 impl Bot {
-    async fn connect(addr: &str, ticket: &str, pid: &str) -> Self {
+    async fn connect(addr: &str, ticket: &str) -> Self {
         let (ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
-        let mut bot = Bot { ws, seq: 1, input_seq: 0, pid: pid.to_string() };
+        let mut bot = Bot { ws, seq: 1, input_seq: 0 };
         bot.send("session.authenticate", json!({ "ticket": ticket, "resume": null })).await;
         bot.recv_type("session.authenticated").await;
         bot
@@ -118,7 +117,7 @@ async fn a_bot_enters_a_hand_designed_dungeon() {
 
     let addr = start_server().await;
     let (ticket, pid) = http_login(&addr, &format!("dbot_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])).await;
-    let mut bot = Bot::connect(&addr, &ticket, &pid).await;
+    let mut bot = Bot::connect(&addr, &ticket).await;
     bot.send("run.enter_maze", json!({})).await;
 
     let mut my = (0.0f64, 0.0f64);

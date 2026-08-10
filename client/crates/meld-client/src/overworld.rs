@@ -567,68 +567,6 @@ pub(crate) fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
         .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
 }
 
-/// The backbone route is NO LONGER drawn as a glowing "walkway" — that highlighted trail
-/// (plus the old wide clear tube) read as a tutorial corridor. A traversable route still
-/// exists, but you have to FIND it through the maze; the client keeps any legacy trail
-/// discs cleared so none linger. (`draw_web_trails` still hints the branch network.)
-pub(crate) fn draw_path_trail(
-    mut commands: Commands,
-    mut world_path: ResMut<WorldPath>,
-    existing: Query<Entity, With<PathTrail>>,
-) {
-    for e in &existing {
-        commands.entity(e).despawn();
-    }
-    world_path.drawn = true;
-}
-
-/// Draw the WEB of trails (disjoint branch/loop/spur edges) as fainter dotted trails
-/// than the backbone, so the overworld reads as an interconnected maze of routes. Same
-/// redraw-when-absent idea as [`draw_path_trail`]; each edge is dotted independently.
-pub(crate) fn draw_web_trail(
-    mut commands: Commands,
-    mut world_web: ResMut<WorldWeb>,
-    existing: Query<Entity, With<WebTrail>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-) {
-    if world_web.edges.is_empty() {
-        return;
-    }
-    if world_web.drawn && !existing.is_empty() {
-        return;
-    }
-    for e in &existing {
-        commands.entity(e).despawn();
-    }
-    let disc = meshes.add(Circle::new(0.28));
-    let mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.9, 0.86, 0.55, 0.14),
-        emissive: LinearRgba::rgb(0.34, 0.3, 0.11),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    let flat = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-    let step = 2.5_f32;
-    for ((ax, ay), (bx, by)) in &world_web.edges {
-        let seg = ((bx - ax).powi(2) + (by - ay).powi(2)).sqrt();
-        let n = (seg / step).ceil().max(1.0) as i32;
-        for i in 0..=n {
-            let t = i as f32 / n as f32;
-            let x = ax + (bx - ax) * t;
-            let y = ay + (by - ay) * t;
-            commands.spawn((
-                WebTrail,
-                Mesh3d(disc.clone()),
-                MeshMaterial3d(mat.clone()),
-                Transform::from_translation(world_pos(x, y, 0.14)).with_rotation(flat),
-            ));
-        }
-    }
-    world_web.drawn = true;
-}
-
 /// The bodies a dungeon door within reach wants held on plates at once, when that is
 /// more than one. `None` when there is no such door nearby.
 pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Option<u8> {
@@ -1374,7 +1312,7 @@ pub(crate) fn sync_overworld_sprites(
     if interp.seen_seq != world.seq {
         interp.seen_seq = world.seq;
         for (id, e) in &world.entities {
-            let cur = InterpSample { x: e.x, y: e.y, level: e.level as f32, t: now };
+            let cur = InterpSample { x: e.x, y: e.y, t: now };
             interp
                 .states
                 .entry(id.clone())
@@ -1714,118 +1652,6 @@ pub(crate) fn pulse_collectibles(
             };
             let c = m.base_color.to_linear();
             m.emissive = LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength);
-        }
-    }
-}
-
-/// Biome cliff/rock tone for the boulder-ridge walls (indexed by biome).
-pub(crate) fn biome_rock_color(bi: usize) -> Color {
-    match bi {
-        1 => Color::srgb(0.66, 0.53, 0.33), // Desert — sandstone
-        2 => Color::srgb(0.24, 0.18, 0.17), // Ashfall — dark basalt
-        3 => Color::srgb(0.74, 0.82, 0.92), // Tundra — pale ice/snow rock
-        4 => Color::srgb(0.30, 0.36, 0.30), // Mire — mossy stone (rare; mire uses water)
-        _ => Color::srgb(0.44, 0.48, 0.42), // Forest — grey-green cliff (also fallback)
-    }
-}
-
-/// Spawn one biome-appropriate boundary prop at world (x, y), tagged [`WorldWall`]
-/// (so the snapshot sync leaves it alone). Reuses the world's own art: a painterly
-/// treeline in the forest, a rugged boulder ridge elsewhere, water in the mire —
-/// so the border looks like natural geography, not a slab.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_wall_prop(
-    commands: &mut Commands,
-    wa: &WorldAssets,
-    mats: &mut Assets<StandardMaterial>,
-    rock_mats: &[Handle<StandardMaterial>],
-    bi: usize,
-    x: f32,
-    y: f32,
-    idx: usize,
-) {
-    let id = format!("wall-{idx}");
-    match bi {
-        0 => {
-            // Forest → a dense treeline of HD-2D tree billboards — the SAME PixelLab
-            // sprites the playfield trees use — so the border reads as pixel-art like
-            // the rest of the world instead of clashing smooth 3D Kenney models.
-            // Variant + height vary per id so the canopy line is layered, not stamped.
-            const TREE_VARIANTS: [&str; 6] = [
-                "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
-                "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
-            ];
-            let pool: Vec<Handle<Image>> = TREE_VARIANTS
-                .iter()
-                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
-                .collect();
-            if !pool.is_empty() {
-                let tex = pool[hash_pick(&id, pool.len())].clone();
-                // Per-id height 4.0..7.5 → a varied, layered wall of trees.
-                let vf = 0.85 + (hash_pick(&id, 100) as f32 / 100.0) * 0.9;
-                let height = (5.2 * vf).clamp(4.0, 7.5);
-                let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
-                commands
-                    .spawn((
-                        WorldWall,
-                        Transform::from_translation(world_pos(x, y, 0.0)),
-                        Visibility::default(),
-                    ))
-                    .with_children(|p| {
-                        p.spawn((
-                            Mesh3d(wa.sprite_quad.clone()),
-                            MeshMaterial3d(mat),
-                            Transform::from_xyz(0.0, height * 0.5, 0.0)
-                                .with_scale(Vec3::splat(height / 2.2)),
-                            hd2d::Billboard,
-                        ));
-                        p.spawn((
-                            Mesh3d(wa.shadow_mesh.clone()),
-                            MeshMaterial3d(wa.shadow_mat.clone()),
-                            Transform::from_xyz(0.0, 0.02, 0.0)
-                                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                                .with_scale(Vec3::new(height * 0.28, height * 0.28 * 0.55, height * 0.28)),
-                        ));
-                    });
-            } else {
-                // Fallback: a rugged rock if the tree sprites failed to load.
-                let mat = rock_mats.first().cloned().unwrap_or_default();
-                let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08;
-                commands.spawn((
-                    WorldWall,
-                    Mesh3d(wa.rock_mesh.clone()),
-                    MeshMaterial3d(mat),
-                    Transform::from_translation(world_pos(x, y, 0.24 * s))
-                        .with_scale(Vec3::splat(s * 0.9)),
-                ));
-            }
-        }
-        4 => {
-            // Mire → a border of animated bog water blobs.
-            let spin = (hash_pick(&id, 360) as f32).to_radians();
-            commands.spawn((
-                WorldWall,
-                Mesh3d(wa.water_mesh.clone()),
-                MeshMaterial3d(wa.water_mat("bog_pool")),
-                Transform::from_translation(world_pos(x, y, 0.2))
-                    .with_rotation(
-                        Quat::from_rotation_y(spin)
-                            * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                    )
-                    .with_scale(Vec3::splat(3.4)),
-            ));
-        }
-        _ => {
-            // Desert / Ashfall / Tundra → a rugged boulder-cliff ridge.
-            let mat = rock_mats.get(bi).cloned().unwrap_or_default();
-            let s = 3.2 + (hash_pick(&id, 24) as f32) * 0.08; // 3.2–5.1, varied
-            commands.spawn((
-                WorldWall,
-                Mesh3d(wa.rock_mesh.clone()),
-                MeshMaterial3d(mat),
-                Transform::from_translation(world_pos(x, y, 0.24 * s))
-                    .with_scale(Vec3::splat(s * 0.9)),
-            ));
         }
     }
 }
@@ -3195,11 +3021,6 @@ pub(crate) fn spawn_obstacle(
     }
 }
 
-/// Turn a creature content id into a display name (`dune_wyrm` → `dune wyrm`).
-pub(crate) fn nice_name(kind: &str) -> String {
-    kind.replace('_', " ")
-}
-
 /// Title-case a class key for display (`alchemist_knight` → `Alchemist Knight`).
 pub(crate) fn class_display(key: &str) -> String {
     key.split('_')
@@ -3525,7 +3346,7 @@ mod tests {
         assert_eq!(n.live(0.0), None, "nothing to say at rest");
         n.say("The vault is sealed - defeat the boss first.", 100.0);
         assert_eq!(n.live(100.0), Some("The vault is sealed - defeat the boss first."));
-        assert_eq!(n.live(100.0 + NOTICE_SECS - 0.1).is_some(), true, "still on screen");
+        assert!(n.live(100.0 + NOTICE_SECS - 0.1).is_some(), "still on screen");
         assert_eq!(n.live(100.0 + NOTICE_SECS + 0.1), None, "and then it gets out of the way");
     }
 
@@ -3823,12 +3644,10 @@ mod explored_map_tests {
     // whatever the walk's shape, everything drawn lands inside the panel.
     #[test]
     fn the_projection_keeps_its_aspect_and_stays_in_the_panel() {
-        let mut map = ExploredMap::default();
-        map.walked = true;
+        let mut map = ExploredMap { walked: true, here: (0.0, 0.0), ..Default::default() };
         for step in 0..20 {
             map.visited.insert((step, 0));
         }
-        map.here = (0.0, 0.0);
         let bounds = map_bounds(&map);
         let (w, h) = (400.0, 200.0);
 
@@ -4000,10 +3819,7 @@ pub(crate) fn station_input(
     let material = if reroll {
         // Same rule as the city anvil: spend the deepest refined stock rather than
         // making anyone name a material at a bench in a maze.
-        match crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
-            Some(m) => m,
-            None => String::new(),
-        }
+        crate::city::best_stock(&inv, meld_proto::materials::MaterialClass::Refined).unwrap_or_default()
     } else {
         String::new()
     };

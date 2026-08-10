@@ -580,13 +580,10 @@ pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
     table[idx].max(0.1)
 }
 
-/// Whether this creature is boss-tier — the encounters that should be measured in
-/// minutes rather than seconds.
-fn is_boss_tier(m: &meld_world::MonsterSpawn) -> bool {
-    !m.boss_kind.is_empty()
-        || matches!(m.encounter_class.as_str(), "gatekeeper" | "undead_rite")
-}
-
+// Eight, and each one is a distinct fact the assembly needs: who, against what, in which
+// run, at what balance, from which seed, carrying which wounds, in which formation.
+// Bundling them into a struct would move the arity rather than remove it.
+#[allow(clippy::too_many_arguments)]
 pub fn build_battle(
     battle_id: Id,
     party: &[PartyMember],

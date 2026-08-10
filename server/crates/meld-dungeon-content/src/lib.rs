@@ -62,7 +62,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_co_op_gate_is_visible_from_the_definition() {
         // `verdant_barrow`'s G1 is `all[P1,P2,P3]` over momentary plates: three bodies.
         // The runtime currently latches plates so one player clears it, but the
@@ -79,6 +78,7 @@ mod tests {
         assert_eq!(by_name("guardia_forest").unwrap().bodies_required(), 1);
     }
 
+    #[test]
     fn every_embedded_dungeon_revalidates_at_runtime() {
         // Belt-and-suspenders: the build already validated these, but prove the
         // embedded form round-trips back to a still-valid def.
