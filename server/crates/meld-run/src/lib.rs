@@ -701,6 +701,42 @@ pub fn build_battle(
 #[cfg(test)]
 mod tests {
 
+    /// The headline level and the party screen have to agree, because they are the same
+    /// number: `run_level` is `max(hero_levels)`. Victory used to award twice — once per
+    /// hero through `award_hero_xp` (the split share) and once more into the run's OWN xp
+    /// pool through `award_xp` (the FULL encounter). The run pool climbed its own ladder
+    /// faster, so the banner said level 3 while the party card still read level 2.
+    #[test]
+    fn the_headline_level_is_the_best_heros_level() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
+        let r = &mut runs.runs[0];
+
+        let enc = same_level_encounter_xp(1, &b);
+        // Two same-level encounters is what level 1 costs, so this must be exactly one up.
+        for _ in 0..2 {
+            r.award_hero_xp(0, 1, enc, &b);
+        }
+        assert_eq!(r.hero_level(0), 2, "two at-level fights is one level");
+        assert_eq!(
+            r.run_level,
+            r.hero_level(0),
+            "the run's headline level must be the hero's, not a second ladder"
+        );
+
+        // And the run pool must not be quietly climbing alongside it.
+        let before = r.run_level;
+        r.award_hero_xp(0, 1, 1, &b);
+        assert!(
+            r.run_level == before || r.run_level == r.hero_level(0),
+            "run_level {} drifted from hero level {}",
+            r.run_level,
+            r.hero_level(0)
+        );
+    }
+
+
     /// A class's abilities and the resource they spend have to be granted to the SAME
     /// class. Adrenaline was handed to the Explorer while every ability that spends it
     /// belongs to the Hunter, so the Explorer banked a resource it could not use and the
