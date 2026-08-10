@@ -104,10 +104,15 @@ async fn a_field_forge_needs_ore_in_hand() {
             "run.started" => send!("run.build_station", {"kind": "smith"}),
             "session.error" => {
                 let msg = v["payload"]["message"].as_str().unwrap_or_default();
-                // Either gate is a legitimate answer for a fresh account (no Forging
-                // level, no ore) — what matters is that it NAMES what is missing.
+                // Any of the three gates is a legitimate answer for a fresh account: no
+                // Smithwright in the party, no Forging level, no ore. What matters is that
+                // the refusal NAMES what is missing. The party gate is the one it hits
+                // first now — the menu used to offer "Set up a smith station" to a party
+                // with no smith in it, and the server took it.
                 assert!(
-                    msg.contains("ore") || msg.contains("Forging"),
+                    msg.contains("ore")
+                        || msg.contains("Forging")
+                        || msg.contains("Smithwright"),
                     "a refusal has to say what a forge wants: {msg}"
                 );
                 assert!(!msg.is_empty());
@@ -138,6 +143,9 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
         .await
         .unwrap();
     db.add_skill_xp(pid, "forging", 100_000).await.unwrap();
+    // A forge is a Smithwright's bench, so the account has to be able to FIELD one — the
+    // skill gate says how good the work is, the class gate says whose bench it is.
+    db.grant_unlocks(pid, &["class_smithwright".to_string()]).await.unwrap();
     assert_eq!(
         http.post(format!("{base}/v1/vault/materials/dune_iron/withdraw"))
             .bearer_auth(&token)
@@ -196,7 +204,10 @@ async fn a_smith_raises_a_forge_in_the_field_and_works_a_piece_at_it() {
         let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("ws closed") };
         let v: Value = serde_json::from_str(&t).unwrap();
         match v["type"].as_str().unwrap_or("") {
-            "session.authenticated" => send!("run.enter_maze", {"tutorial": true}),
+            // A forge is a Smithwright's bench, so field one.
+            "session.authenticated" => {
+                send!("run.enter_maze", {"tutorial": true, "party": ["smithwright"]})
+            }
             "run.started" => send!("run.build_station", {"kind": "smith"}),
             "session.error" => panic!("refused: {v}"),
             // Raising a bench TAKES TIME: the station must not exist until the channel
@@ -330,6 +341,8 @@ async fn a_keeper_raises_a_still_and_a_good_cook_yields_more() {
     // Reagents to build the still with AND to brew from, plus the Alchemy to do both.
     db.bank_extraction(pid, &[("bloom_herb".into(), 40)], 10_000).await.unwrap();
     db.add_skill_xp(pid, "alchemy", 100_000).await.unwrap();
+    // Likewise the still is a Keeper's.
+    db.grant_unlocks(pid, &["class_keeper".to_string()]).await.unwrap();
     assert_eq!(
         http.post(format!("{base}/v1/vault/materials/bloom_herb/withdraw"))
             .bearer_auth(&token)
@@ -371,7 +384,10 @@ async fn a_keeper_raises_a_still_and_a_good_cook_yields_more() {
         let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("ws closed") };
         let v: Value = serde_json::from_str(&t).unwrap();
         match v["type"].as_str().unwrap_or("") {
-            "session.authenticated" => send!("run.enter_maze", {"tutorial": true}),
+            // A still is a Keeper's bench, so field one.
+            "session.authenticated" => {
+                send!("run.enter_maze", {"tutorial": true, "party": ["keeper"]})
+            }
             "run.started" => send!("run.build_station", {"kind": "alembic"}),
             "session.error" => panic!("refused: {v}"),
             "run.backpack_update" => {

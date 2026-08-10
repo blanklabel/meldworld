@@ -173,3 +173,79 @@ async fn a_smithwright_and_a_keeper_are_earned_and_then_fieldable() {
         assert!(meld_proto::skills::rank_title(class, 1).is_some(), "{class} has a rank");
     }
 }
+
+/// A bench is a CLASS's bench: a Smithwright raises the forge, a Keeper the still. The Map
+/// column used to offer "Set up a smith station" to any party carrying ore, and the server
+/// took it — the skill gate is about how good the work is, not about who may set one up.
+#[tokio::test]
+async fn only_the_right_class_may_raise_a_bench() {
+    let addr = start_server().await;
+    let http = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let username = format!("cls_{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
+    let body = json!({ "username": username, "password": "correct-horse-battery" });
+    assert_eq!(
+        http.post(format!("{base}/v1/auth/register")).json(&body).send().await.unwrap().status(),
+        201
+    );
+    let login: Value = http
+        .post(format!("{base}/v1/auth/login"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ticket = login["realtime_ticket"].as_str().unwrap().to_string();
+
+    let (mut ws, _) = connect_async(format!("ws://{addr}/v1/realtime")).await.unwrap();
+    let mut seq = 1u32;
+    macro_rules! send {
+        ($t:expr, $p:tt) => {{
+            ws.send(Message::Text(
+                json!({"type":$t,"seq":seq,"ts":0,"payload":$p}).to_string(),
+            ))
+            .await
+            .unwrap();
+            seq += 1;
+        }};
+    }
+    ws.send(Message::Text(
+        json!({"type":"session.authenticate","seq":seq,"ts":0,
+               "payload":{"ticket":ticket,"resume":null}})
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    seq += 1;
+
+    // A fresh account fields ONE Explorer, so neither bench is its to raise.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let mut refusals = 0;
+    loop {
+        assert!(tokio::time::Instant::now() < deadline, "no answer to the builds");
+        let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("ws closed") };
+        let v: Value = serde_json::from_str(&t).unwrap();
+        match v["type"].as_str().unwrap_or("") {
+            "session.authenticated" => send!("run.enter_maze", {"tutorial": true}),
+            "run.started" => {
+                send!("run.build_station", {"kind": "smith"});
+                send!("run.build_station", {"kind": "alembic"});
+            }
+            "session.error" => {
+                let msg = v["payload"]["message"].as_str().unwrap_or_default().to_string();
+                assert!(
+                    !msg.is_empty(),
+                    "a refusal with no words is the bug this is here to stop"
+                );
+                refusals += 1;
+                if refusals == 2 {
+                    break;
+                }
+            }
+            "run.station_built" => panic!("an Explorer-only party raised a bench: {v}"),
+            _ => {}
+        }
+    }
+}

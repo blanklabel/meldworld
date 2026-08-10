@@ -427,25 +427,42 @@ pub(crate) fn render_main_menu(
                             for (i, kind) in ["smith", "alembic"].into_iter().enumerate() {
                                 let stock = carried_for(&backpack, kind);
                                 let focused = depth == 1 && menu.cursor == 1 + i;
+                                // A forge is a Smithwright's bench and a still is a
+                                // Keeper's, so the row says who is missing rather than
+                                // offering work nobody in this party can do.
+                                let builder =
+                                    if kind == "smith" { "smithwright" } else { "keeper" };
+                                let have_builder =
+                                    roster.heroes.iter().any(|h| h.class_key == builder);
                                 col.spawn((glass::inset(focused), BuildStationButton { kind }))
                                     .with_children(|row| {
                                         let what = if kind == "smith" {
-                                            ("smith station", "ore")
+                                            ("smith station", "ore", "Smithwright")
                                         } else {
-                                            ("Keeper's still", "reagents")
+                                            ("Keeper's still", "reagents", "Keeper")
                                         };
-                                        let (label, tint) = match stock {
-                                            Some((k, qty)) => (
-                                                format!("Set up a {}   ({qty} {k})", what.0),
-                                                glass::TEXT,
-                                            ),
-                                            None => (
+                                        let (label, tint) = if !have_builder {
+                                            (
                                                 format!(
-                                                    "Set up a {}   (no {} carried)",
-                                                    what.0, what.1
+                                                    "Set up a {}   (needs a {} in the party)",
+                                                    what.0, what.2
                                                 ),
                                                 glass::DIM,
-                                            ),
+                                            )
+                                        } else {
+                                            match stock {
+                                                Some((k, qty)) => (
+                                                    format!("Set up a {}   ({qty} {k})", what.0),
+                                                    glass::TEXT,
+                                                ),
+                                                None => (
+                                                    format!(
+                                                        "Set up a {}   (no {} carried)",
+                                                        what.0, what.1
+                                                    ),
+                                                    glass::DIM,
+                                                ),
+                                            }
                                         };
                                         row.spawn(glass::text(label, 19.0, tint));
                                     });

@@ -909,6 +909,15 @@ struct OpenHeat {
     opened_at: u64,
 }
 
+/// A class's name as a player reads it, for a refusal that names who is missing.
+fn class_label(c: CharacterClass) -> &'static str {
+    match c {
+        CharacterClass::Smithwright => "Smithwright",
+        CharacterClass::Keeper => "Keeper",
+        other => meld_run::class_key(other),
+    }
+}
+
 /// A placed dungeon entrance in the overworld (DG-3).
 struct DungeonEntrance {
     entity_id: String,
@@ -5113,6 +5122,24 @@ impl WorldActor {
         if self.battle_of_player(player_id).is_some() {
             return reject(ErrorCode::InvalidState, "Resolve the battle first.");
         }
+        // And somebody in the party has to be able to BUILD it. A forge is a
+        // Smithwright's bench and a still is a Keeper's; the skill gate below is about how
+        // good the work is, not about who may set one up. Without this the menu offered
+        // "Set up a smith station" to a party with no smith in it.
+        let builder = match req.kind.as_str() {
+            "smith" => CharacterClass::Smithwright,
+            _ => CharacterClass::Keeper,
+        };
+        let has_builder = self
+            .party_classes
+            .get(player_id)
+            .is_some_and(|comp| comp.contains(&builder));
+        if !has_builder {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!("{label} needs a {} in the party.", class_label(builder)),
+            );
+        }
         let level = self.skill_levels.get(player_id).and_then(|m| m.get(skill)).copied();
         // No level loaded yet is not a pass: a station is a service, and the whole
         // point is that the smith's own skill is what the work is done at.
@@ -6912,6 +6939,13 @@ impl WorldActor {
                 // hero that fell earns nothing from the fight it did not finish, and
                 // the hero doing the killing is the one that gets stronger.
                 let mut class_bests: Vec<(String, String, i32)> = Vec::new();
+                let run_level_before: Vec<(String, i32)> = inst
+                    .run
+                    .runs
+                    .iter()
+                    .filter(|r| bp.contains(&r.party_id))
+                    .map(|r| (r.player_id.clone(), r.run_level))
+                    .collect();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     let hps = hero_hp_snapshot.get(&r.player_id).cloned().unwrap_or_default();
                     let comp = party_classes_snapshot
@@ -6974,22 +7008,42 @@ impl WorldActor {
                         });
                     }
                 }
-                for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
-                    let old_level = r.run_level;
-                    if r.award_xp(xp_reward, &balance) > 0 {
-                        leveled.push(r.player_id.clone());
-                        level_ups.push((r.player_id.clone(), old_level, r.run_level));
-                        // A level-up tops up the LIVING and raises nobody: the dead
-                        // come back on a Waking Salt, not on someone else's good
-                        // fortune. (`hero_hp` at 0 is a fallen hero.)
-                        if let (Some(classes), Some(hps)) = (
-                            inst.party_classes.get(&r.player_id),
-                            inst.hero_hp.get_mut(&r.player_id),
-                        ) {
-                            for (class, hp) in classes.iter().zip(hps.iter_mut()) {
-                                if *hp > 0 {
-                                    *hp = meld_run::max_hp_at_level(*class, r.run_level, &balance);
-                                }
+                // The headline level is `max(hero_levels)`, maintained by `award_hero_xp`
+                // above — so a level-up is "did that push the best hero up", not a second
+                // award. There used to be a `r.award_xp(xp_reward)` here as well: the run
+                // kept its OWN xp pool and its own ladder, fed the FULL encounter XP while
+                // each hero got the split share. So the banner announced level 3 off the run
+                // pool while the party screen still read level 2 off the hero, and every
+                // victory paid twice.
+                for (pid, before) in run_level_before.iter() {
+                    let Some(r) =
+                        inst.run.runs.iter().find(|r| &r.player_id == pid && bp.contains(&r.party_id))
+                    else {
+                        continue;
+                    };
+                    if r.run_level <= *before {
+                        continue;
+                    }
+                    let now = r.run_level;
+                    leveled.push(pid.clone());
+                    level_ups.push((pid.clone(), *before, now));
+                    // A level-up tops up the LIVING and raises nobody: the dead
+                    // come back on a Waking Salt, not on someone else's good
+                    // fortune. (`hero_hp` at 0 is a fallen hero.)
+                    if let (Some(classes), Some(hps)) =
+                        (inst.party_classes.get(pid).cloned(), inst.hero_hp.get_mut(pid))
+                    {
+                        for (slot, (class, hp)) in classes.iter().zip(hps.iter_mut()).enumerate() {
+                            if *hp > 0 {
+                                // Each hero to ITS own level, not the party's best.
+                                let lvl = inst
+                                    .run
+                                    .runs
+                                    .iter()
+                                    .find(|r| &r.player_id == pid)
+                                    .map(|r| r.hero_level(slot))
+                                    .unwrap_or(now);
+                                *hp = meld_run::max_hp_at_level(*class, lvl, &balance);
                             }
                         }
                     }

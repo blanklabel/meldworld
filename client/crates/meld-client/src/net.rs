@@ -1113,47 +1113,37 @@ impl Inner {
         }
         let (tx, rx) = mpsc::channel();
         self.loadouts_rx = Some(rx);
-        let token = self.session_token.clone();
-        let mut req = ehttp::Request::get(format!("{}/v1/party/loadouts", self.base));
-        req.headers.insert("Authorization", format!("Bearer {token}"));
-        ehttp::fetch(req, move |res| {
-            let mut list = Vec::new();
-            if let Ok(resp) = &res {
-                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
-                    for row in v["data"].as_array().into_iter().flatten() {
-                        let name = row["name"].as_str().unwrap_or_default().to_string();
-                        let classes: Vec<String> = row["classes"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|c| c.as_str().map(String::from))
-                            .collect();
-                        if !name.is_empty() {
-                            list.push(LoadoutLine { name, classes });
-                        }
-                    }
-                }
-            }
-            let _ = tx.send(list);
-        });
+        spawn_loadouts_fetch(self.base.clone(), self.session_token.clone(), tx);
     }
 
     fn save_loadout(&mut self, name: String, classes: Vec<String>) {
         if self.session_token.is_empty() {
             return;
         }
+        let base = self.base.clone();
         let token = self.session_token.clone();
         let mut req = ehttp::Request::post(
-            format!("{}/v1/party/loadouts", self.base),
+            format!("{base}/v1/party/loadouts"),
             serde_json::to_vec(&serde_json::json!({ "name": name, "classes": classes }))
                 .unwrap_or_default(),
         );
         req.headers.insert("Content-Type", "application/json");
         req.headers.insert("Authorization", format!("Bearer {token}"));
-        ehttp::fetch(req, |_| {});
-        // The server validates against the account's unlocks and can refuse, so the
-        // list is re-read rather than assumed.
-        self.fetch_loadouts();
+        // The server validates against the account's unlocks and can refuse, so the list is
+        // re-read rather than assumed — but INSIDE the write's callback. Fired alongside it,
+        // the read raced the write and returned the list without the new row.
+        let (tx, rx) = mpsc::channel();
+        self.loadouts_rx = Some(rx);
+        let (etx, erx) = mpsc::channel();
+        self.craft_rx = Some(erx);
+        ehttp::fetch(req, move |res| {
+            // And say so when it refuses: a save that silently does nothing is the same
+            // bug from the player's side whether the cause is a race or a rejection.
+            if let Some(msg) = save_refusal(&res) {
+                let _ = etx.send(msg);
+            }
+            spawn_loadouts_fetch(base, token, tx);
+        });
     }
 
     fn apply_loadout(&mut self, name: String) {
@@ -2547,6 +2537,53 @@ pub fn repair_line(v: &Value) -> String {
 
 fn reply_json(res: &Result<ehttp::Response, String>) -> Option<Value> {
     res.as_ref().ok()?.text().and_then(|t| serde_json::from_str::<Value>(t).ok())
+}
+
+/// The server's own words when a write is refused, or `None` when it went through.
+fn save_refusal(res: &Result<ehttp::Response, String>) -> Option<String> {
+    match res {
+        Ok(r) if r.ok => None,
+        Ok(r) => Some(
+            r.text()
+                .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                .and_then(|v| {
+                    v["error"]["message"].as_str().map(String::from).or_else(|| {
+                        v["message"].as_str().map(String::from)
+                    })
+                })
+                .unwrap_or_else(|| format!("the server refused that ({})", r.status)),
+        ),
+        Err(e) => Some(format!("could not reach the server: {e}")),
+    }
+}
+
+/// Read the caller's saved loadouts. Standalone (like `spawn_inventory_fetch`) so a WRITE
+/// can chain the re-read inside its own completion callback: firing the read next to the
+/// write instead raced it, and the list came back without the row just saved — which is
+/// exactly what "I couldn't name and save my party" looks like from the outside.
+fn spawn_loadouts_fetch(base: String, token: String, tx: mpsc::Sender<Vec<LoadoutLine>>) {
+    let mut req = ehttp::Request::get(format!("{base}/v1/party/loadouts"));
+    req.headers.insert("Authorization", format!("Bearer {token}"));
+    ehttp::fetch(req, move |res| {
+        let mut list = Vec::new();
+        if let Ok(resp) = &res {
+            if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                for row in v["data"].as_array().into_iter().flatten() {
+                    let name = row["name"].as_str().unwrap_or_default().to_string();
+                    let classes: Vec<String> = row["classes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| c.as_str().map(String::from))
+                        .collect();
+                    if !name.is_empty() {
+                        list.push(LoadoutLine { name, classes });
+                    }
+                }
+            }
+        }
+        let _ = tx.send(list);
+    });
 }
 
 fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayload>) {
