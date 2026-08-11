@@ -162,6 +162,16 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**A condition repaints the readout.** Statuses are not just icons: a hero's cell and a
+creature's HP bar take the condition's colour, from a palette named after things rather than
+built from primaries — poison purple, marked mustard, slow blue sage, rage red for
+**afflictions**; barrier steel blue, regen rosemary green for **boons**. Warm-to-sour means
+something is being done TO you, cool herb/metal means something is helping, so a glance sorts
+the party before you read a word. An affliction outranks a boon, and being hit or being the
+active hero outranks both. `condition_tint` owns it; anything the engine slows (`web`/`chill`/
+`bind`) also wears a **snail**, because a crawling gauge with no icon was indistinguishable
+from a slow one.
+
 **Everything you can act on is over your head, and the thing in reach glows.** The interact
 prompt, the boon prompt, the channel bar and each tick's payout ("+1 bog myrrh") live on a
 mostly-see-through plate above the player, because that is where you are looking while you

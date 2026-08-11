@@ -1871,6 +1871,10 @@ pub(crate) fn render_enemy_panel(
                 let faction = c.statuses.iter().find_map(|s| s.strip_prefix("faction:"));
                 let hp_fill = if hurt {
                     Color::srgb(1.0, 0.95, 0.95)
+                } else if let Some((tint, _)) = condition_tint(&c.statuses) {
+                    // A creature under a condition says so on its own bar — the mustard on a
+                    // blazed target is the party's cue that this is the one to hit.
+                    tint
                 } else {
                     faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.3, 0.3))
                 };
@@ -1934,6 +1938,48 @@ pub(crate) fn spent_tokens(battle: &BattleData, id: &str) -> Vec<String> {
 /// (nerdfont glyph, colour, label). Class resources (adrenaline / focus) and the
 /// row/faction/class/attribute tokens are intentionally excluded — those show in the
 /// HUD cells, not as an aura over the sprite.
+/// What a condition looks like. The palette is deliberately NAMED after things rather than
+/// built out of saturated primaries — mustard, blue sage, rosemary, steel — so several tints
+/// can sit on one screen without any of them shouting.
+///
+/// The pattern is the split: **afflictions** are warm-to-sour (poison purple, marked mustard,
+/// rage red) with slow the one cool exception, and **boons** are the cool herb/metal end
+/// (barrier steel blue, regen rosemary). So a glance at a hero's cell says "something is being
+/// done TO them" or "something is helping them" before you read a single word.
+pub(crate) fn condition_tint(statuses: &[String]) -> Option<(Color, &'static str)> {
+    let has = |n: &str| statuses.iter().any(|s| s == n);
+    let num = |p: &str| {
+        statuses.iter().find_map(|s| s.strip_prefix(p).and_then(|n| n.parse::<i32>().ok()))
+    };
+    // Afflictions first: what is being done to you outranks what is helping you.
+    if has("poison") || has("burn") {
+        return Some((Color::srgb(0.42, 0.22, 0.55), "poison")); // purple
+    }
+    if has("marked") {
+        return Some((Color::srgb(0.72, 0.58, 0.16), "marked")); // mustard
+    }
+    if is_slowed(statuses) {
+        return Some((Color::srgb(0.36, 0.48, 0.52), "slow")); // blue sage
+    }
+    if has("rage") || has("frenzied") {
+        return Some((Color::srgb(0.62, 0.18, 0.16), "rage")); // red
+    }
+    // Then the boons.
+    if num("barrier:").is_some_and(|n| n > 0) {
+        return Some((Color::srgb(0.27, 0.42, 0.58), "barrier")); // steel blue
+    }
+    if num("regen:").is_some_and(|n| n > 0) {
+        return Some((Color::srgb(0.35, 0.52, 0.35), "regen")); // rosemary green
+    }
+    None
+}
+
+/// The statuses that actually drag the ATB gauge — the server's own list (`web`/`chill`/
+/// `bind`), so the snail and the tint agree with what the engine is doing.
+pub(crate) fn is_slowed(statuses: &[String]) -> bool {
+    statuses.iter().any(|s| matches!(s.as_str(), "web" | "chill" | "bind"))
+}
+
 /// The ink width of each badge glyph, in px at the badge's 18px font size.
 ///
 /// Needed because flex centring centres a glyph's ADVANCE box, and these are Nerd Font
@@ -1949,6 +1995,7 @@ pub(crate) fn spent_tokens(battle: &BattleData, id: &str) -> Vec<String> {
 fn status_icon_ink(glyph: &str) -> f32 {
     match glyph {
         "\u{f01a4}" => 16.52, // crosshairs
+        "\u{f1677}" => 14.98, // snail
         "\u{f0208}" => 16.52, // eye
         "\u{f046e}" => 14.98, // run-fast
         "\u{f068c}" => 13.50, // skull
@@ -1995,6 +2042,11 @@ fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str
     }
     if has("hasted") {
         v.push(("\u{f060c}", Color::srgb(1.0, 0.9, 0.55), "Haste")); // lightning-bolt
+    }
+    // A creature that webbed or chilled you SLOWED you, and nothing said so — the gauge
+    // just crawled. A snail is the one icon everybody already reads as "slowed".
+    if is_slowed(statuses) {
+        v.push(("\u{f1677}", Color::srgb(0.62, 0.76, 0.8), "Slowed")); // snail
     }
     if has("poison") {
         v.push(("\u{f068c}", Color::srgb(0.58, 0.9, 0.4), "Poison")); // skull
@@ -2349,12 +2401,17 @@ pub(crate) fn party_cell(
             } else {
                 base_border
             }),
+            // A condition repaints the cell, so the HP/ATB readout itself carries the news.
+            // Being hit still wins (it is the most urgent thing on screen), and so does the
+            // active/target highlight — you must always be able to see whose turn it is.
             BackgroundColor(if hurt {
                 Color::srgba(0.4, 0.12, 0.14, 0.55)
             } else if is_target_cursor {
                 Color::srgba(0.28, 0.26, 0.1, 0.5)
             } else if active {
                 glass::ACTIVE
+            } else if let Some((tint, _)) = condition_tint(&c.statuses) {
+                tint.with_alpha(0.5)
             } else {
                 glass::GLASS_THIN
             }),
@@ -2779,6 +2836,46 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
 mod pack_tests {
     use super::*;
 
+    /// The condition palette: afflictions read warm-to-sour, boons read cool herb/metal, and
+    /// an affliction outranks a boon — "something is being done to me" is the more urgent news.
+    #[test]
+    fn conditions_repaint_the_cell_and_afflictions_win() {
+        let t = |toks: &[&str]| {
+            condition_tint(&toks.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map(|(_, n)| n)
+        };
+        assert_eq!(t(&[]), None, "a clean hero keeps the neutral glass");
+        assert_eq!(t(&["poison"]), Some("poison"));
+        assert_eq!(t(&["marked"]), Some("marked"));
+        assert_eq!(t(&["web"]), Some("slow"), "web/chill/bind all read as slow");
+        assert_eq!(t(&["chill"]), Some("slow"));
+        assert_eq!(t(&["bind"]), Some("slow"));
+        assert_eq!(t(&["barrier:8"]), Some("barrier"));
+        assert_eq!(t(&["regen:3"]), Some("regen"));
+        // A poisoned hero who also has a Barrier still reads as poisoned.
+        assert_eq!(t(&["barrier:8", "poison"]), Some("poison"));
+        // And a zero-valued boon is not a boon.
+        assert_eq!(t(&["barrier:0"]), None);
+    }
+
+    /// Anything the engine slows gets the snail, because the gauge crawling with no icon was
+    /// indistinguishable from the gauge being slow.
+    #[test]
+    fn a_slowed_creature_wears_a_snail() {
+        for tok in ["web", "chill", "bind"] {
+            let icons = status_effects(&[tok.to_string()]);
+            assert!(
+                icons.iter().any(|(_, _, label)| *label == "Slowed"),
+                "{tok} should show the snail: {icons:?}"
+            );
+        }
+        assert!(
+            !status_effects(&["poison".to_string()])
+                .iter()
+                .any(|(_, _, l)| *l == "Slowed"),
+            "poison is not a slow"
+        );
+    }
+
     /// Every status icon we can show must carry a measured horizontal offset. These are
     /// Nerd Font icons in a monospace face: the ink is wider than the cell it advances, so
     /// flex centring alone leaves the glyph pushed right — the skull sat 1.35px off and the
@@ -2787,6 +2884,7 @@ mod pack_tests {
     fn every_status_icon_has_a_measured_ink_width() {
         // One combatant carrying everything the badge can draw.
         let all = vec![
+            "web".to_string(),
             "marked".to_string(),
             "distracted".to_string(),
             "hasted".to_string(),
@@ -2797,7 +2895,7 @@ mod pack_tests {
             "evasion:20".to_string(),
         ];
         let icons = status_effects(&all);
-        assert_eq!(icons.len(), 8, "all eight badges should be offered: {icons:?}");
+        assert_eq!(icons.len(), 9, "every badge should be offered: {icons:?}");
         for (glyph, _, label) in icons {
             let ink = status_icon_ink(glyph);
             assert!(
