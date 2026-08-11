@@ -192,6 +192,7 @@ fn main() {
         .init_resource::<LoadoutData>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
+        .init_resource::<HarvestPops>()
         .init_resource::<Steer>()
         .init_resource::<TapTarget>()
         .init_resource::<Joystick>()
@@ -368,7 +369,8 @@ fn main() {
                 hd2d::billboard,
                 animate_sway,
                 ambient::update_ambient_scatter,
-                (update_overworld_hud, update_run_stats, update_channel_bar, update_touch_interact),
+                (update_overworld_hud, update_run_stats, update_channel_bar, update_touch_interact,
+                    update_action_hud),
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -425,13 +427,22 @@ fn main() {
         // overlay as the Overworld — City and Overworld are mutually exclusive
         // states, so registering these systems again here is safe (never both
         // active at once).
+        //
+        // `render_main_menu` and its input HAVE to be here too. `render_overlay`'s Inventory
+        // arm is empty — the three-column cascade moved into `menu.rs` — so with only
+        // `render_overlay` registered, pressing [V] at the Vault-Deep set `overlay.kind` and
+        // drew absolutely nothing. The vault looked like it would not open.
         .add_systems(
             Update,
             (
                 overlay_input,
                 render_overlay,
+                menu::render_main_menu,
+                main_menu_input,
+                main_menu_click,
+                menu::equip_best_click,
                 gear_click,
-
+                formation_click,
                 withdraw_click,
                 category_button_click,
                 picker_unequip_click,
@@ -2118,5 +2129,84 @@ mod potion_menu_tests {
             .find(|e| matches!(e.action, EntryAction::Skill("trailblaze")))
             .expect("Trailblaze is still there");
         assert_eq!(tb.label, "Trailblaze");
+    }
+}
+
+/// One "+1 Bog Myrrh" that just landed, floating up over the player's head.
+///
+/// A harvest channel pays out per tick, and the payout was invisible: the bar filled, the
+/// stock arrived in a panel you were not looking at, and nothing on screen said a unit had
+/// been banked. The whole point of paying per tick is that you can SEE it paying.
+pub(crate) struct HarvestPop {
+    pub label: String,
+    pub age: f32,
+}
+
+/// The floaters currently in the air, oldest first.
+#[derive(Resource, Default)]
+pub(crate) struct HarvestPops {
+    pub items: Vec<HarvestPop>,
+}
+
+/// How long a `+1 <material>` floater stays up.
+pub(crate) const HARVEST_POP_TTL: f32 = 1.4;
+
+impl HarvestPops {
+    /// Note a unit banked. Same material twice in a row stacks into one floater rather than
+    /// printing a column of identical lines.
+    pub fn banked(&mut self, kind: &str, qty: i32) {
+        let pretty = kind.replace('_', " ");
+        if let Some(last) = self.items.last_mut() {
+            if last.age < 0.35 && last.label.ends_with(&pretty) {
+                let n: i32 = last
+                    .label
+                    .trim_start_matches('+')
+                    .split(' ')
+                    .next()
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1);
+                last.label = format!("+{} {pretty}", n + qty.max(1));
+                last.age = 0.0;
+                return;
+            }
+        }
+        self.items.push(HarvestPop { label: format!("+{} {pretty}", qty.max(1)), age: 0.0 });
+    }
+}
+
+#[cfg(test)]
+mod harvest_pop_tests {
+    use super::*;
+
+    /// A harvest channel pays per tick, and the payout used to be invisible: the bar filled,
+    /// the stock landed in a panel nobody was looking at, and nothing said what you got.
+    #[test]
+    fn banked_units_stack_into_one_floater() {
+        let mut pops = HarvestPops::default();
+        pops.banked("bog_myrrh", 1);
+        assert_eq!(pops.items.len(), 1);
+        assert_eq!(pops.items[0].label, "+1 bog myrrh", "the key is shown as words");
+
+        // A second unit of the same thing, straight away, becomes "+2" rather than a
+        // second identical line — a gather is many ticks and that would be a column.
+        pops.banked("bog_myrrh", 1);
+        assert_eq!(pops.items.len(), 1);
+        assert_eq!(pops.items[0].label, "+2 bog myrrh");
+
+        // A different material is its own floater.
+        pops.banked("peat_iron", 1);
+        assert_eq!(pops.items.len(), 2);
+        assert_eq!(pops.items[1].label, "+1 peat iron");
+    }
+
+    /// Once a floater has aged out it is dropped, so the stack over the head cannot grow
+    /// without bound over a long dig.
+    #[test]
+    fn floaters_expire() {
+        let mut pops = HarvestPops::default();
+        pops.banked("bog_myrrh", 1);
+        pops.items[0].age = HARVEST_POP_TTL + 0.01;
+        pops.items.retain(|p| p.age < HARVEST_POP_TTL);
+        assert!(pops.items.is_empty(), "an old floater should be gone");
     }
 }

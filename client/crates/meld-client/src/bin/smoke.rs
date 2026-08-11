@@ -52,6 +52,8 @@ fn main() {
         net.poll();
         while let Some(msg) = net.try_recv() {
             match msg {
+                // The headless bot has no HUD to pop a floater on.
+                ServerMsg::Harvested { .. } => {}
                 ServerMsg::Loadouts { .. } => {}
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");
