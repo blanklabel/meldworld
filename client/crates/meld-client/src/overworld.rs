@@ -4233,17 +4233,20 @@ pub(crate) struct ReachHalo;
 /// Full-swell brightness of the light the reach rim throws (lumens, scaled by the breathe).
 const REACH_LAMP_LUMENS: f32 = 26_000.0;
 
-/// Make the EDGE of the thing you could interact with glow, on a slow infrequent pulse.
+/// Make the thing you could interact with glow, on a slow pulse — whatever it is made of.
 ///
 /// Two jobs in one affordance. It says "this one is in reach" — nothing used to distinguish
 /// the node you can actually gather from one three steps behind it — and it draws the eye
 /// without erasing the art, which is where the old whole-sprite emissive pulse went wrong:
 /// emissive is added flat across a textured quad, so it painted the sprite out.
 ///
-/// The glow is a copy of the thing's OWN sprite, a little larger and drawn behind it, tinted
-/// warm. A silhouette a few pixels wider than the sprite reads as a rim, which is the cheap
-/// 2D outline trick and needs no shader. It breathes slowly and spends most of its cycle
-/// nearly out, so it is noticeable when you look and quiet when you do not.
+/// TWO parts, because the world is not all billboards. A **pool of light on the ground**
+/// under the target works for anything: a 3D prop model has no sprite to copy, and a bare
+/// mesh has no children at all, so a sprite-copy rim left every ore vein and boulder in the
+/// game with no affordance whatsoever — which is exactly how it was reported ("these don't
+/// glow at all"). On top of that, where there IS a sprite, a copy of it a little larger and
+/// drawn behind reads as a rim, the cheap 2D outline trick that needs no shader. Both breathe
+/// together, and both throw light so the ground answers.
 pub(crate) fn update_reach_halo(
     mut commands: Commands,
     world: Res<Overworld>,
@@ -4251,9 +4254,17 @@ pub(crate) fn update_reach_halo(
     time: Res<Time>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     wa: Option<Res<WorldAssets>>,
-    targets: Query<(Entity, &WorldEntity, &Children)>,
+    targets: Query<(Entity, &WorldEntity, Option<&Children>)>,
     sprite_of: Query<&MeshMaterial3d<StandardMaterial>, Without<ReachHalo>>,
-    mut halos: Query<(Entity, &MeshMaterial3d<StandardMaterial>, &mut PointLight), With<ReachHalo>>,
+    mut halos: Query<
+        (
+            Entity,
+            &ChildOf,
+            &MeshMaterial3d<StandardMaterial>,
+            Option<&mut PointLight>,
+        ),
+        With<ReachHalo>,
+    >,
 ) {
     let want = interact_target(&world, &session)
         .as_ref()
@@ -4268,25 +4279,30 @@ pub(crate) fn update_reach_halo(
 
     let Some(id) = want else {
         // Nothing in reach: clear any halo still standing.
-        for (e, _, _) in &halos {
+        for (e, _, _, _) in &halos {
             commands.entity(e).despawn();
         }
         return;
     };
     let Some(wa) = wa else { return };
+    let Some((root, _, kids)) = targets.iter().find(|(_, we, _)| we.0 == id) else {
+        for (e, _, _, _) in &halos {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
 
-    // Already lit? Just breathe it — the rim's alpha and the light it throws, together.
+    // Already lit? Just breathe it — every part's alpha and the light each throws.
     let mut found = false;
-    for (e, mm, mut light) in &mut halos {
-        let still_right = targets
-            .iter()
-            .any(|(_, we, kids)| we.0 == id && kids.iter().any(|k| k == e));
-        if still_right {
+    for (e, parent, mm, light) in &mut halos {
+        if parent.parent() == root {
             found = true;
             if let Some(m) = mats.get_mut(&mm.0) {
                 m.base_color = m.base_color.with_alpha(alpha);
             }
-            light.intensity = REACH_LAMP_LUMENS * alpha;
+            if let Some(mut light) = light {
+                light.intensity = REACH_LAMP_LUMENS * alpha;
+            }
         } else {
             commands.entity(e).despawn();
         }
@@ -4294,39 +4310,39 @@ pub(crate) fn update_reach_halo(
     if found {
         return;
     }
-    // Otherwise build one from the target's own sprite texture.
-    let Some((root, _, kids)) = targets.iter().find(|(_, we, _)| we.0 == id) else { return };
-    let tex = kids
-        .iter()
-        .filter_map(|k| sprite_of.get(k).ok())
+
+    let glow = |mats: &mut Assets<StandardMaterial>, tex: Option<Handle<Image>>| {
+        mats.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.86, 0.45, alpha),
+            base_color_texture: tex,
+            // Unlit and alpha-blended: this is a light, not a surface. Depth write OFF so it
+            // never punches a hole in the thing it sits behind.
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            depth_bias: -1.0,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        })
+    };
+    let pool = glow(&mut mats, None);
+    let rim_tex = kids
+        .into_iter()
+        .flatten()
+        .filter_map(|k| sprite_of.get(*k).ok())
         .filter_map(|mm| mats.get(&mm.0).and_then(|m| m.base_color_texture.clone()))
         .next();
-    let Some(tex) = tex else { return };
-    let halo = mats.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.86, 0.45, alpha),
-        base_color_texture: Some(tex),
-        // Unlit and alpha-blended: this is a light, not a surface. Depth write OFF so it
-        // never punches a hole in the sprite it sits behind.
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        depth_bias: -1.0,
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
+    let rim = rim_tex.map(|tex| glow(&mut mats, Some(tex)));
     commands.entity(root).with_children(|p| {
+        // The ground pool, and the light it stands for. Laid flat and just clear of the
+        // ground so it is a glow ON the terrain rather than a disc floating over it.
         p.spawn((
             ReachHalo,
-            Mesh3d(wa.sprite_quad.clone()),
-            MeshMaterial3d(halo),
-            // A touch larger and a hair behind, so what shows is a rim around the sprite.
-            Transform::from_xyz(0.0, 0.85, -0.02).with_scale(Vec3::splat(1.7 / 2.2 * 1.20)),
-            hd2d::Billboard,
-            // The rim also THROWS light, on the same breath: the ground and the grass
-            // around the thing in reach brighten with it. That is what makes it read as
-            // the object glowing rather than a decal stuck on top of it — and it survives
-            // being half behind a tree, where the rim alone does not. Short range and no
-            // shadows: a hint, not a lamp.
+            Mesh3d(wa.shadow_mesh.clone()),
+            MeshMaterial3d(pool),
+            Transform::from_xyz(0.0, 0.06, 0.0)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(1.5, 1.5, 1.5)),
             PointLight {
                 color: Color::srgb(1.0, 0.86, 0.45),
                 intensity: 0.0,
@@ -4336,5 +4352,15 @@ pub(crate) fn update_reach_halo(
                 ..default()
             },
         ));
+        if let Some(rim) = rim {
+            p.spawn((
+                ReachHalo,
+                Mesh3d(wa.sprite_quad.clone()),
+                MeshMaterial3d(rim),
+                // A touch larger and a hair behind, so what shows is a rim around the sprite.
+                Transform::from_xyz(0.0, 0.85, -0.02).with_scale(Vec3::splat(1.7 / 2.2 * 1.20)),
+                hd2d::Billboard,
+            ));
+        }
     });
 }

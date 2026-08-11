@@ -2667,8 +2667,28 @@ impl Db {
                 .fetch_one(&mut *tx)
                 .await?;
                 if occupied >= category_capacity(&slot) {
-                    tx.rollback().await?;
-                    return Ok(EquipResult::SlotOccupied);
+                    // A FULL slot is the normal case — every hero starts dressed — so
+                    // refusing here made the equip picker a dead end: every press came back
+                    // 409, and the player was never shown the reason, so it read as a dead
+                    // button. Putting a sword on means taking the old one off; that is not a
+                    // decision worth interrupting for. A multi-capacity category still
+                    // refuses, because with two accessory slots full the player is choosing
+                    // WHICH one comes off, and we must not choose for them.
+                    if category_capacity(&slot) > 1 {
+                        tx.rollback().await?;
+                        return Ok(EquipResult::SlotOccupied);
+                    }
+                    sqlx::query(
+                        "UPDATE gear SET equipped_hero_slot = NULL
+                         WHERE owner_player_id = $1 AND slot = $2 AND equipped_hero_slot = $3
+                           AND gear_id <> $4",
+                    )
+                    .bind(player_id)
+                    .bind(&slot)
+                    .bind(hero_slot)
+                    .bind(gear_id)
+                    .execute(&mut *tx)
+                    .await?;
                 }
                 sqlx::query("UPDATE gear SET equipped_hero_slot = $2 WHERE gear_id = $1")
                     .bind(gear_id)
@@ -2756,7 +2776,26 @@ impl Db {
                     })
                     .count() as i64;
                 if occupied >= category_capacity(&slot) {
-                    return Ok(EquipResult::SlotOccupied);
+                    if category_capacity(&slot) > 1 {
+                        return Ok(EquipResult::SlotOccupied);
+                    }
+                    // Displace the occupant — see the Pg arm for why a full slot swaps.
+                    let displaced: Vec<Uuid> = m
+                        .gear
+                        .values()
+                        .filter(|g| {
+                            g.owner_player_id == player_id
+                                && g.slot == slot
+                                && g.equipped_hero_slot == Some(hero_slot)
+                                && g.gear_id != gear_id
+                        })
+                        .map(|g| g.gear_id)
+                        .collect();
+                    for id in displaced {
+                        if let Some(g) = m.gear.get_mut(&id) {
+                            g.equipped_hero_slot = None;
+                        }
+                    }
                 }
                 m.gear.get_mut(&gear_id).unwrap().equipped_hero_slot = Some(hero_slot);
                 Ok(EquipResult::Ok)
@@ -3324,22 +3363,25 @@ mod tests {
             .unwrap()
             .gear_id;
 
-        assert_eq!(db.set_equipped(p, looted, Some(0)).await.unwrap(), EquipResult::SlotOccupied);
-        // Hero 1 also starts with its own starter weapon (the backfilled
-        // starter kit covers every hero) — unequip it first, same as a real
-        // player swapping in better gear.
-        let hero1_starter_weapon = db
-            .get_gear(p)
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|g| g.equipped_hero_slot == Some(1) && g.slot == "main_hand")
-            .unwrap()
-            .gear_id;
-        assert_eq!(db.set_equipped(p, hero1_starter_weapon, None).await.unwrap(), EquipResult::Ok);
-        // Per-character equip: the looted sword goes on hero 1 instead, no
-        // conflict, and hero 0 keeps the starter — two different heroes with
-        // two different weapons is exactly the point of this feature.
+        // A hero's hand is ALREADY full — the starter kit dresses every one of them — and
+        // putting a sword on means taking the old one off. Refusing here made the equip
+        // picker a dead end: every press was a 409 on a slot that is always occupied.
+        assert_eq!(db.set_equipped(p, looted, Some(0)).await.unwrap(), EquipResult::Ok);
+        let after = db.get_gear(p).await.unwrap();
+        assert_eq!(
+            after.iter().filter(|g| g.slot == "main_hand" && g.equipped_hero_slot == Some(0)).count(),
+            1,
+            "a swap leaves ONE weapon in the hand, not two"
+        );
+        assert_eq!(
+            after.iter().find(|g| g.gear_id == starter).unwrap().equipped_hero_slot,
+            None,
+            "the displaced starter goes back to the Vault rather than vanishing"
+        );
+        // Put it back so the rest of this test reads against the starter kit as before.
+        assert_eq!(db.set_equipped(p, starter, Some(0)).await.unwrap(), EquipResult::Ok);
+        // Per-character equip: the looted sword goes on hero 1, and hero 0 keeps the
+        // starter — two heroes with two different weapons is the point of the feature.
         assert_eq!(db.set_equipped(p, looted, Some(1)).await.unwrap(), EquipResult::Ok);
         let bonuses = db.equipped_gear_bonuses(p, 4, &[]).await.unwrap();
         assert_eq!(bonuses[0].atk, 3);
