@@ -37,6 +37,12 @@ pub(crate) fn enter_battle(
     if !battle_mockup_flag() {
         target.selected = None;
     }
+    // `MELD_BATTLE=skills` wants the Skill page, which is the one with tooltips on it.
+    // The mock sets it at startup and this reset would undo it.
+    if std::env::var("MELD_BATTLE").as_deref() == Ok("skills") {
+        menu.level = MenuLevel::Skills;
+        menu.dirty = true;
+    }
 }
 
 /// A 3D combatant in the HD-2D battle arena, keyed by its combatant id.
@@ -1438,13 +1444,13 @@ pub(crate) fn rebuild_command_menu(
     // which is also what the server gates on.
     // The registry's prose, then the numbers the server resolved from balance. "Spends
     // Adrenaline" is not a decision; "40 of 100 Adrenaline (25 per Attack)" is.
-    let tooltip: String = match level {
-        MenuLevel::Target | MenuLevel::Revoke => String::new(),
+    let (tooltip, magnitudes): (String, String) = match level {
+        MenuLevel::Target | MenuLevel::Revoke => (String::new(), String::new()),
         _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
             .get(menu.cursor)
-            .map(|e| match roster.effect(e.action.skill_key().unwrap_or_default()) {
-                "" => e.tooltip.clone(),
-                fx => format!("{}\n{fx}", e.tooltip),
+            .map(|e| {
+                let key = e.action.skill_key().unwrap_or_default();
+                (e.tooltip.clone(), roster.effect(key).to_string())
             })
             .unwrap_or_default(),
     };
@@ -1634,6 +1640,22 @@ pub(crate) fn rebuild_command_menu(
                                     TextColor(glass::DIM),
                                     Node {
                                         margin: UiRect::top(Val::Px(6.0)),
+                                        max_width: Val::Px(230.0),
+                                        ..default()
+                                    },
+                                ));
+                            }
+                            // The magnitudes get their own gold line: run into the prose
+                            // at the same weight they read as one long sentence, and the
+                            // number — the part that decides between two rows — is what
+                            // gets skipped.
+                            if !magnitudes.is_empty() {
+                                list.spawn((
+                                    Text::new(magnitudes.clone()),
+                                    TextFont { font_size: 12.0, ..default() },
+                                    TextColor(glass::TITLE),
+                                    Node {
+                                        margin: UiRect::top(Val::Px(3.0)),
                                         max_width: Val::Px(230.0),
                                         ..default()
                                     },

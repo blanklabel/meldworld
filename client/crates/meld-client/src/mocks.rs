@@ -51,10 +51,22 @@ pub(crate) fn mock_battle_setup(
     mut hitfx: ResMut<HitFx>,
     mut target: ResMut<BattleTarget>,
     mut flash: ResMut<AtbFlash>,
+    mut roster: ResMut<PartyRoster>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if !battle_mockup_flag() {
         return;
+    }
+    // Ability magnitudes normally arrive on `run.party`, resolved from balance, and
+    // there is no server here. Canned so the tooltip's second line is screenshottable;
+    // `MELD_BATTLE=skills` opens the page it lives on.
+    for (key, effect) in [
+        ("trailblaze", "1.15× damage · marked: every ally deals 120% to it for 6s"),
+        ("field_dressing", "heals 12% of the target's max HP"),
+        ("misdirection", "1.1× damage · 50% of its turn · distracted for 6s"),
+        ("stable_ground", "Barrier for 12% of each ally's max HP (decays 2 per turn)"),
+    ] {
+        roster.ability_effects.insert(key.to_string(), effect.to_string());
     }
     // Seed a fresh ATB-ready flash on h1 so the "turn's up" pop shows statically.
     flash.age.insert("h1".to_string(), 0.06);
