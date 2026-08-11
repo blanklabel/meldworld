@@ -20,26 +20,12 @@ use super::*;
 /// An overworld action reachable by a keyboard key OR an on-screen (touch) button.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum OverworldAct {
-    /// The touch twin of **[E]**: does whatever is in reach, and is hidden when
-    /// nothing is. One button, so touch and keyboard can never disagree.
-    Interact,
     /// Open the inventory/menu overlay (where distance, biome, the backpack and
     /// "Return to town" live). Keyboard equivalent: C / I, or tapping your own
     /// character.
     Menu,
-    /// Ask the crafter at the bench you are standing at for their temporary boon — a
-    /// smith's **edge** on a worn piece, or a Keeper's **tonic** for the party. Its own
-    /// prompt and its own button, because it is a one-press favour rather than a screen
-    /// to open: [E] is for the bench, this is for the thing you actually want from it.
-    Boon,
 }
 
-/// The channel progress bar's frame (hidden unless a channel is running).
-#[derive(Component)]
-pub(crate) struct ChannelBar;
-/// The filling part of the channel bar.
-#[derive(Component)]
-pub(crate) struct ChannelBarFill;
 
 /// The smithing bar's frame: a bar of RED. Hidden unless a heat is open. Spawned on
 /// both the overworld and the city, since the anvil is in one and the stations in the
@@ -147,33 +133,6 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
                 TextColor(Color::srgb(0.9, 0.92, 1.0)),
             ));
-            // Channel progress: a bar that fills once per unit while gathering, and
-            // once while extracting. Hidden unless a channel is running, like every
-            // other piece of this HUD.
-            p.spawn((
-                ChannelBar,
-                Node {
-                    display: Display::None,
-                    width: Val::Px(210.0),
-                    height: Val::Px(9.0),
-                    margin: UiRect::top(Val::Px(4.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
-                BorderColor(Color::srgba(0.78, 0.86, 1.0, 0.45)),
-                BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 0.7)),
-            ))
-            .with_children(|bar| {
-                bar.spawn((
-                    ChannelBarFill,
-                    Node {
-                        width: Val::Percent(0.0),
-                        height: Val::Percent(100.0),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.98, 0.86, 0.42)),
-                ));
-            });
             spawn_heat_bar(p);
             // Touch action bar (bottom-right). Also clickable with the mouse.
             p.spawn((
@@ -188,16 +147,10 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 },
             ))
             .with_children(|bar| {
-                // Two buttons: the contextual Interact (shown only when something is in
-                // reach — `update_touch_interact` keeps its label and visibility in step
-                // with the [E] prompt) and Menu, which is where going home lives.
-                for (act, label) in [
-                    (OverworldAct::Boon, "\u{f0e6d} Boon"),
-                    (OverworldAct::Interact, "\u{f0e6d} Interact"), // hand-pointing icon
-                    (OverworldAct::Menu, "\u{f0214} Menu"),         // list icon
-                ] {
-                    action_button(bar, act, label);
-                }
+                // Just Menu, which is where going home lives. Interact and Boon used to sit
+                // here too, duplicating prompts that now live over the player's head — and
+                // each prompt there is its own tappable chip, so touch loses nothing.
+                action_button(bar, OverworldAct::Menu, "\u{f0214} Menu"); // list icon
             });
             // Virtual thumbstick (base ring + knob), shown only while dragging.
             p.spawn((
@@ -326,68 +279,19 @@ pub(crate) fn action_button(parent: &mut ChildSpawnerCommands, act: OverworldAct
         });
 }
 
-/// Handle taps/clicks on the overworld action buttons — same effects as the
-/// keyboard shortcuts, so touch and keyboard are fully interchangeable.
-#[allow(clippy::too_many_arguments)]
+/// The corner bar's one remaining button: Menu. Interact and Boon moved onto the plate over
+/// the player's head, where the prompts are — a corner button that had to guess which action
+/// you meant was a worse version of tapping the thing you are looking at.
 pub(crate) fn touch_action_buttons(
     q: Query<(&Interaction, &TouchActionButton), Changed<Interaction>>,
-    net: NonSend<NetRes>,
-    world: Res<Overworld>,
-    session: Res<Session>,
     mut overlay: ResMut<Overlay>,
     mut tab: ResMut<OverlayTab>,
-    mut station: ResMut<StationUi>,
-    inv: Res<InventoryData>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
             continue;
         }
         match btn.0 {
-            OverworldAct::Interact => {
-                if session.channeling {
-                    net.0.send(ClientCmd::CancelHarvest);
-                } else {
-                    match interact_target(&world, &session) {
-                        Some(Interact::JoinFight) => net.0.send(ClientCmd::JoinBattle),
-                        Some(Interact::Harvest { entity_id, .. }) => {
-                            net.0.send(ClientCmd::Harvest { entity_id })
-                        }
-                        Some(Interact::OpenChest { entity_id }) => {
-                            net.0.send(ClientCmd::OpenChest { entity_id })
-                        }
-                        Some(Interact::EnterDungeon { entity_id }) => {
-                            net.0.send(ClientCmd::EnterDungeon { entity_id })
-                        }
-                        Some(Interact::UseStation { entity_id, kind, jobs }) => {
-                            if kind == "alembic" {
-                                net.0.fetch_recipes();
-                            }
-                            station.open = Some(entity_id);
-                            station.kind = kind;
-                            station.jobs = jobs;
-                        }
-                        Some(Interact::Extract) => net.0.send(ClientCmd::Extract),
-                        None => {}
-                    }
-                }
-            }
-            OverworldAct::Boon => {
-                if let Some((entity_id, kind, _)) = boon_offer(&world, &session) {
-                    let (service, class) = if kind == "alembic" {
-                        ("tonic", meld_proto::materials::MaterialClass::Reagent)
-                    } else {
-                        ("enhance", meld_proto::materials::MaterialClass::Refined)
-                    };
-                    net.0.send(ClientCmd::SmithRequest {
-                        entity_id,
-                        gear_id: worn_piece(&inv, 0).unwrap_or_default(),
-                        service: service.into(),
-                        material: crate::city::best_stock(&inv, class).unwrap_or_default(),
-                        recipe: String::new(),
-                    });
-                }
-            }
             OverworldAct::Menu => {
                 // Toggle the overlay open to the Status tab, where distance/biome and
                 // the run backpack now live (moved off the always-on HUD).
@@ -649,76 +553,6 @@ pub(crate) fn update_overworld_hud(
     }
 }
 
-/// Keep the touch Interact button in step with the [E] prompt: same label, and hidden
-/// whenever there is nothing to touch — so the field view stays as clean as the HUD.
-pub(crate) fn update_touch_interact(
-    world: Res<Overworld>,
-    session: Res<Session>,
-    mut buttons: Query<(&TouchActionButton, &mut Node, &Children)>,
-    mut labels: Query<&mut Text>,
-) {
-    let target = interact_target(&world, &session);
-    let boon = boon_offer(&world, &session);
-    for (btn, mut node, children) in &mut buttons {
-        let label = match btn.0 {
-            // The Boon button appears with the offer and vanishes with it, exactly as the
-            // Interact button tracks the [E] prompt.
-            OverworldAct::Boon => {
-                (!session.channeling).then(|| boon.as_ref().map(|(_, _, w)| w.clone())).flatten()
-            }
-            OverworldAct::Interact => {
-                if session.channeling {
-                    Some("Stop".to_string())
-                } else {
-                    target.as_ref().map(|t| t.verb())
-                }
-            }
-            OverworldAct::Menu => continue,
-        };
-        node.display = if label.is_some() { Display::Flex } else { Display::None };
-        if let Some(text) = label {
-            for c in children.iter() {
-                if let Ok(mut t) = labels.get_mut(c) {
-                    let want = format!("\u{f0e6d} {text}");
-                    if **t != want {
-                        **t = want;
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Fill the channel bar. One fill = one payout: a gather refills it per unit, an
-/// extraction fills it once and completes. The phase is tracked locally (reset when a
-/// channel starts) rather than off the server clock — this is cosmetic feedback, and
-/// every unit that actually lands is reported separately on `run.backpack_update`.
-pub(crate) fn update_channel_bar(
-    time: Res<Time>,
-    session: Res<Session>,
-    mut phase: Local<f32>,
-    mut was_channeling: Local<bool>,
-    mut frame: Query<&mut Node, (With<ChannelBar>, Without<ChannelBarFill>)>,
-    mut fill: Query<&mut Node, With<ChannelBarFill>>,
-) {
-    let running = session.channeling && session.channel_fill_ms > 0;
-    if running && !*was_channeling {
-        *phase = 0.0;
-    }
-    *was_channeling = session.channeling;
-    if let Ok(mut f) = frame.single_mut() {
-        f.display = if running { Display::Flex } else { Display::None };
-    }
-    if !running {
-        *phase = 0.0;
-        return;
-    }
-    *phase += time.delta_secs();
-    if let Ok(mut bar) = fill.single_mut() {
-        bar.width = Val::Percent(channel_fill_pct(*phase, session.channel_fill_ms));
-    }
-}
-
 /// How full the channel bar is, as a percentage, `phase` seconds into a channel whose
 /// payout lands every `fill_ms`. Wraps, because a gather pays repeatedly — each fill is
 /// one unit, so the bar emptying IS the unit landing.
@@ -803,20 +637,7 @@ pub(crate) fn overworld_input(
     // [N] asks the bench in reach for its temporary boon. A one-press favour, so it is
     // its own key and its own prompt rather than a row inside a screen.
     if keys.just_pressed(KeyCode::KeyN) {
-        if let Some((entity_id, kind, _)) = boon_offer(&world, &session) {
-            let (service, class) = if kind == "alembic" {
-                ("tonic", meld_proto::materials::MaterialClass::Reagent)
-            } else {
-                ("enhance", meld_proto::materials::MaterialClass::Refined)
-            };
-            net.0.send(ClientCmd::SmithRequest {
-                entity_id,
-                gear_id: worn_piece(&inv, 0).unwrap_or_default(),
-                service: service.into(),
-                material: crate::city::best_stock(&inv, class).unwrap_or_default(),
-                recipe: String::new(),
-            });
-        }
+        ask_for_boon(&net.0, &world, &session, &inv);
         return;
     }
 
@@ -902,6 +723,18 @@ impl Interact {
 
     /// The prompt shown while this is in reach. Every line names the SAME key, which
     /// is the point of collapsing the controls onto one.
+    /// Which world entity this action is aimed at, if any. `JoinFight` and `Extract` are
+    /// aimed at a place rather than a thing, so they have none.
+    pub(crate) fn entity_id(&self) -> Option<&str> {
+        match self {
+            Interact::Harvest { entity_id, .. }
+            | Interact::OpenChest { entity_id }
+            | Interact::EnterDungeon { entity_id }
+            | Interact::UseStation { entity_id, .. } => Some(entity_id),
+            Interact::JoinFight | Interact::Extract => None,
+        }
+    }
+
     pub(crate) fn prompt(&self) -> String {
         match self {
             Interact::JoinFight => format!("\u{f0817} [E] {}", self.verb()),
@@ -3167,6 +3000,34 @@ pub(crate) fn overworld_camera_control(
 
 #[cfg(test)]
 mod tests {
+
+    /// The halo has to know WHICH thing it belongs on. `JoinFight` and `Extract` aim at a
+    /// place rather than a thing, so they light nothing — and every other action names its
+    /// entity, or the glow would have nowhere to go.
+    #[test]
+    fn every_thing_shaped_action_names_its_entity() {
+        let cases = [
+            (Interact::Harvest { entity_id: "n1".into(), label: "Bog Myrrh".into() }, Some("n1")),
+            (Interact::OpenChest { entity_id: "c1".into() }, Some("c1")),
+            (Interact::EnterDungeon { entity_id: "d1".into() }, Some("d1")),
+            (
+                Interact::UseStation { entity_id: "s1".into(), kind: "smith".into(), jobs: 2 },
+                Some("s1"),
+            ),
+            (Interact::JoinFight, None),
+            (Interact::Extract, None),
+        ];
+        for (action, want) in cases {
+            assert_eq!(
+                action.entity_id(),
+                want,
+                "{} should {} an entity to glow",
+                action.verb(),
+                if want.is_some() { "name" } else { "name no" }
+            );
+        }
+    }
+
     use super::*;
     use super::creature_kind;
 
@@ -3262,62 +3123,10 @@ mod tests {
         assert!((0.0..=100.0).contains(&channel_fill_pct(3.0, 0)));
     }
 
-    // Running the REAL system, because the thing that can silently break is the wiring
-    // (does `channeling` reach the bar, does the frame un-hide, does the fill widen?),
-    // not the arithmetic. Driving autoplay to a node for a screenshot proved unreliable
-    // — the bot steers at creatures — so the bar is pinned here instead, where it is
-    // deterministic and runs in CI.
-    #[test]
-    fn the_real_bar_hides_when_idle_and_fills_while_channeling() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(Session::default())
-            .add_systems(Update, update_channel_bar);
-        let fill = app
-            .world_mut()
-            .spawn((ChannelBarFill, Node { width: Val::Percent(0.0), ..default() }))
-            .id();
-        let frame = app
-            .world_mut()
-            .spawn((ChannelBar, Node { display: Display::None, ..default() }))
-            .id();
-
-        // Idle: the bar stays out of the way.
-        app.update();
-        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
-
-        // A channel starts → the frame appears.
-        {
-            let mut s = app.world_mut().resource_mut::<Session>();
-            s.channeling = true;
-            s.channel_fill_ms = 1000;
-        }
-        app.update();
-        assert_eq!(
-            app.world().get::<Node>(frame).unwrap().display,
-            Display::Flex,
-            "a running channel should show the bar"
-        );
-
-        // …and it fills as time passes, rather than sitting at zero.
-        let width_of = |app: &App| match app.world().get::<Node>(fill).unwrap().width {
-            Val::Percent(p) => p,
-            other => panic!("fill width should be a percentage, got {other:?}"),
-        };
-        let start = width_of(&app);
-        for _ in 0..6 {
-            std::thread::sleep(std::time::Duration::from_millis(30));
-            app.update();
-        }
-        let later = width_of(&app);
-        assert!(later > start, "the bar should fill over time: {start} -> {later}");
-        assert!((0.0..=100.0).contains(&later), "{later}");
-
-        // The channel ends → the bar goes away again.
-        app.world_mut().resource_mut::<Session>().channeling = false;
-        app.update();
-        assert_eq!(app.world().get::<Node>(frame).unwrap().display, Display::None);
-    }
+    // The corner channel bar this used to drive is gone: the bar moved over the player's
+    // head (`update_action_hud`), where you are actually looking while you gather. Its fill
+    // maths is still covered by `channel_fill_pct` above, and the payout floaters by
+    // `harvest_pop_tests`.
 
     // A button that does nothing reads as broken. When the server refuses ("The vault
     // is sealed — defeat the boss first."), the reason has to reach the screen and then
@@ -4163,6 +3972,100 @@ mod heat_tests {
 #[derive(Component)]
 pub(crate) struct ActionHud;
 
+/// Ask the bench in reach for its temporary boon — the ONE dispatch, shared by [N] and the
+/// plate's chip.
+pub(crate) fn ask_for_boon(
+    net: &crate::net::Net,
+    world: &Overworld,
+    session: &Session,
+    inv: &InventoryData,
+) {
+    let Some((entity_id, kind, _)) = boon_offer(world, session) else { return };
+    let (service, class) = if kind == "alembic" {
+        ("tonic", meld_proto::materials::MaterialClass::Reagent)
+    } else {
+        ("enhance", meld_proto::materials::MaterialClass::Refined)
+    };
+    net.send(ClientCmd::SmithRequest {
+        entity_id,
+        gear_id: worn_piece(inv, 0).unwrap_or_default(),
+        service: service.into(),
+        material: crate::city::best_stock(inv, class).unwrap_or_default(),
+        recipe: String::new(),
+    });
+}
+
+/// Do whatever is in reach — the ONE dispatch, shared by [E], the over-head plate and the
+/// old touch button. It used to be inline in the touch handler, which meant a second copy
+/// every time another surface wanted the same action.
+pub(crate) fn do_interact(
+    net: &crate::net::Net,
+    world: &Overworld,
+    session: &Session,
+    station: &mut StationUi,
+) {
+    if session.channeling {
+        net.send(ClientCmd::CancelHarvest);
+        return;
+    }
+    match interact_target(world, session) {
+        Some(Interact::JoinFight) => net.send(ClientCmd::JoinBattle),
+        Some(Interact::Harvest { entity_id, .. }) => net.send(ClientCmd::Harvest { entity_id }),
+        Some(Interact::OpenChest { entity_id }) => net.send(ClientCmd::OpenChest { entity_id }),
+        Some(Interact::EnterDungeon { entity_id }) => {
+            net.send(ClientCmd::EnterDungeon { entity_id })
+        }
+        Some(Interact::UseStation { entity_id, kind, jobs }) => {
+            if kind == "alembic" {
+                net.fetch_recipes();
+            }
+            station.open = Some(entity_id);
+            station.kind = kind;
+            station.jobs = jobs;
+        }
+        Some(Interact::Extract) => net.send(ClientCmd::Extract),
+        None => {}
+    }
+}
+
+/// The [E] chip on the plate — the touch twin of the key, in the place you are looking.
+#[derive(Component)]
+pub(crate) struct ActionHudTap;
+
+/// The [N] chip: ask the bench for its boon.
+#[derive(Component)]
+pub(crate) struct ActionHudBoonTap;
+
+/// Tapping the [N] chip asks for the bench's temporary boon — the same thing the key does.
+pub(crate) fn action_hud_boon_tap(
+    q: Query<&Interaction, (Changed<Interaction>, With<ActionHudBoonTap>)>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    inv: Res<InventoryData>,
+) {
+    for interaction in &q {
+        if *interaction == Interaction::Pressed {
+            ask_for_boon(&net.0, &world, &session, &inv);
+        }
+    }
+}
+
+/// Tapping the plate over your head does whatever [E] would, including stopping a channel.
+pub(crate) fn action_hud_tap(
+    q: Query<&Interaction, (Changed<Interaction>, With<ActionHudTap>)>,
+    net: NonSend<NetRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    mut station: ResMut<StationUi>,
+) {
+    for interaction in &q {
+        if *interaction == Interaction::Pressed {
+            do_interact(&net.0, &world, &session, &mut station);
+        }
+    }
+}
+
 /// The prompt, the channel bar and the "+1 <material>" pops, in frosted glass over the
 /// player's own head.
 ///
@@ -4268,12 +4171,21 @@ pub(crate) fn update_action_hud(
                 BorderRadius::all(Val::Px(7.0)),
             ))
             .with_children(|plate| {
-                for text in [line, boon_line].into_iter().flatten() {
-                    plate.spawn((
-                        Text::new(text),
-                        TextFont { font_size: 15.0, ..default() },
-                        TextColor(glass::TEXT),
-                    ));
+                // Each prompt is its own chip, so touch has a target per action instead of
+                // one button in the corner that had to guess which you meant.
+                if let Some(text) = line {
+                    plate
+                        .spawn((Button, ActionHudTap, glass::chip(false)))
+                        .with_children(|b| {
+                            b.spawn(glass::text(text, 15.0, glass::TEXT));
+                        });
+                }
+                if let Some(text) = boon_line {
+                    plate
+                        .spawn((Button, ActionHudBoonTap, glass::chip(false)))
+                        .with_children(|b| {
+                            b.spawn(glass::text(text, 15.0, glass::WARN));
+                        });
                 }
                 if session.channeling {
                     let pct = channel_fill_pct(*phase, session.channel_fill_ms);
@@ -4301,5 +4213,99 @@ pub(crate) fn update_action_hud(
                 }
             });
         });
+    });
+}
+
+/// The halo quad behind whatever is currently in reach.
+#[derive(Component)]
+pub(crate) struct ReachHalo;
+
+/// Make the EDGE of the thing you could interact with glow, on a slow infrequent pulse.
+///
+/// Two jobs in one affordance. It says "this one is in reach" — nothing used to distinguish
+/// the node you can actually gather from one three steps behind it — and it draws the eye
+/// without erasing the art, which is where the old whole-sprite emissive pulse went wrong:
+/// emissive is added flat across a textured quad, so it painted the sprite out.
+///
+/// The glow is a copy of the thing's OWN sprite, a little larger and drawn behind it, tinted
+/// warm. A silhouette a few pixels wider than the sprite reads as a rim, which is the cheap
+/// 2D outline trick and needs no shader. It breathes slowly and spends most of its cycle
+/// nearly out, so it is noticeable when you look and quiet when you do not.
+pub(crate) fn update_reach_halo(
+    mut commands: Commands,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    time: Res<Time>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    wa: Option<Res<WorldAssets>>,
+    targets: Query<(Entity, &WorldEntity, &Children)>,
+    sprite_of: Query<&MeshMaterial3d<StandardMaterial>, Without<ReachHalo>>,
+    halos: Query<(Entity, &MeshMaterial3d<StandardMaterial>), With<ReachHalo>>,
+) {
+    let want = interact_target(&world, &session)
+        .as_ref()
+        .and_then(|t| t.entity_id().map(String::from));
+
+    // A slow breathe that sits near zero most of the cycle: ~4s period, and the visible part
+    // is the top of the curve. Obvious when you look for it, easy to ignore when you are not.
+    let phase = (time.elapsed_secs() * std::f32::consts::TAU / 4.0).sin().max(0.0);
+    let alpha = 0.12 + 0.55 * phase * phase;
+
+    let Some(id) = want else {
+        // Nothing in reach: clear any halo still standing.
+        for (e, _) in &halos {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let Some(wa) = wa else { return };
+
+    // Already lit? Just breathe it.
+    let mut found = false;
+    for (e, mm) in &halos {
+        let still_right = targets
+            .iter()
+            .any(|(_, we, kids)| we.0 == id && kids.iter().any(|k| k == e));
+        if still_right {
+            found = true;
+            if let Some(m) = mats.get_mut(&mm.0) {
+                m.base_color = m.base_color.with_alpha(alpha);
+            }
+        } else {
+            commands.entity(e).despawn();
+        }
+    }
+    if found {
+        return;
+    }
+    // Otherwise build one from the target's own sprite texture.
+    let Some((root, _, kids)) = targets.iter().find(|(_, we, _)| we.0 == id) else { return };
+    let tex = kids
+        .iter()
+        .filter_map(|k| sprite_of.get(k).ok())
+        .filter_map(|mm| mats.get(&mm.0).and_then(|m| m.base_color_texture.clone()))
+        .next();
+    let Some(tex) = tex else { return };
+    let halo = mats.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.86, 0.45, alpha),
+        base_color_texture: Some(tex),
+        // Unlit and alpha-blended: this is a light, not a surface. Depth write OFF so it
+        // never punches a hole in the sprite it sits behind.
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        depth_bias: -1.0,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    commands.entity(root).with_children(|p| {
+        p.spawn((
+            ReachHalo,
+            Mesh3d(wa.sprite_quad.clone()),
+            MeshMaterial3d(halo),
+            // A touch larger and a hair behind, so what shows is a rim around the sprite.
+            Transform::from_xyz(0.0, 0.85, -0.02).with_scale(Vec3::splat(1.7 / 2.2 * 1.13)),
+            hd2d::Billboard,
+        ));
     });
 }
