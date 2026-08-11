@@ -4083,6 +4083,7 @@ pub(crate) fn update_action_hud(
     root_q: Query<Entity, With<NameplateRoot>>,
     players: Query<(&WorldEntity, &GlobalTransform)>,
     old: Query<Entity, With<ActionHud>>,
+    wa: Option<Res<WorldAssets>>,
 ) {
     for e in &old {
         commands.entity(e).despawn();
@@ -4137,11 +4138,23 @@ pub(crate) fn update_action_hud(
             // The payouts, newest nearest the head, fading as they rise.
             for pop in pops.items.iter().rev() {
                 let a = (1.0 - pop.age / HARVEST_POP_TTL).clamp(0.0, 1.0);
-                col.spawn((
-                    Text::new(pop.label.clone()),
-                    TextFont { font_size: 17.0, ..default() },
-                    TextColor(Color::srgba(0.62, 0.98, 0.7, a)),
-                ));
+                // The thing itself, then how many of it: a shrunk copy of the node's own
+                // sprite is the same picture as the bush you are standing at, so the payout
+                // is recognisable before the word is read.
+                col.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(5.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    crate::icons::spawn_icon(row, wa.as_deref(), &pop.kind, 20.0);
+                    row.spawn((
+                        Text::new(pop.label()),
+                        TextFont { font_size: 17.0, ..default() },
+                        TextColor(Color::srgba(0.62, 0.98, 0.7, a)),
+                    ));
+                });
             }
             let line = if session.channeling {
                 Some("[E] stop".to_string())

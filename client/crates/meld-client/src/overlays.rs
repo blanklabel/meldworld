@@ -536,65 +536,21 @@ pub(crate) fn rarity_color(name: &str) -> Color {
     }
 }
 
-/// A small item icon for a material/consumable key: the material's own harvest-node
-/// sprite reused from the world, falling back to a nerdfont glyph for things with no
-/// node art (consumables, chits, a Town Portal). Shared by the inventory panel and the
-/// extraction tally so a stack of bloom herb looks the same wherever it is counted.
+/// `kind`'s icon at the head of a row. A thin wrapper: the rule lives in [`crate::icons`],
+/// which every other panel reaches for too.
 pub(crate) fn spawn_item_icon(
     row: &mut ChildSpawnerCommands,
     wa: Option<&WorldAssets>,
     kind: &str,
     px: f32,
 ) {
-    let dim = Color::srgb(0.72, 0.78, 0.9);
-    if let Some(tex) = wa.and_then(|w| w.prop_sprites.get(&format!("resource_{kind}"))) {
-        row.spawn((
-            ImageNode::new(tex.clone()),
-            Node { width: Val::Px(px), height: Val::Px(px), ..default() },
-        ));
-        return;
-    }
-    // No node art for this one (a trophy, a consumable, a piece of gear). Draw a small
-    // tinted chip rather than a nerdfont glyph: the glyphs ARE in the bundled font, but at
-    // this size they read as ambiguous squiggles next to the real 24px item sprites, so a
-    // flat colour-coded chip carries more meaning than a tiny icon nobody can identify.
-    let tint = match kind {
-        "town_portal" => Color::srgb(0.65, 0.5, 0.95),
-        "chits" => Color::srgb(0.95, 0.82, 0.35),
-        "gear" => Color::srgb(0.75, 0.82, 0.95),
-        k if meld_proto::consumables::is_consumable(k) => Color::srgb(0.45, 0.85, 0.55),
-        _ => Color::srgb(0.62, 0.58, 0.5),
-    };
-    let _ = dim;
-    row.spawn((
-        Node {
-            width: Val::Px(px * 0.62),
-            height: Val::Px(px * 0.62),
-            margin: UiRect::all(Val::Px(px * 0.19)),
-            border: UiRect::all(Val::Px(1.0)),
-            ..default()
-        },
-        BackgroundColor(tint.with_alpha(0.55)),
-        BorderColor(tint),
-        BorderRadius::all(Val::Px(3.0)),
-    ));
+    crate::icons::spawn_icon(row, wa, kind, px);
 }
 
-/// A gear row's icon: a chip in the piece's own rarity colour, so a legendary reads as
-/// one at a glance in the haul.
+/// A gear row's icon: a kit glyph in the piece's own rarity colour, so a legendary reads as
+/// one at a glance in the haul. Thin wrapper over [`crate::icons`].
 pub(crate) fn spawn_gear_chip(row: &mut ChildSpawnerCommands, rarity: Color, px: f32) {
-    row.spawn((
-        Node {
-            width: Val::Px(px * 0.62),
-            height: Val::Px(px * 0.62),
-            margin: UiRect::all(Val::Px(px * 0.19)),
-            border: UiRect::all(Val::Px(1.0)),
-            ..default()
-        },
-        BackgroundColor(rarity.with_alpha(0.55)),
-        BorderColor(rarity),
-        BorderRadius::all(Val::Px(3.0)),
-    ));
+    crate::icons::spawn_gear_icon(row, rarity, px);
 }
 
 pub(crate) fn render_loot_report(
@@ -628,7 +584,6 @@ pub(crate) fn render_loot_report(
     if !report.active {
         return;
     }
-    let dim = Color::srgb(0.72, 0.78, 0.9);
     commands
         .spawn((
             LootReportRoot,
@@ -689,17 +644,7 @@ pub(crate) fn render_loot_report(
                 };
                 for (kind, qty) in &report.items {
                     p.spawn(row_node()).with_children(|row| {
-                        spawn_item_icon(row, wa.as_deref(), kind, 24.0);
-                        row.spawn((
-                            Text::new(format!("x{qty}")),
-                            TextFont { font_size: 17.0, ..default() },
-                            TextColor(Color::srgb(0.95, 0.85, 0.5)),
-                        ));
-                        row.spawn((
-                            Text::new(kind.replace('_', " ")),
-                            TextFont { font_size: 16.0, ..default() },
-                            TextColor(dim),
-                        ));
+                        crate::icons::spawn_stack(row, wa.as_deref(), kind, *qty, 24.0);
                     });
                 }
                 for name in &report.gear {

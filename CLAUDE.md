@@ -189,6 +189,19 @@ the base texture, never mirrored from another system: `illuminate_players` lives
 system tuple with no ordering against it, so reading the texture from there was a frame stale
 on whichever frames the scheduler ran it first, and the hero juddered in the dark.
 
+**Every item wears its own icon, and never instead of its name.** One rule, in
+[`icons.rs`](client/crates/meld-client/src/icons.rs): if we drew art for it, show the art —
+every harvestable has a `resource_<kind>.png`, and a shrunk copy of the bush you pulled it
+off beats any symbol. If we did not, show a **Nerd Font glyph for its TYPE** (sword, shield,
+flask, gold bars for refined stock, a bone for a trophy), coloured by type so the glyph
+carries two facts. The count and the name always stay on the row; an icon narrows the guess,
+it is not the answer. Used by the counters, the Vault list, the extraction tally and the
+over-head harvest pop, which is why it lives in one place. **Name the glyph, never the
+codepoint**: this font's Material Design block is shifted from the upstream table, so a
+hand-copied codepoint lands on a neighbour — `md-tshirt_crew` drew a *keyboard*, and a test
+that only asked "is this glyph in the font?" passed on it. `nf::ALL` is checked against the
+face's own `glyph_name`, so being wrong now requires naming the wrong thing.
+
 **Town has a nav, not just a plaza.** Every district is a chip in a frosted travel column
 (1/6 width, same as the menu's nav): click it or press its number to go there, and the one
 you are standing in reads as selected so the column doubles as "where am I". Walking still

@@ -22,6 +22,12 @@ pub(crate) fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, Wit
 #[derive(Resource)]
 pub(crate) struct UiFont(Handle<Font>);
 
+/// The bundled symbol-capable UI face, compiled in. Module scope so a test can ask the same
+/// bytes the game installs whether a glyph is really in there — a Nerd Font codepoint the
+/// face happens not to carry draws as a tofu box, and nothing at runtime complains.
+pub(crate) const UI_FONT_BYTES: &[u8] =
+    include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf");
+
 pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
     // Embed the Nerd Font bytes at COMPILE time and register it directly as a Font
     // asset, bypassing the async asset loader. Loading it as a loose/streamed asset was
@@ -29,9 +35,7 @@ pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font
     // every text node fell back to Bevy's default face, which has the Latin glyphs but
     // none of the private-use icon codepoints, so all the HUD icons rendered as tofu
     // boxes. Compiling the bytes in makes the symbol-capable font ALWAYS present.
-    const FONT_BYTES: &[u8] =
-        include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf");
-    match Font::try_from_bytes(FONT_BYTES.to_vec()) {
+    match Font::try_from_bytes(UI_FONT_BYTES.to_vec()) {
         Ok(font) => {
             commands.insert_resource(UiFont(fonts.add(font)));
         }

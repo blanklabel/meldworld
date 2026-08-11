@@ -183,6 +183,8 @@ pub fn row_chip(on: bool) -> impl Bundle {
         Node {
             width: Val::Percent(100.0),
             justify_content: JustifyContent::FlexStart,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
             padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
             border: UiRect::all(Val::Px(1.0)),
             ..default()

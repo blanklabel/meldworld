@@ -37,6 +37,7 @@ mod ambient; // client-side decorative life: world-snapped grass scatter + biome
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Last City hub: districts, plaza, HUD
 mod flags; // launch-time `MELD_*` / `?query` toggles
+mod icons; // one icon per item kind: its own sprite if we drew it, else a type glyph
 mod menu; // the three-column cascading main menu (nav -> section -> pane)
 mod mocks; // offline screenshot/demo seeds
 mod music; // one looping background track per screen (assets/music/*.mp3)
@@ -2147,8 +2148,19 @@ mod potion_menu_tests {
 /// stock arrived in a panel you were not looking at, and nothing on screen said a unit had
 /// been banked. The whole point of paying per tick is that you can SEE it paying.
 pub(crate) struct HarvestPop {
-    pub label: String,
+    /// The item kind, kept beside the words so the floater can wear the material's own
+    /// sprite: "+1 Bog Myrrh" beside a picture of the bush you just pulled it off is the
+    /// same read as the node in the world, and the label alone cannot recover the kind.
+    pub kind: String,
+    pub qty: i32,
     pub age: f32,
+}
+
+impl HarvestPop {
+    /// What the floater says. The icon goes in front of this, never instead of it.
+    pub fn label(&self) -> String {
+        format!("+{} {}", self.qty, crate::icons::display_name(&self.kind))
+    }
 }
 
 /// The floaters currently in the air, oldest first.
@@ -2164,22 +2176,17 @@ impl HarvestPops {
     /// Note a unit banked. Same material twice in a row stacks into one floater rather than
     /// printing a column of identical lines.
     pub fn banked(&mut self, kind: &str, qty: i32) {
-        let pretty = kind.replace('_', " ");
         if let Some(last) = self.items.last_mut() {
-            if last.age < 0.35 && last.label.ends_with(&pretty) {
-                let n: i32 = last
-                    .label
-                    .trim_start_matches('+')
-                    .split(' ')
-                    .next()
-                    .and_then(|n| n.parse().ok())
-                    .unwrap_or(1);
-                last.label = format!("+{} {pretty}", n + qty.max(1));
+            // Merging on the KIND rather than by parsing the count back out of the label:
+            // the label is for the player, and reading state out of a string you formatted
+            // is how a rename quietly breaks the tally.
+            if last.age < 0.35 && last.kind == kind {
+                last.qty += qty.max(1);
                 last.age = 0.0;
                 return;
             }
         }
-        self.items.push(HarvestPop { label: format!("+{} {pretty}", qty.max(1)), age: 0.0 });
+        self.items.push(HarvestPop { kind: kind.to_string(), qty: qty.max(1), age: 0.0 });
     }
 }
 
@@ -2194,18 +2201,18 @@ mod harvest_pop_tests {
         let mut pops = HarvestPops::default();
         pops.banked("bog_myrrh", 1);
         assert_eq!(pops.items.len(), 1);
-        assert_eq!(pops.items[0].label, "+1 bog myrrh", "the key is shown as words");
+        assert_eq!(pops.items[0].label(), "+1 Bog Myrrh", "the key is shown as words");
 
         // A second unit of the same thing, straight away, becomes "+2" rather than a
         // second identical line — a gather is many ticks and that would be a column.
         pops.banked("bog_myrrh", 1);
         assert_eq!(pops.items.len(), 1);
-        assert_eq!(pops.items[0].label, "+2 bog myrrh");
+        assert_eq!(pops.items[0].label(), "+2 Bog Myrrh");
 
         // A different material is its own floater.
         pops.banked("peat_iron", 1);
         assert_eq!(pops.items.len(), 2);
-        assert_eq!(pops.items[1].label, "+1 peat iron");
+        assert_eq!(pops.items[1].label(), "+1 Peat Iron");
     }
 
     /// Once a floater has aged out it is dropped, so the stack over the head cannot grow

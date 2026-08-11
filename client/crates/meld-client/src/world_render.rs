@@ -558,24 +558,10 @@ pub(crate) fn setup(
         })
         .collect();
 
-    // Bespoke HD-2D prop billboards (PixelLab), one PNG per key under `assets/props/`.
-    let prop_sprites: HashMap<String, Handle<Image>> = [
-        "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
-        "obstacle_tree_willow", "obstacle_tree_bushy",
-        "obstacle_boulder", "obstacle_pond", "obstacle_dune",
-        "obstacle_rock_spire", "obstacle_cactus", "obstacle_cliff", "obstacle_lava",
-        "obstacle_cinder_rock", "obstacle_ice_spire", "obstacle_frozen_pond",
-        "obstacle_snow_drift", "obstacle_bog_pool", "obstacle_mire_root", "obstacle_fungal_wall",
-        "resource_bloom_herb", "resource_heartoak_bark", "resource_sun_salts",
-        "resource_dune_iron", "resource_ember_ash", "resource_cinder_ore",
-        "resource_frost_lichen", "resource_rime_ore", "resource_bog_myrrh", "resource_peat_iron",
-        "connector_ladder", "connector_rope", "connector_ramp",
-        "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
-        "marker_target_marker",
-    ]
-    .iter()
-    .map(|&k| (k.to_string(), assets.load(format!("props/{k}.png"))))
-    .collect();
+    let prop_sprites: HashMap<String, Handle<Image>> = PROP_KEYS
+        .iter()
+        .map(|&k| (k.to_string(), assets.load(format!("props/{k}.png"))))
+        .collect();
 
     commands.insert_resource(WorldAssets {
         class_chars,
@@ -1299,6 +1285,26 @@ pub(crate) fn title_case(s: &str) -> String {
         None => String::new(),
     }
 }
+
+/// Bespoke HD-2D prop billboards (PixelLab), one PNG per key under `assets/props/`.
+///
+/// A const rather than a literal inside `setup`, because the menus reach for the same
+/// sprites (`icons`) and a name that only exists at the call site cannot be checked — a
+/// menu asking for art nobody loads draws a hole where the icon should be.
+pub(crate) const PROP_KEYS: [&str; 39] = [
+    "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
+    "obstacle_tree_willow", "obstacle_tree_bushy",
+    "obstacle_boulder", "obstacle_pond", "obstacle_dune",
+    "obstacle_rock_spire", "obstacle_cactus", "obstacle_cliff", "obstacle_lava",
+    "obstacle_cinder_rock", "obstacle_ice_spire", "obstacle_frozen_pond",
+    "obstacle_snow_drift", "obstacle_bog_pool", "obstacle_mire_root", "obstacle_fungal_wall",
+    "resource_bloom_herb", "resource_heartoak_bark", "resource_sun_salts",
+    "resource_dune_iron", "resource_ember_ash", "resource_cinder_ore",
+    "resource_frost_lichen", "resource_rime_ore", "resource_bog_myrrh", "resource_peat_iron",
+    "connector_ladder", "connector_rope", "connector_ramp",
+    "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
+    "marker_target_marker",
+];
 
 /// Biome theme name → ground-texture / ring index (matches `BIOMES` order in
 /// meld-world and the texture bindings in `ground_biome.wgsl`).

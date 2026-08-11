@@ -55,3 +55,8 @@ rlimit = "0.10"
 uuid = { version = "1", features = ["v4", "v7", "js"] }
 getrandom = { version = "0.2", features = ["js"] }
 web-sys = { version = "0.3", features = ["Window", "Location", "UrlSearchParams"] }
+
+[dev-dependencies]
+# Reading the bundled face in tests, so "is this glyph real?" is checked rather than
+# verified by hand once. Bevy's text stack already pulls it in.
+ttf-parser = "0.21"

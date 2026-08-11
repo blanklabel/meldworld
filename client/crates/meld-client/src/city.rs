@@ -1255,11 +1255,19 @@ pub(crate) struct CounterRow {
     pub(crate) label: String,
     pub(crate) enabled: bool,
     pub(crate) current: bool,
+    /// The item kind this row is about, so the panel can put its icon in front of the
+    /// words — its own sprite where we drew one, else a glyph for its type. `None` for a
+    /// row that is a switch rather than a thing (the anvil's quench, a leaderboard entry).
+    pub(crate) icon: Option<String>,
 }
 
 impl CounterRow {
     fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), enabled: true, current: false }
+        Self { key: key.into(), label: label.into(), enabled: true, current: false, icon: None }
+    }
+    fn of(mut self, kind: impl Into<String>) -> Self {
+        self.icon = Some(kind.into());
+        self
     }
     fn dim(mut self) -> Self {
         self.enabled = false;
@@ -1347,7 +1355,15 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
             .take(ITEM_ROWS + GEAR_ROWS)
             .enumerate()
             .map(|(i, (kind, price))| {
-                CounterRow::new((i + 1).to_string(), format!("{kind} x{} @{price}c", held(kind)))
+                CounterRow::new(
+                    (i + 1).to_string(),
+                    format!(
+                        "{} x{} @{price}c",
+                        crate::icons::display_name(kind),
+                        held(kind)
+                    ),
+                )
+                .of(kind)
             })
             .collect();
         return v;
@@ -1363,7 +1379,8 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
         let row = CounterRow::new(
             (i + 1).to_string(),
             format!("{} {}c{}", s.name, s.price_chits, afford(s.price_chits)),
-        );
+        )
+        .of(s.item_kind.clone());
         v.rows.push(if inv.chits >= s.price_chits { row } else { row.dim() });
     }
     // The Requisition's plain gear shares the counter, on the keys after the items:
@@ -1377,7 +1394,8 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
         let row = CounterRow::new(
             (ITEM_ROWS + i + 1).to_string(),
             format!("{}{} {}c{}", g.name, stat, g.price_chits, afford(g.price_chits)),
-        );
+        )
+        .of(g.slot.clone());
         v.rows.push(if inv.chits >= g.price_chits { row } else { row.dim() });
     }
     if !shop.gear.is_empty() {
@@ -1503,7 +1521,11 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
             String::new(),
             format!("{} x{}{gate}", r.name, r.output_quantity),
         )
-        .cursor(i == craft.cursor);
+        .cursor(i == craft.cursor)
+        .of(meld_proto::consumables::recipe(&r.recipe).map_or_else(
+            || r.recipe.clone(),
+            |d| d.output.to_string(),
+        ));
         v.rows.push(if r.craftable && !short { row } else { row.dim() });
     }
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
@@ -1511,7 +1533,7 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     let quench = if craft.catalyze { "on" } else { "off" };
     v.rows.push(CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])));
     v.rows.push(CounterRow::new("C", format!("quench: {quench}")));
-    v.rows.push(CounterRow::new("F", format!("forge from {anvil}")));
+    v.rows.push(CounterRow::new("F", format!("forge from {anvil}")).of(anvil));
     v.rows.push(CounterRow::new("left/right", bench_line(craft, inv).trim().to_string()));
     // The detail column belongs to whatever the cursor is on: which materials, how many of
     // each are already in the Vault, and what comes out. "1/2 dune_iron" is the whole
@@ -1521,7 +1543,11 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
             v.detail.push(r.name.clone());
             v.detail.push(format!("Makes {} — {} line", r.output_quantity, r.skill));
             for (kind, need) in &r.inputs {
-                v.detail.push(format!("  {}/{need} {kind}", held(kind)));
+                v.detail.push(format!(
+                    "  {}/{need} {}",
+                    held(kind),
+                    crate::icons::display_name(kind)
+                ));
             }
             if !r.craftable {
                 v.detail.push(format!("Locked until {} {}.", r.skill, r.required_level));
@@ -1687,7 +1713,7 @@ mod shop_tests {
         inv.materials = vec![("bloom_herb".to_string(), 1)];
         let text = craft_view(&craft, &inv).flat();
         // Have/need per input is the whole answer to "what am I missing".
-        assert!(text.contains("1/2 bloom_herb"), "{text}");
+        assert!(text.contains("1/2 Bloom Herb"), "{text}");
         assert!(text.contains("(short)"), "{text}");
         // A locked row names the level rather than just refusing later.
         assert!(text.contains("needs alchemy 9"), "{text}");
@@ -1701,7 +1727,7 @@ mod shop_tests {
         craft.cursor = 0;
         inv.materials = vec![("bloom_herb".to_string(), 5)];
         let view = craft_view(&craft, &inv);
-        assert!(view.flat().contains("5/2 bloom_herb"), "{}", view.flat());
+        assert!(view.flat().contains("5/2 Bloom Herb"), "{}", view.flat());
         let salve = view.rows.iter().find(|r| r.label.starts_with("Bloom Salve")).unwrap();
         assert!(salve.enabled, "a stocked, unlocked recipe is not greyed: {salve:?}");
         assert!(!salve.label.contains("(short)"), "{salve:?}");
@@ -1773,10 +1799,10 @@ mod shop_tests {
         let text = shop_view(&shop, &inv, true).flat();
         assert!(text.contains("The Broker"), "{text}");
         // Richest first, with the stack you hold and the price each.
-        assert!(text.contains("[1] bog_ichor x2 @66c"), "{text}");
-        assert!(text.contains("[2] bloom_herb x4 @5c"), "{text}");
+        assert!(text.contains("[1] Bog Ichor x2 @66c"), "{text}");
+        assert!(text.contains("[2] Bloom Herb x4 @5c"), "{text}");
         // A price for something you do not carry is noise.
-        assert!(!text.contains("mystery_rock"), "{text}");
+        assert!(!text.to_lowercase().contains("mystery"), "{text}");
         // And the way back is on the row.
         assert!(text.contains("[B] buy instead"), "{text}");
         assert!(sellable(&shop, &inv).len() == 2);
@@ -3094,6 +3120,7 @@ pub(crate) fn render_counter_panel(
     shop_selling: Res<ShopSelling>,
     craft: Res<CraftData>,
     board: Res<VanguardBoardData>,
+    wa: Option<Res<WorldAssets>>,
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
@@ -3147,6 +3174,9 @@ pub(crate) fn render_counter_panel(
                         // by number key — the same rule the over-head prompts follow.
                         main.spawn((Button, CounterRowButton(i), glass::row_chip(r.current)))
                             .with_children(|b| {
+                                if let Some(kind) = &r.icon {
+                                    crate::icons::spawn_icon(b, wa.as_deref(), kind, 22.0);
+                                }
                                 let label = if r.key.is_empty() {
                                     r.label.clone()
                                 } else {
