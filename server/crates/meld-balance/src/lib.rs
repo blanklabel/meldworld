@@ -94,6 +94,12 @@ pub struct Runs {
     pub fights_per_level_ramp: i32,
     pub xp_reference_creature: f64,
     pub max_hero_level: i32,
+    /// How XP falls off once a hero has out-levelled the ground it is standing on:
+    /// full pay inside `xp_gap_grace` levels of the encounter, then linear down to
+    /// `xp_gap_floor_mult` at `xp_gap_zero`. See `meld_run::xp_after_level_gap`.
+    pub xp_gap_grace: i32,
+    pub xp_gap_zero: i32,
+    pub xp_gap_floor_mult: f64,
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
     pub town_portal_drop_chance: f64,

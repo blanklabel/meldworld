@@ -61,6 +61,37 @@ pub fn xp_total_to_level(level: i32, balance: &Balance) -> i64 {
     (1..level.max(1)).map(|l| xp_to_next(l, balance)).sum()
 }
 
+/// What an encounter of `encounter_level` is worth to a hero of `hero_level`: full pay
+/// while the hero is within `xp_gap_grace` levels of it, then falling linearly to
+/// `xp_gap_floor_mult` once it is `xp_gap_zero` levels above. A hero at or below the
+/// encounter's level is never penalised.
+///
+/// This is what makes "distance is the difficulty axis" true of REWARD and not only of
+/// danger. Creature power rides distance, but the level curve is priced at the level's
+/// own matched depth (`d = 12.5 × L`), so a party that levels without travelling gets
+/// paid at hub rates against a hub-rate curve — measured, two heroes ground d=0 to level
+/// 16 while taking 0-1 damage a fight, then died in one encounter the moment they walked
+/// out. The falloff flattens that grind around level 6-8 and puts the next level where
+/// the danger is.
+pub fn xp_after_level_gap(
+    xp: i64,
+    encounter_level: i32,
+    hero_level: i32,
+    balance: &Balance,
+) -> i64 {
+    let r = &balance.runs;
+    let gap = (hero_level - encounter_level.max(1)) as f64;
+    let grace = r.xp_gap_grace.max(0) as f64;
+    if gap <= grace {
+        return xp;
+    }
+    let zero = (r.xp_gap_zero as f64).max(grace + 1.0);
+    let t = ((gap - grace) / (zero - grace)).clamp(0.0, 1.0);
+    let mult = 1.0 - t * (1.0 - r.xp_gap_floor_mult.clamp(0.0, 1.0));
+    // A kill is still a kill: an award that was worth something stays worth something.
+    ((xp as f64) * mult).round().clamp(0.0, xp as f64) as i64
+}
+
 /// One player's ephemeral run state.
 #[derive(Debug, Clone)]
 pub struct PlayerRun {
@@ -900,6 +931,54 @@ mod tests {
         assert!(same_level_encounter_xp(1, &b) < same_level_encounter_xp(20, &b));
         assert!(xp_to_next(1, &b) < xp_to_next(20, &b));
         assert!(xp_to_next(20, &b) < xp_to_next(255, &b));
+    }
+
+    /// The reported bug, as arithmetic: a party that levels without travelling was paid
+    /// hub rates against a curve priced at its own level's depth, so it climbed to the
+    /// teens on creatures that could not scratch it and then died the moment it walked
+    /// out. Ground you have outgrown has to stop paying for it.
+    #[test]
+    fn ground_you_have_outgrown_stops_paying_for_itself() {
+        let b = Balance::load_default().unwrap();
+        let full = 1000i64;
+        // At level, and every level BELOW it, the encounter pays in full — a hero who
+        // is behind must never be taxed for being behind.
+        for hero in [1, 5, 12] {
+            assert_eq!(xp_after_level_gap(full, 12, hero, &b), full, "hero {hero} was taxed");
+        }
+        // …and so does a hero inside the grace band.
+        let grace = b.runs.xp_gap_grace;
+        assert_eq!(xp_after_level_gap(full, 12, 12 + grace, &b), full);
+        // Past it, the payout falls off, monotonically, and bottoms out at the floor.
+        let mut prev = full;
+        for over in grace + 1..=b.runs.xp_gap_zero + 4 {
+            let paid = xp_after_level_gap(full, 12, 12 + over, &b);
+            assert!(paid <= prev, "the falloff went back up at +{over}");
+            assert!(paid <= full, "a gap paid MORE than the encounter was worth");
+            prev = paid;
+        }
+        let floor = (full as f64 * b.runs.xp_gap_floor_mult).round() as i64;
+        assert_eq!(xp_after_level_gap(full, 12, 12 + b.runs.xp_gap_zero, &b), floor);
+        assert_eq!(xp_after_level_gap(full, 12, 200, &b), floor, "the floor is a floor");
+        assert!(floor > 0, "a kill has to stay worth something");
+        // Zero in, zero out — the falloff never invents a reward.
+        assert_eq!(xp_after_level_gap(0, 1, 99, &b), 0);
+
+        // The shape that matters at the table: the hub ring (mlevel 1) is worth full
+        // XP to a new hero and next to nothing to a level-12 one, while a hero AT the
+        // depth its level is priced for (d = 12.5 x L) is never affected at all.
+        assert_eq!(xp_after_level_gap(full, 1, 1, &b), full);
+        assert!(
+            xp_after_level_gap(full, 1, 12, &b) * 4 < full,
+            "grinding the hub at level 12 still pays"
+        );
+        for level in [1, 5, 12, 20, 40] {
+            assert_eq!(
+                xp_after_level_gap(full, level, level, &b),
+                full,
+                "level {level} at its own depth lost XP"
+            );
+        }
     }
 
     #[test]

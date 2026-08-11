@@ -86,8 +86,19 @@ impl<'a> Scaling<'a> {
     /// Before this split, HP rode `stat_mult` while gear rode tier: different shapes,
     /// so no exponent could make them track, and a geared hero one-shot ordinary
     /// creatures at every distance while an ungeared one did fine.
+    ///
+    /// Linear in `d`, NOT in the integer `tier(d)` — that made it a staircase, and at
+    /// `hp_per_tier = 5.4` the step is 6.4x. Measured: a forest stalker at d=99 died in
+    /// 2 swings and the same creature at d=100 took 10, so one unit of walking turned an
+    /// 8-second fight into a 40-second one. Nothing threatened the party either side of
+    /// the line, so the only thing the step changed was how long they held the button
+    /// down. The `- 0.5` puts the line through each band's CENTRE, so the depths this
+    /// was tuned at (d=150, 250, …) keep the exact multiplier they had and only the
+    /// cliff between them goes.
     pub fn hp_mult(&self, d: i64) -> f64 {
-        1.0 + self.b.world_scaling.hp_per_tier * self.tier(d) as f64
+        let ws = &self.b.world_scaling;
+        let bands = d as f64 / ws.tier_divisor.max(1.0) - 0.5;
+        (1.0 + ws.hp_per_tier * bands).max(1.0)
     }
 
     /// Armour's own curve: `(1 + d/500)^def_mult_exp`, deliberately gentler than
@@ -6422,6 +6433,45 @@ mod tests {
         // And onboarding never meets one.
         let tut = Arena::generate(&b, 5, true);
         assert!(tut.monsters.iter().all(|m| m.encounter_class != "undead_rite"));
+    }
+
+    /// Creature health may climb as fast as the design wants, but it may not JUMP:
+    /// riding the integer `tier(d)` made it a staircase with a 6.4x riser, so a forest
+    /// stalker at d=99 died in 2 swings and the same creature one step later took 10.
+    /// A single unit of walking must never change a fight's length by more than a hair.
+    #[test]
+    fn creature_health_climbs_without_a_cliff() {
+        let b = Balance::load_default().unwrap();
+        let s = Scaling::new(&b);
+        // One unit of walking may add at most one unit of the curve's own slope — a
+        // band's worth spread over the band, never a band's worth in a single step.
+        let step_cap = b.world_scaling.hp_per_tier / b.world_scaling.tier_divisor;
+        let mut prev = s.hp_mult(0);
+        for d in 1..=4000i64 {
+            let now = s.hp_mult(d);
+            assert!(now >= prev - 1e-9, "creature health fell going deeper at d={d}");
+            assert!(
+                now - prev <= step_cap + 1e-9,
+                "creature health jumps {:.2} at d={d} ({prev:.2} -> {now:.2})",
+                now - prev
+            );
+            prev = now;
+        }
+        // The depths the curve was tuned at keep the multiplier they had: the fix takes
+        // the cliff out from between the bands, it does not re-tune the game.
+        let per = b.world_scaling.hp_per_tier;
+        for band in 1..=6i64 {
+            let centre = band * b.world_scaling.tier_divisor as i64 + 50;
+            let want = 1.0 + per * band as f64;
+            assert!(
+                (s.hp_mult(centre) - want).abs() < 1e-6,
+                "band {band}'s centre (d={centre}) moved: {} vs {want}",
+                s.hp_mult(centre)
+            );
+        }
+        // And the hub ring is still the hub ring — the tutorial band is untouched.
+        assert_eq!(s.hp_mult(0), 1.0);
+        assert_eq!(s.hp_mult(50), 1.0);
     }
 
     #[test]
