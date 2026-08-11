@@ -1384,6 +1384,7 @@ pub(crate) fn rebuild_command_menu(
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     mut menu: ResMut<BattleMenu>,
+    roster: Res<crate::PartyRoster>,
     existing: Query<Entity, With<CommandWindow>>,
 ) {
     let show = battle.active.is_some();
@@ -1435,11 +1436,16 @@ pub(crate) fn rebuild_command_menu(
     // The selected row's tooltip. An ability nobody can read is an ability nobody
     // presses, so the description rides under the list — from the shared registry,
     // which is also what the server gates on.
+    // The registry's prose, then the numbers the server resolved from balance. "Spends
+    // Adrenaline" is not a decision; "40 of 100 Adrenaline (25 per Attack)" is.
     let tooltip: String = match level {
         MenuLevel::Target | MenuLevel::Revoke => String::new(),
         _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
             .get(menu.cursor)
-            .map(|e| e.tooltip.clone())
+            .map(|e| match roster.effect(e.action.skill_key().unwrap_or_default()) {
+                "" => e.tooltip.clone(),
+                fx => format!("{}\n{fx}", e.tooltip),
+            })
             .unwrap_or_default(),
     };
 

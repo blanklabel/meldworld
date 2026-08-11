@@ -1756,6 +1756,30 @@ impl WorldActor {
         (synergies, combos)
     }
 
+    /// Every ability this player's classes can hold, with its magnitudes resolved from
+    /// balance. The registry's prose is shared with the client, but the NUMBERS are
+    /// `[TUNABLE]`s the client cannot read — so a row could say "Spends Adrenaline" and
+    /// never how much, which is the only question that decides between two rows. Sent
+    /// with the roster so the battle menu and the abilities panel read the same line.
+    fn party_ability_views(&self, pid: &str) -> Vec<wr::AbilityView> {
+        let Some(comp) = self.party_classes.get(pid) else {
+            return Vec::new();
+        };
+        let mut out: Vec<wr::AbilityView> = Vec::new();
+        for class in comp {
+            for def in meld_proto::skills::skills_for_class(meld_run::class_key(*class)) {
+                if out.iter().any(|a| a.key == def.key) {
+                    continue;
+                }
+                let effect = meld_run::ability_effects::effect_line(def.key, &self.balance);
+                if !effect.is_empty() {
+                    out.push(wr::AbilityView { key: def.key.to_string(), effect });
+                }
+            }
+        }
+        out
+    }
+
     fn party_views(&self, pid: &str) -> Vec<wr::HeroView> {
         let inst = self;
         let Some(comp) = inst.party_classes.get(pid).cloned() else {
@@ -2833,7 +2857,7 @@ impl GameState {
                                     name.clone(),
                                 ));
                                 (
-                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new() })],
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new(), abilities: Vec::new() })],
                                     vec![WorldEffect::SetSessionHeroName {
                                         player_id: player_id.to_string(),
                                         slot,
@@ -2875,7 +2899,7 @@ impl GameState {
                                     back,
                                 ));
                                 (
-                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new() })],
+                                    vec![out_msg(player_id, &wr::Party { heroes: Vec::new(), synergies: Vec::new(), combos: Vec::new(), abilities: Vec::new() })],
                                     vec![WorldEffect::SetSessionHeroRow {
                                         player_id: player_id.to_string(),
                                         slot,
@@ -3385,6 +3409,7 @@ impl GameState {
                         heroes: rosters.get(pid).cloned().unwrap_or_default(),
                         synergies,
                         combos,
+                        abilities: inst.party_ability_views(pid),
                     }
                 },
             ));
@@ -3865,7 +3890,7 @@ impl WorldActor {
                 player_id,
                 &{
                     let (synergies, combos) = self.party_depth(player_id);
-                    wr::Party { heroes: self.party_views(player_id), synergies, combos }
+                    wr::Party { heroes: self.party_views(player_id), synergies, combos, abilities: self.party_ability_views(player_id) }
                 },
             )],
             effects,
@@ -3920,7 +3945,7 @@ impl WorldActor {
                 player_id,
                 &{
                     let (synergies, combos) = self.party_depth(player_id);
-                    wr::Party { heroes: self.party_views(player_id), synergies, combos }
+                    wr::Party { heroes: self.party_views(player_id), synergies, combos, abilities: self.party_ability_views(player_id) }
                 },
             )],
             effects,
@@ -5838,7 +5863,8 @@ impl WorldActor {
         // the party panel already listens to.
         let refreshed = self.party_views(player_id);
         let (synergies, combos) = self.party_depth(player_id);
-        out.push(out_msg(player_id, &wr::Party { heroes: refreshed, synergies, combos }));
+        let abilities = self.party_ability_views(player_id);
+        out.push(out_msg(player_id, &wr::Party { heroes: refreshed, synergies, combos, abilities }));
         (out, Vec::new())
     }
 
@@ -6764,7 +6790,8 @@ impl WorldActor {
             ));
             let party = self.party_views(&pid);
             let (synergies, combos) = self.party_depth(&pid);
-            out.push(out_msg(&pid, &wr::Party { heroes: party, synergies, combos }));
+            let abilities = self.party_ability_views(&pid);
+            out.push(out_msg(&pid, &wr::Party { heroes: party, synergies, combos, abilities }));
         }
         out
     }
@@ -7467,7 +7494,8 @@ impl WorldActor {
         for pid in &members {
             let heroes = self.party_views(pid);
             let (synergies, combos) = self.party_depth(pid);
-            out.push(out_msg(pid, &wr::Party { heroes, synergies, combos }));
+            let abilities = self.party_ability_views(pid);
+            out.push(out_msg(pid, &wr::Party { heroes, synergies, combos, abilities }));
         }
         // Perk tiers scale with run level, so they only change on a level-up.
         for pid in &leveled {

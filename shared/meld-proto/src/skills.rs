@@ -10,6 +10,13 @@
 //! in one row means the battle menu, the abilities view and the server's gate all
 //! read the same line.
 //!
+//! **The NUMBERS do not live here** — they are `[TUNABLE]`s, and this crate is shared
+//! with a client that has no `balance.toml`. So a description says what KIND of thing
+//! an ability is, and `meld_run::ability_effects` formats the magnitudes from balance
+//! and ships them beside it on `run.party`. Write prose here that stays true whatever
+//! the numbers are retuned to; if a row can only be understood by knowing a
+//! coefficient, that half belongs in the effect line, not in a literal here.
+//!
 //! **Unlock levels are square numbers** — 1, 4, 9, 16, 25, 36, … out to about 100.
 //! The XP curve costs `L + 1` fights per level, so cumulative effort grows with the
 //! square of the level; spacing unlocks on squares therefore makes each new ability
@@ -349,7 +356,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Sanctuary",
         class: "resonant",
         unlock: 25,
-        description: "Barrier for the WHOLE party.",
+        description: "Regen for the WHOLE party, and it costs you nothing.",
         upgrades: None,
         rank: "",
     },
@@ -358,7 +365,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Revitalize",
         class: "resonant",
         unlock: 36,
-        description: "A large single-target heal with no HP cost to you.",
+        description: "A large heal for ONE ally, paid from your own HP.",
         upgrades: None,
         rank: "",
     },
@@ -367,7 +374,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Lifewell",
         class: "resonant",
         unlock: 49,
-        description: "Regen for the WHOLE party.",
+        description: "Heals the WHOLE party and grants them Regen, paid from your own HP.",
         upgrades: None,
         rank: "",
     },
@@ -376,7 +383,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Bloodbond",
         class: "resonant",
         unlock: 64,
-        description: "Heals an ally and grants them Regen in one turn, paid from your own HP.",
+        description: "Heals ONE ally, Wards them and grants Regen in one turn — the heaviest single-target boon, and the heaviest HP cost to you.",
         upgrades: None,
         rank: "",
     },
@@ -385,7 +392,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Martyr",
         class: "resonant",
         unlock: 81,
-        description: "Spends a large share of your own HP to bring an ally back up to fighting shape.",
+        description: "Heals the WHOLE party for most of their max HP, and spends most of your own to do it.",
         upgrades: None,
         rank: "",
     },
@@ -394,7 +401,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Eternal Bloom",
         class: "resonant",
         unlock: 100,
-        description: "The capstone: the whole party is healed, warded and given Regen at once.",
+        description: "The capstone: the whole party is healed and Warded at once, paid from your own HP.",
         upgrades: None,
         rank: "",
     },

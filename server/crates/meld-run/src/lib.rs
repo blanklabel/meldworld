@@ -6,6 +6,8 @@
 //! party. Extraction channels, death durability (HTTP/DB side), and abandon are
 //! the next slices; the run/battle spine they hang off is here.
 
+pub mod ability_effects;
+
 use std::collections::HashMap;
 
 use meld_balance::Balance;

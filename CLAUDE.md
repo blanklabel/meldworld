@@ -482,6 +482,20 @@ from it, and the party screen lists each hero's ladder from it — so a kit is d
 once. Unlock levels follow the orders' rank ladders (1 / 2 / 5 / 9 / 13 / 17), which is
 what makes levelling read as promotion.
 
+**A description without a number is flavour.** The registry can only say what KIND of
+thing an ability is — magnitudes are `[TUNABLE]`s and `meld-proto` is shared with a
+client that has no `balance.toml` — so every row read as mood: "A heavy blow. Spends
+Adrenaline." never said 40 of 100, and you could not tell Power Strike from Frenzy
+without pressing one and being refused.
+[`meld_run::ability_effects`](server/crates/meld-run/src/ability_effects.rs) formats the
+magnitudes from balance and they ride the roster (`run.party` → `abilities`), so the
+battle tooltip and the Abilities panel both show prose then numbers, and a retuned
+`[TUNABLE]` retunes the tooltip. A new ability with no arm there **fails a test** rather
+than shipping a blank line. The two halves also have to agree: the registry had shipped
+Sanctuary promising Barrier while granting Regen, and Revitalize advertising "no HP cost
+to you" while charging 30% of the heal — `the_prose_and_the_numbers_agree` is what
+catches that now.
+
 New classes: add the enum variant (`meld-proto` `CharacterClass`), `[player.<key>]` stats +
 any `[battle]` tunables, the `class_key` mapping (`meld-run`), the kit in `meld-battle`, and the
 client menu branch (`menu_entries` keyed off the active hero's `class:` status).
