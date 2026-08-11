@@ -162,6 +162,13 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**Town has a nav, not just a plaza.** Every district is a chip in a frosted travel column
+(1/6 width, same as the menu's nav): click it or press its number to go there, and the one
+you are standing in reads as selected so the column doubles as "where am I". Walking still
+works — travel just lands you inside the district's radius so `[E]` behaves identically.
+`TRAVEL_KEYS` is held against `CITY_DISTRICTS` by a test, because the column advertises its
+keys and a district past the end of that list would silently have none (it already did).
+
 **The three-column convention.** Every cascade screen is **nav | main | detail** at fixed
 fractions of the window — **1/6, 1/2, 1/3**, which tile it exactly (asserted at compile time
 in [`glass.rs`](client/crates/meld-client/src/glass.rs)). Fractions, not content-sizing,
