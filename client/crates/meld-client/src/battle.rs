@@ -1974,6 +1974,96 @@ pub(crate) fn condition_tint(statuses: &[String]) -> Option<(Color, &'static str
     None
 }
 
+/// A rim of the condition's colour around a combatant's own sprite, keyed by which
+/// condition put it there so a change of state rebuilds it.
+#[derive(Component)]
+pub(crate) struct ConditionRim(&'static str);
+
+/// Paint the condition onto the FIGHTER, not just its readout.
+///
+/// The cell and the nameplate already take the tint, and in play that was missed entirely
+/// — the eye is on the arena, not on the party strip. So the sprite wears its own
+/// condition: a copy of it, a little larger and a hair behind, in the condition's colour.
+/// Same trick as the overworld's reach rim, and note the same trap — emissive on a
+/// TEXTURED billboard floods the whole quad, so this is an unlit alpha-blended overlay
+/// with depth-write off rather than anything glowing.
+pub(crate) fn update_condition_rims(
+    mut commands: Commands,
+    time: Res<Time>,
+    battle: Res<BattleData>,
+    wa: Option<Res<WorldAssets>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    quads: Query<(Entity, &SpriteQuad, Option<&Children>)>,
+    rims: Query<(&ConditionRim, &MeshMaterial3d<StandardMaterial>)>,
+) {
+    let Some(wa) = wa else { return };
+    // Slower and gentler than the reach rim, and it never drops out: a condition is a
+    // state you are IN, so it should sit there breathing rather than blink for attention.
+    let phase = (time.elapsed_secs() * std::f32::consts::TAU / 2.6).sin();
+    let alpha = 0.46 + 0.22 * phase;
+
+    for (quad, sq, kids) in &quads {
+        let want = battle
+            .combatants
+            .iter()
+            .find(|c| c.id == sq.id)
+            .filter(|c| c.hp > 0)
+            .and_then(|c| condition_tint(&c.statuses));
+        let mine: Vec<Entity> = kids
+            .map(|k| k.iter().filter(|e| rims.get(*e).is_ok()).collect())
+            .unwrap_or_default();
+        match want {
+            Some((colour, key)) => {
+                let held = mine.iter().find(|e| {
+                    rims.get(**e).is_ok_and(|(r, _)| r.0 == key)
+                });
+                if let Some(held) = held.copied() {
+                    for e in mine.into_iter().filter(|e| *e != held) {
+                        commands.entity(e).despawn();
+                    }
+                    if let Ok((_, mm)) = rims.get(held) {
+                        if let Some(m) = mats.get_mut(&mm.0) {
+                            m.base_color = colour.with_alpha(alpha);
+                        }
+                    }
+                    continue;
+                }
+                for e in mine {
+                    commands.entity(e).despawn();
+                }
+                let Some(tex) = mats.get(&sq.mat).and_then(|m| m.base_color_texture.clone()) else {
+                    continue;
+                };
+                let rim = mats.add(StandardMaterial {
+                    base_color: colour.with_alpha(alpha),
+                    base_color_texture: Some(tex),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
+                    depth_bias: -1.0,
+                    double_sided: true,
+                    cull_mode: None,
+                    ..default()
+                });
+                commands.entity(quad).with_children(|p| {
+                    p.spawn((
+                        ConditionRim(key),
+                        Mesh3d(wa.sprite_quad.clone()),
+                        MeshMaterial3d(rim),
+                        // Local to the sprite quad, so it inherits the billboard's facing
+                        // and size and only has to say "a bit bigger, a bit behind".
+                        Transform::from_xyz(0.0, 0.0, -0.03).with_scale(Vec3::splat(1.10)),
+                    ));
+                });
+            }
+            None => {
+                for e in mine {
+                    commands.entity(e).despawn();
+                }
+            }
+        }
+    }
+}
+
 /// The statuses that actually drag the ATB gauge — the server's own list (`web`/`chill`/
 /// `bind`), so the snail and the tint agree with what the engine is doing.
 pub(crate) fn is_slowed(statuses: &[String]) -> bool {

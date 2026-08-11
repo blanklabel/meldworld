@@ -170,7 +170,9 @@ something is being done TO you, cool herb/metal means something is helping, so a
 the party before you read a word. An affliction outranks a boon, and being hit or being the
 active hero outranks both. `condition_tint` owns it; anything the engine slows (`web`/`chill`/
 `bind`) also wears a **snail**, because a crawling gauge with no icon was indistinguishable
-from a slow one.
+from a slow one. The **fighter itself** wears the colour too, as a rim around its own sprite
+(`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
+in a fight the eye is on the arena.
 
 **Everything you can act on is over your head, and the thing in reach glows.** The interact
 prompt, the boon prompt, the channel bar and each tick's payout ("+1 bog myrrh") live on a
@@ -179,8 +181,13 @@ work — and every prompt on it is its own tappable chip, so touch has a target 
 There is no corner Interact/Boon button and no corner channel bar any more; the corner keeps
 only Menu. Whatever `[E]` would act on wears a slow, infrequent **rim glow** (a copy of its
 own sprite, slightly larger, drawn behind it) so "in reach" is visible without a HUD line —
-and note that emissive on a TEXTURED billboard paints the whole quad, which is what made the
-old whole-sprite pulse erase the art.
+and it **throws light** on the same breath, so the ground near it brightens and the affordance
+survives being half behind a tree. Note that emissive on a TEXTURED billboard paints the whole
+quad, which is what made the old whole-sprite pulse erase the art — the rim is an unlit
+alpha-blended copy instead. Which animation FRAME lights up is set by `animate_chars` beside
+the base texture, never mirrored from another system: `illuminate_players` lives in a different
+system tuple with no ordering against it, so reading the texture from there was a frame stale
+on whichever frames the scheduler ran it first, and the hero juddered in the dark.
 
 **Town has a nav, not just a plaza.** Every district is a chip in a frosted travel column
 (1/6 width, same as the menu's nav): click it or press its number to go there, and the one
@@ -196,7 +203,14 @@ and every column's SLOT is spawned even when empty: the menu's row used to have 
 all, so opening a third column re-centred the whole thing and clicking a nav item moved the
 nav item you just clicked. Nothing shrinks; only `main` grows, so it absorbs whatever the
 minimum widths leave over. Build new panels out of `glass::columns()` + `glass::column()`
-rather than hand-rolled widths.
+rather than hand-rolled widths, and use `glass::row_chip` for list rows (full width,
+left-aligned) and `glass::chip` for tabs. **The town counters are on it too** — the Apothecary,
+the Broker, the Forge & Alembic and the Vanguard Wall all build a `CounterView` (title, nav,
+rows, detail) that `render_counter_panel` draws centred, rather than composing one long string
+into the city's bottom strip, where they read as scenery running off both edges. Rows as data
+is what lets each be its own tappable chip; the strip keeps the walking-around prompt and the
+anvil's heat bar, which wants to hold still. The travel column stands down while a counter is
+open, since both want the same left sixth.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
@@ -506,6 +520,25 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   enter its `path_clear_radius` tube — so a route to the exit is *always* feasible by
   construction (unit-tested across seeds). The client draws the path as a faint trail
   (sent on `run.started`, field `path`).
+
+- **Density is a per-AREA question, and the fan distorts it.** WG-4 bends a fixed-width
+  corridor into an arc that grows with radius, so anything placed *per unit of corridor* is
+  smeared ever thinner outward: at r=230 the arc is ~1400 units across. Both creatures and
+  maze fill compensate (`creature_radial_lane_cap`, `maze_radial_scale_cap`) — creatures by
+  walking the corridor once per corridor-width of arc, obstacles by scaling their count. The
+  trap is the other half: **any spacing/adjacency check must be asked in the BENT frame**,
+  because corridor y is an *angle*. Comparing raw corridor distance is what made the forest
+  ask for 392 trees and place 90 (a wood that read as a field), and it is why creature
+  placement measures separation in world space. Both use a grid rather than a scan, since the
+  world streams outward without bound. Two invariants are held by test: density-per-unit-area
+  must not collapse with depth, and no two standard spawns sit inside `[ai] group_radius` of
+  each other — a PACK is the only thing that may make a group, or the encounter ramp promises
+  duels and quietly hands out fives.
+
+- **Field and Forest are the same ground, different tree counts.** They share fauna, flora,
+  ground texture and dungeon pool; only `field_obstacle_mult` vs `forest_obstacle_mult` (1.3
+  vs 7.0) separates grassland you can see across from a wood you cannot. That contrast IS the
+  content, and a test holds the ratio.
 
 - **Per-section seeds & streaming.** Each area is a **section** generated from its OWN
   seed `section_seed(run_seed, n)` (`meld-world`), so sections are independent +

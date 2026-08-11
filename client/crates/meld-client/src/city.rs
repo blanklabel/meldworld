@@ -1019,12 +1019,6 @@ pub(crate) fn render_city(
     inv: Res<InventoryData>,
     session: Res<Session>,
     city: Res<CityUi>,
-    board: Res<VanguardBoardData>,
-    shop_selling: Res<ShopSelling>,
-    craft: Res<CraftData>,
-    shop: Res<ShopData>,
-    _unlocks: Res<UnlocksRes>,
-    _hero_names: Res<AccountHeroNames>,
     heat: Res<crate::overworld::HeatUi>,
     time: Res<Time>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
@@ -1051,21 +1045,15 @@ pub(crate) fn render_city(
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
         };
-        // A heat in progress owns the panel: the player is mid-blow at the anvil.
-        **t = if let Some(bar) =
-            crate::overworld::heat_line(&heat, time.elapsed_secs_f64())
-        {
-            format!("{}\n{}", craft_text(&craft, &inv), bar)
-        } else if city.craft_open {
-            format!("{}\n{prompt}", craft_text(&craft, &inv))
-        } else if city.shop_open {
-            format!("{}\n{prompt}", shop_text(&shop, &inv, shop_selling.0))
-        } else if city.board_open {
-            format!("{}\n{prompt}", vanguard_wall_text(&board))
-        } else if city.notice.is_empty() {
-            prompt
-        } else {
-            format!("{}\n{prompt}", city.notice)
+        // The counters live in the centred three-column panel now — a shop is a menu, and
+        // a menu belongs where the eye already is — so this strip is back to the one thing
+        // a strip is good for: the walking-around prompt. The anvil's HEAT stays, because
+        // it is a timing bar, and a bar that jumps around under the rows you are reading is
+        // worse than one that holds still at the foot of the screen.
+        **t = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
+            Some(bar) => format!("{bar}\n{prompt}"),
+            None if city.notice.is_empty() => prompt,
+            None => format!("{}\n{prompt}", city.notice),
         };
     }
 }
@@ -1083,37 +1071,6 @@ pub(crate) fn city_vault_text(inv: &InventoryData) -> String {
         inv.chits,
         mat_count,
         inv.gear.len()
-    )
-}
-
-/// The lit Vanguard Wall: the season's deepest dives, best first, with the
-/// reader's own placement called out (P1-1 — behaviors/endgame-seasons.md).
-/// Trimmed to the top few rows because the wall shares the city's one status
-/// line; the full 100 belongs to `AD-6`'s board screen.
-pub(crate) fn vanguard_wall_text(board: &VanguardBoardData) -> String {
-    if !board.loaded {
-        return "The Vanguard Wall flickers awake...".to_string();
-    }
-    if board.entries.is_empty() {
-        return format!(
-            "The Vanguard Wall, season {}:  no name carved yet - the first to walk out and come back deep takes it.",
-            board.season
-        );
-    }
-    let rows: Vec<String> = board
-        .entries
-        .iter()
-        .take(5)
-        .map(|e| format!("{}. {} - d{}", e.rank, e.username, e.max_distance))
-        .collect();
-    let you = match board.you {
-        Some(rank) => format!("    (you: #{rank})"),
-        None => "    (you: uncarved)".to_string(),
-    };
-    format!(
-        "The Vanguard Wall, season {}:  {}{you}",
-        board.season,
-        rows.join("    ")
     )
 }
 
@@ -1263,104 +1220,207 @@ mod tests {
     #[test]
     fn wall_text_covers_flickering_empty_and_ranked() {
         let mut board = VanguardBoardData::default();
-        assert!(vanguard_wall_text(&board).contains("flickers awake"));
+        assert!(wall_view(&board).flat().contains("flickers awake"));
 
         board.loaded = true;
         board.season = 2;
-        let empty = vanguard_wall_text(&board);
-        assert!(empty.contains("season 2"), "{empty}");
-        assert!(empty.contains("no name carved"), "{empty}");
+        let empty = wall_view(&board).flat();
+        assert!(empty.contains("Season 2"), "{empty}");
+        assert!(empty.contains("No name carved"), "{empty}");
 
         board.entries = (1..=8).map(|i| line(i, &format!("digger{i}"), 900 - i * 10)).collect();
         board.you = Some(4);
-        let lit = vanguard_wall_text(&board);
-        assert!(lit.contains("1. digger1 - d890"), "{lit}");
-        // Only the top five share the city's one status line.
-        assert!(lit.contains("5. digger5"), "{lit}");
-        assert!(!lit.contains("6. digger6"), "{lit}");
-        assert!(lit.contains("(you: #4)"), "{lit}");
+        let lit = wall_view(&board).flat();
+        assert!(lit.contains("[1] digger1 — d890"), "{lit}");
+        // The wall has a column to itself now, so it shows the whole top ten rather than
+        // the five that fitted on the city's one status line.
+        assert!(lit.contains("[8] digger8"), "{lit}");
+        assert!(lit.contains("You are #4"), "{lit}");
 
         board.you = None;
-        assert!(vanguard_wall_text(&board).contains("uncarved"));
+        assert!(wall_view(&board).flat().contains("uncarved"));
     }
 }
 
 /// The Apothecary's shelf as the city's one status line can carry it: name, price,
 /// and what the player can currently afford (EC-2). Buying is `[1]`-`[4]`.
-pub(crate) fn shop_text(shop: &ShopData, inv: &InventoryData, selling: bool) -> String {
-    if !shop.loaded {
-        return "The Apothecary is unpacking crates...".to_string();
+/// One actionable line on a counter: the key that runs it and the line itself.
+///
+/// `enabled` is advisory — the SERVER prices and refuses. A greyed row still says what it
+/// would cost, because "you cannot afford this" is a decision and "nothing happened when I
+/// pressed 5" is a bug report.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CounterRow {
+    pub(crate) key: String,
+    pub(crate) label: String,
+    pub(crate) enabled: bool,
+    pub(crate) current: bool,
+}
+
+impl CounterRow {
+    fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { key: key.into(), label: label.into(), enabled: true, current: false }
     }
+    fn dim(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+    fn cursor(mut self, on: bool) -> Self {
+        self.current = on;
+        self
+    }
+}
+
+/// A counter as the three-column convention sees it: **nav | rows | detail**.
+///
+/// A view rather than a string, because a string can only be poured into one text node —
+/// which is what made the counters read as scenery along the bottom of the screen instead
+/// of as the menus they are. Rows as data is what lets each one be its own tappable chip
+/// and gives the detail column something to say about the one under the cursor.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct CounterView {
+    pub(crate) title: String,
+    pub(crate) nav: Vec<(String, bool)>,
+    pub(crate) rows: Vec<CounterRow>,
+    pub(crate) detail: Vec<String>,
+    pub(crate) footer: Vec<String>,
+}
+
+impl CounterView {
+    /// Everything the panel would draw, as one string. For tests — the panel itself walks
+    /// the fields.
+    #[cfg(test)]
+    pub(crate) fn flat(&self) -> String {
+        let mut out = self.title.clone();
+        for (n, on) in &self.nav {
+            out.push_str(&format!("\n{}{n}", if *on { "> " } else { "  " }));
+        }
+        for r in &self.rows {
+            out.push_str(&format!(
+                "\n{}{}{}{}",
+                if r.current { "> " } else { "  " },
+                if r.key.is_empty() { String::new() } else { format!("[{}] ", r.key) },
+                r.label,
+                if r.enabled { "" } else { " (locked)" }
+            ));
+        }
+        for l in self.detail.iter().chain(self.footer.iter()) {
+            out.push_str(&format!("\n{l}"));
+        }
+        out
+    }
+}
+
+/// The Apothecary's counter: the shelf and the Requisition's plain gear on the buy side,
+/// the Broker's quotes on the sell side.
+pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> CounterView {
+    let mut v = CounterView {
+        title: if selling { "The Broker".into() } else { shop.vendor.clone() },
+        nav: vec![("Buy".into(), !selling), ("Sell".into(), selling)],
+        footer: vec![format!(
+            "{}   [E]/[ESC] leave",
+            if selling { "[B] buy instead" } else { "[B] sell" }
+        )],
+        ..default()
+    };
+    if !shop.loaded {
+        v.detail = vec!["The Apothecary is unpacking crates...".into()];
+        return v;
+    }
+    v.detail.push(format!("{} chits", inv.chits));
+    let held = |kind: &str| -> i32 {
+        inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
+    };
     if selling {
-        // The SELL side: what the Broker pays for what you carried home. Priced as a
-        // floor, so this is the answer to "I will never use this" rather than a living.
         let rows = sellable(shop, inv);
         if rows.is_empty() {
-            return format!(
-                "The Broker - {} chits    nothing in the Vault it wants    [B] buy instead",
-                inv.chits
-            );
+            v.detail.push("There is nothing in the Vault it wants.".into());
+            return v;
         }
-        let held = |kind: &str| -> i32 {
-            inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
-        };
-        let listed: Vec<String> = rows
+        v.detail.push(
+            "The Broker pays a floor, not a living — this is the answer to \"I will never \
+             use this\"."
+                .into(),
+        );
+        v.rows = rows
             .iter()
             .take(ITEM_ROWS + GEAR_ROWS)
             .enumerate()
             .map(|(i, (kind, price))| {
-                format!("[{}] {kind} x{} @{price}c", i + 1, held(kind))
+                CounterRow::new((i + 1).to_string(), format!("{kind} x{} @{price}c", held(kind)))
             })
             .collect();
-        return format!(
-            "The Broker - {} chits    {}    [B] buy instead",
-            inv.chits,
-            listed.join("   ")
-        );
+        return v;
     }
     if shop.items.is_empty() {
-        return "The Apothecary has nothing on the shelf.".to_string();
+        v.detail.push("The Apothecary has nothing on the shelf.".into());
+        return v;
     }
     // Mark what the player cannot afford, so a price is a decision rather than a
     // rejection they discover by pressing a key.
     let afford = |price: i64| if inv.chits >= price { "" } else { " (short)" };
-    let rows: Vec<String> = shop
-        .items
-        .iter()
-        .take(4)
-        .enumerate()
-        .map(|(i, s)| format!("[{}] {} {}c{}", i + 1, s.name, s.price_chits, afford(s.price_chits)))
-        .collect();
+    for (i, s) in shop.items.iter().take(ITEM_ROWS).enumerate() {
+        let row = CounterRow::new(
+            (i + 1).to_string(),
+            format!("{} {}c{}", s.name, s.price_chits, afford(s.price_chits)),
+        );
+        v.rows.push(if inv.chits >= s.price_chits { row } else { row.dim() });
+    }
     // The Requisition's plain gear shares the counter, on the keys after the items:
     // "spend chits so the next dive is easier" is one errand, not two.
-    let gear: Vec<String> = shop
-        .gear
-        .iter()
-        .take(GEAR_ROWS)
-        .enumerate()
-        .map(|(i, g)| {
-            let stat = [("atk", g.atk), ("def", g.def), ("spd", g.spd)]
-                .into_iter()
-                .find(|(_, v)| *v > 0)
-                .map(|(n, v)| format!(" +{v} {n}"))
-                .unwrap_or_default();
-            format!(
-                "[{}] {}{} {}c{}",
-                ITEM_ROWS + i + 1,
-                g.name,
-                stat,
-                g.price_chits,
-                afford(g.price_chits)
-            )
-        })
-        .collect();
-    let mut line = format!("{} - {} chits    {}", shop.vendor.clone(), inv.chits, rows.join("   "));
-    if !gear.is_empty() {
-        line.push_str("    |  Requisition: ");
-        line.push_str(&gear.join("   "));
+    for (i, g) in shop.gear.iter().take(GEAR_ROWS).enumerate() {
+        let stat = [("atk", g.atk), ("def", g.def), ("spd", g.spd)]
+            .into_iter()
+            .find(|(_, v)| *v > 0)
+            .map(|(n, v)| format!(" +{v} {n}"))
+            .unwrap_or_default();
+        let row = CounterRow::new(
+            (ITEM_ROWS + i + 1).to_string(),
+            format!("{}{} {}c{}", g.name, stat, g.price_chits, afford(g.price_chits)),
+        );
+        v.rows.push(if inv.chits >= g.price_chits { row } else { row.dim() });
     }
-    line.push_str("    [B] sell");
-    line
+    if !shop.gear.is_empty() {
+        v.detail.push(format!(
+            "Rows {}-{} are the Requisition: plain gear, no affixes, so the next dive starts \
+             dressed.",
+            ITEM_ROWS + 1,
+            ITEM_ROWS + shop.gear.len().min(GEAR_ROWS)
+        ));
+    }
+    v
+}
+
+/// The Vanguard Wall as a counter with nothing to press: the season's deepest dives, best
+/// first, with the reader's own placement called out (P1-1 — behaviors/endgame-seasons.md).
+pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Vanguard Wall".into(),
+        footer: vec!["[E]/[ESC] leave".into()],
+        ..default()
+    };
+    if !board.loaded {
+        v.detail = vec!["The Vanguard Wall flickers awake...".into()];
+        return v;
+    }
+    v.nav = vec![(format!("Season {}", board.season), true)];
+    if board.entries.is_empty() {
+        v.detail = vec![
+            "No name carved yet — the first to walk out and come back deep takes it.".into(),
+        ];
+        return v;
+    }
+    v.rows = board
+        .entries
+        .iter()
+        .take(10)
+        .map(|e| CounterRow::new(e.rank.to_string(), format!("{} — d{}", e.username, e.max_distance)))
+        .collect();
+    v.detail = vec![match board.you {
+        Some(rank) => format!("You are #{rank}."),
+        None => "You are uncarved.".into(),
+    }];
+    v
 }
 
 /// The materials the counter will buy that the player actually holds, richest first.
@@ -1403,69 +1463,76 @@ pub(crate) fn best_stock(
         .map(|(_, kind)| kind)
 }
 
-/// The Forge & Alembic as the city's status block: the recipe book with the cursor on
-/// one row, then the anvil's own line. The server owns every gate, so a locked row says
-/// the level it wants and an unaffordable one says what it is missing — before a
-/// keypress is spent on it.
-pub(crate) fn craft_text(craft: &CraftData, inv: &InventoryData) -> String {
+/// The Forge & Alembic: the recipe book with the cursor on one row, then the anvil and the
+/// bench as rows of their own. The server owns every gate, so a locked row says the level it
+/// wants and an unaffordable one says what it is missing — before a keypress is spent on it.
+///
+/// The whole book fits in `main` now rather than a five-row window, because a column has
+/// height where a status line had none.
+pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Forge & Alembic".into(),
+        nav: vec![
+            ("Recipes  up/down".into(), true),
+            ("Anvil  S C F".into(), false),
+            ("Bench  left/right R P".into(), false),
+        ],
+        footer: vec!["ENTER craft   [E]/[ESC] leave".into()],
+        ..default()
+    };
     if !craft.loaded {
-        return "The Forge & Alembic are warming up...".to_string();
-    }
-    if craft.recipes.is_empty() {
-        return "No recipes known.".to_string();
+        v.detail = vec!["The Forge & Alembic are warming up...".into()];
+        return v;
     }
     let held = |kind: &str| -> i32 {
         inv.materials.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
     };
-    let mut out = String::new();
-    // A window around the cursor, so a long book still fits the city's status block.
-    let n = craft.recipes.len();
-    let start = craft.cursor.saturating_sub(1).min(n.saturating_sub(CRAFT_ROWS));
-    for (i, r) in craft.recipes.iter().enumerate().skip(start).take(CRAFT_ROWS) {
-        let inputs: Vec<String> = r
-            .inputs
-            .iter()
-            .map(|(kind, need)| {
-                let have = held(kind);
-                // Show have/need per input: "1/2 dune_iron" is the whole answer to
-                // "what am I missing", and the reason a craft is greyed out.
-                format!("{have}/{need} {kind}")
-            })
-            .collect();
+    if craft.recipes.is_empty() {
+        v.detail = vec!["No recipes known.".into()];
+    }
+    for (i, r) in craft.recipes.iter().enumerate() {
+        let short = r.inputs.iter().any(|(kind, need)| held(kind) < *need);
         let gate = if !r.craftable {
             format!("  (needs {} {})", r.skill, r.required_level)
-        } else if r.inputs.iter().any(|(kind, need)| held(kind) < *need) {
+        } else if short {
             "  (short)".to_string()
         } else {
             String::new()
         };
-        let cursor = if i == craft.cursor { ">" } else { " " };
-        out.push_str(&format!(
-            "{cursor} {} x{}  <- {}{gate}
-",
-            r.name,
-            r.output_quantity,
-            inputs.join(" + ")
-        ));
+        let row = CounterRow::new(
+            String::new(),
+            format!("{} x{}{gate}", r.name, r.output_quantity),
+        )
+        .cursor(i == craft.cursor);
+        v.rows.push(if r.craftable && !short { row } else { row.dim() });
     }
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
-    let anvil = match &stock {
-        Some(m) => m.as_str(),
-        None => "nothing refined",
-    };
+    let anvil = stock.as_deref().unwrap_or("nothing refined");
     let quench = if craft.catalyze { "on" } else { "off" };
-    out.push_str(&format!(
-        "  ANVIL  [S] slot: {}   [C] quench: {quench}   [F] forge from {anvil}
-",
-        FORGE_SLOTS[craft.slot]
-    ));
-    out.push_str(&bench_line(craft, inv));
-    out.push_str("  up/down choose   ENTER craft");
-    if !craft.last.is_empty() {
-        out.push_str(&format!("
-  {}", craft.last));
+    v.rows.push(CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])));
+    v.rows.push(CounterRow::new("C", format!("quench: {quench}")));
+    v.rows.push(CounterRow::new("F", format!("forge from {anvil}")));
+    v.rows.push(CounterRow::new("left/right", bench_line(craft, inv).trim().to_string()));
+    // The detail column belongs to whatever the cursor is on: which materials, how many of
+    // each are already in the Vault, and what comes out. "1/2 dune_iron" is the whole
+    // answer to "why is this row greyed out", and it needs room a status line never had.
+    match craft.recipes.get(craft.cursor) {
+        Some(r) => {
+            v.detail.push(r.name.clone());
+            v.detail.push(format!("Makes {} — {} line", r.output_quantity, r.skill));
+            for (kind, need) in &r.inputs {
+                v.detail.push(format!("  {}/{need} {kind}", held(kind)));
+            }
+            if !r.craftable {
+                v.detail.push(format!("Locked until {} {}.", r.skill, r.required_level));
+            }
+        }
+        None => v.detail.push(format!("{} chits", inv.chits)),
     }
-    out
+    if !craft.last.is_empty() {
+        v.detail.push(craft.last.clone());
+    }
+    v
 }
 
 /// The smith's other half: the two things they do to a piece you already own —
@@ -1511,9 +1578,6 @@ pub(crate) fn bench_gear<'a>(craft: &CraftData, inv: &'a InventoryData) -> Optio
     inv.gear.get(craft.bench % inv.gear.len())
 }
 
-/// Recipe rows the book shows at once, so the book fits the city's status block.
-pub(crate) const CRAFT_ROWS: usize = 5;
-
 /// Shelf rows the counter shows: items on `[1]`-`[4]`, plain gear on the keys after.
 pub(crate) const ITEM_ROWS: usize = 4;
 pub(crate) const GEAR_ROWS: usize = 4;
@@ -1531,19 +1595,57 @@ mod shop_tests {
         }
     }
 
+    /// The three-column convention only reads as three columns if all three have something
+    /// in them. A counter that leaves nav or detail blank collapses back into "a list of
+    /// rows", which is the shape this replaced.
+    #[test]
+    fn every_counter_fills_all_three_columns() {
+        let shop = ShopData {
+            loaded: true,
+            vendor: "The Apothecary".into(),
+            items: vec![line("bloom_salve", "Bloom Salve", 25)],
+            ..Default::default()
+        };
+        let inv = InventoryData { chits: 40, ..Default::default() };
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
+        let board = VanguardBoardData { loaded: true, season: 1, ..Default::default() };
+        for (name, v) in [
+            ("shop/buy", shop_view(&shop, &inv, false)),
+            ("shop/sell", shop_view(&shop, &inv, true)),
+            ("forge", craft_view(&craft, &inv)),
+            ("wall", wall_view(&board)),
+        ] {
+            assert!(!v.title.is_empty(), "{name} has no title");
+            assert!(!v.nav.is_empty(), "{name} has an empty nav column");
+            assert!(!v.detail.is_empty(), "{name} has an empty detail column");
+            // Exactly one nav chip reads as selected, or the column stops saying where
+            // you are — which is the other half of its job.
+            assert_eq!(
+                v.nav.iter().filter(|(_, on)| *on).count(),
+                1,
+                "{name} nav does not mark exactly one side as current: {:?}",
+                v.nav
+            );
+        }
+    }
+
     #[test]
     fn the_shelf_prices_every_row_and_flags_what_you_cannot_afford() {
         let mut shop = ShopData::default();
         let mut inv = InventoryData::default();
-        assert!(shop_text(&shop, &inv, false).contains("unpacking"));
+        assert!(shop_view(&shop, &inv, false).flat().contains("unpacking"));
 
         shop.loaded = true;
-        assert!(shop_text(&shop, &inv, false).contains("nothing on the shelf"));
+        assert!(shop_view(&shop, &inv, false).flat().contains("nothing on the shelf"));
 
         shop.vendor = "The Apothecary".into();
         shop.items = vec![line("bloom_salve", "Bloom Salve", 25), line("town_portal", "Town Portal", 60)];
         inv.chits = 30;
-        let text = shop_text(&shop, &inv, false);
+        let text = shop_view(&shop, &inv, false).flat();
         assert!(text.contains("The Apothecary"), "{text}");
         assert!(text.contains("[1] Bloom Salve 25c"), "{text}");
         // 30 chits buys the salve but not the portal, and the row says so BEFORE the
@@ -1573,32 +1675,36 @@ mod shop_tests {
     fn the_recipe_book_says_what_each_row_needs() {
         let mut craft = CraftData::default();
         let mut inv = InventoryData::default();
-        assert!(craft_text(&craft, &inv).contains("warming up"));
+        assert!(craft_view(&craft, &inv).flat().contains("warming up"));
 
         craft.loaded = true;
-        assert!(craft_text(&craft, &inv).contains("No recipes known"));
+        assert!(craft_view(&craft, &inv).flat().contains("No recipes known"));
 
         craft.recipes = vec![
             recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)]),
             recipe("Quintessence", 9, false, &[("bog_ichor", 1)]),
         ];
         inv.materials = vec![("bloom_herb".to_string(), 1)];
-        let text = craft_text(&craft, &inv);
+        let text = craft_view(&craft, &inv).flat();
         // Have/need per input is the whole answer to "what am I missing".
         assert!(text.contains("1/2 bloom_herb"), "{text}");
         assert!(text.contains("(short)"), "{text}");
         // A locked row names the level rather than just refusing later.
         assert!(text.contains("needs alchemy 9"), "{text}");
         // The cursor is visible, and moves.
-        assert!(text.starts_with("> Bloom Salve"), "{text}");
+        assert!(text.contains("> Bloom Salve"), "{text}");
         craft.cursor = 1;
-        assert!(craft_text(&craft, &inv).contains("> Quintessence"), "{text}");
+        assert!(craft_view(&craft, &inv).flat().contains("> Quintessence"), "{text}");
 
-        // Enough material and the row stops complaining.
+        // Enough material and the row stops complaining — and stops being greyed out,
+        // which is the part the player actually acts on.
+        craft.cursor = 0;
         inv.materials = vec![("bloom_herb".to_string(), 5)];
-        let text = craft_text(&craft, &inv);
-        assert!(text.contains("5/2 bloom_herb"), "{text}");
-        assert!(!text.contains("Bloom Salve x1  <- 5/2 bloom_herb  (short)"), "{text}");
+        let view = craft_view(&craft, &inv);
+        assert!(view.flat().contains("5/2 bloom_herb"), "{}", view.flat());
+        let salve = view.rows.iter().find(|r| r.label.starts_with("Bloom Salve")).unwrap();
+        assert!(salve.enabled, "a stocked, unlocked recipe is not greyed: {salve:?}");
+        assert!(!salve.label.contains("(short)"), "{salve:?}");
     }
 
     // The anvil spends the best refined stock in the Vault rather than making anyone
@@ -1624,8 +1730,9 @@ mod shop_tests {
             recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
             ..Default::default()
         };
-        let text = craft_text(&craft, &inv);
+        let text = craft_view(&craft, &inv).flat();
         assert!(text.contains("nothing refined"), "the anvil should say it is empty: {text}");
+        assert!(text.contains("[F] forge from"), "{text}");
         assert!(text.contains("[S] slot: main_hand"), "{text}");
         assert!(text.contains("[C] quench: off"), "{text}");
     }
@@ -1653,8 +1760,9 @@ mod shop_tests {
         ];
 
         // Nothing in the Vault → it says so rather than showing an empty list.
-        let empty = shop_text(&shop, &inv, true);
+        let empty = shop_view(&shop, &inv, true).flat();
         assert!(empty.contains("nothing in the Vault it wants"), "{empty}");
+        assert!(shop_view(&shop, &inv, true).rows.is_empty(), "no rows to press");
 
         inv.chits = 12;
         inv.materials = vec![
@@ -1662,7 +1770,7 @@ mod shop_tests {
             ("bog_ichor".to_string(), 2),
             ("mystery_rock".to_string(), 9), // not a material the Broker quotes
         ];
-        let text = shop_text(&shop, &inv, true);
+        let text = shop_view(&shop, &inv, true).flat();
         assert!(text.contains("The Broker"), "{text}");
         // Richest first, with the stack you hold and the price each.
         assert!(text.contains("[1] bog_ichor x2 @66c"), "{text}");
@@ -1675,7 +1783,7 @@ mod shop_tests {
 
         // The buy side advertises the other half too.
         shop.items = vec![line("bloom_salve", "Bloom Salve", 25)];
-        assert!(shop_text(&shop, &inv, false).contains("[B] sell"));
+        assert!(shop_view(&shop, &inv, false).flat().contains("[B] sell"));
     }
 
     fn bench_piece(id: &str, name: &str, dur: i32, base: i32) -> GearLine {
@@ -1719,14 +1827,14 @@ mod shop_tests {
         let mut inv = InventoryData::default();
 
         // An empty Vault says so, rather than offering services on nothing.
-        assert!(craft_text(&craft, &inv).contains("nothing in the Vault"));
+        assert!(craft_view(&craft, &inv).flat().contains("nothing in the Vault"));
         assert!(bench_gear(&craft, &inv).is_none());
 
         inv.gear = vec![
             bench_piece("g1", "Worn Warblade", 6, 10),
             bench_piece("g2", "Issued Cuirass", 10, 10),
         ];
-        let text = craft_text(&craft, &inv);
+        let text = craft_view(&craft, &inv).flat();
         // Both services are advertised, and the piece's state is the reason to use them.
         assert!(text.contains("Worn Warblade"), "{text}");
         assert!(text.contains("6/10 dur"), "{text}");
@@ -1792,7 +1900,7 @@ mod shop_tests {
             spd: 0,
         }];
         inv.chits = 300;
-        let text = shop_text(&shop, &inv, false);
+        let text = shop_view(&shop, &inv, false).flat();
         // Items keep [1]-[4]; gear starts on the key after them, so a row's number
         // never moves when the shelf is short.
         assert!(text.contains("[1] Bloom Salve"), "{text}");
@@ -1804,7 +1912,7 @@ mod shop_tests {
 
         // …and when it does not, the row says so before a keypress is spent.
         inv.chits = 10;
-        assert!(shop_text(&shop, &inv, false).contains("220c (short)"));
+        assert!(shop_view(&shop, &inv, false).flat().contains("220c (short)"));
     }
 }
 
@@ -2857,9 +2965,11 @@ pub(crate) fn render_travel_column(
     for e in &old {
         commands.entity(e).despawn();
     }
-    // The Drill Yard is modal (it swallows letters for the name fields) and a dive is
-    // underway; either way, no travel.
-    if city.party_open || session.entered {
+    // The Drill Yard is modal (it swallows letters for the name fields), a dive is
+    // underway, or a counter is open and holding the same left third for its own nav — and
+    // `travel_keys` already stands down for all three, so the column has to as well or it
+    // advertises numbers that do nothing.
+    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
         return;
     }
     let Ok(root) = root_q.single() else { return };
@@ -2951,6 +3061,184 @@ pub(crate) fn travel_keys(
     for (i, k) in TRAVEL_KEYS.iter().enumerate() {
         if keys.just_pressed(*k) {
             travel_to(i, &mut city, &mut tf);
+            return;
+        }
+    }
+}
+
+/// Marker for the counter panel, rebuilt each frame.
+#[derive(Component)]
+pub(crate) struct CounterPanel;
+
+/// A row chip on the counter: pressing it does whatever its key does.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterRowButton(pub usize);
+
+/// A nav chip on the counter. The shop's Buy/Sell sides are the only two, and they are
+/// each other's only alternative, so the chip that was pressed does not matter yet.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterNavButton;
+
+/// Draw whichever counter is open as **nav | main | detail**, centred.
+///
+/// A shop is a menu, so it gets the menu treatment: the same three columns at the same
+/// 1/6, 1/2, 1/3 as everything else, in the middle of the screen where the player is
+/// already looking. Poured into the city's bottom status strip it was a wall of text
+/// running off both edges, and it read as scenery rather than as something to use.
+pub(crate) fn render_counter_panel(
+    mut commands: Commands,
+    city: Res<CityUi>,
+    session: Res<Session>,
+    inv: Res<InventoryData>,
+    shop: Res<ShopData>,
+    shop_selling: Res<ShopSelling>,
+    craft: Res<CraftData>,
+    board: Res<VanguardBoardData>,
+    old: Query<Entity, With<CounterPanel>>,
+    root_q: Query<Entity, With<CityRoot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    if session.entered || city.party_open {
+        return;
+    }
+    let view = if city.craft_open {
+        craft_view(&craft, &inv)
+    } else if city.shop_open {
+        shop_view(&shop, &inv, shop_selling.0)
+    } else if city.board_open {
+        wall_view(&board)
+    } else {
+        return;
+    };
+    let Ok(root) = root_q.single() else { return };
+    commands.entity(root).with_children(|p| {
+        p.spawn((
+            CounterPanel,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(90.0),
+                left: Val::Px(0.0),
+                width: Val::Vw(100.0),
+                ..default()
+            },
+        ))
+        .with_children(|scrim| {
+            scrim.spawn(glass::columns()).with_children(|cols| {
+                cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
+                    nav.spawn(glass::text(view.title.clone(), 19.0, glass::TITLE));
+                    nav.spawn(glass::divider());
+                    for (label, on) in view.nav.iter() {
+                        nav.spawn((Button, CounterNavButton, glass::row_chip(*on))).with_children(
+                            |b| {
+                                b.spawn(glass::text(
+                                    label.clone(),
+                                    15.0,
+                                    if *on { glass::TITLE } else { glass::TEXT },
+                                ));
+                            },
+                        );
+                    }
+                });
+                cols.spawn(glass::column(glass::COL_MAIN)).with_children(|main| {
+                    for (i, r) in view.rows.iter().enumerate() {
+                        // Every row is its own chip, so the counter is as usable by thumb as
+                        // by number key — the same rule the over-head prompts follow.
+                        main.spawn((Button, CounterRowButton(i), glass::row_chip(r.current)))
+                            .with_children(|b| {
+                                let label = if r.key.is_empty() {
+                                    r.label.clone()
+                                } else {
+                                    format!("[{}]  {}", r.key, r.label)
+                                };
+                                b.spawn(glass::text(
+                                    label,
+                                    16.0,
+                                    if !r.enabled {
+                                        glass::DIM
+                                    } else if r.current {
+                                        glass::TITLE
+                                    } else {
+                                        glass::TEXT
+                                    },
+                                ));
+                            });
+                    }
+                    for line in &view.footer {
+                        main.spawn(glass::text(line.clone(), 13.0, glass::DIM));
+                    }
+                });
+                if view.detail.is_empty() {
+                    cols.spawn(glass::column_empty(glass::COL_DETAIL));
+                } else {
+                    cols.spawn(glass::column(glass::COL_DETAIL)).with_children(|d| {
+                        for (i, line) in view.detail.iter().enumerate() {
+                            let (size, colour) =
+                                if i == 0 { (17.0, glass::TITLE) } else { (14.0, glass::TEXT) };
+                            d.spawn(glass::text(line.clone(), size, colour));
+                        }
+                    });
+                }
+            });
+        });
+    });
+}
+
+/// A tap on a counter row, or on a nav chip — the mouse twin of the counter's keys.
+///
+/// Deliberately the same dispatch the keys use rather than a second path: a row that buys
+/// something different by thumb than by key is the sort of thing nobody notices until a
+/// player buys the wrong gear.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn counter_click(
+    net: NonSend<NetRes>,
+    mut city: ResMut<CityUi>,
+    inv: Res<InventoryData>,
+    shop: Res<ShopData>,
+    mut shop_selling: ResMut<ShopSelling>,
+    mut craft: ResMut<CraftData>,
+    rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
+    navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
+) {
+    for (interaction, _) in &navs {
+        if *interaction == Interaction::Pressed && city.shop_open {
+            shop_selling.0 = !shop_selling.0;
+            return;
+        }
+    }
+    for (interaction, btn) in &rows {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if city.craft_open {
+            // The recipe rows come first and the two tool rows are pinned after them, so a
+            // tap past the book is the anvil or the bench — both of which have their own
+            // keys and their own confirmations, so a tap there does nothing but land.
+            if btn.0 < craft.recipes.len() {
+                craft.cursor = btn.0;
+                if let Some(r) = craft.recipes.get(btn.0) {
+                    net.0.craft(r.recipe.clone());
+                    craft.last = format!("working {}...", r.name);
+                }
+            }
+            return;
+        }
+        if city.shop_open {
+            if shop_selling.0 {
+                if let Some((kind, price)) = sellable(&shop, &inv).get(btn.0) {
+                    net.0.sell_material(kind.clone(), 1);
+                    city.notice = format!("sold 1 {kind} for {price}c");
+                }
+            } else if btn.0 < ITEM_ROWS {
+                if let Some(line) = shop.items.get(btn.0) {
+                    net.0.buy_item(line.item_kind.clone(), 1);
+                    city.notice = format!("bought {}", line.name);
+                }
+            } else if let Some(g) = shop.gear.get(btn.0 - ITEM_ROWS) {
+                net.0.buy_gear(g.slot.clone(), g.class_key.clone());
+                city.notice = format!("requisitioned {}", g.name);
+            }
             return;
         }
     }

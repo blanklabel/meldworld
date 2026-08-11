@@ -618,7 +618,15 @@ pub fn animate_chars(
             cs.frames.idle[dir].clone()
         };
         if let Some(m) = mats.get_mut(&cs.mat) {
-            m.base_color_texture = Some(tex);
+            // The emissive layer is the SAME frame, set in the same breath. Mirroring it
+            // from `illuminate_players` instead means a system in a different tuple, with
+            // no ordering against this one, sometimes reads the texture before this frame
+            // is applied and sometimes after — at night, where emissive dominates, that
+            // paints the previous pose over the current one on every other frame and the
+            // character judders. Set together, a frame can never be half-applied. Harmless
+            // for sprites that never light up, whose `emissive` colour stays black.
+            m.base_color_texture = Some(tex.clone());
+            m.emissive_texture = Some(tex);
         }
     }
 }

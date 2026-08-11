@@ -1308,7 +1308,9 @@ pub(crate) fn biome_ring_index(name: &str) -> usize {
         "ashfall" => 2,
         "tundra" => 3,
         "mire" => 4,
-        _ => 0, // forest / unknown
+        // "field" shares the forest's grass: a meadow and a wood stand on the same ground,
+        // and the only thing that separates them is how many trees are in the way.
+        _ => 0, // field / forest / unknown
     }
 }
 
@@ -1886,7 +1888,7 @@ pub(crate) fn apply_sky(
     if dungeon.active {
         // (fog/clear, ambient colour, ambient brightness, sun colour, sun lux)
         let (fogc, ambc, ambb, sunc, sunlux) = match dungeon.theme.as_str() {
-            "forest" => (Color::srgb(0.05, 0.11, 0.07), Color::srgb(0.34, 0.50, 0.36), 165.0, Color::srgb(0.72, 0.86, 0.66), 3400.0),
+            "field" | "forest" => (Color::srgb(0.05, 0.11, 0.07), Color::srgb(0.34, 0.50, 0.36), 165.0, Color::srgb(0.72, 0.86, 0.66), 3400.0),
             "desert" => (Color::srgb(0.12, 0.09, 0.06), Color::srgb(0.56, 0.44, 0.30), 180.0, Color::srgb(0.95, 0.82, 0.58), 3600.0),
             "ashfall" => (Color::srgb(0.10, 0.06, 0.06), Color::srgb(0.50, 0.30, 0.26), 150.0, Color::srgb(0.90, 0.50, 0.40), 3000.0),
             "tundra" => (Color::srgb(0.07, 0.09, 0.12), Color::srgb(0.42, 0.50, 0.62), 175.0, Color::srgb(0.72, 0.82, 0.98), 3400.0),

@@ -287,7 +287,13 @@ fn main() {
                 city::loadout_name_input,
                 city::yard_rename_input,
                 city::party_panel_refresh,
-                (city::render_travel_column, city::travel_click, city::travel_keys),
+                (
+                    city::render_travel_column,
+                    city::travel_click,
+                    city::travel_keys,
+                    city::render_counter_panel,
+                    city::counter_click,
+                ),
                 city_input,
                 // The anvil's heat is struck in town as well as in the field.
                 (heat_input, update_heat_bar),
@@ -508,6 +514,7 @@ fn main() {
                     hd2d::place_billboards,
                     hd2d::billboard,
                     render_status_icons,
+                    update_condition_rims,
                     // The fight's own results screen — drawn here, over the battle
                     // it belongs to, and it is what returns you to the overworld.
                     render_loot_report,

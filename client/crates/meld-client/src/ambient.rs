@@ -61,7 +61,7 @@ fn biome_at(terrain: &Terrain, x: f32, z: f32) -> String {
         .unwrap_or_else(|| biome_display(r.floor() as i64).to_string())
 }
 fn grassy(biome: &str) -> bool {
-    matches!(biome, "forest" | "mire")
+    matches!(biome, "field" | "forest" | "mire")
 }
 
 pub(crate) fn setup_ambient(

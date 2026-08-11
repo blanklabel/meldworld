@@ -1996,13 +1996,10 @@ pub(crate) fn illuminate_players(
     let ef = night * 1.15;
     for mh in &sprites {
         if let Some(m) = mats.get_mut(&mh.0) {
-            // Track the CURRENT frame every tick, not once. `animate_chars` swaps
-            // `base_color_texture` to the right facing/walk frame each frame; if the
-            // emissive layer latched onto the first (idle-south) frame it would paint a
-            // frozen south sprite over the animating base — at night, where emissive
-            // dominates, the hero looked permanently stuck facing south while its walk
-            // cycle still played. Mirroring it here keeps the lit glow in sync.
-            m.emissive_texture = m.base_color_texture.clone();
+            // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
+            // set alongside the base texture so the two can never disagree — read from
+            // here it was a frame stale on whichever frames the scheduler happened to run
+            // this system first, and the hero juddered in the dark.
             m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         }
     }
@@ -2736,7 +2733,7 @@ pub(crate) fn spawn_obstacle(
             Color::srgb(0.60, 0.42, 0.26) // timber-brown door
         } else {
             match dungeon_theme {
-                "forest" => Color::srgb(0.56, 0.68, 0.50), // mossy stone
+                "field" | "forest" => Color::srgb(0.56, 0.68, 0.50), // mossy stone
                 "desert" => Color::srgb(0.86, 0.75, 0.54), // sandstone
                 "ashfall" => Color::srgb(0.52, 0.44, 0.46), // basalt
                 "tundra" => Color::srgb(0.82, 0.88, 0.96), // ice-rimed stone
@@ -4220,6 +4217,9 @@ pub(crate) fn update_action_hud(
 #[derive(Component)]
 pub(crate) struct ReachHalo;
 
+/// Full-swell brightness of the light the reach rim throws (lumens, scaled by the breathe).
+const REACH_LAMP_LUMENS: f32 = 26_000.0;
+
 /// Make the EDGE of the thing you could interact with glow, on a slow infrequent pulse.
 ///
 /// Two jobs in one affordance. It says "this one is in reach" — nothing used to distinguish
@@ -4240,29 +4240,31 @@ pub(crate) fn update_reach_halo(
     wa: Option<Res<WorldAssets>>,
     targets: Query<(Entity, &WorldEntity, &Children)>,
     sprite_of: Query<&MeshMaterial3d<StandardMaterial>, Without<ReachHalo>>,
-    halos: Query<(Entity, &MeshMaterial3d<StandardMaterial>), With<ReachHalo>>,
+    mut halos: Query<(Entity, &MeshMaterial3d<StandardMaterial>, &mut PointLight), With<ReachHalo>>,
 ) {
     let want = interact_target(&world, &session)
         .as_ref()
         .and_then(|t| t.entity_id().map(String::from));
 
-    // A slow breathe that sits near zero most of the cycle: ~4s period, and the visible part
-    // is the top of the curve. Obvious when you look for it, easy to ignore when you are not.
-    let phase = (time.elapsed_secs() * std::f32::consts::TAU / 4.0).sin().max(0.0);
-    let alpha = 0.12 + 0.55 * phase * phase;
+    // A slow breathe, ~3s, and it never fully lets go: the squared curve on a 0.12 floor
+    // was subtle enough to miss entirely, so the rim now holds a third of its brightness
+    // between breaths and the swell is linear rather than squared. Still slow, so it reads
+    // as something the object is doing rather than a blinking UI element.
+    let phase = (time.elapsed_secs() * std::f32::consts::TAU / 3.0).sin().max(0.0);
+    let alpha = 0.34 + 0.66 * phase;
 
     let Some(id) = want else {
         // Nothing in reach: clear any halo still standing.
-        for (e, _) in &halos {
+        for (e, _, _) in &halos {
             commands.entity(e).despawn();
         }
         return;
     };
     let Some(wa) = wa else { return };
 
-    // Already lit? Just breathe it.
+    // Already lit? Just breathe it — the rim's alpha and the light it throws, together.
     let mut found = false;
-    for (e, mm) in &halos {
+    for (e, mm, mut light) in &mut halos {
         let still_right = targets
             .iter()
             .any(|(_, we, kids)| we.0 == id && kids.iter().any(|k| k == e));
@@ -4271,6 +4273,7 @@ pub(crate) fn update_reach_halo(
             if let Some(m) = mats.get_mut(&mm.0) {
                 m.base_color = m.base_color.with_alpha(alpha);
             }
+            light.intensity = REACH_LAMP_LUMENS * alpha;
         } else {
             commands.entity(e).despawn();
         }
@@ -4304,8 +4307,21 @@ pub(crate) fn update_reach_halo(
             Mesh3d(wa.sprite_quad.clone()),
             MeshMaterial3d(halo),
             // A touch larger and a hair behind, so what shows is a rim around the sprite.
-            Transform::from_xyz(0.0, 0.85, -0.02).with_scale(Vec3::splat(1.7 / 2.2 * 1.13)),
+            Transform::from_xyz(0.0, 0.85, -0.02).with_scale(Vec3::splat(1.7 / 2.2 * 1.20)),
             hd2d::Billboard,
+            // The rim also THROWS light, on the same breath: the ground and the grass
+            // around the thing in reach brighten with it. That is what makes it read as
+            // the object glowing rather than a decal stuck on top of it — and it survives
+            // being half behind a tree, where the rim alone does not. Short range and no
+            // shadows: a hint, not a lamp.
+            PointLight {
+                color: Color::srgb(1.0, 0.86, 0.45),
+                intensity: 0.0,
+                range: 6.5,
+                radius: 0.3,
+                shadows_enabled: false,
+                ..default()
+            },
         ));
     });
 }

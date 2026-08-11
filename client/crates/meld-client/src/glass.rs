@@ -175,6 +175,24 @@ pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
     )
 }
 
+/// A chip that is a LIST ROW rather than a tab: full width and left-aligned, because a
+/// column of centred labels has no edge to run your eye down and prices land wherever the
+/// name length puts them.
+pub fn row_chip(on: bool) -> impl Bundle {
+    (
+        Node {
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::FlexStart,
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
+        BorderColor(if on { EDGE } else { EDGE_SOFT }),
+        BorderRadius::all(Val::Px(5.0)),
+    )
+}
+
 /// Chip fills. Public because interaction systems repaint them in place (mutating
 /// `BackgroundColor` on hover) rather than respawning the chip.
 ///
