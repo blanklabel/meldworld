@@ -596,6 +596,8 @@ pub enum ServerMsg {
     BrokerQuotes { quotes: Vec<BrokerQuote> },
     /// The result of a craft or a forge, in the player's words.
     CraftResult { text: String },
+    /// A harvest channel paid out one tick's worth.
+    Harvested { kind: String, qty: i32 },
     /// A field station answered: what the smith did (or would not), and the jobs left.
     SmithResult { message: String, ok: bool, uses_left: i32 },
     /// The heat is open: strike on the yellow. `bands` are fractions of the bar.
@@ -1917,6 +1919,10 @@ impl Inner {
                 // which one this is, so the chest report only fires for chests.
                 let mut is_chest = false;
                 let mut chest_items: Vec<(String, i32)> = Vec::new();
+                // Units a harvest channel just paid out, so the overworld can pop
+                // "+1 Bog Myrrh" over the player's head. The bar filling is only half the
+                // feedback; this is the half that says what you actually got.
+                let mut harvested: Vec<(String, i32)> = Vec::new();
                 for ch in raw.payload["changes"].as_array().into_iter().flatten() {
                     let kind = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
                     let qty = ch["item"]["quantity"].as_i64().unwrap_or(0) as i32;
@@ -1927,6 +1933,9 @@ impl Inner {
                     if ch["cause"].as_str() == Some("chest") && signed > 0 {
                         is_chest = true;
                         chest_items.push((kind.clone(), signed));
+                    }
+                    if ch["cause"].as_str().is_some_and(|c| c.starts_with("harvest")) && signed > 0 {
+                        harvested.push((kind.clone(), signed));
                     }
                     let e = self.backpack.entry(kind).or_insert(0);
                     *e += signed;
@@ -1950,6 +1959,9 @@ impl Inner {
                     self.run_gear.push((name, atk));
                 }
                 self.emit_backpack();
+                for (kind, qty) in harvested {
+                    self.out.push_back(ServerMsg::Harvested { kind, qty });
+                }
                 if is_chest {
                     self.out.push_back(ServerMsg::ChestOpened {
                         chits: chits_delta,

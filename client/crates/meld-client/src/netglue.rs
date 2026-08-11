@@ -91,6 +91,7 @@ pub(crate) fn pump_net(
             ResMut<crate::overworld::ExploredMap>,
             ResMut<crate::overworld::StationUi>,
             ResMut<crate::overworld::HeatUi>,
+            ResMut<HarvestPops>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -98,7 +99,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -493,6 +494,7 @@ pub(crate) fn pump_net(
                     }
                 }
             }
+            ServerMsg::Harvested { kind, qty } => pops.banked(&kind, qty),
             ServerMsg::CraftResult { text } => {
                 craft.last = text;
                 // The book's `craftable` flags are the server's answer at fetch time, so

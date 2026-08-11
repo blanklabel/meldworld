@@ -629,19 +629,10 @@ pub(crate) fn update_overworld_hud(
         }
         return;
     }
-    let mut line = if session.channeling {
-        "gathering\u{2026}  [E] stop".to_string()
-    } else {
-        interact_target(&world, &session)
-            .map(|i| i.prompt())
-            .unwrap_or_default()
-    };
-    // The bench's boon is its own line, because it is its own key: [E] opens the bench,
-    // [N] asks for the one thing most people walk over for.
-    if let Some((_, _, what)) = boon_offer(&world, &session) {
-        let boon = format!("[N] {what}");
-        line = if line.is_empty() { boon } else { format!("{line}   {boon}") };
-    }
+    // The interact prompt, the boon prompt and the channel bar are NOT here any more: they
+    // are over the player's head (`update_action_hud`), which is where you are looking while
+    // you gather. A prompt in the corner is a prompt you read once and then stop seeing.
+    let mut line = String::new();
     // A door that wants more bodies than one says so BEFORE you are inside it (#190):
     // there is no Town Portal in a dungeon, so a party that finds out at the gate has
     // walked the whole way for nothing.
@@ -1643,10 +1634,15 @@ pub(crate) fn pulse_collectibles(
     // ~2.5 s breathe; `strength` scales each material's own colour into its emissive,
     // so a blue gem glows blue and a gold trophy glows gold.
     //
-    // Turned down to a quarter of what it was (0.5..2.7 -> 0.125..0.675). The HD-2D nodes
-    // are BILLBOARDS on a white base colour, so emissive above ~1.0 is white light over
-    // the whole quad: the pulse did not glow the sprite, it erased it, and a bog myrrh and
-    // a peat iron were the same white blob. Under 1.0 the texture survives the breathe.
+    // Only for UNTEXTURED materials — the 3D harvest models. Emissive is added flat across a
+    // surface, ignoring its texture, so on a textured billboard ANY meaningful value paints
+    // the whole quad one colour: the pulse did not glow the sprite, it erased it, and every
+    // node was the same white blob whatever the art said. Turning the number down (my first
+    // attempt) could not fix that, because the mechanism was wrong rather than the magnitude.
+    //
+    // The billboards therefore do not breathe. They do not need to: the node art is
+    // distinctive, the Explorer's minimap dots point them out, and being able to tell bog
+    // myrrh from peat iron matters more than a glow.
     const GLOW_FLOOR: f32 = 0.125;
     const GLOW_SWING: f32 = 0.55;
     let phase = (time.elapsed_secs() * std::f32::consts::TAU * 0.4).sin() * 0.5 + 0.5;
@@ -1657,6 +1653,13 @@ pub(crate) fn pulse_collectibles(
             let Some(m) = mats.get_mut(&mm.0) else {
                 continue;
             };
+            if m.base_color_texture.is_some() {
+                // A sprite shows itself. Make sure nothing is washing it out.
+                if m.emissive != LinearRgba::BLACK {
+                    m.emissive = LinearRgba::BLACK;
+                }
+                continue;
+            }
             let c = m.base_color.to_linear();
             m.emissive = LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength);
         }
@@ -4154,4 +4157,149 @@ mod heat_tests {
         heat.struck = 2;
         assert!(heat_line(&heat, 0.0).is_none());
     }
+}
+
+/// One frame's worth of the over-the-head action panel (rebuilt each frame).
+#[derive(Component)]
+pub(crate) struct ActionHud;
+
+/// The prompt, the channel bar and the "+1 <material>" pops, in frosted glass over the
+/// player's own head.
+///
+/// They used to live in the top-left HUD line, which is the wrong place for all three: what
+/// you are looking at while you gather is your character, and a bar in the corner is a bar
+/// you do not watch. Paying per tick only reads as paying if you can see the payout land.
+pub(crate) fn update_action_hud(
+    mut commands: Commands,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    time: Res<Time>,
+    mut pops: ResMut<HarvestPops>,
+    // The same phase clock the old corner bar kept: seconds since this channel began,
+    // wrapped per payout by `channel_fill_pct`.
+    mut phase: Local<f32>,
+    mut was_channeling: Local<bool>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    root_q: Query<Entity, With<NameplateRoot>>,
+    players: Query<(&WorldEntity, &GlobalTransform)>,
+    old: Query<Entity, With<ActionHud>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    // Age the floaters and drop the ones that have had their moment.
+    let dt = time.delta_secs();
+    for p in pops.items.iter_mut() {
+        p.age += dt;
+    }
+    pops.items.retain(|p| p.age < HARVEST_POP_TTL);
+
+    let running = session.channeling && session.channel_fill_ms > 0;
+    if running && !*was_channeling {
+        *phase = 0.0;
+    }
+    *was_channeling = running;
+    if running {
+        *phase += dt;
+    }
+
+
+    let target = interact_target(&world, &session);
+    let boon = boon_offer(&world, &session);
+    if target.is_none() && boon.is_none() && !session.channeling && pops.items.is_empty() {
+        return; // nothing to say, so nothing on screen (the [E]-only rule)
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    let Ok(root) = root_q.single() else { return };
+    let Some(me) = players.iter().find(|(we, _)| we.0 == session.player_id).map(|(_, tf)| tf) else {
+        return;
+    };
+    let head = me.translation() + Vec3::Y * 2.35;
+    let Ok(at) = cam.world_to_viewport(cam_tf, head) else { return };
+
+    const W: f32 = 230.0;
+    commands.entity(root).with_children(|p| {
+        p.spawn((
+            ActionHud,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(at.x - W / 2.0),
+                // Sit above the head, and leave room for however many pops are in the air.
+                top: Val::Px(at.y - 34.0 - 18.0 * pops.items.len() as f32),
+                width: Val::Px(W),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: Val::Px(3.0),
+                ..default()
+            },
+        ))
+        .with_children(|col| {
+            // The payouts, newest nearest the head, fading as they rise.
+            for pop in pops.items.iter().rev() {
+                let a = (1.0 - pop.age / HARVEST_POP_TTL).clamp(0.0, 1.0);
+                col.spawn((
+                    Text::new(pop.label.clone()),
+                    TextFont { font_size: 17.0, ..default() },
+                    TextColor(Color::srgba(0.62, 0.98, 0.7, a)),
+                ));
+            }
+            let line = if session.channeling {
+                Some("[E] stop".to_string())
+            } else {
+                target.as_ref().map(|t| t.prompt())
+            };
+            let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
+            if line.is_none() && boon_line.is_none() && !session.channeling {
+                return;
+            }
+            // One frosted plate holding the prompt and the bar, mostly see-through so it
+            // never hides the character it belongs to.
+            col.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(4.0),
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(5.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(glass::GLASS_THIN),
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(7.0)),
+            ))
+            .with_children(|plate| {
+                for text in [line, boon_line].into_iter().flatten() {
+                    plate.spawn((
+                        Text::new(text),
+                        TextFont { font_size: 15.0, ..default() },
+                        TextColor(glass::TEXT),
+                    ));
+                }
+                if session.channeling {
+                    let pct = channel_fill_pct(*phase, session.channel_fill_ms);
+                    plate
+                        .spawn((
+                            Node {
+                                width: Val::Px(150.0),
+                                height: Val::Px(7.0),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor(glass::EDGE_SOFT),
+                            BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 0.7)),
+                        ))
+                        .with_children(|bar| {
+                            bar.spawn((
+                                Node {
+                                    width: Val::Percent(pct),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(glass::TITLE),
+                            ));
+                        });
+                }
+            });
+        });
+    });
 }
