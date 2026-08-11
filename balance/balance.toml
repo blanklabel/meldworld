@@ -856,6 +856,18 @@ lateral_half_extent = 28.0       # ±y half-height of the play area — tall eno
 # so the map feels populated in every direction (area 0 stays on the line for the
 # deterministic tutorial). Kept a touch inside lateral_half_extent.
 creature_lateral_spread = 22.0   # ± y range creatures spawn across (areas ≥ 1)
+# `monster_spacing` places one creature per gap across ONE corridor's worth of width, so
+# the DESIGNED density is 1/(monster_spacing · 2·lateral_half_extent) ≈ 0.0028 per unit² —
+# a creature every ~19 tiles in any direction. The WG-4 fan then bends that fixed width
+# into an arc that grows with radius, which silently threw the intent away: at r=230 the
+# same handful of creatures is smeared over ~1400 units of arc, one per ~91 tiles, and you
+# can cross a whole section meeting nothing. So the corridor is walked once per
+# corridor-width of arc, restoring the flat-corridor density. CAPPED, because the true
+# stretch passes 30× in a world that streams outward forever and every creature is a live
+# roaming entity the sim steps every tick: 24 holds the designed density out to about
+# r=230 (the whole pre-generated world) and thins gently past it. 1.0 = off (the old
+# thinning behaviour, kept so the test for it can prove the bug). [TUNABLE]
+creature_radial_lane_cap = 24.0   # max corridor walks per section (× the creature count)
 # Keep a creature-free ring around the Center Hub in the SPAWN section only, so a
 # just-spawned player isn't instantly aggro'd into a fight before they can orient.
 # MUST stay > [ai] aggro_radius (11.0): a creature's hub-distance equals its corridor-x
@@ -881,6 +893,11 @@ obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1
 # neighbouring section's density, so a forest visibly THINS as it gives way to desert
 # and the rock THICKENS as it gives way to Ashfall (matching the ground cross-fade).
 # [TUNABLE]
+# FIELD and FOREST are the same ground with different tree counts, and that contrast is
+# the point: the field is grassland you can see across, the forest is a wood you can't.
+# They share fauna, flora and ground texture, so the only thing telling them apart is how
+# much of the view is trunk.
+field_obstacle_mult = 1.3        # open grassland — trees in the distance, not around you
 forest_obstacle_mult = 7.0       # a THICK wood — a real maze of trees, only the trail is open
 desert_obstacle_mult = 0.8       # open desert — a scattering of cacti (the breather biome)
 ashfall_obstacle_mult = 6.0      # a choked volcanic mountain-pass maze of rock
@@ -894,7 +911,10 @@ maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 # so density-per-tile stays roughly constant with depth. Capped so the deepest areas
 # don't explode the obstacle count (wire size + client draw calls). 1.0 = off (old
 # behaviour). [TUNABLE]
-maze_radial_scale_cap = 4.0      # max × the arc-stretch can multiply an area's obstacle count
+# Matches `creature_radial_lane_cap` — the same geometry thins both, so they hold to the
+# same radius (~230) before the world starts opening up again. 4.0 was far too low to be
+# the dense wood the multiplier above claims.
+maze_radial_scale_cap = 24.0     # max × the arc-stretch can multiply an area's obstacle count
 biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
@@ -1412,6 +1432,7 @@ wll_per_level = 2
 # first ring an on-ramp without flattening the creatures themselves. Keyed by biome
 # id; a biome missing here is available from the hub. [TUNABLE]
 [biome_gate]
+field = 0
 forest = 0
 mire = 0
 ashfall = 250

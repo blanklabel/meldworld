@@ -145,7 +145,7 @@ pub fn biome_for_distance(d: i64) -> &'static str {
 /// **skin** — which is exactly what lets us vary the theme order per run without
 /// touching fairness. This is the Hades / Risk-of-Rain-2 model: fixed difficulty
 /// axis, shuffled theme. See docs/proposals/worldgen-wg.md and roadmap WG-2/WG-3.
-pub const BIOMES: [&str; 5] = ["forest", "desert", "ashfall", "tundra", "mire"];
+pub const BIOMES: [&str; 6] = ["field", "forest", "desert", "ashfall", "tundra", "mire"];
 
 /// Independent per-section biome stream, salted off the section seed so the theme
 /// choice is stable even if unrelated placement draws change.
@@ -206,7 +206,8 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     // or a slow tanky BRUISER — so the combat rhythm varies as you explore. Appended
     // (index 0 stays the tutorial creature). Stats live under `[creature.<key>]`.
     match biome {
-        "forest" => &["forest_bloom_stalker", "thornback_boar", "sporeling"],
+        // The field is the forest's open ground: the same fauna, room to see it coming.
+        "field" | "forest" => &["forest_bloom_stalker", "thornback_boar", "sporeling"],
         "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
@@ -232,7 +233,7 @@ fn node_stock(balance: &Balance, kind: &str) -> i32 {
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
-        "forest" => &["bloom_herb", "heartoak_bark"],
+        "field" | "forest" => &["bloom_herb", "heartoak_bark"],
         "desert" => &["sun_salts", "dune_iron"],
         "ashfall" => &["ember_ash", "cinder_ore"],
         "tundra" => &["frost_lichen", "rime_ore"],
@@ -244,7 +245,7 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
 /// movement identically). Structural content.
 fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
-        "forest" => &["tree", "boulder", "pond"],
+        "field" | "forest" => &["tree", "boulder", "pond"],
         "desert" => &["dune", "rock_spire", "cactus"],
         "ashfall" => &["cliff", "lava", "cinder_rock"],
         "tundra" => &["ice_spire", "frozen_pond", "snow_drift"],
@@ -259,7 +260,7 @@ fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
 /// with the trail as the only reliable land.
 fn fill_kind_for_biome(biome: &str) -> &'static str {
     match biome {
-        "forest" => "tree",
+        "field" | "forest" => "tree",
         "desert" => "cactus",
         "ashfall" => "cinder_rock",
         "tundra" => "ice_spire",
@@ -277,6 +278,7 @@ fn biome_terrace_mult(biome: &str) -> f64 {
     match biome {
         "ashfall" => 1.6, // a maze of mountain terraces — the path climbs constantly
         "forest" => 0.8,  // trees do the mazing; a few rises
+        "field" => 0.3,   // open meadow — you can see across it
         "tundra" => 0.7,  // rolling
         "mire" => 0.35,   // flooded, not mountainous
         _ => 0.15,        // desert: the open breather — nearly flat
@@ -287,6 +289,7 @@ fn biome_terrace_mult(biome: &str) -> f64 {
 /// own so it FEELS distinct; unlisted biomes fall back to `maze_obstacle_mult`.
 fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
     match biome {
+        "field" => wg.field_obstacle_mult,
         "forest" => wg.forest_obstacle_mult,
         "desert" => wg.desert_obstacle_mult,
         "ashfall" => wg.ashfall_obstacle_mult,
@@ -1736,6 +1739,125 @@ pub struct Arena {
     skirmish_range: f64,
     skirmish_interval: f64,
     loot_pickup_radius: f64,
+    /// Every placed creature's position **in the bent (world) frame**, bucketed into a
+    /// coarse grid so placement can refuse to drop a standard spawn inside another
+    /// creature's pull radius in O(1) rather than scanning thousands of monsters (the
+    /// world streams outward without bound, so a linear scan is quadratic in dive depth).
+    /// Its own store rather than a read of `monsters`, because `push_section` places in
+    /// the corridor frame and cannot tell whether the monsters already in the arena were
+    /// bent by `radialize` (one-shot generate) or not yet (streaming) — so it records the
+    /// bent position itself, at placement, and the frame is never in question. Spans
+    /// sections, so a spawn at a seam is separated from the one in the section next door.
+    creature_spots: SpotGrid,
+}
+
+/// How many lateral positions a creature station tries before it is abandoned. Structure,
+/// not balance: it trades a little generation work for how completely the placement fills.
+const CREATURE_PLACEMENT_TRIES: u32 = 6;
+
+/// Spacing index for one section's maze fill: *does anything already stand within our
+/// combined radii of here?* Answers in the **stretched** metric, because corridor y is an
+/// angle and a tangential gap is worth `stretch` times what it measures. Seeded only from
+/// content inside the section's own x-range, since everything outside it may already have
+/// been bent into the fan and its coordinates would mean something else entirely.
+#[derive(Debug)]
+struct BlockGrid {
+    cell: f64,
+    stretch: f64,
+    x_lo: f64,
+    x_hi: f64,
+    items: HashMap<(i32, i32), Vec<(Position, f64)>>,
+}
+
+impl BlockGrid {
+    fn new(cell: f64, stretch: f64, start_x: f64, end_x: f64) -> Self {
+        Self {
+            cell: cell.max(0.001),
+            stretch: stretch.max(1.0),
+            x_lo: start_x - cell,
+            x_hi: end_x + cell,
+            items: HashMap::new(),
+        }
+    }
+
+    fn key(&self, p: &Position) -> (i32, i32) {
+        ((p.x / self.cell).floor() as i32, (p.y * self.stretch / self.cell).floor() as i32)
+    }
+
+    fn seed(
+        &mut self,
+        monsters: &[MonsterSpawn],
+        resources: &[ResourceNode],
+        chests: &[Chest],
+        obstacles: &[Obstacle],
+    ) {
+        for p in monsters.iter().map(|m| m.position) {
+            self.insert(p, 1.2);
+        }
+        for p in resources.iter().map(|r| r.position) {
+            self.insert(p, 1.2);
+        }
+        for p in chests.iter().map(|c| c.position) {
+            self.insert(p, 1.2);
+        }
+        for o in obstacles {
+            self.insert(o.position, o.radius);
+        }
+    }
+
+    fn blocked(&self, p: &Position, r: f64) -> bool {
+        let (kx, ky) = self.key(p);
+        (-1..=1).any(|dx| {
+            (-1..=1).any(|dy| {
+                self.items.get(&(kx + dx, ky + dy)).is_some_and(|v| {
+                    v.iter().any(|(q, qr)| {
+                        (q.x - p.x).hypot((q.y - p.y) * self.stretch) < r + *qr
+                    })
+                })
+            })
+        })
+    }
+
+    fn insert(&mut self, p: Position, r: f64) {
+        if p.x < self.x_lo || p.x > self.x_hi {
+            return;
+        }
+        self.items.entry(self.key(&p)).or_default().push((p, r));
+    }
+}
+
+/// A coarse uniform grid of world positions with one question: *is anything within `r` of
+/// here?* Cells are `r` on a side, so the answer is always inside the 3×3 block around the
+/// query — no scan of the whole world.
+#[derive(Debug, Clone)]
+struct SpotGrid {
+    radius: f64,
+    spots: HashMap<(i32, i32), Vec<Position>>,
+}
+
+impl SpotGrid {
+    fn new(radius: f64) -> Self {
+        Self { radius: radius.max(0.001), spots: HashMap::new() }
+    }
+
+    fn key(&self, p: &Position) -> (i32, i32) {
+        ((p.x / self.radius).floor() as i32, (p.y / self.radius).floor() as i32)
+    }
+
+    fn crowded(&self, p: &Position) -> bool {
+        let (kx, ky) = self.key(p);
+        (-1..=1).any(|dx| {
+            (-1..=1).any(|dy| {
+                self.spots
+                    .get(&(kx + dx, ky + dy))
+                    .is_some_and(|v| v.iter().any(|q| q.distance_to(p) <= self.radius))
+            })
+        })
+    }
+
+    fn insert(&mut self, p: Position) {
+        self.spots.entry(self.key(&p)).or_default().push(p);
+    }
 }
 
 impl Arena {
@@ -1893,6 +2015,7 @@ impl Arena {
             skirmish_range: balance.ai.skirmish_attack_range,
             skirmish_interval: balance.ai.skirmish_attack_interval,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
+            creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
 
         let count = wg.area_count.max(1);
@@ -2250,138 +2373,132 @@ impl Arena {
             wg.monster_spacing
         };
         let inner_end = end_x - wg.portal_setback - 1.0;
-        // The SPAWN section (i == 0) keeps a creature-free safe ring around the Center
-        // Hub: a just-spawned, stationary player used to be placed ~2 tiles from the
-        // first creature — well inside `[ai] aggro_radius` — so an aggressive creature
-        // closed and yanked them into a battle before they could react. `hub_safe_radius`
-        // exceeds aggro_radius, and in the radial world a creature's hub-distance is its
-        // corridor-x, so starting placement there guarantees a calm spawn. Deeper
-        // sections start right at their western edge as before.
-        let mut x = start_x + if i == 0 { wg.hub_safe_radius.max(2.0) } else { 2.0 };
         // FS-4: a fraction of creatures roll ELITE (champions). A SEPARATE rng stream
         // so the main placement draws stay byte-identical (determinism tests hold).
         // Never in the spawn section (i == 0), which stays gentle onboarding.
         let enc = &balance.encounters;
         let mut erng = Rng(section_seed(self.seed_base, i) ^ 0xE117_E117_E117_E117);
-        while x < inner_end {
-            let kind = kinds[rng.below(kinds.len())];
-            let y = wg.creature_lateral_spread * rng.signed();
-            let pos = Position::new(x, y);
-            let idx = self.monsters.len();
-            let mseed = rng.next_u64();
-            self.monsters
-                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
-            self.monsters[idx].area_min_x = start_x;
-            self.monsters[idx].area_max_x = end_x;
-            // Never shallow: an Elite is a named boss carrying `elite_hp_mult`, so one
-            // in the first ring is a wipe rather than an encounter.
-            if i > 0
-                && !self.tutorial
-                && pos.distance_floor() >= enc.elite_min_distance
-                && erng.unit() < enc.elite_chance
-            {
-                self.monsters[idx].promote(
-                    enc.elite_hp_mult,
-                    enc.elite_atk_mult,
-                    enc.elite_xp_mult,
-                    "elite",
-                );
-                let bseed = erng.next_u64();
-                self.monsters[idx].apply_affix(bseed);
-                // FS-4: unique boss mechanics — an Elite fights as one of the
-                // "elite" tier's two named bosses instead of a plain reskin.
-                self.monsters[idx].become_boss(pick_elite_boss_kind(bseed ^ 0xB055));
+        // Radial density compensation for CREATURES. `monster_spacing` lays one creature
+        // per gap across ONE corridor's worth of width — but the WG-4 fan bends that
+        // fixed width into an arc that grows with radius, so a deep section is an annular
+        // sector hundreds of units of arc across holding the same handful of creatures.
+        // You can cross it and meet nothing. (The maze fill compensates for exactly this;
+        // creature placement did not.) So walk the corridor once per corridor-width of
+        // arc: density-per-tile holds instead of thinning outward. Capped, because the
+        // multiplier passes 30× in a world that streams forever. Lane 0 draws from the
+        // section's main stream in the original order, so every placement/determinism
+        // test still holds byte-identically; each extra lane draws from its OWN stream.
+        let r_mid = (start_x + end_x) * 0.5;
+        let arc_stretch = if self.radial_half > 0.0 {
+            (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
+        } else {
+            1.0
+        };
+        let lanes = arc_stretch
+            .min(wg.creature_radial_lane_cap.max(1.0))
+            .round()
+            .max(1.0) as u64;
+        // `group_around` pulls every creature within `[ai] group_radius` into whatever
+        // fight you start, so at the designed density an unrelated neighbour silently
+        // joins — the first-150-tiles band promised duels and started handing out 1.4
+        // creatures a fight, sometimes five. A PACK is the only thing that may make a
+        // group, so no standard spawn goes down within pull range of another. The margin
+        // is `pack_spread` on top: a pack's satellites scatter that far from their leader,
+        // and it was one of those, not a leader, that reached into the set-piece next door.
+        // Measured in the BENT frame, which is the frame `group_around` measures in: a
+        // corridor-space check would over-separate by the whole arc stretch and undo the
+        // very density it is protecting.
+        let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let bend = move |p: Position| -> Position {
+            if bend_half <= 0.0 {
+                return p;
             }
-
-            // THE UNDEAD RITE (PG-2): rarely, and never shallow, a spawn becomes a
-            // named UNDEAD boss with a retinue of undead minions — the set-piece that
-            // teaches a party it wants a wall. Uses CR-7's pack machinery (leader +
-            // minions) so it fights as a unit, and is checked BEFORE the ordinary pack
-            // roll so a rite is never demoted into one.
-            let leader_idx = idx;
-            let mut became_rite = false;
-            if i > 0
-                && !self.tutorial
-                && tier_at_distance(balance, pos.x) >= enc.undead_rite_min_tier
-                && self.monsters[leader_idx].encounter_class == "standard"
-                && erng.unit() < enc.undead_rite_chance
-            {
-                became_rite = true;
-                let undead = abilities::bosses_of_faction("undead");
-                let boss = undead[erng.below(undead.len().max(1)).min(undead.len() - 1)];
-                self.monsters[leader_idx].promote(
-                    enc.undead_rite_boss_hp_mult,
-                    enc.undead_rite_boss_atk_mult,
-                    enc.undead_rite_boss_xp_mult,
-                    "undead_rite",
-                );
-                self.monsters[leader_idx].become_boss(boss);
-                self.monsters[leader_idx].apply_affix(erng.next_u64());
-                for _ in 0..enc.undead_rite_minions {
-                    let angle = erng.unit() * std::f64::consts::TAU;
-                    let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
-                    let mpos = corridor_offset(
-                        pos,
-                        dist * angle.cos(),
-                        dist * angle.sin(),
-                        self.radial_half,
-                        self.corridor_lateral.max(1.0),
-                    );
-                    let midx = self.monsters.len();
-                    let mseed = erng.next_u64();
-                    self.monsters.push(MonsterSpawn::build(
-                        balance,
-                        format!("mob-{midx}"),
-                        kind,
-                        mpos,
-                        mseed,
-                    ));
-                    self.monsters[midx].area_min_x = start_x;
-                    self.monsters[midx].area_max_x = end_x;
-                    self.monsters[midx].promote(
-                        enc.undead_rite_minion_hp_mult,
-                        enc.undead_rite_minion_atk_mult,
-                        enc.minion_xp_mult,
-                        "minion",
-                    );
-                    // A rite's retinue is its own dead, whatever the local wildlife is.
-                    self.monsters[midx].faction = "undead".to_string();
-                }
-                // Keep the rite a rite: nothing else groups into it.
-                x += balance.ai.group_radius;
-            }
-            // PACKS, on a distance RAMP (`[[encounters.group_ramp]]`): duels while a
-            // player learns the ATB, then duos, then mixed triples, then quads. The
-            // band is chosen by the spawn's hub distance — which in corridor space is
-            // simply its x — so the ramp is a readable curve rather than a dice roll.
-            // Rolled on the elite stream so the main placement draws stay
-            // byte-identical (determinism tests). Never in the spawn section or the
-            // tutorial: onboarding stays calm regardless of the table.
-            let band = enc.group_band_at(pos.x.max(0.0));
-            if let Some(band) = band {
+            let theta = (p.y / bend_lat).clamp(-1.0, 1.0) * bend_half;
+            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+        };
+        let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
+        for lane in 0..lanes {
+            let mut lane_rng =
+                (lane > 0).then(|| Rng(section_seed(self.seed_base, i) ^ 0x1A4E_5EED ^ (lane << 32)));
+            let rng = lane_rng.as_mut().unwrap_or(&mut rng);
+            // The SPAWN section (i == 0) keeps a creature-free safe ring around the Center
+            // Hub: a stationary player at spawn is otherwise inside `[ai] aggro_radius` of
+            // the first creature, so something closes and yanks them into a battle before
+            // they can react. `hub_safe_radius` exceeds aggro_radius, and in the radial
+            // world a creature's hub-distance is its corridor-x, so starting placement
+            // there guarantees a calm spawn. Deeper sections start at their western edge.
+            let mut x = start_x + if i == 0 { wg.hub_safe_radius.max(2.0) } else { 2.0 };
+            while x < inner_end {
+                let kind = kinds[rng.below(kinds.len())];
+                // A few tries at a fresh lateral before giving the station up: skipping on
+                // the first clash loses the spawn outright, and at this density a clash is
+                // common enough that the world would thin back out through the side door.
+                let Some((pos, world)) = (0..CREATURE_PLACEMENT_TRIES).find_map(|_| {
+                    let p = Position::new(x, wg.creature_lateral_spread * rng.signed());
+                    let w = bend(p);
+                    (!taken.crowded(&w)).then_some((p, w))
+                }) else {
+                    let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
+                    x += gap.max(2.0);
+                    continue;
+                };
+                taken.insert(world);
+                let idx = self.monsters.len();
+                let mseed = rng.next_u64();
+                self.monsters
+                    .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
+                self.monsters[idx].area_min_x = start_x;
+                self.monsters[idx].area_max_x = end_x;
+                // Never shallow: an Elite is a named boss carrying `elite_hp_mult`, so one
+                // in the first ring is a wipe rather than an encounter. Gate on the RADIUS
+                // (corridor x), which is what the spawn's hub distance becomes once the fan
+                // bends it — `distance_floor()` here is corridor hypot(x, y), which reads up
+                // to `creature_lateral_spread` too far out and let elites past the on-ramp.
                 if i > 0
-                    && !became_rite
                     && !self.tutorial
-                    && band.size > 1
-                    && self.monsters[leader_idx].encounter_class == "standard"
-                    && erng.unit() < band.chance
+                    && (pos.x.max(0.0).floor() as i64) >= enc.elite_min_distance
+                    && erng.unit() < enc.elite_chance
                 {
-                    self.monsters[leader_idx].promote(
-                        enc.leader_hp_mult,
-                        enc.leader_atk_mult,
-                        enc.leader_xp_mult,
-                        "leader",
+                    self.monsters[idx].promote(
+                        enc.elite_hp_mult,
+                        enc.elite_atk_mult,
+                        enc.elite_xp_mult,
+                        "elite",
                     );
-                    for _ in 0..band.size - 1 {
-                        // Mixed groups: past the duo band, some of the littles are a
-                        // different species than what they follow.
-                        let mkind = if erng.unit() < band.mixed_chance {
-                            kinds[erng.below(kinds.len())]
-                        } else {
-                            kind
-                        };
+                    let bseed = erng.next_u64();
+                    self.monsters[idx].apply_affix(bseed);
+                    // FS-4: unique boss mechanics — an Elite fights as one of the
+                    // "elite" tier's two named bosses instead of a plain reskin.
+                    self.monsters[idx].become_boss(pick_elite_boss_kind(bseed ^ 0xB055));
+                }
+
+                // THE UNDEAD RITE (PG-2): rarely, and never shallow, a spawn becomes a
+                // named UNDEAD boss with a retinue of undead minions — the set-piece that
+                // teaches a party it wants a wall. Uses CR-7's pack machinery (leader +
+                // minions) so it fights as a unit, and is checked BEFORE the ordinary pack
+                // roll so a rite is never demoted into one.
+                let leader_idx = idx;
+                let mut became_rite = false;
+                if i > 0
+                    && !self.tutorial
+                    && tier_at_distance(balance, pos.x) >= enc.undead_rite_min_tier
+                    && self.monsters[leader_idx].encounter_class == "standard"
+                    && erng.unit() < enc.undead_rite_chance
+                {
+                    became_rite = true;
+                    let undead = abilities::bosses_of_faction("undead");
+                    let boss = undead[erng.below(undead.len().max(1)).min(undead.len() - 1)];
+                    self.monsters[leader_idx].promote(
+                        enc.undead_rite_boss_hp_mult,
+                        enc.undead_rite_boss_atk_mult,
+                        enc.undead_rite_boss_xp_mult,
+                        "undead_rite",
+                    );
+                    self.monsters[leader_idx].become_boss(boss);
+                    self.monsters[leader_idx].apply_affix(erng.next_u64());
+                    for _ in 0..enc.undead_rite_minions {
                         let angle = erng.unit() * std::f64::consts::TAU;
-                        let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
+                        let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
                         let mpos = corridor_offset(
                             pos,
                             dist * angle.cos(),
@@ -2394,29 +2511,95 @@ impl Arena {
                         self.monsters.push(MonsterSpawn::build(
                             balance,
                             format!("mob-{midx}"),
-                            mkind,
+                            kind,
                             mpos,
                             mseed,
                         ));
                         self.monsters[midx].area_min_x = start_x;
                         self.monsters[midx].area_max_x = end_x;
+                        taken.insert(bend(mpos));
                         self.monsters[midx].promote(
-                            enc.minion_hp_mult,
-                            enc.minion_atk_mult,
+                            enc.undead_rite_minion_hp_mult,
+                            enc.undead_rite_minion_atk_mult,
                             enc.minion_xp_mult,
                             "minion",
                         );
+                        // A rite's retinue is its own dead, whatever the local wildlife is.
+                        self.monsters[midx].faction = "undead".to_string();
                     }
-                    // Clear the grouping radius before the next spawn, or two packs
-                    // placed a normal gap apart merge into one oversized fight — the
-                    // ramp promises a quad, not an accidental eight.
+                    // Keep the rite a rite: nothing else groups into it.
                     x += balance.ai.group_radius;
                 }
-            }
+                // PACKS, on a distance RAMP (`[[encounters.group_ramp]]`): duels while a
+                // player learns the ATB, then duos, then mixed triples, then quads. The
+                // band is chosen by the spawn's hub distance — which in corridor space is
+                // simply its x — so the ramp is a readable curve rather than a dice roll.
+                // Rolled on the elite stream so the main placement draws stay
+                // byte-identical (determinism tests). Never in the spawn section or the
+                // tutorial: onboarding stays calm regardless of the table.
+                let band = enc.group_band_at(pos.x.max(0.0));
+                if let Some(band) = band {
+                    if i > 0
+                        && !became_rite
+                        && !self.tutorial
+                        && band.size > 1
+                        && self.monsters[leader_idx].encounter_class == "standard"
+                        && erng.unit() < band.chance
+                    {
+                        self.monsters[leader_idx].promote(
+                            enc.leader_hp_mult,
+                            enc.leader_atk_mult,
+                            enc.leader_xp_mult,
+                            "leader",
+                        );
+                        for _ in 0..band.size - 1 {
+                            // Mixed groups: past the duo band, some of the littles are a
+                            // different species than what they follow.
+                            let mkind = if erng.unit() < band.mixed_chance {
+                                kinds[erng.below(kinds.len())]
+                            } else {
+                                kind
+                            };
+                            let angle = erng.unit() * std::f64::consts::TAU;
+                            let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
+                            let mpos = corridor_offset(
+                                pos,
+                                dist * angle.cos(),
+                                dist * angle.sin(),
+                                self.radial_half,
+                                self.corridor_lateral.max(1.0),
+                            );
+                            let midx = self.monsters.len();
+                            let mseed = erng.next_u64();
+                            self.monsters.push(MonsterSpawn::build(
+                                balance,
+                                format!("mob-{midx}"),
+                                mkind,
+                                mpos,
+                                mseed,
+                            ));
+                            self.monsters[midx].area_min_x = start_x;
+                            self.monsters[midx].area_max_x = end_x;
+                            taken.insert(bend(mpos));
+                            self.monsters[midx].promote(
+                                enc.minion_hp_mult,
+                                enc.minion_atk_mult,
+                                enc.minion_xp_mult,
+                                "minion",
+                            );
+                        }
+                        // Clear the grouping radius before the next spawn, or two packs
+                        // placed a normal gap apart merge into one oversized fight — the
+                        // ramp promises a quad, not an accidental eight.
+                        x += balance.ai.group_radius;
+                    }
+                }
 
-            let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
-            x += gap.max(2.0);
+                let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
+                x += gap.max(2.0);
+            }
         }
+        self.creature_spots = taken;
 
         // Scatter harvestable resource nodes through the section (2D, biome kinds).
         let rkinds = resources_for_biome(biome);
@@ -2851,6 +3034,17 @@ impl Arena {
                 }
                 p
             };
+            // How close is too close, asked in the frame the player stands in. Corridor y
+            // is an ANGLE: at r=355 a tangential gap is worth 37× what it measures here.
+            // Comparing raw corridor distance therefore threw out trees that would end up
+            // 190 world units apart, which is why the forest asked for 392 props, placed
+            // 90, and read as a field with a few trees in it — the count was compensated
+            // for the fan, the SPACING never was. Indexed, because the check now succeeds
+            // often enough that a linear scan over every tree in the world would dominate
+            // world generation.
+            let mut near =
+                BlockGrid::new(2.0 * wg.obstacle_max_radius + 1.2, radial_scale, start_x, end_x);
+            near.seed(&self.monsters, &self.resources, &self.chests, &self.obstacles);
             let (mut fp, mut fa) = (0usize, 0usize);
             while fp < extra && fa < extra * 12 {
                 fa += 1;
@@ -2871,16 +3065,10 @@ impl Arena {
                 if terrain.level_at(&pos) != 0 {
                     continue;
                 }
-                let occupied = self
-                    .monsters
-                    .iter()
-                    .any(|m| m.position.distance_to(&pos) < radius + 1.2)
-                    || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.2)
-                    || self.chests.iter().any(|c| c.position.distance_to(&pos) < radius + 1.2)
-                    || self.obstacles.iter().any(|o| o.position.distance_to(&pos) < radius + o.radius);
-                if occupied {
+                if near.blocked(&pos, radius) {
                     continue;
                 }
+                near.insert(pos, radius);
                 self.obstacles.push(Obstacle {
                     entity_id: format!("obs-{}", self.obstacles.len()),
                     kind: fill_kind.to_string(),
@@ -4553,6 +4741,54 @@ mod tests {
         }
     }
 
+    /// Trees per unit of GROUND, ring by ring, for a world pinned to one biome. Per unit
+    /// of corridor length (what `forest_is_a_dense_maze_and_desert_is_open` measures) a
+    /// section can look thick while the ground under the player is nearly bare, because
+    /// the fan stretches each section over an ever-larger sector.
+    fn fill_per_area_by_ring(b: &Balance, biome: &'static str) -> Vec<f64> {
+        let a = Arena::generate_with(b, 42, false, Some(biome));
+        let half = a.radial_half();
+        [(30.0, 90.0), (90.0, 170.0), (170.0, 270.0)]
+            .iter()
+            .map(|&(lo, hi)| {
+                let n = a
+                    .obstacles
+                    .iter()
+                    .filter(|o| {
+                        let r = o.position.x.hypot(o.position.y);
+                        r >= lo && r < hi
+                    })
+                    .count() as f64;
+                n / ((hi * hi - lo * lo) * half)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_wood_is_thick_where_you_are_standing() {
+        // Reported from play: "the forest biome feels more like a field with trees in it."
+        // It asked for 392 props a section and placed 90. Spacing was checked in corridor
+        // coordinates where y is an ANGLE, so two trees that end up 190 world units apart
+        // at depth read as overlapping and one of them was thrown away — the count was
+        // compensated for the fan, the spacing never was. Density on the GROUND is the
+        // only measure that catches that, so that is what this pins.
+        let b = Balance::load_default().unwrap();
+        let forest = fill_per_area_by_ring(&b, "forest");
+        for (n, d) in forest.iter().enumerate() {
+            assert!(*d > 0.006, "forest ring {n} is a field, not a wood: {d:.4}/u²");
+        }
+        // And the FIELD is the same ground deliberately left open — the contrast between
+        // them is the content, so it has to be a big one, not a tuning nudge.
+        let field = fill_per_area_by_ring(&b, "field");
+        assert!(
+            forest[1] > field[1] * 4.0,
+            "a wood should be several times a meadow: forest {:.4}/u² vs field {:.4}/u²",
+            forest[1],
+            field[1]
+        );
+        assert!(field[1] > 0.0, "a field still has trees in the distance");
+    }
+
     #[test]
     fn forest_is_a_dense_maze_and_desert_is_open() {
         // #8: a forest section packs far more blocking fill than the open desert, so
@@ -5323,6 +5559,88 @@ mod tests {
             .map(|m| (m.position.x.powi(2) + m.position.y.powi(2)).sqrt())
             .fold(0.0_f64, f64::max);
         assert!(max_r > 50.0, "the world extends outward, not just a ring");
+    }
+
+    /// Creatures per unit of ground, ring by ring. The fan's area grows with radius, so
+    /// a per-section creature COUNT is not a density — this is what the player actually
+    /// experiences walking around out there.
+    fn creatures_per_area_by_ring(b: &Balance, seed: u64) -> Vec<f64> {
+        let arena = Arena::generate(b, seed, false);
+        let half = arena.radial_half();
+        [(40.0, 100.0), (100.0, 180.0), (180.0, 280.0)]
+            .iter()
+            .map(|&(lo, hi)| {
+                let n = arena
+                    .monsters
+                    .iter()
+                    .filter(|m| {
+                        let r = m.position.x.hypot(m.position.y);
+                        r >= lo && r < hi
+                    })
+                    .count() as f64;
+                n / ((hi * hi - lo * lo) * half)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_world_does_not_empty_out_as_it_fans_open() {
+        // Reported from play: "there just aren't enough creatures spawned... I wandered
+        // around for a bit and didn't see anything on the screen." Creatures are laid one
+        // per `monster_spacing` along the corridor, which is one corridor-WIDTH of content
+        // — but WG-4 bends that fixed width into an arc that grows with radius, so the
+        // same handful of creatures gets smeared over an ever-larger sector. The count per
+        // section was fine; the density collapsed. This pins the density, not the count.
+        let b = Balance::load_default().unwrap();
+        for seed in [1u64, 7, 42, 9001] {
+            let d = creatures_per_area_by_ring(&b, seed);
+            assert!(
+                d[2] > d[0] * 0.7,
+                "seed {seed}: the deep ring keeps its population \
+                 (shallow {:.5}/u², deep {:.5}/u²)",
+                d[0],
+                d[2]
+            );
+        }
+        // ...and the measurement above is not vacuous: turn the compensation off and the
+        // density really does fall away, which is the bug as it shipped.
+        let mut off = b.clone();
+        off.worldgen.creature_radial_lane_cap = 1.0;
+        let d = creatures_per_area_by_ring(&off, 42);
+        assert!(
+            d[2] < d[0] * 0.5,
+            "uncompensated, the deep ring thins out (shallow {:.5}/u², deep {:.5}/u²)",
+            d[0],
+            d[2]
+        );
+    }
+
+    #[test]
+    fn only_a_pack_ever_makes_a_group() {
+        // The density fix and the encounter ramp are two halves that have to be joined:
+        // `group_around` pulls everything within `[ai] group_radius`, so packing creatures
+        // in at the designed density is also a way to silently hand out bigger fights than
+        // the ramp promises. Two spawns that are not each other's pack are never within
+        // pull range — a fight's size is decided by the ramp table, never by geometry.
+        let b = Balance::load_default().unwrap();
+        let pull = b.ai.group_radius;
+        for seed in [3u64, 11, 42, 777] {
+            let mut a = Arena::generate(&b, seed, false);
+            a.ensure_frontier(&b, 600.0);
+            let solo: Vec<&MonsterSpawn> =
+                a.monsters.iter().filter(|m| m.encounter_class == "standard").collect();
+            for (n, m) in solo.iter().enumerate() {
+                for o in &solo[n + 1..] {
+                    let d = m.position.distance_to(&o.position);
+                    assert!(
+                        d > pull,
+                        "seed {seed}: {} and {} are {d:.2} apart and pull each other in",
+                        m.monster_kind,
+                        o.monster_kind
+                    );
+                }
+            }
+        }
     }
 
     #[test]
