@@ -210,7 +210,7 @@ Equips a blue-chest gear item into the loadout slot named by its `slot` field. E
 **Deprecated:** No
 **Auth:** Bearer session token. Owner only.
 **Idempotency:** Idempotent for the already-equipped item — re-equipping the same item returns `200` with unchanged state.
-**Side effects:** Sets `equipped = true` on the item. Loadout changes take effect at the next run start; they do not affect a run already in progress.
+**Side effects:** Sets `equipped = true` on the item. **A full slot SWAPS:** if the hero already wears something in that slot and the slot holds one item, the occupant is unequipped and returned to the Vault as part of the same call — a hero is always dressed, so refusing here made the equip picker a dead end where every press was a 409. Loadout changes take effect at the next run start; they do not affect a run already in progress.
 **Concurrency:** Loadout mutations are rejected with 409 `conflict` while the player has a run in progress (the loadout is locked for the duration of the run).
 
 **Request**
@@ -226,7 +226,7 @@ Equips a blue-chest gear item into the loadout slot named by its `slot` field. E
 | Status | Error code | Condition |
 |--------|------------|-----------|
 | 404 | `not_found` | Gear does not exist or is not owned by the caller. |
-| 409 | `conflict` | Another item already occupies this loadout slot (unequip it first); or `insurance` is `red` (only blue-chest gear is equippable — see Notes); or `max_durability` is 0 (CANON.md §D6); or the caller has a run in progress. |
+| 409 | `conflict` | The slot's occupants are already at a **multi-item** capacity (both accessory slots full) — which one comes off is the player's choice, so the server will not choose; a single-item slot swaps instead of refusing. Or `insurance` is `red` (only blue-chest gear is equippable — see Notes); or `max_durability` is 0 (CANON.md §D6); or the caller has a run in progress; or the hero's class may not wear the item, or a two-handed weapon needs the off-hand freed (GR-5). |
 
 **Example — success**
 

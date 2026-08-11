@@ -122,10 +122,22 @@ the dive→extract→dive loop. This epic finishes M1–M3.
 - [x] **LC-3 — Adopt "The Last City" as the canonical name.** Renamed "The Weld" in
   all in-game UI/labels + client code, the proposal's name line, and added a CANON
   glossary entry (§G) for **The Last City**. District names kept.
-- [ ] **LC-4 — Interact with your inventory inside town.** Open and manage the
+- [x] **LC-4 — Interact with your inventory inside town.** Open and manage the
   Vault + equipped gear + (pre-dive) loadout from within Last City — the Vault-Deep
   district UI reading the live `GET /v1/vault` / `/vault/gear`, plus equip/unequip.
   Prereq for GR-1/PT-1/PT-2/SV-1 having a home. (Depends on GR-1's slot model.)
+  **Shipped:** `[V]`/`[E]` at the Vault-Deep opens the three-column menu in town (the City
+  state registers `menu::render_main_menu` and the whole equip flow, not just
+  `render_overlay`, whose Inventory arm is empty — with only the latter registered the vault
+  looked like it would not open at all), the material and gear lists read the live endpoints,
+  and named loadouts save/apply from the Drill Yard.
+  **Equip/unequip was the last piece, and it was broken until #218:** every hero starts
+  dressed in all six slots, and `set_equipped` refused a full slot with a 409 — so *every*
+  press in the picker was a refusal on a slot that is always occupied, and nothing displayed
+  the reason. A full capacity-1 slot now SWAPS (the displaced piece returns to the Vault);
+  only a full multi-capacity category still refuses, since there the player is choosing which
+  ring comes off. Vault writes report through `ServerMsg::VaultNotice`, so a refusal is spoken
+  where the press happened rather than on a HUD line behind the panel.
 - [ ] **LC-5 — Rebuild Last City as a friendly *authored space*.** A city is an
   authored, multi-room space you walk around in — mechanically the **friendly
   profile** of the same substrate as WG-1 dungeons (authored glyph-grid + manifest
@@ -941,6 +953,21 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   on `run.started.peaks` + `TerrainSection.peaks`, so ground + entity Y raise together and
   the reward sits on top. Screenshot-verified (a Lv-boss atop a desert mountain).
   `[worldgen]`: `peak_radius`, `peak_min_distance`, `path_climb_chance`, `peak_boss_chance`.
+  **Density is a per-AREA question, and the fan distorts it (fixed #217):** bending a
+  fixed-width corridor into an arc means anything placed *per unit of corridor* is smeared
+  ever thinner outward — at r=230 the arc is ~1400 units across. Both creatures and maze fill
+  now compensate (`creature_radial_lane_cap`, `maze_radial_scale_cap`: the corridor is walked
+  once per corridor-width of arc). The half that is easy to miss is that **any spacing or
+  adjacency check must be asked in the BENT frame**, because corridor `y` is an *angle*:
+  comparing raw corridor distance is what made the forest ask for 392 trees and place 90, a
+  wood that read as a field. Both checks are indexed (`SpotGrid`/`BlockGrid`), since the world
+  streams outward without bound and a linear scan is quadratic in dive depth. Two invariants
+  are held by test — density-per-unit-area must not collapse with depth, and no two standard
+  spawns sit inside `[ai] group_radius` of each other, because a PACK is the only thing that
+  may make a group or the encounter ramp promises duels and quietly hands out fives.
+  **A FIELD biome joins the rotation:** the forest's ground, fauna, flora and dungeon pool at
+  `field_obstacle_mult` 1.3 instead of 7.0 — grassland you can see across and a wood you
+  cannot, which is the contrast the two exist for.
   **Remaining (minor cosmetic):** re-homing biome-seam walls into the radial layout
   (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
