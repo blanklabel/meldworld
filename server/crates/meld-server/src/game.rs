@@ -6889,6 +6889,14 @@ impl WorldActor {
             .sum();
         let xp_reward: i64 =
             ((base_xp as f64) * inst.battles[bidx].party_scale).round().max(0.0) as i64;
+        // The toughest thing in the encounter is what a hero learns from, and what
+        // `xp_after_level_gap` weighs its own level against.
+        let encounter_level: i32 = monster_ids
+            .iter()
+            .filter_map(|id| inst.arena.monster_by_id(id))
+            .map(|m| m.level)
+            .max()
+            .unwrap_or(1);
         tracing::info!(battle_id = %battle_id, ?outcome, "battle ended");
         // The outcome applies to every party merged into THIS battle (raid).
         let bp = inst.battles[bidx].parties.clone();
@@ -6957,7 +6965,16 @@ impl WorldActor {
                         if *hp <= 0 {
                             continue;
                         }
-                        if r.award_hero_xp(slot, size, xp_reward, &balance) > 0 {
+                        // Each hero weighs the encounter against ITS OWN level, so the
+                        // one that has fallen behind still learns from ground the rest
+                        // of the party has outgrown.
+                        let paid = meld_run::xp_after_level_gap(
+                            xp_reward,
+                            encounter_level,
+                            r.hero_level(slot),
+                            &balance,
+                        );
+                        if r.award_hero_xp(slot, size, paid, &balance) > 0 {
                             if let Some(class) = comp.get(slot) {
                                 class_bests.push((
                                     r.player_id.clone(),

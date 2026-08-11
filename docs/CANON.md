@@ -104,6 +104,17 @@ All constants **[TUNABLE]** unless noted structural.
 - Hubs at `d = 0, 500, 1000, 1500, …, 5000` (11 curated hubs, structural). Beyond 5000: no hubs, infinite scaling.
 - `base_run_level(hub) = 1 + hub.distance × 0.078` rounded to nearest int → Center = 1, D500 = 40, D1000 = 79, D5000 = 391.
 - Run Level cap: none (grows with XP during run); XP formula `xp_to_next(L) = 80 × L^1.6`.
+- **Encounter XP falls off once a hero has out-levelled the ground.** An encounter pays
+  a hero in full while the hero is within `xp_gap_grace` levels of it, then linearly down
+  to `xp_gap_floor_mult` at `xp_gap_zero` levels above; a hero at or *below* the
+  encounter's level is never penalised, so a lagging hero catches up. Each hero weighs
+  the encounter against its own level (`meld_run::xp_after_level_gap`).
+  This is what makes "distance is the difficulty axis" true of **reward** and not only of
+  danger: creature power rides distance, but the level curve is priced at the level's own
+  matched depth (`d = 12.5 × L`), so without the falloff a party that levels *without
+  travelling* is paid hub rates against a hub-rate curve. Measured, two heroes ground
+  `d = 0` to level 16 while taking 0–1 damage a fight, then died in one encounter the
+  moment they walked out.
 - Gatekeeper arenas at `d = 500k − 1` for k = 1..10 (structural); arena is a full-width chokepoint — no path past it without clearing (per-instance clear flag).
 
 ### Biome bands (curated tutorial order; theme is randomized per run)
@@ -242,9 +253,16 @@ A world stores only its **delta from the seed baseline**, event-sourced:
 > and those do not share a curve:
 >
 > - **HP** is opposed by party *damage*, which is dominated by gear — and gear power
->   is linear in `tier(d)` (`gear_atk_per_tier` x 7 slots). So HP is
->   `1 + hp_per_tier x tier(d)`, linear in the same basis, and the rounds-per-fight
+>   is linear in `tier(d)` (`gear_atk_per_tier` x 7 slots). So HP grows at the same
+>   rate, `max(1, 1 + hp_per_tier x (d/tier_divisor - 0.5))`, and the rounds-per-fight
 >   ratio holds at every depth by construction rather than by tuning.
+>
+>   It is linear in **`d`, not in the integer `tier(d)`**. Riding the floored tier made
+>   it a staircase with a `hp_per_tier`-sized riser (6.4x at shipped values): a creature
+>   at d=99 died in two swings and the same creature at d=100 took ten, so one unit of
+>   walking turned an 8-second fight into a 40-second one and nothing threatened the
+>   party on either side of the line. The `- 0.5` runs the line through each band's
+>   centre, so every depth the curve was tuned at keeps the multiplier it had.
 > - **Attack** is opposed by hero HP and defence, which grow with *level*. That stays
 >   `stat_mult(d) = (1 + d/500)^stat_mult_exp`.
 > - **Armour** is opposed by hero attack, gently: `def_mult(d) = (1 + d/500)^0.7`.
