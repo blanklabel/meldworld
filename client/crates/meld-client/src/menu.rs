@@ -280,6 +280,7 @@ pub(crate) fn render_main_menu(
     backpack: Res<RunBackpack>,
     perks: Res<PerksRes>,
     explored: Res<crate::overworld::ExploredMap>,
+    notice: Res<Notice>,
     wa: Option<Res<WorldAssets>>,
     existing: Query<Entity, With<MainMenuRoot>>,
 ) {
@@ -292,7 +293,8 @@ pub(crate) fn render_main_menu(
         || roster.is_changed()
         || hero_names.is_changed()
         || stats.is_changed()
-        || backpack.is_changed())
+        || backpack.is_changed()
+        || notice.is_changed())
     {
         return;
     }
@@ -763,6 +765,7 @@ pub(crate) fn render_main_menu(
                             &picker,
                             depth,
                             menu.cursor,
+                            &notice,
                         );
                     }
                 });
@@ -895,6 +898,7 @@ fn equipment_pane(
     picker: &EquipPicker,
     depth: u8,
     cursor: usize,
+    notice: &Notice,
 ) {
     let class = (!class_key.is_empty()).then_some(class_key);
     match picker.category {
@@ -929,6 +933,12 @@ fn equipment_pane(
                     b.spawn(glass::text("Equip best   [B]", 18.0, glass::WARN));
                 });
             col.spawn(glass::text("[Enter] change  [B] equip best  [Esc] back", 14.0, glass::DIM));
+            // Whatever the last Vault write said, at the press's own elbow. A refusal that
+            // only reaches the overworld HUD behind this panel is a refusal nobody reads,
+            // and "nothing happened" is indistinguishable from a dead button.
+            if !notice.text.is_empty() {
+                col.spawn(glass::text(notice.text.clone(), 14.0, glass::WARN));
+            }
         }
         Some(cat) => {
             col.spawn(glass::text(gear_category_label(cat), 19.0, glass::WARN));

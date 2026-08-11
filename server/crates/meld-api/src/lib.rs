@@ -1476,12 +1476,18 @@ async fn equip_best(
             continue; // already wearing the best thing available
         }
         match st.db.set_equipped(player_id, g.gear_id, Some(slot)).await {
-            Ok(_) => changed.push(serde_json::json!({
+            // Only `Ok` means it went on. `SlotOccupied`/`ClassLocked`/`Broken` all come
+            // back as `Ok(variant)`, so matching the Result alone reported gear it had not
+            // put on — a haul of changes the Vault would then contradict.
+            Ok(meld_db::EquipResult::Ok) => changed.push(serde_json::json!({
                 "slot": wear_slot,
                 "gear_id": g.gear_id.to_string(),
                 "name": g.name.clone(),
             })),
             // A refusal here is not fatal: take what did fit and report honestly.
+            Ok(refused) => {
+                tracing::warn!("equip-best could not wear {}: {refused:?}", g.gear_id)
+            }
             Err(e) => tracing::warn!("equip-best could not wear {}: {e}", g.gear_id),
         }
     }

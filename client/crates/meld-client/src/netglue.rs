@@ -499,6 +499,7 @@ pub(crate) fn pump_net(
                 }
             }
             ServerMsg::Harvested { kind, qty } => pops.banked(&kind, qty),
+            ServerMsg::VaultNotice { text } => notice.say(text, clock.elapsed_secs_f64()),
             ServerMsg::CraftResult { text } => {
                 craft.last = text;
                 // The book's `craftable` flags are the server's answer at fetch time, so

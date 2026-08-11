@@ -596,6 +596,9 @@ pub enum ServerMsg {
     BrokerQuotes { quotes: Vec<BrokerQuote> },
     /// The result of a craft or a forge, in the player's words.
     CraftResult { text: String },
+    /// Why a Vault write was refused, in the player's words. Only ever a refusal — a
+    /// successful equip shows itself in the list, and narrating it would be noise.
+    VaultNotice { text: String },
     /// A harvest channel paid out one tick's worth.
     Harvested { kind: String, qty: i32 },
     /// A field station answered: what the smith did (or would not), and the jobs left.
@@ -673,6 +676,9 @@ struct Inner {
     recipes_rx: Option<mpsc::Receiver<Vec<RecipeLine>>>,
     broker_rx: Option<mpsc::Receiver<Vec<BrokerQuote>>>,
     craft_rx: Option<mpsc::Receiver<String>>,
+    /// Replies from Vault WRITES (equip/unequip). A refusal that reaches nobody is the
+    /// same as a dead button from the player's side, and this is the only way back.
+    vault_rx: Option<mpsc::Receiver<String>>,
     ticket: String,
     player_id: String,
     /// Bearer token for authenticated HTTP (vault/gear/players).
@@ -717,6 +723,7 @@ pub fn start(base: String) -> Net {
             recipes_rx: None,
             broker_rx: None,
             craft_rx: None,
+            vault_rx: None,
         ticket: String::new(),
         player_id: String::new(),
         session_token: String::new(),
@@ -980,6 +987,12 @@ impl Inner {
                 self.out.push_back(ServerMsg::CraftResult { text });
             }
         }
+        if let Some(rx) = &self.vault_rx {
+            if let Ok(text) = rx.try_recv() {
+                self.vault_rx = None;
+                self.out.push_back(ServerMsg::VaultNotice { text });
+            }
+        }
         if let Some(rx) = &self.vanguard_rx {
             if let Ok((season, entries, you)) = rx.try_recv() {
                 self.vanguard_rx = None;
@@ -1031,7 +1044,14 @@ impl Inner {
         req.headers.insert("Content-Type", "application/json");
         let (tx, rx) = mpsc::channel();
         self.inv_rx = Some(rx);
-        ehttp::fetch(req, move |_res| {
+        let (ntx, nrx) = mpsc::channel();
+        self.vault_rx = Some(nrx);
+        ehttp::fetch(req, move |res| {
+            // A refusal has to reach the player. Dropping the response is what made a full
+            // slot look like a dead button: the server said why in a 409 and nobody read it.
+            if let Some(msg) = save_refusal(&res) {
+                let _ = ntx.send(msg);
+            }
             // Regardless of 200/409, re-read the vault so the UI shows truth.
             spawn_inventory_fetch(base, token, tx);
         });
