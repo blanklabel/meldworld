@@ -800,6 +800,10 @@ pub struct WorldGen {
     pub world_margin: f64,
     pub lateral_half_extent: f64,
     pub creature_lateral_spread: f64,
+    /// How many times a section's corridor is walked laying creatures — one walk per
+    /// corridor-width of arc, so the radial fan doesn't thin creature density with depth.
+    /// Capped here because the true stretch passes 30× and the world streams forever.
+    pub creature_radial_lane_cap: f64,
     /// Creature-free safe ring around the Center Hub in the spawn section (must stay
     /// above `[ai] aggro_radius` so a just-spawned player isn't instantly aggro'd).
     pub hub_safe_radius: f64,
@@ -808,6 +812,7 @@ pub struct WorldGen {
     pub obstacles_per_area: f64,
     /// Forest sections pack this multiple of `obstacles_per_area` extra trees into
     /// the play area (dense maze); other biomes keep the base density.
+    pub field_obstacle_mult: f64,
     pub forest_obstacle_mult: f64,
     /// Per-biome fill density so each biome FEELS distinct (open desert, dense
     /// Ashfall mountain-pass, choked mire, …). `maze_obstacle_mult` is the fallback.

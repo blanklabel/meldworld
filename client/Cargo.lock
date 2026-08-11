@@ -3492,6 +3492,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "ttf-parser 0.21.1",
  "uuid",
  "web-sys",
 ]

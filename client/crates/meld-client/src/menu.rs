@@ -390,11 +390,15 @@ pub(crate) fn render_main_menu(
                                 col.spawn((
                                     Button,
                                     WithdrawButton { item_kind: kind.clone() },
-                                    glass::chip(false),
+                                    glass::row_chip(false),
                                 ))
                                 .with_children(|b| {
+                                    crate::icons::spawn_icon(b, wa.as_deref(), kind, 26.0);
                                     b.spawn(glass::text(
-                                        format!("{kind}  x{n}"),
+                                        format!(
+                                            "{}  x{n}",
+                                            crate::icons::display_name(kind)
+                                        ),
                                         18.0,
                                         glass::TEXT,
                                     ));

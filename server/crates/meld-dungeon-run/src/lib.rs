@@ -616,7 +616,11 @@ pub fn roll_entrance(section_seed: u64, biome: &str, spawn_chance: f64) -> Optio
     if spawn_chance <= 0.0 {
         return None;
     }
-    let pool: Vec<&'static DungeonDef> = meld_dungeon_content::for_biome(biome).collect();
+    // A field is the forest's open ground, so the barrows under it are the forest's
+    // barrows. Without the alias a field section has an empty pool and quietly hosts no
+    // authored dungeon at all — a whole biome with none would read as a broken feature.
+    let pool: Vec<&'static DungeonDef> =
+        meld_dungeon_content::for_biome(if biome == "field" { "forest" } else { biome }).collect();
     if pool.is_empty() {
         return None;
     }
