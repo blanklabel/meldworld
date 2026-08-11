@@ -392,8 +392,6 @@ fn main() {
                 withdraw_click,
                 render_loot_report,
                 mocks::mock_tally_setup,
-                level_up_screen,
-                unlock_banner,
                 menu::render_main_menu,
                 main_menu_click,
                 use_item_click,
@@ -540,7 +538,40 @@ fn main() {
         )
         .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
         .add_systems(Update, (ended_input, ended_buttons).run_if(in_state(Screen::Ended)))
+        .add_plugins(announce_plugin)
         .run();
+}
+
+// ------------------------------------------------------------- announces ---
+
+/// The level-up stat screen and the CL-1 unlock banner, and the states they may
+/// be seen on.
+///
+/// Registered only under `Screen::Overworld`, the node they spawn outlives the
+/// state change (nothing despawns it on exit) while the system that reads
+/// [Space] stops running. So the banner you earn by DYING — the Resonant, the
+/// first unlock most accounts ever see — rode Ended into The Last City and sat
+/// over the plaza forever, deaf to every key. A screen that must be dismissed
+/// runs wherever it can be seen, and is torn down on entering a state that does
+/// not draw it. `current` survives that teardown, so a banner interrupted by a
+/// fight is re-shown afterwards rather than swallowed.
+fn announce_plugin(app: &mut App) {
+    app.add_systems(
+        Update,
+        (level_up_screen, unlock_banner).run_if(
+            in_state(Screen::Overworld)
+                .or(in_state(Screen::City))
+                .or(in_state(Screen::Ended)),
+        ),
+    )
+    .add_systems(
+        OnEnter(Screen::Battle),
+        (despawn::<LevelUpRoot>, despawn::<UnlockBannerRoot>),
+    )
+    .add_systems(
+        OnEnter(Screen::Join),
+        (despawn::<LevelUpRoot>, despawn::<UnlockBannerRoot>),
+    );
 }
 
 // ---------------------------------------------------------------- states ---
@@ -2224,5 +2255,63 @@ mod harvest_pop_tests {
         pops.items[0].age = HARVEST_POP_TTL + 0.01;
         pops.items.retain(|p| p.age < HARVEST_POP_TTL);
         assert!(pops.items.is_empty(), "an old floater should be gone");
+    }
+
+    fn announce_app(screen: Screen) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<Screen>()
+            .insert_resource(ButtonInput::<KeyCode>::default())
+            .insert_resource(UnlocksRes::default())
+            .insert_resource(LevelUpQueue::default())
+            .add_plugins(announce_plugin);
+        app.world_mut().resource_mut::<NextState<Screen>>().set(screen);
+        app.update();
+        app.world_mut().resource_mut::<UnlocksRes>().pending.push_back(net::UnlockLine {
+            key: "class_resonant".into(),
+            name: "Resonant".into(),
+            kind: "class".into(),
+            class_key: None,
+            slot: None,
+            trigger_text: "Lose a run to a wipe.".into(),
+            banner: "That fight wanted a healer.".into(),
+        });
+        app
+    }
+
+    fn banners(app: &mut App) -> usize {
+        app.world_mut().query::<&UnlockBannerRoot>().iter(app.world()).count()
+    }
+
+    /// The banner a wipe hands you lands while the client is on its way to The Last
+    /// City, so town is where it has to be readable AND dismissable. It used to draw
+    /// there and then ignore every key, because only the overworld ran its system.
+    #[test]
+    fn an_unlock_banner_is_dismissible_in_town() {
+        for screen in [Screen::City, Screen::Ended, Screen::Overworld] {
+            let mut app = announce_app(screen.clone());
+            app.update();
+            assert_eq!(banners(&mut app), 1, "no banner on {screen:?}");
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
+            app.update();
+            assert_eq!(banners(&mut app), 0, "[Space] did not dismiss on {screen:?}");
+        }
+    }
+
+    /// A state that does not DRAW the banner must not inherit its node, or the thing
+    /// the player cannot dismiss simply moves to the fight instead of the plaza.
+    #[test]
+    fn a_banner_does_not_follow_you_into_a_fight() {
+        let mut app = announce_app(Screen::Overworld);
+        app.update();
+        assert_eq!(banners(&mut app), 1);
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Battle);
+        app.update();
+        assert_eq!(banners(&mut app), 0, "the banner rode into the battle");
+        // Still owed, though — it is re-shown when the fight is over, not swallowed.
+        app.world_mut().resource_mut::<NextState<Screen>>().set(Screen::Overworld);
+        app.update();
+        app.update();
+        assert_eq!(banners(&mut app), 1, "the unlock was swallowed by the fight");
     }
 }
