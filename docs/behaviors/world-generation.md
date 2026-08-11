@@ -64,6 +64,13 @@ This section specifies three shipped behaviors of the current build (WG-4 + stre
 2. Sections are generated **on demand** as the player advances outward (`ensure_frontier`, keyed off the player's radius): the initial chain streams at run start, and new content **rings** are generated just-in-time as the frontier is approached. The world is therefore **endless** — a run has no fixed length, and difficulty keeps scaling with radius as far as the player pushes — while remaining fully reproducible from `run_seed`.
 3. Streamed sections stitch continuously onto the existing world: a new section's clear path starts where the previous section's ended, and its fresh tail is bent into the same arc the initial disk used, so the backbone, the trail web, and the terrain read as one continuous place across seams.
 
+### Density under the fan
+
+1. Bending a fixed-width corridor into an arc means **anything placed per unit of corridor is smeared thinner as the radius grows** — at radius 230 the arc spans roughly 1400 world units where the corridor spans 56. Placement therefore compensates: a section's corridor is walked **once per corridor-width of arc** for creatures (`creature_radial_lane_cap` **[TUNABLE]**), and its maze-fill count is scaled by the same arc-stretch (`maze_radial_scale_cap` **[TUNABLE]**). Both caps bound the multiplier, because the stretch grows without limit in a world that streams outward forever.
+2. **Spacing is measured in the bent frame, never the corridor frame.** Corridor `y` is an *angle*, so a tangential gap is worth the arc-stretch times what it measures: two props a few corridor-units apart can end up hundreds of world units apart at depth. A corridor-space adjacency test therefore rejects placements that are nowhere near each other, which starves the fill — the observable symptom being a biome whose density claims a dense maze and renders open ground.
+3. **A group is only ever a pack.** Because touching a creature pulls every creature within `[ai] group_radius` into the fight, placement refuses to put a standard spawn inside another's pull radius (measured in the bent frame, plus a `pack_spread` margin so a pack's satellites cannot reach a neighbour). Encounter size is decided by the `[[encounters.group_ramp]]` table, never by geometry — otherwise the shallow band promises duels and delivers whatever happens to have landed nearby.
+4. Both checks are spatially indexed rather than scanned, since the world has no bound and a linear scan would be quadratic in dive depth.
+
 This is the concrete, shipped realization of the abstract "Chunk Streaming" flow below: per-section seeds are the deterministic chunking, and `ensure_frontier` is the on-demand generation.
 
 ---
@@ -96,6 +103,8 @@ Difficulty is a pure function of `distance` (below); the **biome is a difficulty
 - **Every other run:** each section draws a biome per `section_seed`, excluding the previous section's biome (no adjacent repeat). The *start* biome is randomized too (WG-2), and the *order* varies per run (WG-3). The fixed table below is the tutorial order and the difficulty-band reference; it is no longer the biome order for non-tutorial runs.
 
 **Source:** CANON.md §B (Biome bands); GDD.md §3
+
+The **skin set** is `field`, `forest`, `desert`, `ashfall`, `tundra`, `mire`. Field and Forest are deliberately the *same* ground — shared fauna, flora, ground texture and dungeon pool — separated only by fill density (`field_obstacle_mult` vs `forest_obstacle_mult`): grassland you can see across, and a wood you cannot. That contrast is the content, so the ratio between them is held by test. A biome may also be gated outward by `[biome_gate]`, which holds a harsher theme back until the party has had room to grow; the gate never changes a biome's difficulty, only where it may be drawn.
 
 | Distance band | Biome |
 |---------------|-------|
