@@ -358,6 +358,7 @@ fn main() {
                 emit_move,
                 joystick_visual,
                 touch_action_buttons,
+                (action_hud_tap, action_hud_boon_tap),
                 sync_overworld_sprites,
                 // Dotted trail overlays retired — the terrain itself will convey routes
                 // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
@@ -370,8 +371,7 @@ fn main() {
                 hd2d::billboard,
                 animate_sway,
                 ambient::update_ambient_scatter,
-                (update_overworld_hud, update_run_stats, update_channel_bar, update_touch_interact,
-                    update_action_hud),
+                (update_overworld_hud, update_run_stats, update_action_hud),
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -395,7 +395,8 @@ fn main() {
                 (return_to_town_click, build_station_click, menu::equip_best_click),
                 build_world_walls,
                 sync_chests,
-                pulse_collectibles,
+                // Grouped: Bevy's system tuples cap at 20 elements.
+                (pulse_collectibles, update_reach_halo),
                 // Overworld class perks ("party sense").
                 update_explorer_lamp,
                 update_mob_nameplates,

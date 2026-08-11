@@ -162,6 +162,16 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**Everything you can act on is over your head, and the thing in reach glows.** The interact
+prompt, the boon prompt, the channel bar and each tick's payout ("+1 bog myrrh") live on a
+mostly-see-through plate above the player, because that is where you are looking while you
+work — and every prompt on it is its own tappable chip, so touch has a target per action.
+There is no corner Interact/Boon button and no corner channel bar any more; the corner keeps
+only Menu. Whatever `[E]` would act on wears a slow, infrequent **rim glow** (a copy of its
+own sprite, slightly larger, drawn behind it) so "in reach" is visible without a HUD line —
+and note that emissive on a TEXTURED billboard paints the whole quad, which is what made the
+old whole-sprite pulse erase the art.
+
 **Town has a nav, not just a plaza.** Every district is a chip in a frosted travel column
 (1/6 width, same as the menu's nav): click it or press its number to go there, and the one
 you are standing in reads as selected so the column doubles as "where am I". Walking still
