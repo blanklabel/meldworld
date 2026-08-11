@@ -1120,6 +1120,48 @@ pub(crate) fn vanguard_wall_text(board: &VanguardBoardData) -> String {
 #[cfg(test)]
 mod tests {
 
+    /// Travel has to leave you where [E] works, or the button is a worse version of walking.
+    #[test]
+    fn travelling_lands_you_inside_the_district_it_names() {
+        for (i, d) in CITY_DISTRICTS.iter().enumerate() {
+            let mut city = CityUi::default();
+            let mut tf = Transform::from_xyz(0.0, 0.0, 0.0);
+            travel_to(i, &mut city, &mut tf);
+            assert_eq!(city.near, Some(i), "{} should read as the district you are in", d.label);
+            let dist = ((tf.translation.x - d.x).powi(2) + (tf.translation.z - d.z).powi(2)).sqrt();
+            assert!(
+                dist < d.radius,
+                "{} lands {dist:.1} away but its radius is {} - [E] would not fire",
+                d.label,
+                d.radius
+            );
+        }
+    }
+
+    /// And an out-of-range index is a no-op rather than a teleport to the origin.
+    #[test]
+    fn travelling_nowhere_moves_nothing() {
+        let mut city = CityUi::default();
+        let mut tf = Transform::from_xyz(3.0, 0.0, 4.0);
+        travel_to(99, &mut city, &mut tf);
+        assert_eq!(tf.translation.x, 3.0);
+        assert_eq!(tf.translation.z, 4.0);
+        assert_eq!(city.near, None);
+    }
+
+    /// Every district needs a number a player can press. This caught the first version
+    /// advertising [1]-[6] against seven districts — the Vanguard Wall had no key.
+    #[test]
+    fn every_district_has_a_travel_key() {
+        assert!(
+            TRAVEL_KEYS.len() >= CITY_DISTRICTS.len(),
+            "{} districts but only {} travel keys",
+            CITY_DISTRICTS.len(),
+            TRAVEL_KEYS.len()
+        );
+    }
+
+
     /// The Drill Yard is the one screen in town with TWO text fields and a save button
     /// sharing one keyboard, so the thing that breaks is the wiring, not the arithmetic.
     /// These run the real systems.
@@ -2773,6 +2815,143 @@ pub(crate) fn yard_rename_input(
             if rename.buffer.chars().count() < 24 {
                 rename.buffer.push(c);
             }
+        }
+    }
+}
+
+/// The number keys that travel, one per district in order. A module const rather than a
+/// local so a test can hold it against `CITY_DISTRICTS` — the column advertises these keys,
+/// and a district past the end of the list would silently have none. (It already did: this
+/// started as `[1]-[6]` against seven districts.)
+pub(crate) const TRAVEL_KEYS: [KeyCode; 7] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+];
+
+/// A district chip in the town's travel column: click it to go there and open it.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct TravelButton(pub usize);
+
+/// Marker for the travel column, rebuilt each frame.
+#[derive(Component)]
+pub(crate) struct TravelColumn;
+
+/// The town's nav: one chip per district, in the same 1/6 column the menu's nav uses.
+///
+/// Town used to be walk-only — every counter meant crossing the plaza to stand in a radius
+/// and press [E], and nothing on screen said where the shops were. This is the "button to
+/// quickly go to them", and it inherits the three-column convention rather than inventing
+/// another panel shape.
+pub(crate) fn render_travel_column(
+    mut commands: Commands,
+    city: Res<CityUi>,
+    session: Res<Session>,
+    old: Query<Entity, With<TravelColumn>>,
+    root_q: Query<Entity, With<CityRoot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    // The Drill Yard is modal (it swallows letters for the name fields) and a dive is
+    // underway; either way, no travel.
+    if city.party_open || session.entered {
+        return;
+    }
+    let Ok(root) = root_q.single() else { return };
+    commands.entity(root).with_children(|p| {
+        p.spawn((
+            TravelColumn,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(18.0),
+                top: Val::Px(90.0),
+                width: Val::Percent(glass::COL_NAV),
+                min_width: Val::Px(172.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(glass::GLASS),
+            BorderColor(glass::EDGE),
+            BorderRadius::all(Val::Px(10.0)),
+        ))
+        .with_children(|col| {
+            col.spawn(glass::text("THE LAST CITY", 19.0, glass::TITLE));
+            col.spawn(glass::divider());
+            for (i, d) in CITY_DISTRICTS.iter().enumerate() {
+                // The one you are standing in reads as selected, so the column doubles as
+                // "where am I" — the same job the menu's nav does.
+                let here = city.near == Some(i);
+                col.spawn((Button, TravelButton(i), glass::chip(here)))
+                    .with_children(|b| {
+                        b.spawn(glass::text(
+                            format!("{}  {}", i + 1, d.label),
+                            16.0,
+                            if here { glass::TITLE } else { glass::TEXT },
+                        ));
+                    });
+            }
+            col.spawn(glass::text(
+                format!("[1]-[{}] go   [E] use", CITY_DISTRICTS.len()),
+                13.0,
+                glass::DIM,
+            ));
+        });
+    });
+}
+
+/// Walk the avatar to a district and open it. Clicking the chip and pressing its number are
+/// the same path, so they can never disagree.
+pub(crate) fn travel_to(
+    i: usize,
+    city: &mut CityUi,
+    tf: &mut Transform,
+) {
+    let Some(d) = CITY_DISTRICTS.get(i) else { return };
+    // Stand just inside the district's radius, facing in — close enough that the existing
+    // proximity check lights it up and [E] works exactly as if you had walked.
+    tf.translation.x = d.x;
+    tf.translation.z = d.z + (d.radius * 0.5);
+    city.near = Some(i);
+}
+
+/// Clicks on the travel column.
+pub(crate) fn travel_click(
+    q: Query<(&Interaction, &TravelButton), Changed<Interaction>>,
+    mut city: ResMut<CityUi>,
+    mut player: Query<&mut Transform, With<CityPlayer>>,
+) {
+    let Ok(mut tf) = player.single_mut() else { return };
+    for (interaction, btn) in &q {
+        if *interaction == Interaction::Pressed {
+            travel_to(btn.0, &mut city, &mut tf);
+        }
+    }
+}
+
+/// [1]-[6] travel to a district — the keyboard twin of the column.
+pub(crate) fn travel_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut city: ResMut<CityUi>,
+    session: Res<Session>,
+    mut player: Query<&mut Transform, With<CityPlayer>>,
+) {
+    // While a counter is open the number keys buy things, and the yard types names.
+    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
+        return;
+    }
+    let Ok(mut tf) = player.single_mut() else { return };
+    for (i, k) in TRAVEL_KEYS.iter().enumerate() {
+        if keys.just_pressed(*k) {
+            travel_to(i, &mut city, &mut tf);
+            return;
         }
     }
 }

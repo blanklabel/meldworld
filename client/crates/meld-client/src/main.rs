@@ -287,6 +287,7 @@ fn main() {
                 city::loadout_name_input,
                 city::yard_rename_input,
                 city::party_panel_refresh,
+                (city::render_travel_column, city::travel_click, city::travel_keys),
                 city_input,
                 // The anvil's heat is struck in town as well as in the field.
                 (heat_input, update_heat_bar),
