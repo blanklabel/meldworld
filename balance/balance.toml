@@ -221,15 +221,20 @@ shifter_flicker_decay = 0.15     # Evasion lost at the start of each of the Shif
 shifter_ransack_mult = 1.0       # Ransack: dmg = atk*mult - def
 shifter_ransack_drain = 0.35     # Ransack: enemy ATB gauge -= this on hit
 
-# The Explorer (martial baseline / default class). It has no special resource until
-# it earns one: every basic Attack banks `adrenaline_per_attack` Adrenaline (up to
-# `adrenaline_max`), and EVERY skill SPENDS that bank — a skill is rejected unless
-# the Explorer has banked its cost. So the Explorer's rhythm is attack-attack-attack,
-# then unleash:
+# The HUNTER (martial baseline). It has no special resource until it earns one: every
+# basic Attack banks `adrenaline_per_attack` Adrenaline (up to `adrenaline_max`), and
+# EVERY skill SPENDS that bank — a skill is rejected unless the Hunter has banked its
+# cost. So the Hunter's rhythm is attack-attack-attack, then unleash:
 #   Power Strike — a heavy hit (reuses the generic `skill_power_mult`).
 #   Second Wind  — a self-heal for `skill_heal_fraction` of max HP.
 #   Snare        — pins the prey: damage plus an ATB-gauge drain (capture flavour).
 #   Frenzy       — an adrenaline-fuelled onslaught: the biggest hit, biggest cost.
+#
+# THE `explorer_*` KEYS BELOW ARE HUNTER ABILITIES. Adrenaline moved to the Hunter when
+# the Explorer became the mapping order; the keys did not follow, because renaming a
+# tunable collides with every branch in flight. This paragraph is the record: the
+# Explorer banks NOTHING and pays for nothing. Reading these names as the truth is what
+# put the Hunter's kit in the Explorer's unlock banner for a whole release.
 # All [TUNABLE].
 hunter_adrenaline_max = 100          # cap on banked Adrenaline
 hunter_adrenaline_per_attack = 25    # Adrenaline banked by each basic Attack
@@ -241,13 +246,17 @@ explorer_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
 hunter_frenzy_cost = 80              # Frenzy: Adrenaline spent
 explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
 
-# The Order of the Phoenix Guard (monk / tank). A dense, deliberate front-line wall
-# that channels the ocean's momentum into blunt-force kinetic strikes. Its kit is
-# level-gated (no build-up resource — its "equilibrium" is its Root stance):
-#   Swell Strike — a heavy blow that also staggers (drains the target's ATB gauge).
-#   Root         — Structural Rooting: grant self Barrier equal to a fraction of max HP.
-#   Kinetic Shock— a heavier blow that FULLY resets the target's ATB gauge (hard stagger).
-#   Toll of the Deep — an all-enemy shockwave (Destructive Wave); the Grandmaster's toll.
+# The Order of the Phoenix Guard (anti-undead tank). A dense, deliberate front-line
+# wall. Its kit is level-gated — no build-up resource.
+#
+# THE KEY NAMES BELOW ARE THE OLD IRON HULL KIT, one rename behind the abilities they
+# actually drive (renaming a tunable collides with every branch in flight). What they
+# really tune, in `resolve_phoenix_guard`:
+#   swell_*      — Silvered Strike: a heavy blow that also staggers (gauge drain).
+#   root_*       — Rite of Rest: grant self Barrier as a fraction of max HP.
+#   shock_*      — Holy Censure: a heavier blow that FULLY zeroes the target's gauge.
+#   toll_*       — Purging Light: the all-enemy one.
+# The kinetic/oar kit these were named for belongs to a future `iron_hull` monk class.
 # All [TUNABLE].
 phoenix_guard_swell_mult = 1.4            # Swell Strike: dmg = atk*mult - def
 phoenix_guard_swell_drain = 0.3          # Swell Strike: enemy ATB gauge -= this on hit
