@@ -400,14 +400,34 @@ burns on death/leave; some is single-use. See
   - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
     16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
     cost a step up in commitment rather than an ever-flatter trickle.
-  - *Also shipped:* **every class learns at 49 and at 100.** Five of the eight stopped
+  - *Also shipped:* **the flat-magnitude fault.** Some grants were fractions of max HP and
+    scaled with level; others were flat points and did not. A hero runs 40 max HP / 12 atk
+    at level 1 to ~535 / ~309 at 100, so the flat ones decayed to nothing: the Keeper's
+    World Tree restored **4.9%** of a hero where the Resonant's Eternal Bloom restored
+    **85%** — the Keeper stopped being a healer around level 30 — and the Smithwright's
+    `+4 atk` Tempering Blow went from +33% to +1.6%. Barrier decay was flat too, so a deep
+    hero's Barrier outlasted the fight. Every one is now a fraction of the recipient
+    (`Battle::scaled_to` / `grant_regen`), and **the Resonant is the best healer by rule** —
+    `the_healer_is_the_best_healer` holds both crafters' numbers under the healer's.
+  - *Also shipped:* **round rungs.** `skills::RUNGS` = 1 / 5 / 10 / 20 / 35 / 50 / 75 / 100 /
+    150 / 200 / 255, replacing squares — a player counting to their next ability counts in
+    tens, and 49 became a legible **50**. `ladder_top` is 255 for a caster, 100 for the rest,
+    so the casters genuinely learn most: Psyker **Event Horizon** and Resonant **Second
+    Life** land at 255.
+  - *Also shipped:* **once-a-fight calls, spent centrally.** A martial class's repeatable
+    rows stop improving at 50 and gear carries it from there; what it learns after is one
+    dramatic call per fight — Hunter **Pin the Prey** (the pack snared at once) and Shifter
+    **Grand Larceny** (a Mug against every enemy, every pocket picked), plus Iron Lung and
+    The World Entire. `resolve_skill` marks them spent on any successful resolve rather than
+    each arm pushing its own key, which was a list an ability could fall off and be infinite.
+  - *Also shipped:* **every class learns at 50 and at 100.** Five of the eight stopped
     at 25 or 36 — the Hunter, Shifter, Phoenix Guard, Smithwright and Keeper all ran
     out of ladder while the level cap is 255 — so levelling stopped paying for most of
-    the roster. Eleven new abilities close it: Explorer **The World Entire** (100);
-    Hunter **Iron Lung** (49) / **Apex Predator** (100); Shifter **Assassinate** (49) /
-    **Grand Larceny** (100); Phoenix Guard **Hallowed Ground** (49) / **Phoenix
-    Ascendant** (100); Smithwright **Anvil Chorus** (49) / **The Great Work** (100);
-    Keeper **Thorn Grove** (49) / **World Tree** (100).
+    the roster. Thirteen new abilities close it: Explorer **The World Entire**;
+    Hunter **Iron Lung** / **Apex Predator** / **Pin the Prey**; Shifter **Assassinate** /
+    **Grand Larceny**; Phoenix Guard **Hallowed Ground** / **Phoenix Ascendant**;
+    Smithwright **Anvil Chorus** / **The Great Work**; Keeper **Thorn Grove** /
+    **World Tree**; Psyker **Event Horizon**; Resonant **Second Life**.
   - *Also shipped:* **archetype now governs menu WIDTH, not ladder depth.** The Dragon
     Quest lesson it encoded — a martial class's late game is its weapon, not a longer
     menu — survives in *how* a class reaches the top: martial (Hunter, Shifter) gets

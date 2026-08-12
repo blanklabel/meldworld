@@ -62,7 +62,8 @@ pub(crate) fn kit_text(ci: &ClassInfo) -> String {
     // silently showed four of eight read as "this is the whole class".
     let rest = meld_proto::skills::skills_for_class(ci.key).len().saturating_sub(KIT_ROWS);
     if rest > 0 {
-        s.push_str(&format!("\n  ...and {rest} more, out to level {}", meld_proto::skills::LADDER_TOP));
+        let top = meld_proto::skills::ladder_top(meld_proto::skills::archetype(ci.key));
+        s.push_str(&format!("\n  ...and {rest} more, out to level {top}"));
     }
     s
 }

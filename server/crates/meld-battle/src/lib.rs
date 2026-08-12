@@ -394,7 +394,8 @@ pub fn manifest_unlock_level(kind: &str) -> Option<i32> {
         | "matter_dissolution"
         | "phase_shift"
         | "dominate_mind"
-        | "reality_collapse" => {
+        | "reality_collapse"
+        | "event_horizon" => {
             Some(meld_proto::skills::unlock_level(kind))
         }
         _ => None,
@@ -518,10 +519,15 @@ pub struct Battle {
     psyker_spike_tick_mult: f64,
     psyker_aegis_tick_fraction: f64,
     psyker_anchor_gauge_drain: f64,
-    barrier_decay_per_turn: i32,
+    barrier_decay_fraction: f64,
+    psyker_horizon_tick_mult: f64,
+    psyker_horizon_gauge_cap: f64,
+    resonant_second_life_revive_fraction: f64,
+    resonant_second_life_heal_fraction: f64,
+    resonant_second_life_self_cost: f64,
     resonant_transfuse_heal_fraction: f64,
     resonant_transfuse_cost_fraction: f64,
-    resonant_boon_regen: i32,
+    resonant_boon_regen_fraction: f64,
     resonant_ward_barrier_fraction: f64,
     shifter_backstab_mult: f64,
     shifter_backstab_pierce: f64,
@@ -544,7 +550,7 @@ pub struct Battle {
     hunter_frenzy_cost: i32,
     explorer_frenzy_mult: f64,
     hunter_iron_lung_heal_fraction: f64,
-    hunter_iron_lung_regen: i32,
+    hunter_iron_lung_regen_fraction: f64,
     hunter_apex_mult: f64,
     phoenix_guard_swell_mult: f64,
     phoenix_guard_swell_drain: f64,
@@ -615,8 +621,8 @@ pub struct Battle {
 struct AllyBoon {
     /// Fraction of the target's max HP healed.
     heal: f64,
-    /// Flat Regen granted.
-    regen: i32,
+    /// Regen granted, as a fraction of the RECIPIENT's max HP per turn.
+    regen: f64,
     /// Fraction of the target's max HP granted as Barrier.
     barrier: f64,
     /// Fraction of the healing paid out of the caster's own HP.
@@ -642,49 +648,49 @@ impl ResonantDeep {
         Self {
             mend_all: AllyBoon {
                 heal: b.resonant_mend_all_fraction,
-                regen: 0,
+                regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_mend_all_self_cost,
                 party: true,
             },
             sanctuary: AllyBoon {
                 heal: 0.0,
-                regen: b.resonant_sanctuary_regen,
+                regen: b.resonant_sanctuary_regen_fraction,
                 barrier: 0.0,
                 self_cost: 0.0,
                 party: true,
             },
             revitalize: AllyBoon {
                 heal: b.resonant_revitalize_fraction,
-                regen: 0,
+                regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_revitalize_self_cost,
                 party: false,
             },
             lifewell: AllyBoon {
                 heal: b.resonant_lifewell_fraction,
-                regen: b.resonant_lifewell_regen,
+                regen: b.resonant_lifewell_regen_fraction,
                 barrier: 0.0,
                 self_cost: b.resonant_lifewell_self_cost,
                 party: true,
             },
             bloodbond: AllyBoon {
                 heal: b.resonant_bloodbond_fraction,
-                regen: b.resonant_bloodbond_regen,
+                regen: b.resonant_bloodbond_regen_fraction,
                 barrier: b.resonant_bloodbond_barrier_fraction,
                 self_cost: b.resonant_bloodbond_self_cost,
                 party: false,
             },
             martyr: AllyBoon {
                 heal: b.resonant_martyr_fraction,
-                regen: 0,
+                regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_martyr_self_cost,
                 party: true,
             },
             bloom: AllyBoon {
                 heal: b.resonant_bloom_fraction,
-                regen: 0,
+                regen: 0.0,
                 barrier: b.resonant_bloom_barrier_fraction,
                 self_cost: b.resonant_bloom_self_cost,
                 party: true,
@@ -693,8 +699,9 @@ impl ResonantDeep {
     }
 
     /// Every deep-kit key, for the dispatch check.
-    fn names() -> [&'static str; 7] {
+    fn names() -> [&'static str; 8] {
         [
+            "second_life",
             "mend_all",
             "sanctuary",
             "revitalize",
@@ -777,10 +784,17 @@ impl Battle {
             psyker_spike_tick_mult: balance.battle.psyker_spike_tick_mult,
             psyker_aegis_tick_fraction: balance.battle.psyker_aegis_tick_fraction,
             psyker_anchor_gauge_drain: balance.battle.psyker_anchor_gauge_drain,
-            barrier_decay_per_turn: balance.battle.barrier_decay_per_turn,
+            barrier_decay_fraction: balance.battle.barrier_decay_fraction,
+            psyker_horizon_tick_mult: balance.battle.psyker_horizon_tick_mult,
+            psyker_horizon_gauge_cap: balance.battle.psyker_horizon_gauge_cap,
+            resonant_second_life_revive_fraction: balance
+                .battle
+                .resonant_second_life_revive_fraction,
+            resonant_second_life_heal_fraction: balance.battle.resonant_second_life_heal_fraction,
+            resonant_second_life_self_cost: balance.battle.resonant_second_life_self_cost,
             resonant_transfuse_heal_fraction: balance.battle.resonant_transfuse_heal_fraction,
             resonant_transfuse_cost_fraction: balance.battle.resonant_transfuse_cost_fraction,
-            resonant_boon_regen: balance.battle.resonant_boon_regen,
+            resonant_boon_regen_fraction: balance.battle.resonant_boon_regen_fraction,
             resonant_ward_barrier_fraction: balance.battle.resonant_ward_barrier_fraction,
             shifter_backstab_mult: balance.battle.shifter_backstab_mult,
             shifter_backstab_pierce: balance.battle.shifter_backstab_pierce,
@@ -801,7 +815,7 @@ impl Battle {
             hunter_frenzy_cost: balance.battle.hunter_frenzy_cost,
             explorer_frenzy_mult: balance.battle.explorer_frenzy_mult,
             hunter_iron_lung_heal_fraction: balance.battle.hunter_iron_lung_heal_fraction,
-            hunter_iron_lung_regen: balance.battle.hunter_iron_lung_regen,
+            hunter_iron_lung_regen_fraction: balance.battle.hunter_iron_lung_regen_fraction,
             hunter_apex_mult: balance.battle.hunter_apex_mult,
             phoenix_guard_swell_mult: balance.battle.phoenix_guard_swell_mult,
             phoenix_guard_swell_drain: balance.battle.phoenix_guard_swell_drain,
@@ -1335,7 +1349,8 @@ impl Battle {
             // better, its Adrenaline economy does not change.
             "power_strike" | "crushing_blow" => self.hunter_power_strike_cost,
             "second_wind" | "iron_lung" => self.hunter_second_wind_cost,
-            "snare" | "pin_the_prey" => self.hunter_snare_cost,
+            "snare" => self.hunter_snare_cost,
+            "pin_the_prey" => self.hunter_snare_cost,
             "frenzy" | "apex_predator" => self.hunter_frenzy_cost,
             _ => return Err(Reject::ValidationError("unknown hunter skill")),
         };
@@ -1353,16 +1368,8 @@ impl Battle {
             let raw = ((self.fighters[actor_i].max_hp as f64) * fraction).round() as i32;
             let mut effects = self.apply_heal(actor_i, raw);
             if lung {
-                self.fighters[actor_i].regen += self.hunter_iron_lung_regen;
-                let regen = self.fighters[actor_i].regen;
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[actor_i].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(regen),
-                    status: Some("regen".to_string()),
-                    hp_after: self.fighters[actor_i].hp,
-                });
+                let fx = self.grant_regen(actor_i, self.hunter_iron_lung_regen_fraction);
+                effects.extend(fx);
             }
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
@@ -1370,8 +1377,14 @@ impl Battle {
         }
         // Apex Predator is Frenzy turned on the whole pack — the one Hunter row that
         // does not pick a target, so it resolves before the single-target path below.
-        if skill == "apex_predator" {
+        if matches!(skill, "apex_predator" | "pin_the_prey") {
             self.fighters[actor_i].adrenaline -= cost;
+            let pin = skill == "pin_the_prey";
+            let (mult, drain) = if pin {
+                (self.pin_the_prey_mult, self.pin_the_prey_drain)
+            } else {
+                (self.hunter_apex_mult, 0.0)
+            };
             let atk = self.fighters[actor_i].atk;
             let enemies: Vec<usize> = self
                 .fighters
@@ -1382,9 +1395,20 @@ impl Battle {
                 .collect();
             let mut effects = Vec::new();
             for t in enemies {
-                let scaled = (atk as f64 * self.hunter_apex_mult).round() as i32;
+                let scaled = (atk as f64 * mult).round() as i32;
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
+                if drain > 0.0 && self.fighters[t].alive {
+                    self.fighters[t].gauge = (self.fighters[t].gauge - drain).max(0.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[t].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[t].hp,
+                    });
+                }
             }
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
@@ -1395,7 +1419,6 @@ impl Battle {
             "power_strike" => (self.skill_power_mult, 0.0),
             "crushing_blow" => (self.hunter_crushing_blow_mult, 0.0),
             "snare" => (self.explorer_snare_mult, self.explorer_snare_drain),
-            "pin_the_prey" => (self.pin_the_prey_mult, self.pin_the_prey_drain),
             "frenzy" => (self.explorer_frenzy_mult, 0.0),
             _ => unreachable!("cost match already rejected other skills"),
         };
@@ -1534,7 +1557,6 @@ impl Battle {
                 }
             }
             "now" => {
-                self.fighters[actor_i].once_spent.push("now".to_string());
                 // The Globemaster's one call per fight: not faster — NOW. Every living ally
                 // acts immediately. Once per battle, which is what keeps it a decision
                 // about a single moment instead of a rotation.
@@ -1648,7 +1670,10 @@ impl Battle {
                 let t = self
                     .ally_target(target_id)
                     .unwrap_or_else(|| self.most_wounded_ally(actor_i));
-                self.fighters[t].atk += self.smith.temper_atk_bonus;
+                let bonus = ((self.fighters[t].atk as f64) * self.smith.temper_atk_fraction)
+                    .round()
+                    .max(1.0) as i32;
+                self.fighters[t].atk += bonus;
                 let atk = self.fighters[t].atk;
                 effects.push(ResolvedEffect {
                     modifier_flag: None,
@@ -1676,8 +1701,8 @@ impl Battle {
                 // than on the enemy. The attack bonus is permanent for the fight, like
                 // Tempering Blow's, which is what makes either worth a turn early.
                 let great = skill == "great_work";
-                let bonus =
-                    if great { self.smith.great_work_atk_bonus } else { self.smith.chorus_atk_bonus };
+                let share =
+                    if great { self.smith.great_work_atk_fraction } else { self.smith.chorus_atk_fraction };
                 for a in living_allies(self) {
                     if great {
                         let heal = ((self.fighters[a].max_hp as f64)
@@ -1689,6 +1714,8 @@ impl Battle {
                             .round() as i32;
                         effects.extend(self.grant_barrier(a, raw));
                     }
+                    let bonus =
+                        ((self.fighters[a].atk as f64) * share).round().max(1.0) as i32;
                     self.fighters[a].atk += bonus;
                     let atk = self.fighters[a].atk;
                     effects.push(ResolvedEffect {
@@ -1778,52 +1805,32 @@ impl Battle {
                 let t = self
                     .ally_target(target_id)
                     .unwrap_or_else(|| self.most_wounded_ally(actor_i));
-                effects.extend(self.apply_heal(t, self.keeper.poultice_heal));
-                self.fighters[t].regen += self.keeper.poultice_regen;
-                let regen = self.fighters[t].regen;
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[t].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(regen),
-                    status: Some("regen".to_string()),
-                    hp_after: self.fighters[t].hp,
-                });
+                let heal = self.scaled_to(t, self.keeper.poultice_heal_fraction);
+                effects.extend(self.apply_heal(t, heal));
+                let fx = self.grant_regen(t, self.keeper.poultice_regen_fraction);
+                effects.extend(fx);
             }
             "bloomfield" => {
                 for a in living_allies(self) {
-                    self.fighters[a].regen += self.keeper.bloomfield_regen;
-                    let regen = self.fighters[a].regen;
-                    effects.push(ResolvedEffect {
-                        modifier_flag: None,
-                        target_id: self.fighters[a].combatant_id.clone(),
-                        kind: EffectKind::StatusApplied,
-                        amount: Some(regen),
-                        status: Some("regen".to_string()),
-                        hp_after: self.fighters[a].hp,
-                    });
+                    let fx = self.grant_regen(a, self.keeper.bloomfield_regen_fraction);
+                    effects.extend(fx);
                 }
             }
             "vital_draught" => {
                 let t = self
                     .ally_target(target_id)
                     .unwrap_or_else(|| self.most_wounded_ally(actor_i));
-                effects.extend(self.grant_barrier(t, self.keeper.draught_barrier));
-                self.fighters[t].regen += self.keeper.draught_regen;
-                let regen = self.fighters[t].regen;
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[t].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(regen),
-                    status: Some("regen".to_string()),
-                    hp_after: self.fighters[t].hp,
-                });
+                let raw = self.scaled_to(t, self.keeper.draught_barrier_fraction);
+                effects.extend(self.grant_barrier(t, raw));
+                let fx = self.grant_regen(t, self.keeper.draught_regen_fraction);
+                effects.extend(fx);
             }
             "terras_gift" => {
                 for a in living_allies(self) {
-                    effects.extend(self.apply_heal(a, self.keeper.gift_heal));
-                    effects.extend(self.grant_barrier(a, self.keeper.gift_barrier));
+                    let heal = self.scaled_to(a, self.keeper.gift_heal_fraction);
+                    effects.extend(self.apply_heal(a, heal));
+                    let raw = self.scaled_to(a, self.keeper.gift_barrier_fraction);
+                    effects.extend(self.grant_barrier(a, raw));
                     if a != actor_i {
                         self.fighters[a].gauge =
                             (self.fighters[a].gauge + self.keeper.gift_gauge).min(1.0);
@@ -1832,18 +1839,12 @@ impl Battle {
             }
             "world_tree" => {
                 for a in living_allies(self) {
-                    effects.extend(self.apply_heal(a, self.keeper.world_tree_heal));
-                    effects.extend(self.grant_barrier(a, self.keeper.world_tree_barrier));
-                    self.fighters[a].regen += self.keeper.world_tree_regen;
-                    let regen = self.fighters[a].regen;
-                    effects.push(ResolvedEffect {
-                        modifier_flag: None,
-                        target_id: self.fighters[a].combatant_id.clone(),
-                        kind: EffectKind::StatusApplied,
-                        amount: Some(regen),
-                        status: Some("regen".to_string()),
-                        hp_after: self.fighters[a].hp,
-                    });
+                    let heal = self.scaled_to(a, self.keeper.world_tree_heal_fraction);
+                    effects.extend(self.apply_heal(a, heal));
+                    let raw = self.scaled_to(a, self.keeper.world_tree_barrier_fraction);
+                    effects.extend(self.grant_barrier(a, raw));
+                    let fx = self.grant_regen(a, self.keeper.world_tree_regen_fraction);
+                    effects.extend(fx);
                 }
             }
             "thorn_grove" => {
@@ -2113,6 +2114,29 @@ impl Battle {
         skill_kind: Option<&str>,
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
+        let out = self.resolve_skill_inner(actor_i, target_id, skill_kind, action_id);
+        // SPEND the once-a-fight call here, centrally, and only if it actually resolved.
+        // Each arm used to push its own key, which is a list a new once-per-battle
+        // ability falls off — and the failure is that the ability is simply infinite.
+        if out.is_ok() {
+            if let Some(k) = skill_kind {
+                if meld_proto::skills::is_once_per_battle(k)
+                    && !self.fighters[actor_i].once_spent.iter().any(|s| s == k)
+                {
+                    self.fighters[actor_i].once_spent.push(k.to_string());
+                }
+            }
+        }
+        out
+    }
+
+    fn resolve_skill_inner(
+        &mut self,
+        actor_i: usize,
+        target_id: Option<&str>,
+        skill_kind: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
         // A skill the hero hasn't leveled into yet is rejected server-side (the
         // client also greys it out; this is the authoritative backstop).
         if let Some(k) = skill_kind {
@@ -2174,52 +2198,68 @@ impl Battle {
         // Shifter Steal → Mug. Steal takes the foe's tempo (its ATB gauge); Mug is
         // the same theft with a hit on the way past. The upgrade shares the arm, so
         // the two can never drift apart.
-        if matches!(skill_kind, Some("steal") | Some("mug")) {
-            let mug = skill_kind == Some("mug");
-            let (mult, drain) = if mug {
-                (self.shifter_mug_mult, self.shifter_mug_drain)
-            } else {
-                (0.0, self.shifter_steal_drain)
+        if matches!(skill_kind, Some("steal") | Some("mug") | Some("grand_larceny")) {
+            // Grand Larceny is a Mug worked on the WHOLE room, once a fight — so it picks
+            // its own targets and every one of them is robbed, not just hit.
+            let room = skill_kind == Some("grand_larceny");
+            let (mult, drain) = match skill_kind {
+                Some("mug") => (self.shifter_mug_mult, self.shifter_mug_drain),
+                Some("grand_larceny") => (self.shifter_larceny_mult, self.shifter_larceny_drain),
+                _ => (0.0, self.shifter_steal_drain),
             };
-            let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
-            let target_i = match self.idx(target) {
-                Some(t) if self.fighters[t].alive => t,
-                _ => self
-                    .fighters
+            let targets: Vec<usize> = if room {
+                self.fighters
                     .iter()
-                    .position(|f| f.alive && f.kind != CombatantKind::Player)
-                    .ok_or(Reject::NotFound)?,
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect()
+            } else {
+                let target_i = match target_id.and_then(|t| self.idx(t)) {
+                    Some(t) if self.fighters[t].alive => t,
+                    _ => self
+                        .fighters
+                        .iter()
+                        .position(|f| f.alive && f.kind != CombatantKind::Player)
+                        .ok_or(Reject::NotFound)?,
+                };
+                vec![target_i]
             };
             let mut effects = Vec::new();
-            if mult > 0.0 {
-                let scaled = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
-                let def = self.fighters[target_i].def;
-                let defending = self.fighters[target_i].defending;
-                effects = match self.roll_dodge(target_i) {
-                    Some(dodge) => dodge,
-                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
-                };
-            }
-            if self.fighters[target_i].alive {
-                self.fighters[target_i].gauge =
-                    (self.fighters[target_i].gauge - drain).max(0.0);
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[target_i].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: None,
-                    status: Some("slowed".to_string()),
-                    hp_after: self.fighters[target_i].hp,
-                });
-            }
-            // Report the theft: the run's backpack is the server's business. A hero
-            // with no player behind it (a headless test fighter) steals nothing.
-            if let Some(thief) = self.fighters[actor_i].player_id.clone() {
-                let victim = self.fighters[target_i].combatant_id.clone();
-                self.pending_events.push(Event::Pilfered {
-                    thief_player_id: thief,
-                    victim_combatant_id: victim,
-                });
+            for target_i in targets {
+                if mult > 0.0 {
+                    let scaled = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                    let def = self.fighters[target_i].def;
+                    let defending = self.fighters[target_i].defending;
+                    match self.roll_dodge(target_i) {
+                        Some(dodge) => effects.extend(dodge),
+                        None => {
+                            let dmg = self.damage(scaled, def, defending);
+                            effects.extend(self.apply_damage(target_i, dmg));
+                        }
+                    }
+                }
+                if self.fighters[target_i].alive {
+                    self.fighters[target_i].gauge =
+                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[target_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[target_i].hp,
+                    });
+                }
+                // Report the theft: the run's backpack is the server's business. A hero
+                // with no player behind it (a headless test fighter) steals nothing.
+                if let Some(thief) = self.fighters[actor_i].player_id.clone() {
+                    let victim = self.fighters[target_i].combatant_id.clone();
+                    self.pending_events.push(Event::Pilfered {
+                        thief_player_id: thief,
+                        victim_combatant_id: victim,
+                    });
+                }
             }
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
@@ -2248,11 +2288,8 @@ impl Battle {
         // that changes SHAPE: the same theft, worked on every enemy at once.
         if matches!(
             skill_kind,
-            Some("backstab") | Some("ransack") | Some("assassinate") | Some("grand_larceny")
+            Some("backstab") | Some("ransack") | Some("assassinate")
         ) {
-            // Grand Larceny covers the room, so it is the one row here the player is not
-            // asked to aim — `Target::AllEnemies` in the registry, which is what the
-            // client reads, so demanding a target id would reject every real cast of it.
             let target_i = match target_id.and_then(|t| self.idx(t)) {
                 Some(t) if self.fighters[t].alive => t,
                 _ => self
@@ -2263,23 +2300,11 @@ impl Battle {
             };
             let atk = self.fighters[actor_i].atk;
             // Grand Larceny works the whole room; everything else picks one mark.
-            let targets: Vec<usize> = if skill_kind == Some("grand_larceny") {
-                self.fighters
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
-                    .map(|(i, _)| i)
-                    .collect()
-            } else {
-                vec![target_i]
-            };
+            let targets: Vec<usize> = vec![target_i];
             let (mult, pierce, drain) = match skill_kind {
                 Some("backstab") => (self.shifter_backstab_mult, self.shifter_backstab_pierce, 0.0),
                 Some("assassinate") => {
                     (self.shifter_assassinate_mult, self.shifter_assassinate_pierce, 0.0)
-                }
-                Some("grand_larceny") => {
-                    (self.shifter_larceny_mult, 0.0, self.shifter_larceny_drain)
                 }
                 _ => (self.shifter_ransack_mult, 0.0, self.shifter_ransack_drain),
             };
@@ -2496,6 +2521,38 @@ impl Battle {
             }
             // The two area Manifestations: Kinetic Wave grinds the line, and Reality
             // Collapse does it harder and ignores armour entirely.
+            // The Psyker's capstone: while it is held nothing on the other side may fill
+            // past halfway, so the whole line acts at half speed. The cap is applied on
+            // every tick rather than as a status, because a Focus IS its upkeep.
+            "event_horizon" => {
+                let power = self.fighters[psyker_i].spell_power as f64;
+                let dmg = (power * self.psyker_horizon_tick_mult * stacks as f64).round() as i32;
+                let enemies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut effects = Vec::new();
+                for t in enemies {
+                    effects.extend(
+                        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
+                    );
+                    if self.fighters[t].alive && self.fighters[t].gauge > self.psyker_horizon_gauge_cap {
+                        self.fighters[t].gauge = self.psyker_horizon_gauge_cap;
+                        effects.push(ResolvedEffect {
+                            modifier_flag: None,
+                            target_id: self.fighters[t].combatant_id.clone(),
+                            kind: EffectKind::StatusApplied,
+                            amount: None,
+                            status: Some("slowed".to_string()),
+                            hp_after: self.fighters[t].hp,
+                        });
+                    }
+                }
+                effects
+            }
             "kinetic_wave" | "reality_collapse" => {
                 let mult = if kind == "reality_collapse" {
                     self.psyker_collapse_tick_mult
@@ -2578,8 +2635,9 @@ impl Battle {
                 healed_total += raw;
                 effects.extend(self.apply_heal(t, raw));
             }
-            if boon.regen > 0 {
-                self.fighters[t].regen += boon.regen;
+            if boon.regen > 0.0 {
+                let amount = self.scaled_to(t, boon.regen);
+                self.fighters[t].regen += amount;
                 let regen = self.fighters[t].regen;
                 effects.push(ResolvedEffect {
                     modifier_flag: None,
@@ -2622,6 +2680,32 @@ impl Battle {
         } else {
             1.0
         }
+    }
+
+    /// An absolute grant from a FRACTION of the recipient's OWN max HP.
+    ///
+    /// Every heal, Barrier and Regen in the game is authored as a fraction for one reason:
+    /// a hero runs 40 max HP at level 1 and ~535 at 100, so a flat grant is a third of a
+    /// hero early and a rounding error late. Floored at 1 so a small fraction on a small
+    /// hero still does something.
+    fn scaled_to(&self, i: usize, fraction: f64) -> i32 {
+        ((self.fighters[i].max_hp as f64) * fraction).round().max(1.0) as i32
+    }
+
+    /// Grant Regen — HP back at the start of each of the holder's turns — as a fraction of
+    /// their max HP. Stored absolute, so the wire token `regen:<n>` is unchanged.
+    fn grant_regen(&mut self, i: usize, fraction: f64) -> Vec<ResolvedEffect> {
+        let amount = self.scaled_to(i, fraction);
+        self.fighters[i].regen += amount;
+        let regen = self.fighters[i].regen;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: Some(regen),
+            status: Some("regen".to_string()),
+            hp_after: self.fighters[i].hp,
+        }]
     }
 
     fn grant_barrier(&mut self, i: usize, amount: i32) -> Vec<ResolvedEffect> {
@@ -2677,6 +2761,54 @@ impl Battle {
             return self.apply_ally_boon(caster_i, target_i, boon);
         }
         match skill {
+            // The order's whole reason to exist: a hero who has FALLEN stands back up.
+            // Nothing else in the game raises the dead mid-fight, which is why it is one
+            // call a battle and why it costs the caster most of what it has.
+            "second_life" => {
+                let allies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.kind == CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut effects = Vec::new();
+                for a in allies {
+                    if a == caster_i {
+                        continue;
+                    }
+                    if self.fighters[a].alive {
+                        let heal = self.scaled_to(a, self.resonant_second_life_heal_fraction);
+                        effects.extend(self.apply_heal(a, heal));
+                    } else {
+                        let hp = self.scaled_to(a, self.resonant_second_life_revive_fraction);
+                        self.fighters[a].hp = hp;
+                        self.fighters[a].alive = true;
+                        self.fighters[a].gauge = 0.0;
+                        effects.push(ResolvedEffect {
+                            modifier_flag: None,
+                            target_id: self.fighters[a].combatant_id.clone(),
+                            kind: EffectKind::Heal,
+                            amount: Some(hp),
+                            status: Some("revived".to_string()),
+                            hp_after: hp,
+                        });
+                    }
+                }
+                let cost = self.scaled_to(caster_i, self.resonant_second_life_self_cost);
+                let before = self.fighters[caster_i].hp;
+                let after = (before - cost).max(1);
+                self.fighters[caster_i].hp = after;
+                effects.push(ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[caster_i].combatant_id.clone(),
+                    kind: EffectKind::Damage,
+                    amount: Some(before - after),
+                    status: Some("transfuse".to_string()),
+                    hp_after: after,
+                });
+                effects
+            }
             "transfuse" => {
                 let heal = ((self.fighters[caster_i].max_hp as f64)
                     * self.resonant_transfuse_heal_fraction)
@@ -2697,7 +2829,8 @@ impl Battle {
                 effects
             }
             "regen_boon" => {
-                self.fighters[target_i].regen += self.resonant_boon_regen;
+                let amount = self.scaled_to(target_i, self.resonant_boon_regen_fraction);
+                self.fighters[target_i].regen += amount;
                 vec![ResolvedEffect { modifier_flag: None,
                     target_id: self.fighters[target_i].combatant_id.clone(),
                     kind: EffectKind::StatusApplied,
@@ -2755,9 +2888,13 @@ impl Battle {
             let raw = self.fighters[i].regen;
             effects.extend(self.apply_heal(i, raw));
         }
+        // Barrier sheds a SHARE of the pool each turn, floored at 1 so it always drains.
+        // A flat decay meant a level-100 hero's Barrier outlasted the fight it was cast in.
         if self.fighters[i].barrier > 0 {
-            self.fighters[i].barrier =
-                (self.fighters[i].barrier - self.barrier_decay_per_turn).max(0);
+            let shed = ((self.fighters[i].barrier as f64) * self.barrier_decay_fraction)
+                .round()
+                .max(1.0) as i32;
+            self.fighters[i].barrier = (self.fighters[i].barrier - shed).max(0);
         }
         // Evasion (Shifter Flicker) fades a fixed amount each of the holder's turns.
         if self.fighters[i].evasion > 0.0 {
@@ -4401,7 +4538,7 @@ mod tests {
             Battle::new(
                 "b".into(),
                 EncounterClass::Standard,
-                vec![psyker("p", 400, 100, 5)],
+                vec![psyker("p", 400, 255, 5)],
                 vec![monster("m1", 100000, 1), monster("m2", 100000, 1)],
                 &b,
                 7,
@@ -4486,7 +4623,7 @@ mod tests {
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![psyker("p", 400, 1, 2)],
+            vec![psyker("p", 400, meld_proto::skills::unlock_level("kinetic_aegis"), 2)],
             vec![monster("m", 100000, 1)],
             &b,
             7,
@@ -4504,7 +4641,7 @@ mod tests {
                 )
                 .expect("op resolves");
         };
-        cast(&mut battle, 1, "mind_spike"); // locked at L1 → ignored
+        cast(&mut battle, 1, "reality_collapse"); // far past this level → ignored
         assert!(foci_of(&battle, "p").iter().all(|s| !s.contains("mind_spike")));
         cast(&mut battle, 2, "gravity_well");
         cast(&mut battle, 3, "kinetic_aegis");
@@ -4523,7 +4660,7 @@ mod tests {
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![psyker("p", 110, 1, 2)],
+            vec![psyker("p", 110, meld_proto::skills::unlock_level("kinetic_aegis"), 2)],
             vec![monster("m", 1000, 1)],
             &b,
             7,
@@ -4906,7 +5043,7 @@ mod tests {
         let mut battle = Battle::new(
             "b1".into(),
             EncounterClass::Standard,
-            vec![explorer("a", 400, 4)], // Second Wind unlocks at L4
+            vec![explorer("a", 400, meld_proto::skills::unlock_level("second_wind"))],
             vec![monster("m", 1000, 1)],
             &b,
             7,
@@ -5119,7 +5256,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("s", 400, 4)], // Flicker unlocks at L4
+            vec![leveled_player("s", 400, meld_proto::skills::unlock_level("flicker"))],
             vec![monster("m", 500, 1)], // slow, harmless punching bag
             &b,
             7,
@@ -5153,7 +5290,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("s", 400, 9)], // Ransack unlocks at L9
+            vec![leveled_player("s", 400, meld_proto::skills::unlock_level("ransack"))],
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -5321,7 +5458,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("k", 400, 4)], // Rite of Rest unlocks at L4; max_hp 40
+            vec![leveled_player("k", 400, meld_proto::skills::unlock_level("rite_of_rest"))], // max_hp 40
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -5346,7 +5483,7 @@ mod tests {
             "b".into(),
             EncounterClass::Standard,
             // Holy Censure sits at level 9 on the squares ladder.
-            vec![leveled_player("k", 400, 9)],
+            vec![leveled_player("k", 400, meld_proto::skills::unlock_level("holy_censure"))],
             vec![monster("m", 500, 1)],
             &b,
             7,
@@ -5369,7 +5506,7 @@ mod tests {
             "b".into(),
             EncounterClass::Standard,
             // Purging Light sits at level 16.
-            vec![leveled_player("k", 400, 16)],
+            vec![leveled_player("k", 400, meld_proto::skills::unlock_level("purging_light"))],
             vec![monster("m1", 500, 1), monster("m2", 500, 1)],
             &b,
             7,
@@ -5620,7 +5757,7 @@ mod tests {
             "b".into(),
             EncounterClass::Standard,
             vec![{
-                let mut f = leveled_player("s", 400, 25);
+                let mut f = leveled_player("s", 400, meld_proto::skills::unlock_level("mug"));
                 // A hero with a player behind it: the engine reports the theft, and
                 // the server decides what came off the body (it owns the economy).
                 f.player_id = Some("p1".into());
@@ -5672,7 +5809,7 @@ mod tests {
             )
         };
         // Steal takes tempo and nothing else — the foe keeps every hit point.
-        let mut early = make(4);
+        let mut early = make(meld_proto::skills::unlock_level("steal"));
         tick_to_ready(&mut early, "s");
         let mi = early.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
         early.fighters[mi].gauge = 0.9;
@@ -5683,7 +5820,7 @@ mod tests {
         assert_eq!(player_hp(&early, "m"), 500, "Steal drew blood; it should not");
 
         // Mug takes MORE tempo and draws blood: the same ability, grown up.
-        let mut late = make(25);
+        let mut late = make(meld_proto::skills::unlock_level("mug"));
         tick_to_ready(&mut late, "s");
         let mi = late.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
         late.fighters[mi].gauge = 0.9;
@@ -5722,28 +5859,30 @@ mod tests {
         };
         // Crushing Blow replaces Power Strike, and must actually be an upgrade.
         assert!(
-            hit("crushing_blow", 16) > hit("power_strike", 1),
+            hit("crushing_blow", meld_proto::skills::unlock_level("crushing_blow")) > hit("power_strike", 1),
             "Crushing Blow is not an upgrade on Power Strike"
         );
-        // Pin the Prey replaces Snare the same way.
+        // Apex Predator replaces Frenzy the same way — measured on ONE target, since
+        // its whole point is that it also reaches the rest of the pack.
         assert!(
-            hit("pin_the_prey", 25) > hit("snare", 9),
-            "Pin the Prey is not an upgrade on Snare"
+            hit("apex_predator", meld_proto::skills::unlock_level("apex_predator"))
+                > hit("power_strike", 1),
+            "Apex Predator is not an upgrade"
         );
     }
 
     #[test]
     fn a_casters_deep_kit_mends_the_whole_party_and_costs_the_caster() {
         let b = balance();
-        // Eternal Bloom is the Resonant's level-100 capstone: the party whole and
-        // warded, paid for out of the healer.
+        // Eternal Bloom is the Resonant's deepest party heal: everyone whole and warded,
+        // paid for out of the healer.
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
             vec![
-                leveled_player("r", 400, 100),
-                leveled_player("a", 400, 100),
-                leveled_player("c", 400, 100),
+                leveled_player("r", 400, meld_proto::skills::unlock_level("eternal_bloom")),
+                leveled_player("a", 400, meld_proto::skills::unlock_level("eternal_bloom")),
+                leveled_player("c", 400, meld_proto::skills::unlock_level("eternal_bloom")),
             ],
             vec![monster("m", 900, 1)],
             &b,
@@ -5795,7 +5934,7 @@ mod tests {
         let mut battle = Battle::new(
             "b".into(),
             EncounterClass::Standard,
-            vec![leveled_player("r", 400, 20)],
+            vec![leveled_player("r", 400, meld_proto::skills::unlock_level("mend_all"))],
             vec![monster("m", 900, 1)],
             &b,
             7,
@@ -6813,6 +6952,107 @@ mod deep_ladder_tests {
             before - b.fighters[m].hp
         };
         assert!(hit(60) > hit(20), "more Mnd should mean more thorns");
+    }
+
+    /// A once-a-fight call is refused on the second ask — and it is SPENT centrally, on
+    /// any successful resolve, rather than by each arm remembering to push its own key.
+    #[test]
+    fn a_once_a_fight_call_is_refused_the_second_time() {
+        for key in ["now", "the_world_entire", "iron_lung", "pin_the_prey", "grand_larceny"] {
+            let mut b = field(2, 3);
+            let def = meld_proto::skills::skill(key).unwrap();
+            b.fighters[0].class_key = def.class.to_string();
+            b.fighters[0].adrenaline = 100;
+            b.fighters[0].gauge = 1.0;
+            b.resolve_skill(0, None, Some(key), None)
+                .unwrap_or_else(|e| panic!("{key} did not resolve: {e:?}"));
+            assert!(
+                b.fighters[0].once_spent.iter().any(|s| s == key),
+                "{key} was not marked spent"
+            );
+            b.fighters[0].adrenaline = 100;
+            b.fighters[0].gauge = 1.0;
+            assert!(
+                b.resolve_skill(0, None, Some(key), None).is_err(),
+                "{key} resolved twice in one battle"
+            );
+        }
+    }
+
+    /// Pin the Prey and Grand Larceny are the pack versions of Snare and Mug: everything
+    /// on the other side is hit, slowed, and — for the Shifter — robbed.
+    #[test]
+    fn the_once_a_fight_calls_reach_the_whole_pack() {
+        let mut b = field(1, 3);
+        b.fighters[0].adrenaline = 100;
+        for i in mobs(&b) {
+            b.fighters[i].gauge = 0.9;
+        }
+        let before: Vec<i32> = mobs(&b).into_iter().map(|i| b.fighters[i].hp).collect();
+        cast(&mut b, "pin_the_prey", None);
+        all_enemies_hit(&b, &before);
+        for i in mobs(&b) {
+            assert!(b.fighters[i].gauge < 0.9, "Pin the Prey left an enemy its tempo");
+        }
+
+        let mut b = field(1, 3);
+        for i in mobs(&b) {
+            b.fighters[i].gauge = 0.9;
+        }
+        let before: Vec<i32> = mobs(&b).into_iter().map(|i| b.fighters[i].hp).collect();
+        cast(&mut b, "grand_larceny", None);
+        all_enemies_hit(&b, &before);
+        // A Mug robs, so every enemy is pilfered rather than merely hit.
+        let thefts = b
+            .pending_events
+            .iter()
+            .filter(|e| matches!(e, Event::Pilfered { .. }))
+            .count();
+        assert_eq!(thefts, 3, "Grand Larceny picked {thefts} of 3 pockets");
+    }
+
+    /// Every heal, Barrier and Regen is a FRACTION of the recipient, so a deep hero gets
+    /// proportionally what a shallow one does. Flat grants are what made the Keeper stop
+    /// healing around level 30 while the Resonant kept scaling.
+    #[test]
+    fn a_mend_is_worth_the_same_share_at_any_level() {
+        let share = |max_hp: i32, skill: &str| -> f64 {
+            let mut b = field(2, 1);
+            for a in [0usize, 1] {
+                b.fighters[a].max_hp = max_hp;
+                b.fighters[a].hp = max_hp / 2;
+            }
+            b.fighters[0].class_key = "keeper".into();
+            let before = b.fighters[1].hp;
+            cast(&mut b, skill, None);
+            (b.fighters[1].hp - before) as f64 / max_hp as f64
+        };
+        for skill in ["terras_gift", "world_tree"] {
+            let shallow = share(60, skill);
+            let deep = share(600, skill);
+            assert!(shallow > 0.0, "{skill} healed nothing");
+            assert!(
+                (shallow - deep).abs() < 0.02,
+                "{skill} is worth {shallow:.3} of a shallow hero and {deep:.3} of a deep one"
+            );
+        }
+    }
+
+    /// The Smithwright's buff is a share of the ally's OWN attack, so it keeps mattering.
+    #[test]
+    fn a_temper_is_worth_the_same_share_at_any_attack() {
+        let share = |atk: i32| -> f64 {
+            let mut b = field(2, 1);
+            b.fighters[0].class_key = "smithwright".into();
+            b.fighters[1].atk = atk;
+            let before = b.fighters[1].atk;
+            let id = b.fighters[1].combatant_id.clone();
+            b.fighters[0].gauge = 1.0;
+            b.resolve_skill(0, Some(&id), Some("tempering_blow"), None).expect("temper");
+            (b.fighters[1].atk - before) as f64 / atk as f64
+        };
+        let (weak, strong) = (share(20), share(300));
+        assert!((weak - strong).abs() < 0.02, "temper is {weak:.3} then {strong:.3}");
     }
 
     /// The client does not ask the player to aim a party buff or an all-enemy sweep, so
