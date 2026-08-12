@@ -628,6 +628,14 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   At the shipped values a level costs 2 fights at first and level 10 — the gate on
   your **second party slot** — costs 22, with the ramp biting later (65 to L20, 128
   to L30). `PlayerRun::award_hero_xp` levels each hero on victory.
+- **An encounter is a POOL divided among the heroes still STANDING.** The last survivor
+  of a bad fight banks the whole thing — a fight that nearly killed you is worth what it
+  cost. `award_hero_xp` takes `shares` (the living count) SEPARATELY from `party_size`
+  (which only sizes the per-hero vectors); they used to be one argument
+  (`party_size.max(slot + 1)`), so a lone survivor in slot 3 still divided by four and
+  three-quarters of the pool evaporated. Each hero also carries its **own** banked XP and
+  its own next-level bar on `run.party` — those were one shared run-level pair, which is
+  why the split was invisible from inside the game.
 - **Encounter XP is split across the party, once.** A four-hero party meets
   creatures with `encounter_party_scale` more HP, so the encounter pays that same
   multiple before the split — otherwise the scale is charged twice and a full party

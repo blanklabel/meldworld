@@ -137,25 +137,30 @@ impl PlayerRun {
     /// living heroes are ever passed here — a hero that fell earns nothing from the
     /// fight it did not finish. Returns the levels that hero gained.
     ///
-    /// `party_size` grows the per-hero vectors on first use, seeded at the run's
-    /// `base_run_level`, so a dive from a deeper hub starts every hero deeper.
     /// Credit one hero its share of an encounter's XP.
     ///
-    /// The share is the encounter's XP DIVIDED by the party size: a lone hero absorbs
-    /// the whole lesson, four split it. That single division is what gives the game
-    /// its intended arc — the solo era levels fast on short fights, and a full party's
-    /// runs are long — without needing two sets of encounters.
+    /// An encounter is a POOL, and it is divided among the heroes still STANDING when
+    /// it ends — so the last survivor of a bad fight banks the whole thing. `shares` is
+    /// that living count, and it is deliberately separate from `party_size`: the two
+    /// used to be one argument (`party_size.max(slot + 1)`), which meant a lone survivor
+    /// in slot 3 still divided by four and three-quarters of the pool evaporated.
+    ///
+    /// `party_size` only grows the per-hero vectors, seeded at the run's
+    /// `base_run_level`, so a dive from a deeper hub starts every hero deeper — and so
+    /// the party-slot milestones can still count heroes who have not been paid yet.
     pub fn award_hero_xp(
         &mut self,
         slot: usize,
+        shares: usize,
         party_size: usize,
         xp: i64,
         balance: &Balance,
     ) -> i32 {
         let size = party_size.max(slot + 1);
+        let shares = shares.max(1);
         let xp = if balance.runs.xp_split_across_party {
             // Never round a real reward down to nothing.
-            ((xp as f64) / size.max(1) as f64).round().max(1.0) as i64
+            ((xp as f64) / shares as f64).round().max(1.0) as i64
         } else {
             xp
         };
@@ -751,7 +756,7 @@ mod tests {
         let enc = same_level_encounter_xp(1, &b);
         // Two same-level encounters is what level 1 costs, so this must be exactly one up.
         for _ in 0..2 {
-            r.award_hero_xp(0, 1, enc, &b);
+            r.award_hero_xp(0, 1, 1, enc, &b);
         }
         assert_eq!(r.hero_level(0), 2, "two at-level fights is one level");
         assert_eq!(
@@ -762,7 +767,7 @@ mod tests {
 
         // And the run pool must not be quietly climbing alongside it.
         let before = r.run_level;
-        r.award_hero_xp(0, 1, 1, &b);
+        r.award_hero_xp(0, 1, 1, 1, &b);
         assert!(
             r.run_level == before || r.run_level == r.hero_level(0),
             "run_level {} drifted from hero level {}",
@@ -1409,6 +1414,97 @@ mod tests {
     }
 
 
+    fn fresh_run() -> PlayerRun {
+        PlayerRun {
+            run_id: "r".into(),
+            player_id: "p".into(),
+            username: "u".into(),
+            character_class: CharacterClass::Explorer,
+            run_level: 1,
+            xp: 0,
+            backpack: vec![],
+            chits: 0,
+            looted_gear: vec![],
+            max_distance_reached: 0,
+            result: None,
+            party_id: 0,
+            hero_levels: Vec::new(),
+            hero_xp: Vec::new(),
+        }
+    }
+
+    /// **An encounter is a POOL divided among whoever is still STANDING.** Three heroes
+    /// down means the survivor banks the whole thing — a fight that nearly killed you is
+    /// worth what it cost. Dividing by the full party instead evaporated the fallen
+    /// heroes' shares, and a survivor in a LATE slot was the worst case: the divisor and
+    /// the vector sizing were one argument (`party_size.max(slot + 1)`), so the last hero
+    /// standing in slot 3 still divided by four.
+    /// **The encounter scales off the ROSTER, not the survivors** — and that pairing is
+    /// what makes the XP rule above a risk rather than free money. A party of four that
+    /// loses three still meets a four-hero encounter with one hero standing, so the extra
+    /// XP is bought with a fight scoped for people who are no longer in it. Scale this to
+    /// the living count instead and the risk half quietly disappears.
+    #[test]
+    fn a_fight_is_scoped_to_the_roster_even_when_only_one_hero_is_left() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
+        let arena = meld_world::Arena::generate(&b, 5, true);
+
+        let hp_of = |party: &[PartyMember], hp: &[Option<i32>]| -> i32 {
+            let enemies = vec![(&arena.monsters[0], "mc".to_string())];
+            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[]);
+            let (_, foes) = battle.wire_combatants();
+            foes[0].max_hp
+        };
+        let member = |n: usize| -> PartyMember {
+            ("p1".to_string(), format!("c{n}"), CharacterClass::Explorer, GearBonus::default())
+        };
+
+        let solo = hp_of(&[member(0)], &[None]);
+        let four: Vec<PartyMember> = (0..4).map(member).collect();
+        let full = hp_of(&four, &[None, None, None, None]);
+        assert!(full > solo, "a four-hero encounter should be the bigger one");
+
+        // Three of the four are down. The creature is exactly as big as it was.
+        let three_down = hp_of(&four, &[None, Some(0), Some(0), Some(0)]);
+        assert_eq!(three_down, full, "the encounter shrank when the party died");
+        assert!(three_down > solo, "the survivor got a solo-sized fight for free");
+    }
+
+    #[test]
+    fn the_last_hero_standing_banks_the_whole_pool() {
+        let b = Balance::load_default().unwrap();
+        // Divisible by four so the split is exact (the share is ROUNDED per hero, so an
+        // odd pool would be a rounding argument rather than a sharing one), and small
+        // enough that nobody levels — `hero_xp` is then the whole banked share rather
+        // than the remainder left after level costs are subtracted.
+        let pool = (xp_to_next(1, &b) / 8) * 4;
+
+        let mut full = fresh_run();
+        for slot in 0..4 {
+            full.award_hero_xp(slot, 4, 4, pool, &b);
+        }
+        let quarter = full.hero_xp[0];
+        assert!(quarter > 0);
+        for slot in 0..4 {
+            assert_eq!(full.hero_xp[slot], quarter, "an even split is not even");
+        }
+
+        let mut alone = fresh_run();
+        alone.award_hero_xp(3, 1, 4, pool, &b);
+        assert_eq!(alone.hero_xp[3], pool, "the survivor did not bank the whole pool");
+        assert_eq!(alone.hero_xp[3], quarter * 4, "a quarter times four is the pool");
+        // The fallen stay SEATED at the run's base level, so the party-slot milestones
+        // can still count heroes who have not been paid yet.
+        assert_eq!(alone.hero_levels.len(), 4, "the party lost its empty slots");
+        assert_eq!(alone.hero_xp[0], 0, "a fallen hero earned from a fight it lost");
+
+        let mut half = fresh_run();
+        half.award_hero_xp(0, 2, 4, pool, &b);
+        assert_eq!(half.hero_xp[0], quarter * 2, "two standing should take half each");
+    }
+
     #[test]
     fn each_hero_climbs_its_own_ladder_and_the_fallen_climb_nothing() {
         let b = Balance::load_default().unwrap();
@@ -1432,7 +1528,7 @@ mod tests {
 
         // Hero 0 fights; heroes 1-3 do not (or fell). Only hero 0 climbs. The award is
         // SPLIT four ways, so this is twenty-four encounters' worth arriving as six.
-        let gained = r.award_hero_xp(0, 4, one * 6 * 4, &b);
+        let gained = r.award_hero_xp(0, 4, 4, one * 6 * 4, &b);
         assert!(gained >= 2, "six level-1 fights bought {gained} levels");
         assert!(r.hero_level(0) > r.hero_level(1), "the idle hero climbed too");
         assert_eq!(r.hero_level(1), 1, "an unearned hero should sit at the base level");
@@ -1442,17 +1538,17 @@ mod tests {
 
         // Zero XP is a no-op — a dead hero is simply never passed here.
         let before = r.hero_level(0);
-        assert_eq!(r.award_hero_xp(0, 4, 0, &b), 0);
+        assert_eq!(r.award_hero_xp(0, 4, 4, 0, &b), 0);
         assert_eq!(r.hero_level(0), before);
 
         // The slot-unlock rules count heroes at a level.
         assert_eq!(r.heroes_at_level(before), 1);
         assert_eq!(r.heroes_at_level(1), 4);
-        let _ = r.award_hero_xp(1, 4, one * 6 * 4, &b);
+        let _ = r.award_hero_xp(1, 4, 4, one * 6 * 4, &b);
         assert_eq!(r.heroes_at_level(before), 2, "two heroes should now be there");
 
         // The cap holds per hero.
-        let _ = r.award_hero_xp(2, 4, i64::MAX / 4, &b);
+        let _ = r.award_hero_xp(2, 4, 4, i64::MAX / 4, &b);
         assert_eq!(r.hero_level(2), b.runs.max_hero_level);
     }
 
@@ -1479,7 +1575,7 @@ mod tests {
                 hero_levels: vec![1; size],
                 hero_xp: vec![0; size],
             };
-            r.award_hero_xp(0, size, 400, &b);
+            r.award_hero_xp(0, size, size, 400, &b);
             r.hero_xp[0] + (0..r.hero_levels[0] - 1).map(|l| xp_to_next(l + 1, &b)).sum::<i64>()
         };
         let solo = mk(1);
