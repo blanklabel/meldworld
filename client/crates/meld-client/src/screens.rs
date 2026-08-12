@@ -58,6 +58,12 @@ pub(crate) fn kit_text(ci: &ClassInfo) -> String {
         };
         s.push_str(&format!("\n  {} \u{2014} {}{at}", def.name, def.description));
     }
+    // Say what is behind the cut. Every ladder now runs to level 100, so a card that
+    // silently showed four of eight read as "this is the whole class".
+    let rest = meld_proto::skills::skills_for_class(ci.key).len().saturating_sub(KIT_ROWS);
+    if rest > 0 {
+        s.push_str(&format!("\n  ...and {rest} more, out to level {}", meld_proto::skills::LADDER_TOP));
+    }
     s
 }
 

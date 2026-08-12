@@ -96,6 +96,17 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             secs(b.explorer_haste_ticks, balance)
         ),
         "now" => "every living ally's gauge to full · 1 use per battle".to_string(),
+        "the_world_entire" => join(&[
+            format!(
+                "marks EVERY enemy for {}",
+                secs(b.explorer_world_entire_mark_ticks, balance)
+            ),
+            format!(
+                "hastes the party {} for {}",
+                dmg(b.explorer_haste_mult).replace("× damage", "× gauge"),
+                secs(b.explorer_world_entire_haste_ticks, balance)
+            ),
+        ]),
 
         // ---- Hunter: the cost IS the class, so it leads every row.
         "power_strike" => {
@@ -122,6 +133,15 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "frenzy" => {
             join(&[dmg(b.explorer_frenzy_mult), adrenaline(b.hunter_frenzy_cost, balance)])
         }
+        "iron_lung" => join(&[
+            format!("heals {} of your max HP", pct(b.hunter_iron_lung_heal_fraction)),
+            format!("{} Regen a turn", b.hunter_iron_lung_regen),
+            adrenaline(b.hunter_second_wind_cost, balance),
+        ]),
+        "apex_predator" => join(&[
+            format!("{} to EVERY enemy", dmg(b.hunter_apex_mult)),
+            adrenaline(b.hunter_frenzy_cost, balance),
+        ]),
 
         // ---- Psyker: a Focus fires again every Psyker turn it is held, so the
         // per-tick number is the one that decides between two Foci.
@@ -198,6 +218,14 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             pct(b.shifter_flicker_decay)
         ),
         "ransack" => join(&[dmg(b.shifter_ransack_mult), turn(b.shifter_ransack_drain)]),
+        "assassinate" => join(&[
+            dmg(b.shifter_assassinate_mult),
+            format!("ignores {} of its armour", pct(b.shifter_assassinate_pierce)),
+        ]),
+        "grand_larceny" => join(&[
+            format!("{} to EVERY enemy", dmg(b.shifter_larceny_mult)),
+            format!("{} each", turn(b.shifter_larceny_drain)),
+        ]),
         "steal" => join(&[
             turn(b.shifter_steal_drain),
             format!(
@@ -231,6 +259,19 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "purging_light" => {
             join(&[format!("{} to EVERY enemy", dmg(b.phoenix_guard_toll_mult)), undead(balance)])
         }
+        "hallowed_ground" => join(&[
+            format!("{} to EVERY enemy", dmg(b.phoenix_guard_hallowed_mult)),
+            "zeroes every gauge".to_string(),
+            undead(balance),
+        ]),
+        "phoenix_ascendant" => join(&[
+            format!("{} to EVERY enemy", dmg(b.phoenix_guard_ascendant_mult)),
+            undead(balance),
+            format!(
+                "Barrier for {} of each ally's max HP",
+                pct(b.phoenix_guard_ascendant_barrier_fraction)
+            ),
+        ]),
         "unbroken_vigil" => format!(
             "Barrier for {} of each ally's max HP",
             pct(b.phoenix_guard_vigil_barrier_fraction)
@@ -252,6 +293,17 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         }
         "tempering_blow" => format!("+{} attack for the rest of the fight", sm.temper_atk_bonus),
         "slag_spray" => format!("{} to EVERY enemy, ignoring armour", dmg(sm.slag_mult)),
+        "anvil_chorus" => {
+            format!("+{} attack for EVERY ally, for the rest of the fight", sm.chorus_atk_bonus)
+        }
+        "great_work" => join(&[
+            format!(
+                "heals {} and Barriers {} of every ally's max HP",
+                pct(sm.great_work_heal_fraction),
+                pct(sm.great_work_barrier_fraction)
+            ),
+            format!("+{} attack for the rest of the fight", sm.great_work_atk_bonus),
+        ]),
         "one_true_forge" => format!(
             "heals {} and Barriers {} of every ally's max HP",
             pct(sm.forge_heal_fraction),
@@ -274,6 +326,14 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "vital_draught" => {
             format!("{} Barrier and +{} Regen", kp.draught_barrier, kp.draught_regen)
         }
+        "thorn_grove" => join(&[
+            format!("{} (from Mnd) to EVERY enemy", dmg(kp.thorn_grove_mult)),
+            format!("{} each", turn(kp.thorn_grove_gauge_drain)),
+        ]),
+        "world_tree" => format!(
+            "heals {}, {} Barrier and {} Regen a turn to every ally",
+            kp.world_tree_heal, kp.world_tree_barrier, kp.world_tree_regen
+        ),
         "terras_gift" => format!(
             "heals {}, {} Barrier, and {} of a turn to every ally",
             kp.gift_heal,
@@ -437,4 +497,5 @@ mod tests {
         assert_eq!(secs(60, &b), "6s");
         assert_eq!(secs(100, &b), "10s");
     }
+
 }

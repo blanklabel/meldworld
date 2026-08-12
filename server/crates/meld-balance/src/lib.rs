@@ -174,6 +174,10 @@ pub struct Battle {
     pub shifter_flicker_decay: f64,
     pub shifter_ransack_mult: f64,
     pub shifter_ransack_drain: f64,
+    pub shifter_assassinate_mult: f64,
+    pub shifter_assassinate_pierce: f64,
+    pub shifter_larceny_mult: f64,
+    pub shifter_larceny_drain: f64,
     pub hunter_adrenaline_max: i32,
     pub hunter_adrenaline_per_attack: i32,
     pub hunter_power_strike_cost: i32,
@@ -183,6 +187,9 @@ pub struct Battle {
     pub explorer_snare_drain: f64,
     pub hunter_frenzy_cost: i32,
     pub explorer_frenzy_mult: f64,
+    pub hunter_iron_lung_heal_fraction: f64,
+    pub hunter_iron_lung_regen: i32,
+    pub hunter_apex_mult: f64,
     pub phoenix_guard_swell_mult: f64,
     pub phoenix_guard_swell_drain: f64,
     pub phoenix_guard_root_barrier_fraction: f64,
@@ -192,6 +199,9 @@ pub struct Battle {
     pub phoenix_guard_vigil_barrier_fraction: f64,
     pub phoenix_guard_eradication_mult: f64,
     pub phoenix_guard_eradication_missing_bonus: f64,
+    pub phoenix_guard_hallowed_mult: f64,
+    pub phoenix_guard_ascendant_mult: f64,
+    pub phoenix_guard_ascendant_barrier_fraction: f64,
     pub explorer_trailblaze_mult: f64,
     pub explorer_mark_damage_mult: f64,
     pub explorer_mark_ticks: u64,
@@ -206,6 +216,8 @@ pub struct Battle {
     pub explorer_haste_mult: f64,
     pub explorer_haste_ticks: u64,
     pub explorer_now_ticks: u64,
+    pub explorer_world_entire_mark_ticks: u64,
+    pub explorer_world_entire_haste_ticks: u64,
     pub resonant_mend_all_fraction: f64,
     pub resonant_mend_all_self_cost: f64,
     pub resonant_sanctuary_regen: i32,
@@ -525,6 +537,10 @@ pub struct Smithwright {
     pub slag_mult: f64,
     pub forge_heal_fraction: f64,
     pub forge_barrier_fraction: f64,
+    pub chorus_atk_bonus: i32,
+    pub great_work_heal_fraction: f64,
+    pub great_work_barrier_fraction: f64,
+    pub great_work_atk_bonus: i32,
 }
 
 /// The Open Flower Keeper's kit (MS-1): everything here keeps someone standing.
@@ -542,6 +558,11 @@ pub struct Keeper {
     pub gift_heal: i32,
     pub gift_barrier: i32,
     pub gift_gauge: f64,
+    pub thorn_grove_mult: f64,
+    pub thorn_grove_gauge_drain: f64,
+    pub world_tree_heal: i32,
+    pub world_tree_barrier: i32,
+    pub world_tree_regen: i32,
 }
 
 /// Per-class `[atk, def, spd]` weights for "equip best" (GR-5). Keyed by class key so a new

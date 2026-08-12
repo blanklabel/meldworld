@@ -432,14 +432,17 @@ Use these terms consistently in code, comments, and UI.
   artifact, takes three orders to make, and only an Explorer of Serin may set one), Safe
   Passage (L25, party **Evasion** — the Guides get you through untouched, they do not
   bandage you afterwards), A World Known (L36, a real **haste** — every ally's gauge fills faster while it holds),
-  and **Now** (L49, the Globemaster's one call per fight: every ally acts *immediately*,
-  refused on the second ask). See
+  **Now** (L49, the Globemaster's one call per fight: every ally acts *immediately*,
+  refused on the second ask), and **The World Entire** (L100, every enemy marked AND the
+  party hastened in one turn). See
   `Battle::resolve_explorer_kit`.
 - **Hunter** — the martial baseline (disposal-of-dangerous-creatures guild).
   Front-line bruiser with the standard Attack / Defend / Item / Skill menu. It has no resource
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —
   Power Strike (heavy hit), Second Wind (L4, self-heal), Snare (L9, damage + ATB-gauge drain),
-  Frenzy (L16, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
+  Frenzy (L16, biggest hit, biggest cost), then two UPGRADES that keep the menu four rows
+  wide: Iron Lung (L49, Second Wind that also leaves Regen) and Apex Predator (L100, Frenzy
+  against *every* enemy). A skill is rejected unless its Adrenaline cost is banked.
   See `Battle::resolve_hunter` (the Adrenaline resolver, shared with nothing else).
 - **Psyker** — psychic channeler. Instead of the martial kit it manages **Foci**: Gravity Well
   (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L9, stronger),
@@ -449,18 +452,23 @@ Use these terms consistently in code, comments, and UI.
 - **Shifter** — rogue / fortune-explorer ("Runner"). Fast, fragile front-line skirmisher and the only
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
   that pierces most armour), Flicker (L4, self **Evasion** blink), Ransack (L9, damage + drains the
-  enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
+  enemy's ATB gauge), and its two upgrades — Assassinate (L49, Backstab ignoring armour
+  *entirely*) and Grand Larceny (L100, Ransack worked on every enemy at once). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
 - **Smithwright** — **The Foundry's** builder, and the first of the two profession
   classes (MS-1). A front-line support: Hammer Fall (a staggering blow with the tool
   itself), Quench (L4, self **Barrier**), Plant the Bulwark (L9, **party** Barrier),
   Tempering Blow (L16, an ally's atk for the fight), Slag Spray (L25, all-enemy,
-  armour-ignoring), The One True Forge (L36, party heal + Barrier). Out of combat it is
+  armour-ignoring), The One True Forge (L36, party heal + Barrier), Anvil Chorus (L49,
+  Tempering Blow for the *whole* party) and The Great Work (L100, party heal + Barrier +
+  atk together). Out of combat it is
   the class that **raises the field forge**, and a second Smithwright in the party makes
   the anvil's rhythm easier for whoever is working it. See `Battle::resolve_smithwright`.
 - **Keeper** — the **Order of the Open Flower's** grower, the other profession class. A
   between-fights mender: Thornlash (damage + gauge drain), Poultice (L4, heal + Regen),
   Bloomfield (L9, **party** Regen), Root Snare (L16, damage + a long wait), Vital Draught
-  (L25, Barrier + Regen), Terra's Gift (L36, party heal + Barrier + gauge). Its damage
+  (L25, Barrier + Regen), Terra's Gift (L36, party heal + Barrier + gauge), Thorn Grove
+  (L49, the order's only all-enemy answer: Mnd damage + a drain on each) and World Tree
+  (L100, party heal + Barrier + Regen). Its damage
   rides **Mnd**, not Str. Out of combat it **raises the alembic**, whose regen field is
   the only rest a party without a Resonant gets. See `Battle::resolve_keeper`.
   *Neither class has its own sprite set yet — `class_frames` falls back to the Explorer's
@@ -471,17 +479,35 @@ Use these terms consistently in code, comments, and UI.
   Strike (Initiate), Rite of Rest (Purifier L4, self **Barrier**), Holy Censure
   (Exemplar L9, zeroes the gauge), Purging Light (Luminary L16, **all-enemy**), Unbroken
   Vigil (Redeemer L25, **party** Barrier), Eradication (Apotheosis L36, an execute that
-  scales with the target's missing HP). See `Battle::resolve_phoenix_guard`.
+  scales with the target's missing HP), Hallowed Ground (L49, all-enemy damage that zeroes
+  *every* gauge) and Phoenix Ascendant (L100, heavy all-enemy fire + party Barrier). See `Battle::resolve_phoenix_guard`.
   *The kinetic/oar kit it used to carry belongs to the **Order of the Iron Hull**, a
   future monk class whose `iron_hull` key is reserved.*
 
 **Abilities are one registry.** [`meld_proto::skills`](shared/meld-proto/src/skills.rs)
-owns every ability's key, name, owning class, unlock level, **org rank** and
-**description**. The server gates on it, the battle menu builds its rows and tooltips
+owns every ability's key, name, owning class, unlock level, **org rank**, **description**
+and **`target`** (Enemy / Ally / Caster / AllEnemies / Party). The server gates on it, the battle menu builds its rows and tooltips
 from it, and the party screen lists each hero's ladder from it — so a kit is defined
 once, **in ladder order** — `skills_for_class` sorts by unlock, because the table is
 written in authoring order and the Explorer's `Now` (49) sits above `A World Known`
 (36) in it.
+
+**Nobody stops learning, and the archetype governs WIDTH not depth.** Every class learns
+something at **49 and again at 100** (`LADDER_TOP`) — five of the eight used to stop at 25
+or 36 against a level cap of 255, so levelling stopped paying for most of the roster. What
+still separates a martial class from a caster is how it gets there: a **martial** class
+(Hunter, Shifter) climbs via `upgrades`, so Frenzy *becomes* Apex Predator and its menu
+stays four rows; **hybrid** may field 8 and **caster** 10 (`menu_width`). Two tests hold
+both halves.
+
+**Two hand-written lists used to shadow this registry, and both had gone stale.** The
+engine dispatched `resolve_skill` by a per-class list of keys, where an unlisted ability
+fell past every arm and returned "unknown skill" — a row that is in the menu, costs a turn
+and does nothing. The client picked targeting from another list that still named the Iron
+Hull's `root` / `toll_of_the_deep`, so the Phoenix Guard's self-cast Rite of Rest and its
+all-enemy Purging Light both asked the player to aim at a single creature. Both now ask the
+registry (`skill_owner`, `target_of`). **Never reintroduce a list of ability keys** — a
+list is a list a new ability gets left off, silently.
 
 **Unlock levels are SQUARES** — 1 / 4 / 9 / 16 / 25 / 36 / 49 … out to 100 — so each new
 ability costs a step up in commitment rather than an ever-flatter trickle. A test holds
@@ -536,7 +562,8 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
 - **Skill unlocks by level**: the single source of truth is `meld_proto::skills::unlock_level`
   (server rejects a locked skill in `resolve_skill`; client greys the menu row). Second Wind L4,
   Mind Spike L9, Temporal Anchor L16, Regen Boon L4, Ward L9; every class's ladder is
-  squares (1 / 4 / 9 / 16 / 25 / 36 …), not the org ranks.
+  squares (1 / 4 / 9 / 16 / 25 / 36 / 49 … 100), not the org ranks, and every class has a
+  rung at 49 and at 100.
 - *Deferred*: MP (the ATB adaptation has no cast resource yet — Mnd would gate it later).
 
 ## Overworld: exploration, extraction & harvesting

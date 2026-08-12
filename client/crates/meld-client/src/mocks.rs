@@ -308,10 +308,11 @@ pub(crate) fn mock_overlay_setup(
             bonus_pct: 60,
         }];
         // Seed a party roster so the party screen (+ formation toggle) is visible.
+        let level = crate::flags::hero_level_flag();
         let hero = |name: &str, class: &str, back_row| meld_client::net::HeroLine {
             name: name.into(),
             class_key: class.into(),
-            level: 1,
+            level,
             str_: 24,
             mnd: 4,
             dex: 12,

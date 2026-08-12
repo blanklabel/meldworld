@@ -164,11 +164,21 @@ async fn a_smithwright_and_a_keeper_are_earned_and_then_fieldable() {
     );
 
     // The kits come from the one registry, gated by the same ladder as everyone else.
-    for (class, first) in [("smithwright", "Hammer Fall"), ("keeper", "Thornlash")] {
+    for (class, first, deepest) in [
+        ("smithwright", "Hammer Fall", "The Great Work"),
+        ("keeper", "Thornlash", "World Tree"),
+    ] {
         let at_one = meld_proto::skills::skills_for_class_at(class, 1);
         assert_eq!(at_one.len(), 1, "{class} opens with one rung");
         assert_eq!(at_one[0].name, first);
-        assert_eq!(meld_proto::skills::skills_for_class_at(class, 255).len(), 6);
+        // The ladder runs to the top like everyone else's, inside its archetype's width.
+        let full = meld_proto::skills::skills_for_class_at(class, 255);
+        assert!(full.iter().any(|s| s.name == deepest), "{class} stops short of the top");
+        assert!(
+            full.len() <= meld_proto::skills::menu_width(meld_proto::skills::archetype(class)),
+            "{class} fields {} rows",
+            full.len()
+        );
         // And a rank to wear while doing it.
         assert!(meld_proto::skills::rank_title(class, 1).is_some(), "{class} has a rank");
     }

@@ -220,6 +220,13 @@ shifter_flicker_evasion = 0.4    # Flicker: dodge bonus granted (added to Dex do
 shifter_flicker_decay = 0.15     # Evasion lost at the start of each of the Shifter's turns
 shifter_ransack_mult = 1.0       # Ransack: dmg = atk*mult - def
 shifter_ransack_drain = 0.35     # Ransack: enemy ATB gauge -= this on hit
+# The deep rungs (49, 100). A martial class reaches the top by its EXISTING rows getting
+# better, never by growing a fifth button — so these upgrade Backstab and Ransack in
+# place and the Shifter still fields four. [TUNABLE]
+shifter_assassinate_mult = 2.2   # Assassinate (49, upgrades Backstab): dmg = atk*mult
+shifter_assassinate_pierce = 1.0 # ...and it ignores armour ENTIRELY, not just most of it
+shifter_larceny_mult = 1.2       # Grand Larceny (100, upgrades Ransack): to EVERY enemy
+shifter_larceny_drain = 0.45     # ...and drains each of their gauges by this
 
 # The HUNTER (martial baseline). It has no special resource until it earns one: every
 # basic Attack banks `adrenaline_per_attack` Adrenaline (up to `adrenaline_max`), and
@@ -245,6 +252,12 @@ explorer_snare_mult = 1.0              # Snare: dmg = atk*mult - def
 explorer_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
 hunter_frenzy_cost = 80              # Frenzy: Adrenaline spent
 explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
+# The deep rungs (49, 100). Both UPGRADE a row the Hunter already has and cost exactly
+# what the row they replace cost — the kit gets better, the Adrenaline economy does not
+# move, and the menu stays four wide. [TUNABLE]
+hunter_iron_lung_heal_fraction = 0.45  # Iron Lung (49, upgrades Second Wind): heal = max_hp*this
+hunter_iron_lung_regen = 6             # ...and Regen on top, so the wound keeps closing
+hunter_apex_mult = 2.6                 # Apex Predator (100, upgrades Frenzy): to EVERY enemy
 
 # The Order of the Phoenix Guard (anti-undead tank). A dense, deliberate front-line
 # wall. Its kit is level-gated — no build-up resource.
@@ -275,6 +288,14 @@ phoenix_guard_vigil_barrier_fraction = 0.14
 # already is — `mult + bonus * missing_hp_fraction` — so it finishes rather than opens.
 phoenix_guard_eradication_mult = 1.2
 phoenix_guard_eradication_missing_bonus = 2.2
+# Hallowed Ground (49): the wall stops EVERYTHING — damage to every living enemy that
+# also zeroes each of their gauges. Its multiplier sits below Purging Light's because a
+# full party-wide stagger is worth more than the damage is. [TUNABLE]
+phoenix_guard_hallowed_mult = 0.9
+# Phoenix Ascendant (100): the order's own fire. Heavy on every enemy (and far heavier
+# on undead, via `phoenix_guard_undead_mult`), and the same flame Barriers the party.
+phoenix_guard_ascendant_mult = 1.8
+phoenix_guard_ascendant_barrier_fraction = 0.18
 
 # Explorer, the mapping order. Its kit is tempo and stability rather than burst: it
 # keeps the party moving and standing. No Adrenaline — nothing here has a resource
@@ -317,6 +338,12 @@ explorer_haste_ticks = 100       # ~10s at the 100ms tick
 # NOW — and it can be spent exactly once per fight, so it is the answer to one moment
 # rather than a rotation.
 explorer_now_ticks = 0           # reserved: `Now` is instantaneous, it grants no window
+# THE WORLD ENTIRE (Globemaster, 100): the whole field read at once — every enemy blazed
+# AND the party hastened in the same turn. It is the two halves of the class's tempo
+# ladder fired together, so both windows are longer than the single-target Trailblaze
+# and the party-wide A World Known that taught them. [TUNABLE]
+explorer_world_entire_mark_ticks = 100   # ~10s at the 100ms tick
+explorer_world_entire_haste_ticks = 140  # ~14s at the 100ms tick
 
 # The Resonant's deep kit. It is a CASTER (meld_proto::skills::Archetype): almost no
 # gear curve, so the ladder runs to level 100 and these are its late game. Every
@@ -669,6 +696,12 @@ temper_atk_bonus = 4             # Tempering Blow: an ally's attack, for the fig
 slag_mult = 0.7                  # Slag Spray: all-enemy, armour-ignoring
 forge_heal_fraction = 0.2        # The One True Forge: party heal as a fraction of max HP
 forge_barrier_fraction = 0.18    # …and the Barrier that comes with it
+# The deep rungs (49, 100). A Smithwright's value is the party's numbers, so both scale
+# what everyone else does rather than adding a bigger swing of its own.
+chorus_atk_bonus = 3             # Anvil Chorus (49): Tempering Blow, for EVERY ally
+great_work_heal_fraction = 0.25  # The Great Work (100): party heal…
+great_work_barrier_fraction = 0.22 # …Barrier…
+great_work_atk_bonus = 5         # …and the attack that outlasts both, for the fight
 
 [keeper]
 thornlash_mult = 0.85            # Thornlash: modest damage [TUNABLE]
@@ -683,6 +716,13 @@ draught_regen = 5                # …with Regen
 gift_heal = 18                   # Terra's Gift: party heal…
 gift_barrier = 14                # …Barrier…
 gift_gauge = 0.25                # …and a push on every ally's gauge
+# The deep rungs (49, 100). Thorn Grove is the order's ONLY all-enemy answer, so it is
+# priced as control (the drain) with damage attached rather than the reverse.
+thorn_grove_mult = 0.6           # Thorn Grove (49): Mnd damage to EVERY enemy…
+thorn_grove_gauge_drain = 0.35   # …and the gauge it costs each of them
+world_tree_heal = 26             # World Tree (100): party heal…
+world_tree_barrier = 22          # …Barrier…
+world_tree_regen = 6             # …and Regen, all three at once
 
 # "EQUIP BEST" weights: how much each class wants attack / defence / speed out of a piece
 # of gear. Gear only carries those three bonuses, so this is the whole scoring axis — and a

@@ -31,30 +31,27 @@
 //! from balance rather than from a hand-authored table per ability — see
 //! `meld_run::ability_rank`.
 
-/// How long a class's ability ladder runs — the Dragon Quest lesson that not every
-/// class should keep learning forever.
+/// How WIDE a class's menu gets — not how deep its ladder runs.
 ///
-/// A **martial** class gets a short, front-loaded kit and then scales on *gear and
-/// stats*: its power curve is the weapon in its hand, so handing it a new button at
-/// level 80 would be inventing a caster. A **caster** has almost no gear scaling by
-/// comparison, so its ladder is the progression and runs the whole way. A **hybrid**
-/// sits between the two.
+/// **Every class learns something at 49 and again at 100**, so levelling pays for
+/// everyone all the way out. The Dragon Quest lesson this encodes — a martial class's
+/// late game is its weapon, not a longer menu — now lives in *how* it gets there: a
+/// martial class reaches 100 through [`SkillDef::upgrades`], the row it already has
+/// getting better, while a caster reaches it by learning a genuinely new button.
+/// Frenzy becoming Apex Predator is a deeper ladder with the same four rows.
 ///
-/// This is what stops "more abilities" from meaning "every class gets ten": it says
-/// *which* classes should, and why.
+/// So the archetype answers "how many things does this class do at once", and the
+/// answer stops "more abilities" from meaning "every class ends up with ten".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Archetype {
-    /// Short kit, done early. Scales on gear. (Hunter, Shifter.)
+    /// Four rows, forever. Deep unlocks upgrade in place. (Hunter, Shifter.)
     Martial,
-    /// Medium kit. Some gear scaling, some utility. (Explorer, Phoenix Guard.)
+    /// A working spread of tools. (Explorer, Phoenix Guard, Smithwright, Keeper.)
     Hybrid,
-    /// Long kit, arriving all the way out. (Psyker, Resonant.)
+    /// A button for every situation; the kit IS the progression. (Psyker, Resonant.)
     Caster,
 }
 
-/// The deepest level a class's ladder should reach, by archetype. A martial class's
-/// last ability lands while the numbers still matter; a caster's arrives at the cap
-/// of the authored range.
 pub fn archetype(class: &str) -> Archetype {
     match class {
         "hunter" | "shifter" => Archetype::Martial,
@@ -63,12 +60,46 @@ pub fn archetype(class: &str) -> Archetype {
     }
 }
 
-/// The level band an archetype's last ability is expected to fall in.
-pub fn ladder_ceiling(a: Archetype) -> i32 {
+/// The most rows an archetype's menu may hold once everything is unlocked.
+pub fn menu_width(a: Archetype) -> usize {
     match a {
-        Archetype::Martial => 25,
-        Archetype::Hybrid => 49,
-        Archetype::Caster => 100,
+        Archetype::Martial => 4,
+        Archetype::Hybrid => 8,
+        Archetype::Caster => 10,
+    }
+}
+
+/// The level every class's ladder is expected to reach. One number now, because a
+/// class that stopped learning at 25 stopped caring about levels at 25.
+pub const LADDER_TOP: i32 = 100;
+
+/// Who an ability is aimed at — and, just as importantly, whether the player is asked
+/// to aim it at all.
+///
+/// This lives in the registry because the client used to keep its own list of "which
+/// skills need a target pick", and a list is a list a new ability falls off. It had
+/// already gone stale silently: it still named the Iron Hull's `root` and
+/// `toll_of_the_deep`, so the Phoenix Guard's self-cast Rite of Rest and its all-enemy
+/// Purging Light both fell through to "pick an enemy" and asked the player to aim a
+/// stance at a creature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Pick one enemy.
+    Enemy,
+    /// Pick one ally (resolvers default to the most wounded if nobody is picked).
+    Ally,
+    /// The caster only — nothing to pick.
+    Caster,
+    /// Every living enemy — nothing to pick.
+    AllEnemies,
+    /// The whole party — nothing to pick.
+    Party,
+}
+
+impl Target {
+    /// Whether the player must choose a combatant before this can be submitted.
+    pub fn needs_pick(self) -> bool {
+        matches!(self, Target::Enemy | Target::Ally)
     }
 }
 
@@ -82,6 +113,8 @@ pub struct SkillDef {
     pub class: &'static str,
     /// The level a hero must reach to use it.
     pub unlock: i32,
+    /// Who it lands on, and whether the player is asked to aim it.
+    pub target: Target,
     /// What it does, for the battle menu tooltip and the abilities view. Written for
     /// the player: the effect, and the cost or catch.
     pub description: &'static str,
@@ -107,6 +140,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Trailblaze",
         class: "explorer",
         unlock: 1,
+        target: Target::Enemy,
         description: "Damage, and MARKS the target: every ally hits it harder until the mark fades. Costs nothing.",
         upgrades: None,
         rank: "Walker",
@@ -116,6 +150,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Field Dressing",
         class: "explorer",
         unlock: 4,
+        target: Target::Ally,
         description: "Heals one ally (the most wounded if you pick nobody) for a share of their max HP. Costs nothing.",
         upgrades: None,
         rank: "Traveler",
@@ -125,6 +160,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Misdirection",
         class: "explorer",
         unlock: 9,
+        target: Target::Enemy,
         description: "Damage, drains the target's ATB gauge, and DISTRACTS it: it swings wide at whoever it attacks, and the party's chance to flee goes up while it holds.",
         upgrades: None,
         rank: "Scout",
@@ -134,6 +170,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Stable Ground",
         class: "explorer",
         unlock: 16,
+        target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP. Not an Anchor - just enough certainty underfoot to stand on.",
         upgrades: None,
         rank: "Pioneer",
@@ -143,6 +180,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Safe Passage",
         class: "explorer",
         unlock: 25,
+        target: Target::Party,
         description: "Evasion for the WHOLE party: every ally becomes harder to hit until it decays. The Guides' promise, as a stat.",
         upgrades: None,
         rank: "Discoverer",
@@ -152,6 +190,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Now",
         class: "explorer",
         unlock: 49,
+        target: Target::Party,
         description: "Every living ally's gauge fills instantly - they all act at once. ONCE per battle.",
         upgrades: None,
         rank: "Globemaster",
@@ -161,7 +200,18 @@ pub const SKILLS: &[SkillDef] = &[
         name: "A World Known",
         class: "explorer",
         unlock: 36,
+        target: Target::Party,
         description: "HASTE for the whole party: every ally's ATB gauge fills faster for a while.",
+        upgrades: None,
+        rank: "Globemaster",
+    },
+    SkillDef {
+        key: "the_world_entire",
+        name: "The World Entire",
+        class: "explorer",
+        unlock: 100,
+        target: Target::Party,
+        description: "The whole field, read at once: MARKS every enemy so every ally hits all of them harder, and HASTES the whole party at the same time.",
         upgrades: None,
         rank: "Globemaster",
     },
@@ -173,6 +223,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Power Strike",
         class: "hunter",
         unlock: 1,
+        target: Target::Enemy,
         description: "A heavy blow. Spends Adrenaline.",
         upgrades: None,
         rank: "Wisker",
@@ -182,6 +233,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Second Wind",
         class: "hunter",
         unlock: 4,
+        target: Target::Caster,
         description: "Heals YOURSELF for a share of your max HP. Spends Adrenaline.",
         upgrades: None,
         rank: "Stalker",
@@ -191,6 +243,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Snare",
         class: "hunter",
         unlock: 9,
+        target: Target::Enemy,
         description: "Damage, and drains the target's ATB gauge so its turn comes later. Spends Adrenaline.",
         upgrades: None,
         rank: "Stalker",
@@ -200,6 +253,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Frenzy",
         class: "hunter",
         unlock: 16,
+        target: Target::Enemy,
         description: "The biggest single hit in the kit, at the biggest Adrenaline cost.",
         upgrades: None,
         rank: "Shikari",
@@ -209,15 +263,37 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Crushing Blow",
         class: "hunter",
         unlock: 16,
+        target: Target::Enemy,
         description: "Power Strike, harder. Spends the same Adrenaline.",
         upgrades: Some("power_strike"),
         rank: "Predator",
+    },
+    SkillDef {
+        key: "iron_lung",
+        name: "Iron Lung",
+        class: "hunter",
+        unlock: 49,
+        target: Target::Caster,
+        description: "Second Wind, and it keeps working: heals YOURSELF for more, then grants Regen so the wound keeps closing. Spends the same Adrenaline.",
+        upgrades: Some("second_wind"),
+        rank: "Master Hunter",
+    },
+    SkillDef {
+        key: "apex_predator",
+        name: "Apex Predator",
+        class: "hunter",
+        unlock: 100,
+        target: Target::AllEnemies,
+        description: "Frenzy, turned on the whole pack: the biggest hit in the kit, against EVERY enemy at once. Spends the same Adrenaline.",
+        upgrades: Some("frenzy"),
+        rank: "Apex",
     },
     SkillDef {
         key: "pin_the_prey",
         name: "Pin the Prey",
         class: "hunter",
         unlock: 25,
+        target: Target::Enemy,
         description: "Snare, with a longer drain. Spends the same Adrenaline.",
         upgrades: Some("snare"),
         rank: "Master Hunter",
@@ -228,6 +304,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Gravity Well",
         class: "psyker",
         unlock: 1,
+        target: Target::Enemy,
         description: "A Focus: each Psyker turn it damages the target, ignoring armour. Persists until revoked.",
         upgrades: None,
         rank: "Initiate",
@@ -237,7 +314,8 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Kinetic Aegis",
         class: "psyker",
         unlock: 1,
-        description: "A Focus: each Psyker turn it grants Barrier. Persists until revoked.",
+        target: Target::Caster,
+        description: "A Focus: each Psyker turn it grants YOURSELF Barrier. Persists until revoked.",
         upgrades: None,
         rank: "Initiate",
     },
@@ -246,6 +324,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Mind Spike",
         class: "psyker",
         unlock: 9,
+        target: Target::Enemy,
         description: "A Focus: a stronger armour-ignoring tick each Psyker turn. Persists until revoked.",
         upgrades: None,
         rank: "Tracer",
@@ -255,6 +334,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Temporal Anchor",
         class: "psyker",
         unlock: 16,
+        target: Target::Enemy,
         description: "A Focus: each Psyker turn it drains the target's ATB gauge. Persists until revoked.",
         upgrades: None,
         rank: "Field Marshal",
@@ -264,6 +344,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Kinetic Wave",
         class: "psyker",
         unlock: 25,
+        target: Target::AllEnemies,
         description: "A Focus that hits EVERY enemy each Psyker turn, ignoring armour.",
         upgrades: None,
         rank: "Field Marshal",
@@ -273,6 +354,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Thermal Flux",
         class: "psyker",
         unlock: 36,
+        target: Target::Enemy,
         description: "A Focus: fire damage each Psyker turn, so a target that resists physical still burns.",
         upgrades: None,
         rank: "Field Marshal",
@@ -282,6 +364,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Matter Dissolution",
         class: "psyker",
         unlock: 49,
+        target: Target::Enemy,
         description: "A Focus that strips the target's armour as well as its HP.",
         upgrades: None,
         rank: "Lead Investigator",
@@ -291,7 +374,8 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Phase Shift",
         class: "psyker",
         unlock: 64,
-        description: "A Focus that grants the party Evasion each Psyker turn.",
+        target: Target::Caster,
+        description: "A Focus: each Psyker turn it grants YOURSELF Evasion, so you are harder to hit for as long as it is held.",
         upgrades: None,
         rank: "Lead Investigator",
     },
@@ -300,6 +384,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Dominate Mind",
         class: "psyker",
         unlock: 81,
+        target: Target::Enemy,
         description: "A Focus that drains the target's gauge and damages it - control and pressure at once.",
         upgrades: None,
         rank: "Bureau Chief",
@@ -309,6 +394,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Reality Collapse",
         class: "psyker",
         unlock: 100,
+        target: Target::AllEnemies,
         description: "The heaviest Focus: armour-ignoring damage to every enemy, every Psyker turn.",
         upgrades: None,
         rank: "Director",
@@ -320,6 +406,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Transfuse",
         class: "resonant",
         unlock: 1,
+        target: Target::Ally,
         description: "Heals an ally for a large share of their max HP, PAID from your own. The healer bleeds so the party does not.",
         upgrades: None,
         rank: "",
@@ -329,6 +416,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Regen Boon",
         class: "resonant",
         unlock: 4,
+        target: Target::Ally,
         description: "Grants an ally Regen: HP back at the start of each of their turns.",
         upgrades: None,
         rank: "",
@@ -338,6 +426,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Ward",
         class: "resonant",
         unlock: 9,
+        target: Target::Ally,
         description: "Grants an ally Barrier - temporary HP that soaks damage before their own.",
         upgrades: None,
         rank: "",
@@ -347,6 +436,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Mend All",
         class: "resonant",
         unlock: 16,
+        target: Target::Party,
         description: "A small heal for EVERY ally at once, paid from your own HP.",
         upgrades: None,
         rank: "",
@@ -356,6 +446,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Sanctuary",
         class: "resonant",
         unlock: 25,
+        target: Target::Party,
         description: "Regen for the WHOLE party, and it costs you nothing.",
         upgrades: None,
         rank: "",
@@ -365,6 +456,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Revitalize",
         class: "resonant",
         unlock: 36,
+        target: Target::Ally,
         description: "A large heal for ONE ally, paid from your own HP.",
         upgrades: None,
         rank: "",
@@ -374,6 +466,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Lifewell",
         class: "resonant",
         unlock: 49,
+        target: Target::Party,
         description: "Heals the WHOLE party and grants them Regen, paid from your own HP.",
         upgrades: None,
         rank: "",
@@ -383,6 +476,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Bloodbond",
         class: "resonant",
         unlock: 64,
+        target: Target::Ally,
         description: "Heals ONE ally, Wards them and grants Regen in one turn — the heaviest single-target boon, and the heaviest HP cost to you.",
         upgrades: None,
         rank: "",
@@ -392,6 +486,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Martyr",
         class: "resonant",
         unlock: 81,
+        target: Target::Party,
         description: "Heals the WHOLE party for most of their max HP, and spends most of your own to do it.",
         upgrades: None,
         rank: "",
@@ -401,6 +496,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Eternal Bloom",
         class: "resonant",
         unlock: 100,
+        target: Target::Party,
         description: "The capstone: the whole party is healed and Warded at once, paid from your own HP.",
         upgrades: None,
         rank: "",
@@ -413,6 +509,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Backstab",
         class: "shifter",
         unlock: 1,
+        target: Target::Enemy,
         description: "A heavy strike that pierces most of the target's armour.",
         upgrades: None,
         rank: "Flicker Foot",
@@ -422,6 +519,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Flicker",
         class: "shifter",
         unlock: 4,
+        target: Target::Caster,
         description: "Blink: grants YOURSELF a large Evasion bonus that decays each of your turns. The best dodge in the game.",
         upgrades: None,
         rank: "Shift Rat",
@@ -431,6 +529,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Ransack",
         class: "shifter",
         unlock: 9,
+        target: Target::Enemy,
         description: "Damage plus a heavy gauge drain.",
         upgrades: None,
         rank: "Shift Rat",
@@ -440,15 +539,37 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Steal",
         class: "shifter",
         unlock: 4,
+        target: Target::Enemy,
         description: "Takes the target's tempo - drains its ATB gauge - without hitting it.",
         upgrades: None,
         rank: "Shift Rat",
+    },
+    SkillDef {
+        key: "assassinate",
+        name: "Assassinate",
+        class: "shifter",
+        unlock: 49,
+        target: Target::Enemy,
+        description: "Backstab, placed properly: a heavier strike that ignores the target's armour ENTIRELY rather than most of it.",
+        upgrades: Some("backstab"),
+        rank: "Void-Dancer",
+    },
+    SkillDef {
+        key: "grand_larceny",
+        name: "Grand Larceny",
+        class: "shifter",
+        unlock: 100,
+        target: Target::AllEnemies,
+        description: "Ransack, worked on the whole room: damage AND a heavy gauge drain on EVERY enemy at once.",
+        upgrades: Some("ransack"),
+        rank: "The Named",
     },
     SkillDef {
         key: "mug",
         name: "Mug",
         class: "shifter",
         unlock: 25,
+        target: Target::Enemy,
         description: "Steal, with a hit on the way past: damage AND a gauge drain.",
         upgrades: Some("steal"),
         rank: "Void-Dancer",
@@ -461,6 +582,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Silvered Strike",
         class: "phoenix_guard",
         unlock: 1,
+        target: Target::Enemy,
         description: "Damage that also drains the target's gauge, and bites far deeper into UNDEAD.",
         upgrades: None,
         rank: "Initiate",
@@ -470,6 +592,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Rite of Rest",
         class: "phoenix_guard",
         unlock: 4,
+        target: Target::Caster,
         description: "Grants YOURSELF Barrier sized off your own max HP.",
         upgrades: None,
         rank: "Purifier",
@@ -479,6 +602,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Holy Censure",
         class: "phoenix_guard",
         unlock: 9,
+        target: Target::Enemy,
         description: "Damage that ZEROES the target's ATB gauge - a hard stagger. Extra against undead.",
         upgrades: None,
         rank: "Exemplar",
@@ -488,6 +612,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Purging Light",
         class: "phoenix_guard",
         unlock: 16,
+        target: Target::AllEnemies,
         description: "Damage to EVERY living enemy. Extra against undead.",
         upgrades: None,
         rank: "Luminary",
@@ -497,15 +622,37 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Unbroken Vigil",
         class: "phoenix_guard",
         unlock: 25,
+        target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP.",
         upgrades: None,
         rank: "Redeemer",
+    },
+    SkillDef {
+        key: "hallowed_ground",
+        name: "Hallowed Ground",
+        class: "phoenix_guard",
+        unlock: 49,
+        target: Target::AllEnemies,
+        description: "Consecrates the field: damage to EVERY living enemy that also ZEROES each of their ATB gauges. Extra against undead.",
+        upgrades: None,
+        rank: "Apotheosis",
+    },
+    SkillDef {
+        key: "phoenix_ascendant",
+        name: "Phoenix Ascendant",
+        class: "phoenix_guard",
+        unlock: 100,
+        target: Target::AllEnemies,
+        description: "The order's own fire: heavy damage to EVERY enemy, far heavier against undead, and Barrier for the WHOLE party out of the same flame.",
+        upgrades: None,
+        rank: "Apotheosis",
     },
     SkillDef {
         key: "eradication",
         name: "Eradication",
         class: "phoenix_guard",
         unlock: 36,
+        target: Target::Enemy,
         description: "An execute: the more HP the target is missing, the harder it lands. Extra against undead.",
         upgrades: None,
         rank: "Apotheosis",
@@ -518,6 +665,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Hammer Fall",
         class: "smithwright",
         unlock: 1,
+        target: Target::Enemy,
         description: "Damage that also drains the target's gauge - a staggering blow with the tool itself.",
         upgrades: None,
         rank: "Indentured Extractor",
@@ -527,6 +675,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Quench",
         class: "smithwright",
         unlock: 4,
+        target: Target::Caster,
         description: "Grants YOURSELF Barrier sized off your own max HP.",
         upgrades: None,
         rank: "Smelter Apprentice",
@@ -536,6 +685,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Plant the Bulwark",
         class: "smithwright",
         unlock: 9,
+        target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP.",
         upgrades: None,
         rank: "Journeyman Smithwright",
@@ -545,6 +695,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Tempering Blow",
         class: "smithwright",
         unlock: 16,
+        target: Target::Ally,
         description: "Raises ONE ally's attack for the rest of the fight. No damage of its own.",
         upgrades: None,
         rank: "Smithwright",
@@ -554,15 +705,37 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Slag Spray",
         class: "smithwright",
         unlock: 25,
+        target: Target::AllEnemies,
         description: "Damage to EVERY enemy, ignoring armour.",
         upgrades: None,
         rank: "Master Smithwright",
+    },
+    SkillDef {
+        key: "anvil_chorus",
+        name: "Anvil Chorus",
+        class: "smithwright",
+        unlock: 49,
+        target: Target::Party,
+        description: "Tempering Blow for the WHOLE party: every ally's attack goes up for the rest of the fight. No damage of its own.",
+        upgrades: None,
+        rank: "Master of the Foundry",
+    },
+    SkillDef {
+        key: "great_work",
+        name: "The Great Work",
+        class: "smithwright",
+        unlock: 100,
+        target: Target::Party,
+        description: "Everything the trade knows, at once: the whole party is healed, given Barrier, AND has its attack raised for the rest of the fight.",
+        upgrades: None,
+        rank: "Master of the Foundry",
     },
     SkillDef {
         key: "one_true_forge",
         name: "The One True Forge",
         class: "smithwright",
         unlock: 36,
+        target: Target::Party,
         description: "Heals AND shields the whole party at once.",
         upgrades: None,
         rank: "Master of the Foundry",
@@ -574,6 +747,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Thornlash",
         class: "keeper",
         unlock: 1,
+        target: Target::Enemy,
         description: "Damage (from Mnd, not Str) plus a gauge drain.",
         upgrades: None,
         rank: "Sprout",
@@ -583,6 +757,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Poultice",
         class: "keeper",
         unlock: 4,
+        target: Target::Ally,
         description: "Heals an ally now AND grants them Regen after.",
         upgrades: None,
         rank: "Seedling",
@@ -592,6 +767,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Bloomfield",
         class: "keeper",
         unlock: 9,
+        target: Target::Party,
         description: "Regen for the WHOLE party.",
         upgrades: None,
         rank: "Budling",
@@ -601,6 +777,7 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Root Snare",
         class: "keeper",
         unlock: 16,
+        target: Target::Enemy,
         description: "Damage and a heavy gauge drain - its turn is a long way off.",
         upgrades: None,
         rank: "Flowerling",
@@ -610,15 +787,37 @@ pub const SKILLS: &[SkillDef] = &[
         name: "Vital Draught",
         class: "keeper",
         unlock: 25,
+        target: Target::Ally,
         description: "Grants an ally Barrier and Regen together.",
         upgrades: None,
         rank: "Cultivator",
+    },
+    SkillDef {
+        key: "thorn_grove",
+        name: "Thorn Grove",
+        class: "keeper",
+        unlock: 49,
+        target: Target::AllEnemies,
+        description: "The ground itself closes in: damage (from Mnd, not Str) AND a gauge drain on EVERY enemy at once.",
+        upgrades: None,
+        rank: "Terra",
+    },
+    SkillDef {
+        key: "world_tree",
+        name: "World Tree",
+        class: "keeper",
+        unlock: 100,
+        target: Target::Party,
+        description: "The capstone: the WHOLE party is healed, given Barrier, and given Regen — everything the order knows about keeping people alive, in one turn.",
+        upgrades: None,
+        rank: "Terra",
     },
     SkillDef {
         key: "terras_gift",
         name: "Terra's Gift",
         class: "keeper",
         unlock: 36,
+        target: Target::Party,
         description: "The capstone: the whole party is healed, shielded, and pushed up the turn order.",
         upgrades: None,
         rank: "Terra",
@@ -805,6 +1004,12 @@ pub fn unlock_level(skill: &str) -> i32 {
 }
 
 /// What `skill` does, for a tooltip. Empty for actions that need no explanation.
+/// Who `skill` is aimed at. An action outside the registry (Attack) is an enemy pick,
+/// which is what every caller wanted as its fallback anyway.
+pub fn target_of(skill: &str) -> Target {
+    self::skill(skill).map(|s| s.target).unwrap_or(Target::Enemy)
+}
+
 pub fn describe(skill: &str) -> &'static str {
     self::skill(skill).map(|s| s.description).unwrap_or("")
 }
@@ -1030,35 +1235,104 @@ mod tests {
         assert_eq!(upgrade_chain("backstab").len(), 1, "an unchained ability is its own chain");
     }
 
+    /// EVERY class learns something at 49 and again at 100 — read off the registry, so
+    /// a class added later cannot quietly stop paying for levels the way the Hunter,
+    /// Shifter, Phoenix Guard, Smithwright and Keeper all did at 25 or 36.
+    /// A row that says "the WHOLE party" and then asks the player to pick one enemy is
+    /// the bug this field exists to stop, so the two halves are held against each other:
+    /// the prose and the targeting have to tell the same story.
     #[test]
-    fn a_martial_kit_is_short_and_a_casters_runs_the_whole_way() {
-        // The Dragon Quest rule: a martial class's late game is its weapon, so its
-        // ladder ends while the numbers still matter. A caster has no comparable gear
-        // curve, so its ladder IS the progression. "More abilities" must not mean
-        // "ten each".
-        for class in ["hunter", "shifter", "explorer", "psyker", "resonant", "phoenix_guard"] {
-            let kit = skills_for_class(class);
-            let deepest = kit.iter().map(|s| s.unlock).max().unwrap();
-            let ceiling = ladder_ceiling(archetype(class));
+    fn the_prose_and_the_targeting_agree() {
+        for d in SKILLS {
+            let l = d.description.to_lowercase();
+            let says_party =
+                l.contains("whole party") || l.contains("every ally") || l.contains("the party");
+            let says_all = l.contains("every enemy") || l.contains("every living enemy");
+            let says_self = d.description.contains("YOURSELF");
+            match d.target {
+                Target::Party => assert!(
+                    says_party || d.key == "now" || d.key == "the_world_entire",
+                    "{} lands on the party but never says so: {:?}",
+                    d.name,
+                    d.description
+                ),
+                Target::AllEnemies => assert!(
+                    says_all,
+                    "{} hits every enemy but never says so: {:?}",
+                    d.name,
+                    d.description
+                ),
+                Target::Caster => assert!(
+                    says_self,
+                    "{} is self-only but never says so: {:?}",
+                    d.name,
+                    d.description
+                ),
+                Target::Enemy | Target::Ally => {
+                    // "every ally hits it harder" is who BENEFITS, not who it lands on
+                    // — Trailblaze is still one pick — so only the explicit
+                    // whole-party/every-enemy phrasings contradict a single target.
+                    assert!(
+                        !l.contains("whole party") && !says_all,
+                        "{} is a single pick but its prose covers everyone: {:?}",
+                        d.name,
+                        d.description
+                    );
+                }
+            }
+            // And only a single pick may ask the player to aim.
+            assert_eq!(
+                d.target.needs_pick(),
+                matches!(d.target, Target::Enemy | Target::Ally),
+                "{}",
+                d.name
+            );
+        }
+        assert_eq!(target_of("attack"), Target::Enemy, "an unknown action aims at a foe");
+    }
+
+    #[test]
+    fn every_class_is_still_learning_at_fifty_and_at_a_hundred() {
+        for class in all_classes() {
+            let class = class.as_str();
+            let levels: Vec<i32> = skills_for_class(class).iter().map(|s| s.unlock).collect();
+            assert!(levels.contains(&49), "{class} learns nothing at 49: {levels:?}");
             assert!(
-                deepest <= ceiling,
-                "{class} ({:?}) learns something at {deepest}, past its {ceiling} ceiling",
+                levels.contains(&LADDER_TOP),
+                "{class} learns nothing at {LADDER_TOP}: {levels:?}"
+            );
+        }
+    }
+
+    /// The ladder got deeper for everyone, so the thing that still separates a martial
+    /// class from a caster is menu WIDTH: a martial class's deep rungs must upgrade a
+    /// row it already has, not add a fifth button.
+    #[test]
+    fn a_martial_kit_stays_four_rows_and_a_casters_runs_wide() {
+        for class in all_classes() {
+            let class = class.as_str();
+            let rows = skills_for_class_at(class, LADDER_TOP).len();
+            let width = menu_width(archetype(class));
+            assert!(
+                rows <= width,
+                "{class} ({:?}) fields {rows} rows at {LADDER_TOP}, past its {width}",
                 archetype(class)
             );
         }
-        // And a caster actually reaches for it, rather than stopping early and
-        // leaving the archetype a claim nobody honoured.
-        let resonant = skills_for_class("resonant");
-        assert_eq!(
-            resonant.iter().map(|s| s.unlock).max().unwrap(),
-            100,
-            "the Resonant is a caster and should still be learning at the top"
-        );
-        assert!(resonant.len() >= 9, "a caster's ladder is thin: {}", resonant.len());
-        // A martial class stays lean.
+        // The martial classes reach the top WITHOUT growing: same rows at 25 as at 100.
+        for class in ["hunter", "shifter"] {
+            assert_eq!(
+                skills_for_class_at(class, 25).len(),
+                skills_for_class_at(class, LADDER_TOP).len(),
+                "{class} grew a caster's menu on its way to {LADDER_TOP}"
+            );
+        }
+        // A caster earns its width, or the archetypes are a distinction with no
+        // difference.
         assert!(
-            skills_for_class("shifter").len() <= 5,
-            "the Shifter has grown a caster's menu"
+            skills_for_class_at("resonant", LADDER_TOP).len()
+                > menu_width(Archetype::Martial) * 2,
+            "a caster's menu is no wider than a martial one"
         );
     }
 
@@ -1091,13 +1365,6 @@ mod tests {
         }
         // Every class in the registry is covered, not a hand-picked few.
         assert_eq!(all_classes().len(), 8, "{:?}", all_classes());
-        // The hybrid kits reach past the martial ceiling, or the archetypes are a
-        // distinction with no difference.
-        assert!(
-            skills_for_class("phoenix_guard").iter().map(|s| s.unlock).max().unwrap()
-                > ladder_ceiling(Archetype::Martial),
-            "the Phoenix Guard's ladder is no deeper than a martial one"
-        );
     }
 
     #[test]

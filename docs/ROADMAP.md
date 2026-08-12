@@ -400,14 +400,30 @@ burns on death/leave; some is single-use. See
   - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
     16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
     cost a step up in commitment rather than an ever-flatter trickle.
-  - *Also shipped:* **ability distribution by archetype** — the Dragon Quest lesson
-    that not every class should keep learning. `meld_proto::skills::Archetype` splits
-    the roster: **martial** (Hunter, Shifter) gets a short front-loaded kit and scales
-    on *gear* — its ceiling is level 25, because a new button at 80 would make it a
-    caster; **hybrid** (Explorer, Phoenix Guard) reaches 49; **caster** (Psyker,
-    Resonant) runs the whole way to 100, since the kit *is* its progression. A unit
-    test holds each class to its ceiling, so "more abilities" can never quietly become
-    "ten each".
+  - *Also shipped:* **every class learns at 49 and at 100.** Five of the eight stopped
+    at 25 or 36 — the Hunter, Shifter, Phoenix Guard, Smithwright and Keeper all ran
+    out of ladder while the level cap is 255 — so levelling stopped paying for most of
+    the roster. Eleven new abilities close it: Explorer **The World Entire** (100);
+    Hunter **Iron Lung** (49) / **Apex Predator** (100); Shifter **Assassinate** (49) /
+    **Grand Larceny** (100); Phoenix Guard **Hallowed Ground** (49) / **Phoenix
+    Ascendant** (100); Smithwright **Anvil Chorus** (49) / **The Great Work** (100);
+    Keeper **Thorn Grove** (49) / **World Tree** (100).
+  - *Also shipped:* **archetype now governs menu WIDTH, not ladder depth.** The Dragon
+    Quest lesson it encoded — a martial class's late game is its weapon, not a longer
+    menu — survives in *how* a class reaches the top: martial (Hunter, Shifter) gets
+    there through `upgrades`, so Frenzy becomes Apex Predator and the menu stays four
+    rows; hybrid may field 8, caster 10. `menu_width` replaces `ladder_ceiling`, and
+    tests hold both halves: every class learns at 49 and 100, and no class outgrows its
+    width. "More abilities" still cannot quietly become "ten each".
+  - *Also shipped:* **the registry owns targeting and routing.** `SkillDef.target`
+    (Enemy / Ally / Caster / AllEnemies / Party) replaced two hand-written lists that
+    had both gone stale against it: the engine's per-class dispatch in `resolve_skill`,
+    where an unlisted key fell through every arm and came back "unknown skill" — a row
+    in the menu that cost a turn and did nothing — and the client's `order_side`, which
+    still named the Iron Hull's `root` / `toll_of_the_deep`, so the Phoenix Guard's
+    self-cast Rite of Rest and all-enemy Purging Light both asked the player to aim at
+    one creature. Tests: every registered ability resolves, and prose and targeting
+    agree.
   - *Also shipped:* the **Resonant's full caster ladder** — Mend All (16), Sanctuary
     (25), Revitalize (36), Lifewell (49), Bloodbond (64), Martyr (81) and Eternal
     Bloom (100). Seven abilities of one shape (heal / Regen / Barrier, on one ally or
