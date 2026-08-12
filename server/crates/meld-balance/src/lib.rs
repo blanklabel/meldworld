@@ -163,7 +163,7 @@ pub struct Battle {
     pub psyker_phase_evasion: f64,
     pub psyker_collapse_tick_mult: f64,
     pub psyker_horizon_tick_mult: f64,
-    pub psyker_horizon_gauge_cap: f64,
+    pub psyker_horizon_ticks: u64,
     pub resonant_second_life_revive_fraction: f64,
     pub resonant_second_life_heal_fraction: f64,
     pub resonant_second_life_self_cost: f64,

@@ -169,7 +169,7 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
 
         "event_horizon" => focus(join(&[
             format!("{} to EVERY enemy, ignoring armour", dmg(b.psyker_horizon_tick_mult)),
-            format!("and none of their gauges may pass {}", pct(b.psyker_horizon_gauge_cap)),
+            format!("every enemy's gauge fills at {} speed while held", pct(b.status_slow_mult)),
         ])),
 
         // ---- Resonant

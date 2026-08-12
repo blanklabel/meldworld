@@ -43,6 +43,11 @@ pub struct Fighter {
     pub hp: i32,
     pub max_hp: i32,
     pub atk: i32,
+    /// Attack before any fight-long buff, snapshot at battle start. A Tempering Blow is a
+    /// share of THIS, and it refreshes rather than adds — a buff computed off the current
+    /// value and added would compound geometrically, so ten Anvil Chorus casts would be
+    /// 3.1x the party's attack for the price of ten turns.
+    pub base_atk: i32,
     pub def: i32,
     pub speed_stat: i32,
     /// The four attributes (Str/Mnd/Dex/Wll). Populated for player heroes from the
@@ -171,6 +176,7 @@ impl Fighter {
             hp,
             max_hp: hp,
             atk,
+            base_atk: atk,
             def,
             speed_stat,
             str_: 0,
@@ -349,8 +355,17 @@ fn is_dot_status(name: &str) -> bool {
 /// slow, and the Explorer's own `marked`/`distracted` silently throttled whatever carried
 /// them. A status list is a thing to add to on purpose, not to fall into.
 fn is_slowing_status(name: &str) -> bool {
-    matches!(name, "web" | "chill" | "bind")
+    matches!(name, "web" | "chill" | "bind" | HORIZON_STATUS)
 }
+
+/// Event Horizon's mark. It SLOWS the gauge's fill rate rather than capping the gauge,
+/// and the difference is the whole ability: creature `speed_stat` is a fixed constant
+/// (40–125) that never scales, while a hero's climbs with Dex, so by level 255 a Psyker
+/// takes several turns per creature turn. A cap at half would therefore mean the creature
+/// is knocked back below the line every time it approaches it — it would never act again,
+/// which is a soft-lock rather than a capstone. A rate multiplier cannot do that: the
+/// creature always advances, just at half pace.
+pub const HORIZON_STATUS: &str = "horizon";
 
 /// The timed status a hastened fighter carries: its gauge fills faster while it holds.
 pub const HASTE_STATUS: &str = "hasted";
@@ -521,7 +536,7 @@ pub struct Battle {
     psyker_anchor_gauge_drain: f64,
     barrier_decay_fraction: f64,
     psyker_horizon_tick_mult: f64,
-    psyker_horizon_gauge_cap: f64,
+    psyker_horizon_ticks: u64,
     resonant_second_life_revive_fraction: f64,
     resonant_second_life_heal_fraction: f64,
     resonant_second_life_self_cost: f64,
@@ -741,6 +756,7 @@ impl Battle {
         fighters.extend(enemies);
         for f in &mut fighters {
             f.alive = f.hp > 0;
+            f.base_atk = f.atk;
             // Heroes' basic attacks are typed by class (unless the builder
             // already set one); monsters get theirs from creature content.
             if f.kind == CombatantKind::Player && f.basic_attack_type == DamageType::None {
@@ -786,7 +802,7 @@ impl Battle {
             psyker_anchor_gauge_drain: balance.battle.psyker_anchor_gauge_drain,
             barrier_decay_fraction: balance.battle.barrier_decay_fraction,
             psyker_horizon_tick_mult: balance.battle.psyker_horizon_tick_mult,
-            psyker_horizon_gauge_cap: balance.battle.psyker_horizon_gauge_cap,
+            psyker_horizon_ticks: balance.battle.psyker_horizon_ticks,
             resonant_second_life_revive_fraction: balance
                 .battle
                 .resonant_second_life_revive_fraction,
@@ -1670,10 +1686,10 @@ impl Battle {
                 let t = self
                     .ally_target(target_id)
                     .unwrap_or_else(|| self.most_wounded_ally(actor_i));
-                let bonus = ((self.fighters[t].atk as f64) * self.smith.temper_atk_fraction)
+                let bonus = ((self.fighters[t].base_atk as f64) * self.smith.temper_atk_fraction)
                     .round()
                     .max(1.0) as i32;
-                self.fighters[t].atk += bonus;
+                self.fighters[t].atk = self.fighters[t].atk.max(self.fighters[t].base_atk + bonus);
                 let atk = self.fighters[t].atk;
                 effects.push(ResolvedEffect {
                     modifier_flag: None,
@@ -1715,8 +1731,9 @@ impl Battle {
                         effects.extend(self.grant_barrier(a, raw));
                     }
                     let bonus =
-                        ((self.fighters[a].atk as f64) * share).round().max(1.0) as i32;
-                    self.fighters[a].atk += bonus;
+                        ((self.fighters[a].base_atk as f64) * share).round().max(1.0) as i32;
+                    self.fighters[a].atk =
+                        self.fighters[a].atk.max(self.fighters[a].base_atk + bonus);
                     let atk = self.fighters[a].atk;
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
@@ -2521,9 +2538,8 @@ impl Battle {
             }
             // The two area Manifestations: Kinetic Wave grinds the line, and Reality
             // Collapse does it harder and ignores armour entirely.
-            // The Psyker's capstone: while it is held nothing on the other side may fill
-            // past halfway, so the whole line acts at half speed. The cap is applied on
-            // every tick rather than as a status, because a Focus IS its upkeep.
+            // The Psyker's capstone: the whole line acts at half speed for as long as it
+            // is held, re-applied every Psyker turn so it never lapses while the Focus is up.
             "event_horizon" => {
                 let power = self.fighters[psyker_i].spell_power as f64;
                 let dmg = (power * self.psyker_horizon_tick_mult * stacks as f64).round() as i32;
@@ -2539,16 +2555,9 @@ impl Battle {
                     effects.extend(
                         self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
                     );
-                    if self.fighters[t].alive && self.fighters[t].gauge > self.psyker_horizon_gauge_cap {
-                        self.fighters[t].gauge = self.psyker_horizon_gauge_cap;
-                        effects.push(ResolvedEffect {
-                            modifier_flag: None,
-                            target_id: self.fighters[t].combatant_id.clone(),
-                            kind: EffectKind::StatusApplied,
-                            amount: None,
-                            status: Some("slowed".to_string()),
-                            hp_after: self.fighters[t].hp,
-                        });
+                    if self.fighters[t].alive {
+                        let fx = self.apply_timed(t, HORIZON_STATUS, self.psyker_horizon_ticks);
+                        effects.push(fx);
                     }
                 }
                 effects
@@ -6954,6 +6963,60 @@ mod deep_ladder_tests {
         assert!(hit(60) > hit(20), "more Mnd should mean more thorns");
     }
 
+    /// Event Horizon SLOWS the line rather than capping its gauge, and the difference is
+    /// whether the enemy ever acts again. Creature speed is a fixed constant while a hero's
+    /// climbs with Dex, so a deep Psyker takes several turns per creature turn — a cap at
+    /// half would knock the creature back below the line every time it approached one.
+    #[test]
+    fn event_horizon_slows_the_line_but_never_locks_it() {
+        let b = Balance::load_default().unwrap();
+        // A Psyker four times the creature's speed: the worst case for a cap.
+        let mut p = Fighter::new("p".into(), CombatantKind::Player, Some("pl".into()), None,
+            255, 400, 20, 3, 400);
+        p.focus_max = 5;
+        p.spell_power = 20;
+        let mut m = Fighter::new("m".into(), CombatantKind::Monster, None,
+            Some("beast".into()), 1, 400000, 5, 2, 100);
+        m.faction = "beast".into();
+        let mut bt = Battle::new("b".into(), EncounterClass::Standard, vec![p], vec![m], &b, 7);
+        // Seat the Focus through the real submit path (a Psyker never reaches
+        // `resolve_skill`), then let the fight run and count the creature's turns.
+        // The engine acts for creatures itself, so the proof that one still gets turns is
+        // that the Psyker takes damage — and that the creature's gauge passes the halfway
+        // line a cap would have pinned it under.
+        let start_hp = bt.fighters[0].hp;
+        let mut seated = false;
+        let mut peak_gauge = 0.0f64;
+        for n in 0..6000 {
+            for ev in bt.tick() {
+                if let Event::TurnReady { combatant_id } = ev {
+                    if combatant_id == "p" {
+                        let op = if seated { "hold" } else { "cast:event_horizon" };
+                        seated = true;
+                        let _ = bt.submit(
+                            "p",
+                            format!("a{n}"),
+                            BattleActionKind::Skill,
+                            Some(vec!["m".into()]),
+                            Some(op.into()),
+                            None,
+                        );
+                    }
+                }
+            }
+            peak_gauge = peak_gauge.max(bt.fighters[1].gauge);
+        }
+        assert!(seated, "the Focus was never seated");
+        assert!(
+            bt.fighters[0].hp < start_hp,
+            "Event Horizon locked the creature out entirely — it never landed a blow"
+        );
+        assert!(
+            peak_gauge > 0.5,
+            "the creature's gauge never passed 0.5 (peak {peak_gauge:.2}) — that is a cap, not a slow"
+        );
+    }
+
     /// A once-a-fight call is refused on the second ask — and it is SPENT centrally, on
     /// any successful resolve, rather than by each arm remembering to push its own key.
     #[test]
@@ -7045,6 +7108,7 @@ mod deep_ladder_tests {
             let mut b = field(2, 1);
             b.fighters[0].class_key = "smithwright".into();
             b.fighters[1].atk = atk;
+            b.fighters[1].base_atk = atk;
             let before = b.fighters[1].atk;
             let id = b.fighters[1].combatant_id.clone();
             b.fighters[0].gauge = 1.0;
@@ -7053,6 +7117,22 @@ mod deep_ladder_tests {
         };
         let (weak, strong) = (share(20), share(300));
         assert!((weak - strong).abs() < 0.02, "temper is {weak:.3} then {strong:.3}");
+
+        // A fight-long buff REFRESHES. Computed off the current attack and added, ten
+        // Anvil Chorus casts would be 3.1x the party's attack for the price of ten turns.
+        let mut b = field(2, 1);
+        b.fighters[0].class_key = "smithwright".into();
+        let base = b.fighters[1].atk;
+        for _ in 0..5 {
+            b.fighters[0].gauge = 1.0;
+            b.resolve_skill(0, None, Some("anvil_chorus"), None).expect("chorus");
+        }
+        let once = ((base as f64) * 1.12).round() as i32;
+        assert!(
+            b.fighters[1].atk <= once,
+            "five casts stacked to {} where one is {once}",
+            b.fighters[1].atk
+        );
     }
 
     /// The client does not ask the player to aim a party buff or an all-enemy sweep, so

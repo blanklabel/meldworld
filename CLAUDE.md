@@ -517,7 +517,20 @@ halves.
 **A once-a-fight call is spent CENTRALLY** (`resolve_skill`, on any successful resolve), not
 by each arm remembering to push its own key — that was a list, and an ability left off it is
 simply infinite. `is_once_per_battle`: Now, The World Entire, Iron Lung, Pin the Prey, Grand
-Larceny, Second Life.
+Larceny, Hallowed Ground, Second Life.
+
+**A gauge CAP is a soft-lock; slow the RATE instead.** Creature `speed_stat` is a fixed
+constant (40–125) that never scales with distance, while a hero's climbs with Dex — so a
+deep hero takes several turns per creature turn. Anything that pins a creature's gauge to a
+ceiling therefore knocks it back below the line every time it approaches one, and it never
+acts again. Event Horizon slows the fill RATE (`HORIZON_STATUS`, through the same
+`status_slow_mult` a web or chill uses), which cannot lock; Hallowed Ground zeroes every
+gauge outright and is gated to once a fight for the same reason.
+
+**A fight-long stat buff REFRESHES, it does not stack.** Tempering Blow and Anvil Chorus are
+a share of the ally's `base_atk` (snapshot at battle start) and take the max, not the sum —
+computed off the CURRENT attack and added, five Anvil Chorus casts compound to 1.76x and ten
+to 3.1x for the price of the turns.
 
 **Two hand-written lists used to shadow this registry, and both had gone stale.** The
 engine dispatched `resolve_skill` by a per-class list of keys, where an unlisted ability

@@ -417,7 +417,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "psyker",
         unlock: 255,
         target: Target::AllEnemies,
-        description: "The last Focus: while it is held no enemy's gauge may pass halfway, so the whole line acts at half speed — and it grinds EVERY enemy each Psyker turn.",
+        description: "The last Focus: while it is held EVERY enemy's gauge fills at half speed, so the whole line acts half as often — and it grinds all of them each Psyker turn.",
         upgrades: None,
         rank: "Director",
     },
@@ -655,7 +655,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 75,
         target: Target::AllEnemies,
-        description: "Consecrates the field: damage to EVERY living enemy that also ZEROES each of their ATB gauges. Extra against undead.",
+        description: "Consecrates the field: damage to EVERY living enemy that also ZEROES each of their ATB gauges. Extra against undead. ONCE per battle.",
         upgrades: None,
         rank: "Apotheosis",
     },
@@ -1030,7 +1030,19 @@ pub fn upgrade_chain(key: &str) -> Vec<&'static SkillDef> {
 pub fn is_once_per_battle(skill: &str) -> bool {
     matches!(
         skill,
-        "now" | "the_world_entire" | "iron_lung" | "pin_the_prey" | "grand_larceny" | "second_life"
+        // A once-a-fight call is one of two things: a decision about a single MOMENT
+        // (every ally acts NOW; a fallen hero stands up), or an effect that would be
+        // degenerate on repeat. Hallowed Ground is the second kind — it zeroes EVERY
+        // enemy gauge, and creature speed is a fixed constant while a hero's climbs with
+        // Dex, so a deep Phoenix Guard casting it on repeat means nothing on the other
+        // side ever acts again.
+        "now"
+            | "the_world_entire"
+            | "iron_lung"
+            | "pin_the_prey"
+            | "grand_larceny"
+            | "hallowed_ground"
+            | "second_life"
     )
 }
 

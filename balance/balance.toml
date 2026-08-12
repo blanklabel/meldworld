@@ -181,11 +181,17 @@ psyker_dissolution_tick_mult = 0.5    # Matter Dissolution (L49): one foe...
 psyker_dissolution_armour_shred = 2   # ...and its armour corrodes this much per tick
 psyker_phase_evasion = 0.06           # Phase Shift (L64): Evasion granted per tick
 psyker_collapse_tick_mult = 0.55      # Reality Collapse: all enemies, armour-ignoring
-# Event Horizon (255), the caster capstone: it grinds the line AND holds every enemy gauge
-# under a ceiling, so the whole other side acts at half speed for as long as it is held.
-# The damage is deliberately modest — the tempo lock is what you are paying 255 levels for.
+# Event Horizon (255), the caster capstone: it grinds the line AND slows every enemy's gauge
+# FILL RATE (via `status_slow_mult`, the same multiplier a web or a chill uses) for as long
+# as it is held. The damage is deliberately modest — the tempo is what you pay 255 levels for.
+#
+# It slows the RATE rather than capping the gauge, and that is not a detail: creature
+# `speed_stat` is a fixed constant that never scales while a hero's climbs with Dex, so a
+# level-255 Psyker takes several turns per creature turn. A cap would knock every creature
+# back below the line each time it approached one and they would never act again. The window
+# is a little longer than a Psyker's own turn so the slow never lapses while the Focus is up.
 psyker_horizon_tick_mult = 0.35
-psyker_horizon_gauge_cap = 0.5
+psyker_horizon_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
 psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick
