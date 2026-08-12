@@ -177,6 +177,7 @@ fn main() {
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
         .init_resource::<ShopSelling>()
+        .init_resource::<PendingPurchase>()
         .init_resource::<ExploredMap>()
         .init_resource::<StationUi>()
         .init_resource::<HeatUi>()
@@ -294,6 +295,9 @@ fn main() {
                     city::travel_keys,
                     city::render_counter_panel,
                     city::counter_click,
+                    city::render_district_nameplates,
+                    city::render_purchase_confirm,
+                    city::purchase_confirm_click,
                 ),
                 city_input,
                 // The anvil's heat is struck in town as well as in the field.
@@ -1532,6 +1536,20 @@ struct CityUi {
 /// UI state, so it lives apart from [`ShopData`], which holds only the server's answer.
 #[derive(Resource, Default)]
 pub(crate) struct ShopSelling(pub bool);
+
+/// A buy the player just clicked/pressed but hasn't confirmed yet — the Market
+/// Tiers' item and gear purchases stage here instead of firing immediately, so a
+/// "Are you sure...?" prompt can sit in front of them. Selling and the Forge stay
+/// immediate (unchanged): only the two ways to spend chits at the Market are gated.
+#[derive(Resource, Default)]
+pub(crate) struct PendingPurchase {
+    pub kind: Option<PurchaseKind>,
+}
+
+pub(crate) enum PurchaseKind {
+    Item { item_kind: String, name: String, price: i64 },
+    Gear { slot: String, class_key: String, name: String, price: i64 },
+}
 
 /// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).
 #[derive(Resource, Default)]

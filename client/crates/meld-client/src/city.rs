@@ -49,11 +49,23 @@ pub(crate) enum CityAct {
     Coop,
     /// The Drill Yard: open party management.
     Party,
+    /// Close the game window outright — the only place that quit lives besides
+    /// the Ended screen's Esc, since the hub has no "walk to the exit" district.
+    Quit,
 }
 
 /// Marks a tappable on-screen city action button.
 #[derive(Component)]
 pub(crate) struct CityActionButton(pub(crate) CityAct);
+
+/// Root UI node that holds the per-district nameplates (small, always-on labels
+/// floating above each district — distinct from the interactive travel column:
+/// this is passive world signage, not a menu).
+#[derive(Component)]
+pub(crate) struct DistrictNameplateRoot;
+/// One district nameplate (rebuilt each frame).
+#[derive(Component)]
+pub(crate) struct DistrictNameplate;
 
 /// A walkable district: an anchor on the plaza the avatar can stand in and act on.
 pub(crate) struct District {
@@ -267,10 +279,24 @@ pub(crate) fn city_hud(
                     (CityAct::Dive, "Run"),
                     (CityAct::Vault, "Vault"),
                     (CityAct::Coop, "Co-op"),
+                    (CityAct::Quit, "Exit Game"),
                 ] {
                     city_button(bar, act, label);
                 }
             });
+            // Full-screen overlay that holds per-district nameplates, positioned in
+            // screen space by `render_district_nameplates` (mirrors the overworld's
+            // `NameplateRoot`). A sibling of the HUD panels, not nested in them, so
+            // it can be absolutely positioned edge-to-edge.
+            p.spawn((
+                DistrictNameplateRoot,
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
         });
 }
 
@@ -312,6 +338,7 @@ pub(crate) fn city_action_buttons(
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
     mut next: ResMut<NextState<Screen>>,
+    mut exit: EventWriter<AppExit>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -348,6 +375,9 @@ pub(crate) fn city_action_buttons(
             CityAct::Coop => {
                 session.coop = true;
                 next.set(Screen::Lobby);
+            }
+            CityAct::Quit => {
+                exit.write(AppExit::Success);
             }
         }
     }
@@ -606,6 +636,7 @@ pub(crate) fn city_input(
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
     mut shop_selling: ResMut<ShopSelling>,
+    mut pending: ResMut<PendingPurchase>,
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
@@ -700,6 +731,24 @@ pub(crate) fn city_input(
         }
         return;
     }
+    // Esc closes whatever town screen is open — the counter, the bench or the board —
+    // the same way walking away already does (`city_interact`), so there's always a
+    // key that gets you out without having to find the district's own toggle again.
+    // A pending buy confirmation is the newest thing on screen, so it's cancelled
+    // first rather than falling through to close the shop underneath it.
+    if keys.just_pressed(KeyCode::Escape) {
+        if pending.kind.is_some() {
+            pending.kind = None;
+        } else if city.shop_open {
+            city.shop_open = false;
+        } else if city.craft_open {
+            city.craft_open = false;
+        } else if city.board_open {
+            city.board_open = false;
+            city.notice.clear();
+        }
+        return;
+    }
     // While the counter is open, [1]-[4] buy an item and [5]-[8] buy a piece of plain
     // gear. The server prices and refuses; the client only names the row.
     if city.shop_open {
@@ -731,12 +780,19 @@ pub(crate) fn city_input(
                 }
             } else if i < ITEM_ROWS {
                 if let Some(line) = shop.items.get(i) {
-                    net.0.buy_item(line.item_kind.clone(), 1);
-                    city.notice = format!("bought {}", line.name);
+                    pending.kind = Some(PurchaseKind::Item {
+                        item_kind: line.item_kind.clone(),
+                        name: line.name.clone(),
+                        price: line.price_chits,
+                    });
                 }
             } else if let Some(g) = shop.gear.get(i - ITEM_ROWS) {
-                net.0.buy_gear(g.slot.clone(), g.class_key.clone());
-                city.notice = format!("requisitioned {}", g.name);
+                pending.kind = Some(PurchaseKind::Gear {
+                    slot: g.slot.clone(),
+                    class_key: g.class_key.clone(),
+                    name: g.name.clone(),
+                    price: g.price_chits,
+                });
             }
             return;
         }
@@ -3043,6 +3099,53 @@ pub(crate) fn render_travel_column(
     });
 }
 
+/// A small, quiet nameplate floating above each district's world position — passive
+/// signage, not a menu: unlike [`render_travel_column`] this never hides (it isn't
+/// interactive and doesn't compete for the same screen space as a counter), so
+/// walking past always tells you what you're looking at. Rebuilt every frame from
+/// each district's fixed anchor, projected to screen space the same way
+/// `overworld::update_mob_nameplates` floats a plate over a mob's head.
+pub(crate) fn render_district_nameplates(
+    mut commands: Commands,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    root_q: Query<Entity, With<DistrictNameplateRoot>>,
+    old: Query<Entity, With<DistrictNameplate>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Ok((cam, cam_tf)) = cam_q.single() else { return };
+    let Ok(root) = root_q.single() else { return };
+    commands.entity(root).with_children(|p| {
+        for d in CITY_DISTRICTS {
+            // A fixed height above the district's ground anchor — a little higher
+            // than a mob's head-height plate since a district is a structure, not
+            // a creature.
+            let anchor = Vec3::new(d.x, 3.0, d.z);
+            let Ok(s) = cam.world_to_viewport(cam_tf, anchor) else {
+                continue; // behind the camera or otherwise unprojectable
+            };
+            p.spawn((
+                DistrictNameplate,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(s.x),
+                    top: Val::Px(s.y),
+                    padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(glass::GLASS_THIN),
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(6.0)),
+            ))
+            .with_children(|b| {
+                b.spawn(glass::text(d.label, 12.0, glass::TEXT));
+            });
+        }
+    });
+}
+
 /// Walk the avatar to a district and open it. Clicking the chip and pressing its number are
 /// the same path, so they can never disagree.
 pub(crate) fn travel_to(
@@ -3228,6 +3331,7 @@ pub(crate) fn counter_click(
     shop: Res<ShopData>,
     mut shop_selling: ResMut<ShopSelling>,
     mut craft: ResMut<CraftData>,
+    mut pending: ResMut<PendingPurchase>,
     rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
 ) {
@@ -3262,14 +3366,113 @@ pub(crate) fn counter_click(
                 }
             } else if btn.0 < ITEM_ROWS {
                 if let Some(line) = shop.items.get(btn.0) {
-                    net.0.buy_item(line.item_kind.clone(), 1);
-                    city.notice = format!("bought {}", line.name);
+                    pending.kind = Some(PurchaseKind::Item {
+                        item_kind: line.item_kind.clone(),
+                        name: line.name.clone(),
+                        price: line.price_chits,
+                    });
                 }
             } else if let Some(g) = shop.gear.get(btn.0 - ITEM_ROWS) {
-                net.0.buy_gear(g.slot.clone(), g.class_key.clone());
-                city.notice = format!("requisitioned {}", g.name);
+                pending.kind = Some(PurchaseKind::Gear {
+                    slot: g.slot.clone(),
+                    class_key: g.class_key.clone(),
+                    name: g.name.clone(),
+                    price: g.price_chits,
+                });
             }
             return;
         }
     }
+}
+
+/// The Yes/No answer to the [`PendingPurchase`] prompt from [`render_purchase_confirm`].
+#[derive(Component)]
+pub(crate) struct ConfirmBuyButton(pub bool);
+
+/// Resolves the buy-confirm dialog: Yes dispatches the staged purchase, No just drops it.
+/// Both branches clear `pending.kind`, which is also what makes the dialog disappear.
+pub(crate) fn purchase_confirm_click(
+    net: NonSend<NetRes>,
+    mut city: ResMut<CityUi>,
+    mut pending: ResMut<PendingPurchase>,
+    buttons: Query<(&Interaction, &ConfirmBuyButton), Changed<Interaction>>,
+) {
+    for (interaction, btn) in &buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if btn.0 {
+            match pending.kind.take() {
+                Some(PurchaseKind::Item { item_kind, name, .. }) => {
+                    net.0.buy_item(item_kind, 1);
+                    city.notice = format!("bought {name}");
+                }
+                Some(PurchaseKind::Gear { slot, class_key, name, .. }) => {
+                    net.0.buy_gear(slot, class_key);
+                    city.notice = format!("requisitioned {name}");
+                }
+                None => {}
+            }
+        } else {
+            pending.kind = None;
+        }
+        return;
+    }
+}
+
+/// Marks the rebuilt-each-frame root of the buy-confirm dialog.
+#[derive(Component)]
+pub(crate) struct PurchaseConfirmPanel;
+
+/// "Are you sure you want to buy X?" — a scrim + panel sitting in front of the
+/// Market Tiers counter whenever [`PendingPurchase`] holds something. Same
+/// despawn-and-rebuild convention as [`render_counter_panel`], and the same
+/// `CityRoot` parent so it layers above the counter it's confirming a buy from.
+/// Sibling stacking order between two same-frame rebuilds isn't guaranteed (the
+/// systems aren't chained), so this carries its own [`GlobalZIndex`] — the same
+/// escape hatch the gear tooltip uses — rather than leaning on spawn order.
+pub(crate) fn render_purchase_confirm(
+    mut commands: Commands,
+    pending: Res<PendingPurchase>,
+    old: Query<Entity, With<PurchaseConfirmPanel>>,
+    root_q: Query<Entity, With<CityRoot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Some(kind) = &pending.kind else { return };
+    let (name, price) = match kind {
+        PurchaseKind::Item { name, price, .. } => (name.clone(), *price),
+        PurchaseKind::Gear { name, price, .. } => (name.clone(), *price),
+    };
+    let Ok(root) = root_q.single() else { return };
+    commands.entity(root).with_children(|p| {
+        p.spawn((PurchaseConfirmPanel, GlobalZIndex(1000), glass::scrim())).with_children(|scrim| {
+            scrim.spawn(glass::panel(Val::Px(360.0))).with_children(|panel| {
+                panel.spawn(glass::text(
+                    format!("Are you sure you want to buy \"{name}\"?"),
+                    17.0,
+                    glass::TITLE,
+                ));
+                panel.spawn(glass::text(format!("{price} chits"), 14.0, glass::DIM));
+                panel
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(12.0),
+                        margin: UiRect::top(Val::Px(8.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((Button, ConfirmBuyButton(true), glass::chip(false)))
+                            .with_children(|b| {
+                                b.spawn(glass::text("Yes", 15.0, glass::TEXT));
+                            });
+                        row.spawn((Button, ConfirmBuyButton(false), glass::chip(false)))
+                            .with_children(|b| {
+                                b.spawn(glass::text("No", 15.0, glass::TEXT));
+                            });
+                    });
+            });
+        });
+    });
 }
