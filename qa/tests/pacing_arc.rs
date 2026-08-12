@@ -30,12 +30,14 @@
 //! run moves them several seconds either way (the 4-hero figure landing below the
 //! 3-hero one is that noise, not an inversion).
 //!
-//! The XP split is **not** visible at run level: all four sizes banked the same 124
-//! XP. `award_hero_xp` divides an encounter by party size, but XP and level are
-//! tracked per PLAYER rather than per hero, so the division is undone by the time it
-//! reaches the run. The assertion below is `>=` and passes on that equality — it is
-//! a guard against the split INVERTING, not evidence that it happens. Making a lone
-//! hero genuinely level faster needs per-hero XP, which the run model does not have.
+//! **The XP split is real now, and visible.** An encounter is a POOL divided among the
+//! heroes still STANDING when it ends, and each hero carries its OWN banked XP into
+//! `run.party`. Both halves were missing: the divisor was the whole party rather than
+//! the survivors (so a fallen hero's share simply evaporated), and every hero view
+//! reported one shared run-level number, so four heroes sharing a pool reported the
+//! same figure a lone hero did and the split could not be seen from inside the game.
+//! The assertion below is still `>=` — a lone hero must never bank LESS per fight than
+//! a full party — but it is now measuring something rather than passing on equality.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 

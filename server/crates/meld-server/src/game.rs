@@ -1910,16 +1910,12 @@ impl WorldActor {
         // `hero_hp` is the live source; a missing slot (not yet in a battle
         // this run) reads as full.
         let hp_now = inst.hero_hp.get(pid).cloned().unwrap_or_default();
-        // XP/level are per-player (the whole party levels together), not
-        // per-hero — every hero view below carries the same two values.
-        let (run_xp, run_level) = inst
-            .run
-            .runs
-            .iter()
-            .find(|r| r.player_id == pid)
-            .map(|r| (r.xp, r.run_level))
-            .unwrap_or((0, 1));
-        let xp_to_next = meld_run::xp_to_next(run_level, &self.balance);
+        // Each hero carries its OWN banked XP and its OWN next-level bar. These used to
+        // be one shared pair off the run, so the encounter split was invisible: four
+        // heroes sharing a pool reported the same number a lone hero did, and the whole
+        // point of the split could not be seen from inside the game.
+        let run = inst.run.runs.iter().find(|r| r.player_id == pid);
+        let hero_xp = run.map(|r| r.hero_xp.clone()).unwrap_or_default();
         fighters
             .iter()
             .enumerate()
@@ -1936,8 +1932,8 @@ impl WorldActor {
                 dex: f.dex,
                 wll: f.wll,
                 max_hp: f.max_hp,
-                xp: run_xp,
-                xp_to_next,
+                xp: hero_xp.get(slot).copied().unwrap_or(0),
+                xp_to_next: meld_run::xp_to_next(f.level, &self.balance),
                 hp: hp_now.get(slot).copied().unwrap_or(f.max_hp).clamp(0, f.max_hp),
                 back_row: f.back_row,
             })
@@ -5933,10 +5929,10 @@ impl WorldActor {
             let mut leveled: Option<(i32, i32)> = None;
             if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) {
                 let old = r.run_level;
-                // `award_hero_xp` divides by party size (the encounter split); a mote
-                // is drunk by one hero and pays out whole, so pre-multiply to cancel
-                // it — same reasoning as `bank_insight`.
-                if r.award_hero_xp(slot, size, grant_xp * size as i64, &balance) > 0 {
+                // A mote is drunk by ONE hero and pays out whole — it is not an
+                // encounter pool, so it is a single share rather than a pre-multiply
+                // that cancels a division.
+                if r.award_hero_xp(slot, 1, size, grant_xp, &balance) > 0 {
                     leveled = Some((old, r.run_level));
                 }
             }
@@ -6900,11 +6896,8 @@ impl WorldActor {
             if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
                 let old = r.run_level;
                 // A mote is drunk by ONE hero and is not an encounter, so it pays out
-                // WHOLE. `award_hero_xp` divides by party size (the encounter split),
-                // so pre-multiply to cancel it — otherwise a four-hero party's mote is
-                // worth a quarter of a solo player's.
-                let grant = xp * size as i64;
-                if r.award_hero_xp(hero_slot, size, grant, &balance) > 0 {
+                // WHOLE: one share, whatever the party size.
+                if r.award_hero_xp(hero_slot, 1, size, xp, &balance) > 0 {
                     level_ups.push((pid.clone(), old, r.run_level));
                 }
             }
@@ -7116,6 +7109,12 @@ impl WorldActor {
                         .cloned()
                         .unwrap_or_default();
                     let size = comp.len().max(hps.len());
+                    // The encounter is a POOL divided among whoever is still STANDING
+                    // when it ends. Three heroes down means the survivor banks the whole
+                    // thing — a fight that nearly killed you should be worth what it
+                    // cost. Dividing by the full party instead simply evaporated the
+                    // fallen heroes' shares.
+                    let standing = hps.iter().filter(|hp| **hp > 0).count().max(1);
                     for (slot, hp) in hps.iter().enumerate() {
                         if *hp <= 0 {
                             continue;
@@ -7129,7 +7128,7 @@ impl WorldActor {
                             r.hero_level(slot),
                             &balance,
                         );
-                        if r.award_hero_xp(slot, size, paid, &balance) > 0 {
+                        if r.award_hero_xp(slot, standing, size, paid, &balance) > 0 {
                             if let Some(class) = comp.get(slot) {
                                 class_bests.push((
                                     r.player_id.clone(),
