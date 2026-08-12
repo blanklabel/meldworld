@@ -204,6 +204,16 @@ psyker_anchor_gauge_drain = 0.2   # Temporal Anchor: enemy ATB gauge -= drain*st
 # flat 2 was three turns of a level-1 hero's 5-point Barrier and ~60 turns of a level-100
 # hero's 118-point one — so the deep game's Barriers never expired at all.
 barrier_decay_fraction = 0.15
+# REGEN DECAYS TOO, and for the same reason. It was the one lasting effect with neither
+# decay nor expiry, so a healer spending turns on it bought permanent party sustain that
+# only ever grew. It sheds this share of itself each of the holder's turns (floor 1), and
+# when it is spent the stacks it cost come back. [TUNABLE]
+regen_decay_fraction = 0.2
+# THE STACK CEILING, shared by every lasting effect — Regen, Barrier, Evasion and the
+# fight-long attack buff. One number so "how many of these can I hold" is something a
+# player learns once instead of four things they discover. A grant past the ceiling is
+# refused outright rather than silently wasted. [TUNABLE]
+max_effect_stacks = 5
 
 # The Resonant (healer). Innate Regen (HP restored at the start of each of its
 # turns), plus three ally-targeting skills that auto-pick the most-wounded ally:

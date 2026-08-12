@@ -40,6 +40,16 @@ fn turn(drain: f64) -> String {
     format!("{} of its turn", pct(drain))
 }
 
+/// Regen reads as "N% a turn, fading" because it now DECAYS — the number a player sees
+/// is the first turn's, not a permanent one.
+fn regen(fraction: f64, balance: &Balance) -> String {
+    format!(
+        "Regen {} of max HP a turn, fading {} a turn",
+        pct(fraction),
+        pct(balance.battle.regen_decay_fraction)
+    )
+}
+
 fn join(parts: &[String]) -> String {
     parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" · ")
 }
@@ -135,7 +145,7 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         }
         "iron_lung" => join(&[
             format!("heals {} of your max HP", pct(b.hunter_iron_lung_heal_fraction)),
-            format!("Regen {} of max HP a turn", pct(b.hunter_iron_lung_regen_fraction)),
+            regen(b.hunter_iron_lung_regen_fraction, balance),
             adrenaline(b.hunter_second_wind_cost, balance),
         ]),
         "apex_predator" => join(&[
@@ -179,7 +189,7 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             pct(b.resonant_transfuse_cost_fraction)
         ),
         "regen_boon" => {
-            format!("Regen {} of their max HP a turn", pct(b.resonant_boon_regen_fraction))
+            regen(b.resonant_boon_regen_fraction, balance)
         }
         "ward" => {
             format!("Barrier for {} of their max HP", pct(b.resonant_ward_barrier_fraction))

@@ -552,10 +552,24 @@ acts again. Event Horizon slows the fill RATE (`HORIZON_STATUS`, through the sam
 `status_slow_mult` a web or chill uses), which cannot lock; Hallowed Ground zeroes every
 gauge outright and is gated to once a fight for the same reason.
 
-**A fight-long stat buff REFRESHES, it does not stack.** Tempering Blow and Anvil Chorus are
-a share of the ally's `base_atk` (snapshot at battle start) and take the max, not the sum —
-computed off the CURRENT attack and added, five Anvil Chorus casts compound to 1.76x and ten
-to 3.1x for the price of the turns.
+**Every lasting effect answers to ONE ceiling: `[battle] max_effect_stacks` = 5.** Regen,
+Barrier, Evasion and the fight-long attack buff all count stacks on the `Fighter`, and a
+grant past the ceiling is REFUSED rather than silently wasted — so "how many of these can I
+hold" is one number a player learns once instead of four they discover. Everything goes
+through `grant_regen` / `grant_barrier` / `grant_evasion` / `grant_atk`; **never write
+`fighter.regen += x` at a call site**, because the ceiling lives in the helper and a direct
+write is a stack nobody counted. Consumables answer to it too — a stack is a stack whether
+it came from a spell or a bottle.
+
+**Regen DECAYS, like the Barrier beside it** (`regen_decay_fraction`, floor 1). It was the
+one lasting effect in the game with neither decay nor expiry: `regen +=` accumulated without
+limit and never faded, so a healer spending turns on it bought permanent, ever-growing party
+sustain — measured at 5 stacks healing 150 HP a turn, forever. When an effect drains to
+nothing its stacks come back, so a long fight can be re-tended rather than capped for good.
+
+**A fight-long attack buff is a share of `base_atk`** (snapshot at battle start), so five
+stacks is a linear 5x the single bonus. Computed off the CURRENT attack and added it would
+compound instead — five Anvil Chorus casts to 1.76x and ten to 3.1x.
 
 **Two hand-written lists used to shadow this registry, and both had gone stale.** The
 engine dispatched `resolve_skill` by a per-class list of keys, where an unlisted ability

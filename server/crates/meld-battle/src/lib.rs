@@ -48,6 +48,15 @@ pub struct Fighter {
     /// value and added would compound geometrically, so ten Anvil Chorus casts would be
     /// 3.1x the party's attack for the price of ten turns.
     pub base_atk: i32,
+    /// How many stacks of each lasting effect the fighter is holding. Every one of
+    /// them used to accumulate without limit, and Regen never decayed at all — so a
+    /// healer spending turns on it bought permanent, unbounded party sustain. One
+    /// rule now covers all four: a grant is refused past `max_effect_stacks`, and a
+    /// stack count resets when its effect has drained away.
+    pub regen_stacks: u8,
+    pub barrier_stacks: u8,
+    pub evasion_stacks: u8,
+    pub atk_stacks: u8,
     pub def: i32,
     pub speed_stat: i32,
     /// The four attributes (Str/Mnd/Dex/Wll). Populated for player heroes from the
@@ -177,6 +186,10 @@ impl Fighter {
             max_hp: hp,
             atk,
             base_atk: atk,
+            regen_stacks: 0,
+            barrier_stacks: 0,
+            evasion_stacks: 0,
+            atk_stacks: 0,
             def,
             speed_stat,
             str_: 0,
@@ -367,6 +380,15 @@ fn is_slowing_status(name: &str) -> bool {
 /// creature always advances, just at half pace.
 pub const HORIZON_STATUS: &str = "horizon";
 
+/// The lasting effects that STACK, and therefore answer to `max_effect_stacks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stack {
+    Regen,
+    Barrier,
+    Evasion,
+    Atk,
+}
+
 /// The timed status a hastened fighter carries: its gauge fills faster while it holds.
 pub const HASTE_STATUS: &str = "hasted";
 
@@ -535,6 +557,8 @@ pub struct Battle {
     psyker_aegis_tick_fraction: f64,
     psyker_anchor_gauge_drain: f64,
     barrier_decay_fraction: f64,
+    regen_decay_fraction: f64,
+    max_effect_stacks: u8,
     psyker_horizon_tick_mult: f64,
     psyker_horizon_ticks: u64,
     resonant_second_life_revive_fraction: f64,
@@ -801,6 +825,8 @@ impl Battle {
             psyker_aegis_tick_fraction: balance.battle.psyker_aegis_tick_fraction,
             psyker_anchor_gauge_drain: balance.battle.psyker_anchor_gauge_drain,
             barrier_decay_fraction: balance.battle.barrier_decay_fraction,
+            regen_decay_fraction: balance.battle.regen_decay_fraction,
+            max_effect_stacks: balance.battle.max_effect_stacks,
             psyker_horizon_tick_mult: balance.battle.psyker_horizon_tick_mult,
             psyker_horizon_ticks: balance.battle.psyker_horizon_ticks,
             resonant_second_life_revive_fraction: balance
@@ -1526,17 +1552,8 @@ impl Battle {
                 // the Shifter's Flicker pool, so it decays per turn the same way and adds
                 // to each hero's own Dex dodge.
                 for a in living_allies(self) {
-                    self.fighters[a].evasion =
-                        (self.fighters[a].evasion + self.explorer_safe_passage_evasion).min(0.95);
-                    let pct = (self.fighters[a].evasion * 100.0).round() as i32;
-                    effects.push(ResolvedEffect {
-                        modifier_flag: None,
-                        target_id: self.fighters[a].combatant_id.clone(),
-                        kind: EffectKind::StatusApplied,
-                        amount: Some(pct),
-                        status: Some("evasion".to_string()),
-                        hp_after: self.fighters[a].hp,
-                    });
+                    let fx = self.grant_evasion(a, self.explorer_safe_passage_evasion);
+                    effects.extend(fx);
                 }
             }
             "a_world_known" => {
@@ -1686,19 +1703,8 @@ impl Battle {
                 let t = self
                     .ally_target(target_id)
                     .unwrap_or_else(|| self.most_wounded_ally(actor_i));
-                let bonus = ((self.fighters[t].base_atk as f64) * self.smith.temper_atk_fraction)
-                    .round()
-                    .max(1.0) as i32;
-                self.fighters[t].atk = self.fighters[t].atk.max(self.fighters[t].base_atk + bonus);
-                let atk = self.fighters[t].atk;
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[t].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(atk),
-                    status: Some("tempered".to_string()),
-                    hp_after: self.fighters[t].hp,
-                });
+                let fx = self.grant_atk(t, self.smith.temper_atk_fraction);
+                effects.extend(fx);
             }
             "one_true_forge" => {
                 for a in living_allies(self) {
@@ -1730,19 +1736,8 @@ impl Battle {
                             .round() as i32;
                         effects.extend(self.grant_barrier(a, raw));
                     }
-                    let bonus =
-                        ((self.fighters[a].base_atk as f64) * share).round().max(1.0) as i32;
-                    self.fighters[a].atk =
-                        self.fighters[a].atk.max(self.fighters[a].base_atk + bonus);
-                    let atk = self.fighters[a].atk;
-                    effects.push(ResolvedEffect {
-                        modifier_flag: None,
-                        target_id: self.fighters[a].combatant_id.clone(),
-                        kind: EffectKind::StatusApplied,
-                        amount: Some(atk),
-                        status: Some("tempered".to_string()),
-                        hp_after: self.fighters[a].hp,
-                    });
+                    let fx = self.grant_atk(a, share);
+                    effects.extend(fx);
                 }
             }
             "slag_spray" => {
@@ -2285,15 +2280,7 @@ impl Battle {
         // Shifter (rogue) Flicker: a self-cast reality-blink granting Evasion (a
         // temporary dodge bonus that decays each of the Shifter's turns).
         if skill_kind == Some("flicker") {
-            self.fighters[actor_i].evasion += self.shifter_flicker_evasion;
-            let pct = (self.fighters[actor_i].evasion * 100.0).round() as i32;
-            let effects = vec![ResolvedEffect { modifier_flag: None,
-                target_id: self.fighters[actor_i].combatant_id.clone(),
-                kind: EffectKind::StatusApplied,
-                amount: Some(pct),
-                status: Some("evasion".to_string()),
-                hp_after: self.fighters[actor_i].hp,
-            }];
+            let effects = self.grant_evasion(actor_i, self.shifter_flicker_evasion);
             self.fighters[actor_i].defending = false;
             self.reset_gauge(actor_i);
             return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
@@ -2525,16 +2512,7 @@ impl Battle {
             // Phase Shift holds the Psyker slightly out of true: Evasion that tops up
             // every turn the Focus is held, instead of decaying away like Flicker's.
             "phase_shift" => {
-                self.fighters[psyker_i].evasion += self.psyker_phase_evasion * stacks as f64;
-                let pct = (self.fighters[psyker_i].evasion * 100.0).round() as i32;
-                vec![ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[psyker_i].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(pct),
-                    status: Some("evasion".to_string()),
-                    hp_after: self.fighters[psyker_i].hp,
-                }]
+                self.grant_evasion(psyker_i, self.psyker_phase_evasion * stacks as f64)
             }
             // The two area Manifestations: Kinetic Wave grinds the line, and Reality
             // Collapse does it harder and ignores armour entirely.
@@ -2645,17 +2623,8 @@ impl Battle {
                 effects.extend(self.apply_heal(t, raw));
             }
             if boon.regen > 0.0 {
-                let amount = self.scaled_to(t, boon.regen);
-                self.fighters[t].regen += amount;
-                let regen = self.fighters[t].regen;
-                effects.push(ResolvedEffect {
-                    modifier_flag: None,
-                    target_id: self.fighters[t].combatant_id.clone(),
-                    kind: EffectKind::StatusApplied,
-                    amount: Some(regen),
-                    status: Some("regen".to_string()),
-                    hp_after: self.fighters[t].hp,
-                });
+                let fx = self.grant_regen(t, boon.regen);
+                effects.extend(fx);
             }
             if boon.barrier > 0.0 {
                 let raw = ((self.fighters[t].max_hp as f64) * boon.barrier).round() as i32;
@@ -2704,6 +2673,9 @@ impl Battle {
     /// Grant Regen — HP back at the start of each of the holder's turns — as a fraction of
     /// their max HP. Stored absolute, so the wire token `regen:<n>` is unchanged.
     fn grant_regen(&mut self, i: usize, fraction: f64) -> Vec<ResolvedEffect> {
+        if !self.take_stack(i, Stack::Regen) {
+            return Vec::new();
+        }
         let amount = self.scaled_to(i, fraction);
         self.fighters[i].regen += amount;
         let regen = self.fighters[i].regen;
@@ -2717,8 +2689,62 @@ impl Battle {
         }]
     }
 
+    /// Whether `i` may take another stack of a lasting effect, and book it if so.
+    /// Every stacking effect answers to the same ceiling, so "how many of these can I
+    /// hold" is one number a player learns once rather than four they discover.
+    fn take_stack(&mut self, i: usize, which: Stack) -> bool {
+        let cap = self.max_effect_stacks;
+        let held = match which {
+            Stack::Regen => &mut self.fighters[i].regen_stacks,
+            Stack::Barrier => &mut self.fighters[i].barrier_stacks,
+            Stack::Evasion => &mut self.fighters[i].evasion_stacks,
+            Stack::Atk => &mut self.fighters[i].atk_stacks,
+        };
+        if *held >= cap {
+            return false;
+        }
+        *held += 1;
+        true
+    }
+
+    /// Grant Evasion (a temporary dodge bonus) under the stack ceiling.
+    fn grant_evasion(&mut self, i: usize, amount: f64) -> Vec<ResolvedEffect> {
+        if amount <= 0.0 || !self.take_stack(i, Stack::Evasion) {
+            return Vec::new();
+        }
+        self.fighters[i].evasion = (self.fighters[i].evasion + amount).min(0.95);
+        let pct = (self.fighters[i].evasion * 100.0).round() as i32;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: Some(pct),
+            status: Some("evasion".to_string()),
+            hp_after: self.fighters[i].hp,
+        }]
+    }
+
+    /// Raise `i`'s attack for the rest of the fight by a share of its OWN base — under
+    /// the same ceiling, so five Tempering Blows is the most anyone can carry.
+    fn grant_atk(&mut self, i: usize, fraction: f64) -> Vec<ResolvedEffect> {
+        if !self.take_stack(i, Stack::Atk) {
+            return Vec::new();
+        }
+        let bonus = ((self.fighters[i].base_atk as f64) * fraction).round().max(1.0) as i32;
+        self.fighters[i].atk += bonus;
+        let atk = self.fighters[i].atk;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: Some(atk),
+            status: Some("tempered".to_string()),
+            hp_after: self.fighters[i].hp,
+        }]
+    }
+
     fn grant_barrier(&mut self, i: usize, amount: i32) -> Vec<ResolvedEffect> {
-        if amount <= 0 {
+        if amount <= 0 || !self.take_stack(i, Stack::Barrier) {
             return Vec::new();
         }
         self.fighters[i].barrier += amount;
@@ -2838,8 +2864,10 @@ impl Battle {
                 effects
             }
             "regen_boon" => {
-                let amount = self.scaled_to(target_i, self.resonant_boon_regen_fraction);
-                self.fighters[target_i].regen += amount;
+                let fx = self.grant_regen(target_i, self.resonant_boon_regen_fraction);
+                if fx.is_empty() {
+                    return fx;
+                }
                 vec![ResolvedEffect { modifier_flag: None,
                     target_id: self.fighters[target_i].combatant_id.clone(),
                     kind: EffectKind::StatusApplied,
@@ -2896,6 +2924,17 @@ impl Battle {
         if self.fighters[i].alive && self.fighters[i].regen > 0 {
             let raw = self.fighters[i].regen;
             effects.extend(self.apply_heal(i, raw));
+            // Regen DECAYS, like the Barrier beside it. It was the one lasting effect in
+            // the game with neither decay nor expiry, so turns spent on it bought
+            // permanent sustain — and once it is spent the stacks come back, which is
+            // what lets a long fight be re-tended rather than capped forever.
+            let shed = ((self.fighters[i].regen as f64) * self.regen_decay_fraction)
+                .round()
+                .max(1.0) as i32;
+            self.fighters[i].regen = (self.fighters[i].regen - shed).max(0);
+            if self.fighters[i].regen == 0 {
+                self.fighters[i].regen_stacks = 0;
+            }
         }
         // Barrier sheds a SHARE of the pool each turn, floored at 1 so it always drains.
         // A flat decay meant a level-100 hero's Barrier outlasted the fight it was cast in.
@@ -2904,11 +2943,17 @@ impl Battle {
                 .round()
                 .max(1.0) as i32;
             self.fighters[i].barrier = (self.fighters[i].barrier - shed).max(0);
+            if self.fighters[i].barrier == 0 {
+                self.fighters[i].barrier_stacks = 0;
+            }
         }
         // Evasion (Shifter Flicker) fades a fixed amount each of the holder's turns.
         if self.fighters[i].evasion > 0.0 {
             self.fighters[i].evasion =
                 (self.fighters[i].evasion - self.shifter_flicker_decay).max(0.0);
+            if self.fighters[i].evasion <= 0.0 {
+                self.fighters[i].evasion_stacks = 0;
+            }
         }
         effects
     }
@@ -3033,18 +3078,16 @@ impl Battle {
             }
             E::Barrier => {
                 let amount = ((self.consumable_barrier as f64) * dose).round() as i32;
-                self.fighters[target_i].barrier += amount;
-                self.status_effect(target_i, "barrier", amount)
+                self.grant_barrier(target_i, amount)
             }
             E::Regen => {
                 let amount = ((self.consumable_regen as f64) * dose).round() as i32;
-                self.fighters[target_i].regen += amount;
-                self.status_effect(target_i, "regen", amount)
+                let max_hp = self.fighters[target_i].max_hp.max(1);
+                self.grant_regen(target_i, amount as f64 / max_hp as f64)
             }
             E::Evasion => {
                 let pct = ((self.consumable_evasion_pct as f64) * dose).round() as i32;
-                self.fighters[target_i].evasion += pct as f64 / 100.0;
-                self.status_effect(target_i, "evasion", pct)
+                self.grant_evasion(target_i, pct as f64 / 100.0)
             }
             E::Adrenaline => {
                 // Inert on a class with no Adrenaline to bank, exactly like the
@@ -7130,23 +7173,65 @@ mod deep_ladder_tests {
         let (weak, strong) = (share(20), share(300));
         assert!((weak - strong).abs() < 0.02, "temper is {weak:.3} then {strong:.3}");
 
-        // A fight-long buff REFRESHES. Computed off the CURRENT attack and added, five
-        // casts would compound to 2x. Tempering Blow is the one that stays repeatable —
-        // the party-wide versions are once-a-fight calls — so it is where this matters.
+        // Each stack is a share of BASE attack, so stacking is linear rather than
+        // compounding — computed off the current value and added, five casts would be
+        // 2x rather than 1.75x — and the sixth is refused by the shared ceiling.
         let mut b = field(2, 1);
         b.fighters[0].class_key = "smithwright".into();
         let base = b.fighters[1].atk;
         let id = b.fighters[1].combatant_id.clone();
-        for _ in 0..5 {
+        let per_stack = ((base as f64) * 0.15).round() as i32;
+        for _ in 0..8 {
             b.fighters[0].gauge = 1.0;
             b.resolve_skill(0, Some(&id), Some("tempering_blow"), None).expect("temper");
         }
-        let once = ((base as f64) * 1.15).round() as i32;
-        assert!(
-            b.fighters[1].atk <= once,
-            "five casts stacked to {} where one is {once}",
-            b.fighters[1].atk
+        let cap = b.max_effect_stacks as i32;
+        assert_eq!(
+            b.fighters[1].atk,
+            base + per_stack * cap,
+            "eight casts should be {cap} stacks of {per_stack} on {base}"
         );
+        assert_eq!(b.fighters[1].atk_stacks, b.max_effect_stacks);
+    }
+
+    /// **Every lasting effect answers to ONE ceiling**, and Regen decays like the Barrier
+    /// beside it. Regen used to have neither: it accumulated without limit and never
+    /// faded, so turns spent on it bought permanent, ever-growing party sustain.
+    #[test]
+    fn a_lasting_effect_caps_at_five_stacks_and_regen_decays() {
+        let b0 = Balance::load_default().unwrap();
+        let cap = b0.battle.max_effect_stacks;
+        assert_eq!(cap, 5, "the ceiling is the number the player learns once");
+
+        // Regen: ten grants, five stacks, and each one a real increase.
+        let mut b = field(1, 1);
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            b.grant_regen(0, 0.05);
+            seen.push(b.fighters[0].regen);
+        }
+        assert_eq!(b.fighters[0].regen_stacks, cap, "regen ignored the ceiling");
+        assert_eq!(seen[cap as usize - 1], seen[9], "regen kept growing past the cap");
+        assert!(seen[0] < seen[cap as usize - 1], "stacking did nothing");
+
+        // …and it drains, handing the stacks back when it is spent.
+        let mut turns = 0;
+        while b.fighters[0].regen > 0 && turns < 200 {
+            b.start_of_turn(0);
+            turns += 1;
+        }
+        assert!(turns < 200, "Regen never decayed away");
+        assert_eq!(b.fighters[0].regen_stacks, 0, "spent Regen kept its stacks");
+
+        // Barrier and Evasion answer to the same number.
+        let mut b = field(1, 1);
+        for _ in 0..10 {
+            b.grant_barrier(0, 10);
+            b.grant_evasion(0, 0.05);
+        }
+        assert_eq!(b.fighters[0].barrier_stacks, cap, "barrier ignored the ceiling");
+        assert_eq!(b.fighters[0].evasion_stacks, cap, "evasion ignored the ceiling");
+        assert_eq!(b.fighters[0].barrier, 10 * cap as i32);
     }
 
     /// The client does not ask the player to aim a party buff or an all-enemy sweep, so
@@ -7195,4 +7280,5 @@ mod deep_ladder_tests {
             );
         }
     }
+
 }

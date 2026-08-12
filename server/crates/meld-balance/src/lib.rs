@@ -168,6 +168,8 @@ pub struct Battle {
     pub resonant_second_life_heal_fraction: f64,
     pub resonant_second_life_self_cost: f64,
     pub barrier_decay_fraction: f64,
+    pub regen_decay_fraction: f64,
+    pub max_effect_stacks: u8,
     pub resonant_regen_fraction: f64,
     pub resonant_transfuse_heal_fraction: f64,
     pub resonant_transfuse_cost_fraction: f64,

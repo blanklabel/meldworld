@@ -416,6 +416,15 @@ burns on death/leave; some is single-use. See
     `a_party_wide_capstone_is_a_once_a_fight_call` checks the RULE rather than the list —
     a class's deepest rung, if it covers the whole party or every enemy, must be gated
     (Psyker Foci excepted: a Focus is held, and its limit is the slot).
+  - *Also shipped:* **one stack ceiling, and Regen finally decays.** `regen +=`
+    accumulated without limit and never faded — the only lasting effect in the game with
+    neither decay nor expiry — so turns spent on it bought permanent, ever-growing party
+    sustain (measured: 5 stacks healing 150 HP a turn, forever). Regen now sheds
+    `regen_decay_fraction` a turn like the Barrier beside it, and **every** lasting effect
+    (Regen, Barrier, Evasion, the fight-long attack buff, and the consumables that grant
+    them) answers to `[battle] max_effect_stacks` = 5, refused past the ceiling rather than
+    silently wasted. All of it routes through four `grant_*` helpers so a call site cannot
+    add a stack nobody counted.
   - *Also shipped:* **the flat-magnitude fault.** Some grants were fractions of max HP and
     scaled with level; others were flat points and did not. A hero runs 40 max HP / 12 atk
     at level 1 to ~535 / ~309 at 100, so the flat ones decayed to nothing: the Keeper's
