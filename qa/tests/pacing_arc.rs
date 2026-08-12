@@ -18,9 +18,17 @@
 //! are long" is the claim — timing every size against the same stopwatch would fail
 //! the full party for being exactly as slow as it is meant to be.
 //!
-//! **What it measures today (seed 1, two fights each):** 11.7 / 25.8 / 37.5 / 54.0
+//! **What it measures today (seed 1, two fights each):** 18.8 / 32.8 / 54.0 / 51.7
 //! seconds per fight at one, two, three and four heroes. The encounter ramp is real
 //! and close to linear in party size.
+//!
+//! Those were 11.7 / 25.8 / 37.5 / 54.0 while creature HP rode the integer `tier(d)`.
+//! Making it continuous in distance (`Scaling::hp_mult`) removed a 6.4x cliff at d=100
+//! and, in exchange, put real health on the d=50..99 ring the cliff had left flat — so
+//! the shallow fights these bots actually reach got longer, and the deep ones got much
+//! shorter. Treat all of these as a SHAPE, not a target: the box is shared and a loaded
+//! run moves them several seconds either way (the 4-hero figure landing below the
+//! 3-hero one is that noise, not an inversion).
 //!
 //! The XP split is **not** visible at run level: all four sizes banked the same 124
 //! XP. `award_hero_xp` divides an encounter by party size, but XP and level are
