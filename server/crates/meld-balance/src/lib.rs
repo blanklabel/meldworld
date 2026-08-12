@@ -987,6 +987,27 @@ pub struct Perks {
     pub phoenix_guard_aggro_mult_floor: f64,
     /// Obstacle radius an Phoenix Guard party can trample through (0 = disabled; stretch).
     pub phoenix_guard_trample_radius: f64,
+    // --- Smithwright: benches, and the rock they are built from. ---
+    pub smithwright_ore_sense_at: i32,
+    pub smithwright_ore_radius_base: f32,
+    pub smithwright_ore_radius_per_level: f32,
+    pub smithwright_setup_at: i32,
+    pub smithwright_setup_mult: f64,
+    pub smithwright_stock_discount: i32,
+    pub smithwright_pack_full_at: i32,
+    pub smithwright_bench_uses_at: i32,
+    pub smithwright_bench_uses_bonus: i32,
+    // --- Keeper: the ground, and what it will give up. ---
+    pub keeper_reagent_sense_at: i32,
+    pub keeper_reagent_radius_base: f32,
+    pub keeper_reagent_radius_per_level: f32,
+    pub keeper_green_thumb_at: i32,
+    pub keeper_green_thumb_chance: f64,
+    pub keeper_rooted_at: i32,
+    pub keeper_rooted_radius_mult: f32,
+    pub keeper_rooted_regen_mult: f32,
+    pub keeper_whole_vein_at: i32,
+    pub keeper_whole_vein_chance: f64,
 }
 
 /// Content-ish stat blocks. Keyed by content id (e.g. `forest_bloom_stalker`).

@@ -7021,7 +7021,19 @@ mod deep_ladder_tests {
     /// any successful resolve, rather than by each arm remembering to push its own key.
     #[test]
     fn a_once_a_fight_call_is_refused_the_second_time() {
-        for key in ["now", "the_world_entire", "iron_lung", "pin_the_prey", "grand_larceny"] {
+        for key in [
+            "now",
+            "the_world_entire",
+            "iron_lung",
+            "pin_the_prey",
+            "grand_larceny",
+            "hallowed_ground",
+            "phoenix_ascendant",
+            "anvil_chorus",
+            "great_work",
+            "world_tree",
+            "eternal_bloom",
+        ] {
             let mut b = field(2, 3);
             let def = meld_proto::skills::skill(key).unwrap();
             b.fighters[0].class_key = def.class.to_string();
@@ -7118,16 +7130,18 @@ mod deep_ladder_tests {
         let (weak, strong) = (share(20), share(300));
         assert!((weak - strong).abs() < 0.02, "temper is {weak:.3} then {strong:.3}");
 
-        // A fight-long buff REFRESHES. Computed off the current attack and added, ten
-        // Anvil Chorus casts would be 3.1x the party's attack for the price of ten turns.
+        // A fight-long buff REFRESHES. Computed off the CURRENT attack and added, five
+        // casts would compound to 2x. Tempering Blow is the one that stays repeatable —
+        // the party-wide versions are once-a-fight calls — so it is where this matters.
         let mut b = field(2, 1);
         b.fighters[0].class_key = "smithwright".into();
         let base = b.fighters[1].atk;
+        let id = b.fighters[1].combatant_id.clone();
         for _ in 0..5 {
             b.fighters[0].gauge = 1.0;
-            b.resolve_skill(0, None, Some("anvil_chorus"), None).expect("chorus");
+            b.resolve_skill(0, Some(&id), Some("tempering_blow"), None).expect("temper");
         }
-        let once = ((base as f64) * 1.12).round() as i32;
+        let once = ((base as f64) * 1.15).round() as i32;
         assert!(
             b.fighters[1].atk <= once,
             "five casts stacked to {} where one is {once}",

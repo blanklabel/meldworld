@@ -3762,6 +3762,15 @@ impl Arena {
     /// kind, or `None` if it is out of reach or already empty. The unit is banked the
     /// moment it comes out, which is what bounds an interrupted gather to the tick in
     /// flight rather than the whole node.
+    /// Put one unit of stock BACK into a node — the Keeper's "the whole vein" perk,
+    /// where a unit taken sometimes costs the bed nothing. Only ever called immediately
+    /// after a [`Self::take_one`] that succeeded, so this restores rather than creates.
+    pub fn refund_one(&mut self, entity_id: &str) {
+        if let Some(n) = self.resources.iter_mut().find(|n| n.entity_id == entity_id) {
+            n.remaining += 1;
+        }
+    }
+
     pub fn take_one(&mut self, player_id: &str, entity_id: &str) -> Option<String> {
         let kind = self.can_harvest(player_id, entity_id)?;
         let node = self.resources.iter_mut().find(|n| n.entity_id == entity_id)?;

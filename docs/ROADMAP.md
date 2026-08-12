@@ -400,6 +400,22 @@ burns on death/leave; some is single-use. See
   - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
     16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
     cost a step up in commitment rather than an ever-flatter trickle.
+  - *Also shipped:* **the crafters' overworld ladder (MS-1's second half).** Every other
+    class earns an overworld perk that scales with run level; the two PROFESSION classes —
+    the pair whose whole identity is what they do between fights — earned nothing for
+    walking around. Smithwright: *Prospector's Eye*, *Efficient Setup*, *Travelling Forge*,
+    *The Long Shift*. Keeper: *Forager's Path*, *Green Thumb*, *Rooted Ground*, *The Whole
+    Vein*. Each reads only its own trade's materials (`ore` vs `reagent`, off the material
+    registry) and is force-included in that player's snapshot rather than widening the
+    shared interest cull. `compute_perks` became a free function so the whole system is
+    finally unit-tested, and `no_class_walks_the_overworld_with_nothing` reads the class
+    list off the registry — the two missing classes were missing for a release.
+  - *Also shipped:* **every party-wide capstone is a once-a-fight call.** Eternal Bloom,
+    Phoenix Ascendant, Anvil Chorus, The Great Work, World Tree and Hallowed Ground join
+    Now, The World Entire, Iron Lung, Pin the Prey, Grand Larceny and Second Life.
+    `a_party_wide_capstone_is_a_once_a_fight_call` checks the RULE rather than the list —
+    a class's deepest rung, if it covers the whole party or every enemy, must be gated
+    (Psyker Foci excepted: a Focus is held, and its limit is the slot).
   - *Also shipped:* **the flat-magnitude fault.** Some grants were fractions of max HP and
     scaled with level; others were flat points and did not. A hero runs 40 max HP / 12 atk
     at level 1 to ~535 / ~309 at 100, so the flat ones decayed to nothing: the Keeper's

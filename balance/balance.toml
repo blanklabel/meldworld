@@ -1114,6 +1114,32 @@ resonant_regen_per_level = 0.4
 phoenix_guard_aggro_reduction_per_level = 0.04
 phoenix_guard_aggro_mult_floor = 0.4   # mobs never fully ignore an Phoenix Guard party
 phoenix_guard_trample_radius = 0.0     # stretch: trample obstacles this small (0 = off)
+# THE TWO PROFESSION CLASSES had no overworld perk at all — every other class earns one,
+# and the pair whose whole identity is what they do BETWEEN fights earned nothing for
+# walking around. These are that half of the kit (MS-1's second ladder): a Smithwright
+# makes the party's benches cheap and long-lived, a Keeper makes the ground give more.
+#
+# Smithwright — the Foundry reads the rock, and sets up faster than anyone.
+smithwright_ore_sense_at = 1        # run level that starts revealing ORE veins at range
+smithwright_ore_radius_base = 26.0  # world-units at which a vein shows itself
+smithwright_ore_radius_per_level = 2.0
+smithwright_setup_at = 2            # run level at which benches go up quicker and cheaper
+smithwright_setup_mult = 0.6        # station_setup_ms x this
+smithwright_stock_discount = 1      # ore knocked off what a bench costs to raise
+smithwright_pack_full_at = 4        # run level at which packing up returns the WHOLE stock
+smithwright_bench_uses_at = 8       # run level at which its benches serve extra jobs…
+smithwright_bench_uses_bonus = 2    # …this many more
+# Keeper — the Open Flower reads the ground, and takes more from it without killing it.
+keeper_reagent_sense_at = 1         # run level that starts revealing REAGENT beds at range
+keeper_reagent_radius_base = 26.0
+keeper_reagent_radius_per_level = 2.0
+keeper_green_thumb_at = 2           # run level at which a tick sometimes yields two…
+keeper_green_thumb_chance = 0.25    # …this often
+keeper_rooted_at = 4                # run level at which the alembic's field grows…
+keeper_rooted_radius_mult = 1.6     # …this much wider…
+keeper_rooted_regen_mult = 1.5      # …and this much stronger
+keeper_whole_vein_at = 8            # run level at which a unit sometimes costs the node nothing
+keeper_whole_vein_chance = 0.2
 
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,

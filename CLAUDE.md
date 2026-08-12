@@ -519,6 +519,31 @@ by each arm remembering to push its own key — that was a list, and an ability 
 simply infinite. `is_once_per_battle`: Now, The World Entire, Iron Lung, Pin the Prey, Grand
 Larceny, Hallowed Ground, Second Life.
 
+**Crafters have a SECOND ladder, and it is the perk system.** Every class earns an
+overworld perk that scales with run level — the Explorer's lantern and map, the Hunter's
+prey-sense, the Shifter's Shift-sense, the Psyker's threat-sense, the Resonant's walking
+regen, the Phoenix Guard's bulwark — and the two PROFESSION classes had none at all, which
+is the pair whose whole identity is what they do between fights. `compute_perks` is now a
+free function (it reads only balance) so it is unit-tested, and
+`no_class_walks_the_overworld_with_nothing` reads the class list off the registry rather
+than a hand-written one, because the two that were missing were missing for a whole
+release and nothing said so.
+
+- **Smithwright** — *Prospector's Eye* (ore veins revealed past the interest radius),
+  *Efficient Setup* (benches raise quicker and cost less stock), *Travelling Forge*
+  (packing one up returns the WHOLE stock, not the salvage), *The Long Shift* (its benches
+  serve extra jobs before they are spent).
+- **Keeper** — *Forager's Path* (reagent beds revealed at range), *Green Thumb* (a tick
+  sometimes pays two units), *Rooted Ground* (the alembic's regen field reaches further and
+  heals harder), *The Whole Vein* (a unit sometimes costs the bed no stock).
+
+A crafter reads only the half of the world its own trade is built on — the Foundry sees
+`ore`, the Open Flower sees `reagent`, keyed off the material registry's class. Node-sense
+is **force-included** in that player's snapshot the way the portal is, never by widening the
+shared interest cull, which would show everyone everything. Both harvest perks roll off
+`hash_str(node) ^ hash_str(player) ^ tick` so the outcome is reproducible rather than
+wall-clock.
+
 **A gauge CAP is a soft-lock; slow the RATE instead.** Creature `speed_stat` is a fixed
 constant (40–125) that never scales with distance, while a hero's climbs with Dex — so a
 deep hero takes several turns per creature turn. Anything that pins a creature's gauge to a

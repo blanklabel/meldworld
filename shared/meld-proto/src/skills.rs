@@ -519,7 +519,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "resonant",
         unlock: 200,
         target: Target::Party,
-        description: "The capstone: the whole party is healed and Warded at once, paid from your own HP.",
+        description: "The capstone: the whole party is healed and Warded at once, paid from your own HP. ONCE per battle.",
         upgrades: None,
         rank: "",
     },
@@ -665,7 +665,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "phoenix_guard",
         unlock: 100,
         target: Target::AllEnemies,
-        description: "The order's own fire: heavy damage to EVERY enemy, far heavier against undead, and Barrier for the WHOLE party out of the same flame.",
+        description: "The order's own fire: heavy damage to EVERY enemy, far heavier against undead, and Barrier for the WHOLE party out of the same flame. ONCE per battle.",
         upgrades: None,
         rank: "Apotheosis",
     },
@@ -738,7 +738,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "smithwright",
         unlock: 75,
         target: Target::Party,
-        description: "Tempering Blow for the WHOLE party: every ally's attack goes up for the rest of the fight. No damage of its own.",
+        description: "Tempering Blow for the WHOLE party: every ally's attack goes up for the rest of the fight. No damage of its own. ONCE per battle.",
         upgrades: None,
         rank: "Master of the Foundry",
     },
@@ -748,7 +748,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "smithwright",
         unlock: 100,
         target: Target::Party,
-        description: "Everything the trade knows, at once: the whole party is healed, given Barrier, AND has its attack raised for the rest of the fight.",
+        description: "Everything the trade knows, at once: the whole party is healed, given Barrier, AND has its attack raised for the rest of the fight. ONCE per battle.",
         upgrades: None,
         rank: "Master of the Foundry",
     },
@@ -830,7 +830,7 @@ pub const SKILLS: &[SkillDef] = &[
         class: "keeper",
         unlock: 100,
         target: Target::Party,
-        description: "The capstone: the WHOLE party is healed, given Barrier, and given Regen — everything the order knows about keeping people alive, in one turn.",
+        description: "The capstone: the WHOLE party is healed, given Barrier, and given Regen — everything the order knows about keeping people alive, in one turn. ONCE per battle.",
         upgrades: None,
         rank: "Terra",
     },
@@ -1042,6 +1042,11 @@ pub fn is_once_per_battle(skill: &str) -> bool {
             | "pin_the_prey"
             | "grand_larceny"
             | "hallowed_ground"
+            | "phoenix_ascendant"
+            | "anvil_chorus"
+            | "great_work"
+            | "world_tree"
+            | "eternal_bloom"
             | "second_life"
     )
 }
@@ -1286,6 +1291,47 @@ mod tests {
         }
         assert_eq!(upgrade_chain("mug").len(), 2);
         assert_eq!(upgrade_chain("backstab").len(), 1, "an unchained ability is its own chain");
+    }
+
+    /// **A capstone that lands on the WHOLE party or EVERY enemy is a once-a-fight call.**
+    /// That is the rule the gated list encodes, and it is checked rather than trusted: a
+    /// class's deepest rung, if it covers everyone, must be gated. Repeatable all-enemy
+    /// DAMAGE is fine — that is a rotation — which is why the exceptions below are named
+    /// individually rather than the rule being weakened to fit them.
+    #[test]
+    fn a_party_wide_capstone_is_a_once_a_fight_call() {
+        for class in all_classes() {
+            let class = class.as_str();
+            let kit = skills_for_class(class);
+            let deepest = kit.iter().map(|s| s.unlock).max().unwrap();
+            for d in kit.iter().filter(|d| d.unlock == deepest) {
+                // A Psyker's capstone is a FOCUS: it is seated and held, and the limit on
+                // it is the slot it occupies out of five, not a use count. Gating one to
+                // once a fight would mean revoking it ended the ability for the battle,
+                // which is not what any of the other ten Foci do.
+                if class == "psyker" {
+                    continue;
+                }
+                if matches!(d.target, Target::Party | Target::AllEnemies) {
+                    assert!(
+                        is_once_per_battle(d.key),
+                        "{} is {}'s capstone and covers everyone, but is not gated",
+                        d.name,
+                        class
+                    );
+                }
+            }
+        }
+        // And the gate is spelled out in the prose, or the player only finds out by
+        // being refused mid-fight.
+        for d in SKILLS.iter().filter(|d| is_once_per_battle(d.key)) {
+            assert!(
+                d.description.contains("ONCE per battle"),
+                "{} is gated but never says so: {:?}",
+                d.name,
+                d.description
+            );
+        }
     }
 
     /// EVERY class learns something at 49 and again at 100 — read off the registry, so
