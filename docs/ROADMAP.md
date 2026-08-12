@@ -317,11 +317,13 @@ burns on death/leave; some is single-use. See
 
 - [ ] **PG-1 — Progression foundation: a ladder that reaches 255, and dead heroes earn
   nothing.** Design: [`proposals/progression-and-unlocks.md`](proposals/progression-and-unlocks.md).
-  - *Shipped:* the level curve **is its design statement** — level L takes `L + 1` fights
-    against a same-level encounter (two clear level 1, three clear level 2, four clear
-    level 3), with the XP number **derived** from the encounter tables rather than tuned
-    separately, so creature XP and the ladder cannot drift apart. The old curve doubled
-    every level, which made the 255 cap unreachable by construction. XP stays
+  - *Shipped:* the level curve **is its design statement** — level L takes
+    `fights_per_level_base` fights against a same-level encounter plus one more every
+    `fights_per_level_ramp` levels, with the XP number **derived** from the encounter
+    tables rather than tuned separately, so creature XP and the ladder cannot drift apart.
+    Two earlier shapes are retired: doubling every level made the 255 cap unreachable by
+    construction, and `L + 1` charged 54 at-level fights for the level-10 second party
+    slot — most of a first session spent in the game's least interesting configuration. XP stays
     **dive-scoped** (depth is the meta-progression: a deeper hub starts a run at a higher
     `base_run_level`). **A level-up raises nobody** — it tops up the living, and the fallen
     come back on a **Waking Salt**; the world also sprinkles **Insight Motes** (bankable
@@ -416,6 +418,26 @@ burns on death/leave; some is single-use. See
     `a_party_wide_capstone_is_a_once_a_fight_call` checks the RULE rather than the list —
     a class's deepest rung, if it covers the whole party or every enemy, must be gated
     (Psyker Foci excepted: a Focus is held, and its limit is the slot).
+  - *Also shipped:* **an encounter is a POOL divided among the heroes still STANDING.**
+    The last survivor of a bad fight banks the whole thing — risk against reward, since
+    the party-assembly loop iterates the full ROSTER, so that survivor still meets a
+    four-hero encounter alone (`a_fight_is_scoped_to_the_roster_even_when_only_one_hero_is_left`
+    pins the pairing: scale encounters to the living later and the risk half silently
+    disappears). `award_hero_xp` takes `shares` separately from `party_size` — they were
+    one argument (`party_size.max(slot + 1)`), so a lone survivor in slot 3 still divided
+    by four and three-quarters of the pool evaporated. That separation also retired the
+    pre-multiply hack at the mote sites.
+  - *Also shipped:* **the split is visible, and `pacing_arc` measures it.** Every
+    `HeroView` reported one shared run-level `xp`/`xp_to_next`, so four heroes sharing a
+    pool showed the identical number a lone hero did — the test's own header had recorded
+    that as "all four sizes banked the same 124 XP" and concluded the split could not be
+    seen from inside the game. Each hero now carries its own banked XP and its own bar.
+    The test had two further faults only that exposed: it read `xp`, which is the
+    REMAINDER after a level-up spends its cost (a solo dive that banked 185 reported 61),
+    and it asserted XP *per fight*, which is not a claim the balance makes — an encounter
+    pays `encounter_party_scale` BEFORE the split, so a full party's per-hero share is
+    ~1.1x a lone hero's. The cost of fielding four is TIME, and that is measured now:
+    **4.83 / 1.85 / 1.63 / 1.30 XP per second** at one to four heroes, a monotone decline.
   - *Also shipped:* **one stack ceiling, and Regen finally decays.** `regen +=`
     accumulated without limit and never faded — the only lasting effect in the game with
     neither decay nor expiry — so turns spent on it bought permanent, ever-growing party
@@ -602,6 +624,17 @@ The persistent non-combat progression (GDD §4.1). Three skills exist and persis
 XP; harvesting exists but is instant.
 
 - [ ] **MS-1 — Finish & flesh out the Meld skills.**
+  - 🟡 *The crafters earn something for walking around:* every other class had an overworld
+    perk that scales with run level — the Explorer's lantern and map, the Hunter's
+    prey-sense, the Shifter's Shift-sense, the Psyker's threat-sense, the Resonant's
+    walking regen, the Phoenix Guard's bulwark — and the two PROFESSION classes, whose
+    whole identity is what they do BETWEEN fights, had none. Smithwright: *Prospector's
+    Eye*, *Efficient Setup*, *Travelling Forge*, *The Long Shift*. Keeper: *Forager's
+    Path*, *Green Thumb*, *Rooted Ground*, *The Whole Vein*. Each reads only its own
+    trade's materials (`ore` vs `reagent`, off the material registry) and is
+    force-included in that player's snapshot rather than widening the shared interest
+    cull. **Remaining:** the perks are passive; the crafter *actions* a bench cannot
+    already do (field repair away from an anvil, a tonic without a still) are still open.
   - 🟡 *Recipes are real:* crafting was ONE hardcoded recipe that credited every craft to
     Forging regardless of what it made. There is now a recipe registry (seven recipes:
     six potions + the Town Portal), `POST /v1/crafting/craft {recipe}` runs any of them,
