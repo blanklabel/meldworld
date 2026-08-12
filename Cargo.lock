@@ -1112,6 +1112,7 @@ dependencies = [
  "meld-balance",
  "meld-db",
  "meld-proto",
+ "meld-run",
  "meld-server",
  "reqwest",
  "serde_json",

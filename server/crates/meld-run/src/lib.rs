@@ -1439,6 +1439,39 @@ mod tests {
     /// heroes' shares, and a survivor in a LATE slot was the worst case: the divisor and
     /// the vector sizing were one argument (`party_size.max(slot + 1)`), so the last hero
     /// standing in slot 3 still divided by four.
+    /// **The encounter scales off the ROSTER, not the survivors** — and that pairing is
+    /// what makes the XP rule above a risk rather than free money. A party of four that
+    /// loses three still meets a four-hero encounter with one hero standing, so the extra
+    /// XP is bought with a fight scoped for people who are no longer in it. Scale this to
+    /// the living count instead and the risk half quietly disappears.
+    #[test]
+    fn a_fight_is_scoped_to_the_roster_even_when_only_one_hero_is_left() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
+        let arena = meld_world::Arena::generate(&b, 5, true);
+
+        let hp_of = |party: &[PartyMember], hp: &[Option<i32>]| -> i32 {
+            let enemies = vec![(&arena.monsters[0], "mc".to_string())];
+            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[]);
+            let (_, foes) = battle.wire_combatants();
+            foes[0].max_hp
+        };
+        let member = |n: usize| -> PartyMember {
+            ("p1".to_string(), format!("c{n}"), CharacterClass::Explorer, GearBonus::default())
+        };
+
+        let solo = hp_of(&[member(0)], &[None]);
+        let four: Vec<PartyMember> = (0..4).map(member).collect();
+        let full = hp_of(&four, &[None, None, None, None]);
+        assert!(full > solo, "a four-hero encounter should be the bigger one");
+
+        // Three of the four are down. The creature is exactly as big as it was.
+        let three_down = hp_of(&four, &[None, Some(0), Some(0), Some(0)]);
+        assert_eq!(three_down, full, "the encounter shrank when the party died");
+        assert!(three_down > solo, "the survivor got a solo-sized fight for free");
+    }
+
     #[test]
     fn the_last_hero_standing_banks_the_whole_pool() {
         let b = Balance::load_default().unwrap();

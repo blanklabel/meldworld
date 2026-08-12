@@ -21,3 +21,4 @@ sqlx = { workspace = true }
 meld-server.workspace = true
 meld-db.workspace = true
 meld-balance.workspace = true
+meld-run.workspace = true

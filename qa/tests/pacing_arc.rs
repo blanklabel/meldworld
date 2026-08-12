@@ -18,9 +18,10 @@
 //! are long" is the claim — timing every size against the same stopwatch would fail
 //! the full party for being exactly as slow as it is meant to be.
 //!
-//! **What it measures today (seed 1, two fights each):** 18.8 / 32.8 / 54.0 / 51.7
-//! seconds per fight at one, two, three and four heroes. The encounter ramp is real
-//! and close to linear in party size.
+//! **What it measures today (seed 1):** 12.5 / 35.1 / 37.5 / 51.6 seconds per fight at
+//! one, two, three and four heroes, and **4.83 / 1.85 / 1.63 / 1.30 XP per second**. The
+//! encounter ramp is real, and the solo era banks roughly 3.7x faster in wall-clock — a
+//! monotone decline across party size, which is the arc the design claims.
 //!
 //! Those were 11.7 / 25.8 / 37.5 / 54.0 while creature HP rode the integer `tier(d)`.
 //! Making it continuous in distance (`Scaling::hp_mult`) removed a 6.4x cliff at d=100
@@ -57,9 +58,9 @@ struct Dive {
     fights_won: usize,
     /// Highest level any hero reached inside the dive.
     level: i32,
-    /// Run XP banked by the end of the dive. The XP SPLIT is a change in XP, not in
-    /// level: four heroes sharing an encounter still sit at level 1 for a while, and
-    /// a level-based rate then just rewards whoever won the fewest fights.
+    /// TOTAL XP banked by the best hero — the levels it bought plus the bar it is on.
+    /// The raw `xp` field is only the remainder after a level-up spends its cost, so
+    /// comparing those across party sizes rewards whoever levelled least.
     xp: i64,
     /// Mean wall-clock seconds from `battle.started` to `battle.ended`.
     secs_per_fight: f64,
@@ -134,6 +135,7 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
     .unwrap();
     seq += 1;
 
+    let balance_ref = meld_balance::Balance::load_default().unwrap();
     let mut nav = meld_qa::Nav::default();
     let mut in_battle = false;
     let mut my_c = String::new();
@@ -173,9 +175,16 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
                     }
                     "world.snapshot" => nav.observe(&v["payload"], &player_id),
                     "run.party" => {
+                        // TOTAL earned, not the bar. `xp` is the REMAINDER after a
+                        // level-up subtracts what the level cost, so a hero that just
+                        // levelled reads as having earned almost nothing — a solo dive
+                        // that reached level 2 reported 61 where it had banked 185.
                         for h in v["payload"]["heroes"].as_array().into_iter().flatten() {
-                            out.level = out.level.max(h["level"].as_i64().unwrap_or(1) as i32);
-                            out.xp = out.xp.max(h["xp"].as_i64().unwrap_or(0));
+                            let lv = h["level"].as_i64().unwrap_or(1) as i32;
+                            let banked = meld_run::xp_total_to_level(lv, &balance_ref)
+                                + h["xp"].as_i64().unwrap_or(0);
+                            out.level = out.level.max(lv);
+                            out.xp = out.xp.max(banked);
                         }
                     }
                     "battle.started" => {
@@ -267,20 +276,23 @@ async fn the_pacing_arc_holds_from_one_hero_to_four() {
         assert!(!d.wiped, "a party of {} was wiped out", d.heroes);
     }
 
-    // The XP split: a lone hero absorbs a whole encounter, four share it, so the solo
-    // dive should bank more XP PER FIGHT than the full party's.
+    // The XP split, measured as a RATE rather than per fight — because per fight is not
+    // the claim the balance actually makes. An encounter pays `encounter_party_scale`
+    // (4.4x at four heroes) BEFORE it is divided among the survivors, so a full party's
+    // per-hero share of a single fight is roughly 1.1x a lone hero's, not a quarter of
+    // it. That is deliberate: charging the party scale on both sides would bill it twice.
     //
-    // Measured in XP rather than level. At these depths nobody clears level 1 inside
-    // the budget, and `level / fights_won` with every level pinned at 1 does not
-    // measure the split at all — it just rewards whichever size won the FEWEST
-    // fights, which made the solo dive fail for being the most productive.
+    // The cost of fielding four is TIME. Their fights take about three times as long, so
+    // the lone hero banks far more XP per SECOND — which is the thing "the solo era
+    // levels fast" actually means, and the thing worth defending in a test.
     let solo = &runs[0];
     let full = &runs[3];
-    let solo_rate = solo.xp as f64 / solo.fights_won.max(1) as f64;
-    let full_rate = full.xp as f64 / full.fights_won.max(1) as f64;
+    let per_sec = |d: &Dive| d.xp as f64 / (d.secs_per_fight * d.fights_won.max(1) as f64).max(0.1);
+    let (solo_rate, full_rate) = (per_sec(solo), per_sec(full));
     assert!(
         solo_rate >= full_rate,
-        "a lone hero banked less XP per fight than a full party: {solo_rate:.1} vs {full_rate:.1}"
+        "a lone hero banked XP more slowly than a full party: {solo_rate:.2}/s vs \
+         {full_rate:.2}/s — the party ramp is not paying for itself"
     );
 
     // The encounter ramp: creature health scales superlinearly with party size, so a
