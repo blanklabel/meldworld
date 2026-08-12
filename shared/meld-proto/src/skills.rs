@@ -535,7 +535,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "bulwark",
         name: "Plant the Bulwark",
         class: "smithwright",
-        unlock: 12,
+        unlock: 9,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP.",
         upgrades: None,
         rank: "Journeyman Smithwright",
@@ -544,7 +544,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "tempering_blow",
         name: "Tempering Blow",
         class: "smithwright",
-        unlock: 20,
+        unlock: 16,
         description: "Raises ONE ally's attack for the rest of the fight. No damage of its own.",
         upgrades: None,
         rank: "Smithwright",
@@ -553,7 +553,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "slag_spray",
         name: "Slag Spray",
         class: "smithwright",
-        unlock: 28,
+        unlock: 25,
         description: "Damage to EVERY enemy, ignoring armour.",
         upgrades: None,
         rank: "Master Smithwright",
@@ -591,7 +591,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "bloomfield",
         name: "Bloomfield",
         class: "keeper",
-        unlock: 12,
+        unlock: 9,
         description: "Regen for the WHOLE party.",
         upgrades: None,
         rank: "Budling",
@@ -600,7 +600,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "root_snare",
         name: "Root Snare",
         class: "keeper",
-        unlock: 20,
+        unlock: 16,
         description: "Damage and a heavy gauge drain - its turn is a long way off.",
         upgrades: None,
         rank: "Flowerling",
@@ -609,7 +609,7 @@ pub const SKILLS: &[SkillDef] = &[
         key: "vital_draught",
         name: "Vital Draught",
         class: "keeper",
-        unlock: 28,
+        unlock: 25,
         description: "Grants an ally Barrier and Regen together.",
         upgrades: None,
         rank: "Cultivator",
@@ -743,10 +743,28 @@ pub fn skill_owner(skill: &str) -> Option<&'static str> {
     self::skill(skill).map(|s| s.class)
 }
 
-/// A class's whole kit, including superseded versions. Callers showing a menu want
-/// [`skills_for_class_at`] instead.
+/// Every class that owns a kit, in registry order. Read off `SKILLS` rather than
+/// listed, so a class cannot be added and then quietly left out of a rule.
+pub fn all_classes() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in SKILLS {
+        if !out.iter().any(|c| c == s.class) {
+            out.push(s.class.to_string());
+        }
+    }
+    out
+}
+
+/// A class's whole kit, including superseded versions, **in ladder order**. Callers
+/// showing a menu want [`skills_for_class_at`] instead.
+///
+/// Sorted by unlock, not registry order: the Explorer's `Now` (49) is written above
+/// `A World Known` (36) in the table, and the abilities panel listed them that way —
+/// a ladder shown out of order reads as no ladder.
 pub fn skills_for_class(class: &str) -> Vec<&'static SkillDef> {
-    SKILLS.iter().filter(|s| s.class == class).collect()
+    let mut kit: Vec<&'static SkillDef> = SKILLS.iter().filter(|s| s.class == class).collect();
+    kit.sort_by_key(|s| s.unlock);
+    kit
 }
 
 /// What a hero of `class` at `level` can actually do: unlocked abilities, with any
@@ -754,7 +772,7 @@ pub fn skills_for_class(class: &str) -> Vec<&'static SkillDef> {
 /// Steal — the row improved, it did not multiply.
 pub fn skills_for_class_at(class: &str, level: i32) -> Vec<&'static SkillDef> {
     let owned: Vec<&SkillDef> =
-        SKILLS.iter().filter(|s| s.class == class && level >= s.unlock).collect();
+        skills_for_class(class).into_iter().filter(|s| level >= s.unlock).collect();
     let superseded: Vec<&str> = owned.iter().filter_map(|s| s.upgrades).collect();
     owned.into_iter().filter(|s| !superseded.contains(&s.key)).collect()
 }
@@ -1048,7 +1066,13 @@ mod tests {
     fn abilities_are_spaced_out_to_about_a_hundred_not_bunched_under_ten() {
         // The point of the ladder is that levelling keeps paying. A kit whose last
         // ability lands at level 5 stops mattering at level 5.
-        for class in ["hunter", "explorer", "psyker", "resonant", "shifter", "phoenix_guard"] {
+        //
+        // EVERY class, read off the registry — a hand-written list is a list that a
+        // new class is simply left off, and the Smithwright and the Keeper were: both
+        // shipped on 1/4/12/20/28/36 while the rule below says squares, and nothing
+        // failed because neither was named here.
+        for class in all_classes() {
+            let class = class.as_str();
             let kit = skills_for_class(class);
             let mut levels: Vec<i32> = kit.iter().map(|s| s.unlock).collect();
             levels.sort();
@@ -1060,7 +1084,13 @@ mod tests {
                 assert_eq!(r * r, *lv, "{class}: level {lv} is not a square");
             }
             assert!(*levels.last().unwrap() <= 100, "{class} reaches past 100");
+            // And the kit is HANDED OUT in ladder order, so the abilities panel and
+            // the battle menu read as a ladder rather than as table order.
+            let shown: Vec<i32> = kit.iter().map(|s| s.unlock).collect();
+            assert_eq!(shown, levels, "{class}'s kit is listed out of ladder order");
         }
+        // Every class in the registry is covered, not a hand-picked few.
+        assert_eq!(all_classes().len(), 8, "{:?}", all_classes());
         // The hybrid kits reach past the martial ceiling, or the archetypes are a
         // distinction with no difference.
         assert!(
