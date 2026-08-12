@@ -531,7 +531,9 @@ pub fn party_fighters(
                 // A Resonant regenerates a little HP each of its turns (innate) and
                 // stands in the back row.
                 CharacterClass::Resonant => {
-                    f.regen = balance.battle.resonant_regen_per_turn;
+                    f.regen = ((f.max_hp as f64) * balance.battle.resonant_regen_fraction)
+                        .round()
+                        .max(1.0) as i32;
                     f.back_row = true;
                 }
                 // Adrenaline belongs to the HUNTER, which is where every ability that

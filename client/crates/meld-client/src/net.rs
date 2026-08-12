@@ -418,6 +418,11 @@ pub struct PerksLine {
     pub shifter_trap_radius: f32,
     pub psyker_threat: u8,
     pub psyker_reveal_radius: f32,
+    /// World-units at which a Smithwright reveals ORE veins / a Keeper REAGENT beds.
+    /// The server already force-includes them in the snapshot; these are for the HUD
+    /// hint and the minimap.
+    pub smithwright_ore_radius: f32,
+    pub keeper_reagent_radius: f32,
     pub resonant_regen: f32,
     pub phoenix_guard_aggro_mult: f32,
 }
@@ -434,6 +439,8 @@ impl Default for PerksLine {
             shifter_trap_radius: 0.0,
             psyker_threat: 0,
             psyker_reveal_radius: 0.0,
+            smithwright_ore_radius: 0.0,
+            keeper_reagent_radius: 0.0,
             resonant_regen: 0.0,
             phoenix_guard_aggro_mult: 1.0,
         }
@@ -2091,6 +2098,8 @@ impl Inner {
                     shifter_trap_radius: f("shifter_trap_radius"),
                     psyker_threat: u("psyker_threat"),
                     psyker_reveal_radius: f("psyker_reveal_radius"),
+                    smithwright_ore_radius: f("smithwright_ore_radius"),
+                    keeper_reagent_radius: f("keeper_reagent_radius"),
                     resonant_regen: f("resonant_regen"),
                     // Neutral default is 1.0 (no Phoenix Guard), not 0.0.
                     phoenix_guard_aggro_mult: p["phoenix_guard_aggro_mult"].as_f64().unwrap_or(1.0) as f32,

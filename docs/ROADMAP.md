@@ -400,14 +400,75 @@ burns on death/leave; some is single-use. See
   - *Also shipped:* **abilities spread to ~100** on square-number levels (1, 4, 9,
     16, 25, 36…), which on the `L + 1` fights-per-level curve makes each new ability
     cost a step up in commitment rather than an ever-flatter trickle.
-  - *Also shipped:* **ability distribution by archetype** — the Dragon Quest lesson
-    that not every class should keep learning. `meld_proto::skills::Archetype` splits
-    the roster: **martial** (Hunter, Shifter) gets a short front-loaded kit and scales
-    on *gear* — its ceiling is level 25, because a new button at 80 would make it a
-    caster; **hybrid** (Explorer, Phoenix Guard) reaches 49; **caster** (Psyker,
-    Resonant) runs the whole way to 100, since the kit *is* its progression. A unit
-    test holds each class to its ceiling, so "more abilities" can never quietly become
-    "ten each".
+  - *Also shipped:* **the crafters' overworld ladder (MS-1's second half).** Every other
+    class earns an overworld perk that scales with run level; the two PROFESSION classes —
+    the pair whose whole identity is what they do between fights — earned nothing for
+    walking around. Smithwright: *Prospector's Eye*, *Efficient Setup*, *Travelling Forge*,
+    *The Long Shift*. Keeper: *Forager's Path*, *Green Thumb*, *Rooted Ground*, *The Whole
+    Vein*. Each reads only its own trade's materials (`ore` vs `reagent`, off the material
+    registry) and is force-included in that player's snapshot rather than widening the
+    shared interest cull. `compute_perks` became a free function so the whole system is
+    finally unit-tested, and `no_class_walks_the_overworld_with_nothing` reads the class
+    list off the registry — the two missing classes were missing for a release.
+  - *Also shipped:* **every party-wide capstone is a once-a-fight call.** Eternal Bloom,
+    Phoenix Ascendant, Anvil Chorus, The Great Work, World Tree and Hallowed Ground join
+    Now, The World Entire, Iron Lung, Pin the Prey, Grand Larceny and Second Life.
+    `a_party_wide_capstone_is_a_once_a_fight_call` checks the RULE rather than the list —
+    a class's deepest rung, if it covers the whole party or every enemy, must be gated
+    (Psyker Foci excepted: a Focus is held, and its limit is the slot).
+  - *Also shipped:* **one stack ceiling, and Regen finally decays.** `regen +=`
+    accumulated without limit and never faded — the only lasting effect in the game with
+    neither decay nor expiry — so turns spent on it bought permanent, ever-growing party
+    sustain (measured: 5 stacks healing 150 HP a turn, forever). Regen now sheds
+    `regen_decay_fraction` a turn like the Barrier beside it, and **every** lasting effect
+    (Regen, Barrier, Evasion, the fight-long attack buff, and the consumables that grant
+    them) answers to `[battle] max_effect_stacks` = 5, refused past the ceiling rather than
+    silently wasted. All of it routes through four `grant_*` helpers so a call site cannot
+    add a stack nobody counted.
+  - *Also shipped:* **the flat-magnitude fault.** Some grants were fractions of max HP and
+    scaled with level; others were flat points and did not. A hero runs 40 max HP / 12 atk
+    at level 1 to ~535 / ~309 at 100, so the flat ones decayed to nothing: the Keeper's
+    World Tree restored **4.9%** of a hero where the Resonant's Eternal Bloom restored
+    **85%** — the Keeper stopped being a healer around level 30 — and the Smithwright's
+    `+4 atk` Tempering Blow went from +33% to +1.6%. Barrier decay was flat too, so a deep
+    hero's Barrier outlasted the fight. Every one is now a fraction of the recipient
+    (`Battle::scaled_to` / `grant_regen`), and **the Resonant is the best healer by rule** —
+    `the_healer_is_the_best_healer` holds both crafters' numbers under the healer's.
+  - *Also shipped:* **round rungs.** `skills::RUNGS` = 1 / 5 / 10 / 20 / 35 / 50 / 75 / 100 /
+    150 / 200 / 255, replacing squares — a player counting to their next ability counts in
+    tens, and 49 became a legible **50**. `ladder_top` is 255 for a caster, 100 for the rest,
+    so the casters genuinely learn most: Psyker **Event Horizon** and Resonant **Second
+    Life** land at 255.
+  - *Also shipped:* **once-a-fight calls, spent centrally.** A martial class's repeatable
+    rows stop improving at 50 and gear carries it from there; what it learns after is one
+    dramatic call per fight — Hunter **Pin the Prey** (the pack snared at once) and Shifter
+    **Grand Larceny** (a Mug against every enemy, every pocket picked), plus Iron Lung and
+    The World Entire. `resolve_skill` marks them spent on any successful resolve rather than
+    each arm pushing its own key, which was a list an ability could fall off and be infinite.
+  - *Also shipped:* **every class learns at 50 and at 100.** Five of the eight stopped
+    at 25 or 36 — the Hunter, Shifter, Phoenix Guard, Smithwright and Keeper all ran
+    out of ladder while the level cap is 255 — so levelling stopped paying for most of
+    the roster. Thirteen new abilities close it: Explorer **The World Entire**;
+    Hunter **Iron Lung** / **Apex Predator** / **Pin the Prey**; Shifter **Assassinate** /
+    **Grand Larceny**; Phoenix Guard **Hallowed Ground** / **Phoenix Ascendant**;
+    Smithwright **Anvil Chorus** / **The Great Work**; Keeper **Thorn Grove** /
+    **World Tree**; Psyker **Event Horizon**; Resonant **Second Life**.
+  - *Also shipped:* **archetype now governs menu WIDTH, not ladder depth.** The Dragon
+    Quest lesson it encoded — a martial class's late game is its weapon, not a longer
+    menu — survives in *how* a class reaches the top: martial (Hunter, Shifter) gets
+    there through `upgrades`, so Frenzy becomes Apex Predator and the menu stays four
+    rows; hybrid may field 8, caster 10. `menu_width` replaces `ladder_ceiling`, and
+    tests hold both halves: every class learns at 49 and 100, and no class outgrows its
+    width. "More abilities" still cannot quietly become "ten each".
+  - *Also shipped:* **the registry owns targeting and routing.** `SkillDef.target`
+    (Enemy / Ally / Caster / AllEnemies / Party) replaced two hand-written lists that
+    had both gone stale against it: the engine's per-class dispatch in `resolve_skill`,
+    where an unlisted key fell through every arm and came back "unknown skill" — a row
+    in the menu that cost a turn and did nothing — and the client's `order_side`, which
+    still named the Iron Hull's `root` / `toll_of_the_deep`, so the Phoenix Guard's
+    self-cast Rite of Rest and all-enemy Purging Light both asked the player to aim at
+    one creature. Tests: every registered ability resolves, and prose and targeting
+    agree.
   - *Also shipped:* the **Resonant's full caster ladder** — Mend All (16), Sanctuary
     (25), Revitalize (36), Lifewell (49), Bloodbond (64), Martyr (81) and Eternal
     Bloom (100). Seven abilities of one shape (heal / Regen / Barrier, on one ally or

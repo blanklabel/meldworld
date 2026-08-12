@@ -1000,7 +1000,20 @@ impl WorldActor {
     /// `[perks]` balance thresholds. A perk stays neutral unless its class is in
     /// the party. Kept deterministic + side-effect-free so it can be unit-tested.
     fn compute_perks(&self, classes: &[CharacterClass], run_level: i32) -> wr::Perks {
-        let p = &self.balance.perks;
+        compute_perks(&self.balance.perks, classes, run_level)
+    }
+}
+
+/// Pure mapping from (party classes x run level) -> earned perks against the `[perks]`
+/// balance thresholds. A perk stays neutral unless its class is in the party. A free
+/// function rather than a method because it reads nothing but balance — which is what
+/// makes it unit-testable without standing up an instance.
+pub(crate) fn compute_perks(
+    p: &meld_balance::Perks,
+    classes: &[CharacterClass],
+    run_level: i32,
+) -> wr::Perks {
+    {
         let has = |c: CharacterClass| classes.contains(&c);
         let lvl = run_level.max(1);
         let above = |floor: i32| (lvl - floor).max(0) as f32;
@@ -1058,6 +1071,41 @@ impl WorldActor {
         if has(CharacterClass::Resonant) {
             out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
         }
+        // Smithwright — the Foundry's half of MS-1's second ladder. It reads rock at
+        // range, raises benches quicker and cheaper than anyone, gets its whole stock
+        // back when it packs one up, and its benches outlast other people's.
+        if has(CharacterClass::Smithwright) {
+            if lvl >= p.smithwright_ore_sense_at {
+                out.smithwright_ore_radius = p.smithwright_ore_radius_base
+                    + p.smithwright_ore_radius_per_level * above(p.smithwright_ore_sense_at);
+            }
+            if lvl >= p.smithwright_setup_at {
+                out.smithwright_setup_mult = p.smithwright_setup_mult;
+                out.smithwright_stock_discount = p.smithwright_stock_discount;
+            }
+            out.smithwright_pack_full = lvl >= p.smithwright_pack_full_at;
+            if lvl >= p.smithwright_bench_uses_at {
+                out.smithwright_bench_uses = p.smithwright_bench_uses_bonus;
+            }
+        }
+        // Keeper — the Open Flower's half. It reads growing things at range, takes more
+        // from a bed than anyone, and its still is a place the party can actually rest.
+        if has(CharacterClass::Keeper) {
+            if lvl >= p.keeper_reagent_sense_at {
+                out.keeper_reagent_radius = p.keeper_reagent_radius_base
+                    + p.keeper_reagent_radius_per_level * above(p.keeper_reagent_sense_at);
+            }
+            if lvl >= p.keeper_green_thumb_at {
+                out.keeper_extra_unit_chance = p.keeper_green_thumb_chance as f32;
+            }
+            if lvl >= p.keeper_rooted_at {
+                out.keeper_field_radius_mult = p.keeper_rooted_radius_mult;
+                out.keeper_field_regen_mult = p.keeper_rooted_regen_mult;
+            }
+            if lvl >= p.keeper_whole_vein_at {
+                out.keeper_free_unit_chance = p.keeper_whole_vein_chance as f32;
+            }
+        }
         // Phoenix Guard — bulwark (shrinks how close creatures chase this party).
         if has(CharacterClass::PhoenixGuard) {
             let mult = 1.0 - p.phoenix_guard_aggro_reduction_per_level * lvl as f64;
@@ -1065,7 +1113,9 @@ impl WorldActor {
         }
         out
     }
+}
 
+impl WorldActor {
     fn snapshot_msgs(&mut self) -> Vec<Outgoing> {
         let mut entities: Vec<wm::SnapshotEntity> = self
             .arena
@@ -1123,8 +1173,19 @@ impl WorldActor {
                 ..Default::default()
             });
         }
-        // Un-harvested resource nodes, tagged `resource:<kind>` for the client.
+        // Un-harvested resource nodes, tagged `resource:<kind>` for the client. Their
+        // index and material CLASS are remembered so a crafter's node-sense can force
+        // them into its own snapshot from further out than anyone else sees them.
+        let mut node_index: Vec<(usize, Position, Option<meld_proto::materials::MaterialClass>)> =
+            Vec::new();
         for n in self.arena.resources.iter().filter(|n| !n.depleted()) {
+            let class = self
+                .balance
+                .resource
+                .get(&n.kind)
+                .and_then(|r| meld_proto::materials::material(&r.material))
+                .map(|m| m.class);
+            node_index.push((entities.len(), n.position, class));
             entities.push(wm::SnapshotEntity {
                 entity_id: n.entity_id.clone(),
                 position: n.position,
@@ -1261,17 +1322,49 @@ impl WorldActor {
             // (dangerous foes sensed at range). Non-mob entities keep the base radius.
             let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
             let mob_radius2 = mob_radius * mob_radius;
+            // A crafter reads the half of the world its own trade is built on, from
+            // further out than the interest radius: the Foundry sees ORE, the Open Flower
+            // sees REAGENTS. Force-included the way the portal is, rather than widening
+            // the shared cull — a wider cull would show everyone everything.
+            let perks = self.perks_for(&r.player_id);
+            let sight = |class: &Option<meld_proto::materials::MaterialClass>| -> f64 {
+                match class {
+                    Some(meld_proto::materials::MaterialClass::Ore) => {
+                        perks.smithwright_ore_radius as f64
+                    }
+                    Some(meld_proto::materials::MaterialClass::Reagent) => {
+                        perks.keeper_reagent_radius as f64
+                    }
+                    _ => 0.0,
+                }
+            };
+            let sensed: Vec<usize> = match me_pos {
+                Some(p) if perks.smithwright_ore_radius > 0.0 || perks.keeper_reagent_radius > 0.0 => {
+                    node_index
+                        .iter()
+                        .filter(|(_, pos, class)| {
+                            let reach = sight(class);
+                            reach > 0.0 && p.distance_to(pos) <= reach
+                        })
+                        .map(|(i, _, _)| *i)
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 // Grid-indexed interest cull (SC-1): behaviour-identical to the old
                 // full scan (own avatar + portal always; mobs at `mob_radius`, the
                 // rest at `radius`) but O(visible) via the chunk grid.
-                Some(p) => interest_visible_indices(
-                    &entities, &grid, cell, p.x, p.y, radius2, mob_radius, mob_radius2, own_idx,
-                    portal_idx,
-                )
-                .into_iter()
-                .map(|i| entities[i].clone())
-                .collect(),
+                Some(p) => {
+                    let mut idxs = interest_visible_indices(
+                        &entities, &grid, cell, p.x, p.y, radius2, mob_radius, mob_radius2,
+                        own_idx, portal_idx,
+                    );
+                    idxs.extend(sensed);
+                    idxs.sort_unstable();
+                    idxs.dedup();
+                    idxs.into_iter().map(|i| entities[i].clone()).collect()
+                }
                 // Defensive: a roaming run should always have an avatar; if not, don't
                 // cull (send the full set) rather than send an empty world.
                 None => entities.clone(),
@@ -1922,14 +2015,18 @@ impl WorldActor {
     fn alembic_field_regen(&self, player_id: &str) -> f32 {
         let Some(a) = self.arena.avatar(player_id) else { return 0.0 };
         let f = &self.balance.forge;
+        // A Keeper deep enough puts ROOTS under its still: the field reaches further and
+        // heals harder, which is the only rest a party without a Resonant gets.
+        let perks = self.perks_for(player_id);
+        let reach = f.alembic_field_radius * perks.keeper_field_radius_mult as f64;
         let warm = self.arena.stations.iter().any(|s| {
             s.kind == "alembic"
                 && !s.spent()
                 && s.elevation == a.elevation
-                && a.position.distance_to(&s.position) <= f.alembic_field_radius
+                && a.position.distance_to(&s.position) <= reach
         });
         if warm {
-            f.alembic_regen_per_sec
+            f.alembic_regen_per_sec * perks.keeper_field_regen_mult
         } else {
             0.0
         }
@@ -5179,7 +5276,16 @@ impl WorldActor {
         }
         // Built from ore you are carrying — the deepest stack first, so a smith who
         // hauled good ore out does not have it spent last.
-        let need = forge.station_ore_cost;
+        // A Smithwright in the party raises benches cheaper and quicker (its overworld
+        // perk); the discount can never take the cost below one unit of stock.
+        let perks = self.perks_for(player_id);
+        let need = (forge.station_ore_cost - perks.smithwright_stock_discount).max(1);
+        // One duration, used for BOTH the completion time and the bar the client draws —
+        // announcing the unperked length would put the progress bar out of step with the
+        // bench actually arriving.
+        let setup_ms = (((forge.station_setup_ms as f64) * perks.smithwright_setup_mult).round()
+            as u64)
+            .max(1);
         let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
@@ -5233,7 +5339,7 @@ impl WorldActor {
         self.building.insert(
             player_id.to_string(),
             Building {
-                completes_at: now + forge.station_setup_ms,
+                completes_at: now + setup_ms,
                 kind: req.kind.clone(),
                 tearing_down: None,
                 stock: ore_kind.clone(),
@@ -5260,8 +5366,8 @@ impl WorldActor {
         out.extend(self.announce_channel(
             player_id,
             &format!("build:{}", req.kind),
-            now + forge.station_setup_ms,
-            forge.station_setup_ms,
+            now + setup_ms,
+            setup_ms,
             Some(seq),
         ));
         (out, Vec::new())
@@ -5398,6 +5504,7 @@ impl WorldActor {
                 }
             }
             let forge = self.balance.forge.clone();
+            let perks = self.perks_for(&pid);
             match &b.tearing_down {
                 None => {
                     if self
@@ -5405,7 +5512,7 @@ impl WorldActor {
                         .place_station(
                             &pid,
                             &b.kind,
-                            forge.station_uses,
+                            forge.station_uses + perks.smithwright_bench_uses,
                             forge.station_radius,
                             &b.stock,
                         )
@@ -5428,7 +5535,17 @@ impl WorldActor {
                         .arena
                         .remove_station(id)
                         .filter(|(left, _)| *left > 0)
-                        .map(|(_, stock)| (forge.station_teardown_refund.max(0), stock));
+                        // A Smithwright deep enough packs a bench up WHOLE: it gets back
+                        // everything the bench was built from, not the salvage everyone
+                        // else settles for.
+                        .map(|(_, stock)| {
+                            let refund = if perks.smithwright_pack_full {
+                                (forge.station_ore_cost - perks.smithwright_stock_discount).max(1)
+                            } else {
+                                forge.station_teardown_refund.max(0)
+                            };
+                            (refund, stock)
+                        });
                     if let Some((refund, kind)) = salvage.filter(|(r, _)| *r > 0) {
                         let kind = kind.as_str();
                         if let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
@@ -5928,10 +6045,21 @@ impl WorldActor {
         let balance = self.balance.clone();
         let mut out = Vec::new();
         for (pid, node_id) in due {
+            // A Keeper's two gathering perks, rolled off the node and the tick so the
+            // outcome is reproducible rather than wall-clock: GREEN THUMB pays a second
+            // unit into the pack, THE WHOLE VEIN takes that unit without charging the
+            // node for it. Both are why the Open Flower is the class you bring to gather.
+            let perks = self.perks_for(&pid);
+            let material = hash_str(&node_id) ^ hash_str(&pid) ^ now;
+            let free = roll_unit(material) < perks.keeper_free_unit_chance as f64;
+            let extra = roll_unit(material ^ 0xA5A5_A5A5) < perks.keeper_extra_unit_chance as f64;
             let Some(kind) = self.arena.take_one(&pid, &node_id) else {
                 out.extend(self.end_harvest(&pid, "moved"));
                 continue;
             };
+            if free {
+                self.arena.refund_one(&node_id);
+            }
             let Some(res) = balance.resource.get(&kind) else {
                 out.extend(self.end_harvest(&pid, "cancelled"));
                 continue;
@@ -5939,7 +6067,7 @@ impl WorldActor {
             let item = ItemStack {
                 item_id: Uuid::now_v7().to_string(),
                 item_kind: res.material.clone(),
-                quantity: 1,
+                quantity: if extra { 2 } else { 1 },
                 insurance: None,
             };
             if let Some(r) = self.run.run_mut(&pid) {
@@ -7793,6 +7921,115 @@ mod unlock_gate_tests {
                 meld_proto::unlocks::granted_by(m, &have).is_empty(),
                 "a single hero at 40 opened a slot it should not"
             );
+        }
+    }
+}
+
+/// The two PROFESSION classes had no overworld perk at all — every other class earns one
+/// for walking around, and the pair whose whole identity is what they do between fights
+/// earned nothing. These cover MS-1's second ladder.
+#[cfg(test)]
+mod crafter_perk_tests {
+    use super::*;
+    use meld_proto::enums::CharacterClass::{Keeper, Smithwright};
+
+    fn perks(classes: &[CharacterClass], lvl: i32) -> wr::Perks {
+        let b = meld_balance::Balance::load_default().unwrap();
+        compute_perks(&b.perks, classes, lvl)
+    }
+
+    /// Neutral means neutral: a party without the class gets the identity values, not
+    /// zeroes. A `0.0` multiplier would silently make every bench instant and every
+    /// alembic field vanish.
+    #[test]
+    fn a_party_without_a_crafter_is_left_exactly_as_it_was() {
+        let p = perks(&[CharacterClass::Explorer], 50);
+        assert_eq!(p.smithwright_ore_radius, 0.0);
+        assert_eq!(p.smithwright_setup_mult, 1.0, "no smith must not speed benches up");
+        assert_eq!(p.smithwright_stock_discount, 0);
+        assert!(!p.smithwright_pack_full);
+        assert_eq!(p.smithwright_bench_uses, 0);
+        assert_eq!(p.keeper_reagent_radius, 0.0);
+        assert_eq!(p.keeper_extra_unit_chance, 0.0);
+        assert_eq!(p.keeper_field_radius_mult, 1.0, "no Keeper must not shrink the field");
+        assert_eq!(p.keeper_field_regen_mult, 1.0);
+        assert_eq!(p.keeper_free_unit_chance, 0.0);
+    }
+
+    /// Each rung arrives at its own level and not before — the same shape every other
+    /// class's perks have.
+    #[test]
+    fn the_smithwrights_ladder_arrives_a_rung_at_a_time() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let at = |lvl| compute_perks(&b.perks, &[Smithwright], lvl);
+        let p = &b.perks;
+
+        assert!(at(p.smithwright_ore_sense_at).smithwright_ore_radius > 0.0, "no ore sense");
+        // Deeper reads further.
+        assert!(
+            at(p.smithwright_ore_sense_at + 10).smithwright_ore_radius
+                > at(p.smithwright_ore_sense_at).smithwright_ore_radius
+        );
+
+        assert_eq!(at(p.smithwright_setup_at - 1).smithwright_setup_mult, 1.0);
+        assert!(at(p.smithwright_setup_at).smithwright_setup_mult < 1.0, "benches not quicker");
+        assert!(at(p.smithwright_setup_at).smithwright_stock_discount > 0);
+
+        assert!(!at(p.smithwright_pack_full_at - 1).smithwright_pack_full);
+        assert!(at(p.smithwright_pack_full_at).smithwright_pack_full);
+
+        assert_eq!(at(p.smithwright_bench_uses_at - 1).smithwright_bench_uses, 0);
+        assert!(at(p.smithwright_bench_uses_at).smithwright_bench_uses > 0);
+    }
+
+    #[test]
+    fn the_keepers_ladder_arrives_a_rung_at_a_time() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let at = |lvl| compute_perks(&b.perks, &[Keeper], lvl);
+        let p = &b.perks;
+
+        assert!(at(p.keeper_reagent_sense_at).keeper_reagent_radius > 0.0, "no reagent sense");
+        assert!(
+            at(p.keeper_reagent_sense_at + 10).keeper_reagent_radius
+                > at(p.keeper_reagent_sense_at).keeper_reagent_radius
+        );
+
+        assert_eq!(at(p.keeper_green_thumb_at - 1).keeper_extra_unit_chance, 0.0);
+        assert!(at(p.keeper_green_thumb_at).keeper_extra_unit_chance > 0.0);
+
+        assert_eq!(at(p.keeper_rooted_at - 1).keeper_field_radius_mult, 1.0);
+        assert!(at(p.keeper_rooted_at).keeper_field_radius_mult > 1.0, "field did not root");
+        assert!(at(p.keeper_rooted_at).keeper_field_regen_mult > 1.0);
+
+        assert_eq!(at(p.keeper_whole_vein_at - 1).keeper_free_unit_chance, 0.0);
+        assert!(at(p.keeper_whole_vein_at).keeper_free_unit_chance > 0.0);
+    }
+
+    /// A crafter sees the half of the world its OWN trade is built on, and not the other
+    /// half — the Foundry reads rock, the Open Flower reads growing things.
+    #[test]
+    fn each_crafter_reads_its_own_materials() {
+        let smith = perks(&[Smithwright], 50);
+        assert!(smith.smithwright_ore_radius > 0.0 && smith.keeper_reagent_radius == 0.0);
+        let keeper = perks(&[Keeper], 50);
+        assert!(keeper.keeper_reagent_radius > 0.0 && keeper.smithwright_ore_radius == 0.0);
+        // Both in the party and both halves are lit.
+        let both = perks(&[Smithwright, Keeper], 50);
+        assert!(both.smithwright_ore_radius > 0.0 && both.keeper_reagent_radius > 0.0);
+    }
+
+    /// EVERY class earns something for walking around. Read off the class list rather
+    /// than a hand-written one, because the two that were missing were missing for a
+    /// whole release and nothing said so.
+    #[test]
+    fn no_class_walks_the_overworld_with_nothing() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        for key in meld_proto::skills::all_classes() {
+            let Some(class) = meld_proto::equipment::class_from_key(&key) else { continue };
+            let p = compute_perks(&b.perks, &[class], 50);
+            let neutral = compute_perks(&b.perks, &[], 50);
+            let differs = format!("{p:?}") != format!("{neutral:?}");
+            assert!(differs, "{key} earns no overworld perk at all");
         }
     }
 }

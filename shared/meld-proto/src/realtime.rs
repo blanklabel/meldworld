@@ -697,6 +697,38 @@ pub mod run {
         /// Resonant overworld regen applied server-side, in HP/sec (display hint).
         #[serde(default)]
         pub resonant_regen: f32,
+        /// World-units within which a Smithwright reveals ORE veins (0 = none). The
+        /// Foundry reads rock; the Open Flower reads growing things, so the two
+        /// crafters see the half of the world their own trade is built on.
+        #[serde(default)]
+        pub smithwright_ore_radius: f32,
+        /// Multiplier on the channel to RAISE a station (1 = no Smithwright).
+        #[serde(default = "one_f64")]
+        pub smithwright_setup_mult: f64,
+        /// Ore knocked off what raising a station costs (0 = none).
+        #[serde(default)]
+        pub smithwright_stock_discount: i32,
+        /// Whether packing a bench up returns its WHOLE stock rather than part.
+        #[serde(default)]
+        pub smithwright_pack_full: bool,
+        /// Extra jobs a Smithwright's bench serves before it is spent.
+        #[serde(default)]
+        pub smithwright_bench_uses: i32,
+        /// World-units within which a Keeper reveals REAGENT beds (0 = none).
+        #[serde(default)]
+        pub keeper_reagent_radius: f32,
+        /// Chance a harvest tick yields a second unit (0 = no Keeper).
+        #[serde(default)]
+        pub keeper_extra_unit_chance: f32,
+        /// Multipliers on the alembic's regen field — how far it reaches and how
+        /// hard it heals (1 = no Keeper, or not deep enough yet).
+        #[serde(default = "one_f32")]
+        pub keeper_field_radius_mult: f32,
+        #[serde(default = "one_f32")]
+        pub keeper_field_regen_mult: f32,
+        /// Chance a harvested unit costs the node no stock at all (0 = none).
+        #[serde(default)]
+        pub keeper_free_unit_chance: f32,
         /// Phoenix Guard skirmish/aggro radius multiplier (≤1; 1 = no Phoenix Guard).
         #[serde(default = "one_f32")]
         pub phoenix_guard_aggro_mult: f32,
@@ -704,9 +736,13 @@ pub mod run {
     fn one_f32() -> f32 {
         1.0
     }
+    fn one_f64() -> f64 {
+        1.0
+    }
     /// Neutral perks (no gating class in the party). Note `phoenix_guard_aggro_mult`
     /// defaults to 1.0 (no aggro reduction), NOT 0.0 — so a derived `Default`
-    /// would be wrong; this is hand-written to match the serde `default`.
+    /// would be wrong; this is hand-written to match the serde `default`. The same holds
+    /// for the Smithwright's `setup_mult` and the Keeper's two field multipliers.
     impl Default for Perks {
         fn default() -> Self {
             Self {
@@ -720,6 +756,16 @@ pub mod run {
                 psyker_threat: 0,
                 psyker_reveal_radius: 0.0,
                 resonant_regen: 0.0,
+                smithwright_ore_radius: 0.0,
+                smithwright_setup_mult: 1.0,
+                smithwright_stock_discount: 0,
+                smithwright_pack_full: false,
+                smithwright_bench_uses: 0,
+                keeper_reagent_radius: 0.0,
+                keeper_extra_unit_chance: 0.0,
+                keeper_field_radius_mult: 1.0,
+                keeper_field_regen_mult: 1.0,
+                keeper_free_unit_chance: 0.0,
                 phoenix_guard_aggro_mult: 1.0,
             }
         }

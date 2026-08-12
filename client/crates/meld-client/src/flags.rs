@@ -235,6 +235,24 @@ pub(crate) fn menu_flag() -> Option<String> {
     params.get("menu").filter(|s| !s.is_empty())
 }
 
+/// `MELD_HERO_LEVEL=<n>` / `?hero_level=` — the level the mock roster's heroes are at.
+/// Defaults to 1. The deep ability rungs land at 49 and 100, so without this the
+/// mocked Abilities pane can only ever show a level-1 kit and the rows added out
+/// there cannot be screenshot-verified at all.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn hero_level_flag() -> i32 {
+    std::env::var("MELD_HERO_LEVEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn hero_level_flag() -> i32 {
+    (|| {
+        let search = web_sys::window()?.location().search().ok()?;
+        let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+        params.get("hero_level")?.parse().ok()
+    })()
+    .unwrap_or(1)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn unlock_mockup_flag() -> Option<String> {
     std::env::var("MELD_UNLOCK").ok().filter(|s| !s.is_empty())

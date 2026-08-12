@@ -180,7 +180,18 @@ psyker_thermal_tick_mult = 0.62       # Thermal Flux (L36): one foe, fire-typed
 psyker_dissolution_tick_mult = 0.5    # Matter Dissolution (L49): one foe...
 psyker_dissolution_armour_shred = 2   # ...and its armour corrodes this much per tick
 psyker_phase_evasion = 0.06           # Phase Shift (L64): Evasion granted per tick
-psyker_collapse_tick_mult = 0.55      # Reality Collapse (L100): all enemies, armour-ignoring
+psyker_collapse_tick_mult = 0.55      # Reality Collapse: all enemies, armour-ignoring
+# Event Horizon (255), the caster capstone: it grinds the line AND slows every enemy's gauge
+# FILL RATE (via `status_slow_mult`, the same multiplier a web or a chill uses) for as long
+# as it is held. The damage is deliberately modest — the tempo is what you pay 255 levels for.
+#
+# It slows the RATE rather than capping the gauge, and that is not a detail: creature
+# `speed_stat` is a fixed constant that never scales while a hero's climbs with Dex, so a
+# level-255 Psyker takes several turns per creature turn. A cap would knock every creature
+# back below the line each time it approached one and they would never act again. The window
+# is a little longer than a Psyker's own turn so the slow never lapses while the Focus is up.
+psyker_horizon_tick_mult = 0.35
+psyker_horizon_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
 psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick
@@ -189,7 +200,20 @@ psyker_anchor_gauge_drain = 0.2   # Temporal Anchor: enemy ATB gauge -= drain*st
 
 # Barrier (temp HP): a pool that absorbs damage before HP and decays a fixed
 # amount at the start of each of the holder's turns. [TUNABLE]
-barrier_decay_per_turn = 2
+# A SHARE OF THE POOL rather than flat points, with a 1 HP floor so it always drains. A
+# flat 2 was three turns of a level-1 hero's 5-point Barrier and ~60 turns of a level-100
+# hero's 118-point one — so the deep game's Barriers never expired at all.
+barrier_decay_fraction = 0.15
+# REGEN DECAYS TOO, and for the same reason. It was the one lasting effect with neither
+# decay nor expiry, so a healer spending turns on it bought permanent party sustain that
+# only ever grew. It sheds this share of itself each of the holder's turns (floor 1), and
+# when it is spent the stacks it cost come back. [TUNABLE]
+regen_decay_fraction = 0.2
+# THE STACK CEILING, shared by every lasting effect — Regen, Barrier, Evasion and the
+# fight-long attack buff. One number so "how many of these can I hold" is something a
+# player learns once instead of four things they discover. A grant past the ceiling is
+# refused outright rather than silently wasted. [TUNABLE]
+max_effect_stacks = 5
 
 # The Resonant (healer). Innate Regen (HP restored at the start of each of its
 # turns), plus three ally-targeting skills that auto-pick the most-wounded ally:
@@ -198,10 +222,15 @@ barrier_decay_per_turn = 2
 #   Regen Boon  — grant an ally the Regen status.
 #   Ward        — grant an ally Barrier.
 # All [TUNABLE].
-resonant_regen_per_turn = 3
+# REGEN IS A FRACTION OF THE HOLDER'S MAX HP PER TURN, everywhere. Flat Regen was
+# consistent across classes but became decorative past ~level 40, which is most of the
+# ladder. The granted value is still stored as absolute HP on the fighter (so the wire
+# token `regen:<n>` and the client are unchanged) — the FRACTION is what scales it to
+# whoever receives it.
+resonant_regen_fraction = 0.02
 resonant_transfuse_heal_fraction = 0.4
 resonant_transfuse_cost_fraction = 0.5
-resonant_boon_regen = 3
+resonant_boon_regen_fraction = 0.03
 resonant_ward_barrier_fraction = 0.3
 
 # The Shifter (rogue / fortune-explorer, "Runner"). A fast, fragile front-line
@@ -220,6 +249,13 @@ shifter_flicker_evasion = 0.4    # Flicker: dodge bonus granted (added to Dex do
 shifter_flicker_decay = 0.15     # Evasion lost at the start of each of the Shifter's turns
 shifter_ransack_mult = 1.0       # Ransack: dmg = atk*mult - def
 shifter_ransack_drain = 0.35     # Ransack: enemy ATB gauge -= this on hit
+# The deep rungs (49, 100). A martial class reaches the top by its EXISTING rows getting
+# better, never by growing a fifth button — so these upgrade Backstab and Ransack in
+# place and the Shifter still fields four. [TUNABLE]
+shifter_assassinate_mult = 2.2   # Assassinate (49, upgrades Backstab): dmg = atk*mult
+shifter_assassinate_pierce = 1.0 # ...and it ignores armour ENTIRELY, not just most of it
+shifter_larceny_mult = 1.2       # Grand Larceny (100, upgrades Ransack): to EVERY enemy
+shifter_larceny_drain = 0.45     # ...and drains each of their gauges by this
 
 # The HUNTER (martial baseline). It has no special resource until it earns one: every
 # basic Attack banks `adrenaline_per_attack` Adrenaline (up to `adrenaline_max`), and
@@ -245,6 +281,12 @@ explorer_snare_mult = 1.0              # Snare: dmg = atk*mult - def
 explorer_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
 hunter_frenzy_cost = 80              # Frenzy: Adrenaline spent
 explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
+# The deep rungs (49, 100). Both UPGRADE a row the Hunter already has and cost exactly
+# what the row they replace cost — the kit gets better, the Adrenaline economy does not
+# move, and the menu stays four wide. [TUNABLE]
+hunter_iron_lung_heal_fraction = 0.45  # Iron Lung (49, upgrades Second Wind): heal = max_hp*this
+hunter_iron_lung_regen_fraction = 0.05 # ...and Regen a turn on top, so the wound keeps closing
+hunter_apex_mult = 2.6                 # Apex Predator (100, upgrades Frenzy): to EVERY enemy
 
 # The Order of the Phoenix Guard (anti-undead tank). A dense, deliberate front-line
 # wall. Its kit is level-gated — no build-up resource.
@@ -275,6 +317,14 @@ phoenix_guard_vigil_barrier_fraction = 0.14
 # already is — `mult + bonus * missing_hp_fraction` — so it finishes rather than opens.
 phoenix_guard_eradication_mult = 1.2
 phoenix_guard_eradication_missing_bonus = 2.2
+# Hallowed Ground (49): the wall stops EVERYTHING — damage to every living enemy that
+# also zeroes each of their gauges. Its multiplier sits below Purging Light's because a
+# full party-wide stagger is worth more than the damage is. [TUNABLE]
+phoenix_guard_hallowed_mult = 0.9
+# Phoenix Ascendant (100): the order's own fire. Heavy on every enemy (and far heavier
+# on undead, via `phoenix_guard_undead_mult`), and the same flame Barriers the party.
+phoenix_guard_ascendant_mult = 1.8
+phoenix_guard_ascendant_barrier_fraction = 0.18
 
 # Explorer, the mapping order. Its kit is tempo and stability rather than burst: it
 # keeps the party moving and standing. No Adrenaline — nothing here has a resource
@@ -317,6 +367,12 @@ explorer_haste_ticks = 100       # ~10s at the 100ms tick
 # NOW — and it can be spent exactly once per fight, so it is the answer to one moment
 # rather than a rotation.
 explorer_now_ticks = 0           # reserved: `Now` is instantaneous, it grants no window
+# THE WORLD ENTIRE (Globemaster, 100): the whole field read at once — every enemy blazed
+# AND the party hastened in the same turn. It is the two halves of the class's tempo
+# ladder fired together, so both windows are longer than the single-target Trailblaze
+# and the party-wide A World Known that taught them. [TUNABLE]
+explorer_world_entire_mark_ticks = 100   # ~10s at the 100ms tick
+explorer_world_entire_haste_ticks = 140  # ~14s at the 100ms tick
 
 # The Resonant's deep kit. It is a CASTER (meld_proto::skills::Archetype): almost no
 # gear curve, so the ladder runs to level 100 and these are its late game. Every
@@ -324,14 +380,14 @@ explorer_now_ticks = 0           # reserved: `Now` is instantaneous, it grants n
 # heal, paid out of the Resonant's own HP — it never drops itself below 1. [TUNABLE]
 resonant_mend_all_fraction = 0.1        # Mend All (L16): a little for everyone
 resonant_mend_all_self_cost = 0.25
-resonant_sanctuary_regen = 5            # Sanctuary (L25): party Regen, flat per turn
+resonant_sanctuary_regen_fraction = 0.03 # Sanctuary: party Regen a turn
 resonant_revitalize_fraction = 0.45     # Revitalize (L36): one ally, serious
 resonant_revitalize_self_cost = 0.3
 resonant_lifewell_fraction = 0.18       # Lifewell (L49): party heal + Regen
-resonant_lifewell_regen = 4
+resonant_lifewell_regen_fraction = 0.025
 resonant_lifewell_self_cost = 0.2
 resonant_bloodbond_fraction = 0.55      # Bloodbond (L64): heal + Regen + Barrier, one ally
-resonant_bloodbond_regen = 8
+resonant_bloodbond_regen_fraction = 0.05
 resonant_bloodbond_barrier_fraction = 0.2
 resonant_bloodbond_self_cost = 0.45
 resonant_martyr_fraction = 0.6          # Martyr (L81): party heal, most of your own HP
@@ -339,6 +395,12 @@ resonant_martyr_self_cost = 0.8
 resonant_bloom_fraction = 0.85          # Eternal Bloom (L100): party heal + Barrier
 resonant_bloom_barrier_fraction = 0.25
 resonant_bloom_self_cost = 0.35
+# Second Life (255): a FALLEN ally stands back up at this share of their max HP and the
+# living are mended, once a battle, for most of the Resonant's own. Nothing else in the
+# game raises the dead mid-fight, so it is priced as the thing you spend a run on.
+resonant_second_life_revive_fraction = 0.5
+resonant_second_life_heal_fraction = 0.35
+resonant_second_life_self_cost = 0.7
 
 # Martial UPGRADE chains (meld_proto::skills `upgrades`). A martial class progresses
 # by its rows getting better, not by growing more of them, so each of these replaces
@@ -665,24 +727,52 @@ hammer_mult = 1.35               # Hammer Fall: heavy, staggering blow [TUNABLE]
 hammer_gauge_drain = 0.25        # …and the gauge it knocks off the target
 quench_barrier_fraction = 0.22   # Quench: Barrier as a fraction of own max HP
 bulwark_barrier_fraction = 0.14  # Plant the Bulwark: the same, for EVERY ally
-temper_atk_bonus = 4             # Tempering Blow: an ally's attack, for the fight
+# A FRACTION OF THE ALLY'S OWN ATTACK, not flat points — hero attack runs 12 at level 1 to
+# ~309 at level 100, so a flat +4 was worth a third of a hero early and 1.3% late, and
+# Anvil Chorus was a level-75 ability worth one percent.
+temper_atk_fraction = 0.15       # Tempering Blow: +this share of an ally's attack, for the fight
 slag_mult = 0.7                  # Slag Spray: all-enemy, armour-ignoring
-forge_heal_fraction = 0.2        # The One True Forge: party heal as a fraction of max HP
-forge_barrier_fraction = 0.18    # …and the Barrier that comes with it
+# Trimmed under the Resonant's party heals for the same reason the Keeper's are: a smith
+# out-healing the healer made the Resonant optional. See `the_healer_is_the_best_healer`.
+forge_heal_fraction = 0.12       # The One True Forge: party heal as a fraction of max HP
+forge_barrier_fraction = 0.14    # …and the Barrier that comes with it
+# The deep rungs (49, 100). A Smithwright's value is the party's numbers, so both scale
+# what everyone else does rather than adding a bigger swing of its own.
+chorus_atk_fraction = 0.12       # Anvil Chorus: Tempering Blow, for EVERY ally
+great_work_heal_fraction = 0.16  # The Great Work (100): party heal…
+great_work_barrier_fraction = 0.18 # …Barrier…
+great_work_atk_fraction = 0.18   # …and the attack that outlasts both, for the fight
 
 [keeper]
 thornlash_mult = 0.85            # Thornlash: modest damage [TUNABLE]
 thornlash_gauge_drain = 0.2      # …and the gauge the thorns cost it
-poultice_heal = 14               # Poultice: heal now…
-poultice_regen = 4               # …and Regen after
-bloomfield_regen = 3             # Bloomfield: Regen for the whole party
+# EVERY MAGNITUDE HERE IS A FRACTION OF THE RECIPIENT'S MAX HP, not flat points. Flat was
+# the Keeper's undoing: a hero runs 40 max HP at level 1 and ~535 at level 100, so a flat
+# 14-point Poultice was a third of a hero at 5 and 2.6% of one at 100 — the class stopped
+# being a healer somewhere around level 30 while every other mender scaled.
+#
+# THE KEEPER MUST NEVER OUT-HEAL THE RESONANT. The Resonant is the dedicated healer and
+# pays for its heals out of its own HP; the Keeper's are free, so every value here sits
+# strictly under the Resonant's at a comparable rung. Held by
+# `the_healer_is_the_best_healer`, which reads both ladders off balance rather than
+# trusting this paragraph.
+poultice_heal_fraction = 0.14    # Poultice: heal now…
+poultice_regen_fraction = 0.02   # …and Regen a turn after
+bloomfield_regen_fraction = 0.015 # Bloomfield: Regen a turn for the whole party
 root_snare_mult = 0.9            # Root Snare: damage…
 root_snare_gauge_drain = 0.6     # …and a long wait for its turn
-draught_barrier = 20             # Vital Draught: Barrier…
-draught_regen = 5                # …with Regen
-gift_heal = 18                   # Terra's Gift: party heal…
-gift_barrier = 14                # …Barrier…
+draught_barrier_fraction = 0.16  # Vital Draught: Barrier…
+draught_regen_fraction = 0.025   # …with Regen a turn
+gift_heal_fraction = 0.10        # Terra's Gift: party heal…
+gift_barrier_fraction = 0.09     # …Barrier…
 gift_gauge = 0.25                # …and a push on every ally's gauge
+# The deep rungs (49, 100). Thorn Grove is the order's ONLY all-enemy answer, so it is
+# priced as control (the drain) with damage attached rather than the reverse.
+thorn_grove_mult = 0.6           # Thorn Grove (49): Mnd damage to EVERY enemy…
+thorn_grove_gauge_drain = 0.35   # …and the gauge it costs each of them
+world_tree_heal_fraction = 0.14  # World Tree (100): party heal…
+world_tree_barrier_fraction = 0.12 # …Barrier…
+world_tree_regen_fraction = 0.02 # …and Regen a turn, all three at once
 
 # "EQUIP BEST" weights: how much each class wants attack / defence / speed out of a piece
 # of gear. Gear only carries those three bonuses, so this is the whole scoring axis — and a
@@ -1034,6 +1124,32 @@ resonant_regen_per_level = 0.4
 phoenix_guard_aggro_reduction_per_level = 0.04
 phoenix_guard_aggro_mult_floor = 0.4   # mobs never fully ignore an Phoenix Guard party
 phoenix_guard_trample_radius = 0.0     # stretch: trample obstacles this small (0 = off)
+# THE TWO PROFESSION CLASSES had no overworld perk at all — every other class earns one,
+# and the pair whose whole identity is what they do BETWEEN fights earned nothing for
+# walking around. These are that half of the kit (MS-1's second ladder): a Smithwright
+# makes the party's benches cheap and long-lived, a Keeper makes the ground give more.
+#
+# Smithwright — the Foundry reads the rock, and sets up faster than anyone.
+smithwright_ore_sense_at = 1        # run level that starts revealing ORE veins at range
+smithwright_ore_radius_base = 26.0  # world-units at which a vein shows itself
+smithwright_ore_radius_per_level = 2.0
+smithwright_setup_at = 2            # run level at which benches go up quicker and cheaper
+smithwright_setup_mult = 0.6        # station_setup_ms x this
+smithwright_stock_discount = 1      # ore knocked off what a bench costs to raise
+smithwright_pack_full_at = 4        # run level at which packing up returns the WHOLE stock
+smithwright_bench_uses_at = 8       # run level at which its benches serve extra jobs…
+smithwright_bench_uses_bonus = 2    # …this many more
+# Keeper — the Open Flower reads the ground, and takes more from it without killing it.
+keeper_reagent_sense_at = 1         # run level that starts revealing REAGENT beds at range
+keeper_reagent_radius_base = 26.0
+keeper_reagent_radius_per_level = 2.0
+keeper_green_thumb_at = 2           # run level at which a tick sometimes yields two…
+keeper_green_thumb_chance = 0.25    # …this often
+keeper_rooted_at = 4                # run level at which the alembic's field grows…
+keeper_rooted_radius_mult = 1.6     # …this much wider…
+keeper_rooted_regen_mult = 1.5      # …and this much stronger
+keeper_whole_vein_at = 8            # run level at which a unit sometimes costs the node nothing
+keeper_whole_vein_chance = 0.2
 
 # `faction` groups creatures that get along; `aggression` drives overworld
 # movement (passive = wander near home, territorial = patrol + chase if close,

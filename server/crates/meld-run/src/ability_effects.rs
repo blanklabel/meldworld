@@ -40,6 +40,16 @@ fn turn(drain: f64) -> String {
     format!("{} of its turn", pct(drain))
 }
 
+/// Regen reads as "N% a turn, fading" because it now DECAYS — the number a player sees
+/// is the first turn's, not a permanent one.
+fn regen(fraction: f64, balance: &Balance) -> String {
+    format!(
+        "Regen {} of max HP a turn, fading {} a turn",
+        pct(fraction),
+        pct(balance.battle.regen_decay_fraction)
+    )
+}
+
 fn join(parts: &[String]) -> String {
     parts.iter().filter(|p| !p.is_empty()).cloned().collect::<Vec<_>>().join(" · ")
 }
@@ -85,9 +95,9 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             ),
         ]),
         "stable_ground" => format!(
-            "Barrier for {} of each ally's max HP (decays {} per turn)",
+            "Barrier for {} of each ally's max HP (sheds {} of the pool per turn)",
             pct(b.explorer_stable_ground_fraction),
-            b.barrier_decay_per_turn
+            pct(b.barrier_decay_fraction)
         ),
         "safe_passage" => format!("+{} dodge to every ally", pct(b.explorer_safe_passage_evasion)),
         "a_world_known" => format!(
@@ -96,6 +106,17 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             secs(b.explorer_haste_ticks, balance)
         ),
         "now" => "every living ally's gauge to full · 1 use per battle".to_string(),
+        "the_world_entire" => join(&[
+            format!(
+                "marks EVERY enemy for {}",
+                secs(b.explorer_world_entire_mark_ticks, balance)
+            ),
+            format!(
+                "hastes the party {} for {}",
+                dmg(b.explorer_haste_mult).replace("× damage", "× gauge"),
+                secs(b.explorer_world_entire_haste_ticks, balance)
+            ),
+        ]),
 
         // ---- Hunter: the cost IS the class, so it leads every row.
         "power_strike" => {
@@ -122,6 +143,15 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "frenzy" => {
             join(&[dmg(b.explorer_frenzy_mult), adrenaline(b.hunter_frenzy_cost, balance)])
         }
+        "iron_lung" => join(&[
+            format!("heals {} of your max HP", pct(b.hunter_iron_lung_heal_fraction)),
+            regen(b.hunter_iron_lung_regen_fraction, balance),
+            adrenaline(b.hunter_second_wind_cost, balance),
+        ]),
+        "apex_predator" => join(&[
+            format!("{} to EVERY enemy", dmg(b.hunter_apex_mult)),
+            adrenaline(b.hunter_frenzy_cost, balance),
+        ]),
 
         // ---- Psyker: a Focus fires again every Psyker turn it is held, so the
         // per-tick number is the one that decides between two Foci.
@@ -147,41 +177,56 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         )),
         "phase_shift" => focus(format!("+{} dodge", pct(b.psyker_phase_evasion))),
 
+        "event_horizon" => focus(join(&[
+            format!("{} to EVERY enemy, ignoring armour", dmg(b.psyker_horizon_tick_mult)),
+            format!("every enemy's gauge fills at {} speed while held", pct(b.status_slow_mult)),
+        ])),
+
         // ---- Resonant
         "transfuse" => format!(
             "heals {} of the ally's max HP, and costs you {} of that",
             pct(b.resonant_transfuse_heal_fraction),
             pct(b.resonant_transfuse_cost_fraction)
         ),
-        "regen_boon" => format!("+{} Regen per turn", b.resonant_boon_regen),
+        "regen_boon" => {
+            regen(b.resonant_boon_regen_fraction, balance)
+        }
         "ward" => {
             format!("Barrier for {} of their max HP", pct(b.resonant_ward_barrier_fraction))
         }
         "mend_all" => {
-            boon(b.resonant_mend_all_fraction, 0, 0.0, b.resonant_mend_all_self_cost, true)
+            boon(b.resonant_mend_all_fraction, 0.0, 0.0, b.resonant_mend_all_self_cost, true)
         }
-        "sanctuary" => boon(0.0, b.resonant_sanctuary_regen, 0.0, 0.0, true),
+        "sanctuary" => boon(0.0, b.resonant_sanctuary_regen_fraction, 0.0, 0.0, true),
         "revitalize" => {
-            boon(b.resonant_revitalize_fraction, 0, 0.0, b.resonant_revitalize_self_cost, false)
+            boon(b.resonant_revitalize_fraction, 0.0, 0.0, b.resonant_revitalize_self_cost, false)
         }
         "lifewell" => boon(
             b.resonant_lifewell_fraction,
-            b.resonant_lifewell_regen,
+            b.resonant_lifewell_regen_fraction,
             0.0,
             b.resonant_lifewell_self_cost,
             true,
         ),
         "bloodbond" => boon(
             b.resonant_bloodbond_fraction,
-            b.resonant_bloodbond_regen,
+            b.resonant_bloodbond_regen_fraction,
             b.resonant_bloodbond_barrier_fraction,
             b.resonant_bloodbond_self_cost,
             false,
         ),
-        "martyr" => boon(b.resonant_martyr_fraction, 0, 0.0, b.resonant_martyr_self_cost, true),
+        "martyr" => boon(b.resonant_martyr_fraction, 0.0, 0.0, b.resonant_martyr_self_cost, true),
+        "second_life" => join(&[
+            format!(
+                "a FALLEN ally stands up at {} of their max HP",
+                pct(b.resonant_second_life_revive_fraction)
+            ),
+            format!("heals every living ally {}", pct(b.resonant_second_life_heal_fraction)),
+            format!("costs you {} of your own max HP", pct(b.resonant_second_life_self_cost)),
+        ]),
         "eternal_bloom" => boon(
             b.resonant_bloom_fraction,
-            0,
+            0.0,
             b.resonant_bloom_barrier_fraction,
             b.resonant_bloom_self_cost,
             true,
@@ -198,6 +243,14 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             pct(b.shifter_flicker_decay)
         ),
         "ransack" => join(&[dmg(b.shifter_ransack_mult), turn(b.shifter_ransack_drain)]),
+        "assassinate" => join(&[
+            dmg(b.shifter_assassinate_mult),
+            format!("ignores {} of its armour", pct(b.shifter_assassinate_pierce)),
+        ]),
+        "grand_larceny" => join(&[
+            format!("{} to EVERY enemy", dmg(b.shifter_larceny_mult)),
+            format!("{} each", turn(b.shifter_larceny_drain)),
+        ]),
         "steal" => join(&[
             turn(b.shifter_steal_drain),
             format!(
@@ -231,6 +284,19 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "purging_light" => {
             join(&[format!("{} to EVERY enemy", dmg(b.phoenix_guard_toll_mult)), undead(balance)])
         }
+        "hallowed_ground" => join(&[
+            format!("{} to EVERY enemy", dmg(b.phoenix_guard_hallowed_mult)),
+            "zeroes every gauge".to_string(),
+            undead(balance),
+        ]),
+        "phoenix_ascendant" => join(&[
+            format!("{} to EVERY enemy", dmg(b.phoenix_guard_ascendant_mult)),
+            undead(balance),
+            format!(
+                "Barrier for {} of each ally's max HP",
+                pct(b.phoenix_guard_ascendant_barrier_fraction)
+            ),
+        ]),
         "unbroken_vigil" => format!(
             "Barrier for {} of each ally's max HP",
             pct(b.phoenix_guard_vigil_barrier_fraction)
@@ -250,8 +316,24 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "bulwark" => {
             format!("Barrier for {} of each ally's max HP", pct(sm.bulwark_barrier_fraction))
         }
-        "tempering_blow" => format!("+{} attack for the rest of the fight", sm.temper_atk_bonus),
+        "tempering_blow" => {
+            format!("+{} of the ally's attack for the rest of the fight", pct(sm.temper_atk_fraction))
+        }
         "slag_spray" => format!("{} to EVERY enemy, ignoring armour", dmg(sm.slag_mult)),
+        "anvil_chorus" => {
+            format!(
+                "+{} attack for EVERY ally, for the rest of the fight",
+                pct(sm.chorus_atk_fraction)
+            )
+        }
+        "great_work" => join(&[
+            format!(
+                "heals {} and Barriers {} of every ally's max HP",
+                pct(sm.great_work_heal_fraction),
+                pct(sm.great_work_barrier_fraction)
+            ),
+            format!("+{} attack for the rest of the fight", pct(sm.great_work_atk_fraction)),
+        ]),
         "one_true_forge" => format!(
             "heals {} and Barriers {} of every ally's max HP",
             pct(sm.forge_heal_fraction),
@@ -264,20 +346,41 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             turn(kp.thornlash_gauge_drain),
         ]),
         "poultice" => {
-            format!("heals {} and grants +{} Regen", kp.poultice_heal, kp.poultice_regen)
+            format!(
+                "heals {} of their max HP and grants Regen {} a turn",
+                pct(kp.poultice_heal_fraction),
+                pct(kp.poultice_regen_fraction)
+            )
         }
-        "bloomfield" => format!("+{} Regen per turn to every ally", kp.bloomfield_regen),
+        "bloomfield" => format!(
+            "Regen {} of max HP a turn to every ally",
+            pct(kp.bloomfield_regen_fraction)
+        ),
         "root_snare" => join(&[
             format!("{} (from Mnd)", dmg(kp.root_snare_mult)),
             turn(kp.root_snare_gauge_drain),
         ]),
         "vital_draught" => {
-            format!("{} Barrier and +{} Regen", kp.draught_barrier, kp.draught_regen)
+            format!(
+                "Barrier {} of their max HP and Regen {} a turn",
+                pct(kp.draught_barrier_fraction),
+                pct(kp.draught_regen_fraction)
+            )
         }
+        "thorn_grove" => join(&[
+            format!("{} (from Mnd) to EVERY enemy", dmg(kp.thorn_grove_mult)),
+            format!("{} each", turn(kp.thorn_grove_gauge_drain)),
+        ]),
+        "world_tree" => format!(
+            "heals {}, {} Barrier and {} Regen a turn to every ally",
+            pct(kp.world_tree_heal_fraction),
+            pct(kp.world_tree_barrier_fraction),
+            pct(kp.world_tree_regen_fraction)
+        ),
         "terras_gift" => format!(
             "heals {}, {} Barrier, and {} of a turn to every ally",
-            kp.gift_heal,
-            kp.gift_barrier,
+            pct(kp.gift_heal_fraction),
+            pct(kp.gift_barrier_fraction),
             pct(kp.gift_gauge)
         ),
 
@@ -295,14 +398,14 @@ fn undead(balance: &Balance) -> String {
 
 /// The Resonant's deep kit is one shape with seven sets of numbers, so it gets one
 /// formatter rather than seven near-identical arms.
-fn boon(heal: f64, regen: i32, barrier: f64, self_cost: f64, party: bool) -> String {
+fn boon(heal: f64, regen: f64, barrier: f64, self_cost: f64, party: bool) -> String {
     let who = if party { "every ally" } else { "one ally" };
     let mut parts = Vec::new();
     if heal > 0.0 {
         parts.push(format!("heals {} of {who}'s max HP", pct(heal)));
     }
-    if regen > 0 {
-        parts.push(format!("+{regen} Regen to {who}"));
+    if regen > 0.0 {
+        parts.push(format!("Regen {} of max HP a turn to {who}", pct(regen)));
     }
     if barrier > 0.0 {
         parts.push(format!("Barrier for {} of max HP", pct(barrier)));
@@ -316,6 +419,124 @@ fn boon(heal: f64, regen: i32, barrier: f64, self_cost: f64, party: bool) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The Resonant is the healer, so nothing else may out-heal it.** The crafters mend
+    /// for free; the Resonant pays its own HP for every point. If a Smithwright's party
+    /// heal beats a Resonant's, the party stops needing the class whose entire job it is.
+    ///
+    /// Read off balance rather than asserted as literals, so retuning a crafter upward
+    /// past the healer fails here instead of in someone's run.
+    #[test]
+    fn the_healer_is_the_best_healer() {
+        let b = Balance::load_default().unwrap();
+        let r = &b.battle;
+        let kp = &b.keeper;
+        let sm = &b.smithwright;
+
+        // Best the Resonant does to ONE ally, and to the whole party.
+        let resonant_single = [
+            r.resonant_transfuse_heal_fraction,
+            r.resonant_revitalize_fraction,
+            r.resonant_bloodbond_fraction,
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        let resonant_party = [
+            r.resonant_mend_all_fraction,
+            r.resonant_lifewell_fraction,
+            r.resonant_martyr_fraction,
+            r.resonant_bloom_fraction,
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+
+        for (who, single, party) in [
+            ("Keeper", kp.poultice_heal_fraction, kp.gift_heal_fraction.max(kp.world_tree_heal_fraction)),
+            ("Smithwright", 0.0, sm.forge_heal_fraction.max(sm.great_work_heal_fraction)),
+        ] {
+            assert!(
+                single < resonant_single,
+                "{who} out-heals the Resonant on one ally: {single} vs {resonant_single}"
+            );
+            assert!(
+                party < resonant_party,
+                "{who} out-heals the Resonant on the party: {party} vs {resonant_party}"
+            );
+        }
+
+        // Same for Regen a turn, and for Barrier.
+        let resonant_regen = [
+            r.resonant_boon_regen_fraction,
+            r.resonant_sanctuary_regen_fraction,
+            r.resonant_lifewell_regen_fraction,
+            r.resonant_bloodbond_regen_fraction,
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        let keeper_regen = [
+            kp.poultice_regen_fraction,
+            kp.bloomfield_regen_fraction,
+            kp.draught_regen_fraction,
+            kp.world_tree_regen_fraction,
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        assert!(
+            keeper_regen < resonant_regen,
+            "the Keeper out-Regens the Resonant: {keeper_regen} vs {resonant_regen}"
+        );
+
+        let resonant_barrier =
+            r.resonant_ward_barrier_fraction.max(r.resonant_bloodbond_barrier_fraction);
+        let keeper_barrier = [
+            kp.draught_barrier_fraction,
+            kp.gift_barrier_fraction,
+            kp.world_tree_barrier_fraction,
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        assert!(
+            keeper_barrier < resonant_barrier,
+            "the Keeper out-Wards the Resonant: {keeper_barrier} vs {resonant_barrier}"
+        );
+    }
+
+    /// Nothing that lands on a hero may be authored as flat points: a hero runs 40 max HP
+    /// at level 1 and ~535 at 100, so a flat grant is a third of a hero early and a
+    /// rounding error late. Every value below is a FRACTION, and the plausible range is
+    /// what catches a fraction that was pasted in as if it were still points.
+    #[test]
+    fn every_magnitude_that_lands_on_a_hero_is_a_fraction() {
+        let b = Balance::load_default().unwrap();
+        let kp = &b.keeper;
+        let sm = &b.smithwright;
+        let r = &b.battle;
+        let fractions = [
+            ("poultice heal", kp.poultice_heal_fraction),
+            ("poultice regen", kp.poultice_regen_fraction),
+            ("bloomfield regen", kp.bloomfield_regen_fraction),
+            ("draught barrier", kp.draught_barrier_fraction),
+            ("draught regen", kp.draught_regen_fraction),
+            ("gift heal", kp.gift_heal_fraction),
+            ("gift barrier", kp.gift_barrier_fraction),
+            ("world tree heal", kp.world_tree_heal_fraction),
+            ("world tree barrier", kp.world_tree_barrier_fraction),
+            ("world tree regen", kp.world_tree_regen_fraction),
+            ("temper atk", sm.temper_atk_fraction),
+            ("chorus atk", sm.chorus_atk_fraction),
+            ("great work atk", sm.great_work_atk_fraction),
+            ("innate regen", r.resonant_regen_fraction),
+            ("boon regen", r.resonant_boon_regen_fraction),
+            ("iron lung regen", r.hunter_iron_lung_regen_fraction),
+            ("barrier decay", r.barrier_decay_fraction),
+        ];
+        for (what, v) in fractions {
+            assert!(
+                v > 0.0 && v <= 1.0,
+                "{what} is {v} — that reads like flat points, not a fraction"
+            );
+        }
+    }
 
     /// Every ability in the registry gets a number, or the row is back to flavour —
     /// which is the bug this module exists to fix. A new ability with no arm here
@@ -422,7 +643,7 @@ mod tests {
             "{:?}",
             effect_line("trailblaze", &b)
         );
-        b.smithwright.temper_atk_bonus = 41;
+        b.smithwright.temper_atk_fraction = 0.41;
         assert!(effect_line("tempering_blow", &b).contains("41"));
     }
 
@@ -437,4 +658,5 @@ mod tests {
         assert_eq!(secs(60, &b), "6s");
         assert_eq!(secs(100, &b), "10s");
     }
+
 }

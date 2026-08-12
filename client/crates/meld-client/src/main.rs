@@ -1001,26 +1001,28 @@ enum Side {
 fn order_side(kind: QueuedKind) -> Option<Side> {
     match kind {
         QueuedKind::Attack => Some(Side::Enemy),
-        QueuedKind::Skill("power_strike") => Some(Side::Enemy),
-        QueuedKind::Skill("transfuse") | QueuedKind::Skill("regen_boon") | QueuedKind::Skill("ward") => {
-            Some(Side::Ally)
-        }
-        QueuedKind::Skill("second_wind") => None,
-        // Shifter Flicker is a self-cast evasion blink (Backstab/Ransack hit an enemy
-        // via the default arm below).
-        QueuedKind::Skill("flicker") => None,
-        // Phoenix Guard: Root is a self-cast stance; Toll of the Deep is an all-enemy
-        // shockwave that needs no single target (Swell Strike / Kinetic Shock hit an
-        // enemy via the default arm below).
-        QueuedKind::Skill("root") | QueuedKind::Skill("toll_of_the_deep") => None,
-        // Any other/unknown skill defaults to an offensive (enemy) target.
-        QueuedKind::Skill(_) => Some(Side::Enemy),
+        // Ask the REGISTRY who an ability is aimed at. This used to be a list of keys
+        // here, and it had gone stale without anyone noticing: it still named the Iron
+        // Hull's `root` and `toll_of_the_deep`, so the Phoenix Guard's self-cast Rite of
+        // Rest and its all-enemy Purging Light both fell through the default arm and
+        // asked the player to aim a stance at one creature. Every party-wide row added
+        // since had the same problem.
+        QueuedKind::Skill(k) => match meld_proto::skills::target_of(k) {
+            meld_proto::skills::Target::Enemy => Some(Side::Enemy),
+            meld_proto::skills::Target::Ally => Some(Side::Ally),
+            _ => None,
+        },
         QueuedKind::Item(_) => Some(Side::Ally),
         QueuedKind::Defend => None,
         // Psyker Foci: Kinetic Aegis wards the caster (self); the rest are aimed at an
         // enemy. Revoke/Hold need no target.
-        QueuedKind::Focus("cast", "kinetic_aegis") | QueuedKind::Focus("reinforce", "kinetic_aegis") => None,
-        QueuedKind::Focus("cast", _) | QueuedKind::Focus("reinforce", _) => Some(Side::Enemy),
+        QueuedKind::Focus("cast", f) | QueuedKind::Focus("reinforce", f) => {
+            match meld_proto::skills::target_of(f) {
+                meld_proto::skills::Target::Enemy => Some(Side::Enemy),
+                meld_proto::skills::Target::Ally => Some(Side::Ally),
+                _ => None,
+            }
+        }
         QueuedKind::Focus(_, _) => None,
         QueuedKind::Hold => None,
         // Flee bails the whole party — no target to pick.
@@ -2087,6 +2089,18 @@ mod tests {
         assert_eq!(order_side(QueuedKind::Item("salve")), Some(Side::Ally));
         assert_eq!(order_side(QueuedKind::Defend), None);
         assert_eq!(order_side(QueuedKind::Skill("second_wind")), None);
+        // These four were all answered "pick an enemy" while the targeting list here
+        // still named the Iron Hull's keys: a self-cast stance, an all-enemy sweep, a
+        // party Barrier and a party haste.
+        assert_eq!(order_side(QueuedKind::Skill("rite_of_rest")), None);
+        assert_eq!(order_side(QueuedKind::Skill("purging_light")), None);
+        assert_eq!(order_side(QueuedKind::Skill("unbroken_vigil")), None);
+        assert_eq!(order_side(QueuedKind::Skill("a_world_known")), None);
+        // The deep rungs land on the same rule without anyone adding them here.
+        assert_eq!(order_side(QueuedKind::Skill("apex_predator")), None);
+        assert_eq!(order_side(QueuedKind::Skill("world_tree")), None);
+        assert_eq!(order_side(QueuedKind::Skill("assassinate")), Some(Side::Enemy));
+        assert_eq!(order_side(QueuedKind::Skill("tempering_blow")), Some(Side::Ally));
         // Kinetic Aegis wards the caster; other Foci are aimed at an enemy.
         assert_eq!(order_side(QueuedKind::Focus("cast", "kinetic_aegis")), None);
         assert_eq!(order_side(QueuedKind::Focus("cast", "gravity_well")), Some(Side::Enemy));
