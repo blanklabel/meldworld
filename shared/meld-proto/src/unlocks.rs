@@ -81,9 +81,10 @@ pub const UNLOCKS: &[UnlockDef] = &[
         kind: UnlockKind::Class(CharacterClass::Explorer),
         trigger: Trigger::Start,
         trigger_text: "Yours from the first dive.",
-        banner: "The disposal-of-dangerous-creatures guild takes anyone. An Explorer holds the \
-                 front line: basic attacks bank Adrenaline and every skill spends it, so the \
-                 longer a fight runs the harder you hit.",
+        banner: "The mapping order takes anyone, because nobody gets through the Meld alone. \
+                 An Explorer sets the pace instead of the damage: its opener MARKS a creature \
+                 so every ally hits it harder, and its later calls Barrier the party, make it \
+                 hard to hit, and hurry everyone's turn along.",
         requires: None,
     },
     UnlockDef {
@@ -102,8 +103,9 @@ pub const UNLOCKS: &[UnlockDef] = &[
         trigger: Trigger::Extracted,
         trigger_text: "Extract from a dive — the hall pays on evidence, not stories.",
         banner: "The Den has a board, a pit, and a marker with your callsign on it. A Hunter \
-                 opens the fight: it reads a creature's weak point and hits it there, and its \
-                 intel names what you are walking into before you commit to it.",
+                 fights on ADRENALINE: every basic attack banks it and every skill spends it, \
+                 so the longer a fight runs the harder you hit. Its intel also names what you \
+                 are walking into before you commit to it.",
         requires: Some("party_slot_2"),
     },
     UnlockDef {

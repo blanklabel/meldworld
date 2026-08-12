@@ -181,6 +181,10 @@ pub(crate) fn party_flag() -> Option<String> {
 /// Offline battle-screen mockup: jump straight into the Battle screen with canned
 /// combatants and the command window open, so the subscreen can be inspected
 /// without a server or walking there. Native: `MELD_BATTLE` env. Browser: `?battle`.
+///
+/// `MELD_BATTLE=coop` adds joined ally parties (the surround layout); `=skills` opens
+/// the Skill page, which is the only one that draws a tooltip — an ability's prose and
+/// its magnitudes are otherwise unreachable in a screenshot without driving a fight.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn battle_mockup_flag() -> bool {
     std::env::var("MELD_BATTLE").is_ok()

@@ -598,6 +598,14 @@ pub mod run {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Party {
         pub heroes: Vec<HeroView>,
+        /// Every ability the party's classes can hold, with its magnitudes resolved
+        /// from `balance.toml` (`meld_run::ability_effects`). The registry's prose can
+        /// only say what KIND of thing an ability is — the numbers are `[TUNABLE]`s and
+        /// the client has no balance file — so without this a row could not say what
+        /// Power Strike costs or how much Trailblaze's mark is worth. Additive; a
+        /// client that does not render it just shows the prose.
+        #[serde(default)]
+        pub abilities: Vec<AbilityView>,
         /// AD-2: the class-pair synergies this composition has ACTIVE, and the
         /// sequenced combos it can perform. The build feedback loop — a player has
         /// to see what their comp enables to chase a better one. Additive; older
@@ -606,6 +614,15 @@ pub mod run {
         pub synergies: Vec<SynergyView>,
         #[serde(default)]
         pub combos: Vec<ComboView>,
+    }
+
+    /// One ability, as the battle menu and the abilities panel need it: the registry's
+    /// prose plus the magnitudes the server resolved from balance.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct AbilityView {
+        pub key: String,
+        /// The one-line magnitude ("1.75× damage · 40 of 100 Adrenaline (25 per Attack)").
+        pub effect: String,
     }
 
     /// One active class-pair synergy, described for the party screen.
@@ -1332,6 +1349,30 @@ mod tests {
         let back: run::Perks = serde_json::from_str(&s).unwrap();
         assert_eq!(back.explorer_map, 2);
         assert_eq!(back.psyker_reveal_radius, 30.0);
+    }
+
+    /// The ability magnitudes ride the roster because the client has no `balance.toml`
+    /// to compute them from. Additive: a payload minted before the field existed must
+    /// still parse, and simply carry no numbers.
+    #[test]
+    fn the_roster_carries_ability_magnitudes_and_tolerates_a_payload_without_them() {
+        let old = r#"{"heroes":[],"synergies":[],"combos":[]}"#;
+        let p: run::Party = serde_json::from_str(old).unwrap();
+        assert!(p.abilities.is_empty());
+
+        let full = run::Party {
+            heroes: Vec::new(),
+            synergies: Vec::new(),
+            combos: Vec::new(),
+            abilities: vec![run::AbilityView {
+                key: "power_strike".into(),
+                effect: "1.75× damage · 40 of 100 Adrenaline (25 per Attack)".into(),
+            }],
+        };
+        let back: run::Party =
+            serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back.abilities[0].key, "power_strike");
+        assert!(back.abilities[0].effect.contains("Adrenaline"));
     }
 
     #[test]

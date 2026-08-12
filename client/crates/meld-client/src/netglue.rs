@@ -112,13 +112,18 @@ pub(crate) fn pump_net(
                 backpack.chits = chits;
                 backpack.gear = gear;
             }
-            ServerMsg::Party { heroes, synergies, combos } => {
+            ServerMsg::Party { heroes, synergies, combos, abilities } => {
                 roster.heroes = heroes;
                 // A party message with an empty roster is a formation/rename echo;
                 // don't let it wipe the depth lines the full roster carried.
                 if !synergies.is_empty() || !combos.is_empty() || !roster.heroes.is_empty() {
                     roster.synergies = synergies;
                     roster.combos = combos;
+                }
+                // Same rule for the same reason: a formation/rename echo carries no
+                // ability table, and dropping it would blank every tooltip mid-run.
+                if !abilities.is_empty() {
+                    roster.ability_effects = abilities.into_iter().collect();
                 }
             }
             ServerMsg::Perks { perks: p } => perks.0 = p,

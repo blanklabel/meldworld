@@ -426,41 +426,41 @@ Use these terms consistently in code, comments, and UI.
   rather than burst, and its opener is a **mark**, not a bigger hit: Trailblaze blazes its
   target so *every* ally hits it harder for a window (`marked`, `[battle] explorer_mark_*`)
   — the order whose belief is that nobody accomplishes it alone should be paid for helping.
-  Then Field Dressing (L2), Misdirection (L5, the creature is **distracted**: it swings wide and
+  Then Field Dressing (L4), Misdirection (L9, the creature is **distracted**: it swings wide and
   the party can leave), Stable Ground
-  (L9, party Barrier — deliberately **not** an Anchor: that is the setting's load-bearing
+  (L16, party Barrier — deliberately **not** an Anchor: that is the setting's load-bearing
   artifact, takes three orders to make, and only an Explorer of Serin may set one), Safe
-  Passage (L13, party **Evasion** — the Guides get you through untouched, they do not
-  bandage you afterwards), A World Known (L17, a real **haste** — every ally's gauge fills faster while it holds),
+  Passage (L25, party **Evasion** — the Guides get you through untouched, they do not
+  bandage you afterwards), A World Known (L36, a real **haste** — every ally's gauge fills faster while it holds),
   and **Now** (L49, the Globemaster's one call per fight: every ally acts *immediately*,
   refused on the second ask). See
   `Battle::resolve_explorer_kit`.
 - **Hunter** — the martial baseline (disposal-of-dangerous-creatures guild).
   Front-line bruiser with the standard Attack / Defend / Item / Skill menu. It has no resource
   until it earns one: each basic **Attack** banks **Adrenaline**, and **every** skill SPENDS it —
-  Power Strike (heavy hit), Second Wind (L2, self-heal), Snare (L2, damage + ATB-gauge drain),
-  Frenzy (L3, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
+  Power Strike (heavy hit), Second Wind (L4, self-heal), Snare (L9, damage + ATB-gauge drain),
+  Frenzy (L16, biggest hit, biggest cost). A skill is rejected unless its Adrenaline cost is banked.
   See `Battle::resolve_hunter` (the Adrenaline resolver, shared with nothing else).
 - **Psyker** — psychic channeler. Instead of the martial kit it manages **Foci**: Gravity Well
-  (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L3, stronger),
-  Temporal Anchor (L5, drains the enemy's ATB gauge). See `Battle::resolve_psyker`.
+  (armour-ignoring damage tick), Kinetic Aegis (grants **Barrier**), Mind Spike (L9, stronger),
+  Temporal Anchor (L16, drains the enemy's ATB gauge). See `Battle::resolve_psyker`.
 - **Resonant** — healer. Innate **Regen**, plus ally-auto-targeting skills: Transfuse (heal an ally,
   paid from its own HP), Regen Boon (grant Regen), Ward (grant **Barrier**). See `Battle::resolve_resonant`.
 - **Shifter** — rogue / fortune-explorer ("Runner"). Fast, fragile front-line skirmisher and the only
   class with innate dodge (base Dex clears the dodge floor). Str/atk-driven kit: Backstab (heavy strike
-  that pierces most armour), Flicker (L2, self **Evasion** blink), Ransack (L3, damage + drains the
+  that pierces most armour), Flicker (L4, self **Evasion** blink), Ransack (L9, damage + drains the
   enemy's ATB gauge). See `Battle::resolve_skill` (the `flicker`/`backstab`/`ransack` arms).
 - **Smithwright** — **The Foundry's** builder, and the first of the two profession
   classes (MS-1). A front-line support: Hammer Fall (a staggering blow with the tool
-  itself), Quench (L2, self **Barrier**), Plant the Bulwark (L5, **party** Barrier),
-  Tempering Blow (L9, an ally's atk for the fight), Slag Spray (L13, all-enemy,
-  armour-ignoring), The One True Forge (L17, party heal + Barrier). Out of combat it is
+  itself), Quench (L4, self **Barrier**), Plant the Bulwark (L9, **party** Barrier),
+  Tempering Blow (L16, an ally's atk for the fight), Slag Spray (L25, all-enemy,
+  armour-ignoring), The One True Forge (L36, party heal + Barrier). Out of combat it is
   the class that **raises the field forge**, and a second Smithwright in the party makes
   the anvil's rhythm easier for whoever is working it. See `Battle::resolve_smithwright`.
 - **Keeper** — the **Order of the Open Flower's** grower, the other profession class. A
-  between-fights mender: Thornlash (damage + gauge drain), Poultice (L2, heal + Regen),
-  Bloomfield (L5, **party** Regen), Root Snare (L9, damage + a long wait), Vital Draught
-  (L13, Barrier + Regen), Terra's Gift (L17, party heal + Barrier + gauge). Its damage
+  between-fights mender: Thornlash (damage + gauge drain), Poultice (L4, heal + Regen),
+  Bloomfield (L9, **party** Regen), Root Snare (L16, damage + a long wait), Vital Draught
+  (L25, Barrier + Regen), Terra's Gift (L36, party heal + Barrier + gauge). Its damage
   rides **Mnd**, not Str. Out of combat it **raises the alembic**, whose regen field is
   the only rest a party without a Resonant gets. See `Battle::resolve_keeper`.
   *Neither class has its own sprite set yet — `class_frames` falls back to the Explorer's
@@ -468,9 +468,9 @@ Use these terms consistently in code, comments, and UI.
 - **Phoenix Guard** — the Last City's **anti-undead** order. The tankiest, slowest class
   (most HP + armour, no dodge), and every damaging ability of theirs hits **undead**
   `phoenix_guard_undead_mult` harder. Its ladder is the order's rank ladder: Silvered
-  Strike (Initiate), Rite of Rest (Purifier L2, self **Barrier**), Holy Censure
-  (Exemplar L5, zeroes the gauge), Purging Light (Luminary L9, **all-enemy**), Unbroken
-  Vigil (Redeemer L13, **party** Barrier), Eradication (Apotheosis L17, an execute that
+  Strike (Initiate), Rite of Rest (Purifier L4, self **Barrier**), Holy Censure
+  (Exemplar L9, zeroes the gauge), Purging Light (Luminary L16, **all-enemy**), Unbroken
+  Vigil (Redeemer L25, **party** Barrier), Eradication (Apotheosis L36, an execute that
   scales with the target's missing HP). See `Battle::resolve_phoenix_guard`.
   *The kinetic/oar kit it used to carry belongs to the **Order of the Iron Hull**, a
   future monk class whose `iron_hull` key is reserved.*
@@ -479,8 +479,30 @@ Use these terms consistently in code, comments, and UI.
 owns every ability's key, name, owning class, unlock level, **org rank** and
 **description**. The server gates on it, the battle menu builds its rows and tooltips
 from it, and the party screen lists each hero's ladder from it — so a kit is defined
-once. Unlock levels follow the orders' rank ladders (1 / 2 / 5 / 9 / 13 / 17), which is
-what makes levelling read as promotion.
+once, **in ladder order** — `skills_for_class` sorts by unlock, because the table is
+written in authoring order and the Explorer's `Now` (49) sits above `A World Known`
+(36) in it.
+
+**Unlock levels are SQUARES** — 1 / 4 / 9 / 16 / 25 / 36 / 49 … out to 100 — so each new
+ability costs a step up in commitment rather than an ever-flatter trickle. A test holds
+EVERY class in the registry to it: a hand-written list of classes is a list a new class
+gets left off, which is exactly how the Smithwright and the Keeper shipped on
+1 / 4 / 12 / 20 / 28 / 36. The **org ranks** are a separate, far slower ladder
+(1 / 25 / 65 / 115 / 165 / 215) and gate nothing — they are standing, not power.
+
+**A description without a number is flavour.** The registry can only say what KIND of
+thing an ability is — magnitudes are `[TUNABLE]`s and `meld-proto` is shared with a
+client that has no `balance.toml` — so every row read as mood: "A heavy blow. Spends
+Adrenaline." never said 40 of 100, and you could not tell Power Strike from Frenzy
+without pressing one and being refused.
+[`meld_run::ability_effects`](server/crates/meld-run/src/ability_effects.rs) formats the
+magnitudes from balance and they ride the roster (`run.party` → `abilities`), so the
+battle tooltip and the Abilities panel both show prose then numbers, and a retuned
+`[TUNABLE]` retunes the tooltip. A new ability with no arm there **fails a test** rather
+than shipping a blank line. The two halves also have to agree: the registry had shipped
+Sanctuary promising Barrier while granting Regen, and Revitalize advertising "no HP cost
+to you" while charging 30% of the heal — `the_prose_and_the_numbers_agree` is what
+catches that now.
 
 New classes: add the enum variant (`meld-proto` `CharacterClass`), `[player.<key>]` stats +
 any `[battle]` tunables, the `class_key` mapping (`meld-run`), the kit in `meld-battle`, and the
@@ -512,8 +534,9 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   `spell_power` (Mnd-driven, used by Psyker Foci instead of `atk`) and `dodge`. Attributes ride the
   wire on `statuses` (`str:`/`mnd:`/`dex:`/`wll:`), shown in the battle party cell.
 - **Skill unlocks by level**: the single source of truth is `meld_proto::skills::unlock_level`
-  (server rejects a locked skill in `resolve_skill`; client greys the menu row). Second Wind L2,
-  Mind Spike L3, Temporal Anchor L5, Regen Boon L2, Ward L3; everything else L1.
+  (server rejects a locked skill in `resolve_skill`; client greys the menu row). Second Wind L4,
+  Mind Spike L9, Temporal Anchor L16, Regen Boon L4, Ward L9; every class's ladder is
+  squares (1 / 4 / 9 / 16 / 25 / 36 …), not the org ranks.
 - *Deferred*: MP (the ATB adaptation has no cast resource yet — Mnd would gate it later).
 
 ## Overworld: exploration, extraction & harvesting

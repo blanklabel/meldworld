@@ -878,6 +878,17 @@ struct PartyRoster {
     /// only place that shows it, and `render_overlay` is at Bevy's param ceiling.
     locked: Vec<(String, String)>,
     party_slots: i32,
+    /// Ability key → the one-line magnitudes the server resolved from balance. The
+    /// registry's prose says what KIND of thing an ability is; a `[TUNABLE]` lives on
+    /// the server, so without this a row could name Adrenaline and never its cost.
+    ability_effects: HashMap<String, String>,
+}
+
+impl PartyRoster {
+    /// The magnitudes for `key`, or empty until the server has sent a roster.
+    fn effect(&self, key: &str) -> &str {
+        self.ability_effects.get(key).map(String::as_str).unwrap_or("")
+    }
 }
 
 /// The caller's earned overworld class perks ("party sense"), from `run.perks`.
@@ -1702,6 +1713,17 @@ enum EntryAction {
     Back,
 }
 
+impl EntryAction {
+    /// The registry ability this row commands, if it commands one. A Psyker's
+    /// Manifest rows are abilities too — they are the whole class.
+    fn skill_key(&self) -> Option<&'static str> {
+        match self {
+            EntryAction::Skill(k) | EntryAction::Manifest(k) => Some(k),
+            _ => None,
+        }
+    }
+}
+
 /// One selectable row in the command window.
 struct MenuEntry {
     /// Owned, because an item row carries its count ("Bloom Salve x2").
@@ -2255,6 +2277,30 @@ mod harvest_pop_tests {
         pops.items[0].age = HARVEST_POP_TTL + 0.01;
         pops.items.retain(|p| p.age < HARVEST_POP_TTL);
         assert!(pops.items.is_empty(), "an old floater should be gone");
+    }
+
+    /// A skill row's tooltip is the registry's prose plus the magnitudes the server
+    /// resolved. Only the server has `balance.toml`, so before the roster arrives the
+    /// row still reads — it just has no numbers yet.
+    #[test]
+    fn a_skill_row_carries_its_numbers_once_the_roster_lands() {
+        let rows = skill_entries("hunter", 4, &[]);
+        let ps = rows.iter().find(|e| e.action.skill_key() == Some("power_strike")).unwrap();
+        assert!(!ps.tooltip.is_empty(), "the prose is always there");
+
+        let mut roster = PartyRoster::default();
+        assert_eq!(roster.effect("power_strike"), "", "no numbers before the roster");
+        roster.ability_effects.insert(
+            "power_strike".into(),
+            "1.75× damage · 40 of 100 Adrenaline (25 per Attack)".into(),
+        );
+        assert!(roster.effect("power_strike").contains("Adrenaline"));
+        // A Psyker's Manifest rows are abilities too, so they resolve the same way.
+        let foci = menu_entries(MenuLevel::Manifest, "psyker", 16, &[], &[]);
+        assert!(foci.iter().any(|e| e.action.skill_key() == Some("gravity_well")));
+        // Rows that are not abilities have no key to look up, and must not panic.
+        assert_eq!(EntryAction::Attack.skill_key(), None);
+        assert_eq!(EntryAction::Back.skill_key(), None);
     }
 
     fn announce_app(screen: Screen) -> App {

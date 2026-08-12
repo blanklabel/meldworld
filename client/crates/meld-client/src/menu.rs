@@ -713,6 +713,13 @@ pub(crate) fn render_main_menu(
                                 15.0,
                                 glass::DIM,
                             ));
+                            // The prose says what KIND of thing it is; this says how
+                            // much. Without it the ladder is unreadable — Power Strike
+                            // and Frenzy differ only in numbers nobody could see.
+                            let fx = roster.effect(def.key);
+                            if !fx.is_empty() {
+                                col.spawn(glass::text(format!("   {fx}"), 14.0, glass::TITLE));
+                            }
                         }
                     }
                     MenuPane::UseOn => {

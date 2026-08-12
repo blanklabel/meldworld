@@ -478,6 +478,10 @@ pub enum ServerMsg {
         /// AD-2 build feedback: what this comp has active and what it can run.
         synergies: Vec<DepthLine>,
         combos: Vec<DepthLine>,
+        /// `(ability key, one-line magnitudes)`. The registry's prose says what KIND of
+        /// thing an ability is; the numbers are balance `[TUNABLE]`s the client cannot
+        /// read, so the server resolves them and sends them along.
+        abilities: Vec<(String, String)>,
     },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
     Perks { perks: PerksLine },
@@ -2058,7 +2062,20 @@ impl Inner {
                 };
                 let synergies = depth("synergies", "effect");
                 let combos = depth("combos", "sequence");
-                self.out.push_back(ServerMsg::Party { heroes, synergies, combos });
+                let abilities = raw.payload["abilities"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|a| {
+                                (
+                                    a["key"].as_str().unwrap_or_default().to_string(),
+                                    a["effect"].as_str().unwrap_or_default().to_string(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::Party { heroes, synergies, combos, abilities });
             }
             "run.perks" => {
                 let p = &raw.payload;
