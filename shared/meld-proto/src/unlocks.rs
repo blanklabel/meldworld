@@ -80,7 +80,7 @@ pub const UNLOCKS: &[UnlockDef] = &[
         name: "Explorer",
         kind: UnlockKind::Class(CharacterClass::Explorer),
         trigger: Trigger::Start,
-        trigger_text: "Yours from the first dive.",
+        trigger_text: "Yours from the first run.",
         banner: "The mapping order takes anyone, because nobody gets through the Meld alone. \
                  An Explorer sets the pace instead of the damage: its opener MARKS a creature \
                  so every ally hits it harder, and its later calls Barrier the party, make it \
@@ -101,7 +101,7 @@ pub const UNLOCKS: &[UnlockDef] = &[
         name: "Hunter",
         kind: UnlockKind::Class(CharacterClass::Hunter),
         trigger: Trigger::Extracted,
-        trigger_text: "Extract from a dive — the hall pays on evidence, not stories.",
+        trigger_text: "Extract from a run — the hall pays on evidence, not stories.",
         banner: "The Den has a board, a pit, and a marker with your callsign on it. A Hunter \
                  fights on ADRENALINE: every basic attack banks it and every skill spends it, \
                  so the longer a fight runs the harder you hit. Its intel also names what you \

@@ -87,7 +87,7 @@ pub(crate) struct District {
 pub(crate) const CITY_DISTRICTS: &[District] = &[
     District {
         label: "The Threshold",
-        purpose: "leave town: start a dive",
+        purpose: "leave town: start a run",
         x: 0.0,
         z: -19.0,
         radius: 5.5,
@@ -135,7 +135,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Vanguard Wall",
-        purpose: "the season's deepest-dive rankings",
+        purpose: "the season's deepest-run rankings",
         x: -15.0,
         z: -14.0,
         radius: 5.0,
@@ -1196,7 +1196,7 @@ pub(crate) fn render_city(
 /// The name alone is scenery to anyone who has not been told what a Drill Yard is.
 pub(crate) fn district_prompt(d: &District) -> String {
     let key = match d.action {
-        CityAction::Dive => "[E]/[ENTER] dive",
+        CityAction::Dive => "[E]/[ENTER] run",
         CityAction::Vault => "[E] open",
         CityAction::Shop => "[E] browse",
         CityAction::Craft => "[E] work",
@@ -1594,7 +1594,7 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
     }
     if !shop.gear.is_empty() {
         v.detail.push(format!(
-            "Rows {}-{} are the Requisition: plain gear, no affixes, so the next dive starts \
+            "Rows {}-{} are the Requisition: plain gear, no affixes, so the next run starts \
              dressed.",
             ITEM_ROWS + 1,
             ITEM_ROWS + shop.gear.len().min(GEAR_ROWS)
@@ -2296,7 +2296,7 @@ pub(crate) fn prompt_party_if_unset(
     *asked = true;
     if !session.party_chosen {
         city.party_open = true;
-        city.notice = "Muster a party before you dive.".to_string();
+        city.notice = "Muster a party before your run.".to_string();
     }
 }
 

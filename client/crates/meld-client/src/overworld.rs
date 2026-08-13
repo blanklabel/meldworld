@@ -759,9 +759,9 @@ pub(crate) fn boon_offer(
         .map(|(id, e)| (id.clone(), e.name.clone().unwrap_or_default()))
         .next()?;
     let label = if kind == "alembic" {
-        "Ask for a tonic (party, this dive)"
+        "Ask for a tonic (party, this run)"
     } else {
-        "Ask for an edge (this dive)"
+        "Ask for an edge (this run)"
     };
     Some((id, kind, label.to_string()))
 }

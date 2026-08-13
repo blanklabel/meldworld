@@ -118,8 +118,8 @@ pub const HUNTS: &[HuntDef] = &[
         name: "Cull the Bloom",
         quarry: "Bloom Stalkers",
         blurb: "They have learned to stand where the light comes through, which is where \
-                everyone walks. The wood is the first thing a new diver sees; the Guides \
-                would rather it did not eat them.",
+                everyone walks. The wood is the first thing anyone sees on a first run; \
+                the Guides would rather it did not eat them.",
         goal: HuntGoal::Fell { creature: "forest_bloom_stalker", count: 8 },
         tier: 0,
         reward_material: Some("forest_bloom_petal"),

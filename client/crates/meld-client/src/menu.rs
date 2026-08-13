@@ -407,7 +407,7 @@ pub(crate) fn render_main_menu(
                                 });
                             }
                             col.spawn(glass::text(
-                                "click a material to take it on your next dive",
+                                "click a material to take it on your next run",
                                 14.0,
                                 glass::DIM,
                             ));
