@@ -82,12 +82,89 @@ enum WorldEffect {
     /// MS-1: a smith job the world has accepted (who asked, where they stood, whose
     /// skill). The Router owns the heat and the Vault, so it takes it from here.
     SmithJob(Box<SmithJob>),
+    /// AD-4: something happened that a posted hunt might be counting. Same split as
+    /// `Milestone` — the world reports the fact, the Router owns the board.
+    Hunt {
+        player_id: String,
+        fact: HuntFact,
+    },
+    /// AD-4: a bounty's mark is down. The world knows which creature it was; the Router
+    /// owns the contract and the telling.
+    BountyFelled {
+        player_id: String,
+        bounty_id: String,
+        mark: String,
+    },
     /// Same, for the front/back-row formation flag.
     SetSessionHeroRow {
         player_id: String,
         slot: usize,
         back: bool,
     },
+}
+
+/// What one unfinished hunt is looking for, as the snapshot asks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuarryTarget {
+    Kind(String),
+    Class(String),
+}
+
+impl QuarryTarget {
+    fn matches(&self, kind: &str, class: &str) -> bool {
+        match self {
+            QuarryTarget::Kind(k) => k == kind,
+            QuarryTarget::Class(c) => c == class,
+        }
+    }
+}
+
+/// Every quarry a player is still working, from the hunts their session holds.
+///
+/// The board lives on the Router and the snapshot is built by the world, so this is
+/// pushed across the same way `skill_levels` is — the world never reads a session.
+fn quarry_targets(board: &HashMap<String, (i32, bool)>) -> Vec<QuarryTarget> {
+    let mut out = Vec::new();
+    for def in meld_proto::hunts::HUNTS {
+        let (progress, claimed) = board.get(def.key).copied().unwrap_or((0, false));
+        // A finished hunt stops marking: you are done looking, and the thing left to do
+        // is walk home and be paid.
+        if claimed || progress >= def.goal.target() {
+            continue;
+        }
+        match def.goal {
+            meld_proto::hunts::HuntGoal::Fell { creature, .. } => {
+                out.push(QuarryTarget::Kind(creature.to_string()))
+            }
+            meld_proto::hunts::HuntGoal::FellClass { class, .. } => {
+                out.push(QuarryTarget::Class(class.to_string()))
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// An owned [`meld_proto::hunts::HuntEvent`], for the trip from the world to the
+/// Router.
+#[derive(Debug, Clone)]
+enum HuntFact {
+    Felled { creature: String, class: String },
+    Depth(i32),
+    Extracted(i32),
+    DungeonCleared,
+}
+
+impl HuntFact {
+    fn as_event(&self) -> meld_proto::hunts::HuntEvent<'_> {
+        use meld_proto::hunts::HuntEvent;
+        match self {
+            HuntFact::Felled { creature, class } => HuntEvent::Felled { creature, class },
+            HuntFact::Depth(d) => HuntEvent::Depth { distance: *d },
+            HuntFact::Extracted(d) => HuntEvent::Extracted { deepest: *d },
+            HuntFact::DungeonCleared => HuntEvent::DungeonCleared,
+        }
+    }
 }
 
 /// Handle used by the gateway to feed the loop.
@@ -131,6 +208,13 @@ enum DbWrite {
     HeroClass(String, i16, String),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
+    /// Credit progress toward one posted hunt: (player, hunt key, delta, target).
+    /// The session already decided this is worth writing, so the DB call is a store
+    /// rather than a second ruling.
+    HuntProgress(String, String, i32, i32),
+    /// A bounty's mark was felled: (player, bounty id). The reward is still taken at the
+    /// board — this only records that the contract is finished.
+    BountyFelled(String, String),
     /// Post a new deepest distance to the Vanguard Board: (player, distance).
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
@@ -220,6 +304,20 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     let season = meld_db::current_season();
                     if let Err(e) = db.record_vanguard_distance(uid, season, distance).await {
                         tracing::error!("vanguard post failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::HuntProgress(pid, key, delta, target) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.credit_hunt(uid, &key, delta, target).await {
+                        tracing::error!("hunt credit failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::BountyFelled(pid, bounty_id) => {
+                if let (Ok(uid), Ok(bid)) = (Uuid::parse_str(&pid), Uuid::parse_str(&bounty_id)) {
+                    if let Err(e) = db.complete_bounty(uid, bid).await {
+                        tracing::error!("bounty completion failed for {pid}: {e}");
                     }
                 }
             }
@@ -450,6 +548,11 @@ struct Session {
     /// before `run.enter_maze` is handled so `form_run` can drain them
     /// synchronously into the fresh run's Backpack (see `flush_pending_materials`).
     pending_materials: Vec<(String, i32)>,
+    /// AD-4: progress and claimed-state per posted hunt, loaded on connect. `None`
+    /// until it lands, and a hunt credited before then is simply not counted — the
+    /// alternative is an in-memory zero racing the load and announcing "1/8" on a
+    /// hunt the account had already finished.
+    hunts: Option<HashMap<String, (i32, bool)>>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -796,6 +899,12 @@ struct BattleSlot {
 struct DungeonBattle {
     key: u64,
     boss_id: String,
+    /// The bounty this door's boss IS, or empty (AD-4). A dungeon boss is built here
+    /// rather than placed in the arena, so the contract rides the battle instead of a
+    /// `MonsterSpawn`.
+    bounty: String,
+    /// Which named boss the mark fights as, for the telling.
+    mark_boss: String,
 }
 
 /// One world's authoritative state — the nucleus that SC-3 will own on its own
@@ -883,6 +992,15 @@ struct WorldActor {
     /// pure (no wall-clock), so this lives here and is passed into `check_touch` as an
     /// exclusion set rather than being computed inside the arena.
     battle_immune_until: HashMap<String, u64>,
+    /// player_id -> the quarry of every hunt they are still working (AD-4), mirrored in
+    /// from the Router's session board so the snapshot can force-include and mark it.
+    quarry: HashMap<String, Vec<QuarryTarget>>,
+    /// player_id -> their standing bounty contracts (AD-4), mirrored in from the DB. The
+    /// world stands each mark up once the frontier reaches its sighted distance.
+    bounties: HashMap<String, Vec<(String, meld_proto::bounties::BountySpec)>>,
+    /// Contract ids whose mark has already been stood up in this world, so a mark is
+    /// never two creatures and a felled one never comes back.
+    marks_placed: std::collections::HashSet<String>,
 }
 
 /// One queued request at a field station: everything the DB half needs, decided
@@ -1143,7 +1261,24 @@ impl WorldActor {
         // as `mob:<kind>:<faction>` so the client can colour/label it by faction;
         // that's distinct from the player states and the `portal` tag below. Slain
         // creatures are dropped from the snapshot.
+        // AD-4: a hunt's quarry is force-included in its holder's own snapshot from
+        // further out than anyone else sees it, so it can be tracked rather than
+        // stumbled upon. Remembered here the way node-sense remembers nodes.
+        let mut mob_index: Vec<(usize, Position, &str, &str)> = Vec::new();
+        // A bounty MARK exists for one player (AD-4): its index is remembered here so
+        // every other player's cull drops it. A contract with your name on it must not be
+        // scenery in a stranger's world — or worse, a fight they can watch you lose.
+        let mut mark_index: Vec<(usize, String)> = Vec::new();
         for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
+            mob_index.push((
+                entities.len(),
+                m.position,
+                m.monster_kind.as_str(),
+                m.encounter_class.as_str(),
+            ));
+            if !m.owner.is_empty() {
+                mark_index.push((entities.len(), m.owner.clone()));
+            }
             entities.push(wm::SnapshotEntity {
                 entity_id: m.entity_id.clone(),
                 position: m.position,
@@ -1280,6 +1415,35 @@ impl WorldActor {
         let cell = self.balance.world.chunk_size.max(1) as f64;
         let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
         let radius2 = radius * radius;
+        // AD-4: which mobs are each player's QUARRY, decided before anything takes `self`
+        // mutably (and so before `mob_index`'s borrows end). A Hunter senses one from much
+        // further out — the guild's whole trade — but anyone holding a posted hunt knows
+        // what they are looking for.
+        let quarry_marks: HashMap<String, std::collections::HashSet<usize>> = self
+            .run
+            .runs
+            .iter()
+            .filter_map(|r| {
+                let targets = self.quarry.get(&r.player_id).filter(|q| !q.is_empty())?;
+                let pos = self.arena.avatar(&r.player_id)?.position;
+                let h = &self.balance.hunt;
+                let reach = if self.perks_for(&r.player_id).hunter_intel > 0 {
+                    h.quarry_sense_hunter_radius
+                } else {
+                    h.quarry_sense_radius
+                }
+                .max(radius);
+                let hits: std::collections::HashSet<usize> = mob_index
+                    .iter()
+                    .filter(|(_, mpos, kind, class)| {
+                        pos.distance_to(mpos) <= reach
+                            && targets.iter().any(|t| t.matches(kind, class))
+                    })
+                    .map(|(i, _, _, _)| *i)
+                    .collect();
+                (!hits.is_empty()).then(|| (r.player_id.clone(), hits))
+            })
+            .collect();
         let grid = build_interest_grid(&entities, cell);
         let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
         // Overworld snapshots go to players NOT in any battle. A fighting party is
@@ -1359,6 +1523,17 @@ impl WorldActor {
                 }
                 _ => Vec::new(),
             };
+            let mut marked = quarry_marks.get(&r.player_id).cloned().unwrap_or_default();
+            // Your own mark is always tracked and always yours; everyone else's is not in
+            // your world at all.
+            let mut hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for (idx, owner) in &mark_index {
+                if owner == &r.player_id {
+                    marked.insert(*idx);
+                } else {
+                    hidden.insert(*idx);
+                }
+            }
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 // Grid-indexed interest cull (SC-1): behaviour-identical to the old
                 // full scan (own avatar + portal always; mobs at `mob_radius`, the
@@ -1369,13 +1544,33 @@ impl WorldActor {
                         own_idx, portal_idx,
                     );
                     idxs.extend(sensed);
+                    idxs.extend(marked.iter().copied());
+                    idxs.retain(|i| !hidden.contains(i));
                     idxs.sort_unstable();
                     idxs.dedup();
-                    idxs.into_iter().map(|i| entities[i].clone()).collect()
+                    idxs.into_iter()
+                        .map(|i| {
+                            let mut e = entities[i].clone();
+                            // The tag rides this player's OWN copy of the row: the same
+                            // creature is not a quarry to the teammate beside them.
+                            if marked.contains(&i) {
+                                if let Some(st) = e.avatar_state.as_mut() {
+                                    st.push_str(":quarry");
+                                }
+                            }
+                            e
+                        })
+                        .collect()
                 }
                 // Defensive: a roaming run should always have an avatar; if not, don't
-                // cull (send the full set) rather than send an empty world.
-                None => entities.clone(),
+                // cull (send the full set) rather than send an empty world. Someone
+                // else's mark is still not theirs to see.
+                None => entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !hidden.contains(i))
+                    .map(|(_, e)| e.clone())
+                    .collect(),
             };
             out.push(out_msg(
                 &r.player_id,
@@ -2371,7 +2566,43 @@ impl WorldActor {
         }
 
         let boss_entity = format!("dboss-{key}-{boss_id}");
-        let boss = meld_world::MonsterSpawn::dungeon_boss(&balance, boss_entity, biome, boss_kind, eff_dist, seed);
+        // AD-4: a bounty whose venue is a DESCENT waits at the bottom of one. If this
+        // player holds such a contract and the door is deep enough for it, the thing
+        // keeping the door IS their mark — built from the contract, so the fight it names
+        // is the fight they get.
+        let mark = inst
+            .bounties
+            .get(pid)
+            .into_iter()
+            .flatten()
+            .find(|(id, spec)| {
+                spec.venue == meld_proto::bounties::Venue::Dungeon
+                    && !inst.marks_placed.contains(id)
+                    && eff_dist >= spec.distance as i64
+            })
+            .map(|(id, spec)| (id.clone(), spec.clone()));
+        let boss = match &mark {
+            Some((id, spec)) => meld_world::MonsterSpawn::bounty_mark_at(
+                &balance,
+                boss_entity,
+                spec,
+                id,
+                pid,
+                eff_dist,
+                seed,
+            ),
+            None => meld_world::MonsterSpawn::dungeon_boss(
+                &balance,
+                boss_entity,
+                biome,
+                boss_kind,
+                eff_dist,
+                seed,
+            ),
+        };
+        if let Some((id, _)) = &mark {
+            inst.marks_placed.insert(id.clone());
+        }
         let enemies_ref: Vec<(&meld_world::MonsterSpawn, String)> = vec![(&boss, boss_cid.clone())];
         let battle = build_battle(
             battle_id.clone(),
@@ -2391,7 +2622,12 @@ impl WorldActor {
             player_combatants,
             parties: std::iter::once(party_id).collect(),
             pos: Position::new(0.0, 0.0),
-            dungeon: Some(DungeonBattle { key, boss_id: boss_id.to_string() }),
+            dungeon: Some(DungeonBattle {
+                key,
+                boss_id: boss_id.to_string(),
+                bounty: mark.as_ref().map(|(id, _)| id.clone()).unwrap_or_default(),
+                mark_boss: mark.as_ref().map(|(_, s)| s.boss_kind.clone()).unwrap_or_default(),
+            }),
             party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
@@ -2499,6 +2735,9 @@ struct GameState {
     /// Players whose persistent Meld skill levels the world still needs (MS-1 field
     /// stations gate on them). Drained by `flush_skill_loads` after the tick.
     pending_skill_load: Vec<String>,
+    /// Players whose standing bounty contracts (AD-4) still have to be read out of the DB
+    /// and handed to the world, so their marks can be stood up.
+    pending_bounty_load: Vec<String>,
     /// Open heats (MS-1's smithing tempo game), keyed by job id. A heat holds the bar
     /// the server laid out and the blows reported so far; it leaves here graded, either
     /// when the last blow lands or when its window runs out.
@@ -2526,6 +2765,7 @@ impl GameState {
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
             pending_skill_load: Vec::new(),
+            pending_bounty_load: Vec::new(),
             open_heats: HashMap::new(),
             pending_smith: Vec::new(),
             next_job: 0,
@@ -2563,6 +2803,7 @@ impl GameState {
             self.flush_skill_loads().await;
             self.flush_smith_jobs().await;
             self.flush_hero_loads().await;
+            self.flush_bounty_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
             if let Some(w) = self.world.as_mut() {
@@ -2642,6 +2883,7 @@ impl GameState {
                         has_dived: false,
                         unlocks: None,
                         pending_materials: Vec::new(),
+                        hunts: None,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -2661,6 +2903,7 @@ impl GameState {
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
                 self.pending_skill_load.retain(|p| p != &player_id);
+                self.pending_bounty_load.retain(|p| p != &player_id);
                 self.pending_hero_load.retain(|p| p != &player_id);
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
@@ -2752,6 +2995,88 @@ impl GameState {
         self.dispatch(vec![out_msg(player_id, &msg)]);
     }
 
+    /// AD-4: offer a fact to every posted hunt and credit the ones that want it.
+    ///
+    /// Decided against the session's in-memory board, like `grant_milestone`: the cap
+    /// and the completion crossing are settled here, so several kills in one tick
+    /// cannot each announce the same finish and the DB write can lag without paying
+    /// twice. A claimed hunt is inert.
+    fn credit_hunts(&mut self, player_id: &str, fact: &HuntFact) {
+        let Some(board) = self.sessions.get(player_id).and_then(|s| s.hunts.clone()) else {
+            return;
+        };
+        let ev = fact.as_event();
+        let mut moved: Vec<(String, i32, i32, i32, bool)> = Vec::new();
+        for def in meld_proto::hunts::HUNTS {
+            let (progress, claimed) = board.get(def.key).copied().unwrap_or((0, false));
+            let target = def.goal.target();
+            if claimed || progress >= target {
+                continue;
+            }
+            let delta = def.goal.credits(&ev);
+            if delta <= 0 {
+                continue;
+            }
+            let now = (progress + delta).min(target);
+            moved.push((def.key.to_string(), delta, now, target, now >= target));
+        }
+        if moved.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            if let Some(b) = s.hunts.as_mut() {
+                for (key, _, now, _, _) in &moved {
+                    let e = b.entry(key.clone()).or_insert((0, false));
+                    e.0 = *now;
+                }
+            }
+        }
+        // A finished hunt stops being tracked, so the world's copy is refreshed from the
+        // same board the credit just moved.
+        let targets = self
+            .sessions
+            .get(player_id)
+            .and_then(|s| s.hunts.as_ref())
+            .map(quarry_targets);
+        if let (Some(w), Some(t)) = (self.world.as_mut(), targets) {
+            w.quarry.insert(player_id.to_string(), t);
+        }
+        let mut out = Vec::new();
+        for (key, delta, now, target, complete) in moved {
+            let _ = self.db_writes.send(DbWrite::HuntProgress(
+                player_id.to_string(),
+                key.clone(),
+                delta,
+                target,
+            ));
+            let name = meld_proto::hunts::hunt(&key).map_or(key.clone(), |d| d.name.to_string());
+            out.push(out_msg(
+                player_id,
+                &wr::HuntProgress { key, name, progress: now, target, complete },
+            ));
+        }
+        self.dispatch(out);
+    }
+
+    /// AD-4: a bounty's mark is down. Record it and say so; the Den pays at the board.
+    fn finish_bounty(&mut self, player_id: &str, bounty_id: &str, mark: &str) {
+        let _ = self.db_writes.send(DbWrite::BountyFelled(
+            player_id.to_string(),
+            bounty_id.to_string(),
+        ));
+        let name = meld_world::boss_display_name(mark);
+        self.dispatch(vec![out_msg(
+            player_id,
+            &wr::HuntProgress {
+                key: format!("bounty:{bounty_id}"),
+                name: format!("{name} is down"),
+                progress: 1,
+                target: 1,
+                complete: true,
+            },
+        )]);
+    }
+
     fn release_from_run(&mut self, player_id: &str) {
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.in_instance = false;
@@ -2785,6 +3110,12 @@ impl GameState {
                     }
                 }
                 WorldEffect::SmithJob(job) => self.open_heat(*job),
+                WorldEffect::Hunt { player_id, fact } => self.credit_hunts(&player_id, &fact),
+                WorldEffect::BountyFelled {
+                    player_id,
+                    bounty_id,
+                    mark,
+                } => self.finish_bounty(&player_id, &bounty_id, &mark),
                 WorldEffect::SetSessionHeroRow {
                     player_id,
                     slot,
@@ -3248,6 +3579,9 @@ impl GameState {
                 dungeon_scene_sent: HashMap::new(),
                 pending_effects: Vec::new(),
                 skill_levels: HashMap::new(),
+                quarry: HashMap::new(),
+                bounties: HashMap::new(),
+                marks_placed: std::collections::HashSet::new(),
                 edges: HashMap::new(),
                 battle_immune_until: HashMap::new(),
             });
@@ -3539,6 +3873,24 @@ impl GameState {
         // The professions' field verbs gate on persistent Meld levels, so the world
         // needs them in hand before anyone tries to raise a station.
         self.pending_skill_load.extend(party_ids.iter().cloned());
+        // AD-4: the diver's standing contracts, so their marks can stand up as the world
+        // grows out to them.
+        self.pending_bounty_load.extend(party_ids.iter().cloned());
+        // AD-4: and the quarry of every hunt each diver is working, so the snapshot can
+        // mark it from the first tick. The board was loaded on connect, when there was no
+        // world to hold it — this is the handover.
+        let quarry: Vec<(String, Vec<QuarryTarget>)> = party_ids
+            .iter()
+            .filter_map(|pid| {
+                let board = self.sessions.get(pid).and_then(|s| s.hunts.as_ref())?;
+                Some((pid.clone(), quarry_targets(board)))
+            })
+            .collect();
+        if let Some(w) = self.world.as_mut() {
+            for (pid, targets) in quarry {
+                w.quarry.insert(pid, targets);
+            }
+        }
         out
     }
 
@@ -3827,20 +4179,20 @@ impl WorldActor {
             intent.input_seq,
         );
 
-        self.post_vanguard(player_id);
+        let deeper = self.post_vanguard(player_id);
 
         // WG-4: crossing the western border behind the hub returns you to Last City
         // (an instant extraction home — you keep your backpack). `complete_extractions`
         // banks it this same tick and sends the result, so no touch/battle is resolved.
         if self.west_return(player_id) {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), deeper);
         }
 
         // Contact starts a battle. Checked here for an instant response to the
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
-        (self.resolve_touches(), Vec::new())
+        (self.resolve_touches(), deeper)
     }
 
     /// Post the player's current distance to the Vanguard Board when it beats
@@ -3850,13 +4202,13 @@ impl WorldActor {
     /// write fires once per *new* deepest tile rather than on every move — and the
     /// number never comes from the client: it is read off the server-owned avatar
     /// after movement was validated (CANON §S anti-forgery).
-    fn post_vanguard(&mut self, player_id: &str) {
+    fn post_vanguard(&mut self, player_id: &str) -> Vec<WorldEffect> {
         let Some(d) = self
             .arena
             .avatar(player_id)
             .map(|a| a.position.distance_floor().clamp(0, i32::MAX as i64) as i32)
         else {
-            return;
+            return Vec::new();
         };
         let Some(run) = self
             .run
@@ -3864,15 +4216,21 @@ impl WorldActor {
             .iter_mut()
             .find(|r| r.player_id == player_id && r.result.is_none())
         else {
-            return;
+            return Vec::new();
         };
         if d <= run.max_distance_reached {
-            return;
+            return Vec::new();
         }
         run.max_distance_reached = d;
         let _ = self
             .db_writes
             .send(DbWrite::Vanguard(player_id.to_string(), d));
+        // A depth hunt rides the same high-water mark, so it is asked once per new
+        // deepest tile rather than on every step of the walk out.
+        vec![WorldEffect::Hunt {
+            player_id: player_id.to_string(),
+            fact: HuntFact::Depth(d),
+        }]
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -4816,6 +5174,28 @@ impl GameState {
         }
     }
 
+    /// Read each pending player's standing bounty contracts and hand them to the world
+    /// (AD-4). Only `active` rows travel: a felled or withdrawn contract has no mark.
+    async fn flush_bounty_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_bounty_load);
+        for pid in loads {
+            let Ok(uid) = Uuid::parse_str(&pid) else { continue };
+            let Ok(rows) = self.db.list_bounties(uid).await else { continue };
+            let specs: Vec<(String, meld_proto::bounties::BountySpec)> = rows
+                .into_iter()
+                .filter(|r| r.state == "active")
+                .filter_map(|r| {
+                    serde_json::from_str(&r.spec)
+                        .ok()
+                        .map(|spec| (r.bounty_id.to_string(), spec))
+                })
+                .collect();
+            if let Some(w) = self.world.as_mut() {
+                w.bounties.insert(pid, specs);
+            }
+        }
+    }
+
     /// Do the Postgres half of the smith jobs the world queued this tick. The world
     /// already decided WHO may ask and WHERE they were standing; what is left is the
     /// same atomic Vault call the HTTP anvil makes — which is what keeps "ownership
@@ -5201,6 +5581,21 @@ impl GameState {
                         s.unlocks = Some(owned);
                     }
                     self.dispatch(vec![out_msg(&pid, &inventory)]);
+                }
+                // AD-4: the board's state for this account, so a kill can be credited
+                // against it on the tick it happens rather than at a DB round-trip.
+                if let Ok(rows) = self.db.get_hunts(uid).await {
+                    let board: HashMap<String, (i32, bool)> = rows
+                        .into_iter()
+                        .map(|r| (r.hunt_key, (r.progress, r.claimed)))
+                        .collect();
+                    let targets = quarry_targets(&board);
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.hunts = Some(board);
+                    }
+                    if let Some(w) = self.world.as_mut() {
+                        w.quarry.insert(pid.clone(), targets);
+                    }
                 }
             }
         }
@@ -6342,6 +6737,7 @@ impl GameState {
             items: Vec<ItemStack>,
             chits: i64,
             gear: Vec<LootGear>,
+            deepest: i32,
         }
         let (banks, members): (Vec<Banked>, Vec<String>) = {
             let Some(inst) = self.world.as_mut() else {
@@ -6386,6 +6782,7 @@ impl GameState {
                         items,
                         chits,
                         gear,
+                        deepest: r.max_distance_reached,
                     });
                 }
             }
@@ -6405,6 +6802,8 @@ impl GameState {
             // Hunters' hall recruits on ("hunts are only rewarded with evidence of
             // kills"), so a completed extraction is the Hunter's trigger.
             self.grant_milestone(&b.player_id, meld_proto::unlocks::Milestone::Extracted);
+            // AD-4: and it is what a "come home from depth" hunt is waiting for.
+            self.credit_hunts(&b.player_id, &HuntFact::Extracted(b.deepest));
             // Reaching the city burns ephemeral gear even when you WALKED in. It is
             // the strongest gear in the game precisely because it can never be banked
             // — surviving extraction would make it merely the best loot.
@@ -6556,6 +6955,32 @@ impl WorldActor {
                 .fold(f64::NEG_INFINITY, f64::max);
             if reach.is_finite() {
                 created_sections = self.arena.ensure_frontier(&balance, reach);
+            }
+        }
+        // AD-4: stand up any bounty mark the world has now grown out far enough to hold.
+        // Cheap: only contracts not yet placed are considered, and each is tried once.
+        if !self.bounties.is_empty() {
+            let balance = self.balance.clone();
+            let pending: Vec<(String, String, meld_proto::bounties::BountySpec)> = self
+                .bounties
+                .iter()
+                .flat_map(|(pid, specs)| {
+                    specs
+                        .iter()
+                        .filter(|(id, spec)| {
+                            // A descent contract waits for a descent; standing it up in
+                            // the open too would be the same mark twice.
+                            spec.venue == meld_proto::bounties::Venue::Overworld
+                                && !self.marks_placed.contains(id)
+                        })
+                        .map(move |(id, spec)| (pid.clone(), id.clone(), spec.clone()))
+                })
+                .collect();
+            for (pid, id, spec) in pending {
+                let seed = hash_str(&id);
+                if self.arena.place_bounty_mark(&balance, &pid, &id, &spec, seed) {
+                    self.marks_placed.insert(id);
+                }
             }
         }
         // Stream the freshly-generated sections' terrain (+ trail segment) so the
@@ -6858,6 +7283,28 @@ impl WorldActor {
                     out.extend(bout);
                     effects.extend(beff);
                     if let Some(d) = dctx {
+                        if outcome == BattleOutcome::Victory {
+                            effects.extend(members.iter().map(|pid| WorldEffect::Hunt {
+                                player_id: pid.clone(),
+                                fact: HuntFact::DungeonCleared,
+                            }));
+                            // AD-4: and if the door was keeping someone's MARK, the
+                            // contract is finished — for its owner, whoever else swung.
+                            if !d.bounty.is_empty() {
+                                if let Some(owner) = self
+                                    .bounties
+                                    .iter()
+                                    .find(|(_, specs)| specs.iter().any(|(id, _)| *id == d.bounty))
+                                    .map(|(pid, _)| pid.clone())
+                                {
+                                    effects.push(WorldEffect::BountyFelled {
+                                        player_id: owner,
+                                        bounty_id: d.bounty.clone(),
+                                        mark: d.mark_boss.clone(),
+                                    });
+                                }
+                            }
+                        }
                         out.extend(self.finish_dungeon_battle(&members, outcome, d));
                     }
                 }
@@ -7163,14 +7610,39 @@ impl WorldActor {
                 // they leave the arena: what was in the encounter is what earns the
                 // class, and a moment later there is nothing left to ask.
                 let (mut felled_champion, mut felled_rite) = (false, false);
+                // AD-4 reads the same carcasses: what a hunt counts is the creature's
+                // OWN kind and class, taken before the encounter leaves the arena.
+                let mut felled: Vec<(String, String)> = Vec::new();
                 for id in &monster_ids {
                     match inst.arena.monster_by_id(id).map(|m| m.encounter_class.as_str()) {
                         Some("elite") | Some("gatekeeper") => felled_champion = true,
                         Some("undead_rite") => felled_rite = true,
                         _ => {}
                     }
+                    if let Some(m) = inst.arena.monster_by_id(id) {
+                        felled.push((m.monster_kind.clone(), m.encounter_class.clone()));
+                        // AD-4: a felled MARK finishes its contract, and it finishes it
+                        // for its owner only — whoever else was swinging, the contract has
+                        // one name on it.
+                        if !m.bounty.is_empty() && !m.owner.is_empty() {
+                            effects.push(WorldEffect::BountyFelled {
+                                player_id: m.owner.clone(),
+                                bounty_id: m.bounty.clone(),
+                                mark: m.boss_kind.clone(),
+                            });
+                        }
+                    }
                 }
                 for r in inst.run.runs.iter().filter(|r| bp.contains(&r.party_id)) {
+                    for (creature, class) in &felled {
+                        effects.push(WorldEffect::Hunt {
+                            player_id: r.player_id.clone(),
+                            fact: HuntFact::Felled {
+                                creature: creature.clone(),
+                                class: class.clone(),
+                            },
+                        });
+                    }
                     if felled_champion {
                         effects.push(WorldEffect::Milestone {
                             player_id: r.player_id.clone(),
@@ -7958,6 +8430,59 @@ mod unlock_gate_tests {
 /// The two PROFESSION classes had no overworld perk at all — every other class earns one
 /// for walking around, and the pair whose whole identity is what they do between fights
 /// earned nothing. These cover MS-1's second ladder.
+#[cfg(test)]
+mod quarry_tests {
+    use super::*;
+
+    fn board(entries: &[(&str, i32, bool)]) -> HashMap<String, (i32, bool)> {
+        entries.iter().map(|(k, p, c)| (k.to_string(), (*p, *c))).collect()
+    }
+
+    /// A fresh account is working every hunt, so every quarry on the board is tracked.
+    #[test]
+    fn an_untouched_board_tracks_every_quarry_it_names() {
+        let targets = quarry_targets(&board(&[]));
+        assert!(targets.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+        assert!(targets.contains(&QuarryTarget::Class("gatekeeper".into())));
+        assert!(targets.contains(&QuarryTarget::Class("elite".into())));
+        // A depth or an extraction has no quarry to mark — there is nothing to point at.
+        assert_eq!(
+            targets.len(),
+            meld_proto::hunts::HUNTS
+                .iter()
+                .filter(|h| matches!(
+                    h.goal,
+                    meld_proto::hunts::HuntGoal::Fell { .. }
+                        | meld_proto::hunts::HuntGoal::FellClass { .. }
+                ))
+                .count()
+        );
+    }
+
+    /// Finished or paid, it stops being marked: the thing left to do is walk home, and a
+    /// world that keeps shouting QUARRY at a hunt you closed is noise.
+    #[test]
+    fn a_finished_or_claimed_hunt_stops_being_tracked() {
+        let done = quarry_targets(&board(&[("unseat_the_keeper", 1, false)]));
+        assert!(!done.contains(&QuarryTarget::Class("gatekeeper".into())));
+        let paid = quarry_targets(&board(&[("cull_the_bloom", 8, true)]));
+        assert!(!paid.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+        // Partial progress is still a hunt you are working.
+        let partial = quarry_targets(&board(&[("cull_the_bloom", 7, false)]));
+        assert!(partial.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+    }
+
+    #[test]
+    fn a_target_matches_its_own_kind_or_class_and_nothing_else() {
+        let kind = QuarryTarget::Kind("dune_wyrm".into());
+        assert!(kind.matches("dune_wyrm", "standard"));
+        assert!(!kind.matches("bog_serpent", "standard"));
+        let class = QuarryTarget::Class("gatekeeper".into());
+        assert!(class.matches("anything", "gatekeeper"));
+        assert!(!class.matches("anything", "elite"));
+    }
+}
+
 #[cfg(test)]
 mod crafter_perk_tests {
     use super::*;

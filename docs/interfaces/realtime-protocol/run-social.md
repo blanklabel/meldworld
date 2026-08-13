@@ -547,6 +547,31 @@ Authoritative delta to the recipient's own backpack — the single source of tru
 
 ---
 
+### `run.hunt_progress` (S2C)
+
+A posted hunt moved (roadmap `AD-4`; behavior: [behaviors/hunt-board.md](../../behaviors/hunt-board.md)).
+
+**Source:** [proposals/adventure-depth.md](../../proposals/adventure-depth.md) §E; CANON.md §S (progress is server-owned — the client is told, never asked).
+**Direction:** S2C — sent to the player whose progress changed, as it changes, so a hunt is something you watch fill rather than something you find finished on your next walk past the board. Several credits in one tick send one message each; `complete` is true on exactly one of them, ever.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| key | string | Yes | No | — | The hunt's stable id (`meld_proto::hunts`). |
+| name | string | Yes | No | — | Display name, so a client that does not know the key can still speak. |
+| progress | integer (int32, ≥ 1) | Yes | No | — | Progress after this credit, capped at `target`. |
+| target | integer (int32, ≥ 1) | Yes | No | — | What the hunt completes at. |
+| complete | boolean | Yes | No | — | This credit finished it; the reward is waiting at the Bounty Board (`POST /v1/hunts/:key/claim`). |
+
+**Example**
+
+```json
+{"type": "run.hunt_progress", "seq": 812, "ts": 1783728150001, "payload": {"key": "cull_the_bloom", "name": "Cull the Bloom", "progress": 3, "target": 8, "complete": false}}
+```
+
+---
+
 ### `social.drop_item` (C2S)
 
 Drops backpack items onto the overworld for anyone to pick up — cooperation, gifting, or paying bodyguards.

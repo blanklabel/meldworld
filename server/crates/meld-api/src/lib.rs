@@ -72,6 +72,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vendors/requisition/buy", post(requisition_buy))
         .route("/v1/vendors/broker", get(broker_prices))
         .route("/v1/vendors/broker/sell", post(broker_sell))
+        .route("/v1/hunts", get(hunt_board))
+        .route("/v1/hunts/:key/claim", post(claim_hunt))
+        .route("/v1/bounties", get(bounty_board))
+        .route("/v1/bounties/:bounty_id/claim", post(claim_bounty))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -243,6 +247,458 @@ async fn vanguard_entries(st: &ApiState, season: i32) -> Result<Vec<VanguardEntr
             achieved_at: r.achieved_at.timestamp_millis(),
         })
         .collect())
+}
+
+/// `GET /v1/hunts` — the Hunt Board: every posted hunt with the caller's progress
+/// against it (roadmap AD-4).
+///
+/// The registry supplies the rows and the DB only supplies progress, so a hunt nobody
+/// has touched is still on the board — a board that only listed what you had started
+/// would have nothing on it for a new account.
+async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let rows = st.db.get_hunts(player_id).await.map_err(ApiReject::internal)?;
+    let data = meld_proto::hunts::HUNTS
+        .iter()
+        .map(|def| {
+            let row = rows.iter().find(|r| r.hunt_key == def.key);
+            let progress = row.map_or(0, |r| r.progress);
+            let claimed = row.is_some_and(|r| r.claimed);
+            let target = def.goal.target();
+            HuntView {
+                key: def.key.to_string(),
+                name: def.name.to_string(),
+                objective: meld_proto::hunts::objective(def),
+                blurb: def.blurb.to_string(),
+                tier: def.tier,
+                progress,
+                target,
+                claimable: progress >= target && !claimed,
+                claimed,
+                reward_chits: st.balance.hunt.reward_chits(def.tier),
+                reward_material: def.reward_material.unwrap_or_default().to_string(),
+                reward_material_qty: def
+                    .reward_material
+                    .map_or(0, |_| st.balance.hunt.reward_qty(def.tier)),
+                reward_gear: def.reward_gear,
+                where_to_look: where_to_look(&st.balance, def),
+            }
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(HuntBoardResponse { data })).into_response())
+}
+
+/// The caller's hunter rank and banked XP (AD-4). Rank 0 is an unblooded hunter, so it is
+/// the `hunting` skill level minus one — a level ladder starts at 1, a rank at none.
+async fn hunter_rank(st: &ApiState, player_id: Uuid) -> Result<(i32, i64), ApiReject> {
+    let skills = st.db.get_skills(player_id).await.map_err(ApiReject::internal)?;
+    let xp = skills.iter().find(|(k, _)| k == "hunting").map(|(_, xp)| *xp).unwrap_or(0);
+    Ok(((meld_balance::meld_skill_level(xp, st.meld_xp_per_level) - 1).max(0), xp))
+}
+
+/// Whether this account has earned the Den's board at all. The bounty surface is the
+/// Hunter's, so it opens with the class (CL-1) rather than being handed to everyone.
+async fn owns_the_den(st: &ApiState, player_id: Uuid) -> bool {
+    st.db
+        .get_unlocks(player_id)
+        .await
+        .map(|owned| owned.iter().any(|k| k == "class_hunter"))
+        .unwrap_or(false)
+}
+
+fn bounty_view(
+    row: &meld_db::BountyRow,
+    spec: &meld_proto::bounties::BountySpec,
+    now: chrono::DateTime<chrono::Utc>,
+) -> BountyView {
+    let standing = spec_state(row).is_some_and(|s| s.is_standing());
+    BountyView {
+        bounty_id: row.bounty_id.to_string(),
+        state: row.state.clone(),
+        mark_name: spec.mark_name(meld_world::boss_display_name(&spec.boss_kind)),
+        boss_kind: spec.boss_kind.clone(),
+        creature: spec.creature.clone(),
+        biome: spec.biome.clone(),
+        distance: spec.distance,
+        venue: spec.venue.wire().to_string(),
+        // A descent contract is gated on the door being at least as deep as the sighting,
+        // so it says "past" — the depth is a condition there, not just a report.
+        where_to_look: match spec.venue {
+            meld_proto::bounties::Venue::Dungeon => format!(
+                "Waiting {} past d{}, in the {}.",
+                spec.venue.phrasing(),
+                spec.distance,
+                spec.biome
+            ),
+            meld_proto::bounties::Venue::Overworld => format!(
+                "Sighted at d{} in the {}, {}.",
+                spec.distance,
+                spec.biome,
+                spec.venue.phrasing()
+            ),
+        },
+        power: spec.power,
+        expires_in_secs: if standing {
+            (row.expires_at - now).num_seconds().max(0)
+        } else {
+            0
+        },
+        reward_chits: spec.reward_chits,
+        reward_material: spec.reward_material.clone(),
+        reward_material_qty: spec.reward_material_qty,
+        reward_gear: spec.reward_gear,
+        reward_rank_xp: spec.reward_rank_xp,
+    }
+}
+
+fn spec_state(row: &meld_db::BountyRow) -> Option<meld_proto::bounties::BountyState> {
+    meld_proto::bounties::BountyState::from_wire(&row.state)
+}
+
+/// `GET /v1/bounties` — the Den's board: standing contracts, your history, your rank.
+///
+/// Withdraws whatever expired and tops the list back up to `[bounty] active_slots` on the
+/// way through, so the offers are always live without a scheduler anywhere.
+async fn bounty_board(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if !owns_the_den(&st, player_id).await {
+        return Err(ApiReject::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "The Den takes its own. Earn the Hunter first.",
+        ));
+    }
+    let now = chrono::Utc::now();
+    st.db
+        .expire_bounties(player_id, now)
+        .await
+        .map_err(ApiReject::internal)?;
+    let (rank, rank_xp) = hunter_rank(&st, player_id).await?;
+
+    let mut rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    let standing = |r: &meld_db::BountyRow| spec_state(r).is_some_and(|s| s.is_standing());
+    let missing = st
+        .balance
+        .bounty
+        .active_slots
+        .saturating_sub(rows.iter().filter(|r| standing(r)).count());
+    if missing > 0 {
+        let window = chrono::Duration::hours(st.balance.bounty.window_hours.max(1));
+        for i in 0..missing {
+            let bounty_id = Uuid::now_v7();
+            let spec = meld_world::roll_bounty(
+                &st.balance,
+                rank,
+                seed_now() ^ ((i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            );
+            let Ok(json) = serde_json::to_string(&spec) else { continue };
+            st.db
+                .insert_bounty(player_id, bounty_id, &json, now + window)
+                .await
+                .map_err(ApiReject::internal)?;
+        }
+        rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    }
+
+    let (mut active, mut history) = (Vec::new(), Vec::new());
+    for row in &rows {
+        let Ok(spec) = serde_json::from_str::<meld_proto::bounties::BountySpec>(&row.spec) else {
+            continue;
+        };
+        let view = bounty_view(row, &spec, now);
+        match row.state.as_str() {
+            "active" | "completed" => active.push(view),
+            _ => history.push(view),
+        }
+    }
+    let per = st.meld_xp_per_level.max(1);
+    Ok((
+        StatusCode::OK,
+        Json(BountyBoardResponse {
+            rank,
+            rank_title: meld_proto::bounties::rank_title(rank).to_string(),
+            rank_xp,
+            rank_xp_to_next: (per - rank_xp % per).max(0),
+            active,
+            history,
+        }),
+    )
+        .into_response())
+}
+
+/// `POST /v1/bounties/:bounty_id/claim` — take the Den's payment for a felled mark.
+async fn claim_bounty(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(bounty_id): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Ok(id) = Uuid::parse_str(&bounty_id) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."));
+    };
+    let rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    let Some(row) = rows.iter().find(|r| r.bounty_id == id) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."));
+    };
+    let spec: meld_proto::bounties::BountySpec = serde_json::from_str(&row.spec)
+        .map_err(|e| ApiReject::internal(format!("unreadable bounty spec: {e}")))?;
+    let (rank_before, _) = hunter_rank(&st, player_id).await?;
+
+    let tier = band_of(spec.distance);
+    let drop = if spec.reward_gear {
+        award_gear(&st, player_id, tier).await
+    } else {
+        None
+    };
+    let piece = drop.as_ref().map(crafted_row);
+    let material = (!spec.reward_material.is_empty())
+        .then_some((spec.reward_material.as_str(), spec.reward_material_qty));
+    match st
+        .db
+        .claim_bounty(
+            player_id,
+            id,
+            spec.reward_chits,
+            material,
+            piece.as_ref(),
+            spec.reward_rank_xp,
+        )
+        .await
+        .map_err(ApiReject::internal)?
+    {
+        meld_db::BountyClaim::Paid { chits } => {
+            let (rank, _) = hunter_rank(&st, player_id).await?;
+            Ok((
+                StatusCode::OK,
+                Json(BountyClaimResponse {
+                    bounty_id,
+                    mark_name: spec.mark_name(meld_world::boss_display_name(&spec.boss_kind)),
+                    reward_chits: spec.reward_chits,
+                    reward_material: spec.reward_material.clone(),
+                    reward_material_qty: spec.reward_material_qty,
+                    reward_gear: drop.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                    chits,
+                    rank,
+                    rank_title: meld_proto::bounties::rank_title(rank).to_string(),
+                    ranked_up: rank > rank_before,
+                }),
+            )
+                .into_response())
+        }
+        meld_db::BountyClaim::AlreadyClaimed => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "The Den has already paid for that one.",
+        )),
+        meld_db::BountyClaim::NotCompleted => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "{} is still standing.",
+                spec.mark_name(meld_world::boss_display_name(&spec.boss_kind))
+            ),
+        )),
+        meld_db::BountyClaim::Missing => {
+            Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."))
+        }
+    }
+}
+
+/// `POST /v1/hunts/:key/claim` — take the reward for a hunt you have finished.
+async fn claim_hunt(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Some(def) = meld_proto::hunts::hunt(&key) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such hunt."));
+    };
+    let chits = st.balance.hunt.reward_chits(def.tier);
+    let qty = st.balance.hunt.reward_qty(def.tier);
+    let material = def.reward_material.map(|m| (m, qty));
+    // The deep hunts pay a piece as well. Rolled for a class the caller actually fields
+    // (GR-7's recorded roster), at the hunt's own band, from the ordinary pool — the
+    // board is a reliable source of good gear, never a better one than a champion.
+    let drop = if def.reward_gear { hunt_gear(&st, player_id, def).await } else { None };
+    let piece = drop.as_ref().map(crafted_row);
+    match st
+        .db
+        .claim_hunt(
+            player_id,
+            def.key,
+            def.goal.target(),
+            chits,
+            material,
+            piece.as_ref(),
+        )
+        .await
+        .map_err(ApiReject::internal)?
+    {
+        meld_db::HuntClaim::Paid { chits: after } => Ok((
+            StatusCode::OK,
+            Json(HuntClaimResponse {
+                key: def.key.to_string(),
+                reward_chits: chits,
+                reward_material: def.reward_material.unwrap_or_default().to_string(),
+                reward_material_qty: def.reward_material.map_or(0, |_| qty),
+                reward_gear: drop.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                chits: after,
+            }),
+        )
+            .into_response()),
+        meld_db::HuntClaim::AlreadyClaimed => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("{} has already been paid out.", def.name),
+        )),
+        meld_db::HuntClaim::NotEarned { progress } => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "{} is not finished — {progress}/{}. {}.",
+                def.name,
+                def.goal.target(),
+                meld_proto::hunts::objective(def)
+            ),
+        )),
+    }
+}
+
+/// Where to go to work a hunt, in one line — derived from the tables the world actually
+/// generates from, never written down twice.
+///
+/// A board that says "Fell 6 Dune Wyrms" and nothing else is a board that sends a level-1
+/// player looking for a desert the `[biome_gate]` holds until `d400`. This is the answer
+/// to "where do I even do this".
+fn where_to_look(balance: &meld_balance::Balance, def: &meld_proto::hunts::HuntDef) -> String {
+    use meld_proto::hunts::HuntGoal;
+    match def.goal {
+        HuntGoal::Fell { creature, .. } => {
+            let biomes = meld_world::biomes_of_creature(creature);
+            if biomes.is_empty() {
+                return String::new();
+            }
+            // The shallowest gate among the biomes that hold it: the first depth at
+            // which the world will even offer you the ground it lives on.
+            let from = biomes
+                .iter()
+                .map(|b| balance.biome_gate.get(*b).copied().unwrap_or(0))
+                .min()
+                .unwrap_or(0);
+            let named = biomes.join(" or ");
+            if from > 0 {
+                format!("Found in the {named} — which the world opens from d{from}.")
+            } else {
+                format!("Found in the {named}, from the first ring out.")
+            }
+        }
+        HuntGoal::FellClass { class, .. } => match class {
+            // A gatekeeper is not a lucky roll: one stands in the door at every biome
+            // seam, on the clear path, and there is no way past it but through.
+            "gatekeeper" => format!(
+                "One stands in the pass at every biome border, on the path itself, from                  d{}. There is no way through but through it.",
+                balance.encounters.gatekeeper_min_distance
+            ),
+            "elite" => format!(
+                "Promoted from ordinary creatures no shallower than d{}, so they thicken                  the further out you work.",
+                balance.encounters.elite_min_distance
+            ),
+            _ => String::new(),
+        },
+        HuntGoal::ClearDungeon { .. } => {
+            "Take any descent you find in the field and put down what is keeping the              door."
+                .to_string()
+        }
+        HuntGoal::Depth { .. } | HuntGoal::ExtractFrom { .. } => String::new(),
+    }
+}
+
+/// Roll the piece a deep hunt hands over.
+///
+/// Rolled for a class the caller **fields** (GR-7's recorded roster) into a slot that
+/// class can actually use, so a Resonant is never paid in off-hands. Tier is the hunt's
+/// own band and the pool is the ordinary one; the spread is a master smith's
+/// (`gear_variance_floor`) rather than an apprentice's, because the board's promise is
+/// dependability — a champion is still the better source of a great item.
+async fn hunt_gear(
+    st: &ApiState,
+    player_id: Uuid,
+    def: &meld_proto::hunts::HuntDef,
+) -> Option<meld_world::GearDrop> {
+    award_gear(st, player_id, def.tier).await
+}
+
+/// The one roll behind every piece a **board** hands over, hunt or bounty.
+async fn award_gear(
+    st: &ApiState,
+    player_id: Uuid,
+    tier: i32,
+) -> Option<meld_world::GearDrop> {
+    let roster = st.db.get_hero_classes(player_id).await.unwrap_or_default();
+    let fielded: Vec<&str> = roster
+        .iter()
+        .map(String::as_str)
+        .filter(|k| meld_proto::equipment::class_from_key(k).is_some())
+        .collect();
+    // The seed is the only randomness here, so both picks are drawn off it rather than
+    // from a second source that would not be reproducible from the reply.
+    let seed = seed_now();
+    let class_key = if fielded.is_empty() {
+        "explorer"
+    } else {
+        fielded[(seed as usize) % fielded.len()]
+    };
+    let class = meld_proto::equipment::class_from_key(class_key)?;
+    let wearable: Vec<&str> = meld_proto::equipment::SLOT_CATEGORIES
+        .iter()
+        .copied()
+        .filter(|slot| {
+            meld_proto::equipment::is_armor_slot(slot)
+                || *slot == "accessory"
+                || !meld_proto::equipment::families_for_slot(class, slot).is_empty()
+        })
+        .collect();
+    let slot = wearable[((seed >> 32) as usize) % wearable.len()];
+    let biome = meld_world::biome_for_distance(band_distance(tier));
+    Some(meld_world::rolled_gear(
+        &st.balance,
+        tier,
+        "rare",
+        st.balance.forge.gear_variance_floor,
+        slot,
+        class_key,
+        biome,
+        seed,
+    ))
+}
+
+/// Which biome band a distance falls in — the inverse of [`band_distance`], sharing
+/// `meld_world::biome_for_distance`'s own boundaries so a bounty's reward tier matches the
+/// ground its mark stands on.
+fn band_of(distance: i32) -> i32 {
+    match distance.max(0) {
+        0..=99 => 0,
+        100..=299 => 1,
+        300..=499 => 2,
+        500..=999 => 3,
+        _ => 4,
+    }
+}
+
+/// A representative distance inside a biome band, for anything that has a `tier` and
+/// needs the band's own biome (`meld_world::biome_for_distance` owns the boundaries).
+fn band_distance(tier: i32) -> i64 {
+    match tier.max(0) {
+        0 => 0,
+        1 => 100,
+        2 => 300,
+        3 => 500,
+        _ => 1000,
+    }
 }
 
 async fn vanguard_body(st: &ApiState, season: i32) -> Result<Response, ApiReject> {

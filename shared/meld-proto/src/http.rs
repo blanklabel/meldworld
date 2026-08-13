@@ -158,3 +158,128 @@ pub struct VanguardBoardResponse {
     pub archived: bool,
     pub data: Vec<VanguardEntry>,
 }
+
+/// One row on the Hunt Board (`GET /v1/hunts`) — roadmap AD-4.
+///
+/// Progress and the reward are both the server's answer: the client draws the row it
+/// is handed rather than re-deriving either, so a retuned `[hunt]` retunes the board.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntView {
+    pub key: String,
+    pub name: String,
+    /// What the hunt wants, with its number in it ("Fell 8 Bloom Stalkers").
+    pub objective: String,
+    pub blurb: String,
+    /// Biome band, shallow 0 … deep 4.
+    pub tier: i32,
+    pub progress: i32,
+    pub target: i32,
+    /// Earned, and the reward is still on the board.
+    pub claimable: bool,
+    pub claimed: bool,
+    pub reward_chits: i64,
+    /// Item kind of the stack paid alongside the chits; empty for chits alone.
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+    /// Whether finishing this one also hands over a rolled piece of gear.
+    #[serde(default)]
+    pub reward_gear: bool,
+    /// Where to go to work it, derived server-side from the world's own placement
+    /// tables. Empty when the objective already says it (a depth).
+    #[serde(default)]
+    pub where_to_look: String,
+}
+
+/// `GET /v1/hunts` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntBoardResponse {
+    pub data: Vec<HuntView>,
+}
+
+/// One bounty contract on the Quests panel (`GET /v1/bounties`) — roadmap AD-4.
+///
+/// Everything a player reads about a mark, resolved server-side: what it is called, where
+/// it was sighted, how hard it is and what it pays. The client renders the row it is
+/// handed and never re-derives a number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BountyView {
+    pub bounty_id: String,
+    /// `active` · `completed` · `claimed` · `expired`.
+    pub state: String,
+    /// The mark's full name — "Ironmaw the Unburied".
+    pub mark_name: String,
+    /// FS-4 boss key, for the client's boss portrait.
+    pub boss_kind: String,
+    pub creature: String,
+    pub biome: String,
+    pub distance: i32,
+    /// `overworld` or `dungeon`.
+    pub venue: String,
+    /// Where to go, in a sentence.
+    pub where_to_look: String,
+    /// How much harder than a standard creature at that depth the mark is.
+    pub power: f64,
+    /// Seconds until the contract is withdrawn; `0` once it is no longer standing.
+    pub expires_in_secs: i64,
+    pub reward_chits: i64,
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+    #[serde(default)]
+    pub reward_gear: bool,
+    pub reward_rank_xp: i64,
+}
+
+/// `GET /v1/bounties` response: the Den's standing offers, your history, and your rank.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BountyBoardResponse {
+    /// Hunter rank — raised only by finished board work, never by levelling a party.
+    pub rank: i32,
+    pub rank_title: String,
+    pub rank_xp: i64,
+    /// XP still owed for the next rank.
+    pub rank_xp_to_next: i64,
+    /// Standing and finished-but-unpaid contracts, newest first.
+    pub active: Vec<BountyView>,
+    /// Everything that is over: paid, or withdrawn unfought.
+    pub history: Vec<BountyView>,
+}
+
+/// `POST /v1/bounties/:id/claim` response — `200 OK`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BountyClaimResponse {
+    pub bounty_id: String,
+    pub mark_name: String,
+    pub reward_chits: i64,
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+    #[serde(default)]
+    pub reward_gear: String,
+    /// The Vault's chit balance after the Den paid.
+    pub chits: i64,
+    /// Hunter rank after banking this contract's XP, and whether it just went up.
+    pub rank: i32,
+    pub rank_title: String,
+    pub ranked_up: bool,
+}
+
+/// `POST /v1/hunts/:key/claim` response — `200 OK`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntClaimResponse {
+    pub key: String,
+    pub reward_chits: i64,
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+    /// Name of the piece the board handed over; empty when the hunt pays no gear.
+    #[serde(default)]
+    pub reward_gear: String,
+    /// The Vault's chit balance after the board paid out.
+    pub chits: i64,
+}

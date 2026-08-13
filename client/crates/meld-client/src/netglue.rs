@@ -96,6 +96,8 @@ pub(crate) fn pump_net(
             ResMut<crate::overworld::StationUi>,
             ResMut<crate::overworld::HeatUi>,
             ResMut<HarvestPops>,
+            ResMut<HuntBoardData>,
+            ResMut<BountyData>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -103,7 +105,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -265,6 +267,7 @@ pub(crate) fn pump_net(
                             max_hp: e.max_hp,
                             encounter_class: e.encounter_class,
                             aggression: e.aggression,
+                            quarry: e.quarry,
                             bodies_required: e.bodies_required,
                         },
                     );
@@ -516,6 +519,29 @@ pub(crate) fn pump_net(
                 vanguard.entries = entries;
                 vanguard.you = you;
                 vanguard.loaded = true;
+            }
+            ServerMsg::Bounties { board } => {
+                bounties.rank = board.rank;
+                bounties.rank_title = board.rank_title;
+                bounties.rank_xp_to_next = board.rank_xp_to_next;
+                bounties.active = board.active;
+                bounties.history = board.history;
+                bounties.loaded = true;
+            }
+            ServerMsg::HuntBoard { hunts: rows } => {
+                hunts.cursor = hunts.cursor.min(rows.len().saturating_sub(1));
+                hunts.hunts = rows;
+                hunts.loaded = true;
+            }
+            ServerMsg::HuntProgress { name, progress, target, complete } => {
+                notice.say(
+                    if complete {
+                        format!("{name} complete - claim it at the Bounty Board")
+                    } else {
+                        format!("{name}  {progress}/{target}")
+                    },
+                    clock.elapsed_secs_f64(),
+                );
             }
             ServerMsg::Loadouts { list } => {
                 loadouts.list = list;

@@ -240,9 +240,54 @@ pub(crate) fn mock_overlay_setup(
     mut backpack: ResMut<RunBackpack>,
     mut picker: ResMut<EquipPicker>,
     mut unlocks: ResMut<UnlocksRes>,
+    mut bounties: ResMut<BountyData>,
     mut main_menu: ResMut<MainMenu>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    // AD-4: `MELD_MENU=quests` needs an account that owns the Den and a board with
+    // something on it. There is no server here, so both are staged: the Hunter is what
+    // makes the nav row exist at all, and a board with no contracts on it says nothing
+    // about how a contract reads.
+    if menu_flag().as_deref() == Some("quests") {
+        unlocks.owned = vec!["class_explorer".into(), "party_slot_2".into(), "class_hunter".into()];
+        let mark = |name: &str, boss: &str, dist: i32, venue: &str, state: &str, secs: i64| {
+            crate::net::BountyLine {
+                bounty_id: format!("mock-{name}"),
+                state: state.to_string(),
+                mark_name: name.to_string(),
+                boss_kind: boss.to_string(),
+                distance: dist,
+                venue: venue.to_string(),
+                where_to_look: if venue == "dungeon" {
+                    format!("Waiting at the bottom of a descent past d{dist}, in the ashfall.")
+                } else {
+                    format!("Sighted at d{dist} in the desert, in the open.")
+                },
+                power: 3.75,
+                expires_in_secs: secs,
+                reward_chits: 465,
+                reward_material: "sun_scarab_husk".into(),
+                reward_material_qty: 3,
+                reward_gear: true,
+                reward_rank_xp: 112,
+            }
+        };
+        *bounties = BountyData {
+            rank: 1,
+            rank_title: meld_proto::bounties::rank_title(1).to_string(),
+            rank_xp_to_next: 38,
+            active: vec![
+                mark("Ironmaw the Unburied", "ironmaw", 231, "overworld", "active", 47_000),
+                mark("Pyrewarden of Nine Wounds", "pyrewarden", 268, "dungeon", "active", 12_400),
+                mark("Choirmother Who Waits", "choirmother", 204, "overworld", "completed", 0),
+            ],
+            history: vec![
+                mark("Rustfang the Sundered", "rustfang", 140, "overworld", "claimed", 0),
+                mark("Gloamhound That Came Back", "gloamhound", 155, "dungeon", "expired", 0),
+            ],
+            loaded: true,
+        };
+    }
     // Open the cascade at a given depth for screenshots.
     if let Some(spec) = menu_flag() {
         let (section, pane) = match spec.as_str() {
@@ -250,6 +295,7 @@ pub(crate) fn mock_overlay_setup(
             "materials" => (Some(MenuSection::Materials), None),
             "map" => (Some(MenuSection::Map), None),
             "guide" => (Some(MenuSection::Guide), None),
+            "quests" => (Some(MenuSection::Quests), None),
             "party.abilities" => (Some(MenuSection::Party), Some(MenuPane::Abilities)),
             "party.equipment" => (Some(MenuSection::Party), Some(MenuPane::Equipment)),
             _ => (Some(MenuSection::Party), None),

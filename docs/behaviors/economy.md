@@ -124,6 +124,8 @@ Chits is a conserved 64-bit integer quantity. Every chits mutation is classified
 | S1 | Monster kill chits drops | Battle loot rolls (server-authoritative), banked on extraction |
 | S2 | World loot drops (chests, containers) | Overworld loot rolls, banked on extraction |
 | S3 | **Broker material buyback** | `POST /v1/vendors/broker/sell` — the NPC that buys crafting materials out of the Vault at `[material] sale_*`, scaled by the seller's Mercantile level |
+| S4 | **Hunt Board payouts** | `POST /v1/hunts/:key/claim` — the once-per-account reward for a completed hunt, `[hunt] reward_chits_*` scaled by the hunt's tier (AD-4, [hunt-board.md](hunt-board.md)) |
+| S5 | **Bounty payouts** | `POST /v1/bounties/{id}/claim` — the Den's generated contracts, `[bounty] reward_chits_*` scaled by hunter rank (AD-4, [hunt-board.md](hunt-board.md)). Bounded by `active_slots` × the expiry window, and each contract pays once. |
 
 Chits found during a run lives in the Backpack: it is only **minted into the persistent economy at extraction**; dying deletes it with the Backpack (so a death of un-extracted chits is a non-event for the persistent supply — it never entered circulation).
 
@@ -136,6 +138,13 @@ is always the answer to "I will never use this" and never the optimal play. It i
 also Mercantile's only XP source until player stalls (EC-1) ship. The faucet is
 uncapped by design for now; if inflation shows up, the lever is
 `[material] sale_base_chits`, and a per-day cap is the next step (open question).
+
+**On S4 (the Hunt Board).** A hunt is a **directed goal**, not a job: each one pays
+**once per account**, so the faucet is bounded by the size of the roster rather than by
+how long a player is willing to grind. That bound is the design — it is what lets a hunt
+reward be worth several kills at its own band (which is what makes it a reason to dive)
+without becoming an income that competes with the loot chase. A repeatable or rotating
+board changes that arithmetic and needs its own cap before it ships.
 
 ### Sinks (chits destroyed)
 

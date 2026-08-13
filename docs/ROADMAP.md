@@ -77,7 +77,9 @@ market is the multiplier*).
   [`interfaces/http-api/leaderboards.md`](interfaces/http-api/leaderboards.md) and close
   with `AD-6`.
 - → **AD-4** (Hunt Board) at a **light first cut**: a handful of "kill X / reach depth Y /
-  clear this dungeon" hunts, not the full system.
+  clear this dungeon" hunts, not the full system. 🟡 *The light cut ships* — eight posted
+  hunts, credited off real kills/depth/extractions/dungeon clears and claimed at the
+  Bounty Board; `AD-4` stays open for the rest of the system (see its epic).
 
 **④ Polish the feel — as important as any new system.** A slice becomes "want to play"
 through feel & clarity, not more mechanics.
@@ -1447,6 +1449,82 @@ the current build.
     player can *see* the matchup before committing a turn.
 - [ ] **AD-4 — The Hunt Board.** Directed combat goals (named creatures/dungeons/depth) —
   the mid-game spine; ties `CR-5` bestiary, `FS-4`, `DG`; co-op/guild hunts (`SOC`).
+  - 🟡 *The light first cut ships (Phase 1 ③), and the Bounty Board is a real district:*
+    the one thing in Last City that told you to come back later ("gathering contracts
+    arrive in M2") is now eight posted hunts you can read, work and be paid for. A hunt
+    is one registry (`meld_proto::hunts`) both sides read — server credits progress
+    against `HuntGoal::credits`, the board draws its rows from the same defs — so the
+    board can never advertise a condition the server does not check. Five goal kinds
+    cover what a dive is actually made of: fell N of a **kind**, fell N of an
+    **encounter class** (elite / gatekeeper), **reach** a depth, **extract from** a
+    depth, **clear** a dungeon. Every credit is read off server-owned state (the
+    carcass's own kind, the validated avatar, the run's own record) — there is no
+    client-submitted progress path — and it is announced as it happens
+    (`run.hunt_progress`), because a goal you cannot watch fill is a goal you forget you
+    have. Progress survives death: what a dive costs you is your Backpack, not your
+    standing with a board.
+  - *The reward is taken at the board, not granted on completion*, so finishing a hunt
+    is a reason to come **home** — `POST /v1/hunts/:key/claim` pays chits + a material
+    stack into the Vault, once per account, with the claim stamp and the payout in one
+    transaction so two presses cannot both be paid. Magnitudes are `[hunt]` `[TUNABLE]`s
+    resolved server-side and ridden onto the wire, so a retuned reward retunes what the
+    row promises. Chits minted here are economy source **S4**
+    ([`behaviors/economy.md`](behaviors/economy.md)); the faucet is bounded by the size
+    of the roster rather than by grinding, which is what a repeatable board would have
+    to solve before it ships. Spec:
+    [`behaviors/hunt-board.md`](behaviors/hunt-board.md) +
+    [`interfaces/http-api/hunts.md`](interfaces/http-api/hunts.md). Screenshot flag:
+    `MELD_HUNTS` / `?hunts`. Verified by `qa/tests/hunt_board.rs` (a real kill over the
+    real wire → the board over HTTP), `meld-db` claim/credit unit tests, and a
+    `meld-world` test holding every hunt's quarry against the creatures the world
+    actually spawns — a hunt naming a creature nothing spawns is a contract that can
+    never be filled.
+  - 🟡 *The deep hunts pay a piece, and the quarry can be tracked:* a board that paid
+    only chits paid in the currency the Broker already prints, and a hunt naming a
+    creature you could not find was a goal you could not act on. Tier-3+ hunts now hand
+    over a **rolled piece** — insured, at the hunt's own band, for a class you actually
+    field, in a slot that class can wear — through the *same* generator the Forge uses
+    (`meld_world::rolled_gear`, factored out so there is one roll path) and in the same
+    transaction as the payout. Never from the **epic** pool: a champion stays the better
+    *source* of a great item, and the board's promise is reliability, not superiority.
+    Only the deep hunts pay it, so the board reads as a ladder.
+  - 🟡 *And it tells you where to go:* every row carries a `where_to_look` line derived
+    from the tables the world generates from (`biomes_of_creature` + `[biome_gate]`,
+    `gatekeeper_min_distance`, `elite_min_distance`) rather than written down twice — so
+    "Fell 6 Dune Wyrms" is no longer a level-1 player hunting a desert the world holds
+    until d400. **A Gatekeeper was already guaranteed** (one stands in the pass at every
+    biome border, on the clear path, every run) — nothing had ever said so. In the field
+    the quarry of an unfinished hunt is **force-included in that player's own snapshot**
+    and tagged `:quarry` (the portal/node-sense pattern, never a wider shared cull), so it
+    is trackable rather than stumbled upon; a **Hunter** senses it from much further out
+    (`[hunt] quarry_sense_hunter_radius`), which is the guild's whole trade. Marking stops
+    the moment the hunt is finished.
+  - 🟡 *And the Den posts contracts with your name on them (bounties):* the fixed board is
+    a checklist everyone shares, so it has no ladder. A **bounty** is generated *for you*
+    against a **hunter rank** — a persistent track (the `hunting` Meld skill) that only
+    finished board work raises, so the question is "how many marks have you put down",
+    not "what level is your party". **Every bounty ends in a boss fight**: one of `FS-4`'s
+    ten named bosses wearing a rolled **epithet** ("Ironmaw the Unburied"), promoted by the
+    contract's own power rather than the Gatekeeper constants and always affixed, so a
+    deep-rank mark is worse than the door it walked past. It is sighted at a depth the rank
+    has earned, in the open **or at the bottom of a descent** (where the mark *is* what
+    keeps the door: the first dungeon its owner descends at or past the sighted depth
+    builds its boss from the contract, so a descent contract is never also standing in the
+    open) — and it stands in the world for **that player alone**: `MonsterSpawn.owner` keeps it out of every other player's
+    snapshot and out of their touch check, so in co-op the party can fight it beside you
+    but only you can trigger it. Contracts **expire and re-roll** (`[bounty] active_slots`
+    / `window_hours`), lazily on read, so the offers are always live with no scheduler;
+    only a *standing* one expires, because a felled mark is owed its reward however long
+    the walk home takes. Paid at the board like a hunt — chits, the band's trophy, a rolled
+    piece from `reward_gear_from_rank` up, and the rank XP, all in one transaction.
+  - 🟡 *The menu grows a **Quests** column, and it appears with the Hunter:* the board is
+    the Den's, so `MenuSection::Quests` is gated on owning `class_hunter` rather than
+    sitting there greyed out — the menu's own rule is that it never advertises what you
+    have not earned. It lists the standing contracts (mark, where, how hard, what it pays,
+    how long is left) and everything settled. Reading only: the reward is taken at the
+    Bounty Board, so a finished contract says so instead of handing you power mid-run.
+  - **Remains (the full system):** an explicit *accept* step, bestiary ties (`CR-5`),
+    co-op and guild hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

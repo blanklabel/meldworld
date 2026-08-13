@@ -759,9 +759,9 @@ pub(crate) fn boon_offer(
         .map(|(id, e)| (id.clone(), e.name.clone().unwrap_or_default()))
         .next()?;
     let label = if kind == "alembic" {
-        "Ask for a tonic (party, this dive)"
+        "Ask for a tonic (party, this run)"
     } else {
-        "Ask for an edge (this dive)"
+        "Ask for an edge (this run)"
     };
     Some((id, kind, label.to_string()))
 }
@@ -932,6 +932,7 @@ pub(crate) fn overworld_click_menu(
 
     if on_sprite || near_feet {
         overlay.kind = Some(OverlayKind::Inventory);
+        net.0.fetch_bounties();
         inv.loaded = false;
         net.0.fetch_inventory();
     }
@@ -2030,7 +2031,10 @@ pub(crate) fn update_mob_nameplates(
     }
     let intel = perks.0.hunter_intel;
     let threat = perks.0.psyker_threat;
-    if intel == 0 && threat == 0 {
+    // A QUARRY plate is not a perk — it is the hunt you are holding — so the intel/threat
+    // early-out must not swallow it.
+    let any_quarry = world.entities.values().any(|e| e.quarry);
+    if intel == 0 && threat == 0 && !any_quarry {
         return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else {
@@ -2078,6 +2082,14 @@ pub(crate) fn update_mob_nameplates(
                 },
             ))
             .with_children(|c| {
+                // What you came out here for, over its head, in the board's own word.
+                if ent.quarry {
+                    c.spawn((
+                        Text::new("QUARRY"),
+                        TextFont { font_size: 11.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.85, 0.35)),
+                    ));
+                }
                 if !marker.is_empty() {
                     c.spawn((
                         Text::new(marker),
@@ -3044,6 +3056,7 @@ mod tests {
             max_hp: None,
             encounter_class: None,
             aggression: None,
+            quarry: false,
             bodies_required: 1,
         }
     }
@@ -3338,6 +3351,7 @@ mod explored_map_tests {
             max_hp: None,
             encounter_class: None,
             aggression: None,
+            quarry: false,
             bodies_required: 1,
         }
     }
@@ -3739,6 +3753,7 @@ mod station_tests {
             max_hp: None,
             encounter_class: None,
             aggression: None,
+            quarry: false,
             bodies_required: 1,
         };
         world.entities.insert("me".into(), me.clone());

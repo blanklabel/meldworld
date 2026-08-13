@@ -35,8 +35,8 @@ pub(crate) enum CityAction {
     Craft,
     /// The Drill Yard: pick the party you take down.
     Party,
-    /// A not-yet-raised district: post its milestone notice.
-    Notice(&'static str),
+    /// The Bounty Board: the posted hunts and their rewards (AD-4).
+    Hunts,
 }
 
 /// A city action reachable by an on-screen (touch) button — always available, so a
@@ -70,6 +70,11 @@ pub(crate) struct DistrictNameplate;
 /// A walkable district: an anchor on the plaza the avatar can stand in and act on.
 pub(crate) struct District {
     label: &'static str,
+    /// What you actually do here, in plain words. The names are the city's fiction
+    /// (CANON §G) and a fiction does not tell a new player where to sell a rock, so the
+    /// two always travel together: the nav chip, the walk-up prompt and the counter's
+    /// own header all carry this.
+    purpose: &'static str,
     x: f32,
     z: f32,
     /// Radius the avatar must be within to interact.
@@ -80,10 +85,25 @@ pub(crate) struct District {
 /// The city's interactable districts (positions are plaza-local world x/z; the
 /// avatar spawns near +z/south and the camera looks north/-z).
 pub(crate) const CITY_DISTRICTS: &[District] = &[
-    District { label: "The Threshold", x: 0.0, z: -19.0, radius: 5.5, action: CityAction::Dive },
-    District { label: "The Vault-Deep", x: -13.0, z: -5.0, radius: 5.0, action: CityAction::Vault },
+    District {
+        label: "The Threshold",
+        purpose: "leave town: start a run",
+        x: 0.0,
+        z: -19.0,
+        radius: 5.5,
+        action: CityAction::Dive,
+    },
+    District {
+        label: "The Vault-Deep",
+        purpose: "your storage: chits, materials, gear",
+        x: -13.0,
+        z: -5.0,
+        radius: 5.0,
+        action: CityAction::Vault,
+    },
     District {
         label: "The Market Tiers",
+        purpose: "buy supplies, sell what you hauled home",
         x: 13.0,
         z: 0.0,
         radius: 6.0,
@@ -91,6 +111,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Forge & Alembic",
+        purpose: "craft, repair and re-roll gear",
         x: -10.0,
         z: 9.0,
         radius: 5.0,
@@ -98,13 +119,15 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Bounty Board",
+        purpose: "hunts: what to go and do, and what it pays",
         x: 8.0,
         z: -12.0,
         radius: 4.5,
-        action: CityAction::Notice("The Bounty Board is bare - gathering contracts arrive in M2."),
+        action: CityAction::Hunts,
     },
     District {
         label: "The Drill Yard",
+        purpose: "pick the party you take down",
         x: 15.0,
         z: -13.0,
         radius: 5.0,
@@ -112,6 +135,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Vanguard Wall",
+        purpose: "the season's deepest-run rankings",
         x: -15.0,
         z: -14.0,
         radius: 5.0,
@@ -188,6 +212,10 @@ pub(crate) fn city_hud(
     city.craft_open = crate::flags::forge_preview_flag();
     if city.craft_open {
         net.0.fetch_recipes();
+    }
+    city.hunts_open = crate::flags::hunts_preview_flag();
+    if city.hunts_open {
+        net.0.fetch_hunts();
     }
     if crate::flags::heat_preview_flag() {
         // A plausible heat, laid out the way the server would for a mid-tier piece:
@@ -366,6 +394,7 @@ pub(crate) fn city_action_buttons(
                     overlay.kind = None;
                 } else {
                     overlay.kind = Some(OverlayKind::Inventory);
+                    net.0.fetch_bounties();
                     *tab = OverlayTab::Items;
                     inv.loaded = false;
                     net.0.fetch_inventory();
@@ -635,11 +664,15 @@ pub(crate) fn city_input(
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
+    // The two boards travel as one param: this system is at Bevy's 16-param ceiling, and
+    // the Bounty Board's own two sides are the natural pair to group.
+    mut boards: (ResMut<HuntBoardData>, Res<BountyData>),
     mut shop_selling: ResMut<ShopSelling>,
     mut pending: ResMut<PendingPurchase>,
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    let (hunts, bounties) = (&mut boards.0, &boards.1);
     // The Drill Yard is modal and full of text fields, so town hotkeys are off while
     // it is open: `T` is a tutorial dive and `Enter` is a dive, and both sit in the
     // middle of the alphabet you type a hero's name out of. Autoplay never opens the
@@ -690,6 +723,7 @@ pub(crate) fn city_input(
             overlay.kind = None;
         } else {
             overlay.kind = Some(OverlayKind::Inventory);
+            net.0.fetch_bounties();
             *tab = OverlayTab::Items;
             inv.loaded = false;
             net.0.fetch_inventory();
@@ -795,6 +829,66 @@ pub(crate) fn city_input(
                 });
             }
             return;
+        }
+    }
+    // The Bounty Board: ↑/↓ walk the hunts, [1]-[8] (or ENTER on the row) claim one, and
+    // [B] turns the board around to the Den's own contracts.
+    if city.hunts_open {
+        if keys.just_pressed(KeyCode::KeyB) {
+            city.bounty_tab = !city.bounty_tab;
+            if city.bounty_tab {
+                net.0.fetch_bounties();
+            }
+            return;
+        }
+        if city.bounty_tab {
+            const BOUNTY_KEYS: [KeyCode; 8] = [
+                KeyCode::Digit1,
+                KeyCode::Digit2,
+                KeyCode::Digit3,
+                KeyCode::Digit4,
+                KeyCode::Digit5,
+                KeyCode::Digit6,
+                KeyCode::Digit7,
+                KeyCode::Digit8,
+            ];
+            for (i, key) in BOUNTY_KEYS.iter().enumerate() {
+                if keys.just_pressed(*key) && i < bounties.active.len() {
+                    claim_bounty_row(&net, &mut city, bounties, i);
+                    return;
+                }
+            }
+            return;
+        }
+        let n = hunts.hunts.len();
+        if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
+            hunts.cursor = (hunts.cursor + 1) % n;
+            return;
+        }
+        if n > 0 && keys.just_pressed(KeyCode::ArrowUp) {
+            hunts.cursor = (hunts.cursor + n - 1) % n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            claim_hunt_row(&net, &mut city, hunts, hunts.cursor);
+            return;
+        }
+        const HUNT_KEYS: [KeyCode; 8] = [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+        ];
+        for (i, key) in HUNT_KEYS.iter().enumerate() {
+            if keys.just_pressed(*key) && i < n {
+                hunts.cursor = i;
+                claim_hunt_row(&net, &mut city, hunts, i);
+                return;
+            }
         }
     }
     // The Forge & Alembic: ↑/↓ walk the recipe book, ENTER runs the highlighted recipe,
@@ -939,7 +1033,14 @@ pub(crate) fn city_input(
                         net.0.fetch_vanguard();
                     }
                 }
-                CityAction::Notice(s) => city.notice = s.to_string(),
+                CityAction::Hunts => {
+                    city.hunts_open = !city.hunts_open;
+                    if city.hunts_open {
+                        city.notice.clear();
+                        net.0.fetch_hunts();
+                        net.0.fetch_bounties();
+                    }
+                }
             }
         }
     }
@@ -1068,6 +1169,13 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
     {
         city.board_open = false;
     }
+    if city.hunts_open
+        && !crate::flags::hunts_preview_flag()
+        && !near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Hunts))
+    {
+        city.hunts_open = false;
+        city.bounty_tab = false;
+    }
     city.near = near;
 }
 
@@ -1076,6 +1184,7 @@ pub(crate) fn render_city(
     session: Res<Session>,
     city: Res<CityUi>,
     heat: Res<crate::overworld::HeatUi>,
+    notice: Res<Notice>,
     time: Res<Time>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
@@ -1088,15 +1197,7 @@ pub(crate) fn render_city(
             session.status.clone()
         } else if let Some(i) = city.near {
             let d = &CITY_DISTRICTS[i];
-            match d.action {
-                CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
-                CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
-                CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
-                CityAction::Craft => format!("{}    [E] work the recipes and the anvil", d.label),
-                CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
-                CityAction::Party => format!("{}    [E] muster your party", d.label),
-                CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
-            }
+            district_prompt(d)
         } else {
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
@@ -1106,12 +1207,37 @@ pub(crate) fn render_city(
         // a strip is good for: the walking-around prompt. The anvil's HEAT stays, because
         // it is a timing bar, and a bar that jumps around under the rows you are reading is
         // worse than one that holds still at the foot of the screen.
+        // The server's own words win over the client's guess at them: a counter reply
+        // ("the board pays 200c", or why it will not) arrives on `Notice`, and until it
+        // reached this strip it was spoken to nobody — town has no other line.
+        let spoken = notice
+            .live(time.elapsed_secs_f64())
+            .map(str::to_string)
+            .or_else(|| (!city.notice.is_empty()).then(|| city.notice.clone()));
         **t = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
             Some(bar) => format!("{bar}\n{prompt}"),
-            None if city.notice.is_empty() => prompt,
-            None => format!("{}\n{prompt}", city.notice),
+            None => match spoken {
+                Some(line) => format!("{line}\n{prompt}"),
+                None => prompt,
+            },
         };
     }
+}
+
+/// The walk-up line for the district you are standing in: its name, what it is for, and
+/// the one key that does it.
+///
+/// The name alone is scenery to anyone who has not been told what a Drill Yard is.
+pub(crate) fn district_prompt(d: &District) -> String {
+    let key = match d.action {
+        CityAction::Dive => "[E]/[ENTER] run",
+        CityAction::Vault => "[E] open",
+        CityAction::Shop => "[E] browse",
+        CityAction::Craft => "[E] work",
+        CityAction::Vanguard | CityAction::Hunts => "[E] read",
+        CityAction::Party => "[E] muster",
+    };
+    format!("{} - {}    {key}", d.label, d.purpose)
 }
 
 /// Compose the Vault-Deep's ambient one-line summary from the live `GET
@@ -1160,6 +1286,40 @@ mod tests {
         assert_eq!(tf.translation.x, 3.0);
         assert_eq!(tf.translation.z, 4.0);
         assert_eq!(city.near, None);
+    }
+
+    /// A district's NAME is the city's fiction; a player still has to be told what the
+    /// room is for. Both halves are required, so a new district cannot ship as scenery.
+    #[test]
+    fn every_district_says_what_it_is_for() {
+        for d in CITY_DISTRICTS {
+            assert!(!d.label.is_empty(), "a nameless district");
+            assert!(!d.purpose.is_empty(), "{} does not say what it is for", d.label);
+            // The nav column is one sixth of the window: a paragraph does not fit, and a
+            // purpose that wraps to three lines is one nobody reads.
+            assert!(
+                d.purpose.len() <= 48,
+                "{}'s purpose is too long for the column: {:?}",
+                d.label,
+                d.purpose
+            );
+            assert!(
+                d.purpose.chars().next().is_some_and(|c| c.is_lowercase()),
+                "{}'s purpose reads as a phrase under the name, not a title: {:?}",
+                d.label,
+                d.purpose
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_up_prompt_names_the_room_what_it_does_and_one_key() {
+        for d in CITY_DISTRICTS {
+            let line = district_prompt(d);
+            assert!(line.contains(d.label), "{line} does not name the district");
+            assert!(line.contains(d.purpose), "{line} does not say what it is for");
+            assert!(line.contains("[E]"), "{line} offers no key");
+        }
     }
 
     /// Every district needs a number a player can press. This caught the first version
@@ -1344,6 +1504,10 @@ impl CounterRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct CounterView {
     pub(crate) title: String,
+    /// What this counter is for, in plain words, under its name. A player who walked in
+    /// on the strength of a chip should not have to press a row to find out what the
+    /// room does.
+    pub(crate) subtitle: String,
     pub(crate) nav: Vec<(String, bool)>,
     pub(crate) rows: Vec<CounterRow>,
     pub(crate) detail: Vec<String>,
@@ -1356,6 +1520,9 @@ impl CounterView {
     #[cfg(test)]
     pub(crate) fn flat(&self) -> String {
         let mut out = self.title.clone();
+        if !self.subtitle.is_empty() {
+            out.push_str(&format!("\n{}", self.subtitle));
+        }
         for (n, on) in &self.nav {
             out.push_str(&format!("\n{}{n}", if *on { "> " } else { "  " }));
         }
@@ -1380,6 +1547,11 @@ impl CounterView {
 pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> CounterView {
     let mut v = CounterView {
         title: if selling { "The Broker".into() } else { shop.vendor.clone() },
+        subtitle: if selling {
+            "sell what you will never use".into()
+        } else {
+            "supplies and plain gear, for chits".into()
+        },
         nav: vec![("Buy".into(), !selling), ("Sell".into(), selling)],
         footer: vec![format!(
             "{}   [E]/[ESC] leave",
@@ -1456,7 +1628,7 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
     }
     if !shop.gear.is_empty() {
         v.detail.push(format!(
-            "Rows {}-{} are the Requisition: plain gear, no affixes, so the next dive starts \
+            "Rows {}-{} are the Requisition: plain gear, no affixes, so the next run starts \
              dressed.",
             ITEM_ROWS + 1,
             ITEM_ROWS + shop.gear.len().min(GEAR_ROWS)
@@ -1470,6 +1642,7 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
 pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
     let mut v = CounterView {
         title: "The Vanguard Wall".into(),
+        subtitle: "who got deepest this season".into(),
         footer: vec!["[E]/[ESC] leave".into()],
         ..default()
     };
@@ -1495,6 +1668,179 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
         None => "You are uncarved.".into(),
     }];
     v
+}
+
+/// The Bounty Board as a counter: every posted hunt, what it wants, how far along you
+/// are, and what it pays (AD-4).
+///
+/// A finished hunt is a row you can press; everything else states its progress. The
+/// numbers are all the server's — the panel never computes a reward or a completion.
+pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Bounty Board".into(),
+        subtitle: "go and do these; claim the reward here".into(),
+        footer: vec!["[1]-[8] claim   [E]/[ESC] leave".into()],
+        ..default()
+    };
+    if !board.loaded {
+        v.detail = vec!["Someone is still pinning the contracts up...".into()];
+        return v;
+    }
+    if board.hunts.is_empty() {
+        v.detail = vec!["The board is bare.".into()];
+        return v;
+    }
+    let claimable = board.hunts.iter().filter(|h| h.claimable).count();
+    v.nav = vec![
+        ("Hunts".into(), true),
+        (
+            if claimable > 0 {
+                format!("{claimable} to claim")
+            } else {
+                "nothing to claim".into()
+            },
+            claimable > 0,
+        ),
+    ];
+    if board.hunts.iter().any(|h| h.reward_gear) {
+        v.footer.insert(0, "* also pays a piece of gear".into());
+    }
+    v.rows = board
+        .hunts
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let state = if h.claimed {
+                " - paid".to_string()
+            } else if h.claimable {
+                " - CLAIM".to_string()
+            } else {
+                format!(" {}/{}", h.progress, h.target)
+            };
+            let mark = if h.reward_gear { " *" } else { "" };
+            let row = CounterRow::new((i + 1).to_string(), format!("{}{mark}{state}", h.name))
+                .cursor(i == board.cursor);
+            if h.claimed {
+                row.dim()
+            } else {
+                row
+            }
+        })
+        .collect();
+    if let Some(h) = board.hunts.get(board.cursor) {
+        let mut reward = format!("Pays {}c", h.reward_chits);
+        if h.reward_material_qty > 0 && !h.reward_material.is_empty() {
+            reward.push_str(&format!(
+                ", {} {}",
+                h.reward_material_qty,
+                crate::icons::display_name(&h.reward_material)
+            ));
+        }
+        // The piece is the reason to work a deep hunt, so it is on the row's own line
+        // rather than buried at the end of the price.
+        if h.reward_gear {
+            reward.push_str(" and a piece of gear");
+        }
+        v.detail = vec![h.objective.clone(), reward];
+        if !h.where_to_look.is_empty() {
+            v.detail.push(h.where_to_look.clone());
+        }
+        v.detail.push(h.blurb.clone());
+    }
+    v
+}
+
+/// The Den's side of the Bounty Board: the contracts with your name on them (AD-4).
+///
+/// A felled mark is a row you can press; a standing one states where it is and how long is
+/// left. This is the one place a bounty is paid, which is why the menu's Quests column is
+/// reading-only.
+pub(crate) fn bounty_view(board: &BountyData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Bounty Board".into(),
+        subtitle: "the Den's contracts, with your name on them".into(),
+        footer: vec!["[1]-[8] claim   [B] posted hunts   [E]/[ESC] leave".into()],
+        ..default()
+    };
+    if !board.loaded {
+        v.detail = vec!["The Den is checking its ledger...".into()];
+        return v;
+    }
+    let ready = board.active.iter().filter(|b| b.state == "completed").count();
+    v.nav = vec![
+        ("Hunts".into(), false),
+        ("Bounties".into(), true),
+        (
+            if ready > 0 {
+                format!("{ready} to claim")
+            } else {
+                format!("rank {} - {}", board.rank, board.rank_title)
+            },
+            ready > 0,
+        ),
+    ];
+    if board.active.is_empty() {
+        v.detail = vec!["The Den has nothing posted for you.".into()];
+        return v;
+    }
+    v.rows = board
+        .active
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let done = b.state == "completed";
+            let row = CounterRow::new(
+                (i + 1).to_string(),
+                format!("{}{}", b.mark_name, if done { " - CLAIM" } else { "" }),
+            );
+            if done {
+                row
+            } else {
+                row.dim()
+            }
+        })
+        .collect();
+    let head = board.active.first();
+    if let Some(b) = head {
+        v.detail = vec![
+            b.where_to_look.clone(),
+            format!("Pays {}c and {} rank XP", b.reward_chits, b.reward_rank_xp),
+        ];
+    }
+    v.detail.push(format!(
+        "Hunter rank {} - {}. {} XP to the next.",
+        board.rank, board.rank_title, board.rank_xp_to_next
+    ));
+    v
+}
+
+/// Ask the Den to pay for the contract on `row`, or say why it will not.
+fn claim_bounty_row(net: &NetRes, city: &mut CityUi, board: &BountyData, row: usize) {
+    let Some(b) = board.active.get(row) else { return };
+    if b.state != "completed" {
+        city.notice = format!("{} is still standing. {}", b.mark_name, b.where_to_look);
+        return;
+    }
+    net.0.claim_bounty(b.bounty_id.clone());
+    city.notice = format!("collecting on {}...", b.mark_name);
+}
+
+/// Ask the board to pay for the hunt on `row`, or say why it will not.
+///
+/// One path for the key and the tap: a row that claims by thumb but not by number is
+/// the kind of split nobody notices until it is the reward that went missing.
+fn claim_hunt_row(net: &NetRes, city: &mut CityUi, board: &HuntBoardData, row: usize) {
+    let Some(h) = board.hunts.get(row) else { return };
+    if h.claimed {
+        city.notice = format!("{} is already paid.", h.name);
+        return;
+    }
+    if !h.claimable {
+        city.notice = format!("{} - {}/{}. {}.", h.name, h.progress, h.target, h.objective);
+        return;
+    }
+    net.0.claim_hunt(h.key.clone());
+    city.notice = format!("claiming {}...", h.name);
 }
 
 /// The materials the counter will buy that the player actually holds, richest first.
@@ -1546,6 +1892,7 @@ pub(crate) fn best_stock(
 pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView {
     let mut v = CounterView {
         title: "The Forge & Alembic".into(),
+        subtitle: "brew, smelt, forge, mend".into(),
         nav: vec![
             ("Recipes  up/down".into(), true),
             ("Anvil  S C F".into(), false),
@@ -2071,7 +2418,7 @@ pub(crate) fn prompt_party_if_unset(
     *asked = true;
     if !session.party_chosen {
         city.party_open = true;
-        city.notice = "Muster a party before you dive.".to_string();
+        city.notice = "Muster a party before your run.".to_string();
     }
 }
 
@@ -3051,7 +3398,13 @@ pub(crate) fn render_travel_column(
     // underway, or a counter is open and holding the same left third for its own nav — and
     // `travel_keys` already stands down for all three, so the column has to as well or it
     // advertises numbers that do nothing.
-    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
+    if city.party_open
+        || city.shop_open
+        || city.craft_open
+        || city.board_open
+        || city.hunts_open
+        || session.entered
+    {
         return;
     }
     let Ok(root) = root_q.single() else { return };
@@ -3081,13 +3434,21 @@ pub(crate) fn render_travel_column(
                 // The one you are standing in reads as selected, so the column doubles as
                 // "where am I" — the same job the menu's nav does.
                 let here = city.near == Some(i);
-                col.spawn((Button, TravelButton(i), glass::chip(here)))
+                col.spawn((Button, TravelButton(i), glass::row_chip(here)))
                     .with_children(|b| {
-                        b.spawn(glass::text(
-                            format!("{}  {}", i + 1, d.label),
-                            16.0,
-                            if here { glass::TITLE } else { glass::TEXT },
-                        ));
+                        b.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(2.0),
+                            ..default()
+                        })
+                        .with_children(|lines| {
+                            lines.spawn(glass::text(
+                                format!("{}  {}", i + 1, d.label),
+                                16.0,
+                                if here { glass::TITLE } else { glass::TEXT },
+                            ));
+                            lines.spawn(glass::text(d.purpose, 13.0, glass::DIM));
+                        });
                     });
             }
             col.spawn(glass::text(
@@ -3140,7 +3501,19 @@ pub(crate) fn render_district_nameplates(
                 BorderRadius::all(Val::Px(6.0)),
             ))
             .with_children(|b| {
-                b.spawn(glass::text(d.label, 12.0, glass::TEXT));
+                // Name over purpose, the same pairing the nav chip and the walk-up prompt
+                // use: a plate that reads "The Drill Yard" and stops has told a new player
+                // the one thing they already knew — that it is called something.
+                b.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(1.0),
+                    ..default()
+                })
+                .with_children(|lines| {
+                    lines.spawn(glass::text(d.label, 12.0, glass::TEXT));
+                    lines.spawn(glass::text(d.purpose, 10.0, glass::DIM));
+                });
             });
         }
     });
@@ -3183,7 +3556,13 @@ pub(crate) fn travel_keys(
     mut player: Query<&mut Transform, With<CityPlayer>>,
 ) {
     // While a counter is open the number keys buy things, and the yard types names.
-    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
+    if city.party_open
+        || city.shop_open
+        || city.craft_open
+        || city.board_open
+        || city.hunts_open
+        || session.entered
+    {
         return;
     }
     let Ok(mut tf) = player.single_mut() else { return };
@@ -3223,6 +3602,8 @@ pub(crate) fn render_counter_panel(
     shop_selling: Res<ShopSelling>,
     craft: Res<CraftData>,
     board: Res<VanguardBoardData>,
+    hunts: Res<HuntBoardData>,
+    bounties: Res<BountyData>,
     wa: Option<Res<WorldAssets>>,
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
@@ -3239,6 +3620,12 @@ pub(crate) fn render_counter_panel(
         shop_view(&shop, &inv, shop_selling.0)
     } else if city.board_open {
         wall_view(&board)
+    } else if city.hunts_open {
+        if city.bounty_tab {
+            bounty_view(&bounties)
+        } else {
+            hunts_view(&hunts)
+        }
     } else {
         return;
     };
@@ -3258,6 +3645,9 @@ pub(crate) fn render_counter_panel(
             scrim.spawn(glass::columns()).with_children(|cols| {
                 cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
                     nav.spawn(glass::text(view.title.clone(), 19.0, glass::TITLE));
+                    if !view.subtitle.is_empty() {
+                        nav.spawn(glass::text(view.subtitle.clone(), 12.0, glass::DIM));
+                    }
                     nav.spawn(glass::divider());
                     for (label, on) in view.nav.iter() {
                         nav.spawn((Button, CounterNavButton, glass::row_chip(*on))).with_children(
@@ -3332,6 +3722,7 @@ pub(crate) fn counter_click(
     mut shop_selling: ResMut<ShopSelling>,
     mut craft: ResMut<CraftData>,
     mut pending: ResMut<PendingPurchase>,
+    mut hunts: ResMut<HuntBoardData>,
     rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
 ) {
@@ -3355,6 +3746,15 @@ pub(crate) fn counter_click(
                     net.0.craft(r.recipe.clone());
                     craft.last = format!("working {}...", r.name);
                 }
+            }
+            return;
+        }
+        if city.hunts_open {
+            // A tap moves the detail column to the row; only a FINISHED hunt is a
+            // press that does anything, and the server rules on it either way.
+            if btn.0 < hunts.hunts.len() {
+                hunts.cursor = btn.0;
+                claim_hunt_row(&net, &mut city, &hunts, btn.0);
             }
             return;
         }

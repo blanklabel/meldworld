@@ -209,6 +209,17 @@ works — travel just lands you inside the district's radius so `[E]` behaves id
 `TRAVEL_KEYS` is held against `CITY_DISTRICTS` by a test, because the column advertises its
 keys and a district past the end of that list would silently have none (it already did).
 
+**A district's name is fiction; the player still has to be told what the room is for.**
+"The Drill Yard" and "The Vault-Deep" are canon (§G) and stay, but nothing on screen said
+that one is where you pick your party and the other is where your gear lives — so town
+read as seven pretty doors. Every `District` now carries a plain-language **`purpose`**
+alongside its label, and the two always travel together: the nav chip shows the name with
+the purpose under it, the walk-up prompt is `name - purpose  [E] <verb>`
+(`district_prompt`), and every counter carries a `subtitle` under its title so a room
+explains itself the moment it opens. Tests hold both halves — a purpose is required, must
+be short enough for the 1/6 column, and must read as a phrase rather than a title —
+because a new district shipping with no purpose is a new district that reads as scenery.
+
 **The three-column convention.** Every cascade screen is **nav | main | detail** at fixed
 fractions of the window — **1/6, 1/2, 1/3**, which tile it exactly (asserted at compile time
 in [`glass.rs`](client/crates/meld-client/src/glass.rs)). Fractions, not content-sizing,
@@ -224,6 +235,50 @@ into the city's bottom strip, where they read as scenery running off both edges.
 is what lets each be its own tappable chip; the strip keeps the walking-around prompt and the
 anvil's heat bar, which wants to hold still. The travel column stands down while a counter is
 open, since both want the same left sixth.
+
+**The board tells you what to go and do, and pays when you come home.** The Bounty
+Board district used to be the one thing in town that said "come back later"; it is now
+eight posted **hunts** (`AD-4`) — fell N of a kind, fell N elites or a Gatekeeper, reach
+a depth, extract from a depth, clear a dungeon. A hunt is ONE registry
+([`meld_proto::hunts`](shared/meld-proto/src/hunts.rs)) that both sides read: the server
+credits progress through `HuntGoal::credits` and the board builds its rows from the same
+defs, so the board cannot advertise a condition the server does not check. Every credit
+comes off server-owned state — the carcass's own `monster_kind`, the validated avatar,
+the run's own record — and is announced as it happens (`run.hunt_progress`), because a
+goal you cannot watch fill is a goal you forget you have. **Progress survives death**
+(what a dive costs you is your Backpack, not your standing), but the **reward is taken at
+the board**, once per account, which is what makes finishing one a reason to come home.
+A hunt names a **quarry**; only its goal carries a count, and `objective` formats the
+sentence — a number written twice is a number that will disagree with itself. Reward
+magnitudes are `[hunt]` `[TUNABLE]`s resolved server-side and ridden onto the wire, and the
+**deep hunts pay a rolled piece** as well — through the same `rolled_gear` path the Forge
+uses, never the epic pool, because a champion must stay the better *source* of a great item.
+
+**A goal you cannot find is not a goal.** Every hunt row carries a `where_to_look` line
+derived from the tables the world generates from (`biomes_of_creature` + `[biome_gate]`,
+`gatekeeper_min_distance`), never written down twice — "Fell 6 Dune Wyrms" would otherwise
+send a level-1 player hunting a desert the world holds until d400. A **Gatekeeper is
+already guaranteed**: one stands in the pass at every biome border, on the clear path,
+every run — that was true long before anything said it out loud. In the field the quarry of
+an unfinished hunt is **force-included in that player's own snapshot** and tagged
+`mob:<kind>:<faction>:quarry` (the portal/node-sense pattern — never a wider shared cull,
+which would show everyone everything), and the client floats a QUARRY plate over it. A
+**Hunter** senses it from much further out. Screenshot flag: `MELD_HUNTS` / `?hunts`.
+
+**The Den posts contracts with your name on them.** A hunt is a checklist everyone shares;
+a **bounty** ([`meld_proto::bounties`](shared/meld-proto/src/bounties.rs)) is generated for
+ONE player against a **hunter rank** — the `hunting` Meld skill, raised only by finished
+board work, so the ladder asks "how many marks have you put down" rather than "what level
+is your party". Every bounty ends in a **boss fight**: an FS-4 named boss wearing a rolled
+epithet ("Ironmaw the Unburied"), promoted by the contract's own `power` rather than the
+Gatekeeper constants, sighted at a depth the rank earned, in the open or at the bottom of a
+descent. It stands in the world for its owner ALONE — `MonsterSpawn.owner` keeps it out of
+every other player's snapshot *and* out of their `check_touch`, so co-op can fight beside
+you but cannot trigger your contract. Contracts expire and re-roll lazily on read
+(`[bounty] active_slots` / `window_hours`); only a *standing* one expires, because a felled
+mark is owed its reward however long the walk home takes. The menu's **Quests** column is
+gated on owning `class_hunter` — the menu never advertises what you have not earned — and
+is reading-only, because the reward is taken at the board.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
