@@ -321,12 +321,22 @@ fn bounty_view(
         biome: spec.biome.clone(),
         distance: spec.distance,
         venue: spec.venue.wire().to_string(),
-        where_to_look: format!(
-            "Sighted at d{} in the {}, {}.",
-            spec.distance,
-            spec.biome,
-            spec.venue.phrasing()
-        ),
+        // A descent contract is gated on the door being at least as deep as the sighting,
+        // so it says "past" — the depth is a condition there, not just a report.
+        where_to_look: match spec.venue {
+            meld_proto::bounties::Venue::Dungeon => format!(
+                "Waiting {} past d{}, in the {}.",
+                spec.venue.phrasing(),
+                spec.distance,
+                spec.biome
+            ),
+            meld_proto::bounties::Venue::Overworld => format!(
+                "Sighted at d{} in the {}, {}.",
+                spec.distance,
+                spec.biome,
+                spec.venue.phrasing()
+            ),
+        },
         power: spec.power,
         expires_in_secs: if standing {
             (row.expires_at - now).num_seconds().max(0)

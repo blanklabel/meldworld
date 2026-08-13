@@ -899,6 +899,12 @@ struct BattleSlot {
 struct DungeonBattle {
     key: u64,
     boss_id: String,
+    /// The bounty this door's boss IS, or empty (AD-4). A dungeon boss is built here
+    /// rather than placed in the arena, so the contract rides the battle instead of a
+    /// `MonsterSpawn`.
+    bounty: String,
+    /// Which named boss the mark fights as, for the telling.
+    mark_boss: String,
 }
 
 /// One world's authoritative state — the nucleus that SC-3 will own on its own
@@ -2560,7 +2566,43 @@ impl WorldActor {
         }
 
         let boss_entity = format!("dboss-{key}-{boss_id}");
-        let boss = meld_world::MonsterSpawn::dungeon_boss(&balance, boss_entity, biome, boss_kind, eff_dist, seed);
+        // AD-4: a bounty whose venue is a DESCENT waits at the bottom of one. If this
+        // player holds such a contract and the door is deep enough for it, the thing
+        // keeping the door IS their mark — built from the contract, so the fight it names
+        // is the fight they get.
+        let mark = inst
+            .bounties
+            .get(pid)
+            .into_iter()
+            .flatten()
+            .find(|(id, spec)| {
+                spec.venue == meld_proto::bounties::Venue::Dungeon
+                    && !inst.marks_placed.contains(id)
+                    && eff_dist >= spec.distance as i64
+            })
+            .map(|(id, spec)| (id.clone(), spec.clone()));
+        let boss = match &mark {
+            Some((id, spec)) => meld_world::MonsterSpawn::bounty_mark_at(
+                &balance,
+                boss_entity,
+                spec,
+                id,
+                pid,
+                eff_dist,
+                seed,
+            ),
+            None => meld_world::MonsterSpawn::dungeon_boss(
+                &balance,
+                boss_entity,
+                biome,
+                boss_kind,
+                eff_dist,
+                seed,
+            ),
+        };
+        if let Some((id, _)) = &mark {
+            inst.marks_placed.insert(id.clone());
+        }
         let enemies_ref: Vec<(&meld_world::MonsterSpawn, String)> = vec![(&boss, boss_cid.clone())];
         let battle = build_battle(
             battle_id.clone(),
@@ -2580,7 +2622,12 @@ impl WorldActor {
             player_combatants,
             parties: std::iter::once(party_id).collect(),
             pos: Position::new(0.0, 0.0),
-            dungeon: Some(DungeonBattle { key, boss_id: boss_id.to_string() }),
+            dungeon: Some(DungeonBattle {
+                key,
+                boss_id: boss_id.to_string(),
+                bounty: mark.as_ref().map(|(id, _)| id.clone()).unwrap_or_default(),
+                mark_boss: mark.as_ref().map(|(_, s)| s.boss_kind.clone()).unwrap_or_default(),
+            }),
             party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
@@ -6920,7 +6967,12 @@ impl WorldActor {
                 .flat_map(|(pid, specs)| {
                     specs
                         .iter()
-                        .filter(|(id, _)| !self.marks_placed.contains(id))
+                        .filter(|(id, spec)| {
+                            // A descent contract waits for a descent; standing it up in
+                            // the open too would be the same mark twice.
+                            spec.venue == meld_proto::bounties::Venue::Overworld
+                                && !self.marks_placed.contains(id)
+                        })
                         .map(move |(id, spec)| (pid.clone(), id.clone(), spec.clone()))
                 })
                 .collect();
@@ -7236,6 +7288,22 @@ impl WorldActor {
                                 player_id: pid.clone(),
                                 fact: HuntFact::DungeonCleared,
                             }));
+                            // AD-4: and if the door was keeping someone's MARK, the
+                            // contract is finished — for its owner, whoever else swung.
+                            if !d.bounty.is_empty() {
+                                if let Some(owner) = self
+                                    .bounties
+                                    .iter()
+                                    .find(|(_, specs)| specs.iter().any(|(id, _)| *id == d.bounty))
+                                    .map(|(pid, _)| pid.clone())
+                                {
+                                    effects.push(WorldEffect::BountyFelled {
+                                        player_id: owner,
+                                        bounty_id: d.bounty.clone(),
+                                        mark: d.mark_boss.clone(),
+                                    });
+                                }
+                            }
                         }
                         out.extend(self.finish_dungeon_battle(&members, outcome, d));
                     }

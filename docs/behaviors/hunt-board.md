@@ -118,6 +118,7 @@ for.
 | The mark | One of `FS-4`'s ten named bosses wearing a rolled **epithet** ("Ironmaw the Unburied"), so two contracts on the same boss are two creatures with two histories. |
 | How hard | Promoted by the contract's own `power` (`power_base + power_per_rank × rank`) rather than the Gatekeeper constants, and **always** affixed. A deep-rank mark is worse than the door it walked past. |
 | Where | Sighted at a distance, in a biome, in the open or **at the bottom of a descent** (`dungeon_chance`). The species it wears is drawn from that band's own pool, so the sprite and the ground agree. |
+| A descent contract | The mark **is** what keeps the door: the first dungeon its owner descends at or past the sighted depth builds its boss from the contract instead of the authored one, and felling it finishes the contract. It is therefore never also standing in the open — one contract is one creature. |
 | Yours alone | The mark carries an `owner`. It is left out of every other player's snapshot and **cannot be touched by them** — in a co-op instance the party can fight it beside you, but only you can trigger it. |
 | Stood up lazily | The world stands a mark up once its frontier reaches the sighted distance, once per contract. A felled mark never comes back. |
 | Tracked | A mark is always marked as its owner's quarry, so it wears the same `:quarry` tag and QUARRY plate a hunt's quarry does. |

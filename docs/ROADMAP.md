@@ -1507,8 +1507,10 @@ the current build.
     ten named bosses wearing a rolled **epithet** ("Ironmaw the Unburied"), promoted by the
     contract's own power rather than the Gatekeeper constants and always affixed, so a
     deep-rank mark is worse than the door it walked past. It is sighted at a depth the rank
-    has earned, in the open **or at the bottom of a descent** — and it stands in the world
-    for **that player alone**: `MonsterSpawn.owner` keeps it out of every other player's
+    has earned, in the open **or at the bottom of a descent** (where the mark *is* what
+    keeps the door: the first dungeon its owner descends at or past the sighted depth
+    builds its boss from the contract, so a descent contract is never also standing in the
+    open) — and it stands in the world for **that player alone**: `MonsterSpawn.owner` keeps it out of every other player's
     snapshot and out of their touch check, so in co-op the party can fight it beside you
     but only you can trigger it. Contracts **expire and re-roll** (`[bounty] active_slots`
     / `window_hours`), lazily on read, so the offers are always live with no scheduler;

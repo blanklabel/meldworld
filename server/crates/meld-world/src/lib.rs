@@ -1439,6 +1439,22 @@ impl MonsterSpawn {
         m
     }
 
+    /// A bounty mark built for a **stamped distance** rather than a world position — the
+    /// dungeon case, where the boss is assembled for the fight instead of standing in the
+    /// arena. Same promotion as [`Self::bounty_mark`], so both venues fight the same thing.
+    pub fn bounty_mark_at(
+        balance: &Balance,
+        entity_id: Id,
+        spec: &meld_proto::bounties::BountySpec,
+        bounty_id: &str,
+        owner: &str,
+        effective_distance: i64,
+        seed: u64,
+    ) -> Self {
+        let pos = Position::new(effective_distance.max(0) as f64, 0.0);
+        Self::bounty_mark(balance, entity_id, spec, bounty_id, owner, pos, seed)
+    }
+
     /// Promote a fresh standard spawn to an Elite champion or a Gatekeeper boss
     /// (FS-4): scale its HP/atk/XP and tag the encounter class — which drives the
     /// loot multiplier on the kill, the battle merge cap, and the client's size +
