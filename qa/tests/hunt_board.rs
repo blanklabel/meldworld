@@ -155,6 +155,7 @@ async fn the_board_posts_refuses_what_nobody_earned_and_counts_a_real_kill() {
     let mut started = false;
     let mut won = false;
     let mut progressed = false;
+    let mut marked = false;
     let (mut my_c, mut mon_c, mut bid) = (String::new(), String::new(), String::new());
 
     let mut mover = tokio::time::interval(Duration::from_millis(80));
@@ -186,6 +187,31 @@ async fn the_board_posts_refuses_what_nobody_earned_and_counts_a_real_kill() {
                         seq += 1;
                     }
                     "run.started" => started = true,
+                    // AD-4: the quarry of a hunt you are working is force-included in
+                    // YOUR snapshot and tagged, which is what makes it trackable rather
+                    // than something you stumble into.
+                    "world.snapshot" => {
+                        for e in v["payload"]["entities"].as_array().into_iter().flatten() {
+                            let Some(state) = e["avatar_state"].as_str() else { continue };
+                            if !state.ends_with(":quarry") {
+                                continue;
+                            }
+                            // A fresh account is working every hunt, so the mark can land
+                            // on any of their quarries — but only on one of THOSE. The
+                            // registry is the list; a hand-written one here would drift.
+                            let kind = state.strip_prefix("mob:").and_then(|r| r.split(':').next());
+                            let class = e["encounter_class"].as_str().unwrap_or("");
+                            let wanted = meld_proto::hunts::HUNTS.iter().any(|h| match h.goal {
+                                meld_proto::hunts::HuntGoal::Fell { creature, .. } => {
+                                    kind == Some(creature)
+                                }
+                                meld_proto::hunts::HuntGoal::FellClass { class: c, .. } => c == class,
+                                _ => false,
+                            });
+                            assert!(wanted, "something no hunt asks for was marked: {e}");
+                            marked = true;
+                        }
+                    }
                     "battle.started" => {
                         assert_eq!(
                             v["payload"]["enemies"][0]["monster_kind"],
@@ -241,6 +267,7 @@ async fn the_board_posts_refuses_what_nobody_earned_and_counts_a_real_kill() {
         }
     }
     assert!(progressed, "the kill never announced itself to the board");
+    assert!(marked, "the hunt's quarry was never marked in the snapshot");
 
     // …and it is on the board over HTTP, which is the half that survives a relog.
     // The credit is fire-and-forget off the game loop, so give the DB task a beat.

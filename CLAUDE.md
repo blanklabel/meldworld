@@ -250,8 +250,20 @@ goal you cannot watch fill is a goal you forget you have. **Progress survives de
 the board**, once per account, which is what makes finishing one a reason to come home.
 A hunt names a **quarry**; only its goal carries a count, and `objective` formats the
 sentence — a number written twice is a number that will disagree with itself. Reward
-magnitudes are `[hunt]` `[TUNABLE]`s resolved server-side and ridden onto the wire.
-Screenshot flag: `MELD_HUNTS` / `?hunts`.
+magnitudes are `[hunt]` `[TUNABLE]`s resolved server-side and ridden onto the wire, and the
+**deep hunts pay a rolled piece** as well — through the same `rolled_gear` path the Forge
+uses, never the epic pool, because a champion must stay the better *source* of a great item.
+
+**A goal you cannot find is not a goal.** Every hunt row carries a `where_to_look` line
+derived from the tables the world generates from (`biomes_of_creature` + `[biome_gate]`,
+`gatekeeper_min_distance`), never written down twice — "Fell 6 Dune Wyrms" would otherwise
+send a level-1 player hunting a desert the world holds until d400. A **Gatekeeper is
+already guaranteed**: one stands in the pass at every biome border, on the clear path,
+every run — that was true long before anything said it out loud. In the field the quarry of
+an unfinished hunt is **force-included in that player's own snapshot** and tagged
+`mob:<kind>:<faction>:quarry` (the portal/node-sense pattern — never a wider shared cull,
+which would show everyone everything), and the client floats a QUARRY plate over it. A
+**Hunter** senses it from much further out. Screenshot flag: `MELD_HUNTS` / `?hunts`.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you

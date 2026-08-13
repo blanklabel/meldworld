@@ -1591,3 +1591,9 @@ reward_chits_base = 200          # what a tier-0 (shallow wood) hunt pays
 reward_chits_growth_per_tier = 1.8   # each band deeper is worth this much more
 reward_material_qty = 2          # stacks handed over with the chits at tier 0…
 reward_material_qty_per_tier = 1 # …plus this per band, so a deep hunt seeds a deep craft
+# Tracking a quarry. A posted hunt tells you WHAT you are looking for, so anyone holding
+# one senses its quarry a little past the interest radius; a Hunter senses it much
+# further, which is the guild's whole trade. Force-included into that player's own
+# snapshot (never a wider shared cull). [TUNABLE]
+quarry_sense_radius = 36.0
+quarry_sense_hunter_radius = 90.0

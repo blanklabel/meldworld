@@ -278,6 +278,8 @@ async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                 reward_material_qty: def
                     .reward_material
                     .map_or(0, |_| st.balance.hunt.reward_qty(def.tier)),
+                reward_gear: def.reward_gear,
+                where_to_look: where_to_look(&st.balance, def),
             }
         })
         .collect();
@@ -297,9 +299,21 @@ async fn claim_hunt(
     let chits = st.balance.hunt.reward_chits(def.tier);
     let qty = st.balance.hunt.reward_qty(def.tier);
     let material = def.reward_material.map(|m| (m, qty));
+    // The deep hunts pay a piece as well. Rolled for a class the caller actually fields
+    // (GR-7's recorded roster), at the hunt's own band, from the ordinary pool — the
+    // board is a reliable source of good gear, never a better one than a champion.
+    let drop = if def.reward_gear { hunt_gear(&st, player_id, def).await } else { None };
+    let piece = drop.as_ref().map(crafted_row);
     match st
         .db
-        .claim_hunt(player_id, def.key, def.goal.target(), chits, material)
+        .claim_hunt(
+            player_id,
+            def.key,
+            def.goal.target(),
+            chits,
+            material,
+            piece.as_ref(),
+        )
         .await
         .map_err(ApiReject::internal)?
     {
@@ -310,6 +324,7 @@ async fn claim_hunt(
                 reward_chits: chits,
                 reward_material: def.reward_material.unwrap_or_default().to_string(),
                 reward_material_qty: def.reward_material.map_or(0, |_| qty),
+                reward_gear: drop.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
                 chits: after,
             }),
         )
@@ -329,6 +344,117 @@ async fn claim_hunt(
                 meld_proto::hunts::objective(def)
             ),
         )),
+    }
+}
+
+/// Where to go to work a hunt, in one line — derived from the tables the world actually
+/// generates from, never written down twice.
+///
+/// A board that says "Fell 6 Dune Wyrms" and nothing else is a board that sends a level-1
+/// player looking for a desert the `[biome_gate]` holds until `d400`. This is the answer
+/// to "where do I even do this".
+fn where_to_look(balance: &meld_balance::Balance, def: &meld_proto::hunts::HuntDef) -> String {
+    use meld_proto::hunts::HuntGoal;
+    match def.goal {
+        HuntGoal::Fell { creature, .. } => {
+            let biomes = meld_world::biomes_of_creature(creature);
+            if biomes.is_empty() {
+                return String::new();
+            }
+            // The shallowest gate among the biomes that hold it: the first depth at
+            // which the world will even offer you the ground it lives on.
+            let from = biomes
+                .iter()
+                .map(|b| balance.biome_gate.get(*b).copied().unwrap_or(0))
+                .min()
+                .unwrap_or(0);
+            let named = biomes.join(" or ");
+            if from > 0 {
+                format!("Found in the {named} — which the world opens from d{from}.")
+            } else {
+                format!("Found in the {named}, from the first ring out.")
+            }
+        }
+        HuntGoal::FellClass { class, .. } => match class {
+            // A gatekeeper is not a lucky roll: one stands in the door at every biome
+            // seam, on the clear path, and there is no way past it but through.
+            "gatekeeper" => format!(
+                "One stands in the pass at every biome border, on the path itself, from                  d{}. There is no way through but through it.",
+                balance.encounters.gatekeeper_min_distance
+            ),
+            "elite" => format!(
+                "Promoted from ordinary creatures no shallower than d{}, so they thicken                  the further out you work.",
+                balance.encounters.elite_min_distance
+            ),
+            _ => String::new(),
+        },
+        HuntGoal::ClearDungeon { .. } => {
+            "Take any descent you find in the field and put down what is keeping the              door."
+                .to_string()
+        }
+        HuntGoal::Depth { .. } | HuntGoal::ExtractFrom { .. } => String::new(),
+    }
+}
+
+/// Roll the piece a deep hunt hands over.
+///
+/// Rolled for a class the caller **fields** (GR-7's recorded roster) into a slot that
+/// class can actually use, so a Resonant is never paid in off-hands. Tier is the hunt's
+/// own band and the pool is the ordinary one; the spread is a master smith's
+/// (`gear_variance_floor`) rather than an apprentice's, because the board's promise is
+/// dependability — a champion is still the better source of a great item.
+async fn hunt_gear(
+    st: &ApiState,
+    player_id: Uuid,
+    def: &meld_proto::hunts::HuntDef,
+) -> Option<meld_world::GearDrop> {
+    let roster = st.db.get_hero_classes(player_id).await.unwrap_or_default();
+    let fielded: Vec<&str> = roster
+        .iter()
+        .map(String::as_str)
+        .filter(|k| meld_proto::equipment::class_from_key(k).is_some())
+        .collect();
+    // The seed is the only randomness here, so both picks are drawn off it rather than
+    // from a second source that would not be reproducible from the reply.
+    let seed = seed_now();
+    let class_key = if fielded.is_empty() {
+        "explorer"
+    } else {
+        fielded[(seed as usize) % fielded.len()]
+    };
+    let class = meld_proto::equipment::class_from_key(class_key)?;
+    let wearable: Vec<&str> = meld_proto::equipment::SLOT_CATEGORIES
+        .iter()
+        .copied()
+        .filter(|slot| {
+            meld_proto::equipment::is_armor_slot(slot)
+                || *slot == "accessory"
+                || !meld_proto::equipment::families_for_slot(class, slot).is_empty()
+        })
+        .collect();
+    let slot = wearable[((seed >> 32) as usize) % wearable.len()];
+    let biome = meld_world::biome_for_distance(band_distance(def.tier));
+    Some(meld_world::rolled_gear(
+        &st.balance,
+        def.tier,
+        "rare",
+        st.balance.forge.gear_variance_floor,
+        slot,
+        class_key,
+        biome,
+        seed,
+    ))
+}
+
+/// A representative distance inside a biome band, for anything that has a `tier` and
+/// needs the band's own biome (`meld_world::biome_for_distance` owns the boundaries).
+fn band_distance(tier: i32) -> i64 {
+    match tier.max(0) {
+        0 => 0,
+        1 => 100,
+        2 => 300,
+        3 => 500,
+        _ => 1000,
     }
 }
 

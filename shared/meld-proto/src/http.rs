@@ -183,6 +183,13 @@ pub struct HuntView {
     pub reward_material: String,
     #[serde(default)]
     pub reward_material_qty: i32,
+    /// Whether finishing this one also hands over a rolled piece of gear.
+    #[serde(default)]
+    pub reward_gear: bool,
+    /// Where to go to work it, derived server-side from the world's own placement
+    /// tables. Empty when the objective already says it (a depth).
+    #[serde(default)]
+    pub where_to_look: String,
 }
 
 /// `GET /v1/hunts` response.
@@ -200,6 +207,9 @@ pub struct HuntClaimResponse {
     pub reward_material: String,
     #[serde(default)]
     pub reward_material_qty: i32,
+    /// Name of the piece the board handed over; empty when the hunt pays no gear.
+    #[serde(default)]
+    pub reward_gear: String,
     /// The Vault's chit balance after the board paid out.
     pub chits: i64,
 }

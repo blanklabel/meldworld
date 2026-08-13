@@ -240,6 +240,19 @@ fn node_stock(balance: &Balance, kind: &str) -> i32 {
     balance.harvest.node_yield(class).0
 }
 
+/// Which biomes spawn a creature kind, in `BIOMES` order.
+///
+/// The inverse of [`creatures_for_biome`], so anything that has to tell a player where a
+/// species lives reads the same table the generator places it from rather than a second
+/// list that can quietly disagree.
+pub fn biomes_of_creature(kind: &str) -> Vec<&'static str> {
+    BIOMES
+        .iter()
+        .copied()
+        .filter(|b| creatures_for_biome(b).contains(&kind))
+        .collect()
+}
+
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
@@ -936,16 +949,41 @@ pub fn forge_gear(
     seed: u64,
 ) -> GearDrop {
     let fg = &balance.forge;
-    let l = &balance.loot;
-    let mut rng = Rng(seed);
-    let rarity = if catalyzed { "epic" } else { "rare" };
     let tier = if catalyzed {
         fg.catalyzed_tier(forging_level)
     } else {
         fg.forgeable_tier(forging_level)
     }
     .max(0);
-    let variance = fg.variance_at(forging_level);
+    rolled_gear(
+        balance,
+        tier,
+        if catalyzed { "epic" } else { "rare" },
+        fg.variance_at(forging_level),
+        slot,
+        class_key,
+        biome,
+        seed,
+    )
+}
+
+/// An **insured** piece rolled at a stated tier and rarity: the one roll path behind
+/// anything the persistent world hands over as a made-or-awarded item (the Forge, a Hunt
+/// Board payout). A second copy of this body is a second game's worth of drift.
+#[allow(clippy::too_many_arguments)]
+pub fn rolled_gear(
+    balance: &Balance,
+    tier: i32,
+    rarity: &str,
+    variance: f64,
+    slot: &str,
+    class_key: &str,
+    biome: &str,
+    seed: u64,
+) -> GearDrop {
+    let l = &balance.loot;
+    let mut rng = Rng(seed);
+    let tier = tier.max(0);
     let jitter = 1.0 + rng.signed() * variance;
     let stat = ((l.gear_atk_per_tier * tier.max(1) as f64 * jitter).round() as i32).max(1);
     let (atk_bonus, def_bonus, spd_bonus) = match slot {
@@ -993,7 +1031,7 @@ pub fn forge_gear(
         affixes,
         unique_key: String::new(),
         set_key: String::new(),
-        // You made it at a forge in town, out of materials you carried home; it does
+        // Earned in town — made at a forge, or paid out for work finished — so it does
         // not evaporate the first time you die.
         insurance: Insurance::Insured,
     }
@@ -4207,6 +4245,26 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    // A board that tells a player where to hunt something is only as honest as this
+    // inverse: if it disagrees with the placement table, the advice sends them to the
+    // wrong biome.
+    #[test]
+    fn biomes_of_creature_is_the_inverse_of_the_placement_table() {
+        for b in BIOMES {
+            for kind in creatures_for_biome(b) {
+                assert!(
+                    biomes_of_creature(kind).contains(&b),
+                    "{kind} spawns in {b} but the inverse does not say so"
+                );
+            }
+        }
+        assert!(biomes_of_creature("no_such_creature").is_empty());
+        // Field and forest are the same fauna on different tree counts, so a forest
+        // creature answers with both — the advice has to name both or it is wrong half
+        // the time.
+        assert_eq!(biomes_of_creature("forest_bloom_stalker"), vec!["field", "forest"]);
     }
 
     // AD-4: a hunt that names a creature nothing spawns is a contract that can never

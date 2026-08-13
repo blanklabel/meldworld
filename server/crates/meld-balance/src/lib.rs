@@ -784,6 +784,8 @@ pub struct Hunt {
     pub reward_chits_growth_per_tier: f64,
     pub reward_material_qty: i32,
     pub reward_material_qty_per_tier: i32,
+    pub quarry_sense_radius: f64,
+    pub quarry_sense_hunter_radius: f64,
 }
 
 impl Hunt {

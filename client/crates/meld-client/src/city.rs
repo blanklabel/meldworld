@@ -1668,6 +1668,9 @@ pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
             claimable > 0,
         ),
     ];
+    if board.hunts.iter().any(|h| h.reward_gear) {
+        v.footer.insert(0, "* also pays a piece of gear".into());
+    }
     v.rows = board
         .hunts
         .iter()
@@ -1680,7 +1683,8 @@ pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
             } else {
                 format!(" {}/{}", h.progress, h.target)
             };
-            let row = CounterRow::new((i + 1).to_string(), format!("{}{state}", h.name))
+            let mark = if h.reward_gear { " *" } else { "" };
+            let row = CounterRow::new((i + 1).to_string(), format!("{}{mark}{state}", h.name))
                 .cursor(i == board.cursor);
             if h.claimed {
                 row.dim()
@@ -1693,12 +1697,21 @@ pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
         let mut reward = format!("Pays {}c", h.reward_chits);
         if h.reward_material_qty > 0 && !h.reward_material.is_empty() {
             reward.push_str(&format!(
-                " and {} {}",
+                ", {} {}",
                 h.reward_material_qty,
                 crate::icons::display_name(&h.reward_material)
             ));
         }
-        v.detail = vec![h.objective.clone(), reward, h.blurb.clone()];
+        // The piece is the reason to work a deep hunt, so it is on the row's own line
+        // rather than buried at the end of the price.
+        if h.reward_gear {
+            reward.push_str(" and a piece of gear");
+        }
+        v.detail = vec![h.objective.clone(), reward];
+        if !h.where_to_look.is_empty() {
+            v.detail.push(h.where_to_look.clone());
+        }
+        v.detail.push(h.blurb.clone());
     }
     v
 }

@@ -1479,9 +1479,29 @@ the current build.
     `meld-world` test holding every hunt's quarry against the creatures the world
     actually spawns — a hunt naming a creature nothing spawns is a contract that can
     never be filled.
-  - **Remains (the full system):** named-creature hunts off `FS-4`'s bosses, rotation /
-    expiry / an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild hunts
-    (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
+  - 🟡 *The deep hunts pay a piece, and the quarry can be tracked:* a board that paid
+    only chits paid in the currency the Broker already prints, and a hunt naming a
+    creature you could not find was a goal you could not act on. Tier-3+ hunts now hand
+    over a **rolled piece** — insured, at the hunt's own band, for a class you actually
+    field, in a slot that class can wear — through the *same* generator the Forge uses
+    (`meld_world::rolled_gear`, factored out so there is one roll path) and in the same
+    transaction as the payout. Never from the **epic** pool: a champion stays the better
+    *source* of a great item, and the board's promise is reliability, not superiority.
+    Only the deep hunts pay it, so the board reads as a ladder.
+  - 🟡 *And it tells you where to go:* every row carries a `where_to_look` line derived
+    from the tables the world generates from (`biomes_of_creature` + `[biome_gate]`,
+    `gatekeeper_min_distance`, `elite_min_distance`) rather than written down twice — so
+    "Fell 6 Dune Wyrms" is no longer a level-1 player hunting a desert the world holds
+    until d400. **A Gatekeeper was already guaranteed** (one stands in the pass at every
+    biome border, on the clear path, every run) — nothing had ever said so. In the field
+    the quarry of an unfinished hunt is **force-included in that player's own snapshot**
+    and tagged `:quarry` (the portal/node-sense pattern, never a wider shared cull), so it
+    is trackable rather than stumbled upon; a **Hunter** senses it from much further out
+    (`[hunt] quarry_sense_hunter_radius`), which is the guild's whole trade. Marking stops
+    the moment the hunt is finished.
+  - **Remains (the full system):** named-creature hunts off `FS-4`'s ten named bosses,
+    rotation / expiry / an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild
+    hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

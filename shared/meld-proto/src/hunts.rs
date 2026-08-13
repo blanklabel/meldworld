@@ -105,6 +105,13 @@ pub struct HuntDef {
     /// The stack handed over on top of the chits, keyed into [`crate::materials`]. The
     /// quantity is a `[TUNABLE]`.
     pub reward_material: Option<&'static str>,
+    /// Whether the board also hands over a **rolled piece of gear**.
+    ///
+    /// Only the deep hunts do, so the board is a ladder rather than a shortcut — and the
+    /// piece is rolled at the hunt's own band from the ordinary pool, never the epic one:
+    /// a champion you fought for stays the better source of a great item. The board's
+    /// version is *reliable*, not superior.
+    pub reward_gear: bool,
 }
 
 /// Every hunt on the board, shallow → deep.
@@ -123,6 +130,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::Fell { creature: "forest_bloom_stalker", count: 8 },
         tier: 0,
         reward_material: Some("forest_bloom_petal"),
+        reward_gear: false,
     },
     HuntDef {
         key: "the_wyrm_contract",
@@ -134,6 +142,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::Fell { creature: "dune_wyrm", count: 6 },
         tier: 1,
         reward_material: Some("sun_scarab_husk"),
+        reward_gear: false,
     },
     HuntDef {
         key: "the_vaults_below",
@@ -144,6 +153,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::ClearDungeon { count: 1 },
         tier: 1,
         reward_material: Some("dune_ingot"),
+        reward_gear: false,
     },
     HuntDef {
         key: "the_far_frontier",
@@ -154,6 +164,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::Depth { distance: 300 },
         tier: 2,
         reward_material: None,
+        reward_gear: false,
     },
     HuntDef {
         key: "break_the_champions",
@@ -164,6 +175,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::FellClass { class: "elite", count: 5 },
         tier: 2,
         reward_material: Some("ember_cinder"),
+        reward_gear: false,
     },
     HuntDef {
         key: "the_long_walk_back",
@@ -174,6 +186,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::ExtractFrom { distance: 500 },
         tier: 3,
         reward_material: Some("rime_ingot"),
+        reward_gear: true,
     },
     HuntDef {
         key: "unseat_the_keeper",
@@ -184,6 +197,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::FellClass { class: "gatekeeper", count: 1 },
         tier: 3,
         reward_material: Some("frost_shard"),
+        reward_gear: true,
     },
     HuntDef {
         key: "drain_the_mire",
@@ -194,6 +208,7 @@ pub const HUNTS: &[HuntDef] = &[
         goal: HuntGoal::Fell { creature: "bog_serpent", count: 6 },
         tier: 4,
         reward_material: Some("bog_ichor"),
+        reward_gear: true,
     },
 ];
 
@@ -280,6 +295,29 @@ mod tests {
         let home = HuntGoal::ExtractFrom { distance: 500 };
         assert_eq!(home.credits(&HuntEvent::Depth { distance: 900 }), 0);
         assert_eq!(home.credits(&HuntEvent::Extracted { deepest: 500 }), 1);
+    }
+
+    #[test]
+    fn only_the_deep_hunts_pay_gear_and_the_shallow_ones_still_pay() {
+        // The board has to read as a ladder: if the first hunt handed over a piece there
+        // would be no reason to work the deep ones, and if none did, the board would only
+        // ever pay in a currency the Broker already prints.
+        for h in HUNTS {
+            assert_eq!(
+                h.reward_gear,
+                h.tier >= 3,
+                "{} pays gear at tier {}",
+                h.key,
+                h.tier
+            );
+            assert!(
+                h.reward_gear || h.reward_material.is_some() || h.tier == 2,
+                "{} pays nothing but chits",
+                h.key
+            );
+        }
+        assert!(HUNTS.iter().any(|h| h.reward_gear), "no hunt on the board pays a piece");
+        assert!(HUNTS.iter().any(|h| !h.reward_gear), "every hunt pays a piece");
     }
 
     #[test]

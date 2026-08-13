@@ -628,6 +628,7 @@ impl Db {
         target: i32,
         chits: i64,
         material: Option<(&str, i32)>,
+        gear: Option<&LootedGear>,
     ) -> Result<HuntClaim, DbError> {
         match &self.backend {
             Backend::Pg(pool) => {
@@ -682,6 +683,9 @@ impl Db {
                     .execute(&mut *tx)
                     .await?;
                 }
+                if let Some(g) = gear {
+                    insert_gear_row(&mut tx, player_id, g).await?;
+                }
                 tx.commit().await?;
                 Ok(HuntClaim::Paid { chits: after })
             }
@@ -706,6 +710,9 @@ impl Db {
                 };
                 if let Some((kind, qty)) = material.filter(|(_, q)| *q > 0) {
                     *m.vault_items.entry((player_id, kind.to_string())).or_insert(0) += qty;
+                }
+                if let Some(g) = gear {
+                    m.gear.entry(g.gear_id).or_insert_with(|| mem_gear_row(player_id, g));
                 }
                 Ok(HuntClaim::Paid { chits: after })
             }
@@ -2432,33 +2439,7 @@ impl Db {
             Backend::Pg(pool) => {
                 let mut tx = pool.begin().await?;
                 for g in gear {
-                    sqlx::query(
-                        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key)
-                         VALUES ($1, $2, $3, $4, $5, $18, $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, $16, $17)
-                         ON CONFLICT (gear_id) DO NOTHING",
-                    )
-                    .bind(g.gear_id)
-                    .bind(player_id)
-                    .bind(&g.name)
-                    .bind(&g.slot)
-                    .bind(&g.class_key)
-                    .bind(g.tier)
-                    .bind(g.atk_bonus)
-                    .bind(g.def_bonus)
-                    .bind(g.spd_bonus)
-                    .bind(g.base_max_durability)
-                    .bind(g.max_durability)
-                    .bind(&g.damage_modifiers)
-                    .bind(&g.family)
-                    .bind(&g.armor_weight)
-                    .bind(&g.affixes)
-                    .bind(&g.unique_key)
-                    .bind(&g.set_key)
-                    // Permanent (blue) survives death and wears down; looted (red)
-                    // burns. Only a reward-spike encounter rolls permanence.
-                    .bind(insurance_word(g.insurance))
-                    .execute(&mut *tx)
-                    .await?;
+                    insert_gear_row(&mut tx, player_id, g).await?;
                 }
                 tx.commit().await?;
             }
@@ -2466,27 +2447,7 @@ impl Db {
                 let mut m = m.lock().unwrap();
                 for g in gear {
                     // ON CONFLICT (gear_id) DO NOTHING.
-                    m.gear.entry(g.gear_id).or_insert_with(|| MemGear {
-                        gear_id: g.gear_id,
-                        owner_player_id: player_id,
-                        name: g.name.clone(),
-                        slot: g.slot.clone(),
-                        class_key: g.class_key.clone(),
-                        insurance: insurance_word(g.insurance).to_string(),
-                        family: g.family.clone(),
-                        armor_weight: g.armor_weight.clone(),
-                        affixes: g.affixes.clone(),
-                        unique_key: g.unique_key.clone(),
-                        set_key: g.set_key.clone(),
-                        tier: g.tier,
-                        atk_bonus: g.atk_bonus,
-                        def_bonus: g.def_bonus,
-                        spd_bonus: g.spd_bonus,
-                        base_max_durability: g.base_max_durability,
-                        max_durability: g.max_durability,
-                        equipped_hero_slot: None,
-                        damage_modifiers: g.damage_modifiers.clone(),
-                    });
+                    m.gear.entry(g.gear_id).or_insert_with(|| mem_gear_row(player_id, g));
                 }
             }
         }
@@ -3787,11 +3748,11 @@ mod tests {
         );
 
         assert_eq!(
-            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2))).await.unwrap(),
+            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2)), None).await.unwrap(),
             HuntClaim::Paid { chits: 250 }
         );
         assert_eq!(
-            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2))).await.unwrap(),
+            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2)), None).await.unwrap(),
             HuntClaim::AlreadyClaimed
         );
         let (chits, items) = db.get_vault(p).await.unwrap();
@@ -3801,6 +3762,55 @@ mod tests {
         let rows = db.get_hunts(p).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].claimed);
+    }
+
+    #[tokio::test]
+    async fn a_deep_hunt_hands_over_its_piece_exactly_once() {
+        let db = mem().await;
+        let p = db
+            .register("deephunt", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+        let before = db.get_gear(p).await.unwrap().len();
+        let piece = LootedGear {
+            insurance: meld_proto::enums::Insurance::Insured,
+            gear_id: Uuid::now_v7(),
+            name: "Keeper's Reward".into(),
+            slot: "main_hand".into(),
+            class_key: "hunter".into(),
+            tier: 3,
+            atk_bonus: 12,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 100,
+            max_durability: 100,
+            damage_modifiers: "{}".into(),
+            family: "sword".into(),
+            armor_weight: String::new(),
+            affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+
+        db.credit_hunt(p, "unseat_the_keeper", 1, 1).await.unwrap();
+        assert_eq!(
+            db.claim_hunt(p, "unseat_the_keeper", 1, 500, None, Some(&piece)).await.unwrap(),
+            HuntClaim::Paid { chits: 500 }
+        );
+        let after = db.get_gear(p).await.unwrap();
+        assert_eq!(after.len(), before + 1, "the piece did not land");
+        let awarded = after.iter().find(|g| g.gear_id == piece.gear_id).unwrap();
+        assert_eq!(awarded.name, "Keeper's Reward");
+        assert!(awarded.equipped_hero_slot.is_none(), "an awarded piece arrives in the Vault");
+
+        // The second press is refused, and it does not mint a second copy.
+        assert_eq!(
+            db.claim_hunt(p, "unseat_the_keeper", 1, 500, None, Some(&piece)).await.unwrap(),
+            HuntClaim::AlreadyClaimed
+        );
+        assert_eq!(db.get_gear(p).await.unwrap().len(), before + 1);
+        assert_eq!(db.get_vault(p).await.unwrap().0, 500);
     }
 
     #[tokio::test]
@@ -3814,7 +3824,7 @@ mod tests {
 
         db.credit_hunt(p, "unseat_the_keeper", 1, 3).await.unwrap();
         assert_eq!(
-            db.claim_hunt(p, "unseat_the_keeper", 3, 500, None).await.unwrap(),
+            db.claim_hunt(p, "unseat_the_keeper", 3, 500, None, None).await.unwrap(),
             HuntClaim::NotEarned { progress: 1 }
         );
         assert_eq!(db.get_vault(p).await.unwrap().0, 0, "a refusal costs the board nothing");
@@ -3822,7 +3832,7 @@ mod tests {
         // Once claimed, further credit is frozen: re-earning a one-off payout is how a
         // board gets farmed.
         db.credit_hunt(p, "unseat_the_keeper", 2, 3).await.unwrap();
-        db.claim_hunt(p, "unseat_the_keeper", 3, 500, None).await.unwrap();
+        db.claim_hunt(p, "unseat_the_keeper", 3, 500, None, None).await.unwrap();
         assert_eq!(
             db.credit_hunt(p, "unseat_the_keeper", 3, 3).await.unwrap(),
             HuntCredit { progress: 3, completed: false }
@@ -4478,6 +4488,69 @@ pub fn season_at(unix_secs: i64) -> i32 {
 /// The season currently open.
 pub fn current_season() -> i32 {
     season_at(Utc::now().timestamp())
+}
+
+/// Insert one owned, unequipped piece of gear inside an open transaction.
+///
+/// The single Postgres write behind every piece the persistent world hands over —
+/// extraction banking and a Hunt Board payout — so the column list cannot drift between
+/// them.
+async fn insert_gear_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    player_id: Uuid,
+    g: &LootedGear,
+) -> Result<(), DbError> {
+    sqlx::query(
+        "INSERT INTO gear (gear_id, owner_player_id, name, slot, class_key, insurance, tier, atk_bonus, def_bonus, spd_bonus, base_max_durability, max_durability, equipped_hero_slot, damage_modifiers, family, armor_weight, affixes, unique_key, set_key)
+         VALUES ($1, $2, $3, $4, $5, $18, $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14, $15, $16, $17)
+         ON CONFLICT (gear_id) DO NOTHING",
+    )
+    .bind(g.gear_id)
+    .bind(player_id)
+    .bind(&g.name)
+    .bind(&g.slot)
+    .bind(&g.class_key)
+    .bind(g.tier)
+    .bind(g.atk_bonus)
+    .bind(g.def_bonus)
+    .bind(g.spd_bonus)
+    .bind(g.base_max_durability)
+    .bind(g.max_durability)
+    .bind(&g.damage_modifiers)
+    .bind(&g.family)
+    .bind(&g.armor_weight)
+    .bind(&g.affixes)
+    .bind(&g.unique_key)
+    .bind(&g.set_key)
+    .bind(insurance_word(g.insurance))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// The in-memory backend's mirror of [`insert_gear_row`].
+fn mem_gear_row(player_id: Uuid, g: &LootedGear) -> MemGear {
+    MemGear {
+        gear_id: g.gear_id,
+        owner_player_id: player_id,
+        name: g.name.clone(),
+        slot: g.slot.clone(),
+        class_key: g.class_key.clone(),
+        insurance: insurance_word(g.insurance).to_string(),
+        family: g.family.clone(),
+        armor_weight: g.armor_weight.clone(),
+        affixes: g.affixes.clone(),
+        unique_key: g.unique_key.clone(),
+        set_key: g.set_key.clone(),
+        tier: g.tier,
+        atk_bonus: g.atk_bonus,
+        def_bonus: g.def_bonus,
+        spd_bonus: g.spd_bonus,
+        base_max_durability: g.base_max_durability,
+        max_durability: g.max_durability,
+        equipped_hero_slot: None,
+        damage_modifiers: g.damage_modifiers.clone(),
+    }
 }
 
 // ----------------------------------------------------------- the Hunt Board ---

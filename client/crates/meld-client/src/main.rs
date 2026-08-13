@@ -698,13 +698,15 @@ struct OwEntity {
     max_hp: Option<i32>,
     encounter_class: Option<String>,
     aggression: Option<String>,
+    /// The quarry of a hunt this player is working (AD-4) — server-decided, per-viewer.
+    quarry: bool,
     /// Dungeon entrances: heroes the doors inside want on plates at once (1 = solo).
     bodies_required: u8,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, bodies_required: 1 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -722,11 +724,12 @@ impl OwEntity {
             max_hp: None,
             encounter_class: None,
             aggression: None,
+            quarry: false,
             bodies_required: 1,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, bodies_required: 1 }
     }
 }
 

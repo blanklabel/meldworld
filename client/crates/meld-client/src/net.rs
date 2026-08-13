@@ -194,6 +194,9 @@ pub struct EntityView {
     pub encounter_class: Option<String>,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: Option<String>,
+    /// This creature is the quarry of a hunt the viewer is working (AD-4). Server-decided
+    /// and per-viewer: the same creature is not a quarry to the teammate beside them.
+    pub quarry: bool,
     /// For dungeon entrances: how many heroes the doors inside want standing on
     /// plates at once. 1 for anything a lone player can finish.
     pub bodies_required: u8,
@@ -383,6 +386,10 @@ pub struct HuntLine {
     pub reward_chits: i64,
     pub reward_material: String,
     pub reward_material_qty: i32,
+    /// Finishing this one also hands over a rolled piece of gear.
+    pub reward_gear: bool,
+    /// Where to go to work it — the server's own answer, from the placement tables.
+    pub where_to_look: String,
 }
 
 /// A meld-skill row for the level-up screen.
@@ -2281,6 +2288,7 @@ impl Inner {
                             let mut radius = 0.0;
                             let mut bodies_required: u8 = 1;
                             let mut opened = false;
+                            let mut quarry = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
                                 Some("stair") => (EntityKind::Stair, None, None),
@@ -2295,8 +2303,8 @@ impl Inner {
                                     (EntityKind::Chest, None, None)
                                 }
                                 Some(s) if s.starts_with("mob:") => {
-                                    let rest = &s["mob:".len()..];
-                                    let (k, f) = rest.split_once(':').unwrap_or((rest, ""));
+                                    let (k, f, q) = parse_mob_state(s);
+                                    quarry = q;
                                     (
                                         EntityKind::Monster,
                                         Some(k.to_string()),
@@ -2354,6 +2362,7 @@ impl Inner {
                                 max_hp: is_mob.then_some(e.max_hp).flatten(),
                                 encounter_class: if is_mob { e.encounter_class } else { None },
                                 aggression: if is_mob { e.aggression } else { None },
+                                quarry,
                                 bodies_required,
                             }
                         })
@@ -2584,6 +2593,17 @@ impl Inner {
 /// Turn a craft reply into one line for the panel. A refusal is reported as loudly as
 /// a success: the server's own message ("Insufficient materials (need 2 heartoak_bark)",
 /// "alchemy level 1 is below the required level 9") is already the right sentence.
+/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:quarry]` — into its parts.
+///
+/// The trailing marker is optional and per-viewer (AD-4), which is exactly why this is one
+/// function: reading the faction with a `split_once` swallowed `hostile:quarry` whole.
+fn parse_mob_state(state: &str) -> (&str, &str, bool) {
+    let mut parts = state.strip_prefix("mob:").unwrap_or(state).split(':');
+    let kind = parts.next().unwrap_or("");
+    let faction = parts.next().unwrap_or("");
+    (kind, faction, parts.next() == Some("quarry"))
+}
+
 /// GET the Hunt Board and hand the rows back over `tx`.
 fn spawn_hunts_fetch(base: String, token: String, tx: mpsc::Sender<Vec<HuntLine>>) {
     let mut req = ehttp::Request::get(format!("{base}/v1/hunts"));
@@ -2613,6 +2633,8 @@ fn hunt_lines(res: &Result<ehttp::Response, String>) -> Vec<HuntLine> {
             reward_chits: h["reward_chits"].as_i64().unwrap_or(0),
             reward_material: h["reward_material"].as_str().unwrap_or("").to_string(),
             reward_material_qty: h["reward_material_qty"].as_i64().unwrap_or(0) as i32,
+            reward_gear: h["reward_gear"].as_bool().unwrap_or(false),
+            where_to_look: h["where_to_look"].as_str().unwrap_or("").to_string(),
         })
         .collect()
 }
@@ -2628,11 +2650,15 @@ fn hunt_claim_text(res: &Result<ehttp::Response, String>) -> String {
     let chits = v["reward_chits"].as_i64().unwrap_or(0);
     let qty = v["reward_material_qty"].as_i64().unwrap_or(0);
     let mat = v["reward_material"].as_str().unwrap_or("");
+    let gear = v["reward_gear"].as_str().unwrap_or("");
+    let mut paid = format!("{chits}c");
     if qty > 0 && !mat.is_empty() {
-        format!("the board pays {chits}c and {qty} {}", mat.replace('_', " "))
-    } else {
-        format!("the board pays {chits}c")
+        paid.push_str(&format!(", {qty} {}", mat.replace('_', " ")));
     }
+    if !gear.is_empty() {
+        paid.push_str(&format!(", and {gear}"));
+    }
+    format!("the board pays {paid}")
 }
 
 fn craft_reply_text(res: &Result<ehttp::Response, String>) -> String {
@@ -2965,6 +2991,28 @@ fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<Log
         });
     });
     rx
+}
+
+#[cfg(test)]
+mod mob_state_tests {
+    use super::*;
+
+    #[test]
+    fn a_mob_state_keeps_its_faction_whether_or_not_it_is_a_quarry() {
+        assert_eq!(
+            parse_mob_state("mob:forest_bloom_stalker:fungal"),
+            ("forest_bloom_stalker", "fungal", false)
+        );
+        // The marker must not be read as part of the faction — the faction drives the
+        // creature's colour, and `fungal:quarry` is not a colour.
+        assert_eq!(
+            parse_mob_state("mob:forest_bloom_stalker:fungal:quarry"),
+            ("forest_bloom_stalker", "fungal", true)
+        );
+        // A factionless mob, and an unknown trailing token, both stay readable.
+        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false));
+        assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:something"), ("dune_wyrm", "wyrm", false));
+    }
 }
 
 #[cfg(test)]

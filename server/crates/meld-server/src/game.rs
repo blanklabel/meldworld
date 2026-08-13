@@ -96,6 +96,48 @@ enum WorldEffect {
     },
 }
 
+/// What one unfinished hunt is looking for, as the snapshot asks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QuarryTarget {
+    Kind(String),
+    Class(String),
+}
+
+impl QuarryTarget {
+    fn matches(&self, kind: &str, class: &str) -> bool {
+        match self {
+            QuarryTarget::Kind(k) => k == kind,
+            QuarryTarget::Class(c) => c == class,
+        }
+    }
+}
+
+/// Every quarry a player is still working, from the hunts their session holds.
+///
+/// The board lives on the Router and the snapshot is built by the world, so this is
+/// pushed across the same way `skill_levels` is — the world never reads a session.
+fn quarry_targets(board: &HashMap<String, (i32, bool)>) -> Vec<QuarryTarget> {
+    let mut out = Vec::new();
+    for def in meld_proto::hunts::HUNTS {
+        let (progress, claimed) = board.get(def.key).copied().unwrap_or((0, false));
+        // A finished hunt stops marking: you are done looking, and the thing left to do
+        // is walk home and be paid.
+        if claimed || progress >= def.goal.target() {
+            continue;
+        }
+        match def.goal {
+            meld_proto::hunts::HuntGoal::Fell { creature, .. } => {
+                out.push(QuarryTarget::Kind(creature.to_string()))
+            }
+            meld_proto::hunts::HuntGoal::FellClass { class, .. } => {
+                out.push(QuarryTarget::Class(class.to_string()))
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// An owned [`meld_proto::hunts::HuntEvent`], for the trip from the world to the
 /// Router.
 #[derive(Debug, Clone)]
@@ -927,6 +969,9 @@ struct WorldActor {
     /// pure (no wall-clock), so this lives here and is passed into `check_touch` as an
     /// exclusion set rather than being computed inside the arena.
     battle_immune_until: HashMap<String, u64>,
+    /// player_id -> the quarry of every hunt they are still working (AD-4), mirrored in
+    /// from the Router's session board so the snapshot can force-include and mark it.
+    quarry: HashMap<String, Vec<QuarryTarget>>,
 }
 
 /// One queued request at a field station: everything the DB half needs, decided
@@ -1187,7 +1232,17 @@ impl WorldActor {
         // as `mob:<kind>:<faction>` so the client can colour/label it by faction;
         // that's distinct from the player states and the `portal` tag below. Slain
         // creatures are dropped from the snapshot.
+        // AD-4: a hunt's quarry is force-included in its holder's own snapshot from
+        // further out than anyone else sees it, so it can be tracked rather than
+        // stumbled upon. Remembered here the way node-sense remembers nodes.
+        let mut mob_index: Vec<(usize, Position, &str, &str)> = Vec::new();
         for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
+            mob_index.push((
+                entities.len(),
+                m.position,
+                m.monster_kind.as_str(),
+                m.encounter_class.as_str(),
+            ));
             entities.push(wm::SnapshotEntity {
                 entity_id: m.entity_id.clone(),
                 position: m.position,
@@ -1324,6 +1379,35 @@ impl WorldActor {
         let cell = self.balance.world.chunk_size.max(1) as f64;
         let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
         let radius2 = radius * radius;
+        // AD-4: which mobs are each player's QUARRY, decided before anything takes `self`
+        // mutably (and so before `mob_index`'s borrows end). A Hunter senses one from much
+        // further out — the guild's whole trade — but anyone holding a posted hunt knows
+        // what they are looking for.
+        let quarry_marks: HashMap<String, std::collections::HashSet<usize>> = self
+            .run
+            .runs
+            .iter()
+            .filter_map(|r| {
+                let targets = self.quarry.get(&r.player_id).filter(|q| !q.is_empty())?;
+                let pos = self.arena.avatar(&r.player_id)?.position;
+                let h = &self.balance.hunt;
+                let reach = if self.perks_for(&r.player_id).hunter_intel > 0 {
+                    h.quarry_sense_hunter_radius
+                } else {
+                    h.quarry_sense_radius
+                }
+                .max(radius);
+                let hits: std::collections::HashSet<usize> = mob_index
+                    .iter()
+                    .filter(|(_, mpos, kind, class)| {
+                        pos.distance_to(mpos) <= reach
+                            && targets.iter().any(|t| t.matches(kind, class))
+                    })
+                    .map(|(i, _, _, _)| *i)
+                    .collect();
+                (!hits.is_empty()).then(|| (r.player_id.clone(), hits))
+            })
+            .collect();
         let grid = build_interest_grid(&entities, cell);
         let portal_idx = entities.iter().position(|e| e.entity_id == "portal");
         // Overworld snapshots go to players NOT in any battle. A fighting party is
@@ -1403,6 +1487,7 @@ impl WorldActor {
                 }
                 _ => Vec::new(),
             };
+            let marked = quarry_marks.get(&r.player_id).cloned().unwrap_or_default();
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 // Grid-indexed interest cull (SC-1): behaviour-identical to the old
                 // full scan (own avatar + portal always; mobs at `mob_radius`, the
@@ -1413,9 +1498,22 @@ impl WorldActor {
                         own_idx, portal_idx,
                     );
                     idxs.extend(sensed);
+                    idxs.extend(marked.iter().copied());
                     idxs.sort_unstable();
                     idxs.dedup();
-                    idxs.into_iter().map(|i| entities[i].clone()).collect()
+                    idxs.into_iter()
+                        .map(|i| {
+                            let mut e = entities[i].clone();
+                            // The tag rides this player's OWN copy of the row: the same
+                            // creature is not a quarry to the teammate beside them.
+                            if marked.contains(&i) {
+                                if let Some(st) = e.avatar_state.as_mut() {
+                                    st.push_str(":quarry");
+                                }
+                            }
+                            e
+                        })
+                        .collect()
                 }
                 // Defensive: a roaming run should always have an avatar; if not, don't
                 // cull (send the full set) rather than send an empty world.
@@ -2833,6 +2931,16 @@ impl GameState {
                 }
             }
         }
+        // A finished hunt stops being tracked, so the world's copy is refreshed from the
+        // same board the credit just moved.
+        let targets = self
+            .sessions
+            .get(player_id)
+            .and_then(|s| s.hunts.as_ref())
+            .map(quarry_targets);
+        if let (Some(w), Some(t)) = (self.world.as_mut(), targets) {
+            w.quarry.insert(player_id.to_string(), t);
+        }
         let mut out = Vec::new();
         for (key, delta, now, target, complete) in moved {
             let _ = self.db_writes.send(DbWrite::HuntProgress(
@@ -3347,6 +3455,7 @@ impl GameState {
                 dungeon_scene_sent: HashMap::new(),
                 pending_effects: Vec::new(),
                 skill_levels: HashMap::new(),
+                quarry: HashMap::new(),
                 edges: HashMap::new(),
                 battle_immune_until: HashMap::new(),
             });
@@ -3638,6 +3747,21 @@ impl GameState {
         // The professions' field verbs gate on persistent Meld levels, so the world
         // needs them in hand before anyone tries to raise a station.
         self.pending_skill_load.extend(party_ids.iter().cloned());
+        // AD-4: and the quarry of every hunt each diver is working, so the snapshot can
+        // mark it from the first tick. The board was loaded on connect, when there was no
+        // world to hold it — this is the handover.
+        let quarry: Vec<(String, Vec<QuarryTarget>)> = party_ids
+            .iter()
+            .filter_map(|pid| {
+                let board = self.sessions.get(pid).and_then(|s| s.hunts.as_ref())?;
+                Some((pid.clone(), quarry_targets(board)))
+            })
+            .collect();
+        if let Some(w) = self.world.as_mut() {
+            for (pid, targets) in quarry {
+                w.quarry.insert(pid, targets);
+            }
+        }
         out
     }
 
@@ -5314,8 +5438,12 @@ impl GameState {
                         .into_iter()
                         .map(|r| (r.hunt_key, (r.progress, r.claimed)))
                         .collect();
+                    let targets = quarry_targets(&board);
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.hunts = Some(board);
+                    }
+                    if let Some(w) = self.world.as_mut() {
+                        w.quarry.insert(pid.clone(), targets);
                     }
                 }
             }
@@ -8099,6 +8227,59 @@ mod unlock_gate_tests {
 /// The two PROFESSION classes had no overworld perk at all — every other class earns one
 /// for walking around, and the pair whose whole identity is what they do between fights
 /// earned nothing. These cover MS-1's second ladder.
+#[cfg(test)]
+mod quarry_tests {
+    use super::*;
+
+    fn board(entries: &[(&str, i32, bool)]) -> HashMap<String, (i32, bool)> {
+        entries.iter().map(|(k, p, c)| (k.to_string(), (*p, *c))).collect()
+    }
+
+    /// A fresh account is working every hunt, so every quarry on the board is tracked.
+    #[test]
+    fn an_untouched_board_tracks_every_quarry_it_names() {
+        let targets = quarry_targets(&board(&[]));
+        assert!(targets.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+        assert!(targets.contains(&QuarryTarget::Class("gatekeeper".into())));
+        assert!(targets.contains(&QuarryTarget::Class("elite".into())));
+        // A depth or an extraction has no quarry to mark — there is nothing to point at.
+        assert_eq!(
+            targets.len(),
+            meld_proto::hunts::HUNTS
+                .iter()
+                .filter(|h| matches!(
+                    h.goal,
+                    meld_proto::hunts::HuntGoal::Fell { .. }
+                        | meld_proto::hunts::HuntGoal::FellClass { .. }
+                ))
+                .count()
+        );
+    }
+
+    /// Finished or paid, it stops being marked: the thing left to do is walk home, and a
+    /// world that keeps shouting QUARRY at a hunt you closed is noise.
+    #[test]
+    fn a_finished_or_claimed_hunt_stops_being_tracked() {
+        let done = quarry_targets(&board(&[("unseat_the_keeper", 1, false)]));
+        assert!(!done.contains(&QuarryTarget::Class("gatekeeper".into())));
+        let paid = quarry_targets(&board(&[("cull_the_bloom", 8, true)]));
+        assert!(!paid.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+        // Partial progress is still a hunt you are working.
+        let partial = quarry_targets(&board(&[("cull_the_bloom", 7, false)]));
+        assert!(partial.contains(&QuarryTarget::Kind("forest_bloom_stalker".into())));
+    }
+
+    #[test]
+    fn a_target_matches_its_own_kind_or_class_and_nothing_else() {
+        let kind = QuarryTarget::Kind("dune_wyrm".into());
+        assert!(kind.matches("dune_wyrm", "standard"));
+        assert!(!kind.matches("bog_serpent", "standard"));
+        let class = QuarryTarget::Class("gatekeeper".into());
+        assert!(class.matches("anything", "gatekeeper"));
+        assert!(!class.matches("anything", "elite"));
+    }
+}
+
 #[cfg(test)]
 mod crafter_perk_tests {
     use super::*;

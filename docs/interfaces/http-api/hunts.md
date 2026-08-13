@@ -29,6 +29,8 @@ account has never touched still appears, at zero. Reward magnitudes are `[hunt]`
 | reward_chits | integer (int64, ≥ 1) | No | v0.1 | No | Chits the claim pays (`[hunt] reward_chits_base × reward_chits_growth_per_tier ^ tier`). |
 | reward_material | string | No | v0.1 | No | Item kind paid alongside the chits; `""` for chits alone. |
 | reward_material_qty | integer (int32, ≥ 0) | No | v0.1 | No | Size of that stack; `0` when there is no material. |
+| reward_gear | boolean | No | v0.1 | No | Finishing it also hands over a rolled piece of gear (tier ≥ 3 hunts). |
+| where_to_look | string | No | v0.1 | No | Where to go to work it, derived server-side from the world's placement tables. Empty when the objective already says it (a depth). |
 
 ---
 
@@ -53,7 +55,9 @@ Every posted hunt with the caller's progress against it. Requires a session.
       "claimed": false,
       "reward_chits": 200,
       "reward_material": "forest_bloom_petal",
-      "reward_material_qty": 2
+      "reward_material_qty": 2,
+      "reward_gear": false,
+      "where_to_look": "Found in the field or forest, from the first ring out."
     }
   ]
 }
@@ -81,13 +85,17 @@ stack) — the caller is in the city, so there is no Backpack to route it throug
 
 ```json
 {
-  "key": "cull_the_bloom",
-  "reward_chits": 200,
-  "reward_material": "forest_bloom_petal",
-  "reward_material_qty": 2,
-  "chits": 1450
+  "key": "unseat_the_keeper",
+  "reward_chits": 1166,
+  "reward_material": "frost_shard",
+  "reward_material_qty": 5,
+  "reward_gear": "Unyielding Gauntlet of the Vigil",
+  "chits": 2616
 }
 ```
+
+`reward_gear` is the name of the piece the board handed over, or `""` when the hunt pays
+no gear. The piece lands in the Vault, unequipped.
 
 `chits` is the Vault balance **after** the payout.
 
