@@ -4018,8 +4018,11 @@ impl Arena {
         self.monsters.retain(|m| !m.defeated || m.in_battle);
     }
 
-    pub fn check_touch(&self) -> Option<(Id, usize)> {
-        for a in self.avatars.iter().filter(|a| a.state == "active") {
+    /// `immune` excludes players a caller has decided (via wall-clock state it holds,
+    /// since this crate must stay pure) should not be pulled into a new battle right
+    /// now — e.g. they just won, lost, or fled one and haven't had a moment to react.
+    pub fn check_touch(&self, immune: &std::collections::HashSet<Id>) -> Option<(Id, usize)> {
+        for a in self.avatars.iter().filter(|a| a.state == "active" && !immune.contains(&a.player_id)) {
             for (idx, m) in self.monsters.iter().enumerate() {
                 // Skip creatures already locked in someone else's fight (`in_battle`)
                 // so concurrent battles never fight over the same creature, and
@@ -5029,12 +5032,13 @@ mod tests {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 42, true);
         arena.add_avatar("p1".into(), 6.0);
-        assert!(arena.check_touch().is_none());
+        let none: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(arena.check_touch(&none).is_none());
         // Walk east along the corridor for up to ~8 s of sim ticks.
         let mut hit = None;
         for i in 0..(20 * 8) {
             arena.apply_move("p1", 1.0, 0.0, i + 1);
-            if let Some((p, idx)) = arena.check_touch() {
+            if let Some((p, idx)) = arena.check_touch(&none) {
                 hit = Some((p, idx));
                 break;
             }
@@ -5045,7 +5049,7 @@ mod tests {
         arena.monsters[idx].defeated = true;
         // Standing on the slain monster, check_touch must not re-trigger it.
         arena.avatar_mut("p1").unwrap().position = arena.monsters[idx].position;
-        let again = arena.check_touch();
+        let again = arena.check_touch(&none);
         assert!(again.map(|(_, i)| i != idx).unwrap_or(true));
     }
 
@@ -5691,7 +5695,7 @@ mod tests {
                 "seed {seed}: nearest creature {nearest:.1} inside aggro range at spawn"
             );
             assert!(
-                arena.check_touch().is_none(),
+                arena.check_touch(&std::collections::HashSet::new()).is_none(),
                 "seed {seed}: player spawned already in contact with a creature"
             );
         }
