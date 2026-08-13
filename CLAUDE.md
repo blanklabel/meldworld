@@ -209,6 +209,17 @@ works — travel just lands you inside the district's radius so `[E]` behaves id
 `TRAVEL_KEYS` is held against `CITY_DISTRICTS` by a test, because the column advertises its
 keys and a district past the end of that list would silently have none (it already did).
 
+**A district's name is fiction; the player still has to be told what the room is for.**
+"The Drill Yard" and "The Vault-Deep" are canon (§G) and stay, but nothing on screen said
+that one is where you pick your party and the other is where your gear lives — so town
+read as seven pretty doors. Every `District` now carries a plain-language **`purpose`**
+alongside its label, and the two always travel together: the nav chip shows the name with
+the purpose under it, the walk-up prompt is `name - purpose  [E] <verb>`
+(`district_prompt`), and every counter carries a `subtitle` under its title so a room
+explains itself the moment it opens. Tests hold both halves — a purpose is required, must
+be short enough for the 1/6 column, and must read as a phrase rather than a title —
+because a new district shipping with no purpose is a new district that reads as scenery.
+
 **The three-column convention.** Every cascade screen is **nav | main | detail** at fixed
 fractions of the window — **1/6, 1/2, 1/3**, which tile it exactly (asserted at compile time
 in [`glass.rs`](client/crates/meld-client/src/glass.rs)). Fractions, not content-sizing,

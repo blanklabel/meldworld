@@ -70,6 +70,11 @@ pub(crate) struct DistrictNameplate;
 /// A walkable district: an anchor on the plaza the avatar can stand in and act on.
 pub(crate) struct District {
     label: &'static str,
+    /// What you actually do here, in plain words. The names are the city's fiction
+    /// (CANON §G) and a fiction does not tell a new player where to sell a rock, so the
+    /// two always travel together: the nav chip, the walk-up prompt and the counter's
+    /// own header all carry this.
+    purpose: &'static str,
     x: f32,
     z: f32,
     /// Radius the avatar must be within to interact.
@@ -80,10 +85,25 @@ pub(crate) struct District {
 /// The city's interactable districts (positions are plaza-local world x/z; the
 /// avatar spawns near +z/south and the camera looks north/-z).
 pub(crate) const CITY_DISTRICTS: &[District] = &[
-    District { label: "The Threshold", x: 0.0, z: -19.0, radius: 5.5, action: CityAction::Dive },
-    District { label: "The Vault-Deep", x: -13.0, z: -5.0, radius: 5.0, action: CityAction::Vault },
+    District {
+        label: "The Threshold",
+        purpose: "leave town: start a dive",
+        x: 0.0,
+        z: -19.0,
+        radius: 5.5,
+        action: CityAction::Dive,
+    },
+    District {
+        label: "The Vault-Deep",
+        purpose: "your storage: chits, materials, gear",
+        x: -13.0,
+        z: -5.0,
+        radius: 5.0,
+        action: CityAction::Vault,
+    },
     District {
         label: "The Market Tiers",
+        purpose: "buy supplies, sell what you hauled home",
         x: 13.0,
         z: 0.0,
         radius: 6.0,
@@ -91,6 +111,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Forge & Alembic",
+        purpose: "craft, repair and re-roll gear",
         x: -10.0,
         z: 9.0,
         radius: 5.0,
@@ -98,6 +119,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Bounty Board",
+        purpose: "hunts: what to go and do, and what it pays",
         x: 8.0,
         z: -12.0,
         radius: 4.5,
@@ -105,6 +127,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Drill Yard",
+        purpose: "pick the party you take down",
         x: 15.0,
         z: -13.0,
         radius: 5.0,
@@ -112,6 +135,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
     },
     District {
         label: "The Vanguard Wall",
+        purpose: "the season's deepest-dive rankings",
         x: -15.0,
         z: -14.0,
         radius: 5.0,
@@ -1139,15 +1163,7 @@ pub(crate) fn render_city(
             session.status.clone()
         } else if let Some(i) = city.near {
             let d = &CITY_DISTRICTS[i];
-            match d.action {
-                CityAction::Dive => format!("{}    [E]/[ENTER] step onto the plane", d.label),
-                CityAction::Vault => format!("{}    [E] open your storage chest", d.label),
-                CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
-                CityAction::Craft => format!("{}    [E] work the recipes and the anvil", d.label),
-                CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
-                CityAction::Hunts => format!("{}    [E] read the posted hunts", d.label),
-                CityAction::Party => format!("{}    [E] muster your party", d.label),
-            }
+            district_prompt(d)
         } else {
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
                 .to_string()
@@ -1172,6 +1188,22 @@ pub(crate) fn render_city(
             },
         };
     }
+}
+
+/// The walk-up line for the district you are standing in: its name, what it is for, and
+/// the one key that does it.
+///
+/// The name alone is scenery to anyone who has not been told what a Drill Yard is.
+pub(crate) fn district_prompt(d: &District) -> String {
+    let key = match d.action {
+        CityAction::Dive => "[E]/[ENTER] dive",
+        CityAction::Vault => "[E] open",
+        CityAction::Shop => "[E] browse",
+        CityAction::Craft => "[E] work",
+        CityAction::Vanguard | CityAction::Hunts => "[E] read",
+        CityAction::Party => "[E] muster",
+    };
+    format!("{} - {}    {key}", d.label, d.purpose)
 }
 
 /// Compose the Vault-Deep's ambient one-line summary from the live `GET
@@ -1220,6 +1252,40 @@ mod tests {
         assert_eq!(tf.translation.x, 3.0);
         assert_eq!(tf.translation.z, 4.0);
         assert_eq!(city.near, None);
+    }
+
+    /// A district's NAME is the city's fiction; a player still has to be told what the
+    /// room is for. Both halves are required, so a new district cannot ship as scenery.
+    #[test]
+    fn every_district_says_what_it_is_for() {
+        for d in CITY_DISTRICTS {
+            assert!(!d.label.is_empty(), "a nameless district");
+            assert!(!d.purpose.is_empty(), "{} does not say what it is for", d.label);
+            // The nav column is one sixth of the window: a paragraph does not fit, and a
+            // purpose that wraps to three lines is one nobody reads.
+            assert!(
+                d.purpose.len() <= 48,
+                "{}'s purpose is too long for the column: {:?}",
+                d.label,
+                d.purpose
+            );
+            assert!(
+                d.purpose.chars().next().is_some_and(|c| c.is_lowercase()),
+                "{}'s purpose reads as a phrase under the name, not a title: {:?}",
+                d.label,
+                d.purpose
+            );
+        }
+    }
+
+    #[test]
+    fn a_walk_up_prompt_names_the_room_what_it_does_and_one_key() {
+        for d in CITY_DISTRICTS {
+            let line = district_prompt(d);
+            assert!(line.contains(d.label), "{line} does not name the district");
+            assert!(line.contains(d.purpose), "{line} does not say what it is for");
+            assert!(line.contains("[E]"), "{line} offers no key");
+        }
     }
 
     /// Every district needs a number a player can press. This caught the first version
@@ -1404,6 +1470,10 @@ impl CounterRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct CounterView {
     pub(crate) title: String,
+    /// What this counter is for, in plain words, under its name. A player who walked in
+    /// on the strength of a chip should not have to press a row to find out what the
+    /// room does.
+    pub(crate) subtitle: String,
     pub(crate) nav: Vec<(String, bool)>,
     pub(crate) rows: Vec<CounterRow>,
     pub(crate) detail: Vec<String>,
@@ -1416,6 +1486,9 @@ impl CounterView {
     #[cfg(test)]
     pub(crate) fn flat(&self) -> String {
         let mut out = self.title.clone();
+        if !self.subtitle.is_empty() {
+            out.push_str(&format!("\n{}", self.subtitle));
+        }
         for (n, on) in &self.nav {
             out.push_str(&format!("\n{}{n}", if *on { "> " } else { "  " }));
         }
@@ -1440,6 +1513,11 @@ impl CounterView {
 pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> CounterView {
     let mut v = CounterView {
         title: if selling { "The Broker".into() } else { shop.vendor.clone() },
+        subtitle: if selling {
+            "sell what you will never use".into()
+        } else {
+            "supplies and plain gear, for chits".into()
+        },
         nav: vec![("Buy".into(), !selling), ("Sell".into(), selling)],
         footer: vec![format!(
             "{}   [E]/[ESC] leave",
@@ -1530,6 +1608,7 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
 pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
     let mut v = CounterView {
         title: "The Vanguard Wall".into(),
+        subtitle: "who got deepest this season".into(),
         footer: vec!["[E]/[ESC] leave".into()],
         ..default()
     };
@@ -1565,6 +1644,7 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
 pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
     let mut v = CounterView {
         title: "The Bounty Board".into(),
+        subtitle: "go and do these; claim the reward here".into(),
         footer: vec!["[1]-[8] claim   [E]/[ESC] leave".into()],
         ..default()
     };
@@ -1690,6 +1770,7 @@ pub(crate) fn best_stock(
 pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView {
     let mut v = CounterView {
         title: "The Forge & Alembic".into(),
+        subtitle: "brew, smelt, forge, mend".into(),
         nav: vec![
             ("Recipes  up/down".into(), true),
             ("Anvil  S C F".into(), false),
@@ -3231,13 +3312,21 @@ pub(crate) fn render_travel_column(
                 // The one you are standing in reads as selected, so the column doubles as
                 // "where am I" — the same job the menu's nav does.
                 let here = city.near == Some(i);
-                col.spawn((Button, TravelButton(i), glass::chip(here)))
+                col.spawn((Button, TravelButton(i), glass::row_chip(here)))
                     .with_children(|b| {
-                        b.spawn(glass::text(
-                            format!("{}  {}", i + 1, d.label),
-                            16.0,
-                            if here { glass::TITLE } else { glass::TEXT },
-                        ));
+                        b.spawn(Node {
+                            flex_direction: FlexDirection::Column,
+                            row_gap: Val::Px(2.0),
+                            ..default()
+                        })
+                        .with_children(|lines| {
+                            lines.spawn(glass::text(
+                                format!("{}  {}", i + 1, d.label),
+                                16.0,
+                                if here { glass::TITLE } else { glass::TEXT },
+                            ));
+                            lines.spawn(glass::text(d.purpose, 13.0, glass::DIM));
+                        });
                     });
             }
             col.spawn(glass::text(
@@ -3417,6 +3506,9 @@ pub(crate) fn render_counter_panel(
             scrim.spawn(glass::columns()).with_children(|cols| {
                 cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
                     nav.spawn(glass::text(view.title.clone(), 19.0, glass::TITLE));
+                    if !view.subtitle.is_empty() {
+                        nav.spawn(glass::text(view.subtitle.clone(), 12.0, glass::DIM));
+                    }
                     nav.spawn(glass::divider());
                     for (label, on) in view.nav.iter() {
                         nav.spawn((Button, CounterNavButton, glass::row_chip(*on))).with_children(
