@@ -72,6 +72,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vendors/requisition/buy", post(requisition_buy))
         .route("/v1/vendors/broker", get(broker_prices))
         .route("/v1/vendors/broker/sell", post(broker_sell))
+        .route("/v1/hunts", get(hunt_board))
+        .route("/v1/hunts/:key/claim", post(claim_hunt))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -243,6 +245,91 @@ async fn vanguard_entries(st: &ApiState, season: i32) -> Result<Vec<VanguardEntr
             achieved_at: r.achieved_at.timestamp_millis(),
         })
         .collect())
+}
+
+/// `GET /v1/hunts` — the Hunt Board: every posted hunt with the caller's progress
+/// against it (roadmap AD-4).
+///
+/// The registry supplies the rows and the DB only supplies progress, so a hunt nobody
+/// has touched is still on the board — a board that only listed what you had started
+/// would have nothing on it for a new account.
+async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let rows = st.db.get_hunts(player_id).await.map_err(ApiReject::internal)?;
+    let data = meld_proto::hunts::HUNTS
+        .iter()
+        .map(|def| {
+            let row = rows.iter().find(|r| r.hunt_key == def.key);
+            let progress = row.map_or(0, |r| r.progress);
+            let claimed = row.is_some_and(|r| r.claimed);
+            let target = def.goal.target();
+            HuntView {
+                key: def.key.to_string(),
+                name: def.name.to_string(),
+                objective: meld_proto::hunts::objective(def),
+                blurb: def.blurb.to_string(),
+                tier: def.tier,
+                progress,
+                target,
+                claimable: progress >= target && !claimed,
+                claimed,
+                reward_chits: st.balance.hunt.reward_chits(def.tier),
+                reward_material: def.reward_material.unwrap_or_default().to_string(),
+                reward_material_qty: def
+                    .reward_material
+                    .map_or(0, |_| st.balance.hunt.reward_qty(def.tier)),
+            }
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(HuntBoardResponse { data })).into_response())
+}
+
+/// `POST /v1/hunts/:key/claim` — take the reward for a hunt you have finished.
+async fn claim_hunt(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Some(def) = meld_proto::hunts::hunt(&key) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such hunt."));
+    };
+    let chits = st.balance.hunt.reward_chits(def.tier);
+    let qty = st.balance.hunt.reward_qty(def.tier);
+    let material = def.reward_material.map(|m| (m, qty));
+    match st
+        .db
+        .claim_hunt(player_id, def.key, def.goal.target(), chits, material)
+        .await
+        .map_err(ApiReject::internal)?
+    {
+        meld_db::HuntClaim::Paid { chits: after } => Ok((
+            StatusCode::OK,
+            Json(HuntClaimResponse {
+                key: def.key.to_string(),
+                reward_chits: chits,
+                reward_material: def.reward_material.unwrap_or_default().to_string(),
+                reward_material_qty: def.reward_material.map_or(0, |_| qty),
+                chits: after,
+            }),
+        )
+            .into_response()),
+        meld_db::HuntClaim::AlreadyClaimed => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("{} has already been paid out.", def.name),
+        )),
+        meld_db::HuntClaim::NotEarned { progress } => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "{} is not finished — {progress}/{}. {}.",
+                def.name,
+                def.goal.target(),
+                meld_proto::hunts::objective(def)
+            ),
+        )),
+    }
 }
 
 async fn vanguard_body(st: &ApiState, season: i32) -> Result<Response, ApiReject> {

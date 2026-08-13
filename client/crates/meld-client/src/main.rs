@@ -173,6 +173,7 @@ fn main() {
         .init_resource::<ProgressData>()
         .init_resource::<AccountHeroNames>()
         .init_resource::<VanguardBoardData>()
+        .init_resource::<HuntBoardData>()
         .init_resource::<ShopData>()
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
@@ -1519,6 +1520,8 @@ struct CityUi {
     /// True while the Vanguard Wall is lit — the board replaces the notice line
     /// until the player walks away or presses [E] again.
     board_open: bool,
+    /// True while the Bounty Board's hunts are open (AD-4).
+    hunts_open: bool,
     /// The name being typed for the next loadout save. On `CityUi` rather than the
     /// panel so it survives the panel being rebuilt when the saved list changes.
     loadout_name: String,
@@ -1617,6 +1620,14 @@ pub(crate) struct ShopData {
 pub(crate) struct LoadoutData {
     pub list: Vec<meld_client::net::LoadoutLine>,
     pub loaded: bool,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct HuntBoardData {
+    pub hunts: Vec<meld_client::net::HuntLine>,
+    pub loaded: bool,
+    /// Which row the detail column is describing.
+    pub cursor: usize,
 }
 
 #[derive(Resource, Default)]

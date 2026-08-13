@@ -368,6 +368,23 @@ pub struct VanguardLine {
     pub max_distance: i32,
 }
 
+/// One row of the Hunt Board as the Bounty Board panel renders it (AD-4). Every
+/// number is the server's answer, including the reward.
+#[derive(Clone, Debug)]
+pub struct HuntLine {
+    pub key: String,
+    pub name: String,
+    pub objective: String,
+    pub blurb: String,
+    pub progress: i32,
+    pub target: i32,
+    pub claimable: bool,
+    pub claimed: bool,
+    pub reward_chits: i64,
+    pub reward_material: String,
+    pub reward_material_qty: i32,
+}
+
 /// A meld-skill row for the level-up screen.
 pub struct SkillLine {
     pub kind: String,
@@ -624,6 +641,10 @@ pub enum ServerMsg {
     },
     /// The seasonal Vanguard Board (`GET /v1/leaderboards/vanguard`), for the
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
+    /// The Hunt Board (`GET /v1/hunts`), for the Bounty Board in Last City (AD-4).
+    HuntBoard { hunts: Vec<HuntLine> },
+    /// A posted hunt moved while diving (`run.hunt_progress`).
+    HuntProgress { name: String, progress: i32, target: i32, complete: bool },
     VanguardBoard {
         season: i32,
         entries: Vec<VanguardLine>,
@@ -682,6 +703,7 @@ struct Inner {
     heroes_rx: Option<mpsc::Receiver<(Vec<String>, Vec<String>)>>,
     loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
+    hunts_rx: Option<mpsc::Receiver<Vec<HuntLine>>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
     gear_shop_rx: Option<mpsc::Receiver<Vec<GearShopLine>>>,
     recipes_rx: Option<mpsc::Receiver<Vec<RecipeLine>>>,
@@ -729,6 +751,7 @@ pub fn start(base: String) -> Net {
         heroes_rx: None,
         loadouts_rx: None,
         vanguard_rx: None,
+        hunts_rx: None,
         shop_rx: None,
             gear_shop_rx: None,
             recipes_rx: None,
@@ -876,6 +899,17 @@ impl Net {
         self.0.borrow_mut().apply_loadout(name);
     }
 
+    /// Kick off an authenticated GET of the Hunt Board (→ `HuntBoard`) — the Bounty
+    /// Board in Last City (AD-4).
+    pub fn fetch_hunts(&self) {
+        self.0.borrow_mut().fetch_hunts();
+    }
+
+    /// Take the reward for a finished hunt, then refresh the board and the Vault.
+    pub fn claim_hunt(&self, key: String) {
+        self.0.borrow_mut().claim_hunt(key);
+    }
+
     /// Kick off an authenticated GET of the live Vanguard Board
     /// (→ `VanguardBoard`) — the Vanguard Wall in Last City.
     pub fn fetch_vanguard(&self) {
@@ -1008,6 +1042,12 @@ impl Inner {
             if let Ok((season, entries, you)) = rx.try_recv() {
                 self.vanguard_rx = None;
                 self.out.push_back(ServerMsg::VanguardBoard { season, entries, you });
+            }
+        }
+        if let Some(rx) = &self.hunts_rx {
+            if let Ok(hunts) = rx.try_recv() {
+                self.hunts_rx = None;
+                self.out.push_back(ServerMsg::HuntBoard { hunts });
             }
         }
 
@@ -1523,6 +1563,40 @@ impl Inner {
         self.inv_rx = Some(rx);
         ehttp::fetch(req, move |_res| {
             spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// GET `/v1/hunts` (Bearer auth) — every posted hunt with this account's progress.
+    fn fetch_hunts(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.hunts_rx = Some(rx);
+        spawn_hunts_fetch(self.base.clone(), self.session_token.clone(), tx);
+    }
+
+    /// POST `/v1/hunts/:key/claim`, then re-read the board and the Vault so what the
+    /// panel shows is the server's answer rather than an optimistic guess.
+    fn claim_hunt(&mut self, key: String) {
+        if self.session_token.is_empty() || key.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(format!("{base}/v1/hunts/{key}/claim"), Vec::new());
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.vault_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        let (htx, hrx) = mpsc::channel();
+        self.hunts_rx = Some(hrx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(hunt_claim_text(&res));
+            spawn_hunts_fetch(base.clone(), token.clone(), htx);
+            spawn_inventory_fetch(base, token, itx);
         });
     }
 
@@ -2106,6 +2180,15 @@ impl Inner {
                 };
                 self.out.push_back(ServerMsg::Perks { perks });
             }
+            "run.hunt_progress" => {
+                let p = &raw.payload;
+                self.out.push_back(ServerMsg::HuntProgress {
+                    name: p["name"].as_str().unwrap_or("A hunt").to_string(),
+                    progress: p["progress"].as_i64().unwrap_or(0) as i32,
+                    target: p["target"].as_i64().unwrap_or(1) as i32,
+                    complete: p["complete"].as_bool().unwrap_or(false),
+                });
+            }
             "run.unlocked" => {
                 let newly = raw.payload["unlocks"]
                     .as_array()
@@ -2501,6 +2584,57 @@ impl Inner {
 /// Turn a craft reply into one line for the panel. A refusal is reported as loudly as
 /// a success: the server's own message ("Insufficient materials (need 2 heartoak_bark)",
 /// "alchemy level 1 is below the required level 9") is already the right sentence.
+/// GET the Hunt Board and hand the rows back over `tx`.
+fn spawn_hunts_fetch(base: String, token: String, tx: mpsc::Sender<Vec<HuntLine>>) {
+    let mut req = ehttp::Request::get(format!("{base}/v1/hunts"));
+    req.headers.insert("Authorization", format!("Bearer {token}"));
+    ehttp::fetch(req, move |res| {
+        let _ = tx.send(hunt_lines(&res));
+    });
+}
+
+fn hunt_lines(res: &Result<ehttp::Response, String>) -> Vec<HuntLine> {
+    let Some(v) = reply_json(res) else {
+        return Vec::new();
+    };
+    v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|h| HuntLine {
+            key: h["key"].as_str().unwrap_or("").to_string(),
+            name: h["name"].as_str().unwrap_or("?").to_string(),
+            objective: h["objective"].as_str().unwrap_or("").to_string(),
+            blurb: h["blurb"].as_str().unwrap_or("").to_string(),
+            progress: h["progress"].as_i64().unwrap_or(0) as i32,
+            target: h["target"].as_i64().unwrap_or(1) as i32,
+            claimable: h["claimable"].as_bool().unwrap_or(false),
+            claimed: h["claimed"].as_bool().unwrap_or(false),
+            reward_chits: h["reward_chits"].as_i64().unwrap_or(0),
+            reward_material: h["reward_material"].as_str().unwrap_or("").to_string(),
+            reward_material_qty: h["reward_material_qty"].as_i64().unwrap_or(0) as i32,
+        })
+        .collect()
+}
+
+/// What the board said when you asked to be paid — its own words on a refusal.
+fn hunt_claim_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the board did not answer".to_string();
+    };
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    let chits = v["reward_chits"].as_i64().unwrap_or(0);
+    let qty = v["reward_material_qty"].as_i64().unwrap_or(0);
+    let mat = v["reward_material"].as_str().unwrap_or("");
+    if qty > 0 && !mat.is_empty() {
+        format!("the board pays {chits}c and {qty} {}", mat.replace('_', " "))
+    } else {
+        format!("the board pays {chits}c")
+    }
+}
+
 fn craft_reply_text(res: &Result<ehttp::Response, String>) -> String {
     let Some(v) = reply_json(res) else {
         return "the workshop did not answer".to_string();

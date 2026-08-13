@@ -55,6 +55,7 @@ fn main() {
                 // The headless bot has no HUD to pop a floater on.
                 ServerMsg::Harvested { .. } => {}
                 ServerMsg::VaultNotice { .. } => {}
+                ServerMsg::HuntBoard { .. } | ServerMsg::HuntProgress { .. } => {}
                 ServerMsg::Loadouts { .. } => {}
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");

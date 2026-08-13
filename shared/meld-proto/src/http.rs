@@ -158,3 +158,48 @@ pub struct VanguardBoardResponse {
     pub archived: bool,
     pub data: Vec<VanguardEntry>,
 }
+
+/// One row on the Hunt Board (`GET /v1/hunts`) — roadmap AD-4.
+///
+/// Progress and the reward are both the server's answer: the client draws the row it
+/// is handed rather than re-deriving either, so a retuned `[hunt]` retunes the board.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntView {
+    pub key: String,
+    pub name: String,
+    /// What the hunt wants, with its number in it ("Fell 8 Bloom Stalkers").
+    pub objective: String,
+    pub blurb: String,
+    /// Biome band, shallow 0 … deep 4.
+    pub tier: i32,
+    pub progress: i32,
+    pub target: i32,
+    /// Earned, and the reward is still on the board.
+    pub claimable: bool,
+    pub claimed: bool,
+    pub reward_chits: i64,
+    /// Item kind of the stack paid alongside the chits; empty for chits alone.
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+}
+
+/// `GET /v1/hunts` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntBoardResponse {
+    pub data: Vec<HuntView>,
+}
+
+/// `POST /v1/hunts/:key/claim` response — `200 OK`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HuntClaimResponse {
+    pub key: String,
+    pub reward_chits: i64,
+    #[serde(default)]
+    pub reward_material: String,
+    #[serde(default)]
+    pub reward_material_qty: i32,
+    /// The Vault's chit balance after the board paid out.
+    pub chits: i64,
+}

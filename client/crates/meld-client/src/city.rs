@@ -35,8 +35,8 @@ pub(crate) enum CityAction {
     Craft,
     /// The Drill Yard: pick the party you take down.
     Party,
-    /// A not-yet-raised district: post its milestone notice.
-    Notice(&'static str),
+    /// The Bounty Board: the posted hunts and their rewards (AD-4).
+    Hunts,
 }
 
 /// A city action reachable by an on-screen (touch) button — always available, so a
@@ -101,7 +101,7 @@ pub(crate) const CITY_DISTRICTS: &[District] = &[
         x: 8.0,
         z: -12.0,
         radius: 4.5,
-        action: CityAction::Notice("The Bounty Board is bare - gathering contracts arrive in M2."),
+        action: CityAction::Hunts,
     },
     District {
         label: "The Drill Yard",
@@ -188,6 +188,10 @@ pub(crate) fn city_hud(
     city.craft_open = crate::flags::forge_preview_flag();
     if city.craft_open {
         net.0.fetch_recipes();
+    }
+    city.hunts_open = crate::flags::hunts_preview_flag();
+    if city.hunts_open {
+        net.0.fetch_hunts();
     }
     if crate::flags::heat_preview_flag() {
         // A plausible heat, laid out the way the server would for a mid-tier piece:
@@ -635,6 +639,7 @@ pub(crate) fn city_input(
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
+    mut hunts: ResMut<HuntBoardData>,
     mut shop_selling: ResMut<ShopSelling>,
     mut pending: ResMut<PendingPurchase>,
     unlocks: Res<UnlocksRes>,
@@ -797,6 +802,39 @@ pub(crate) fn city_input(
             return;
         }
     }
+    // The Bounty Board: ↑/↓ walk the hunts, [1]-[8] (or ENTER on the row) claim one.
+    if city.hunts_open {
+        let n = hunts.hunts.len();
+        if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
+            hunts.cursor = (hunts.cursor + 1) % n;
+            return;
+        }
+        if n > 0 && keys.just_pressed(KeyCode::ArrowUp) {
+            hunts.cursor = (hunts.cursor + n - 1) % n;
+            return;
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            claim_hunt_row(&net, &mut city, &hunts, hunts.cursor);
+            return;
+        }
+        const HUNT_KEYS: [KeyCode; 8] = [
+            KeyCode::Digit1,
+            KeyCode::Digit2,
+            KeyCode::Digit3,
+            KeyCode::Digit4,
+            KeyCode::Digit5,
+            KeyCode::Digit6,
+            KeyCode::Digit7,
+            KeyCode::Digit8,
+        ];
+        for (i, key) in HUNT_KEYS.iter().enumerate() {
+            if keys.just_pressed(*key) && i < n {
+                hunts.cursor = i;
+                claim_hunt_row(&net, &mut city, &hunts, i);
+                return;
+            }
+        }
+    }
     // The Forge & Alembic: ↑/↓ walk the recipe book, ENTER runs the highlighted recipe,
     // [S] cycles which slot the anvil would make, [C] arms a trophy quench, [F] forges.
     // Every refusal comes back from the server in its own words.
@@ -939,7 +977,13 @@ pub(crate) fn city_input(
                         net.0.fetch_vanguard();
                     }
                 }
-                CityAction::Notice(s) => city.notice = s.to_string(),
+                CityAction::Hunts => {
+                    city.hunts_open = !city.hunts_open;
+                    if city.hunts_open {
+                        city.notice.clear();
+                        net.0.fetch_hunts();
+                    }
+                }
             }
         }
     }
@@ -1068,6 +1112,12 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
     {
         city.board_open = false;
     }
+    if city.hunts_open
+        && !crate::flags::hunts_preview_flag()
+        && !near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Hunts))
+    {
+        city.hunts_open = false;
+    }
     city.near = near;
 }
 
@@ -1076,6 +1126,7 @@ pub(crate) fn render_city(
     session: Res<Session>,
     city: Res<CityUi>,
     heat: Res<crate::overworld::HeatUi>,
+    notice: Res<Notice>,
     time: Res<Time>,
     mut q_vault: Query<&mut Text, (With<CityVaultText>, Without<CityStatusText>)>,
     mut q_status: Query<&mut Text, With<CityStatusText>>,
@@ -1094,8 +1145,8 @@ pub(crate) fn render_city(
                 CityAction::Shop => format!("{}    [E] browse the Apothecary", d.label),
                 CityAction::Craft => format!("{}    [E] work the recipes and the anvil", d.label),
                 CityAction::Vanguard => format!("{}    [E] read the season's board", d.label),
+                CityAction::Hunts => format!("{}    [E] read the posted hunts", d.label),
                 CityAction::Party => format!("{}    [E] muster your party", d.label),
-                CityAction::Notice(_) => format!("{}    [E] inspect", d.label),
             }
         } else {
             "WASD move    [E] enter a district    [ENTER] run    [T] tutorial    [C] co-op    [V] storage chest"
@@ -1106,10 +1157,19 @@ pub(crate) fn render_city(
         // a strip is good for: the walking-around prompt. The anvil's HEAT stays, because
         // it is a timing bar, and a bar that jumps around under the rows you are reading is
         // worse than one that holds still at the foot of the screen.
+        // The server's own words win over the client's guess at them: a counter reply
+        // ("the board pays 200c", or why it will not) arrives on `Notice`, and until it
+        // reached this strip it was spoken to nobody — town has no other line.
+        let spoken = notice
+            .live(time.elapsed_secs_f64())
+            .map(str::to_string)
+            .or_else(|| (!city.notice.is_empty()).then(|| city.notice.clone()));
         **t = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
             Some(bar) => format!("{bar}\n{prompt}"),
-            None if city.notice.is_empty() => prompt,
-            None => format!("{}\n{prompt}", city.notice),
+            None => match spoken {
+                Some(line) => format!("{line}\n{prompt}"),
+                None => prompt,
+            },
         };
     }
 }
@@ -1495,6 +1555,90 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
         None => "You are uncarved.".into(),
     }];
     v
+}
+
+/// The Bounty Board as a counter: every posted hunt, what it wants, how far along you
+/// are, and what it pays (AD-4).
+///
+/// A finished hunt is a row you can press; everything else states its progress. The
+/// numbers are all the server's — the panel never computes a reward or a completion.
+pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Bounty Board".into(),
+        footer: vec!["[1]-[8] claim   [E]/[ESC] leave".into()],
+        ..default()
+    };
+    if !board.loaded {
+        v.detail = vec!["Someone is still pinning the contracts up...".into()];
+        return v;
+    }
+    if board.hunts.is_empty() {
+        v.detail = vec!["The board is bare.".into()];
+        return v;
+    }
+    let claimable = board.hunts.iter().filter(|h| h.claimable).count();
+    v.nav = vec![
+        ("Hunts".into(), true),
+        (
+            if claimable > 0 {
+                format!("{claimable} to claim")
+            } else {
+                "nothing to claim".into()
+            },
+            claimable > 0,
+        ),
+    ];
+    v.rows = board
+        .hunts
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let state = if h.claimed {
+                " - paid".to_string()
+            } else if h.claimable {
+                " - CLAIM".to_string()
+            } else {
+                format!(" {}/{}", h.progress, h.target)
+            };
+            let row = CounterRow::new((i + 1).to_string(), format!("{}{state}", h.name))
+                .cursor(i == board.cursor);
+            if h.claimed {
+                row.dim()
+            } else {
+                row
+            }
+        })
+        .collect();
+    if let Some(h) = board.hunts.get(board.cursor) {
+        let mut reward = format!("Pays {}c", h.reward_chits);
+        if h.reward_material_qty > 0 && !h.reward_material.is_empty() {
+            reward.push_str(&format!(
+                " and {} {}",
+                h.reward_material_qty,
+                crate::icons::display_name(&h.reward_material)
+            ));
+        }
+        v.detail = vec![h.objective.clone(), reward, h.blurb.clone()];
+    }
+    v
+}
+
+/// Ask the board to pay for the hunt on `row`, or say why it will not.
+///
+/// One path for the key and the tap: a row that claims by thumb but not by number is
+/// the kind of split nobody notices until it is the reward that went missing.
+fn claim_hunt_row(net: &NetRes, city: &mut CityUi, board: &HuntBoardData, row: usize) {
+    let Some(h) = board.hunts.get(row) else { return };
+    if h.claimed {
+        city.notice = format!("{} is already paid.", h.name);
+        return;
+    }
+    if !h.claimable {
+        city.notice = format!("{} - {}/{}. {}.", h.name, h.progress, h.target, h.objective);
+        return;
+    }
+    net.0.claim_hunt(h.key.clone());
+    city.notice = format!("claiming {}...", h.name);
 }
 
 /// The materials the counter will buy that the player actually holds, richest first.
@@ -3051,7 +3195,13 @@ pub(crate) fn render_travel_column(
     // underway, or a counter is open and holding the same left third for its own nav — and
     // `travel_keys` already stands down for all three, so the column has to as well or it
     // advertises numbers that do nothing.
-    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
+    if city.party_open
+        || city.shop_open
+        || city.craft_open
+        || city.board_open
+        || city.hunts_open
+        || session.entered
+    {
         return;
     }
     let Ok(root) = root_q.single() else { return };
@@ -3183,7 +3333,13 @@ pub(crate) fn travel_keys(
     mut player: Query<&mut Transform, With<CityPlayer>>,
 ) {
     // While a counter is open the number keys buy things, and the yard types names.
-    if city.party_open || city.shop_open || city.craft_open || city.board_open || session.entered {
+    if city.party_open
+        || city.shop_open
+        || city.craft_open
+        || city.board_open
+        || city.hunts_open
+        || session.entered
+    {
         return;
     }
     let Ok(mut tf) = player.single_mut() else { return };
@@ -3223,6 +3379,7 @@ pub(crate) fn render_counter_panel(
     shop_selling: Res<ShopSelling>,
     craft: Res<CraftData>,
     board: Res<VanguardBoardData>,
+    hunts: Res<HuntBoardData>,
     wa: Option<Res<WorldAssets>>,
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
@@ -3239,6 +3396,8 @@ pub(crate) fn render_counter_panel(
         shop_view(&shop, &inv, shop_selling.0)
     } else if city.board_open {
         wall_view(&board)
+    } else if city.hunts_open {
+        hunts_view(&hunts)
     } else {
         return;
     };
@@ -3332,6 +3491,7 @@ pub(crate) fn counter_click(
     mut shop_selling: ResMut<ShopSelling>,
     mut craft: ResMut<CraftData>,
     mut pending: ResMut<PendingPurchase>,
+    mut hunts: ResMut<HuntBoardData>,
     rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
 ) {
@@ -3355,6 +3515,15 @@ pub(crate) fn counter_click(
                     net.0.craft(r.recipe.clone());
                     craft.last = format!("working {}...", r.name);
                 }
+            }
+            return;
+        }
+        if city.hunts_open {
+            // A tap moves the detail column to the row; only a FINISHED hunt is a
+            // press that does anything, and the server rules on it either way.
+            if btn.0 < hunts.hunts.len() {
+                hunts.cursor = btn.0;
+                claim_hunt_row(&net, &mut city, &hunts, btn.0);
             }
             return;
         }

@@ -142,6 +142,8 @@ Ephemeral concerns are documented in the realtime protocol spec, not here. Hando
 | POST | `/v1/runs/prepare` | Prepare a run / enqueue matchmaking | [runs-world.md](http-api/runs-world.md) |
 | GET | `/v1/hubs` | List hubs with unlock state | [runs-world.md](http-api/runs-world.md) |
 | POST | `/v1/hubs/{distance}/rebuild` | Rebuild an outer hub | [runs-world.md](http-api/runs-world.md) |
+| GET | `/v1/hunts` | The Hunt Board with the caller's progress | [hunts.md](http-api/hunts.md) |
+| POST | `/v1/hunts/{key}/claim` | Take the reward for a finished hunt | [hunts.md](http-api/hunts.md) |
 | GET | `/v1/leaderboards/vanguard` | Vanguard Board (current or archived season) | [leaderboards.md](http-api/leaderboards.md) |
 | GET | `/v1/leaderboards/vanguard/me` | My best Vanguard ranking | [leaderboards.md](http-api/leaderboards.md) |
 | GET | `/v1/seasons` | List seasons | [leaderboards.md](http-api/leaderboards.md) |

@@ -4209,6 +4209,32 @@ mod tests {
         b
     }
 
+    // AD-4: a hunt that names a creature nothing spawns is a contract that can never
+    // be filled, and the board would advertise it forever. The registry lives in
+    // `meld-proto` and the roster lives here, so this is the only place the two can be
+    // held against each other.
+    #[test]
+    fn every_posted_hunt_names_a_creature_the_world_actually_spawns() {
+        let balance = Balance::load_default().unwrap();
+        let spawnable: std::collections::HashSet<&str> = BIOMES
+            .iter()
+            .flat_map(|b| creatures_for_biome(b).iter().copied())
+            .collect();
+        for hunt in meld_proto::hunts::HUNTS {
+            if let meld_proto::hunts::HuntGoal::Fell { creature, .. } = hunt.goal {
+                assert!(
+                    spawnable.contains(creature),
+                    "{} hunts {creature}, which no biome spawns",
+                    hunt.key
+                );
+                assert!(
+                    balance.creature.contains_key(creature),
+                    "{creature} has no [creature.{creature}] stats"
+                );
+            }
+        }
+    }
+
     // A field station is a PLACE: it lands where its builder stands, only one to a
     // spot, and it can only be worked from that spot and that elevation. Everything
     // about who may build one lives in the server; this is the world's half.

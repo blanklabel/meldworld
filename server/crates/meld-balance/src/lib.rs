@@ -36,6 +36,7 @@ pub struct Balance {
     pub affix: Affix,
     pub meld: Meld,
     pub material: Material,
+    pub hunt: Hunt,
     pub harvest: Harvest,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -774,6 +775,27 @@ impl Material {
             .min(self.sale_haggle_max_pct)
             / 100.0;
         (((self.sale_base_chits as f64) * band * class * (1.0 + haggle)).round() as i64).max(1)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hunt {
+    pub reward_chits_base: i64,
+    pub reward_chits_growth_per_tier: f64,
+    pub reward_material_qty: i32,
+    pub reward_material_qty_per_tier: i32,
+}
+
+impl Hunt {
+    /// Chits the board pays for completing a hunt of `tier`.
+    pub fn reward_chits(&self, tier: i32) -> i64 {
+        let band = self.reward_chits_growth_per_tier.powi(tier.max(0));
+        (((self.reward_chits_base as f64) * band).round() as i64).max(1)
+    }
+
+    /// Size of the material stack handed over with the chits.
+    pub fn reward_qty(&self, tier: i32) -> i32 {
+        (self.reward_material_qty + self.reward_material_qty_per_tier * tier.max(0)).max(1)
     }
 }
 

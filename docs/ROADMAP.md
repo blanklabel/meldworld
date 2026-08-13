@@ -77,7 +77,9 @@ market is the multiplier*).
   [`interfaces/http-api/leaderboards.md`](interfaces/http-api/leaderboards.md) and close
   with `AD-6`.
 - → **AD-4** (Hunt Board) at a **light first cut**: a handful of "kill X / reach depth Y /
-  clear this dungeon" hunts, not the full system.
+  clear this dungeon" hunts, not the full system. 🟡 *The light cut ships* — eight posted
+  hunts, credited off real kills/depth/extractions/dungeon clears and claimed at the
+  Bounty Board; `AD-4` stays open for the rest of the system (see its epic).
 
 **④ Polish the feel — as important as any new system.** A slice becomes "want to play"
 through feel & clarity, not more mechanics.
@@ -1447,6 +1449,39 @@ the current build.
     player can *see* the matchup before committing a turn.
 - [ ] **AD-4 — The Hunt Board.** Directed combat goals (named creatures/dungeons/depth) —
   the mid-game spine; ties `CR-5` bestiary, `FS-4`, `DG`; co-op/guild hunts (`SOC`).
+  - 🟡 *The light first cut ships (Phase 1 ③), and the Bounty Board is a real district:*
+    the one thing in Last City that told you to come back later ("gathering contracts
+    arrive in M2") is now eight posted hunts you can read, work and be paid for. A hunt
+    is one registry (`meld_proto::hunts`) both sides read — server credits progress
+    against `HuntGoal::credits`, the board draws its rows from the same defs — so the
+    board can never advertise a condition the server does not check. Five goal kinds
+    cover what a dive is actually made of: fell N of a **kind**, fell N of an
+    **encounter class** (elite / gatekeeper), **reach** a depth, **extract from** a
+    depth, **clear** a dungeon. Every credit is read off server-owned state (the
+    carcass's own kind, the validated avatar, the run's own record) — there is no
+    client-submitted progress path — and it is announced as it happens
+    (`run.hunt_progress`), because a goal you cannot watch fill is a goal you forget you
+    have. Progress survives death: what a dive costs you is your Backpack, not your
+    standing with a board.
+  - *The reward is taken at the board, not granted on completion*, so finishing a hunt
+    is a reason to come **home** — `POST /v1/hunts/:key/claim` pays chits + a material
+    stack into the Vault, once per account, with the claim stamp and the payout in one
+    transaction so two presses cannot both be paid. Magnitudes are `[hunt]` `[TUNABLE]`s
+    resolved server-side and ridden onto the wire, so a retuned reward retunes what the
+    row promises. Chits minted here are economy source **S4**
+    ([`behaviors/economy.md`](behaviors/economy.md)); the faucet is bounded by the size
+    of the roster rather than by grinding, which is what a repeatable board would have
+    to solve before it ships. Spec:
+    [`behaviors/hunt-board.md`](behaviors/hunt-board.md) +
+    [`interfaces/http-api/hunts.md`](interfaces/http-api/hunts.md). Screenshot flag:
+    `MELD_HUNTS` / `?hunts`. Verified by `qa/tests/hunt_board.rs` (a real kill over the
+    real wire → the board over HTTP), `meld-db` claim/credit unit tests, and a
+    `meld-world` test holding every hunt's quarry against the creatures the world
+    actually spawns — a hunt naming a creature nothing spawns is a contract that can
+    never be filled.
+  - **Remains (the full system):** named-creature hunts off `FS-4`'s bosses, rotation /
+    expiry / an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild hunts
+    (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

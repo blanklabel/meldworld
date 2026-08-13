@@ -119,6 +119,17 @@ pub(crate) fn wall_preview_flag() -> bool {
     query_has("wall")
 }
 
+/// Open the Bounty Board's hunts on arrival in Last City (AD-4) — a stable frame for
+/// screenshots. Native: `MELD_HUNTS=1`. Browser: `?hunts`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn hunts_preview_flag() -> bool {
+    std::env::var("MELD_HUNTS").is_ok()
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn hunts_preview_flag() -> bool {
+    query_has("hunts")
+}
+
 /// Preview a boss/elite sprite in The Last City plaza (with `MELD_CITY`) — a stable
 /// frame for eyeballing the encounter art. Native: `MELD_BOSS=ironmaw`. Browser:
 /// `?boss=ironmaw`. See `world_render::BOSS_KEYS` for valid ids.

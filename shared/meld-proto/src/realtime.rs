@@ -840,6 +840,22 @@ pub mod run {
         const TYPE: &'static str = "run.unlocked";
     }
 
+    /// S2C — a posted hunt moved (`AD-4`). Sent to the player whose progress changed,
+    /// as it changes, so a hunt is something you watch fill rather than something you
+    /// discover finished on your next walk past the board.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct HuntProgress {
+        pub key: String,
+        pub name: String,
+        pub progress: i32,
+        pub target: i32,
+        /// True on the credit that finished it — the reward is waiting at the board.
+        pub complete: bool,
+    }
+    impl Message for HuntProgress {
+        const TYPE: &'static str = "run.hunt_progress";
+    }
+
     /// C2S — begin working a resource node the avatar is standing next to (MS-2).
     /// Opens a **channel** that yields one unit per tick until the node is empty, the
     /// player moves, a fight starts, or [`CancelHarvest`] arrives — so this starts a

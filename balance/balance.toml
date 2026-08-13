@@ -1580,3 +1580,14 @@ mire = 0
 ashfall = 250
 desert = 400
 tundra = 550
+
+# THE HUNT BOARD (AD-4): what the board pays for a completed hunt. A hunt is a
+# directed goal, not a grind loop — each one is claimable ONCE, so these are one-off
+# payouts sized against several kills at the hunt's own band rather than an income.
+# The reward scales off the hunt's tier (docs/proposals/adventure-depth.md §E);
+# chits minted here are economy source S4 (docs/behaviors/economy.md). [TUNABLE]
+[hunt]
+reward_chits_base = 200          # what a tier-0 (shallow wood) hunt pays
+reward_chits_growth_per_tier = 1.8   # each band deeper is worth this much more
+reward_material_qty = 2          # stacks handed over with the chits at tier 0…
+reward_material_qty_per_tier = 1 # …plus this per band, so a deep hunt seeds a deep craft

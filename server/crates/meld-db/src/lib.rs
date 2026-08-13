@@ -402,6 +402,23 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // The Hunt Board (roadmap AD-4): one row per hunt a player has made progress
+        // on. `progress` is capped at the hunt's target by every writer, so "complete"
+        // is `progress >= target` read against the registry rather than a second column
+        // that could disagree with it. `claimed_at` is what makes a payout once-only.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS hunts (
+                player_id  UUID NOT NULL REFERENCES players(player_id),
+                hunt_key   TEXT NOT NULL,
+                progress   INTEGER NOT NULL DEFAULT 0,
+                claimed_at TIMESTAMPTZ,
+                PRIMARY KEY (player_id, hunt_key)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -504,6 +521,193 @@ impl Db {
                 });
                 rows.truncate(limit.max(0) as usize);
                 Ok(rows)
+            }
+        }
+    }
+
+    /// Every hunt this account has touched (roadmap AD-4). A hunt with no row has
+    /// never been progressed; the board fills the gaps from the registry.
+    pub async fn get_hunts(&self, player_id: Uuid) -> Result<Vec<HuntRow>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT hunt_key, progress, claimed_at FROM hunts WHERE player_id = $1",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| HuntRow {
+                        hunt_key: r.get("hunt_key"),
+                        progress: r.get("progress"),
+                        claimed: r.get::<Option<DateTime<Utc>>, _>("claimed_at").is_some(),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                Ok(m.hunts
+                    .iter()
+                    .filter(|((pid, _), _)| *pid == player_id)
+                    .map(|((_, key), (progress, claimed))| HuntRow {
+                        hunt_key: key.clone(),
+                        progress: *progress,
+                        claimed: *claimed,
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// Add `delta` to a hunt's progress, capped at `target`.
+    ///
+    /// `completed` is true only on the credit that crosses the target, so the loop can
+    /// announce a finished hunt exactly once however many kills land in the same tick.
+    /// A claimed hunt is frozen: re-earning it would let one payout be taken twice.
+    pub async fn credit_hunt(
+        &self,
+        player_id: Uuid,
+        hunt_key: &str,
+        delta: i32,
+        target: i32,
+    ) -> Result<HuntCredit, DbError> {
+        if delta <= 0 || target <= 0 {
+            return Ok(HuntCredit { progress: 0, completed: false });
+        }
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let before: Option<(i32, Option<DateTime<Utc>>)> = sqlx::query(
+                    "SELECT progress, claimed_at FROM hunts
+                      WHERE player_id = $1 AND hunt_key = $2 FOR UPDATE",
+                )
+                .bind(player_id)
+                .bind(hunt_key)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|r| (r.get("progress"), r.get("claimed_at")));
+                let (was, claimed) = before.unwrap_or((0, None));
+                if claimed.is_some() || was >= target {
+                    tx.rollback().await?;
+                    return Ok(HuntCredit { progress: was.min(target), completed: false });
+                }
+                let now = (was + delta).min(target);
+                sqlx::query(
+                    "INSERT INTO hunts (player_id, hunt_key, progress) VALUES ($1, $2, $3)
+                     ON CONFLICT (player_id, hunt_key) DO UPDATE SET progress = $3",
+                )
+                .bind(player_id)
+                .bind(hunt_key)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                Ok(HuntCredit { progress: now, completed: now >= target })
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let e = m.hunts.entry((player_id, hunt_key.to_string())).or_insert((0, false));
+                if e.1 || e.0 >= target {
+                    return Ok(HuntCredit { progress: e.0.min(target), completed: false });
+                }
+                e.0 = (e.0 + delta).min(target);
+                Ok(HuntCredit { progress: e.0, completed: e.0 >= target })
+            }
+        }
+    }
+
+    /// Pay a completed hunt out: mark it claimed and credit the reward, atomically.
+    ///
+    /// The claim stamp and the payout are one transaction, so a board cannot pay twice
+    /// under concurrent presses — the second one reads a stamped row and refuses.
+    pub async fn claim_hunt(
+        &self,
+        player_id: Uuid,
+        hunt_key: &str,
+        target: i32,
+        chits: i64,
+        material: Option<(&str, i32)>,
+    ) -> Result<HuntClaim, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let row: Option<(i32, Option<DateTime<Utc>>)> = sqlx::query(
+                    "SELECT progress, claimed_at FROM hunts
+                      WHERE player_id = $1 AND hunt_key = $2 FOR UPDATE",
+                )
+                .bind(player_id)
+                .bind(hunt_key)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|r| (r.get("progress"), r.get("claimed_at")));
+                let (progress, claimed) = row.unwrap_or((0, None));
+                if claimed.is_some() {
+                    tx.rollback().await?;
+                    return Ok(HuntClaim::AlreadyClaimed);
+                }
+                if progress < target {
+                    tx.rollback().await?;
+                    return Ok(HuntClaim::NotEarned { progress });
+                }
+                sqlx::query(
+                    "INSERT INTO hunts (player_id, hunt_key, progress, claimed_at)
+                     VALUES ($1, $2, $3, now())
+                     ON CONFLICT (player_id, hunt_key) DO UPDATE SET claimed_at = now()",
+                )
+                .bind(player_id)
+                .bind(hunt_key)
+                .bind(progress)
+                .execute(&mut *tx)
+                .await?;
+                let after: i64 = sqlx::query(
+                    "INSERT INTO vaults (player_id, chits) VALUES ($1, $2)
+                     ON CONFLICT (player_id) DO UPDATE SET chits = vaults.chits + $2
+                     RETURNING chits",
+                )
+                .bind(player_id)
+                .bind(chits)
+                .fetch_one(&mut *tx)
+                .await?
+                .get("chits");
+                if let Some((kind, qty)) = material.filter(|(_, q)| *q > 0) {
+                    sqlx::query(
+                        "INSERT INTO vault_items (player_id, item_kind, quantity) VALUES ($1, $2, $3)
+                         ON CONFLICT (player_id, item_kind)
+                         DO UPDATE SET quantity = vault_items.quantity + $3",
+                    )
+                    .bind(player_id)
+                    .bind(kind)
+                    .bind(qty)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+                Ok(HuntClaim::Paid { chits: after })
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let (progress, claimed) = m
+                    .hunts
+                    .get(&(player_id, hunt_key.to_string()))
+                    .copied()
+                    .unwrap_or((0, false));
+                if claimed {
+                    return Ok(HuntClaim::AlreadyClaimed);
+                }
+                if progress < target {
+                    return Ok(HuntClaim::NotEarned { progress });
+                }
+                m.hunts.insert((player_id, hunt_key.to_string()), (progress, true));
+                let after = {
+                    let c = m.chits.entry(player_id).or_insert(0);
+                    *c += chits;
+                    *c
+                };
+                if let Some((kind, qty)) = material.filter(|(_, q)| *q > 0) {
+                    *m.vault_items.entry((player_id, kind.to_string())).or_insert(0) += qty;
+                }
+                Ok(HuntClaim::Paid { chits: after })
             }
         }
     }
@@ -3090,6 +3294,8 @@ struct Mem {
     unlocks: HashSet<(Uuid, String)>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
+    /// hunts (progress, claimed), keyed by (player_id, hunt_key).
+    hunts: HashMap<(Uuid, String), (i32, bool)>,
     /// party_loadouts.classes, keyed by (player_id, name).
     loadouts: HashMap<(Uuid, String), Loadout>,
 }
@@ -3552,6 +3758,76 @@ mod tests {
         // Toggling back to the front is remembered too.
         db.set_hero_row(p, 2, false).await.unwrap();
         assert!(!db.get_hero_rows(p).await.unwrap()[2]);
+    }
+
+    #[tokio::test]
+    async fn a_hunt_completes_once_and_pays_once() {
+        let db = mem().await;
+        let p = db
+            .register("hunter", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+
+        assert!(db.get_hunts(p).await.unwrap().is_empty());
+        // Progress accumulates and is capped at the target: an overshoot on the last
+        // kill cannot bank credit toward a hunt nobody has posted yet.
+        assert_eq!(
+            db.credit_hunt(p, "cull_the_bloom", 2, 3).await.unwrap(),
+            HuntCredit { progress: 2, completed: false }
+        );
+        assert_eq!(
+            db.credit_hunt(p, "cull_the_bloom", 5, 3).await.unwrap(),
+            HuntCredit { progress: 3, completed: true }
+        );
+        // `completed` is the crossing, not the state — a later kill announces nothing.
+        assert_eq!(
+            db.credit_hunt(p, "cull_the_bloom", 1, 3).await.unwrap(),
+            HuntCredit { progress: 3, completed: false }
+        );
+
+        assert_eq!(
+            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2))).await.unwrap(),
+            HuntClaim::Paid { chits: 250 }
+        );
+        assert_eq!(
+            db.claim_hunt(p, "cull_the_bloom", 3, 250, Some(("bloom_herb", 2))).await.unwrap(),
+            HuntClaim::AlreadyClaimed
+        );
+        let (chits, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(chits, 250, "the board paid exactly once");
+        assert_eq!(items.iter().find(|(k, _)| k == "bloom_herb").map(|(_, q)| *q), Some(2));
+
+        let rows = db.get_hunts(p).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].claimed);
+    }
+
+    #[tokio::test]
+    async fn an_unearned_hunt_pays_nothing_and_a_claimed_one_stops_counting() {
+        let db = mem().await;
+        let p = db
+            .register("unearned", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+
+        db.credit_hunt(p, "unseat_the_keeper", 1, 3).await.unwrap();
+        assert_eq!(
+            db.claim_hunt(p, "unseat_the_keeper", 3, 500, None).await.unwrap(),
+            HuntClaim::NotEarned { progress: 1 }
+        );
+        assert_eq!(db.get_vault(p).await.unwrap().0, 0, "a refusal costs the board nothing");
+
+        // Once claimed, further credit is frozen: re-earning a one-off payout is how a
+        // board gets farmed.
+        db.credit_hunt(p, "unseat_the_keeper", 2, 3).await.unwrap();
+        db.claim_hunt(p, "unseat_the_keeper", 3, 500, None).await.unwrap();
+        assert_eq!(
+            db.credit_hunt(p, "unseat_the_keeper", 3, 3).await.unwrap(),
+            HuntCredit { progress: 3, completed: false }
+        );
+        assert_eq!(db.get_vault(p).await.unwrap().0, 500);
     }
 
     #[tokio::test]
@@ -4202,4 +4478,31 @@ pub fn season_at(unix_secs: i64) -> i32 {
 /// The season currently open.
 pub fn current_season() -> i32 {
     season_at(Utc::now().timestamp())
+}
+
+// ----------------------------------------------------------- the Hunt Board ---
+
+/// One stored hunt record (roadmap AD-4). Absent from the table means untouched:
+/// zero progress, unclaimed.
+#[derive(Debug, Clone)]
+pub struct HuntRow {
+    pub hunt_key: String,
+    pub progress: i32,
+    pub claimed: bool,
+}
+
+/// What crediting an event did to one hunt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HuntCredit {
+    pub progress: i32,
+    /// This credit is the one that finished it — true exactly once per hunt.
+    pub completed: bool,
+}
+
+/// The board's answer to a claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HuntClaim {
+    Paid { chits: i64 },
+    NotEarned { progress: i32 },
+    AlreadyClaimed,
 }

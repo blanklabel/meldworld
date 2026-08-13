@@ -225,6 +225,23 @@ is what lets each be its own tappable chip; the strip keeps the walking-around p
 anvil's heat bar, which wants to hold still. The travel column stands down while a counter is
 open, since both want the same left sixth.
 
+**The board tells you what to go and do, and pays when you come home.** The Bounty
+Board district used to be the one thing in town that said "come back later"; it is now
+eight posted **hunts** (`AD-4`) — fell N of a kind, fell N elites or a Gatekeeper, reach
+a depth, extract from a depth, clear a dungeon. A hunt is ONE registry
+([`meld_proto::hunts`](shared/meld-proto/src/hunts.rs)) that both sides read: the server
+credits progress through `HuntGoal::credits` and the board builds its rows from the same
+defs, so the board cannot advertise a condition the server does not check. Every credit
+comes off server-owned state — the carcass's own `monster_kind`, the validated avatar,
+the run's own record — and is announced as it happens (`run.hunt_progress`), because a
+goal you cannot watch fill is a goal you forget you have. **Progress survives death**
+(what a dive costs you is your Backpack, not your standing), but the **reward is taken at
+the board**, once per account, which is what makes finishing one a reason to come home.
+A hunt names a **quarry**; only its goal carries a count, and `objective` formats the
+sentence — a number written twice is a number that will disagree with itself. Reward
+magnitudes are `[hunt]` `[TUNABLE]`s resolved server-side and ridden onto the wire.
+Screenshot flag: `MELD_HUNTS` / `?hunts`.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a

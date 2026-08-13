@@ -82,12 +82,40 @@ enum WorldEffect {
     /// MS-1: a smith job the world has accepted (who asked, where they stood, whose
     /// skill). The Router owns the heat and the Vault, so it takes it from here.
     SmithJob(Box<SmithJob>),
+    /// AD-4: something happened that a posted hunt might be counting. Same split as
+    /// `Milestone` — the world reports the fact, the Router owns the board.
+    Hunt {
+        player_id: String,
+        fact: HuntFact,
+    },
     /// Same, for the front/back-row formation flag.
     SetSessionHeroRow {
         player_id: String,
         slot: usize,
         back: bool,
     },
+}
+
+/// An owned [`meld_proto::hunts::HuntEvent`], for the trip from the world to the
+/// Router.
+#[derive(Debug, Clone)]
+enum HuntFact {
+    Felled { creature: String, class: String },
+    Depth(i32),
+    Extracted(i32),
+    DungeonCleared,
+}
+
+impl HuntFact {
+    fn as_event(&self) -> meld_proto::hunts::HuntEvent<'_> {
+        use meld_proto::hunts::HuntEvent;
+        match self {
+            HuntFact::Felled { creature, class } => HuntEvent::Felled { creature, class },
+            HuntFact::Depth(d) => HuntEvent::Depth { distance: *d },
+            HuntFact::Extracted(d) => HuntEvent::Extracted { deepest: *d },
+            HuntFact::DungeonCleared => HuntEvent::DungeonCleared,
+        }
+    }
 }
 
 /// Handle used by the gateway to feed the loop.
@@ -131,6 +159,10 @@ enum DbWrite {
     HeroClass(String, i16, String),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
+    /// Credit progress toward one posted hunt: (player, hunt key, delta, target).
+    /// The session already decided this is worth writing, so the DB call is a store
+    /// rather than a second ruling.
+    HuntProgress(String, String, i32, i32),
     /// Post a new deepest distance to the Vanguard Board: (player, distance).
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
@@ -220,6 +252,13 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     let season = meld_db::current_season();
                     if let Err(e) = db.record_vanguard_distance(uid, season, distance).await {
                         tracing::error!("vanguard post failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::HuntProgress(pid, key, delta, target) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.credit_hunt(uid, &key, delta, target).await {
+                        tracing::error!("hunt credit failed for {pid}: {e}");
                     }
                 }
             }
@@ -450,6 +489,11 @@ struct Session {
     /// before `run.enter_maze` is handled so `form_run` can drain them
     /// synchronously into the fresh run's Backpack (see `flush_pending_materials`).
     pending_materials: Vec<(String, i32)>,
+    /// AD-4: progress and claimed-state per posted hunt, loaded on connect. `None`
+    /// until it lands, and a hunt credited before then is simply not counted — the
+    /// alternative is an in-memory zero racing the load and announcing "1/8" on a
+    /// hunt the account had already finished.
+    hunts: Option<HashMap<String, (i32, bool)>>,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -2642,6 +2686,7 @@ impl GameState {
                         has_dived: false,
                         unlocks: None,
                         pending_materials: Vec::new(),
+                        hunts: None,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -2752,6 +2797,59 @@ impl GameState {
         self.dispatch(vec![out_msg(player_id, &msg)]);
     }
 
+    /// AD-4: offer a fact to every posted hunt and credit the ones that want it.
+    ///
+    /// Decided against the session's in-memory board, like `grant_milestone`: the cap
+    /// and the completion crossing are settled here, so several kills in one tick
+    /// cannot each announce the same finish and the DB write can lag without paying
+    /// twice. A claimed hunt is inert.
+    fn credit_hunts(&mut self, player_id: &str, fact: &HuntFact) {
+        let Some(board) = self.sessions.get(player_id).and_then(|s| s.hunts.clone()) else {
+            return;
+        };
+        let ev = fact.as_event();
+        let mut moved: Vec<(String, i32, i32, i32, bool)> = Vec::new();
+        for def in meld_proto::hunts::HUNTS {
+            let (progress, claimed) = board.get(def.key).copied().unwrap_or((0, false));
+            let target = def.goal.target();
+            if claimed || progress >= target {
+                continue;
+            }
+            let delta = def.goal.credits(&ev);
+            if delta <= 0 {
+                continue;
+            }
+            let now = (progress + delta).min(target);
+            moved.push((def.key.to_string(), delta, now, target, now >= target));
+        }
+        if moved.is_empty() {
+            return;
+        }
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            if let Some(b) = s.hunts.as_mut() {
+                for (key, _, now, _, _) in &moved {
+                    let e = b.entry(key.clone()).or_insert((0, false));
+                    e.0 = *now;
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (key, delta, now, target, complete) in moved {
+            let _ = self.db_writes.send(DbWrite::HuntProgress(
+                player_id.to_string(),
+                key.clone(),
+                delta,
+                target,
+            ));
+            let name = meld_proto::hunts::hunt(&key).map_or(key.clone(), |d| d.name.to_string());
+            out.push(out_msg(
+                player_id,
+                &wr::HuntProgress { key, name, progress: now, target, complete },
+            ));
+        }
+        self.dispatch(out);
+    }
+
     fn release_from_run(&mut self, player_id: &str) {
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.in_instance = false;
@@ -2785,6 +2883,7 @@ impl GameState {
                     }
                 }
                 WorldEffect::SmithJob(job) => self.open_heat(*job),
+                WorldEffect::Hunt { player_id, fact } => self.credit_hunts(&player_id, &fact),
                 WorldEffect::SetSessionHeroRow {
                     player_id,
                     slot,
@@ -3827,20 +3926,20 @@ impl WorldActor {
             intent.input_seq,
         );
 
-        self.post_vanguard(player_id);
+        let deeper = self.post_vanguard(player_id);
 
         // WG-4: crossing the western border behind the hub returns you to Last City
         // (an instant extraction home — you keep your backpack). `complete_extractions`
         // banks it this same tick and sends the result, so no touch/battle is resolved.
         if self.west_return(player_id) {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), deeper);
         }
 
         // Contact starts a battle. Checked here for an instant response to the
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
-        (self.resolve_touches(), Vec::new())
+        (self.resolve_touches(), deeper)
     }
 
     /// Post the player's current distance to the Vanguard Board when it beats
@@ -3850,13 +3949,13 @@ impl WorldActor {
     /// write fires once per *new* deepest tile rather than on every move — and the
     /// number never comes from the client: it is read off the server-owned avatar
     /// after movement was validated (CANON §S anti-forgery).
-    fn post_vanguard(&mut self, player_id: &str) {
+    fn post_vanguard(&mut self, player_id: &str) -> Vec<WorldEffect> {
         let Some(d) = self
             .arena
             .avatar(player_id)
             .map(|a| a.position.distance_floor().clamp(0, i32::MAX as i64) as i32)
         else {
-            return;
+            return Vec::new();
         };
         let Some(run) = self
             .run
@@ -3864,15 +3963,21 @@ impl WorldActor {
             .iter_mut()
             .find(|r| r.player_id == player_id && r.result.is_none())
         else {
-            return;
+            return Vec::new();
         };
         if d <= run.max_distance_reached {
-            return;
+            return Vec::new();
         }
         run.max_distance_reached = d;
         let _ = self
             .db_writes
             .send(DbWrite::Vanguard(player_id.to_string(), d));
+        // A depth hunt rides the same high-water mark, so it is asked once per new
+        // deepest tile rather than on every step of the walk out.
+        vec![WorldEffect::Hunt {
+            player_id: player_id.to_string(),
+            fact: HuntFact::Depth(d),
+        }]
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -5202,6 +5307,17 @@ impl GameState {
                     }
                     self.dispatch(vec![out_msg(&pid, &inventory)]);
                 }
+                // AD-4: the board's state for this account, so a kill can be credited
+                // against it on the tick it happens rather than at a DB round-trip.
+                if let Ok(rows) = self.db.get_hunts(uid).await {
+                    let board: HashMap<String, (i32, bool)> = rows
+                        .into_iter()
+                        .map(|r| (r.hunt_key, (r.progress, r.claimed)))
+                        .collect();
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.hunts = Some(board);
+                    }
+                }
             }
         }
     }
@@ -6342,6 +6458,7 @@ impl GameState {
             items: Vec<ItemStack>,
             chits: i64,
             gear: Vec<LootGear>,
+            deepest: i32,
         }
         let (banks, members): (Vec<Banked>, Vec<String>) = {
             let Some(inst) = self.world.as_mut() else {
@@ -6386,6 +6503,7 @@ impl GameState {
                         items,
                         chits,
                         gear,
+                        deepest: r.max_distance_reached,
                     });
                 }
             }
@@ -6405,6 +6523,8 @@ impl GameState {
             // Hunters' hall recruits on ("hunts are only rewarded with evidence of
             // kills"), so a completed extraction is the Hunter's trigger.
             self.grant_milestone(&b.player_id, meld_proto::unlocks::Milestone::Extracted);
+            // AD-4: and it is what a "come home from depth" hunt is waiting for.
+            self.credit_hunts(&b.player_id, &HuntFact::Extracted(b.deepest));
             // Reaching the city burns ephemeral gear even when you WALKED in. It is
             // the strongest gear in the game precisely because it can never be banked
             // — surviving extraction would make it merely the best loot.
@@ -6858,6 +6978,12 @@ impl WorldActor {
                     out.extend(bout);
                     effects.extend(beff);
                     if let Some(d) = dctx {
+                        if outcome == BattleOutcome::Victory {
+                            effects.extend(members.iter().map(|pid| WorldEffect::Hunt {
+                                player_id: pid.clone(),
+                                fact: HuntFact::DungeonCleared,
+                            }));
+                        }
                         out.extend(self.finish_dungeon_battle(&members, outcome, d));
                     }
                 }
@@ -7163,14 +7289,29 @@ impl WorldActor {
                 // they leave the arena: what was in the encounter is what earns the
                 // class, and a moment later there is nothing left to ask.
                 let (mut felled_champion, mut felled_rite) = (false, false);
+                // AD-4 reads the same carcasses: what a hunt counts is the creature's
+                // OWN kind and class, taken before the encounter leaves the arena.
+                let mut felled: Vec<(String, String)> = Vec::new();
                 for id in &monster_ids {
                     match inst.arena.monster_by_id(id).map(|m| m.encounter_class.as_str()) {
                         Some("elite") | Some("gatekeeper") => felled_champion = true,
                         Some("undead_rite") => felled_rite = true,
                         _ => {}
                     }
+                    if let Some(m) = inst.arena.monster_by_id(id) {
+                        felled.push((m.monster_kind.clone(), m.encounter_class.clone()));
+                    }
                 }
                 for r in inst.run.runs.iter().filter(|r| bp.contains(&r.party_id)) {
+                    for (creature, class) in &felled {
+                        effects.push(WorldEffect::Hunt {
+                            player_id: r.player_id.clone(),
+                            fact: HuntFact::Felled {
+                                creature: creature.clone(),
+                                class: class.clone(),
+                            },
+                        });
+                    }
                     if felled_champion {
                         effects.push(WorldEffect::Milestone {
                             player_id: r.player_id.clone(),

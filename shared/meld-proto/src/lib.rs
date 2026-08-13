@@ -25,6 +25,7 @@ pub mod envelope;
 pub mod equipment;
 pub mod factions;
 pub mod http;
+pub mod hunts;
 pub mod limits;
 pub mod materials;
 pub mod names;

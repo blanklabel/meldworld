@@ -25,7 +25,8 @@ is the human table of contents.
   [economy](behaviors/economy.md), [meta-progression](behaviors/meta-progression.md),
   [disconnect handling](behaviors/disconnect-handling.md),
   [async interaction](behaviors/async-interaction.md),
-  [endgame & seasons](behaviors/endgame-seasons.md).
+  [endgame & seasons](behaviors/endgame-seasons.md),
+  [the Hunt Board](behaviors/hunt-board.md).
 - [`interfaces/`](interfaces/) — wire/data contracts:
   [HTTP API](interfaces/http-api.md), [realtime protocol](interfaces/realtime-protocol.md),
   [data models](interfaces/data-models.md).

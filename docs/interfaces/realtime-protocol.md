@@ -169,6 +169,7 @@ Shared object shapes referenced by the detail files.
 | S2C | `run.member_result` | A member's run ended: extracted / died / abandoned | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.instance_closed` | MazeInstance shut down | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.backpack_update` | Authoritative delta to the player's backpack | [run-social.md](realtime-protocol/run-social.md) |
+| S2C | `run.hunt_progress` | A posted hunt moved (AD-4) | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `social.drop_item` | Drop backpack items onto the overworld | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `social.pickup_item` | Pick up a ground item | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `social.item_picked_up` | Pickup ack with the items gained | [run-social.md](realtime-protocol/run-social.md) |
