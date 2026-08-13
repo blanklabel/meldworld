@@ -27,15 +27,17 @@ pub(crate) enum MenuSection {
     Materials,
     Party,
     Map,
+    Quests,
     Guide,
 }
 
 impl MenuSection {
-    pub(crate) const ALL: [MenuSection; 5] = [
+    pub(crate) const ALL: [MenuSection; 6] = [
         MenuSection::Items,
         MenuSection::Materials,
         MenuSection::Party,
         MenuSection::Map,
+        MenuSection::Quests,
         MenuSection::Guide,
     ];
 
@@ -45,9 +47,34 @@ impl MenuSection {
             MenuSection::Materials => "Materials",
             MenuSection::Party => "Party",
             MenuSection::Map => "Map",
+            MenuSection::Quests => "Quests",
             MenuSection::Guide => "Guide",
         }
     }
+
+    /// The account unlock this section waits on, or `None` for the ones everyone has.
+    ///
+    /// **Quests** is the Den's board, so it appears with the Hunter (CL-1) rather than
+    /// sitting there greyed out — nothing in this menu advertises what you have not
+    /// earned, which is the rule the whole panel is built on.
+    pub(crate) fn requires(self) -> Option<&'static str> {
+        match self {
+            MenuSection::Quests => Some("class_hunter"),
+            _ => None,
+        }
+    }
+}
+
+/// The nav rows this account can actually see, in order.
+pub(crate) fn visible_sections(owned: &[String]) -> Vec<MenuSection> {
+    MenuSection::ALL
+        .iter()
+        .copied()
+        .filter(|s| match s.requires() {
+            Some(key) => owned.iter().any(|k| k == key),
+            None => true,
+        })
+        .collect()
 }
 
 /// The controls, as `(heading, rows)`. This is where they live now: a permanent
@@ -227,6 +254,99 @@ fn class_and_rank(class_key: &str, level: i32) -> String {
     }
 }
 
+/// The Quests column: the Den's standing contracts, then everything already settled.
+///
+/// Reading only. A contract is paid at the Bounty Board in town, so a finished one says so
+/// rather than offering a button that would hand you power in the middle of a run.
+fn quest_column(col: &mut ChildSpawnerCommands, bounties: &BountyData) {
+    if !bounties.loaded {
+        col.spawn(glass::text("The Den is checking its ledger...", 16.0, glass::DIM));
+        return;
+    }
+    col.spawn(glass::text(
+        format!("Hunter rank {} - {}", bounties.rank, bounties.rank_title),
+        17.0,
+        glass::TITLE,
+    ));
+    col.spawn(glass::text(
+        format!("{} XP to the next rank", bounties.rank_xp_to_next),
+        14.0,
+        glass::DIM,
+    ));
+    col.spawn(glass::divider());
+
+    col.spawn(glass::text("Standing", 17.0, glass::TITLE));
+    if bounties.active.is_empty() {
+        col.spawn(glass::text("Nothing posted for you.", 15.0, glass::DIM));
+    }
+    for b in &bounties.active {
+        let done = b.state == "completed";
+        col.spawn(glass::text(
+            format!("{}{}", b.mark_name, if done { "  - felled" } else { "" }),
+            16.0,
+            if done { glass::TITLE } else { glass::TEXT },
+        ));
+        col.spawn(glass::text(format!("   {}", b.where_to_look), 14.0, glass::DIM));
+        let reward = match (b.reward_material_qty > 0, b.reward_gear) {
+            (true, true) => format!(
+                "   Pays {}c, {} {} and a piece of gear",
+                b.reward_chits,
+                b.reward_material_qty,
+                crate::icons::display_name(&b.reward_material)
+            ),
+            (true, false) => format!(
+                "   Pays {}c and {} {}",
+                b.reward_chits,
+                b.reward_material_qty,
+                crate::icons::display_name(&b.reward_material)
+            ),
+            _ => format!("   Pays {}c", b.reward_chits),
+        };
+        col.spawn(glass::text(reward, 14.0, glass::DIM));
+        col.spawn(glass::text(
+            if done {
+                "   Claim it at the Bounty Board.".to_string()
+            } else {
+                format!(
+                    "   {}x a standard creature at that depth   -   {}",
+                    format_power(b.power),
+                    remaining(b.expires_in_secs)
+                )
+            },
+            14.0,
+            glass::DIM,
+        ));
+    }
+    col.spawn(glass::divider());
+    col.spawn(glass::text("Settled", 17.0, glass::TITLE));
+    if bounties.history.is_empty() {
+        col.spawn(glass::text("Nothing yet.", 15.0, glass::DIM));
+    }
+    for b in bounties.history.iter().take(12) {
+        let tail = if b.state == "claimed" { "paid" } else { "withdrawn" };
+        col.spawn(glass::text(format!("{} - {tail}", b.mark_name), 15.0, glass::DIM));
+    }
+}
+
+/// A power multiplier as a player reads it: one decimal, and no trailing `.0`.
+fn format_power(power: f64) -> String {
+    let s = format!("{power:.1}");
+    s.trim_end_matches(".0").to_string()
+}
+
+/// How long a contract has left, in the coarsest unit that is still true.
+fn remaining(secs: i64) -> String {
+    if secs <= 0 {
+        return "withdrawn".to_string();
+    }
+    let hours = secs / 3600;
+    if hours >= 1 {
+        format!("{hours}h left")
+    } else {
+        format!("{}m left", (secs / 60).max(1))
+    }
+}
+
 /// How many rows the deepest open column has, so the cursor can wrap.
 pub(crate) fn column_len(
     menu: &MainMenu,
@@ -235,6 +355,7 @@ pub(crate) fn column_len(
     inv: &InventoryData,
     backpack: &RunBackpack,
     picker: &EquipPicker,
+    owned: &[String],
 ) -> usize {
     match (menu.section, menu.pane) {
         (Some(MenuSection::Party), Some(MenuPane::Abilities)) => {
@@ -259,7 +380,10 @@ pub(crate) fn column_len(
         (Some(MenuSection::Map), None) => 3,
         // Reading only — the cursor has nothing to land on.
         (Some(MenuSection::Guide), None) => 0,
-        (None, _) => MenuSection::ALL.len(),
+        // Reading only, both columns: the board is a log, and the reward is taken at the
+        // Bounty Board in town rather than from a menu mid-run.
+        (Some(MenuSection::Quests), None) => 0,
+        (None, _) => visible_sections(owned).len(),
         // Only the Party column opens a third; anything else has nothing deeper.
         (Some(_), Some(_)) => 0,
     }
@@ -278,9 +402,15 @@ pub(crate) fn render_main_menu(
     hero_names: Res<AccountHeroNames>,
     stats: Res<RunStats>,
     backpack: Res<RunBackpack>,
-    perks: Res<PerksRes>,
-    explored: Res<crate::overworld::ExploredMap>,
-    notice: Res<Notice>,
+    // Grouped as one tuple param to stay inside Bevy's 16-param system limit — the same
+    // reason `netglue`'s world resources travel together.
+    reads: (
+        Res<PerksRes>,
+        Res<crate::overworld::ExploredMap>,
+        Res<Notice>,
+        Res<UnlocksRes>,
+        Res<BountyData>,
+    ),
     wa: Option<Res<WorldAssets>>,
     existing: Query<Entity, With<MainMenuRoot>>,
 ) {
@@ -294,10 +424,14 @@ pub(crate) fn render_main_menu(
         || hero_names.is_changed()
         || stats.is_changed()
         || backpack.is_changed()
-        || notice.is_changed())
+        || reads.3.is_changed()
+        || reads.4.is_changed()
+        || reads.2.is_changed())
     {
         return;
     }
+    let (perks, explored, notice, unlocks, bounties) =
+        (&*reads.0, &*reads.1, &*reads.2, &*reads.3, &*reads.4);
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -316,7 +450,7 @@ pub(crate) fn render_main_menu(
                 cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
                     nav.spawn(glass::text("MENU", 26.0, glass::TITLE));
                     nav.spawn(glass::divider());
-                    for (i, s) in MenuSection::ALL.iter().enumerate() {
+                    for (i, s) in visible_sections(&unlocks.owned).iter().enumerate() {
                         let open = menu.section == Some(*s);
                         let focused = depth == 0 && menu.cursor == i;
                         nav.spawn((Button, NavButton(*s), glass::chip(open || focused)))
@@ -488,7 +622,10 @@ pub(crate) fn render_main_menu(
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
                             col.spawn(glass::divider());
-                            explored_map(col, &perks, &explored);
+                            explored_map(col, perks, explored);
+                        }
+                        MenuSection::Quests => {
+                            quest_column(col, bounties);
                         }
                         MenuSection::Guide => {
                             for (heading, rows) in GUIDE {
@@ -772,7 +909,7 @@ pub(crate) fn render_main_menu(
                             &picker,
                             depth,
                             menu.cursor,
-                            &notice,
+                            notice,
                         );
                     }
                 });
@@ -1034,13 +1171,15 @@ pub(crate) fn main_menu_input(
     hero_names: Res<AccountHeroNames>,
     inv: Res<InventoryData>,
     backpack: Res<RunBackpack>,
+    unlocks: Res<UnlocksRes>,
     mut rename: ResMut<HeroRename>,
     net: NonSend<NetRes>,
 ) {
     if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
         return;
     }
-    let len = column_len(&menu, &roster, &hero_names, &inv, &backpack, &picker).max(1);
+    let len =
+        column_len(&menu, &roster, &hero_names, &inv, &backpack, &picker, &unlocks.owned).max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % len;
     }
@@ -1062,7 +1201,7 @@ pub(crate) fn main_menu_input(
     {
         match menu.depth() {
             0 => {
-                menu.section = MenuSection::ALL.get(menu.cursor).copied();
+                menu.section = visible_sections(&unlocks.owned).get(menu.cursor).copied();
                 menu.cursor = 0;
             }
             1 if menu.section == Some(MenuSection::Map) && menu.cursor >= 1 => {
@@ -1374,6 +1513,25 @@ mod tests {
         }
     }
 
+    /// The Den's board appears when the Den does. Nothing in this menu advertises what
+    /// has not been earned, so a locked Quests row would break the panel's own rule.
+    #[test]
+    fn quests_appears_with_the_hunter_and_not_before() {
+        let none: Vec<String> = Vec::new();
+        assert!(!visible_sections(&none).contains(&MenuSection::Quests));
+        assert_eq!(visible_sections(&none).len(), MenuSection::ALL.len() - 1);
+
+        let owned = vec!["class_explorer".to_string(), "class_hunter".to_string()];
+        let with = visible_sections(&owned);
+        assert!(with.contains(&MenuSection::Quests));
+        assert_eq!(with.len(), MenuSection::ALL.len());
+        // Order is the nav's own order either way, so a row never moves under the cursor.
+        assert_eq!(with, MenuSection::ALL.to_vec());
+        let expected: Vec<MenuSection> =
+            MenuSection::ALL.iter().copied().filter(|s| *s != MenuSection::Quests).collect();
+        assert_eq!(visible_sections(&none), expected);
+    }
+
     #[test]
     fn the_guide_column_is_reading_only() {
         // Nothing to select, so `column_len` is 0 — the cursor arithmetic in
@@ -1386,6 +1544,7 @@ mod tests {
             &InventoryData::default(),
             &RunBackpack::default(),
             &EquipPicker::default(),
+            &[],
         );
         assert_eq!(len, 0);
         assert_eq!(len.max(1), 1, "the guard the cursor relies on");

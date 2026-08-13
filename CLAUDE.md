@@ -265,6 +265,21 @@ an unfinished hunt is **force-included in that player's own snapshot** and tagge
 which would show everyone everything), and the client floats a QUARRY plate over it. A
 **Hunter** senses it from much further out. Screenshot flag: `MELD_HUNTS` / `?hunts`.
 
+**The Den posts contracts with your name on them.** A hunt is a checklist everyone shares;
+a **bounty** ([`meld_proto::bounties`](shared/meld-proto/src/bounties.rs)) is generated for
+ONE player against a **hunter rank** — the `hunting` Meld skill, raised only by finished
+board work, so the ladder asks "how many marks have you put down" rather than "what level
+is your party". Every bounty ends in a **boss fight**: an FS-4 named boss wearing a rolled
+epithet ("Ironmaw the Unburied"), promoted by the contract's own `power` rather than the
+Gatekeeper constants, sighted at a depth the rank earned, in the open or at the bottom of a
+descent. It stands in the world for its owner ALONE — `MonsterSpawn.owner` keeps it out of
+every other player's snapshot *and* out of their `check_touch`, so co-op can fight beside
+you but cannot trigger your contract. Contracts expire and re-roll lazily on read
+(`[bounty] active_slots` / `window_hours`); only a *standing* one expires, because a felled
+mark is owed its reward however long the walk home takes. The menu's **Quests** column is
+gated on owning `class_hunter` — the menu never advertises what you have not earned — and
+is reading-only, because the reward is taken at the board.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a

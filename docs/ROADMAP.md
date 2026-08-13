@@ -1499,9 +1499,30 @@ the current build.
     is trackable rather than stumbled upon; a **Hunter** senses it from much further out
     (`[hunt] quarry_sense_hunter_radius`), which is the guild's whole trade. Marking stops
     the moment the hunt is finished.
-  - **Remains (the full system):** named-creature hunts off `FS-4`'s ten named bosses,
-    rotation / expiry / an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild
-    hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
+  - 🟡 *And the Den posts contracts with your name on them (bounties):* the fixed board is
+    a checklist everyone shares, so it has no ladder. A **bounty** is generated *for you*
+    against a **hunter rank** — a persistent track (the `hunting` Meld skill) that only
+    finished board work raises, so the question is "how many marks have you put down",
+    not "what level is your party". **Every bounty ends in a boss fight**: one of `FS-4`'s
+    ten named bosses wearing a rolled **epithet** ("Ironmaw the Unburied"), promoted by the
+    contract's own power rather than the Gatekeeper constants and always affixed, so a
+    deep-rank mark is worse than the door it walked past. It is sighted at a depth the rank
+    has earned, in the open **or at the bottom of a descent** — and it stands in the world
+    for **that player alone**: `MonsterSpawn.owner` keeps it out of every other player's
+    snapshot and out of their touch check, so in co-op the party can fight it beside you
+    but only you can trigger it. Contracts **expire and re-roll** (`[bounty] active_slots`
+    / `window_hours`), lazily on read, so the offers are always live with no scheduler;
+    only a *standing* one expires, because a felled mark is owed its reward however long
+    the walk home takes. Paid at the board like a hunt — chits, the band's trophy, a rolled
+    piece from `reward_gear_from_rank` up, and the rank XP, all in one transaction.
+  - 🟡 *The menu grows a **Quests** column, and it appears with the Hunter:* the board is
+    the Den's, so `MenuSection::Quests` is gated on owning `class_hunter` rather than
+    sitting there greyed out — the menu's own rule is that it never advertises what you
+    have not earned. It lists the standing contracts (mark, where, how hard, what it pays,
+    how long is left) and everything settled. Reading only: the reward is taken at the
+    Bounty Board, so a finished contract says so instead of handing you power mid-run.
+  - **Remains (the full system):** an explicit *accept* step, bestiary ties (`CR-5`),
+    co-op and guild hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

@@ -1597,3 +1597,29 @@ reward_material_qty_per_tier = 1 # …plus this per band, so a deep hunt seeds a
 # snapshot (never a wider shared cull). [TUNABLE]
 quarry_sense_radius = 36.0
 quarry_sense_hunter_radius = 90.0
+
+# BOUNTIES (AD-4): the Den's generated contracts. Each one is a named boss standing in the
+# world for ONE player, rolled against that player's HUNTER RANK — a persistent track (the
+# `hunting` Meld skill) that only board work raises, so the ladder is "how many marks have
+# you put down", not "what level is your party". Contracts expire and re-roll, so the list
+# is always live. [TUNABLE]
+[bounty]
+active_slots = 3                 # standing contracts at once; finishing one draws another
+window_hours = 20                # how long a contract stands before it is withdrawn
+rank_xp_base = 90                # hunter XP a rank-0 contract banks…
+rank_xp_per_rank = 22            # …plus this per rank, so the ladder keeps its pace
+# Where a mark is sighted: shallow at first, deeper as the Den trusts you with worse.
+sighting_base_distance = 140
+sighting_per_rank = 95
+sighting_jitter = 0.25           # +/- fraction on the sighted distance
+# What a mark IS. Power multiplies a standard creature at that depth — a Gatekeeper is
+# 10x, so an early mark is a real fight and a deep one is worse than the door.
+power_base = 3.2
+power_per_rank = 0.55
+dungeon_chance = 0.35            # fraction of contracts that wait at the bottom of a descent
+# What it pays. Chits scale with rank; the material is the sighting band's own trophy.
+reward_chits_base = 320
+reward_chits_per_rank = 145
+reward_material_qty = 2
+reward_material_qty_per_rank = 1
+reward_gear_from_rank = 2        # rank at which contracts start paying a rolled piece

@@ -419,6 +419,29 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // Bounties (roadmap AD-4): the Den's generated contracts, one row per rolled
+        // mark. The rolled numbers live in `spec` as JSON rather than as columns — they
+        // are drawn once against `[bounty]` and then owned by the contract, so a retune
+        // changes the next roll instead of rewriting one a player is already working.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS bounties (
+                bounty_id  UUID PRIMARY KEY,
+                player_id  UUID NOT NULL REFERENCES players(player_id),
+                spec       TEXT NOT NULL,
+                state      TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_bounties_player ON bounties(player_id, state)",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -715,6 +738,267 @@ impl Db {
                     m.gear.entry(g.gear_id).or_insert_with(|| mem_gear_row(player_id, g));
                 }
                 Ok(HuntClaim::Paid { chits: after })
+            }
+        }
+    }
+
+    /// Every bounty contract this account has ever been offered, newest first (AD-4).
+    pub async fn list_bounties(&self, player_id: Uuid) -> Result<Vec<BountyRow>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT bounty_id, spec, state, expires_at, created_at FROM bounties
+                      WHERE player_id = $1 ORDER BY created_at DESC, bounty_id DESC",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| BountyRow {
+                        bounty_id: r.get("bounty_id"),
+                        spec: r.get("spec"),
+                        state: r.get("state"),
+                        expires_at: r.get("expires_at"),
+                        created_at: r.get("created_at"),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut rows: Vec<BountyRow> = m
+                    .bounties
+                    .values()
+                    .filter(|b| b.player_id == player_id)
+                    .map(|b| BountyRow {
+                        bounty_id: b.bounty_id,
+                        spec: b.spec.clone(),
+                        state: b.state.clone(),
+                        expires_at: b.expires_at,
+                        created_at: b.created_at,
+                    })
+                    .collect();
+                rows.sort_by(|a, b| {
+                    b.created_at.cmp(&a.created_at).then(b.bounty_id.cmp(&a.bounty_id))
+                });
+                Ok(rows)
+            }
+        }
+    }
+
+    /// Post a freshly rolled contract.
+    pub async fn insert_bounty(
+        &self,
+        player_id: Uuid,
+        bounty_id: Uuid,
+        spec: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "INSERT INTO bounties (bounty_id, player_id, spec, state, expires_at)
+                     VALUES ($1, $2, $3, 'active', $4)
+                     ON CONFLICT (bounty_id) DO NOTHING",
+                )
+                .bind(bounty_id)
+                .bind(player_id)
+                .bind(spec)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                m.bounties.entry(bounty_id).or_insert(MemBounty {
+                    bounty_id,
+                    player_id,
+                    spec: spec.to_string(),
+                    state: "active".to_string(),
+                    expires_at,
+                    created_at: Utc::now(),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Withdraw every standing contract whose window has closed. Returns how many.
+    ///
+    /// Only an `active` row expires: a mark already felled is owed its reward however
+    /// long the walk home takes.
+    pub async fn expire_bounties(
+        &self,
+        player_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Result<u64, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "UPDATE bounties SET state = 'expired'
+                      WHERE player_id = $1 AND state = 'active' AND expires_at <= $2",
+                )
+                .bind(player_id)
+                .bind(now)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected())
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let mut n = 0;
+                for b in m.bounties.values_mut() {
+                    if b.player_id == player_id && b.state == "active" && b.expires_at <= now {
+                        b.state = "expired".to_string();
+                        n += 1;
+                    }
+                }
+                Ok(n)
+            }
+        }
+    }
+
+    /// Mark a contract's mark as felled. `true` when this call is the one that did it.
+    pub async fn complete_bounty(
+        &self,
+        player_id: Uuid,
+        bounty_id: Uuid,
+    ) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "UPDATE bounties SET state = 'completed'
+                      WHERE bounty_id = $1 AND player_id = $2 AND state = 'active'",
+                )
+                .bind(bounty_id)
+                .bind(player_id)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                match m.bounties.get_mut(&bounty_id) {
+                    Some(b) if b.player_id == player_id && b.state == "active" => {
+                        b.state = "completed".to_string();
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
+        }
+    }
+
+    /// Pay a finished contract out and bank its hunter XP, atomically (AD-4).
+    ///
+    /// The hunter rank rides the `hunting` Meld skill, so the same ladder every other
+    /// profession uses carries the Den's — and the XP lands in the same transaction as
+    /// the payout, because a rank that moved without paying is a rank nobody earned.
+    pub async fn claim_bounty(
+        &self,
+        player_id: Uuid,
+        bounty_id: Uuid,
+        chits: i64,
+        material: Option<(&str, i32)>,
+        gear: Option<&LootedGear>,
+        rank_xp: i64,
+    ) -> Result<BountyClaim, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let mut tx = pool.begin().await?;
+                let state: Option<String> = sqlx::query(
+                    "SELECT state FROM bounties WHERE bounty_id = $1 AND player_id = $2 FOR UPDATE",
+                )
+                .bind(bounty_id)
+                .bind(player_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|r| r.get("state"));
+                match state.as_deref() {
+                    None => {
+                        tx.rollback().await?;
+                        return Ok(BountyClaim::Missing);
+                    }
+                    Some("claimed") => {
+                        tx.rollback().await?;
+                        return Ok(BountyClaim::AlreadyClaimed);
+                    }
+                    Some("completed") => {}
+                    Some(_) => {
+                        tx.rollback().await?;
+                        return Ok(BountyClaim::NotCompleted);
+                    }
+                }
+                sqlx::query("UPDATE bounties SET state = 'claimed' WHERE bounty_id = $1")
+                    .bind(bounty_id)
+                    .execute(&mut *tx)
+                    .await?;
+                let after: i64 = sqlx::query(
+                    "INSERT INTO vaults (player_id, chits) VALUES ($1, $2)
+                     ON CONFLICT (player_id) DO UPDATE SET chits = vaults.chits + $2
+                     RETURNING chits",
+                )
+                .bind(player_id)
+                .bind(chits)
+                .fetch_one(&mut *tx)
+                .await?
+                .get("chits");
+                if let Some((kind, qty)) = material.filter(|(_, q)| *q > 0) {
+                    sqlx::query(
+                        "INSERT INTO vault_items (player_id, item_kind, quantity) VALUES ($1, $2, $3)
+                         ON CONFLICT (player_id, item_kind)
+                         DO UPDATE SET quantity = vault_items.quantity + $3",
+                    )
+                    .bind(player_id)
+                    .bind(kind)
+                    .bind(qty)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                if let Some(g) = gear {
+                    insert_gear_row(&mut tx, player_id, g).await?;
+                }
+                if rank_xp > 0 {
+                    sqlx::query(
+                        "INSERT INTO meld_skills (player_id, skill_kind, xp) VALUES ($1, 'hunting', $2)
+                         ON CONFLICT (player_id, skill_kind) DO UPDATE SET xp = meld_skills.xp + $2",
+                    )
+                    .bind(player_id)
+                    .bind(rank_xp)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+                Ok(BountyClaim::Paid { chits: after })
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                match m.bounties.get(&bounty_id).map(|b| (b.player_id, b.state.clone())) {
+                    None => return Ok(BountyClaim::Missing),
+                    Some((owner, _)) if owner != player_id => return Ok(BountyClaim::Missing),
+                    Some((_, s)) if s == "claimed" => return Ok(BountyClaim::AlreadyClaimed),
+                    Some((_, s)) if s != "completed" => return Ok(BountyClaim::NotCompleted),
+                    Some(_) => {}
+                }
+                if let Some(b) = m.bounties.get_mut(&bounty_id) {
+                    b.state = "claimed".to_string();
+                }
+                let after = {
+                    let c = m.chits.entry(player_id).or_insert(0);
+                    *c += chits;
+                    *c
+                };
+                if let Some((kind, qty)) = material.filter(|(_, q)| *q > 0) {
+                    *m.vault_items.entry((player_id, kind.to_string())).or_insert(0) += qty;
+                }
+                if let Some(g) = gear {
+                    m.gear.entry(g.gear_id).or_insert_with(|| mem_gear_row(player_id, g));
+                }
+                if rank_xp > 0 {
+                    *m.skills.entry((player_id, "hunting".to_string())).or_insert(0) += rank_xp;
+                }
+                Ok(BountyClaim::Paid { chits: after })
             }
         }
     }
@@ -3257,8 +3541,19 @@ struct Mem {
     vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
     /// hunts (progress, claimed), keyed by (player_id, hunt_key).
     hunts: HashMap<(Uuid, String), (i32, bool)>,
+    /// bounties, keyed by bounty_id.
+    bounties: HashMap<Uuid, MemBounty>,
     /// party_loadouts.classes, keyed by (player_id, name).
     loadouts: HashMap<(Uuid, String), Loadout>,
+}
+
+struct MemBounty {
+    bounty_id: Uuid,
+    player_id: Uuid,
+    spec: String,
+    state: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
 }
 
 struct MemPlayer {
@@ -3762,6 +4057,86 @@ mod tests {
         let rows = db.get_hunts(p).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].claimed);
+    }
+
+    #[tokio::test]
+    async fn a_contract_pays_once_and_the_hunter_rank_only_moves_when_it_does() {
+        let db = mem().await;
+        let p = db
+            .register("den", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+        let id = Uuid::now_v7();
+        let now = Utc::now();
+        db.insert_bounty(p, id, "{}", now + chrono::Duration::hours(5)).await.unwrap();
+
+        // Standing, so it cannot be claimed and the rank has not moved.
+        assert_eq!(
+            db.claim_bounty(p, id, 500, None, None, 90).await.unwrap(),
+            BountyClaim::NotCompleted
+        );
+        assert!(db.get_skills(p).await.unwrap().iter().all(|(k, _)| k != "hunting"));
+
+        assert!(db.complete_bounty(p, id).await.unwrap());
+        assert!(!db.complete_bounty(p, id).await.unwrap(), "felled twice");
+        assert_eq!(
+            db.claim_bounty(p, id, 500, Some(("frost_shard", 3)), None, 90).await.unwrap(),
+            BountyClaim::Paid { chits: 500 }
+        );
+        assert_eq!(
+            db.claim_bounty(p, id, 500, Some(("frost_shard", 3)), None, 90).await.unwrap(),
+            BountyClaim::AlreadyClaimed
+        );
+        let (chits, items) = db.get_vault(p).await.unwrap();
+        assert_eq!(chits, 500, "the Den paid exactly once");
+        assert_eq!(items.iter().find(|(k, _)| k == "frost_shard").map(|(_, q)| *q), Some(3));
+        // The rank rides the `hunting` skill, banked in the same breath as the payout.
+        let xp = db
+            .get_skills(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|(k, _)| k == "hunting")
+            .map(|(_, xp)| xp);
+        assert_eq!(xp, Some(90), "the rank moved by more or less than one contract");
+
+        // Another player cannot claim it, and an unknown id is not a payout.
+        let q = db.register("poacher", &Uuid::new_v4().to_string()).await.unwrap().player_id;
+        assert_eq!(
+            db.claim_bounty(q, id, 500, None, None, 90).await.unwrap(),
+            BountyClaim::Missing
+        );
+        assert_eq!(
+            db.claim_bounty(p, Uuid::now_v7(), 500, None, None, 90).await.unwrap(),
+            BountyClaim::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_standing_contract_expires() {
+        let db = mem().await;
+        let p = db
+            .register("window", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+        let now = Utc::now();
+        let (stale, fresh, felled) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        db.insert_bounty(p, stale, "{}", now - chrono::Duration::hours(1)).await.unwrap();
+        db.insert_bounty(p, fresh, "{}", now + chrono::Duration::hours(1)).await.unwrap();
+        db.insert_bounty(p, felled, "{}", now - chrono::Duration::hours(1)).await.unwrap();
+        db.complete_bounty(p, felled).await.unwrap();
+
+        assert_eq!(db.expire_bounties(p, now).await.unwrap(), 1);
+        let rows = db.list_bounties(p).await.unwrap();
+        let state = |id: Uuid| {
+            rows.iter().find(|r| r.bounty_id == id).map(|r| r.state.clone()).unwrap()
+        };
+        assert_eq!(state(stale), "expired");
+        assert_eq!(state(fresh), "active", "a live window was withdrawn");
+        // A mark already down is owed its reward however long the walk home takes.
+        assert_eq!(state(felled), "completed");
     }
 
     #[tokio::test]
@@ -4578,4 +4953,26 @@ pub enum HuntClaim {
     Paid { chits: i64 },
     NotEarned { progress: i32 },
     AlreadyClaimed,
+}
+
+/// One stored bounty contract (roadmap AD-4). `spec` is a serialized
+/// `meld_proto::bounties::BountySpec` — rolled once, then owned by the row.
+#[derive(Debug, Clone)]
+pub struct BountyRow {
+    pub bounty_id: Uuid,
+    pub spec: String,
+    pub state: String,
+    pub expires_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The Den's answer to a bounty claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BountyClaim {
+    Paid { chits: i64 },
+    /// The mark is still standing.
+    NotCompleted,
+    AlreadyClaimed,
+    /// No such contract, or not this player's.
+    Missing,
 }

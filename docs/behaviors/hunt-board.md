@@ -90,10 +90,65 @@ finishing a hunt is a reason to come home.
 
 ---
 
+## Bounties — the Den's own board
+
+A **hunt** is posted for everyone and stands forever. A **bounty** is yours: rolled for
+your hunter rank, sighted at a depth that rank has earned, standing in the world for you
+alone, and withdrawn after a while whether or not you went.
+
+**Source:** roadmap `AD-4`; registry `meld_proto::bounties`; the roll is
+`meld_world::roll_bounty`; magnitudes are `[bounty]` in `balance.toml`.
+
+### Hunter rank
+
+| Rule | Behavior |
+|------|----------|
+| Its own ladder | Rank rides the **`hunting` Meld skill**, so it uses the same XP ladder every profession does — and it is raised *only* by finished board work, never by levelling a party. "How many marks have you put down" is a different question from "what level is your party", and the generator asks the first one. |
+| Where it moves | XP is banked in the same transaction as the payout, at the board. A rank that moved without paying would be a rank nobody earned. |
+| What it does | It is the sole input to the roll: sighting depth (`sighting_base_distance + sighting_per_rank × rank`), the mark's power, the chits, the material stack, and whether the contract pays gear at all (`reward_gear_from_rank`). |
+| Titles | `rank_title` (Unblooded → Tracker → Marksworn → Houndmaster → Reaver → Apex) gates nothing; it is standing, like the orders' rank ladders. |
+
+### What a contract is
+
+Always a **boss fight**. There is no "fell eight of these" bounty — that is what hunts are
+for.
+
+| Rule | Behavior |
+|------|----------|
+| The mark | One of `FS-4`'s ten named bosses wearing a rolled **epithet** ("Ironmaw the Unburied"), so two contracts on the same boss are two creatures with two histories. |
+| How hard | Promoted by the contract's own `power` (`power_base + power_per_rank × rank`) rather than the Gatekeeper constants, and **always** affixed. A deep-rank mark is worse than the door it walked past. |
+| Where | Sighted at a distance, in a biome, in the open or **at the bottom of a descent** (`dungeon_chance`). The species it wears is drawn from that band's own pool, so the sprite and the ground agree. |
+| Yours alone | The mark carries an `owner`. It is left out of every other player's snapshot and **cannot be touched by them** — in a co-op instance the party can fight it beside you, but only you can trigger it. |
+| Stood up lazily | The world stands a mark up once its frontier reaches the sighted distance, once per contract. A felled mark never comes back. |
+| Tracked | A mark is always marked as its owner's quarry, so it wears the same `:quarry` tag and QUARRY plate a hunt's quarry does. |
+
+### The window
+
+| Rule | Behavior |
+|------|----------|
+| `active_slots` standing | Reading the board withdraws whatever expired and rolls replacements up to the slot count, so the offers are always live with no scheduler anywhere. |
+| `window_hours` | Only a **standing** contract expires. A mark already felled is owed its reward however long the walk home takes. |
+| Nothing is lost | Progress is felled-or-not, so an expiry can never eat banked work. |
+
+### Claiming
+
+Same rule as a hunt: **paid at the board**. The Quests column shows a finished contract as
+ready and says where to take it; the payout (chits + material + a rolled piece from
+`reward_gear_from_rank` up) and the rank XP land together, once, in the Vault.
+
+### Where a player reads it
+
+The menu's **Quests** column — which appears only once the account owns the **Hunter**
+(`class_hunter`), because the board is the Den's and nothing in that menu advertises what
+has not been earned. It lists the standing contracts (mark, where, how hard, what it pays,
+how long is left) and everything already settled.
+
+---
+
 ## Deliberately not in this cut
 
 The full `AD-4` design ([`../proposals/adventure-depth.md`](../proposals/adventure-depth.md) §E)
-also carries: named-creature hunts off `FS-4`'s ten named bosses, rotation and expiry, an
-explicit *accept* step, bestiary ties (`CR-5`), co-op and guild hunts (`SOC`), reputation,
-and hunt leaderboard points (`AD-6`). None of those exist yet. A hunt today is posted for
-everyone, forever, and is claimed by whoever finishes it.
+also carries: an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild hunts
+(`SOC`), reputation, and hunt leaderboard points (`AD-6`). Named-creature contracts,
+rotation and expiry ship with bounties above; the fixed hunts are still posted for
+everyone, forever.

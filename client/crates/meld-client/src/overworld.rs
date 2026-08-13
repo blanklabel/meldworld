@@ -932,6 +932,7 @@ pub(crate) fn overworld_click_menu(
 
     if on_sprite || near_feet {
         overlay.kind = Some(OverlayKind::Inventory);
+        net.0.fetch_bounties();
         inv.loaded = false;
         net.0.fetch_inventory();
     }

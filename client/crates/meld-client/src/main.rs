@@ -174,6 +174,7 @@ fn main() {
         .init_resource::<AccountHeroNames>()
         .init_resource::<VanguardBoardData>()
         .init_resource::<HuntBoardData>()
+        .init_resource::<BountyData>()
         .init_resource::<ShopData>()
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
@@ -1525,6 +1526,9 @@ struct CityUi {
     board_open: bool,
     /// True while the Bounty Board's hunts are open (AD-4).
     hunts_open: bool,
+    /// Which side of the Bounty Board is facing you: the posted hunts, or the Den's own
+    /// contracts. One district, two boards — the same flip the counter uses for buy/sell.
+    bounty_tab: bool,
     /// The name being typed for the next loadout save. On `CityUi` rather than the
     /// panel so it survives the panel being rebuilt when the saved list changes.
     loadout_name: String,
@@ -1622,6 +1626,18 @@ pub(crate) struct ShopData {
 #[derive(Resource, Default)]
 pub(crate) struct LoadoutData {
     pub list: Vec<meld_client::net::LoadoutLine>,
+    pub loaded: bool,
+}
+
+/// The Den's bounty board as last read from `GET /v1/bounties` (AD-4) — what the menu's
+/// Quests column shows.
+#[derive(Resource, Default)]
+pub(crate) struct BountyData {
+    pub rank: i32,
+    pub rank_title: String,
+    pub rank_xp_to_next: i64,
+    pub active: Vec<meld_client::net::BountyLine>,
+    pub history: Vec<meld_client::net::BountyLine>,
     pub loaded: bool,
 }
 

@@ -37,6 +37,7 @@ pub struct Balance {
     pub meld: Meld,
     pub material: Material,
     pub hunt: Hunt,
+    pub bounty: Bounty,
     pub harvest: Harvest,
     pub combat_math: CombatMath,
     pub world_scaling: WorldScaling,
@@ -798,6 +799,49 @@ impl Hunt {
     /// Size of the material stack handed over with the chits.
     pub fn reward_qty(&self, tier: i32) -> i32 {
         (self.reward_material_qty + self.reward_material_qty_per_tier * tier.max(0)).max(1)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Bounty {
+    pub active_slots: usize,
+    pub window_hours: i64,
+    pub rank_xp_base: i64,
+    pub rank_xp_per_rank: i64,
+    pub sighting_base_distance: i32,
+    pub sighting_per_rank: i32,
+    pub sighting_jitter: f64,
+    pub power_base: f64,
+    pub power_per_rank: f64,
+    pub dungeon_chance: f64,
+    pub reward_chits_base: i64,
+    pub reward_chits_per_rank: i64,
+    pub reward_material_qty: i32,
+    pub reward_material_qty_per_rank: i32,
+    pub reward_gear_from_rank: i32,
+}
+
+impl Bounty {
+    /// Where a mark is sighted for this rank, before jitter.
+    pub fn sighting(&self, rank: i32) -> i32 {
+        self.sighting_base_distance + self.sighting_per_rank * rank.max(0)
+    }
+
+    /// How much harder than a standard creature at that depth the mark is.
+    pub fn power(&self, rank: i32) -> f64 {
+        self.power_base + self.power_per_rank * rank.max(0) as f64
+    }
+
+    pub fn reward_chits(&self, rank: i32) -> i64 {
+        self.reward_chits_base + self.reward_chits_per_rank * rank.max(0) as i64
+    }
+
+    pub fn reward_qty(&self, rank: i32) -> i32 {
+        (self.reward_material_qty + self.reward_material_qty_per_rank * rank.max(0)).max(1)
+    }
+
+    pub fn rank_xp(&self, rank: i32) -> i64 {
+        self.rank_xp_base + self.rank_xp_per_rank * rank.max(0) as i64
     }
 }
 

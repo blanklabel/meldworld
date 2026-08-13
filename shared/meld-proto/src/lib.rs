@@ -18,6 +18,7 @@
 
 pub mod abilities;
 pub mod affixes;
+pub mod bounties;
 pub mod common;
 pub mod consumables;
 pub mod enums;

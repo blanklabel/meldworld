@@ -88,6 +88,13 @@ enum WorldEffect {
         player_id: String,
         fact: HuntFact,
     },
+    /// AD-4: a bounty's mark is down. The world knows which creature it was; the Router
+    /// owns the contract and the telling.
+    BountyFelled {
+        player_id: String,
+        bounty_id: String,
+        mark: String,
+    },
     /// Same, for the front/back-row formation flag.
     SetSessionHeroRow {
         player_id: String,
@@ -205,6 +212,9 @@ enum DbWrite {
     /// The session already decided this is worth writing, so the DB call is a store
     /// rather than a second ruling.
     HuntProgress(String, String, i32, i32),
+    /// A bounty's mark was felled: (player, bounty id). The reward is still taken at the
+    /// board — this only records that the contract is finished.
+    BountyFelled(String, String),
     /// Post a new deepest distance to the Vanguard Board: (player, distance).
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
@@ -301,6 +311,13 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.credit_hunt(uid, &key, delta, target).await {
                         tracing::error!("hunt credit failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::BountyFelled(pid, bounty_id) => {
+                if let (Ok(uid), Ok(bid)) = (Uuid::parse_str(&pid), Uuid::parse_str(&bounty_id)) {
+                    if let Err(e) = db.complete_bounty(uid, bid).await {
+                        tracing::error!("bounty completion failed for {pid}: {e}");
                     }
                 }
             }
@@ -972,6 +989,12 @@ struct WorldActor {
     /// player_id -> the quarry of every hunt they are still working (AD-4), mirrored in
     /// from the Router's session board so the snapshot can force-include and mark it.
     quarry: HashMap<String, Vec<QuarryTarget>>,
+    /// player_id -> their standing bounty contracts (AD-4), mirrored in from the DB. The
+    /// world stands each mark up once the frontier reaches its sighted distance.
+    bounties: HashMap<String, Vec<(String, meld_proto::bounties::BountySpec)>>,
+    /// Contract ids whose mark has already been stood up in this world, so a mark is
+    /// never two creatures and a felled one never comes back.
+    marks_placed: std::collections::HashSet<String>,
 }
 
 /// One queued request at a field station: everything the DB half needs, decided
@@ -1236,6 +1259,10 @@ impl WorldActor {
         // further out than anyone else sees it, so it can be tracked rather than
         // stumbled upon. Remembered here the way node-sense remembers nodes.
         let mut mob_index: Vec<(usize, Position, &str, &str)> = Vec::new();
+        // A bounty MARK exists for one player (AD-4): its index is remembered here so
+        // every other player's cull drops it. A contract with your name on it must not be
+        // scenery in a stranger's world — or worse, a fight they can watch you lose.
+        let mut mark_index: Vec<(usize, String)> = Vec::new();
         for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
             mob_index.push((
                 entities.len(),
@@ -1243,6 +1270,9 @@ impl WorldActor {
                 m.monster_kind.as_str(),
                 m.encounter_class.as_str(),
             ));
+            if !m.owner.is_empty() {
+                mark_index.push((entities.len(), m.owner.clone()));
+            }
             entities.push(wm::SnapshotEntity {
                 entity_id: m.entity_id.clone(),
                 position: m.position,
@@ -1487,7 +1517,17 @@ impl WorldActor {
                 }
                 _ => Vec::new(),
             };
-            let marked = quarry_marks.get(&r.player_id).cloned().unwrap_or_default();
+            let mut marked = quarry_marks.get(&r.player_id).cloned().unwrap_or_default();
+            // Your own mark is always tracked and always yours; everyone else's is not in
+            // your world at all.
+            let mut hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for (idx, owner) in &mark_index {
+                if owner == &r.player_id {
+                    marked.insert(*idx);
+                } else {
+                    hidden.insert(*idx);
+                }
+            }
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 // Grid-indexed interest cull (SC-1): behaviour-identical to the old
                 // full scan (own avatar + portal always; mobs at `mob_radius`, the
@@ -1499,6 +1539,7 @@ impl WorldActor {
                     );
                     idxs.extend(sensed);
                     idxs.extend(marked.iter().copied());
+                    idxs.retain(|i| !hidden.contains(i));
                     idxs.sort_unstable();
                     idxs.dedup();
                     idxs.into_iter()
@@ -1516,8 +1557,14 @@ impl WorldActor {
                         .collect()
                 }
                 // Defensive: a roaming run should always have an avatar; if not, don't
-                // cull (send the full set) rather than send an empty world.
-                None => entities.clone(),
+                // cull (send the full set) rather than send an empty world. Someone
+                // else's mark is still not theirs to see.
+                None => entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !hidden.contains(i))
+                    .map(|(_, e)| e.clone())
+                    .collect(),
             };
             out.push(out_msg(
                 &r.player_id,
@@ -2641,6 +2688,9 @@ struct GameState {
     /// Players whose persistent Meld skill levels the world still needs (MS-1 field
     /// stations gate on them). Drained by `flush_skill_loads` after the tick.
     pending_skill_load: Vec<String>,
+    /// Players whose standing bounty contracts (AD-4) still have to be read out of the DB
+    /// and handed to the world, so their marks can be stood up.
+    pending_bounty_load: Vec<String>,
     /// Open heats (MS-1's smithing tempo game), keyed by job id. A heat holds the bar
     /// the server laid out and the blows reported so far; it leaves here graded, either
     /// when the last blow lands or when its window runs out.
@@ -2668,6 +2718,7 @@ impl GameState {
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
             pending_skill_load: Vec::new(),
+            pending_bounty_load: Vec::new(),
             open_heats: HashMap::new(),
             pending_smith: Vec::new(),
             next_job: 0,
@@ -2705,6 +2756,7 @@ impl GameState {
             self.flush_skill_loads().await;
             self.flush_smith_jobs().await;
             self.flush_hero_loads().await;
+            self.flush_bounty_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
             if let Some(w) = self.world.as_mut() {
@@ -2804,6 +2856,7 @@ impl GameState {
                 self.order.retain(|p| p != &player_id);
                 self.pending_gear_load.retain(|p| p != &player_id);
                 self.pending_skill_load.retain(|p| p != &player_id);
+                self.pending_bounty_load.retain(|p| p != &player_id);
                 self.pending_hero_load.retain(|p| p != &player_id);
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
@@ -2958,6 +3011,25 @@ impl GameState {
         self.dispatch(out);
     }
 
+    /// AD-4: a bounty's mark is down. Record it and say so; the Den pays at the board.
+    fn finish_bounty(&mut self, player_id: &str, bounty_id: &str, mark: &str) {
+        let _ = self.db_writes.send(DbWrite::BountyFelled(
+            player_id.to_string(),
+            bounty_id.to_string(),
+        ));
+        let name = meld_world::boss_display_name(mark);
+        self.dispatch(vec![out_msg(
+            player_id,
+            &wr::HuntProgress {
+                key: format!("bounty:{bounty_id}"),
+                name: format!("{name} is down"),
+                progress: 1,
+                target: 1,
+                complete: true,
+            },
+        )]);
+    }
+
     fn release_from_run(&mut self, player_id: &str) {
         if let Some(s) = self.sessions.get_mut(player_id) {
             s.in_instance = false;
@@ -2992,6 +3064,11 @@ impl GameState {
                 }
                 WorldEffect::SmithJob(job) => self.open_heat(*job),
                 WorldEffect::Hunt { player_id, fact } => self.credit_hunts(&player_id, &fact),
+                WorldEffect::BountyFelled {
+                    player_id,
+                    bounty_id,
+                    mark,
+                } => self.finish_bounty(&player_id, &bounty_id, &mark),
                 WorldEffect::SetSessionHeroRow {
                     player_id,
                     slot,
@@ -3456,6 +3533,8 @@ impl GameState {
                 pending_effects: Vec::new(),
                 skill_levels: HashMap::new(),
                 quarry: HashMap::new(),
+                bounties: HashMap::new(),
+                marks_placed: std::collections::HashSet::new(),
                 edges: HashMap::new(),
                 battle_immune_until: HashMap::new(),
             });
@@ -3747,6 +3826,9 @@ impl GameState {
         // The professions' field verbs gate on persistent Meld levels, so the world
         // needs them in hand before anyone tries to raise a station.
         self.pending_skill_load.extend(party_ids.iter().cloned());
+        // AD-4: the diver's standing contracts, so their marks can stand up as the world
+        // grows out to them.
+        self.pending_bounty_load.extend(party_ids.iter().cloned());
         // AD-4: and the quarry of every hunt each diver is working, so the snapshot can
         // mark it from the first tick. The board was loaded on connect, when there was no
         // world to hold it — this is the handover.
@@ -5041,6 +5123,28 @@ impl GameState {
             }
             if let Some(w) = self.world.as_mut() {
                 w.skill_levels.insert(pid, levels);
+            }
+        }
+    }
+
+    /// Read each pending player's standing bounty contracts and hand them to the world
+    /// (AD-4). Only `active` rows travel: a felled or withdrawn contract has no mark.
+    async fn flush_bounty_loads(&mut self) {
+        let loads: Vec<String> = std::mem::take(&mut self.pending_bounty_load);
+        for pid in loads {
+            let Ok(uid) = Uuid::parse_str(&pid) else { continue };
+            let Ok(rows) = self.db.list_bounties(uid).await else { continue };
+            let specs: Vec<(String, meld_proto::bounties::BountySpec)> = rows
+                .into_iter()
+                .filter(|r| r.state == "active")
+                .filter_map(|r| {
+                    serde_json::from_str(&r.spec)
+                        .ok()
+                        .map(|spec| (r.bounty_id.to_string(), spec))
+                })
+                .collect();
+            if let Some(w) = self.world.as_mut() {
+                w.bounties.insert(pid, specs);
             }
         }
     }
@@ -6806,6 +6910,27 @@ impl WorldActor {
                 created_sections = self.arena.ensure_frontier(&balance, reach);
             }
         }
+        // AD-4: stand up any bounty mark the world has now grown out far enough to hold.
+        // Cheap: only contracts not yet placed are considered, and each is tried once.
+        if !self.bounties.is_empty() {
+            let balance = self.balance.clone();
+            let pending: Vec<(String, String, meld_proto::bounties::BountySpec)> = self
+                .bounties
+                .iter()
+                .flat_map(|(pid, specs)| {
+                    specs
+                        .iter()
+                        .filter(|(id, _)| !self.marks_placed.contains(id))
+                        .map(move |(id, spec)| (pid.clone(), id.clone(), spec.clone()))
+                })
+                .collect();
+            for (pid, id, spec) in pending {
+                let seed = hash_str(&id);
+                if self.arena.place_bounty_mark(&balance, &pid, &id, &spec, seed) {
+                    self.marks_placed.insert(id);
+                }
+            }
+        }
         // Stream the freshly-generated sections' terrain (+ trail segment) so the
         // client extends its relief and path — the endless-world payoff.
         if !created_sections.is_empty() {
@@ -7428,6 +7553,16 @@ impl WorldActor {
                     }
                     if let Some(m) = inst.arena.monster_by_id(id) {
                         felled.push((m.monster_kind.clone(), m.encounter_class.clone()));
+                        // AD-4: a felled MARK finishes its contract, and it finishes it
+                        // for its owner only — whoever else was swinging, the contract has
+                        // one name on it.
+                        if !m.bounty.is_empty() && !m.owner.is_empty() {
+                            effects.push(WorldEffect::BountyFelled {
+                                player_id: m.owner.clone(),
+                                bounty_id: m.bounty.clone(),
+                                mark: m.boss_kind.clone(),
+                            });
+                        }
                     }
                 }
                 for r in inst.run.runs.iter().filter(|r| bp.contains(&r.party_id)) {

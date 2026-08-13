@@ -394,6 +394,7 @@ pub(crate) fn city_action_buttons(
                     overlay.kind = None;
                 } else {
                     overlay.kind = Some(OverlayKind::Inventory);
+                    net.0.fetch_bounties();
                     *tab = OverlayTab::Items;
                     inv.loaded = false;
                     net.0.fetch_inventory();
@@ -664,6 +665,7 @@ pub(crate) fn city_input(
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
     mut hunts: ResMut<HuntBoardData>,
+    bounties: Res<BountyData>,
     mut shop_selling: ResMut<ShopSelling>,
     mut pending: ResMut<PendingPurchase>,
     unlocks: Res<UnlocksRes>,
@@ -719,6 +721,7 @@ pub(crate) fn city_input(
             overlay.kind = None;
         } else {
             overlay.kind = Some(OverlayKind::Inventory);
+            net.0.fetch_bounties();
             *tab = OverlayTab::Items;
             inv.loaded = false;
             net.0.fetch_inventory();
@@ -826,8 +829,35 @@ pub(crate) fn city_input(
             return;
         }
     }
-    // The Bounty Board: ↑/↓ walk the hunts, [1]-[8] (or ENTER on the row) claim one.
+    // The Bounty Board: ↑/↓ walk the hunts, [1]-[8] (or ENTER on the row) claim one, and
+    // [B] turns the board around to the Den's own contracts.
     if city.hunts_open {
+        if keys.just_pressed(KeyCode::KeyB) {
+            city.bounty_tab = !city.bounty_tab;
+            if city.bounty_tab {
+                net.0.fetch_bounties();
+            }
+            return;
+        }
+        if city.bounty_tab {
+            const BOUNTY_KEYS: [KeyCode; 8] = [
+                KeyCode::Digit1,
+                KeyCode::Digit2,
+                KeyCode::Digit3,
+                KeyCode::Digit4,
+                KeyCode::Digit5,
+                KeyCode::Digit6,
+                KeyCode::Digit7,
+                KeyCode::Digit8,
+            ];
+            for (i, key) in BOUNTY_KEYS.iter().enumerate() {
+                if keys.just_pressed(*key) && i < bounties.active.len() {
+                    claim_bounty_row(&net, &mut city, &bounties, i);
+                    return;
+                }
+            }
+            return;
+        }
         let n = hunts.hunts.len();
         if n > 0 && keys.just_pressed(KeyCode::ArrowDown) {
             hunts.cursor = (hunts.cursor + 1) % n;
@@ -1006,6 +1036,7 @@ pub(crate) fn city_input(
                     if city.hunts_open {
                         city.notice.clear();
                         net.0.fetch_hunts();
+                        net.0.fetch_bounties();
                     }
                 }
             }
@@ -1141,6 +1172,7 @@ pub(crate) fn city_interact(players: Query<&Transform, With<CityPlayer>>, mut ci
         && !near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Hunts))
     {
         city.hunts_open = false;
+        city.bounty_tab = false;
     }
     city.near = near;
 }
@@ -1714,6 +1746,81 @@ pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
         v.detail.push(h.blurb.clone());
     }
     v
+}
+
+/// The Den's side of the Bounty Board: the contracts with your name on them (AD-4).
+///
+/// A felled mark is a row you can press; a standing one states where it is and how long is
+/// left. This is the one place a bounty is paid, which is why the menu's Quests column is
+/// reading-only.
+pub(crate) fn bounty_view(board: &BountyData) -> CounterView {
+    let mut v = CounterView {
+        title: "The Bounty Board".into(),
+        subtitle: "the Den's contracts, with your name on them".into(),
+        footer: vec!["[1]-[8] claim   [B] posted hunts   [E]/[ESC] leave".into()],
+        ..default()
+    };
+    if !board.loaded {
+        v.detail = vec!["The Den is checking its ledger...".into()];
+        return v;
+    }
+    let ready = board.active.iter().filter(|b| b.state == "completed").count();
+    v.nav = vec![
+        ("Hunts".into(), false),
+        ("Bounties".into(), true),
+        (
+            if ready > 0 {
+                format!("{ready} to claim")
+            } else {
+                format!("rank {} - {}", board.rank, board.rank_title)
+            },
+            ready > 0,
+        ),
+    ];
+    if board.active.is_empty() {
+        v.detail = vec!["The Den has nothing posted for you.".into()];
+        return v;
+    }
+    v.rows = board
+        .active
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let done = b.state == "completed";
+            let row = CounterRow::new(
+                (i + 1).to_string(),
+                format!("{}{}", b.mark_name, if done { " - CLAIM" } else { "" }),
+            );
+            if done {
+                row
+            } else {
+                row.dim()
+            }
+        })
+        .collect();
+    let head = board.active.first();
+    if let Some(b) = head {
+        v.detail = vec![
+            b.where_to_look.clone(),
+            format!("Pays {}c and {} rank XP", b.reward_chits, b.reward_rank_xp),
+        ];
+    }
+    v.detail.push(format!(
+        "Hunter rank {} - {}. {} XP to the next.",
+        board.rank, board.rank_title, board.rank_xp_to_next
+    ));
+    v
+}
+
+/// Ask the Den to pay for the contract on `row`, or say why it will not.
+fn claim_bounty_row(net: &NetRes, city: &mut CityUi, board: &BountyData, row: usize) {
+    let Some(b) = board.active.get(row) else { return };
+    if b.state != "completed" {
+        city.notice = format!("{} is still standing. {}", b.mark_name, b.where_to_look);
+        return;
+    }
+    net.0.claim_bounty(b.bounty_id.clone());
+    city.notice = format!("collecting on {}...", b.mark_name);
 }
 
 /// Ask the board to pay for the hunt on `row`, or say why it will not.
@@ -3482,6 +3589,7 @@ pub(crate) fn render_counter_panel(
     craft: Res<CraftData>,
     board: Res<VanguardBoardData>,
     hunts: Res<HuntBoardData>,
+    bounties: Res<BountyData>,
     wa: Option<Res<WorldAssets>>,
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
@@ -3499,7 +3607,11 @@ pub(crate) fn render_counter_panel(
     } else if city.board_open {
         wall_view(&board)
     } else if city.hunts_open {
-        hunts_view(&hunts)
+        if city.bounty_tab {
+            bounty_view(&bounties)
+        } else {
+            hunts_view(&hunts)
+        }
     } else {
         return;
     };

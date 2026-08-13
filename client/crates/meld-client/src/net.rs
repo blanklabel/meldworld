@@ -392,6 +392,36 @@ pub struct HuntLine {
     pub where_to_look: String,
 }
 
+/// One bounty contract as the Quests column renders it (AD-4). Every number is the
+/// server's answer.
+#[derive(Clone, Debug, Default)]
+pub struct BountyLine {
+    pub bounty_id: String,
+    pub state: String,
+    pub mark_name: String,
+    pub boss_kind: String,
+    pub distance: i32,
+    pub venue: String,
+    pub where_to_look: String,
+    pub power: f64,
+    pub expires_in_secs: i64,
+    pub reward_chits: i64,
+    pub reward_material: String,
+    pub reward_material_qty: i32,
+    pub reward_gear: bool,
+    pub reward_rank_xp: i64,
+}
+
+/// The Den's board: rank, standing contracts, and what is already settled.
+#[derive(Clone, Debug, Default)]
+pub struct BountyBoard {
+    pub rank: i32,
+    pub rank_title: String,
+    pub rank_xp_to_next: i64,
+    pub active: Vec<BountyLine>,
+    pub history: Vec<BountyLine>,
+}
+
 /// A meld-skill row for the level-up screen.
 pub struct SkillLine {
     pub kind: String,
@@ -650,6 +680,8 @@ pub enum ServerMsg {
     /// Vanguard Wall in Last City (P1-1). `you` is the caller's own rank, if any.
     /// The Hunt Board (`GET /v1/hunts`), for the Bounty Board in Last City (AD-4).
     HuntBoard { hunts: Vec<HuntLine> },
+    /// The Den's bounty board (`GET /v1/bounties`), for the menu's Quests column (AD-4).
+    Bounties { board: BountyBoard },
     /// A posted hunt moved while diving (`run.hunt_progress`).
     HuntProgress { name: String, progress: i32, target: i32, complete: bool },
     VanguardBoard {
@@ -711,6 +743,7 @@ struct Inner {
     loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
     hunts_rx: Option<mpsc::Receiver<Vec<HuntLine>>>,
+    bounties_rx: Option<mpsc::Receiver<BountyBoard>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
     gear_shop_rx: Option<mpsc::Receiver<Vec<GearShopLine>>>,
     recipes_rx: Option<mpsc::Receiver<Vec<RecipeLine>>>,
@@ -759,6 +792,7 @@ pub fn start(base: String) -> Net {
         loadouts_rx: None,
         vanguard_rx: None,
         hunts_rx: None,
+        bounties_rx: None,
         shop_rx: None,
             gear_shop_rx: None,
             recipes_rx: None,
@@ -904,6 +938,17 @@ impl Net {
     /// it does not own.
     pub fn apply_loadout(&self, name: String) {
         self.0.borrow_mut().apply_loadout(name);
+    }
+
+    /// Kick off an authenticated GET of the Den's bounty board (→ `Bounties`), which
+    /// also expires and re-rolls contracts server-side (AD-4).
+    pub fn fetch_bounties(&self) {
+        self.0.borrow_mut().fetch_bounties();
+    }
+
+    /// Take the Den's payment for a felled mark, then refresh the board and the Vault.
+    pub fn claim_bounty(&self, bounty_id: String) {
+        self.0.borrow_mut().claim_bounty(bounty_id);
     }
 
     /// Kick off an authenticated GET of the Hunt Board (→ `HuntBoard`) — the Bounty
@@ -1055,6 +1100,12 @@ impl Inner {
             if let Ok(hunts) = rx.try_recv() {
                 self.hunts_rx = None;
                 self.out.push_back(ServerMsg::HuntBoard { hunts });
+            }
+        }
+        if let Some(rx) = &self.bounties_rx {
+            if let Ok(board) = rx.try_recv() {
+                self.bounties_rx = None;
+                self.out.push_back(ServerMsg::Bounties { board });
             }
         }
 
@@ -1570,6 +1621,41 @@ impl Inner {
         self.inv_rx = Some(rx);
         ehttp::fetch(req, move |_res| {
             spawn_inventory_fetch(base, token, tx);
+        });
+    }
+
+    /// GET `/v1/bounties` (Bearer auth). A `403` is not an error: it is an account that
+    /// has not earned the Den yet, and the menu simply has no Quests row for it.
+    fn fetch_bounties(&mut self) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.bounties_rx = Some(rx);
+        spawn_bounties_fetch(self.base.clone(), self.session_token.clone(), tx);
+    }
+
+    /// POST `/v1/bounties/:id/claim`, then re-read the board and the Vault.
+    fn claim_bounty(&mut self, bounty_id: String) {
+        if self.session_token.is_empty() || bounty_id.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req =
+            ehttp::Request::post(format!("{base}/v1/bounties/{bounty_id}/claim"), Vec::new());
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (tx, rx) = mpsc::channel();
+        self.vault_rx = Some(rx);
+        let (itx, irx) = mpsc::channel();
+        self.inv_rx = Some(irx);
+        let (btx, brx) = mpsc::channel();
+        self.bounties_rx = Some(brx);
+        ehttp::fetch(req, move |res| {
+            let _ = tx.send(bounty_claim_text(&res));
+            spawn_bounties_fetch(base.clone(), token.clone(), btx);
+            spawn_inventory_fetch(base, token, itx);
         });
     }
 
@@ -2602,6 +2688,77 @@ fn parse_mob_state(state: &str) -> (&str, &str, bool) {
     let kind = parts.next().unwrap_or("");
     let faction = parts.next().unwrap_or("");
     (kind, faction, parts.next() == Some("quarry"))
+}
+
+/// GET the Den's board and hand it back over `tx`.
+fn spawn_bounties_fetch(base: String, token: String, tx: mpsc::Sender<BountyBoard>) {
+    let mut req = ehttp::Request::get(format!("{base}/v1/bounties"));
+    req.headers.insert("Authorization", format!("Bearer {token}"));
+    ehttp::fetch(req, move |res| {
+        let _ = tx.send(bounty_board(&res));
+    });
+}
+
+fn bounty_board(res: &Result<ehttp::Response, String>) -> BountyBoard {
+    let Some(v) = reply_json(res) else {
+        return BountyBoard::default();
+    };
+    let lines = |key: &str| -> Vec<BountyLine> {
+        v[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|b| BountyLine {
+                bounty_id: b["bounty_id"].as_str().unwrap_or("").to_string(),
+                state: b["state"].as_str().unwrap_or("active").to_string(),
+                mark_name: b["mark_name"].as_str().unwrap_or("A mark").to_string(),
+                boss_kind: b["boss_kind"].as_str().unwrap_or("").to_string(),
+                distance: b["distance"].as_i64().unwrap_or(0) as i32,
+                venue: b["venue"].as_str().unwrap_or("overworld").to_string(),
+                where_to_look: b["where_to_look"].as_str().unwrap_or("").to_string(),
+                power: b["power"].as_f64().unwrap_or(1.0),
+                expires_in_secs: b["expires_in_secs"].as_i64().unwrap_or(0),
+                reward_chits: b["reward_chits"].as_i64().unwrap_or(0),
+                reward_material: b["reward_material"].as_str().unwrap_or("").to_string(),
+                reward_material_qty: b["reward_material_qty"].as_i64().unwrap_or(0) as i32,
+                reward_gear: b["reward_gear"].as_bool().unwrap_or(false),
+                reward_rank_xp: b["reward_rank_xp"].as_i64().unwrap_or(0),
+            })
+            .collect()
+    };
+    BountyBoard {
+        rank: v["rank"].as_i64().unwrap_or(0) as i32,
+        rank_title: v["rank_title"].as_str().unwrap_or("Unblooded").to_string(),
+        rank_xp_to_next: v["rank_xp_to_next"].as_i64().unwrap_or(0),
+        active: lines("active"),
+        history: lines("history"),
+    }
+}
+
+/// What the Den said when you asked to be paid — its own words on a refusal.
+fn bounty_claim_text(res: &Result<ehttp::Response, String>) -> String {
+    let Some(v) = reply_json(res) else {
+        return "the Den did not answer".to_string();
+    };
+    if let Some(msg) = v["error"]["message"].as_str() {
+        return msg.to_string();
+    }
+    let mut line = format!(
+        "the Den pays {}c for {}",
+        v["reward_chits"].as_i64().unwrap_or(0),
+        v["mark_name"].as_str().unwrap_or("the mark")
+    );
+    if let Some(gear) = v["reward_gear"].as_str().filter(|g| !g.is_empty()) {
+        line.push_str(&format!(", and {gear}"));
+    }
+    if v["ranked_up"].as_bool().unwrap_or(false) {
+        line.push_str(&format!(
+            " - hunter rank {} ({})",
+            v["rank"].as_i64().unwrap_or(0),
+            v["rank_title"].as_str().unwrap_or("")
+        ));
+    }
+    line
 }
 
 /// GET the Hunt Board and hand the rows back over `tx`.

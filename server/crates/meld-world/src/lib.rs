@@ -1310,6 +1310,14 @@ pub struct MonsterSpawn {
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: String,
+    /// The one player this creature exists for, or empty for everyone's world (AD-4
+    /// bounty marks). A mark is left out of every other player's snapshot and cannot be
+    /// touched by them, so a contract with your name on it is *yours* — including in a
+    /// co-op instance, where the party can fight it beside you but never trigger it.
+    pub owner: String,
+    /// The bounty this creature IS, or empty. Felling it completes that contract, which
+    /// is decided by identity rather than by matching a species after the fact.
+    pub bounty: String,
     pub flees: bool,
     /// World-scaled combat stats (stat_mult applied at spawn — no rescale later).
     pub hp: i32,
@@ -1358,6 +1366,8 @@ impl MonsterSpawn {
             boss_kind: String::new(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
+            owner: String::new(),
+            bounty: String::new(),
             flees: stats.flees,
             hp: ((stats.base_hp as f64) * scaling.hp_mult(d) * ramp).round().max(1.0) as i32,
             max_hp: ((stats.base_hp as f64) * scaling.hp_mult(d) * ramp).round().max(1.0) as i32,
@@ -1398,6 +1408,34 @@ impl MonsterSpawn {
         let e = &balance.encounters;
         m.promote(e.gatekeeper_hp_mult, e.gatekeeper_atk_mult, e.gatekeeper_xp_mult, "gatekeeper");
         m.become_boss(boss_kind);
+        m
+    }
+
+    /// Build a **bounty mark** (`AD-4`): the named boss a generated contract names,
+    /// standing at `position` for `owner` alone.
+    ///
+    /// Promoted by the contract's own `power` rather than the Gatekeeper constants, so a
+    /// deep-rank mark is worse than the door it walked past, and always affixed — a mark
+    /// is the most specific fight in the game, not a bigger version of a common one.
+    pub fn bounty_mark(
+        balance: &Balance,
+        entity_id: Id,
+        spec: &meld_proto::bounties::BountySpec,
+        bounty_id: &str,
+        owner: &str,
+        position: Position,
+        seed: u64,
+    ) -> Self {
+        let mut m = Self::build(balance, entity_id, &spec.creature, position, seed);
+        let xp = balance.encounters.gatekeeper_xp_mult;
+        m.promote(spec.power, spec.power, xp, "gatekeeper");
+        m.become_boss(&spec.boss_kind);
+        m.apply_affix(seed ^ 0xB0_1177);
+        m.owner = owner.to_string();
+        m.bounty = bounty_id.to_string();
+        // A mark waits where it was sighted rather than roaming off it: a contract that
+        // wanders out of its own reported position cannot be tracked to one.
+        m.aggression = "territorial".to_string();
         m
     }
 
@@ -1445,6 +1483,48 @@ impl MonsterSpawn {
         self.def += def_add;
         self.speed_stat = ((self.speed_stat as f64) * spd_m).round().max(1.0) as i32;
         self.affix = name.to_string();
+    }
+}
+
+/// Roll one bounty contract for a hunter of `rank` (`AD-4`).
+///
+/// Pure: balance, rank and a seed in, a spec out — so the Den's offers are unit-testable
+/// and a stored contract is never re-derived (a retune changes the *next* one).
+///
+/// Everything about the mark is drawn from the band it is sighted in, which is what keeps
+/// a rank-0 contract a shallow-forest fight and a rank-20 one an apocalypse in the mire.
+pub fn roll_bounty(
+    balance: &Balance,
+    rank: i32,
+    seed: u64,
+) -> meld_proto::bounties::BountySpec {
+    use meld_proto::bounties::{BountySpec, Venue, EPITHETS};
+    let b = &balance.bounty;
+    let mut rng = Rng(seed | 1);
+    let jitter = 1.0 + rng.signed() * b.sighting_jitter;
+    let distance = ((b.sighting(rank) as f64) * jitter).round().max(1.0) as i32;
+    let biome = biome_for_distance(distance as i64);
+    let pool = creatures_for_biome(biome);
+    let creature = pool[rng.below(pool.len())].to_string();
+    let venue = if rng.unit() < b.dungeon_chance {
+        Venue::Dungeon
+    } else {
+        Venue::Overworld
+    };
+    BountySpec {
+        boss_kind: pick_gatekeeper_boss_kind(distance as i64, rng.next_u64()).to_string(),
+        epithet: EPITHETS[rng.below(EPITHETS.len())].to_string(),
+        creature,
+        biome: biome.to_string(),
+        distance,
+        venue,
+        rank,
+        power: b.power(rank),
+        reward_chits: b.reward_chits(rank),
+        reward_material: combat_material_for_biome(distance as i64).to_string(),
+        reward_material_qty: b.reward_qty(rank),
+        reward_gear: rank >= b.reward_gear_from_rank,
+        reward_rank_xp: b.rank_xp(rank),
     }
 }
 
@@ -3843,6 +3923,50 @@ impl Arena {
     /// and refuses to stack two on the same spot (which would let one smith cover a
     /// tile in benches and never walk again).
     #[allow(clippy::too_many_arguments)]
+    /// Stand a bounty mark at its sighted distance, for its owner alone (`AD-4`).
+    ///
+    /// Placed on the guaranteed clear path, like a Gatekeeper, so a contract that reports
+    /// a distance can actually be walked to. Refuses when the world has not yet grown out
+    /// that far (the caller retries as sections stream in) and when the mark is already
+    /// standing — a contract must never be two creatures.
+    pub fn place_bounty_mark(
+        &mut self,
+        balance: &Balance,
+        owner: &str,
+        bounty_id: &str,
+        spec: &meld_proto::bounties::BountySpec,
+        seed: u64,
+    ) -> bool {
+        if self.monsters.iter().any(|m| m.bounty == bounty_id) {
+            return false;
+        }
+        let x = spec.distance as f64;
+        if x > self.cursor {
+            return false;
+        }
+        let pos = Position::new(x, path_y_at(&self.path, x));
+        let mark = MonsterSpawn::bounty_mark(
+            balance,
+            format!("mark-{bounty_id}"),
+            spec,
+            bounty_id,
+            owner,
+            pos,
+            seed,
+        );
+        self.monsters.push(mark);
+        true
+    }
+
+    /// Every bounty mark standing in this world, as `(owner, bounty id)`.
+    pub fn standing_marks(&self) -> Vec<(&str, &str)> {
+        self.monsters
+            .iter()
+            .filter(|m| !m.defeated && !m.bounty.is_empty())
+            .map(|m| (m.owner.as_str(), m.bounty.as_str()))
+            .collect()
+    }
+
     pub fn place_station(
         &mut self,
         player_id: &str,
@@ -4065,6 +4189,11 @@ impl Arena {
                 // Skip creatures already locked in someone else's fight (`in_battle`)
                 // so concurrent battles never fight over the same creature, and
                 // creatures on another terrace until you climb to them.
+                // A bounty mark belongs to one player: walking into someone else's
+                // contract must not start their fight for them (AD-4).
+                if !m.owner.is_empty() && m.owner != a.player_id {
+                    continue;
+                }
                 if !m.defeated
                     && !m.in_battle
                     && m.elevation == a.elevation
@@ -4245,6 +4374,91 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    // AD-4: the Den's roll. Pure, so the same seed is the same contract — and the ladder
+    // has to bite: a higher rank must send you further out against something worse, or the
+    // hunter rank is a number that means nothing.
+    #[test]
+    fn a_rolled_contract_is_deterministic_and_scales_with_rank() {
+        let b = Balance::load_default().unwrap();
+        let a = roll_bounty(&b, 0, 42);
+        let again = roll_bounty(&b, 0, 42);
+        assert_eq!(a, again, "the same seed rolled two different contracts");
+
+        let deep = roll_bounty(&b, 12, 42);
+        assert!(deep.distance > a.distance, "rank did not push the sighting outward");
+        assert!(deep.power > a.power, "rank did not make the mark worse");
+        assert!(deep.reward_chits > a.reward_chits, "a harder contract pays no better");
+        assert!(deep.reward_rank_xp > a.reward_rank_xp);
+        assert_eq!(deep.rank, 12);
+    }
+
+    // Everything a contract names has to be real: a species the world spawns, in the band
+    // it was sighted in, with stats in balance — a mark that cannot be built is a contract
+    // that crashes a dive.
+    #[test]
+    fn every_rolled_contract_names_a_creature_the_world_can_actually_build() {
+        let b = Balance::load_default().unwrap();
+        let mut venues = std::collections::HashSet::new();
+        for seed in 0..200u64 {
+            for rank in [0, 3, 9, 25] {
+                let spec = roll_bounty(&b, rank, seed.wrapping_mul(0x9E37_79B9));
+                assert!(spec.distance > 0);
+                assert_eq!(
+                    spec.biome,
+                    biome_for_distance(spec.distance as i64),
+                    "a mark sighted outside its own band"
+                );
+                assert!(
+                    creatures_for_biome(&spec.biome).contains(&spec.creature.as_str()),
+                    "{} does not spawn in {}",
+                    spec.creature,
+                    spec.biome
+                );
+                assert!(b.creature.contains_key(&spec.creature));
+                assert!(!boss_display_name(&spec.boss_kind).is_empty());
+                assert_ne!(boss_display_name(&spec.boss_kind), "Unknown Horror");
+                assert!(!spec.epithet.is_empty());
+                venues.insert(spec.venue);
+            }
+        }
+        // Both venues have to actually come up, or "or in a dungeon" is a promise the
+        // roller never keeps.
+        assert_eq!(venues.len(), 2, "the roller only ever picks one venue");
+    }
+
+    // A contract is ONE player's. Another diver walking over it must not trigger it — in a
+    // co-op instance they can fight beside you, but the mark answers to its owner.
+    #[test]
+    fn a_mark_is_only_touchable_by_its_owner() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 9, true);
+        arena.add_avatar("owner".to_string(), 10.0);
+        arena.add_avatar("stranger".to_string(), 10.0);
+        let spec = roll_bounty(&b, 0, 7);
+        // Stand the mark where the world already reaches, then put both players on it.
+        let spec = meld_proto::bounties::BountySpec { distance: 20, ..spec };
+        assert!(arena.place_bounty_mark(&b, "owner", "b-1", &spec, 5));
+        assert!(!arena.place_bounty_mark(&b, "owner", "b-1", &spec, 5), "placed twice");
+        let mark_pos = arena
+            .monsters
+            .iter()
+            .find(|m| m.bounty == "b-1")
+            .expect("the mark stands")
+            .position;
+        for pid in ["owner", "stranger"] {
+            if let Some(a) = arena.avatar_mut(pid) {
+                a.position = mark_pos;
+                a.state = "active".to_string();
+            }
+        }
+        // Every other creature is out of the way, so whatever touches is the mark.
+        let touched: Vec<String> = std::iter::from_fn(|| arena.check_touch())
+            .take(1)
+            .map(|(pid, _)| pid)
+            .collect();
+        assert_eq!(touched, vec!["owner".to_string()], "a stranger triggered someone's contract");
     }
 
     // A board that tells a player where to hunt something is only as honest as this

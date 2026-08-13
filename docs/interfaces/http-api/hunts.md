@@ -1,4 +1,4 @@
-# Hunt Board Endpoints
+# Hunt Board & Bounty Endpoints
 
 > Parent: [interfaces/http-api](../http-api.md)
 
@@ -105,3 +105,86 @@ no gear. The piece lands in the Vault, unequipped.
 | 401 | `unauthorized` | Missing or invalid session token. |
 | 404 | `not_found` | No hunt with that key. |
 | 409 | `conflict` | Already paid out, **or** not finished — the message names the progress and restates the objective. |
+
+---
+
+## GET /v1/bounties
+
+The Den's board: your standing contracts, your history, and your hunter rank (AD-4;
+behaviour: [behaviors/hunt-board.md](../../behaviors/hunt-board.md) "Bounties").
+
+Reading it **withdraws** expired contracts and **rolls replacements** up to
+`[bounty] active_slots`, so the offers are always live without a scheduler. Requires a
+session, and requires the account to own the **Hunter** — the board is the Den's.
+
+**Response `200`**
+
+```json
+{
+  "rank": 3,
+  "rank_title": "Tracker",
+  "rank_xp": 320,
+  "rank_xp_to_next": 80,
+  "active": [
+    {
+      "bounty_id": "0198d0c2-2e4d-7bd1-9a3e-1f0b7c9a2b44",
+      "state": "active",
+      "mark_name": "Ironmaw the Unburied",
+      "boss_kind": "ironmaw",
+      "creature": "dune_wyrm",
+      "biome": "desert",
+      "distance": 431,
+      "venue": "overworld",
+      "where_to_look": "Sighted at d431 in the desert, in the open.",
+      "power": 4.85,
+      "expires_in_secs": 61200,
+      "reward_chits": 755,
+      "reward_material": "ember_cinder",
+      "reward_material_qty": 5,
+      "reward_gear": true,
+      "reward_rank_xp": 156
+    }
+  ],
+  "history": []
+}
+```
+
+`active` holds contracts that are standing **or** felled-and-unpaid (`state:
+"completed"`); `history` holds `claimed` and `expired`. `expires_in_secs` is `0` for
+anything no longer standing.
+
+| Status | Code | When |
+|--------|------|------|
+| 200 | — | Always, for a Hunter-owning caller. |
+| 401 | `unauthorized` | Missing or invalid session token. |
+| 403 | `forbidden` | The account has not earned the Hunter yet. |
+
+## POST /v1/bounties/{bounty_id}/claim
+
+Take the Den's payment for a felled mark. No request body. The payout, any rolled piece,
+and the **hunter XP** all land in one transaction — a rank that moved without paying would
+be a rank nobody earned.
+
+**Response `200`**
+
+```json
+{
+  "bounty_id": "0198d0c2-2e4d-7bd1-9a3e-1f0b7c9a2b44",
+  "mark_name": "Ironmaw the Unburied",
+  "reward_chits": 755,
+  "reward_material": "ember_cinder",
+  "reward_material_qty": 5,
+  "reward_gear": "Unyielding Gauntlet of the Vigil",
+  "chits": 3371,
+  "rank": 4,
+  "rank_title": "Tracker",
+  "ranked_up": true
+}
+```
+
+| Status | Code | When |
+|--------|------|------|
+| 200 | — | Paid. |
+| 401 | `unauthorized` | Missing or invalid session token. |
+| 404 | `not_found` | No such contract, or not this player's. |
+| 409 | `conflict` | Already paid, **or** the mark is still standing. |

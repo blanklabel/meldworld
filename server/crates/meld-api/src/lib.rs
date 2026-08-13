@@ -74,6 +74,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vendors/broker/sell", post(broker_sell))
         .route("/v1/hunts", get(hunt_board))
         .route("/v1/hunts/:key/claim", post(claim_hunt))
+        .route("/v1/bounties", get(bounty_board))
+        .route("/v1/bounties/:bounty_id/claim", post(claim_bounty))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -286,6 +288,215 @@ async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
     Ok((StatusCode::OK, Json(HuntBoardResponse { data })).into_response())
 }
 
+/// The caller's hunter rank and banked XP (AD-4). Rank 0 is an unblooded hunter, so it is
+/// the `hunting` skill level minus one — a level ladder starts at 1, a rank at none.
+async fn hunter_rank(st: &ApiState, player_id: Uuid) -> Result<(i32, i64), ApiReject> {
+    let skills = st.db.get_skills(player_id).await.map_err(ApiReject::internal)?;
+    let xp = skills.iter().find(|(k, _)| k == "hunting").map(|(_, xp)| *xp).unwrap_or(0);
+    Ok(((meld_balance::meld_skill_level(xp, st.meld_xp_per_level) - 1).max(0), xp))
+}
+
+/// Whether this account has earned the Den's board at all. The bounty surface is the
+/// Hunter's, so it opens with the class (CL-1) rather than being handed to everyone.
+async fn owns_the_den(st: &ApiState, player_id: Uuid) -> bool {
+    st.db
+        .get_unlocks(player_id)
+        .await
+        .map(|owned| owned.iter().any(|k| k == "class_hunter"))
+        .unwrap_or(false)
+}
+
+fn bounty_view(
+    row: &meld_db::BountyRow,
+    spec: &meld_proto::bounties::BountySpec,
+    now: chrono::DateTime<chrono::Utc>,
+) -> BountyView {
+    let standing = spec_state(row).is_some_and(|s| s.is_standing());
+    BountyView {
+        bounty_id: row.bounty_id.to_string(),
+        state: row.state.clone(),
+        mark_name: spec.mark_name(meld_world::boss_display_name(&spec.boss_kind)),
+        boss_kind: spec.boss_kind.clone(),
+        creature: spec.creature.clone(),
+        biome: spec.biome.clone(),
+        distance: spec.distance,
+        venue: spec.venue.wire().to_string(),
+        where_to_look: format!(
+            "Sighted at d{} in the {}, {}.",
+            spec.distance,
+            spec.biome,
+            spec.venue.phrasing()
+        ),
+        power: spec.power,
+        expires_in_secs: if standing {
+            (row.expires_at - now).num_seconds().max(0)
+        } else {
+            0
+        },
+        reward_chits: spec.reward_chits,
+        reward_material: spec.reward_material.clone(),
+        reward_material_qty: spec.reward_material_qty,
+        reward_gear: spec.reward_gear,
+        reward_rank_xp: spec.reward_rank_xp,
+    }
+}
+
+fn spec_state(row: &meld_db::BountyRow) -> Option<meld_proto::bounties::BountyState> {
+    meld_proto::bounties::BountyState::from_wire(&row.state)
+}
+
+/// `GET /v1/bounties` — the Den's board: standing contracts, your history, your rank.
+///
+/// Withdraws whatever expired and tops the list back up to `[bounty] active_slots` on the
+/// way through, so the offers are always live without a scheduler anywhere.
+async fn bounty_board(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    if !owns_the_den(&st, player_id).await {
+        return Err(ApiReject::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "The Den takes its own. Earn the Hunter first.",
+        ));
+    }
+    let now = chrono::Utc::now();
+    st.db
+        .expire_bounties(player_id, now)
+        .await
+        .map_err(ApiReject::internal)?;
+    let (rank, rank_xp) = hunter_rank(&st, player_id).await?;
+
+    let mut rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    let standing = |r: &meld_db::BountyRow| spec_state(r).is_some_and(|s| s.is_standing());
+    let missing = st
+        .balance
+        .bounty
+        .active_slots
+        .saturating_sub(rows.iter().filter(|r| standing(r)).count());
+    if missing > 0 {
+        let window = chrono::Duration::hours(st.balance.bounty.window_hours.max(1));
+        for i in 0..missing {
+            let bounty_id = Uuid::now_v7();
+            let spec = meld_world::roll_bounty(
+                &st.balance,
+                rank,
+                seed_now() ^ ((i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            );
+            let Ok(json) = serde_json::to_string(&spec) else { continue };
+            st.db
+                .insert_bounty(player_id, bounty_id, &json, now + window)
+                .await
+                .map_err(ApiReject::internal)?;
+        }
+        rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    }
+
+    let (mut active, mut history) = (Vec::new(), Vec::new());
+    for row in &rows {
+        let Ok(spec) = serde_json::from_str::<meld_proto::bounties::BountySpec>(&row.spec) else {
+            continue;
+        };
+        let view = bounty_view(row, &spec, now);
+        match row.state.as_str() {
+            "active" | "completed" => active.push(view),
+            _ => history.push(view),
+        }
+    }
+    let per = st.meld_xp_per_level.max(1);
+    Ok((
+        StatusCode::OK,
+        Json(BountyBoardResponse {
+            rank,
+            rank_title: meld_proto::bounties::rank_title(rank).to_string(),
+            rank_xp,
+            rank_xp_to_next: (per - rank_xp % per).max(0),
+            active,
+            history,
+        }),
+    )
+        .into_response())
+}
+
+/// `POST /v1/bounties/:bounty_id/claim` — take the Den's payment for a felled mark.
+async fn claim_bounty(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(bounty_id): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Ok(id) = Uuid::parse_str(&bounty_id) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."));
+    };
+    let rows = st.db.list_bounties(player_id).await.map_err(ApiReject::internal)?;
+    let Some(row) = rows.iter().find(|r| r.bounty_id == id) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."));
+    };
+    let spec: meld_proto::bounties::BountySpec = serde_json::from_str(&row.spec)
+        .map_err(|e| ApiReject::internal(format!("unreadable bounty spec: {e}")))?;
+    let (rank_before, _) = hunter_rank(&st, player_id).await?;
+
+    let tier = band_of(spec.distance);
+    let drop = if spec.reward_gear {
+        award_gear(&st, player_id, tier).await
+    } else {
+        None
+    };
+    let piece = drop.as_ref().map(crafted_row);
+    let material = (!spec.reward_material.is_empty())
+        .then_some((spec.reward_material.as_str(), spec.reward_material_qty));
+    match st
+        .db
+        .claim_bounty(
+            player_id,
+            id,
+            spec.reward_chits,
+            material,
+            piece.as_ref(),
+            spec.reward_rank_xp,
+        )
+        .await
+        .map_err(ApiReject::internal)?
+    {
+        meld_db::BountyClaim::Paid { chits } => {
+            let (rank, _) = hunter_rank(&st, player_id).await?;
+            Ok((
+                StatusCode::OK,
+                Json(BountyClaimResponse {
+                    bounty_id,
+                    mark_name: spec.mark_name(meld_world::boss_display_name(&spec.boss_kind)),
+                    reward_chits: spec.reward_chits,
+                    reward_material: spec.reward_material.clone(),
+                    reward_material_qty: spec.reward_material_qty,
+                    reward_gear: drop.as_ref().map(|d| d.name.clone()).unwrap_or_default(),
+                    chits,
+                    rank,
+                    rank_title: meld_proto::bounties::rank_title(rank).to_string(),
+                    ranked_up: rank > rank_before,
+                }),
+            )
+                .into_response())
+        }
+        meld_db::BountyClaim::AlreadyClaimed => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "The Den has already paid for that one.",
+        )),
+        meld_db::BountyClaim::NotCompleted => Err(ApiReject::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!(
+                "{} is still standing.",
+                spec.mark_name(meld_world::boss_display_name(&spec.boss_kind))
+            ),
+        )),
+        meld_db::BountyClaim::Missing => {
+            Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."))
+        }
+    }
+}
+
 /// `POST /v1/hunts/:key/claim` — take the reward for a hunt you have finished.
 async fn claim_hunt(
     State(st): State<ApiState>,
@@ -408,6 +619,15 @@ async fn hunt_gear(
     player_id: Uuid,
     def: &meld_proto::hunts::HuntDef,
 ) -> Option<meld_world::GearDrop> {
+    award_gear(st, player_id, def.tier).await
+}
+
+/// The one roll behind every piece a **board** hands over, hunt or bounty.
+async fn award_gear(
+    st: &ApiState,
+    player_id: Uuid,
+    tier: i32,
+) -> Option<meld_world::GearDrop> {
     let roster = st.db.get_hero_classes(player_id).await.unwrap_or_default();
     let fielded: Vec<&str> = roster
         .iter()
@@ -433,10 +653,10 @@ async fn hunt_gear(
         })
         .collect();
     let slot = wearable[((seed >> 32) as usize) % wearable.len()];
-    let biome = meld_world::biome_for_distance(band_distance(def.tier));
+    let biome = meld_world::biome_for_distance(band_distance(tier));
     Some(meld_world::rolled_gear(
         &st.balance,
-        def.tier,
+        tier,
         "rare",
         st.balance.forge.gear_variance_floor,
         slot,
@@ -444,6 +664,19 @@ async fn hunt_gear(
         biome,
         seed,
     ))
+}
+
+/// Which biome band a distance falls in — the inverse of [`band_distance`], sharing
+/// `meld_world::biome_for_distance`'s own boundaries so a bounty's reward tier matches the
+/// ground its mark stands on.
+fn band_of(distance: i32) -> i32 {
+    match distance.max(0) {
+        0..=99 => 0,
+        100..=299 => 1,
+        300..=499 => 2,
+        500..=999 => 3,
+        _ => 4,
+    }
 }
 
 /// A representative distance inside a biome band, for anything that has a `tier` and

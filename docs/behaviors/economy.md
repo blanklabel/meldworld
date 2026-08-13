@@ -125,6 +125,7 @@ Chits is a conserved 64-bit integer quantity. Every chits mutation is classified
 | S2 | World loot drops (chests, containers) | Overworld loot rolls, banked on extraction |
 | S3 | **Broker material buyback** | `POST /v1/vendors/broker/sell` — the NPC that buys crafting materials out of the Vault at `[material] sale_*`, scaled by the seller's Mercantile level |
 | S4 | **Hunt Board payouts** | `POST /v1/hunts/:key/claim` — the once-per-account reward for a completed hunt, `[hunt] reward_chits_*` scaled by the hunt's tier (AD-4, [hunt-board.md](hunt-board.md)) |
+| S5 | **Bounty payouts** | `POST /v1/bounties/{id}/claim` — the Den's generated contracts, `[bounty] reward_chits_*` scaled by hunter rank (AD-4, [hunt-board.md](hunt-board.md)). Bounded by `active_slots` × the expiry window, and each contract pays once. |
 
 Chits found during a run lives in the Backpack: it is only **minted into the persistent economy at extraction**; dying deletes it with the Backpack (so a death of un-extracted chits is a non-event for the persistent supply — it never entered circulation).
 

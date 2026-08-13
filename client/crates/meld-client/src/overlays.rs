@@ -81,6 +81,7 @@ pub(crate) fn overlay_input(
             overlay.kind = None;
         } else {
             overlay.kind = Some(OverlayKind::Inventory);
+            net.0.fetch_bounties();
             *tab = OverlayTab::Items;
             inv.loaded = false;
             net.0.fetch_inventory();
