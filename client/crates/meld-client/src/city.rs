@@ -664,13 +664,15 @@ pub(crate) fn city_input(
     mut inv: ResMut<InventoryData>,
     shop: Res<ShopData>,
     mut craft: ResMut<CraftData>,
-    mut hunts: ResMut<HuntBoardData>,
-    bounties: Res<BountyData>,
+    // The two boards travel as one param: this system is at Bevy's 16-param ceiling, and
+    // the Bounty Board's own two sides are the natural pair to group.
+    mut boards: (ResMut<HuntBoardData>, Res<BountyData>),
     mut shop_selling: ResMut<ShopSelling>,
     mut pending: ResMut<PendingPurchase>,
     unlocks: Res<UnlocksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    let (hunts, bounties) = (&mut boards.0, &boards.1);
     // The Drill Yard is modal and full of text fields, so town hotkeys are off while
     // it is open: `T` is a tutorial dive and `Enter` is a dive, and both sit in the
     // middle of the alphabet you type a hero's name out of. Autoplay never opens the
@@ -852,7 +854,7 @@ pub(crate) fn city_input(
             ];
             for (i, key) in BOUNTY_KEYS.iter().enumerate() {
                 if keys.just_pressed(*key) && i < bounties.active.len() {
-                    claim_bounty_row(&net, &mut city, &bounties, i);
+                    claim_bounty_row(&net, &mut city, bounties, i);
                     return;
                 }
             }
@@ -868,7 +870,7 @@ pub(crate) fn city_input(
             return;
         }
         if keys.just_pressed(KeyCode::Enter) {
-            claim_hunt_row(&net, &mut city, &hunts, hunts.cursor);
+            claim_hunt_row(&net, &mut city, hunts, hunts.cursor);
             return;
         }
         const HUNT_KEYS: [KeyCode; 8] = [
@@ -884,7 +886,7 @@ pub(crate) fn city_input(
         for (i, key) in HUNT_KEYS.iter().enumerate() {
             if keys.just_pressed(*key) && i < n {
                 hunts.cursor = i;
-                claim_hunt_row(&net, &mut city, &hunts, i);
+                claim_hunt_row(&net, &mut city, hunts, i);
                 return;
             }
         }
@@ -3499,7 +3501,19 @@ pub(crate) fn render_district_nameplates(
                 BorderRadius::all(Val::Px(6.0)),
             ))
             .with_children(|b| {
-                b.spawn(glass::text(d.label, 12.0, glass::TEXT));
+                // Name over purpose, the same pairing the nav chip and the walk-up prompt
+                // use: a plate that reads "The Drill Yard" and stops has told a new player
+                // the one thing they already knew — that it is called something.
+                b.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(1.0),
+                    ..default()
+                })
+                .with_children(|lines| {
+                    lines.spawn(glass::text(d.label, 12.0, glass::TEXT));
+                    lines.spawn(glass::text(d.purpose, 10.0, glass::DIM));
+                });
             });
         }
     });

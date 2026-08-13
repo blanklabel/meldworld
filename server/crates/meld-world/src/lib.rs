@@ -4470,7 +4470,8 @@ mod tests {
             }
         }
         // Every other creature is out of the way, so whatever touches is the mark.
-        let touched: Vec<String> = std::iter::from_fn(|| arena.check_touch())
+        let none = std::collections::HashSet::new();
+        let touched: Vec<String> = std::iter::from_fn(|| arena.check_touch(&none))
             .take(1)
             .map(|(pid, _)| pid)
             .collect();
