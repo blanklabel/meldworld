@@ -22,6 +22,10 @@ snapshot_hz = 10                 # CANON §B
 touch_radius_tiles = 1.0         # contact distance to trigger a battle (spec-defined)
 interaction_radius_tiles = 2.5   # range to use a portal/drop/etc. (~2-tile, limits.md) [TUNABLE]
 avatar_speed_tiles_per_sec = 6.0 # overworld walk speed (spec-defined)
+battle_reentry_grace_ms = 5000   # after winning/losing/fleeing a fight, how long that
+                                  # player is immune to being touched into a new one —
+                                  # covers the victory/loot summary and gives a fled
+                                  # player a real window to walk away [TUNABLE]
 
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)

@@ -79,6 +79,7 @@ pub struct World {
     pub touch_radius_tiles: f64,
     pub interaction_radius_tiles: f64,
     pub avatar_speed_tiles_per_sec: f64,
+    pub battle_reentry_grace_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

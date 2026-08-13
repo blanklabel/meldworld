@@ -875,6 +875,14 @@ struct WorldActor {
     /// gates the professions' field verbs on these (raising a station, and whose skill
     /// a station's work is done at), so it must not have to ask Postgres mid-tick.
     skill_levels: HashMap<String, HashMap<String, i32>>,
+    /// player_id -> wall-clock ms until which `resolve_touches` won't start them a new
+    /// battle. Set on every way out of a fight (victory, defeat-with-survivors, flee) so
+    /// a monster that was already adjacent can't yank the player straight back in while
+    /// the previous result is still on screen, and so fleeing buys a real window to walk
+    /// away instead of the fight restarting on the very next tick. `meld-world` must stay
+    /// pure (no wall-clock), so this lives here and is passed into `check_touch` as an
+    /// exclusion set rather than being computed inside the arena.
+    battle_immune_until: HashMap<String, u64>,
 }
 
 /// One queued request at a field station: everything the DB half needs, decided
@@ -2089,9 +2097,17 @@ impl WorldActor {
     /// another's — and teammates still opt into an *ongoing* fight via `join_battle`.
     fn resolve_touches(&mut self) -> Vec<Outgoing> {
         let mut out = Vec::new();
+        // Players who just walked out of a battle (win, loss, or flee) sit out a short
+        // grace window before they can be touched into another one — see
+        // `battle_immune_until`. Expired entries are dropped here so the map doesn't
+        // grow forever.
+        let now = now_ms();
+        self.battle_immune_until.retain(|_, until| *until > now);
+        let immune: std::collections::HashSet<String> =
+            self.battle_immune_until.keys().cloned().collect();
         let max_passes = self.arena.avatars.len();
         for _ in 0..max_passes {
-            let decision = self.arena.check_touch().and_then(|(toucher, monster_idx)| {
+            let decision = self.arena.check_touch(&immune).and_then(|(toucher, monster_idx)| {
                 self.run
                     .runs
                     .iter()
@@ -3233,6 +3249,7 @@ impl GameState {
                 pending_effects: Vec::new(),
                 skill_levels: HashMap::new(),
                 edges: HashMap::new(),
+                battle_immune_until: HashMap::new(),
             });
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
@@ -7224,6 +7241,12 @@ impl WorldActor {
                         a.state = "active".to_string();
                     }
                 }
+                // A nearby second monster shouldn't be able to pull the party straight
+                // into another fight while the victory/loot summary is still on screen.
+                let reentry_until = now_ms() + balance.world.battle_reentry_grace_ms;
+                for pid in &members {
+                    inst.battle_immune_until.insert(pid.clone(), reentry_until);
+                }
                 // Build per-member ended (own loot) + backpack update.
                 let runs_snapshot: Vec<(String, i32, i64)> = inst
                     .run
@@ -7500,6 +7523,14 @@ impl WorldActor {
                         a.position.x = battle_pos.x + ux * flee_dist;
                         a.position.y = battle_pos.y + uy * flee_dist;
                     }
+                }
+                // The teleport alone wasn't enough — an aggressive creature's chase
+                // speed can close a 4-tile gap in under a second, so the fight restarted
+                // before the player had reacted. A real grace window on top of the
+                // teleport gives fleeing an actual chance to work.
+                let reentry_until = now_ms() + balance.world.battle_reentry_grace_ms;
+                for pid in &members {
+                    inst.battle_immune_until.insert(pid.clone(), reentry_until);
                 }
                 let mut losses: Vec<FleeLoss> = Vec::new();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {

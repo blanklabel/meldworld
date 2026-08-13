@@ -1168,9 +1168,16 @@ pub(crate) fn menu_keyboard(
     autoplay: Res<Autoplay>,
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
+    report: Res<LootReport>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
+    // The fight is already won/lost/fled — the victory/loot tally is up, so no
+    // keyboard shortcut should be able to queue another action behind it (see
+    // the matching `show` gate in `rebuild_command_menu`).
+    if report.active {
+        return;
+    }
     // The Items page offers only what the party is carrying (GR-4).
     let held = held_potions(&backpack);
     // The command menu keys off the *active hero's* class — a mixed party is
@@ -1389,11 +1396,16 @@ pub(crate) fn rebuild_command_menu(
     battle: Res<BattleData>,
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
+    report: Res<LootReport>,
     mut menu: ResMut<BattleMenu>,
     roster: Res<crate::PartyRoster>,
     existing: Query<Entity, With<CommandWindow>>,
 ) {
-    let show = battle.active.is_some();
+    // The fight is over the moment the loot report is up (victory/chest tally) —
+    // hidden here rather than left to decay naturally, since `battle.active` isn't
+    // cleared until the NEXT battle starts and would otherwise keep Attack/Flee
+    // live and clickable on top of the summary.
+    let show = battle.active.is_some() && !report.active;
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
