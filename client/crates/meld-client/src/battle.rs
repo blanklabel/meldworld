@@ -536,6 +536,7 @@ pub(crate) fn drive_battle_facing(
 pub(crate) fn animate_battle_actors(
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    feel: Res<BattleFeel>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(&mut Transform, &SpriteQuad)>,
 ) {
@@ -562,20 +563,20 @@ pub(crate) fn animate_battle_actors(
         let lunge_age = hitfx.acts.get(&s.id).copied().unwrap_or(f32::INFINITY);
 
         // Recoil: a knockback that eases home over the TTL.
-        let recoil = if hit_age < HIT_RECOIL_TTL {
-            (1.0 - hit_age / HIT_RECOIL_TTL) * 0.35
+        let recoil = if hit_age < feel.recoil_ttl {
+            (1.0 - hit_age / feel.recoil_ttl) * feel.recoil_distance
         } else {
             0.0
         };
         // Lunge: step toward the foe and back (half-sine, peaks mid-window).
-        let lunge = if lunge_age < ATTACK_LUNGE_TTL {
-            (std::f32::consts::PI * lunge_age / ATTACK_LUNGE_TTL).sin() * 0.6
+        let lunge = if lunge_age < feel.lunge_ttl {
+            (std::f32::consts::PI * lunge_age / feel.lunge_ttl).sin() * feel.lunge_distance
         } else {
             0.0
         };
         // A brief lateral shake right at the moment of impact.
-        let shake = if hit_age < HIT_WHITE_TTL {
-            (hit_age * 90.0).sin() * (1.0 - hit_age / HIT_WHITE_TTL) * 0.12
+        let shake = if hit_age < feel.white_ttl {
+            (hit_age * feel.shake_hz).sin() * (1.0 - hit_age / feel.white_ttl) * feel.shake_distance
         } else {
             0.0
         };
@@ -602,9 +603,9 @@ pub(crate) fn animate_battle_actors(
         // White impact flash on the instant of a hit (brighter than base → blooms);
         // otherwise the base tint, warmed toward angry red by the rage fraction.
         if let Some(m) = mats.get_mut(&s.mat) {
-            if hit_age < HIT_WHITE_TTL {
+            if hit_age < feel.white_ttl {
                 m.base_color =
-                    lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / HIT_WHITE_TTL);
+                    lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / feel.white_ttl);
                 m.emissive = LinearRgba::BLACK;
             } else {
                 m.base_color = lerp_color(s.base, Color::srgb(1.9, 0.5, 0.35), rage * 0.55);
@@ -1851,9 +1852,9 @@ pub(crate) fn meter_labeled(parent: &mut ChildSpawnerCommands, frac: f32, height
         });
 }
 
-/// True if a combatant was hit within the last [`FLASH_TTL`] seconds.
-pub(crate) fn flashing(hitfx: &HitFx, id: &str) -> bool {
-    hitfx.items.iter().any(|h| h.target == id && h.age < FLASH_TTL)
+/// True if a combatant was hit within the last [`BattleFeel::flash_ttl`] seconds.
+pub(crate) fn flashing(hitfx: &HitFx, feel: &BattleFeel, id: &str) -> bool {
+    hitfx.items.iter().any(|h| h.target == id && h.age < feel.flash_ttl)
 }
 
 /// During the Target picker, classify a combatant: `(is a candidate, is the
@@ -1877,6 +1878,7 @@ pub(crate) fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    feel: Res<BattleFeel>,
     menu: Res<BattleMenu>,
     target: Res<BattleTarget>,
     perks: Res<PerksRes>,
@@ -1906,7 +1908,7 @@ pub(crate) fn render_enemy_panel(
                 let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == c.id) else { continue };
                 let Ok(feet) = cam.world_to_viewport(cam_tf, gt.translation()) else { continue };
                 let frac = c.hp as f32 / c.max_hp.max(1) as f32;
-                let hurt = flashing(&hitfx, &c.id);
+                let hurt = flashing(&hitfx, &feel, &c.id);
                 let is_target = focus.as_deref() == Some(c.id.as_str());
                 let faction = c.statuses.iter().find_map(|s| s.strip_prefix("faction:"));
                 let hp_fill = if hurt {
@@ -1948,8 +1950,9 @@ pub(crate) fn render_enemy_panel(
                         TextColor(name_color),
                     ));
                     meter(e, frac, 10.0, hp_fill);
-                    // Explorer "Predator's Eye" top tier: reveal the enemy's ATB gauge
-                    // (otherwise hidden — you only see foe HP). ATB shows in battle only.
+                    // Hunter "Predator's Eye" top tier (`hunter_intel_atb_at`): reveal the
+                    // enemy's ATB gauge — otherwise you read foe HP and guess at its turn.
+                    // The perk moved to the Hunter with CL-2; the label said Explorer.
                     if perks.0.hunter_intel >= 3 {
                         meter(e, c.gauge as f32, 5.0, Color::srgb(0.5, 0.72, 1.0));
                     }
@@ -2302,6 +2305,7 @@ pub(crate) fn render_ally_parties(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    feel: Res<BattleFeel>,
     panel: Res<AllyPanel>,
     existing: Query<Entity, With<AllyPartyStrips>>,
 ) {
@@ -2420,7 +2424,7 @@ pub(crate) fn render_ally_parties(
                         })
                         .with_children(|cells| {
                             for c in heroes.iter() {
-                                ally_cell(cells, &hitfx, c);
+                                ally_cell(cells, &hitfx, &feel, c);
                             }
                         });
                     });
@@ -2432,10 +2436,15 @@ pub(crate) fn render_ally_parties(
 /// A compact read-only status cell for one joined ally hero: name (+ HP number
 /// inside its bar) and a slim ATB gauge. Kept narrow so a full co-op board fits in
 /// the single top ally box.
-pub(crate) fn ally_cell(parent: &mut ChildSpawnerCommands, hitfx: &HitFx, c: &CombatantView) {
+pub(crate) fn ally_cell(
+    parent: &mut ChildSpawnerCommands,
+    hitfx: &HitFx,
+    feel: &BattleFeel,
+    c: &CombatantView,
+) {
     let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
     let gauge = c.gauge.clamp(0.0, 1.0) as f32;
-    let hurt = flashing(hitfx, &c.id);
+    let hurt = flashing(hitfx, feel, &c.id);
     let name = if !c.name.is_empty() && c.name != "Hero" {
         c.name.clone()
     } else {
@@ -2481,6 +2490,7 @@ pub(crate) fn party_cell(
     parent: &mut ChildSpawnerCommands,
     battle: &BattleData,
     hitfx: &HitFx,
+    feel: &BattleFeel,
     menu: &BattleMenu,
     flash: &AtbFlash,
     id: &str,
@@ -2496,12 +2506,12 @@ pub(crate) fn party_cell(
     let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
     let gauge = c.gauge.clamp(0.0, 1.0) as f32;
     let name = battle.hero_label(id);
-    let hurt = flashing(hitfx, id);
+    let hurt = flashing(hitfx, feel, id);
     // "Turn's up" pop: 1.0 the instant the gauge fills, fading to 0 over the TTL.
     let atb_pop = flash
         .age
         .get(id)
-        .map(|a| (1.0 - a / ATB_FLASH_TTL).clamp(0.0, 1.0))
+        .map(|a| (1.0 - a / feel.atb_flash_ttl).clamp(0.0, 1.0))
         .unwrap_or(0.0);
     // Frosted glass: hairline edge normally, a brighter gold edge for the active /
     // target hero so it still stands out without a heavy border.
@@ -2675,6 +2685,7 @@ pub(crate) fn render_party_window(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
+    feel: Res<BattleFeel>,
     menu: Res<BattleMenu>,
     flash: Res<AtbFlash>,
     existing: Query<Entity, With<PartyWindow>>,
@@ -2705,7 +2716,7 @@ pub(crate) fn render_party_window(
         .with_children(|row| {
             for i in 0..4 {
                 match ids.get(i) {
-                    Some(id) => party_cell(row, &battle, &hitfx, &menu, &flash, id, i),
+                    Some(id) => party_cell(row, &battle, &hitfx, &feel, &menu, &flash, id, i),
                     None => {
                         row.spawn(Node {
                             flex_grow: 1.0,
@@ -2721,7 +2732,12 @@ pub(crate) fn render_party_window(
 /// Start a fading flash for any hero whose ATB just filled (rising edge into
 /// `ready`) and age out the running ones — the "your turn is up" pop that
 /// [`party_cell`] renders on the ATB bar. Frozen in the static mockup.
-pub(crate) fn advance_atb_flash(time: Res<Time>, battle: Res<BattleData>, mut flash: ResMut<AtbFlash>) {
+pub(crate) fn advance_atb_flash(
+    time: Res<Time>,
+    battle: Res<BattleData>,
+    feel: Res<BattleFeel>,
+    mut flash: ResMut<AtbFlash>,
+) {
     if battle_mockup_flag() {
         return;
     }
@@ -2729,7 +2745,7 @@ pub(crate) fn advance_atb_flash(time: Res<Time>, battle: Res<BattleData>, mut fl
     // Age existing flashes and drop the expired.
     flash.age.retain(|_, a| {
         *a += dt;
-        *a < ATB_FLASH_TTL
+        *a < feel.atb_flash_ttl
     });
     // Newly-ready heroes (weren't ready last frame) get a fresh flash.
     for id in battle.ready.iter() {
@@ -2763,7 +2779,7 @@ pub(crate) fn tactics_toggle(
 
 /// Age floating hit numbers; drop the expired. Frozen in the static mockup so
 /// the seeded feedback stays on screen.
-pub(crate) fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
+pub(crate) fn advance_hit_fx(time: Res<Time>, feel: Res<BattleFeel>, mut hitfx: ResMut<HitFx>) {
     if battle_mockup_flag() {
         return;
     }
@@ -2771,25 +2787,37 @@ pub(crate) fn advance_hit_fx(time: Res<Time>, mut hitfx: ResMut<HitFx>) {
     for h in &mut hitfx.items {
         h.age += dt;
     }
-    hitfx.items.retain(|h| h.age < HIT_TTL);
+    hitfx.items.retain(|h| h.age < feel.hit_ttl);
     for c in &mut hitfx.callouts {
         c.age += dt;
     }
     hitfx.callouts.retain(|c| c.age < c.ttl);
     hitfx.acts.retain(|_, a| {
         *a += dt;
-        *a < ATTACK_LUNGE_TTL
+        *a < feel.lunge_ttl
     });
 }
 
-/// Immediate-mode overlay: draw each floating number, rising and fading, anchored
-/// over the monster (top-centre) or the striking hero's slot (bottom-left).
+/// Immediate-mode overlay: draw each floating number, rising and fading, anchored over
+/// the combatant it landed on — its own sprite in the arena, projected the way
+/// [`render_enemy_panel`] hangs the HP bars.
+///
+/// It used to anchor by *identity*: `monster_combatant` (which is only ever
+/// `enemies.first()`) drew top-centre and everything else fell through a
+/// `your_ids.position(…).unwrap_or(0)`. So every enemy past the first — and every joined
+/// ally — printed its damage over hero slot 0's cell. Packs are standard now and an
+/// all-enemy ability resolves four or five at once, so a Purging Light sprayed the whole
+/// sweep onto the first hero. Anchoring to the actor removes the class of bug rather
+/// than the instance.
 pub(crate) fn render_hit_fx(
     mut commands: Commands,
     hitfx: Res<HitFx>,
     battle: Res<BattleData>,
+    feel: Res<BattleFeel>,
     tactics: Res<Tactics>,
     windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<HitFxRoot>>,
 ) {
     for e in &existing {
@@ -2810,38 +2838,46 @@ pub(crate) fn render_hit_fx(
             },
         ))
         .with_children(|p| {
+            let cam = cam_q.iter().next();
             for hit in &hitfx.items {
-                let (x, y0) = if Some(hit.target.as_str()) == battle.monster_combatant.as_deref() {
-                    (w * 0.5 - 16.0, h * 0.22)
-                } else {
-                    // Heroes sit in a single compact row across the bottom; float the
-                    // number over that hero's cell.
-                    let idx = battle
-                        .your_ids
-                        .iter()
-                        .position(|id| id == &hit.target)
-                        .unwrap_or(0);
-                    ((idx as f32 + 0.5) / 4.0 * w, h - 150.0)
+                let over_actor = cam.and_then(|(cam, cam_tf)| {
+                    let (_, gt) = actors.iter().find(|(a, _)| a.id == hit.target)?;
+                    let head = gt.translation() + Vec3::Y * feel.number_height;
+                    cam.world_to_viewport(cam_tf, head).ok()
+                });
+                // No actor yet (or it is behind the camera) — fall back to the hero's own
+                // cell, and only for a hero we actually field. Printing someone else's
+                // number on slot 0 is what this system is being fixed for.
+                let Some((x, y0)) = over_actor.map(|p| (p.x - 16.0, p.y)).or_else(|| {
+                    let idx = battle.your_ids.iter().position(|id| id == &hit.target)?;
+                    Some(((idx as f32 + 0.5) / 4.0 * w, h - 150.0))
+                }) else {
+                    continue;
                 };
-                let rise = hit.age * 46.0;
-                let alpha = (1.0 - hit.age / HIT_TTL).clamp(0.0, 1.0);
+                let rise = hit.age * feel.number_rise;
+                let alpha = (1.0 - hit.age / feel.hit_ttl).clamp(0.0, 1.0);
                 // WEAK! hits pop bigger and judder side-to-side (the spec's
                 // screen-shaking flourish, scoped to the number itself).
                 let shake = if hit.scale > 1.0 {
-                    (hit.age * 60.0).sin() * 4.0 * alpha
+                    (hit.age * 60.0).sin() * feel.number_shake * alpha
                 } else {
                     0.0
                 };
+                // Simultaneous hits on one target share an anchor exactly, so stack them
+                // and alternate the side — an all-enemy sweep otherwise overstrikes into
+                // an unreadable smear at a single point.
+                let stack = hit.stack as f32 * feel.stack_step;
+                let sway = if hit.stack % 2 == 1 { feel.stack_step } else { 0.0 };
                 p.spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(x + shake),
-                        top: Val::Px(y0 - rise),
+                        left: Val::Px(x + shake + sway),
+                        top: Val::Px(y0 - rise - stack),
                         ..default()
                     },
                     Text::new(hit.text.clone()),
                     TextFont {
-                        font_size: 26.0 * hit.scale,
+                        font_size: feel.number_size * hit.scale,
                         ..default()
                     },
                     TextColor(hit.color.with_alpha(alpha)),
@@ -2909,9 +2945,10 @@ pub(crate) fn render_hit_fx(
 }
 
 /// Turn a resolved effect into a floating number (skips zero/no-op effects).
-/// `show_elements` is the Psyker perk gate (spec §6): only a party whose
-/// Psyker has unlocked threat-sight reads WEAK!/RESIST!/IMMUNE!/ABSORB! —
-/// everyone else sees plain numbers (an immune hit still shows its 0).
+/// `show_elements` is the Hunter's threat-sense gate (spec §6): only a party whose
+/// Hunter has unlocked it reads WEAK!/RESIST!/IMMUNE!/ABSORB! — everyone else sees
+/// plain numbers (an immune hit still shows its 0). Reading what a creature is made of
+/// is the same trade as reading its level and its gauge.
 pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool) {
     let modifier = if show_elements { e.modifier.as_deref() } else { None };
     let mut scale = 1.0;
@@ -2953,12 +2990,14 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
         "ko" => ("KO!".to_string(), Color::srgb(1.0, 0.35, 0.35)),
         _ => return,
     };
+    let stack = hitfx.items.iter().filter(|h| h.target == e.target).count().min(255) as u8;
     hitfx.items.push(Hit {
         target: e.target.clone(),
         text,
         color,
         age: 0.0,
         scale,
+        stack,
     });
 }
 

@@ -2030,7 +2030,7 @@ pub(crate) fn update_mob_nameplates(
         commands.entity(e).despawn();
     }
     let intel = perks.0.hunter_intel;
-    let threat = perks.0.psyker_threat;
+    let threat = perks.0.hunter_threat;
     // A QUARRY plate is not a perk — it is the hunt you are holding — so the intel/threat
     // early-out must not swallow it.
     let any_quarry = world.entities.values().any(|e| e.quarry);
@@ -2056,7 +2056,7 @@ pub(crate) fn update_mob_nameplates(
             let Some(s) = cam.world_to_viewport(cam_tf, head).ok() else {
                 continue;
             };
-            // Threat marker (Psyker): elites/gatekeepers, then aggressive mobs.
+            // Threat marker (Hunter): elites/gatekeepers, then aggressive mobs.
             let ec = ent.encounter_class.as_deref().unwrap_or("standard");
             let aggr = ent.aggression.as_deref().unwrap_or("passive");
             let (marker, marker_col) = if threat >= 1 && ec == "gatekeeper" {

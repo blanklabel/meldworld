@@ -470,8 +470,8 @@ pub struct PerksLine {
     pub shifter_item_sense: bool,
     /// Dungeon cells within which a Shifter reveals ARMED traps (0 = none).
     pub shifter_trap_radius: f32,
-    pub psyker_threat: u8,
-    pub psyker_reveal_radius: f32,
+    pub hunter_threat: u8,
+    pub hunter_reveal_radius: f32,
     /// World-units at which a Smithwright reveals ORE veins / a Keeper REAGENT beds.
     /// The server already force-includes them in the snapshot; these are for the HUD
     /// hint and the minimap.
@@ -491,8 +491,8 @@ impl Default for PerksLine {
             shifter_dungeon_radius: 0.0,
             shifter_item_sense: false,
             shifter_trap_radius: 0.0,
-            psyker_threat: 0,
-            psyker_reveal_radius: 0.0,
+            hunter_threat: 0,
+            hunter_reveal_radius: 0.0,
             smithwright_ore_radius: 0.0,
             keeper_reagent_radius: 0.0,
             resonant_regen: 0.0,
@@ -2263,8 +2263,8 @@ impl Inner {
                     shifter_dungeon_radius: f("shifter_dungeon_radius"),
                     shifter_item_sense: p["shifter_item_sense"].as_bool().unwrap_or(false),
                     shifter_trap_radius: f("shifter_trap_radius"),
-                    psyker_threat: u("psyker_threat"),
-                    psyker_reveal_radius: f("psyker_reveal_radius"),
+                    hunter_threat: u("hunter_threat"),
+                    hunter_reveal_radius: f("hunter_reveal_radius"),
                     smithwright_ore_radius: f("smithwright_ore_radius"),
                     keeper_reagent_radius: f("keeper_reagent_radius"),
                     resonant_regen: f("resonant_regen"),

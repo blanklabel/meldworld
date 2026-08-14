@@ -688,12 +688,14 @@ pub mod run {
         /// before somebody stands on it.
         #[serde(default)]
         pub shifter_trap_radius: f32,
-        /// Psyker threat tier: 0 none · 1 elites/gatekeepers · 2 +aggressive mobs.
-        #[serde(default)]
-        pub psyker_threat: u8,
-        /// Extended mob interest radius the Psyker reveals (0 when no Psyker).
-        #[serde(default)]
-        pub psyker_reveal_radius: f32,
+        /// Hunter threat tier: 0 none · 1 elites/gatekeepers · 2 +aggressive mobs.
+        /// Sits with `hunter_intel` because both are the same trade — sizing up what
+        /// you are walking toward. The `psyker_*` aliases keep an older payload parsing.
+        #[serde(default, alias = "psyker_threat")]
+        pub hunter_threat: u8,
+        /// Extended mob interest radius the Hunter reveals (0 when no Hunter).
+        #[serde(default, alias = "psyker_reveal_radius")]
+        pub hunter_reveal_radius: f32,
         /// Resonant overworld regen applied server-side, in HP/sec (display hint).
         #[serde(default)]
         pub resonant_regen: f32,
@@ -753,8 +755,8 @@ pub mod run {
                 shifter_dungeon_radius: 0.0,
                 shifter_item_sense: false,
                 shifter_trap_radius: 0.0,
-                psyker_threat: 0,
-                psyker_reveal_radius: 0.0,
+                hunter_threat: 0,
+                hunter_reveal_radius: 0.0,
                 resonant_regen: 0.0,
                 smithwright_ore_radius: 0.0,
                 smithwright_setup_mult: 1.0,
@@ -1407,10 +1409,14 @@ mod tests {
         assert!(env.payload.shifter_item_sense);
         assert_eq!(env.payload.shifter_trap_radius, 4.5);
         assert_eq!(env.payload.phoenix_guard_aggro_mult, 0.6);
+        // Threat sense moved to the Hunter; this payload still names it `psyker_*`, so
+        // the aliases are what keep an in-flight message from an older server readable.
+        assert_eq!(env.payload.hunter_threat, 1);
+        assert_eq!(env.payload.hunter_reveal_radius, 30.0);
         let s = serde_json::to_string(&env.payload).unwrap();
         let back: run::Perks = serde_json::from_str(&s).unwrap();
         assert_eq!(back.explorer_map, 2);
-        assert_eq!(back.psyker_reveal_radius, 30.0);
+        assert_eq!(back.hunter_reveal_radius, 30.0);
     }
 
     /// The ability magnitudes ride the roster because the client has no `balance.toml`

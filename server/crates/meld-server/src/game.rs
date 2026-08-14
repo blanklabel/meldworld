@@ -949,7 +949,7 @@ struct WorldActor {
     /// player_id -> fractional HP carried over between ticks for the Resonant
     /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
     /// bank the sub-1 remainder here and apply whole HP as it accrues).
-    regen_accum: HashMap<String, f32>,
+    regen_accum: HashMap<String, RegenAccum>,
     /// DG-3: hand-designed dungeon entrances placed as the world streams (a chanced
     /// per-section draw from the biome's authored pool). Rendered in the overworld
     /// snapshot as `entrance:<dungeon>`; touch one to descend (`enter_dungeon`).
@@ -1130,6 +1130,58 @@ impl WorldActor {
     }
 }
 
+/// One player's overworld-regen tick: the two sources, the party's HP caps, and which
+/// slots are Resonants (the only heroes the walking regen tends).
+struct RegenPlan {
+    player_id: String,
+    own: f32,
+    field: f32,
+    caps: Vec<i32>,
+    healers: Vec<usize>,
+}
+
+/// Sub-1 HP banked per source. They are kept apart because they reach different heroes,
+/// so a shared remainder would let the field's overflow heal through the Resonant-only
+/// rule (and vice versa).
+#[derive(Default)]
+pub(crate) struct RegenAccum {
+    own: f32,
+    field: f32,
+}
+
+/// Take the whole HP out of an accumulator, leaving the remainder banked.
+fn take_whole(acc: &mut f32) -> i32 {
+    let whole = acc.floor();
+    if whole < 1.0 {
+        return 0;
+    }
+    *acc -= whole;
+    whole as i32
+}
+
+/// Spend `budget` HP into `hps`, most-wounded living hero first. `eligible` restricts it
+/// to those slots (the Resonant-only source); `None` means the whole party.
+fn pour_regen(hps: &mut [i32], caps: &[i32], eligible: Option<&[usize]>, mut budget: i32) {
+    while budget > 0 {
+        let mut best: Option<usize> = None;
+        let mut best_deficit = 0;
+        for (i, h) in hps.iter().enumerate() {
+            if eligible.is_some_and(|e| !e.contains(&i)) {
+                continue;
+            }
+            let cap = caps.get(i).copied().unwrap_or(*h);
+            let deficit = cap - *h;
+            if *h > 0 && deficit > best_deficit {
+                best_deficit = deficit;
+                best = Some(i);
+            }
+        }
+        let Some(i) = best else { break };
+        hps[i] += 1;
+        budget -= 1;
+    }
+}
+
 /// Pure mapping from (party classes x run level) -> earned perks against the `[perks]`
 /// balance thresholds. A perk stays neutral unless its class is in the party. A free
 /// function rather than a method because it reads nothing but balance — which is what
@@ -1172,6 +1224,15 @@ pub(crate) fn compute_perks(
             } else {
                 0
             };
+            // Threat sense is the same eye at longer range: what is dangerous before it
+            // is in reach. It used to be the Psyker's, where it duplicated this lane and
+            // stopped growing at run level 3.
+            if lvl >= p.hunter_threat_elites_at {
+                out.hunter_threat = if lvl >= p.hunter_threat_aggro_at { 2 } else { 1 };
+                out.hunter_reveal_radius = (p.hunter_reveal_base
+                    + p.hunter_reveal_per_level * above(p.hunter_threat_elites_at) as f64)
+                    as f32;
+            }
         }
         // Shifter — Shift-sense. Not a map: a Runner reads the instability a door
         // leaks, and can tell what is worth carrying out before touching it.
@@ -1185,13 +1246,6 @@ pub(crate) fn compute_perks(
                 out.shifter_trap_radius = p.shifter_trap_radius_base
                     + p.shifter_trap_radius_per_level * above(p.shifter_trap_sense_at);
             }
-        }
-        // Psyker — threat sense.
-        if has(CharacterClass::Psyker) && lvl >= p.psyker_threat_elites_at {
-            out.psyker_threat = if lvl >= p.psyker_threat_aggro_at { 2 } else { 1 };
-            out.psyker_reveal_radius = (p.psyker_reveal_base
-                + p.psyker_reveal_per_level * above(p.psyker_threat_elites_at) as f64)
-                as f32;
         }
         // Resonant — overworld regen (HP/sec).
         if has(CharacterClass::Resonant) {
@@ -1492,7 +1546,7 @@ impl WorldActor {
             let own_idx = me.map(|(i, _)| i);
             // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
             // (dangerous foes sensed at range). Non-mob entities keep the base radius.
-            let mob_radius = (self.perks_for(&r.player_id).psyker_reveal_radius as f64).max(radius);
+            let mob_radius = (self.perks_for(&r.player_id).hunter_reveal_radius as f64).max(radius);
             let mob_radius2 = mob_radius * mob_radius;
             // A crafter reads the half of the world its own trade is built on, from
             // further out than the interest radius: the Foundry sees ORE, the Open Flower
@@ -2143,68 +2197,65 @@ impl WorldActor {
             .collect()
     }
 
-    /// Resonant "Overworld Regen": restore carried hero HP over time while a party
-    /// roams (not in battle). Regen is HP/sec but `hero_hp` is integer, so the
-    /// sub-1 remainder is banked in `regen_accum` and whole HP is applied as it
-    /// accrues, most-wounded living hero first (downed heroes at 0 HP are not
-    /// revived — that needs a real fight). Purely server state.
+    /// Overworld regen: restore carried hero HP over time while a party roams (not in
+    /// battle). Regen is HP/sec but `hero_hp` is integer, so the sub-1 remainder is
+    /// banked in `regen_accum` and whole HP is applied as it accrues, most-wounded
+    /// living hero first (downed heroes at 0 HP are not revived — that needs a real
+    /// fight). Purely server state.
+    ///
+    /// **Two sources, and they reach different people.** A Resonant's walking regen
+    /// tends only the Resonants themselves: poured over the whole party it mended every
+    /// wound between fights, so a party that brought a healer never needed healing and
+    /// the class's own kit — the thing it is best in the game at — went unspent. A
+    /// Keeper's alembic field still reaches everyone standing in it, because a field is
+    /// a PLACE you choose to stand rather than a passive you get for bringing someone.
     fn apply_overworld_regen(&mut self, dt: f64) {
         // Plan first (shared borrow), then mutate hero_hp (exclusive borrow).
-        let plans: Vec<(String, f32, Vec<i32>)> = {
+        let plans: Vec<RegenPlan> = {
             let in_battle = self.parties_in_battle();
             let mut v = Vec::new();
             for r in &self.run.runs {
                 if in_battle.contains(&r.party_id) {
                     continue;
                 }
-                // The Resonant's perk and a Keeper's field stack: both are "someone is
-                // looking after you out here", and standing in a still's warmth should
-                // matter to a party that has no healer at all.
-                let regen = self.perks_for(&r.player_id).resonant_regen
-                    + self.alembic_field_regen(&r.player_id);
-                if regen <= 0.0 {
+                let own = self.perks_for(&r.player_id).resonant_regen;
+                let field = self.alembic_field_regen(&r.player_id);
+                if own <= 0.0 && field <= 0.0 {
                     continue;
                 }
-                let caps: Vec<i32> = self
-                    .party_views(&r.player_id)
-                    .iter()
-                    .map(|h| h.max_hp)
-                    .collect();
-                v.push((r.player_id.clone(), regen, caps));
+                let party = self.party_views(&r.player_id);
+                v.push(RegenPlan {
+                    player_id: r.player_id.clone(),
+                    own,
+                    field,
+                    caps: party.iter().map(|h| h.max_hp).collect(),
+                    healers: party
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, h)| h.class_key == meld_run::class_key(CharacterClass::Resonant))
+                        .map(|(i, _)| i)
+                        .collect(),
+                });
             }
             v
         };
         if plans.is_empty() {
             return;
         }
-        for (pid, regen, caps) in plans {
-            let acc = self.regen_accum.entry(pid.clone()).or_insert(0.0);
-            *acc += regen * dt as f32;
-            let whole = acc.floor();
-            if whole < 1.0 {
+        for plan in plans {
+            let acc = self.regen_accum.entry(plan.player_id.clone()).or_default();
+            acc.own += plan.own * dt as f32;
+            acc.field += plan.field * dt as f32;
+            let own_budget = take_whole(&mut acc.own);
+            let field_budget = take_whole(&mut acc.field);
+            if own_budget == 0 && field_budget == 0 {
                 continue;
             }
-            *acc -= whole;
-            let mut budget = whole as i32;
-            let Some(hps) = self.hero_hp.get_mut(&pid) else {
+            let Some(hps) = self.hero_hp.get_mut(&plan.player_id) else {
                 continue;
             };
-            while budget > 0 {
-                // Most-wounded living hero still below its cap.
-                let mut best: Option<usize> = None;
-                let mut best_deficit = 0;
-                for (i, h) in hps.iter().enumerate() {
-                    let cap = caps.get(i).copied().unwrap_or(*h);
-                    let deficit = cap - *h;
-                    if *h > 0 && deficit > best_deficit {
-                        best_deficit = deficit;
-                        best = Some(i);
-                    }
-                }
-                let Some(i) = best else { break };
-                hps[i] += 1;
-                budget -= 1;
-            }
+            pour_regen(hps, &plan.caps, Some(&plan.healers), own_budget);
+            pour_regen(hps, &plan.caps, None, field_budget);
         }
     }
 
@@ -8579,12 +8630,75 @@ mod crafter_perk_tests {
     #[test]
     fn no_class_walks_the_overworld_with_nothing() {
         let b = meld_balance::Balance::load_default().unwrap();
+        let neutral = format!("{:?}", compute_perks(&b.perks, &[], 50));
         for key in meld_proto::skills::all_classes() {
             let Some(class) = meld_proto::equipment::class_from_key(&key) else { continue };
-            let p = compute_perks(&b.perks, &[class], 50);
-            let neutral = compute_perks(&b.perks, &[], 50);
-            let differs = format!("{p:?}") != format!("{neutral:?}");
-            assert!(differs, "{key} earns no overworld perk at all");
+            // The Psyker is the one KNOWN gap, asserted below so it stays loud. Its
+            // threat sense went to the Hunter, where it belonged; what replaces it is
+            // open work under `CL-2`.
+            if class == CharacterClass::Psyker {
+                continue;
+            }
+            let p = format!("{:?}", compute_perks(&b.perks, &[class], 50));
+            assert!(p != neutral, "{key} earns no overworld perk at all");
         }
+    }
+
+    /// The exception above, pinned. When the Psyker earns its own overworld perk this
+    /// fails — which is the reminder to delete the carve-out rather than leave a class
+    /// silently exempt from the rule. The Smithwright and the Keeper walked around with
+    /// nothing for a whole release because no test ever said so.
+    #[test]
+    fn the_psyker_is_the_one_class_still_owed_an_overworld_perk() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let neutral = format!("{:?}", compute_perks(&b.perks, &[], 50));
+        let psyker = format!("{:?}", compute_perks(&b.perks, &[CharacterClass::Psyker], 50));
+        assert_eq!(psyker, neutral, "the Psyker has a perk now — drop the carve-out");
+    }
+
+    /// Threat sense is the Hunter's: the long-range half of the same eye that reads a
+    /// mob's level, HP and gauge. A party without a Hunter reads nothing.
+    #[test]
+    fn threat_sense_belongs_to_the_hunter() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let hunter = compute_perks(&b.perks, &[CharacterClass::Hunter], 50);
+        assert!(hunter.hunter_threat >= 1, "a Hunter marks elites and gatekeepers");
+        assert!(hunter.hunter_reveal_radius > 0.0, "and sees them from further off");
+        for other in [CharacterClass::Psyker, CharacterClass::Resonant, CharacterClass::Explorer] {
+            let p = compute_perks(&b.perks, &[other], 50);
+            assert_eq!(p.hunter_threat, 0, "{other:?} should not read threat");
+            assert_eq!(p.hunter_reveal_radius, 0.0, "{other:?} should not widen the cull");
+        }
+    }
+
+    /// A Resonant's walking regen tends only Resonants. Poured over the party it mended
+    /// every wound between fights, so the best healer in the game never had to heal.
+    #[test]
+    fn walking_regen_tends_only_the_healer() {
+        let caps = [40, 40, 40];
+        let healers = [2usize];
+        let mut hps = [5, 6, 30];
+        pour_regen(&mut hps, &caps, Some(&healers), 4);
+        assert_eq!(hps, [5, 6, 34], "the wounded front line is not the healer's business");
+    }
+
+    /// The alembic's field is a PLACE, so it reaches whoever stands in it — most wounded
+    /// first, and never a hero already down (standing back up takes a real fight).
+    #[test]
+    fn a_field_reaches_the_whole_party_but_never_the_fallen() {
+        let caps = [40, 40, 40];
+        let mut hps = [0, 10, 39];
+        pour_regen(&mut hps, &caps, None, 3);
+        assert_eq!(hps, [0, 13, 39], "the fallen stay down; the living mend worst-first");
+    }
+
+    /// A cap is a cap: a budget bigger than the party's total deficit stops, it does not
+    /// spill past max HP or spin.
+    #[test]
+    fn regen_stops_at_full() {
+        let caps = [10, 10];
+        let mut hps = [9, 8];
+        pour_regen(&mut hps, &caps, None, 99);
+        assert_eq!(hps, [10, 10]);
     }
 }

@@ -1105,6 +1105,13 @@ explorer_map_radius_per_level = 2.0
 hunter_intel_level_at = 1           # run level to reveal a mob's LEVEL over its head
 hunter_intel_hp_at = 3              # run level to also reveal a mob's HP bar
 hunter_intel_atb_at = 6             # run level to reveal enemy ATB gauges in battle
+# …and threat sense, which is the same trade seen from further off: what is dangerous
+# before it is in reach. It sat with the Psyker, whose fantasy is manifestations rather
+# than fieldcraft, and duplicated the intel lane above while capping out at run level 3.
+hunter_threat_elites_at = 1         # run level to mark elite/gatekeeper mobs
+hunter_threat_aggro_at = 3          # + mark aggressive mobs
+hunter_reveal_base = 22.0           # extended mob interest radius (tiles) at unlock
+hunter_reveal_per_level = 2.0
 # Shifter — Shift-sense: where the doors are, and which loot is worth carrying.
 shifter_dungeon_at = 1              # run level that starts revealing dungeon entrances
 shifter_dungeon_radius_base = 45.0  # world-units at which an entrance shows itself
@@ -1117,12 +1124,13 @@ shifter_item_sense_at = 2           # run level to tell insured loot from epheme
 shifter_trap_sense_at = 1
 shifter_trap_radius_base = 4.0
 shifter_trap_radius_per_level = 0.15
-# Psyker — threat sense.
-psyker_threat_elites_at = 1       # run level to mark elite/gatekeeper mobs
-psyker_threat_aggro_at = 3        # + mark aggressive mobs
-psyker_reveal_base = 22.0         # extended mob interest radius (tiles) at unlock
-psyker_reveal_per_level = 2.0
-# Resonant — overworld regen (HP/sec per run level, applied while walking).
+# Psyker — nothing on the overworld. Its threat sense moved to the Hunter (above);
+# a perk true to manifestations is open work under CL-2.
+# Resonant — walking regen (HP/sec per run level), and it tends ONLY the Resonant
+# itself. Poured over the whole party it healed away the wounds between fights, so a
+# party carrying a healer never needed healing and the class's own kit went unused. A
+# still's field (`[forge] alembic_regen_per_sec`) is what mends everyone — that one is a
+# PLACE you choose to stand, not a passive you get for bringing someone.
 resonant_regen_per_level = 0.4
 # Phoenix Guard — bulwark: creature aggro/skirmish radius shrinks per run level.
 phoenix_guard_aggro_reduction_per_level = 0.04

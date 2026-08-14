@@ -83,9 +83,44 @@ market is the multiplier*).
 
 **④ Polish the feel — as important as any new system.** A slice becomes "want to play"
 through feel & clarity, not more mechanics.
-- [ ] **P1-2 — Combat & moment-to-moment feel pass.** Hit feedback/juice, damage/heal
+- [x] **P1-2 — Combat & moment-to-moment feel pass.** Hit feedback/juice, damage/heal
   readability, turn/telegraph clarity, pacing — make the ATB *feel* good, not just be
   correct. Screenshot/video-verify (CLAUDE.md "Visual verification").
+  - **Most of the juice was already there** and nobody had recorded it: the struck sprite
+    flashes white, recoils and judders, the attacker lunges and plays its own action clip,
+    and the numbers carry a vocabulary (`CRIT!` gold, `WEAK!` big and shaking, `RESIST!` /
+    `IMMUNE!` / `ABSORB!` behind the Psyker's threat-sight). #216 gave conditions a palette
+    on the cells, the creature bars and the sprites themselves; #227 got the victory menu
+    out of the way. What was missing was narrower than the line suggested.
+  - **A number now belongs to the combatant it landed on.** `render_hit_fx` anchored by
+    *identity* — `monster_combatant` (only ever `enemies.first()`) drew top-centre and
+    everything else fell through `your_ids.position(…).unwrap_or(0)`, so every enemy past
+    the first, and every joined ally, printed its damage over **hero slot 0's cell**. Packs
+    are standard and the level-50/75/100 rungs added a wave of all-enemy abilities, so one
+    Purging Light sprayed its whole sweep onto the first hero. Each number is now projected
+    over its own arena actor, the way `render_enemy_panel` already hangs the HP bars — the
+    class of bug, not the instance. The hero-cell path survives only as a fallback, and
+    only for a hero we actually field: printing someone else's number on slot 0 was the
+    fault.
+  - **Simultaneous hits stack instead of overstriking.** `Hit::stack` records how many live
+    numbers already shared that target, and each is lifted clear (`stack_step`, held above
+    the font size by test) with an alternating sway — an all-enemy sweep used to resolve
+    four numbers onto one pixel.
+  - **Turn clarity is the enemy's own ATB gauge, not a turn-order list.** It already ships:
+    a second bar under each foe's name/HP, gated on Predator's Eye's top tier
+    (`hunter_intel_atb_at`, run level 6). Left with the **Hunter** per `CL-2` — sizing up
+    prey is the guild's trade — and the stale comment calling it the Explorer's is fixed.
+  - **The feel is tunable at last** (`meld_client::feel`). The timings and magnitudes were
+    bare `const`s plus magic literals inside the animation systems, so dialing them in was
+    a recompile per guess. One `BattleFeel` resource with the shipped values as defaults
+    and a runtime override — `MELD_FEEL="lunge_ttl=0.5,number_rise=70"` / `?feel=`. A bad
+    knob warns and is skipped rather than failing the boot. Authoritative pacing
+    (`tick_ms`, `gauge_fill_divisor`, `turn_timeout_ms`) stays in `balance.toml`, since it
+    is a rule rather than a look. `number_height` was picked *with* the dial: 2.0 put every
+    number through the sprite's own art, 3.1 clears the head and sits just off the target
+    diamond.
+  - Verified natively (`MELD_BATTLE`, whose mockup is now the fixture for both bugs — a
+    second **live** enemy that is not `enemies.first()`, and two numbers on one target).
 - [ ] **P1-3 — New-player onboarding & progression legibility.** The first hour: teach the
   loop, and make "am I getting stronger?" legible (gear power, level, what to do next).
 - → **LC-2** (fix the reversed-walk bug — a visible rough edge new players hit).
@@ -579,15 +614,37 @@ burns on death/leave; some is single-use. See
   *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
   `game.rs::compute_perks`) — each class's *presence* in the party grants an
   earned overworld capability that scales with the shared `run_level`: the
-  **Shifter grants a corner minimap** (+ mob/portal dots, coverage grows with
-  level), the **Explorer grants enemy-HP intel**, Phoenix Guard shrinks creature aggro
-  range, Resonant grants overworld regen. **This is where overworld map-reveal and
-  threat-reading belong — they're *what a class can do*, a reason to bring it, not
-  universal UI.** Remaining: flesh the system out — round out perks per class
-  (Psyker has none yet), tier them across run level, surface them clearly in the
+  **Explorer grants the minimap** (+ mob/portal dots, coverage grows with level),
+  the **Hunter grants creature intel**, the **Shifter** reads doors and loot,
+  Phoenix Guard shrinks creature aggro range, Resonant grants walking regen, and the
+  two crafters read their own trade's materials. **This is where overworld map-reveal
+  and threat-reading belong — they're *what a class can do*, a reason to bring it, not
+  universal UI.** Remaining: tier them across run level, surface them clearly in the
   HUD, and fold it into CANON with a §/D-number. Anything giving map/threat
   *awareness in the maze* should extend this system, not bypass it. (Contrast UX-1,
   which is town-only, and UX-2, which is universal accessibility.)
+  - 🟡 *Threat sense is the Hunter's now.* Marking elites/gatekeepers and aggressive
+    mobs, and the widened mob reveal radius, sat with the **Psyker** — where it
+    duplicated the Hunter's whole trade (reading a creature before you commit),
+    stopped growing at run level 3, and had half of itself invisible: you cannot tell
+    you are seeing further than you otherwise would. It is the long-range half of the
+    predator's eye, so it lives beside `hunter_intel`. The client's elemental verdicts
+    (`WEAK!`/`RESIST!`/`IMMUNE!`) ride the same gate — what a creature is made of is
+    the same question as what level it is. `psyker_*` stays a serde alias so a message
+    in flight from an older server still parses.
+  - 🟡 *A passive must not do the job the class is FOR.* The Resonant's walking regen
+    healed the **whole party**, so a party carrying the best healer in the game never
+    needed healing between fights and its kit went unspent. It now tends only the
+    **Resonants themselves**. A Keeper's alembic field still reaches everyone standing
+    in it — a field is a PLACE you choose to stand, not something you get for bringing
+    someone — so the two sources bank their sub-1 remainders separately, or the field's
+    overflow would heal straight through the Resonant-only rule.
+  - **Open: the Psyker now has NO overworld perk at all**, and that is asserted by name
+    (`the_psyker_is_the_one_class_still_owed_an_overworld_perk`) rather than left to be
+    noticed — the Smithwright and the Keeper walked around with nothing for a whole
+    release because no test ever said so. Whatever it gets should be something it
+    *does* (manifestations reaching outside the fight), not another way to see, since
+    seeing is now the Hunter's and mapping is the Explorer's.
 
 ---
 
