@@ -368,7 +368,7 @@ fn main() {
             (
                 overlay_input,
                 overworld_input,
-                overworld_click_menu,
+                (overworld_click_menu, psyker_hold_click),
                 overworld_camera_control,
                 gather_steer,
                 emit_move,
@@ -704,13 +704,16 @@ struct OwEntity {
     aggression: Option<String>,
     /// The quarry of a hunt this player is working (AD-4) — server-decided, per-viewer.
     quarry: bool,
+    /// Pinned by a Psyker right now (CL-2): it cannot move, and engaging it opens the
+    /// fight with the whole party's gauges full.
+    held: bool,
     /// Dungeon entrances: heroes the doors inside want on plates at once (1 = solo).
     bodies_required: u8,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -729,11 +732,12 @@ impl OwEntity {
             encounter_class: None,
             aggression: None,
             quarry: false,
+            held: false,
             bodies_required: 1,
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
     }
 }
 

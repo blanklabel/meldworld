@@ -1076,6 +1076,25 @@ pub struct Perks {
     pub hunter_reveal_base: f64,
     /// Extra reveal radius per run level.
     pub hunter_reveal_per_level: f64,
+    // --- Psyker: telekinesis (the pin) + Mind Link. ---
+    /// Run level at which the pin is earned.
+    pub psyker_hold_at: i32,
+    /// Seconds one pin holds at unlock, and the growth/ceiling on it.
+    pub psyker_hold_seconds_base: f32,
+    pub psyker_hold_seconds_per_level: f32,
+    pub psyker_hold_seconds_cap: f32,
+    /// Seconds between pins at unlock, shortening with level but never to nothing.
+    pub psyker_hold_cooldown_base: f32,
+    pub psyker_hold_cooldown_per_level: f32,
+    pub psyker_hold_cooldown_floor: f32,
+    /// Run level for a second simultaneous pin, its growth, and its ceiling.
+    pub psyker_hold_targets_at: i32,
+    pub psyker_hold_targets_per_level: i32,
+    pub psyker_hold_targets_cap: i32,
+    /// World-units a Psyker can reach to pin a creature.
+    pub psyker_hold_radius: f32,
+    /// Run level at which co-op teammates ride the snapshot at any distance.
+    pub psyker_mind_link_at: i32,
     // --- Resonant: overworld regen. ---
     /// HP/sec restored to each carried hero while walking the overworld, per run
     /// level (0 at level 0). Applied server-side; feeds next fight's start HP.

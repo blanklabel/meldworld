@@ -2495,6 +2495,18 @@ impl Battle {
         }
     }
 
+    /// Open the fight with every living HERO's gauge full — the party walked into a
+    /// creature a Psyker had pinned, so it picked the moment and moves first. Only the
+    /// player side is filled: a surprise that also readied the creature would be no
+    /// surprise at all.
+    pub fn open_with_full_party_gauges(&mut self) {
+        for f in self.fighters.iter_mut() {
+            if f.alive && f.kind == CombatantKind::Player {
+                f.gauge = 1.0;
+            }
+        }
+    }
+
     /// Drop any aspect whose parent Focus is gone. Let go of Pressure and the Gravity
     /// dragging on it has nothing to hold — otherwise revoking the base of a chain would
     /// leave its aspects running free, which is a slow nothing is paying a slot for.
@@ -4996,6 +5008,29 @@ mod tests {
         let spill = 100000 - hp(&wide, "m2");
         assert!(spill > 0, "Expansion reached nobody");
         assert!(spill < primary, "the spill ({spill}) is not softer than the primary ({primary})");
+    }
+
+    /// The reward for spending a pin: the party walked into a creature it had held, so it
+    /// picked the moment and moves first. Only the PLAYER side is readied — a surprise
+    /// that also filled the creature's gauge would be no surprise at all.
+    #[test]
+    fn a_surprise_opens_with_the_party_ready_and_the_creature_not() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![psyker("p", 40, 10, 3)],
+            vec![monster("m1", 100, 1)],
+            &b,
+            7,
+        );
+        let gauge = |bt: &Battle, id: &str| {
+            bt.fighters.iter().find(|f| f.combatant_id == id).unwrap().gauge
+        };
+        assert!(gauge(&battle, "p") < 1.0, "a normal fight does not open ready");
+        battle.open_with_full_party_gauges();
+        assert!(gauge(&battle, "p") >= 1.0, "the party did not get the first move");
+        assert!(gauge(&battle, "m1") < 1.0, "the surprise also readied the creature");
     }
 
     #[test]

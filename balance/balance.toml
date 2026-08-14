@@ -1165,8 +1165,32 @@ shifter_item_sense_at = 2           # run level to tell insured loot from epheme
 shifter_trap_sense_at = 1
 shifter_trap_radius_base = 4.0
 shifter_trap_radius_per_level = 0.15
-# Psyker — nothing on the overworld. Its threat sense moved to the Hunter (above);
-# a perk true to manifestations is open work under CL-2.
+# Psyker — TELEKINESIS, the one thing the order does that nobody else can. Tapping a
+# creature pins it where it stands: it stops moving, chasing and skirmishing, but it stays
+# touchable, and a fight begun against a pinned creature opens with the whole party's
+# gauges FULL. That is the decision the perk is FOR — you chose the moment, so you get the
+# first move. Seeing belongs to the Hunter and the map to the Explorer, so the Psyker's is
+# a verb. Held on a cooldown rather than a cost: a pin you can spam walks past all content.
+psyker_hold_at = 1                # run level at which the pin is earned
+# The numbers answer one question: can a Psyker keep everything it can reach pinned
+# FOREVER? To sustain N pins you must lay one every `seconds / N`, so the cooldown has to
+# stay above that or the deep game is a Psyker walking through content untouched. At the
+# caps: 12s / 3 targets = one needed every 4s against an 8s cooldown, so ~1 creature can be
+# held indefinitely, or all 3 in a burst that then lapses. A test holds this at EVERY level,
+# not just the caps — the first draft passed at level 1 and failed at 255.
+psyker_hold_seconds_base = 4.0    # how long one pin holds at unlock
+psyker_hold_seconds_per_level = 0.05
+psyker_hold_seconds_cap = 12.0
+psyker_hold_cooldown_base = 14.0  # seconds between pins at unlock…
+psyker_hold_cooldown_per_level = 0.03   # …shortening with level…
+psyker_hold_cooldown_floor = 8.0        # …but never past the sustain line above
+psyker_hold_targets_at = 25       # run level at which a second creature can be pinned
+psyker_hold_targets_per_level = 60
+psyker_hold_targets_cap = 3
+psyker_hold_radius = 26.0         # world-units a Psyker can reach to pin
+# Mind Link: co-op teammates ride your snapshot however far off they are. POSITIONS only —
+# the map itself is the Explorer's, so this says "where they are", never "what they see".
+psyker_mind_link_at = 10
 # Resonant — walking regen (HP/sec per run level), and it tends ONLY the Resonant
 # itself. Poured over the whole party it healed away the wounds between fights, so a
 # party carrying a healer never needed healing and the class's own kit went unused. A

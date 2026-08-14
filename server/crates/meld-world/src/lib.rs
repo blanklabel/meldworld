@@ -1371,6 +1371,11 @@ pub struct MonsterSpawn {
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: String,
+    /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
+    /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
+    /// skirmish — but it is still touchable and still fights when reached, because the
+    /// pin is an opening the party chooses to take, not a way to delete an encounter.
+    pub held_for: f64,
     /// The one player this creature exists for, or empty for everyone's world (AD-4
     /// bounty marks). A mark is left out of every other player's snapshot and cannot be
     /// touched by them, so a contract with your name on it is *yours* — including in a
@@ -1427,6 +1432,7 @@ impl MonsterSpawn {
             boss_kind: String::new(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
+            held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
             flees: stats.flees,
@@ -3679,6 +3685,13 @@ impl Arena {
             if m.defeated || m.in_battle {
                 continue;
             }
+            // A Psyker's pin: it does not move, chase or skirmish while it holds. Counted
+            // down HERE rather than against a clock, so the world stays a pure function of
+            // its own ticks and a paused instance does not leak the hold away.
+            if m.held_for > 0.0 {
+                m.held_for = (m.held_for - dt).max(0.0);
+                continue;
+            }
             let aggro_range = match m.aggression.as_str() {
                 "aggressive" => aggro,
                 "territorial" => terr_aggro,
@@ -4451,6 +4464,54 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    /// A Psyker's pin stops a creature moving — and NOTHING else. It is still touchable
+    /// and still fights when reached: the pin buys the party the first move (the surprise
+    /// round in `build_battle`), it does not delete an encounter. The hold counts down
+    /// against the world's own `dt` rather than a clock, so the world stays pure.
+    #[test]
+    fn a_pinned_creature_stops_moving_but_is_still_there_to_fight() {
+        let b = Balance::load_default().unwrap();
+        let build = || {
+            let mut arena = Arena::generate(&b, 5, true);
+            arena.monsters[0].aggression = "aggressive".to_string();
+            let m = arena.monsters[0].position;
+            arena.add_avatar("p".into(), 6.0);
+            arena.avatar_mut("p").unwrap().position = Position::new(m.x + 8.0, m.y);
+            arena
+        };
+        let mut free = build();
+        let mut pinned = build();
+        pinned.monsters[0].held_for = 2.0;
+        let start = free.monsters[0].position.x;
+        for _ in 0..10 {
+            free.step_creatures(0.1);
+            pinned.step_creatures(0.1);
+        }
+        assert!(free.monsters[0].position.x - start > 2.0, "the control never chased");
+        assert_eq!(
+            pinned.monsters[0].position, Position::new(start, pinned.monsters[0].position.y),
+            "a pinned creature moved"
+        );
+
+        // Still touchable while pinned — that is the whole point of spending one.
+        let immune = std::collections::HashSet::new();
+        pinned.avatar_mut("p").unwrap().position = pinned.monsters[0].position;
+        assert!(
+            pinned.check_touch(&immune).is_some(),
+            "a pinned creature could not be engaged — the pin deleted the encounter"
+        );
+
+        // And it lapses on its own: 1s of hold left, 2s of ticks, then it chases again.
+        let mut lapsing = build();
+        lapsing.monsters[0].held_for = 0.5;
+        let from = lapsing.monsters[0].position.x;
+        for _ in 0..20 {
+            lapsing.step_creatures(0.1);
+        }
+        assert_eq!(lapsing.monsters[0].held_for, 0.0, "the hold never expired");
+        assert!(lapsing.monsters[0].position.x - from > 0.0, "it never resumed chasing");
     }
 
     // AD-4: the Den's roll. Pure, so the same seed is the same contract — and the ladder

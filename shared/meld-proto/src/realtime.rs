@@ -699,6 +699,23 @@ pub mod run {
         /// Resonant overworld regen applied server-side, in HP/sec (display hint).
         #[serde(default)]
         pub resonant_regen: f32,
+        /// Creatures a Psyker may hold pinned at once (0 = no Psyker in the party).
+        #[serde(default)]
+        pub psyker_hold_targets: u8,
+        /// Seconds each pin lasts.
+        #[serde(default)]
+        pub psyker_hold_seconds: f32,
+        /// Seconds between pins.
+        #[serde(default)]
+        pub psyker_hold_cooldown: f32,
+        /// World-units within which a Psyker can reach a creature to pin it.
+        #[serde(default)]
+        pub psyker_hold_radius: f32,
+        /// Whether the party's Psyker links minds with its co-op teammates — their
+        /// positions ride the snapshot however far away they are. Positions only: the
+        /// MAP belongs to the Explorer.
+        #[serde(default)]
+        pub psyker_mind_link: bool,
         /// World-units within which a Smithwright reveals ORE veins (0 = none). The
         /// Foundry reads rock; the Open Flower reads growing things, so the two
         /// crafters see the half of the world their own trade is built on.
@@ -758,6 +775,11 @@ pub mod run {
                 hunter_threat: 0,
                 hunter_reveal_radius: 0.0,
                 resonant_regen: 0.0,
+                psyker_hold_targets: 0,
+                psyker_hold_seconds: 0.0,
+                psyker_hold_cooldown: 0.0,
+                psyker_hold_radius: 0.0,
+                psyker_mind_link: false,
                 smithwright_ore_radius: 0.0,
                 smithwright_setup_mult: 1.0,
                 smithwright_stock_discount: 0,
@@ -869,6 +891,23 @@ pub mod run {
     }
     impl Message for Harvest {
         const TYPE: &'static str = "run.harvest";
+    }
+
+    /// C2S — a Psyker PINS a creature where it stands (CL-2). Telekinesis is the one
+    /// thing this order does that nobody else can, so its overworld perk is a verb
+    /// rather than another way to see. The creature stops moving for
+    /// `psyker_hold_seconds` and cannot close on the party — but it can still be walked
+    /// into and fought, and a fight begun against a pinned creature opens with the whole
+    /// party's gauges FULL: you chose the moment, so you get the first move.
+    ///
+    /// Refused (silently, as a no-op) when the party has no Psyker, when the cooldown is
+    /// still running, when the target is out of reach, or when every hold is spent.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PsykerHold {
+        pub entity_id: Id,
+    }
+    impl Message for PsykerHold {
+        const TYPE: &'static str = "run.psyker_hold";
     }
 
     /// C2S — open a treasure chest the avatar is standing next to. Rolls loot

@@ -615,12 +615,37 @@ stand rather than something you get for bringing someone. Both pour through `pou
 which takes the eligible slots — the two sources bank their sub-1 remainders separately, or
 the field's overflow would heal straight through the Resonant-only rule.
 
-**The Psyker is the one class with NO overworld perk**, and that is asserted by name
-(`the_psyker_is_the_one_class_still_owed_an_overworld_perk`) rather than left to be
-noticed. Its threat sense moved to the Hunter, where it stopped duplicating the intel lane
-and stopped capping out at run level 3. What replaces it is open work under `CL-2` — the
-test fails the moment it earns one, which is the cue to drop the carve-out in
-`no_class_walks_the_overworld_with_nothing`.
+**The Psyker's overworld perk is a VERB, because seeing is taken.** Its threat sense moved
+to the Hunter (where it stopped duplicating the intel lane), and the map is the Explorer's,
+so what is left for the order of manifestations is **telekinesis**: tap a creature and it is
+PINNED where it stands. It stops moving, chasing and skirmishing — but it is still touchable
+and still fights, because a pin is an opening the party chooses to take, not a way to delete
+an encounter. Engaging a pinned creature opens the fight with **every hero's gauge full**
+(`build_battle(.., surprise)`), which is the entire reason to spend one. Held on a
+**cooldown**, and the numbers answer one question: *can a Psyker keep everything it can
+reach pinned forever?* To sustain N pins you must lay one every `seconds / N`, so the
+cooldown stays above that line at **every level** — a test walks 1..=255, because the first
+tuning passed at level 1 and failed at 255. **Mind Link** (a later rung) force-includes
+co-op teammates in the snapshot at any distance — positions only, since the map belongs to
+the Explorer.
+
+**A Focus can grow ASPECTS, and that is what makes the Psyker a controller.** A manifestation
+in the class doc is a chain with prerequisites, not one effect: Gravity Well is Pressure,
+then **Gravity** on what is being crushed, then **Anchor** on what is already slowed.
+`SkillDef.requires` names the parent; an aspect may only be cast onto a target already
+holding it, takes the parent's OWN target, occupies its own Focus slot, and falls when the
+parent does (`drop_orphaned_aspects` loops — a chain is three deep). Both tiers of slow are
+**rates, never caps**, and the strongest wins rather than stacking. An aspect is **not a
+menu row**: `skills_for_class_at` excludes it, `aspects_of` returns it, and the battle menu
+lists it indented under a parent that is currently held — so the menu grows in DEPTH without
+growing in width, and you can never press something the engine would refuse.
+
+**Mind's Eye and Dual Manifestation are ONE mechanic** — a cast that does not spend the
+turn (`Fighter::free_casts`). Mind's Eye seeds the pool at battle start from the hero's
+level; Dual Manifestation tops it back up each Psyker turn. Only a cast that LANDED spends
+one, or a refused aspect would quietly burn the opening. **Expansion** widens an offensive
+Focus across the line for a share of the tick: a controller should get wider with level,
+and hitting one target harder is what the Hunter and Shifter are for.
 
 A crafter reads only the half of the world its own trade is built on — the Foundry sees
 `ore`, the Open Flower sees `reagent`, keyed off the material registry's class. Node-sense

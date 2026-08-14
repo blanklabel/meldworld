@@ -751,6 +751,10 @@ pub fn build_battle(
     hp_overrides: &[Option<i32>],
     // Per-hero saved formation, aligned with `party` (see [`party_fighters`]).
     row_overrides: &[Option<bool>],
+    // A SURPRISE: the party walked into a creature a Psyker had pinned, so it chose the
+    // moment. Every hero opens with a full gauge and therefore the first move — which is
+    // the entire reason to spend a pin rather than simply avoid the creature.
+    surprise: bool,
 ) -> Battle {
     let mut allies = party_fighters(party, runs, balance, row_overrides);
     // Creatures scale with how many heroes are facing them, on top of the distance
@@ -845,7 +849,12 @@ pub fn build_battle(
         })
         .unwrap_or(EncounterClass::Standard);
 
-    Battle::new(battle_id, encounter_class, allies, enemy_fighters, balance, seed)
+    let mut battle =
+        Battle::new(battle_id, encounter_class, allies, enemy_fighters, balance, seed);
+    if surprise {
+        battle.open_with_full_party_gauges();
+    }
+    battle
 }
 
 #[cfg(test)]
@@ -1262,7 +1271,7 @@ mod tests {
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
         // Carry a wounded hero in: start at 17 HP rather than full.
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[]);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[], false);
         let (allies, _) = battle.wire_combatants();
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
@@ -1289,7 +1298,7 @@ mod tests {
 
         let enemies = vec![(gk, "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[]);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
         let (_, wire_enemies) = battle.wire_combatants();
         let boss = &wire_enemies[0];
 
@@ -1589,7 +1598,7 @@ mod tests {
 
         let hp_of = |party: &[PartyMember], hp: &[Option<i32>]| -> i32 {
             let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[]);
+            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[], false);
             let (_, foes) = battle.wire_combatants();
             foes[0].max_hp
         };
@@ -1780,6 +1789,7 @@ mod tests {
                 1,
                 &[],
                 &[],
+                false,
             );
             battle.combatant_hp("e0").unwrap_or(0)
         };
@@ -1881,6 +1891,7 @@ mod tests {
                 1,
                 &[],
                 &[],
+                false,
             );
             let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
             let f = &party_fighters(&party, &runs, &b, &[])[0];
@@ -1921,6 +1932,7 @@ mod tests {
             1,
             &[],
             &[],
+            false,
         );
         let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
         let f = &party_fighters(&party, &runs, &b, &[])[0];
@@ -2062,6 +2074,7 @@ mod tests {
                 1,
                 &[],
                 &[],
+                false,
             );
             (battle.combatant_hp("e0").unwrap_or(0), atk)
         };
