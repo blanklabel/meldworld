@@ -497,6 +497,20 @@ pub type PartyMember = (Id, Id, CharacterClass, GearBonus);
 /// `row_overrides` (aligned with `party`) lets the player's saved formation win over
 /// the class-default front/back row: `Some(true)` = back, `Some(false)` = front,
 /// `None`/absent = keep the class default.
+/// Mind's Eye: how many Foci a Psyker of `level` may raise at the top of a fight without
+/// spending the turn on them. A controller whose whole kit is "hold three things at once"
+/// otherwise spends its first three turns doing nothing but setting up, which is the
+/// least interesting stretch of every fight it is in.
+pub fn minds_eye_casts(level: i32, balance: &Balance) -> u32 {
+    let b = &balance.battle;
+    if b.psyker_minds_eye_at <= 0 || level < b.psyker_minds_eye_at {
+        return 0;
+    }
+    let step = b.psyker_minds_eye_per_level.max(1);
+    let grown = 1 + (level - b.psyker_minds_eye_at) / step;
+    grown.clamp(1, b.psyker_minds_eye_cap as i32) as u32
+}
+
 pub fn party_fighters(
     party: &[PartyMember],
     runs: &InstanceRun,
@@ -623,6 +637,10 @@ pub fn party_fighters(
                     f.focus_max = (bb.psyker_focus_base as i32 + extra + bonus.focus_slots)
                         .clamp(bb.psyker_focus_base as i32, bb.psyker_focus_cap as i32)
                         as usize;
+                    // Mind's Eye: the doc's precognition, which acts "the moment danger
+                    // manifests". Seeded here rather than in the engine because it is a
+                    // property of the HERO's level, and the engine never sees a level curve.
+                    f.free_casts = minds_eye_casts(level, balance);
                     f.back_row = true;
                 }
                 // A Resonant regenerates a little HP each of its turns (innate) and
@@ -954,6 +972,29 @@ mod tests {
     }
 
     use super::*;
+
+    /// Mind's Eye grows with the hero and stops at its ceiling. A controller opens the
+    /// fight with its Foci already up; it does not open every fight with three turns of
+    /// setup, and it does not eventually open with an unbounded number of free actions.
+    #[test]
+    fn minds_eye_grows_with_the_psyker_and_then_stops() {
+        let b = Balance::load_default().unwrap();
+        let at = b.battle.psyker_minds_eye_at;
+        assert_eq!(minds_eye_casts(at - 1, &b), 0, "granted before its level");
+        assert_eq!(minds_eye_casts(at, &b), 1, "the first one arrives on the rung");
+        assert_eq!(
+            minds_eye_casts(255, &b),
+            b.battle.psyker_minds_eye_cap,
+            "the cap is not a cap"
+        );
+        // Monotone: a level-up never takes one away.
+        let mut prev = 0;
+        for lv in 1..=255 {
+            let n = minds_eye_casts(lv, &b);
+            assert!(n >= prev, "level {lv} lost a cast ({prev} -> {n})");
+            prev = n;
+        }
+    }
 
     #[test]
     fn base_run_levels_match_canon() {

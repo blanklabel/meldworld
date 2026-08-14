@@ -170,6 +170,22 @@ pub struct Battle {
     pub psyker_vortex_tick_mult: f64,
     /// ATB fill multiplier while ANCHORED — the deepest slow, never a cap.
     pub psyker_anchor_slow_mult: f64,
+    /// Hero level at which Mind's Eye grants its first free (turn-less) cast.
+    pub psyker_minds_eye_at: i32,
+    /// Levels between each additional Mind's Eye cast.
+    pub psyker_minds_eye_per_level: i32,
+    /// Ceiling on Mind's Eye casts at the top of a fight.
+    pub psyker_minds_eye_cap: u32,
+    /// Hero level from which every Psyker turn refunds one cast (Dual Manifestation).
+    pub psyker_dual_manifest_at: i32,
+    /// Hero level at which an offensive Focus starts reaching a second enemy.
+    pub psyker_expansion_at: i32,
+    /// Levels between each additional enemy Expansion reaches.
+    pub psyker_expansion_per_level: i32,
+    /// Ceiling on the extra enemies Expansion reaches.
+    pub psyker_expansion_cap: i32,
+    /// Share of the primary tick each Expansion target takes.
+    pub psyker_expansion_mult: f64,
     /// Ticks an aspect's mark outlives the Psyker turn that applied it.
     pub psyker_aspect_ticks: u64,
     pub psyker_vortex_ticks: u64,

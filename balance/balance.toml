@@ -202,6 +202,22 @@ psyker_vortex_tick_mult = 0.35
 # a creature's speed_stat never scales with distance, so a gauge that stops advancing is a
 # creature that never acts again. 0.2 crawls; it does not lock.
 psyker_anchor_slow_mult = 0.2
+# Mind's Eye + Dual Manifestation, which are ONE mechanic: a cast that does not spend the
+# turn. A controller holding three Foci otherwise opens every fight with three turns of
+# pure setup. Mind's Eye seeds the pool once at battle start; Dual Manifestation tops it
+# back up each Psyker turn from `psyker_dual_manifest_at`, so a deep Psyker raises two
+# Foci per turn forever rather than only at the opening.
+psyker_minds_eye_at = 5             # hero level at which the opening free cast appears
+psyker_minds_eye_per_level = 45     # …and one more every this many levels
+psyker_minds_eye_cap = 3            # never more than this at the top of a fight
+psyker_dual_manifest_at = 75        # hero level from which every Psyker turn refunds one cast
+# Expansion: an offensive Focus also grinds this many OTHER living enemies. The doc's
+# passive on Gravity Well, generalised — a controller should widen with level, and the
+# alternative (more damage) is the one thing this class is not for.
+psyker_expansion_at = 35
+psyker_expansion_per_level = 70
+psyker_expansion_cap = 3
+psyker_expansion_mult = 0.5         # share of the primary tick each extra enemy takes
 psyker_aspect_ticks = 40          # ticks an aspect's mark outlives the turn that applied it
 psyker_vortex_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):

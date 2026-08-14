@@ -117,6 +117,12 @@ pub struct Fighter {
     /// Max simultaneous Foci (0 = not a Psyker; Psykers channel instead of the
     /// normal attack/skill kit — see [`Battle::resolve_psyker`]).
     pub focus_max: usize,
+    /// Casts this Psyker may make WITHOUT spending the turn. Mind's Eye seeds the pool at
+    /// battle start (the doc's "activate up to two Manifestations without expending your
+    /// Action" at initiative); Dual Manifestation tops it back up each Psyker turn. Both
+    /// are the same primitive — a cast that does not cost the turn — so there is one
+    /// counter to reason about rather than two overlapping rules.
+    pub free_casts: u32,
     /// Active Manifestations occupying Focus slots (Psyker only).
     pub foci: Vec<Focus>,
     /// True while a `defend` stance is active (until this fighter next acts).
@@ -217,6 +223,7 @@ impl Fighter {
             pack_role: PackRole::None,
             back_row: false,
             focus_max: 0,
+            free_casts: 0,
             foci: Vec::new(),
             defending: false,
             abilities: Vec::new(),
@@ -560,6 +567,11 @@ pub struct Battle {
     psyker_vortex_tick_mult: f64,
     psyker_anchor_slow_mult: f64,
     psyker_aspect_ticks: u64,
+    psyker_dual_manifest_at: i32,
+    psyker_expansion_at: i32,
+    psyker_expansion_per_level: i32,
+    psyker_expansion_cap: i32,
+    psyker_expansion_mult: f64,
     psyker_vortex_ticks: u64,
     resonant_second_life_revive_fraction: f64,
     resonant_second_life_heal_fraction: f64,
@@ -830,6 +842,11 @@ impl Battle {
             psyker_vortex_tick_mult: balance.battle.psyker_vortex_tick_mult,
             psyker_anchor_slow_mult: balance.battle.psyker_anchor_slow_mult,
             psyker_aspect_ticks: balance.battle.psyker_aspect_ticks,
+            psyker_dual_manifest_at: balance.battle.psyker_dual_manifest_at,
+            psyker_expansion_at: balance.battle.psyker_expansion_at,
+            psyker_expansion_per_level: balance.battle.psyker_expansion_per_level,
+            psyker_expansion_cap: balance.battle.psyker_expansion_cap,
+            psyker_expansion_mult: balance.battle.psyker_expansion_mult,
             psyker_vortex_ticks: balance.battle.psyker_vortex_ticks,
             resonant_second_life_revive_fraction: balance
                 .battle
@@ -2398,6 +2415,7 @@ impl Battle {
         // player aimed them at; casting/reinforcing the same kind on a new enemy just
         // redirects it (see [`Focus::target_id`]).
         let op = op.unwrap_or("hold");
+        let mut cast_landed = false;
         let mut parts = op.splitn(2, ':');
         let verb = parts.next().unwrap_or("hold");
         let arg = parts.next().unwrap_or("");
@@ -2424,6 +2442,7 @@ impl Battle {
                         target_id: tgt.clone(),
                     });
                     effects.extend(self.tick_manifest(actor_i, arg, 1, tgt.as_deref())); // fires immediately
+                    cast_landed = true;
                 }
             }
             "reinforce" => {
@@ -2449,7 +2468,23 @@ impl Battle {
         }
 
         self.fighters[actor_i].defending = false;
-        self.reset_gauge(actor_i);
+        // Dual Manifestation: past its level every Psyker turn refunds one cast, so the
+        // pool Mind's Eye seeded at the top of the fight never runs dry. Topped up BEFORE
+        // the spend below, so the turn that earns it can use it.
+        if verb == "cast" && self.fighters[actor_i].level >= self.psyker_dual_manifest_at {
+            self.fighters[actor_i].free_casts = self.fighters[actor_i].free_casts.max(1);
+        }
+        // A free cast does not cost the turn: the gauge is left full, so the Psyker acts
+        // again immediately. This is Mind's Eye and Dual Manifestation both — one counter,
+        // because two rules that each mean "this cast was free" would be two rules to keep
+        // in step. Only a cast that LANDED may spend one (`cast_landed`), or a refused
+        // aspect would quietly burn the opening it was meant to buy.
+        let free = verb == "cast" && cast_landed && self.fighters[actor_i].free_casts > 0;
+        if free {
+            self.fighters[actor_i].free_casts -= 1;
+        } else {
+            self.reset_gauge(actor_i);
+        }
         Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
@@ -3029,7 +3064,42 @@ impl Battle {
         let power = self.fighters[psyker_i].spell_power;
         let dmg = ((power as f64) * mult * stacks as f64).round() as i32;
         // Manifestations are psychic — MIND-typed, so elemental profiles apply.
-        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind)
+        let mut effects = self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind);
+        // Expansion (the doc's passive on Gravity Well, generalised): the Focus also
+        // reaches other living enemies, for a share of the tick. A controller should widen
+        // with level — the alternative, hitting the one target harder, is the one thing
+        // this class is not for.
+        let extra = self.expansion_reach(psyker_i);
+        if extra > 0 {
+            let spill = (dmg as f64 * self.psyker_expansion_mult).round() as i32;
+            let others: Vec<usize> = self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(i, f)| {
+                    *i != t && f.alive && f.kind == CombatantKind::Monster && f.hp > 0
+                })
+                .map(|(i, _)| i)
+                .take(extra)
+                .collect();
+            for o in others {
+                effects.extend(self.apply_typed_damage(o, spill.max(self.min_damage), DamageType::Mind));
+            }
+        }
+        effects
+    }
+
+    /// How many enemies BEYOND its own target an offensive Focus reaches, from the
+    /// Psyker's level. Zero until Expansion unlocks, so an early Psyker still picks one
+    /// creature and grinds it.
+    fn expansion_reach(&self, psyker_i: usize) -> usize {
+        let level = self.fighters[psyker_i].level;
+        if self.psyker_expansion_at <= 0 || level < self.psyker_expansion_at {
+            return 0;
+        }
+        let step = self.psyker_expansion_per_level.max(1);
+        let grown = 1 + (level - self.psyker_expansion_at) / step;
+        grown.clamp(1, self.psyker_expansion_cap.max(1)) as usize
     }
 
     /// Control Manifestation tick: drain the aimed enemy's ATB gauge, delaying its turns.
@@ -4815,6 +4885,117 @@ mod tests {
             battle.fighters[mi].gauge > before || battle.fighters[mi].gauge >= 1.0,
             "an anchored creature's gauge never moved — that is a lock"
         );
+    }
+
+    /// Mind's Eye: the opening Foci are free, so a controller does not spend the first
+    /// three turns of every fight doing nothing but setting up. A free cast leaves the
+    /// gauge full — the Psyker acts again immediately — and the pool is finite.
+    #[test]
+    fn minds_eye_opens_the_fight_without_spending_it() {
+        let b = balance();
+        let mut f = psyker("p", 400, 50, 5);
+        // The level -> count curve is `meld-run`'s (the engine never sees a level curve);
+        // what is pinned HERE is what the engine does with the pool it is handed.
+        f.free_casts = 2;
+        let budget = f.free_casts;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![f],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "p");
+        let pi = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        let _ = battle.submit(
+            "p",
+            "op1".into(),
+            BattleActionKind::Skill,
+            Some(vec!["m1".into()]),
+            Some("cast:gravity_well".into()),
+            None,
+        );
+        let pi2 = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        assert_eq!(pi, pi2);
+        assert!(
+            battle.fighters[pi].gauge >= 1.0,
+            "a free cast spent the turn — the whole point is that it does not"
+        );
+        assert_eq!(battle.fighters[pi].free_casts, budget - 1, "the pool did not decrement");
+    }
+
+    /// A refused cast must not burn the opening it was meant to buy — the aspect chain
+    /// makes "rejected" an ordinary outcome, not an edge case.
+    #[test]
+    fn a_refused_cast_costs_no_free_cast() {
+        let b = balance();
+        let mut f = psyker("p", 400, 50, 5);
+        f.free_casts = 2;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![f],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "p");
+        // Gravity with no Gravity Well under it: refused.
+        let _ = battle.submit(
+            "p",
+            "op1".into(),
+            BattleActionKind::Skill,
+            Some(vec!["m1".into()]),
+            Some("cast:gravity".into()),
+            None,
+        );
+        let pi = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        assert_eq!(battle.fighters[pi].free_casts, 2, "a refusal spent a free cast");
+    }
+
+    /// Expansion: an offensive Focus reaches other living enemies too. A controller widens
+    /// with level; hitting one target harder is the one thing this class is not for.
+    #[test]
+    fn expansion_spreads_a_focus_across_the_line() {
+        let b = balance();
+        let mk = |level: i32| {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![psyker("p", 400, level, 5)],
+                vec![monster("m1", 100000, 1), monster("m2", 100000, 1)],
+                &b,
+                7,
+            )
+        };
+        let cast = |battle: &mut Battle| {
+            tick_to_ready(battle, "p");
+            let _ = battle.submit(
+                "p",
+                "op1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some("cast:gravity_well".into()),
+                None,
+            );
+        };
+        let hp = |battle: &Battle, id: &str| {
+            battle.fighters.iter().find(|f| f.combatant_id == id).unwrap().hp
+        };
+
+        // Below the unlock the second creature is untouched.
+        let mut early = mk(1);
+        cast(&mut early);
+        assert_eq!(hp(&early, "m2"), 100000, "an early Psyker splashed the line");
+
+        // Past it, the same single-target Focus grinds the neighbour too — for less.
+        let mut wide = mk(b.battle.psyker_expansion_at);
+        cast(&mut wide);
+        let primary = 100000 - hp(&wide, "m1");
+        let spill = 100000 - hp(&wide, "m2");
+        assert!(spill > 0, "Expansion reached nobody");
+        assert!(spill < primary, "the spill ({spill}) is not softer than the primary ({primary})");
     }
 
     #[test]
