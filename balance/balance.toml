@@ -186,7 +186,7 @@ psyker_dissolution_tick_mult = 0.5    # Matter Dissolution (L49): one foe...
 psyker_dissolution_armour_shred = 2   # ...and its armour corrodes this much per tick
 psyker_phase_evasion = 0.06           # Phase Shift (L64): Evasion granted per tick
 psyker_collapse_tick_mult = 0.55      # Reality Collapse: all enemies, armour-ignoring
-# Event Horizon (255), the caster capstone: it grinds the line AND slows every enemy's gauge
+# Gravity Vortex (255), the caster capstone: it grinds the line AND slows every enemy's gauge
 # FILL RATE (via `status_slow_mult`, the same multiplier a web or a chill uses) for as long
 # as it is held. The damage is deliberately modest — the tempo is what you pay 255 levels for.
 #
@@ -195,8 +195,15 @@ psyker_collapse_tick_mult = 0.55      # Reality Collapse: all enemies, armour-ig
 # level-255 Psyker takes several turns per creature turn. A cap would knock every creature
 # back below the line each time it approached one and they would never act again. The window
 # is a little longer than a Psyker's own turn so the slow never lapses while the Focus is up.
-psyker_horizon_tick_mult = 0.35
-psyker_horizon_ticks = 80
+psyker_vortex_tick_mult = 0.35
+# Gravity Well's ASPECTS (the doc's Pressure -> Gravity -> Anchor chain). Each occupies its
+# own Focus slot and re-applies its mark every Psyker turn, so the hold lasts exactly as
+# long as the Focus is held. `anchor` is the deepest slow in the game and is still a RATE:
+# a creature's speed_stat never scales with distance, so a gauge that stops advancing is a
+# creature that never acts again. 0.2 crawls; it does not lock.
+psyker_anchor_slow_mult = 0.2
+psyker_aspect_ticks = 40          # ticks an aspect's mark outlives the turn that applied it
+psyker_vortex_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
 psyker_spike_tick_mult = 0.9      # Mind Spike: stronger armour-ignoring dmg tick

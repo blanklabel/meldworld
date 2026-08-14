@@ -167,8 +167,12 @@ pub struct Battle {
     pub psyker_dissolution_armour_shred: i32,
     pub psyker_phase_evasion: f64,
     pub psyker_collapse_tick_mult: f64,
-    pub psyker_horizon_tick_mult: f64,
-    pub psyker_horizon_ticks: u64,
+    pub psyker_vortex_tick_mult: f64,
+    /// ATB fill multiplier while ANCHORED — the deepest slow, never a cap.
+    pub psyker_anchor_slow_mult: f64,
+    /// Ticks an aspect's mark outlives the Psyker turn that applied it.
+    pub psyker_aspect_ticks: u64,
+    pub psyker_vortex_ticks: u64,
     pub resonant_second_life_revive_fraction: f64,
     pub resonant_second_life_heal_fraction: f64,
     pub resonant_second_life_self_cost: f64,

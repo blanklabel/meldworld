@@ -140,6 +140,13 @@ pub struct SkillDef {
     /// to the class name — abilities now run well past the top rank, so this is a
     /// note about the ability's station, not the hero's.
     pub rank: &'static str,
+    /// The Focus this one is an ASPECT of — it may only be cast onto a target that is
+    /// already holding its parent, and it falls the moment the parent does. This is how
+    /// the Psyker controls: Pressure crushes, Gravity slows what is being crushed, Anchor
+    /// pins what is already slowed. An aspect is never a top-level menu row (see
+    /// [`skills_for_class_at`]); it is reached from the manifestation it deepens, which
+    /// is what keeps a caster's menu at its width while its DEPTH grows.
+    pub requires: Option<&'static str>,
 }
 
 /// Every hero ability in the game.
@@ -155,6 +162,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage, and MARKS the target: every ally hits it harder until the mark fades. Costs nothing.",
         upgrades: None,
+        requires: None,
         rank: "Walker",
     },
     SkillDef {
@@ -165,6 +173,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Heals one ally (the most wounded if you pick nobody) for a share of their max HP. Costs nothing.",
         upgrades: None,
+        requires: None,
         rank: "Traveler",
     },
     SkillDef {
@@ -175,6 +184,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage, drains the target's ATB gauge, and DISTRACTS it: it swings wide at whoever it attacks, and the party's chance to flee goes up while it holds.",
         upgrades: None,
+        requires: None,
         rank: "Scout",
     },
     SkillDef {
@@ -185,6 +195,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP. Not an Anchor - just enough certainty underfoot to stand on.",
         upgrades: None,
+        requires: None,
         rank: "Pioneer",
     },
     SkillDef {
@@ -195,6 +206,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Evasion for the WHOLE party: every ally becomes harder to hit until it decays. The Guides' promise, as a stat.",
         upgrades: None,
+        requires: None,
         rank: "Discoverer",
     },
     SkillDef {
@@ -205,6 +217,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Every living ally's gauge fills instantly - they all act at once. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Globemaster",
     },
     SkillDef {
@@ -215,6 +228,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "HASTE for the whole party: every ally's ATB gauge fills faster for a while.",
         upgrades: None,
+        requires: None,
         rank: "Globemaster",
     },
     SkillDef {
@@ -225,6 +239,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "The whole field, read at once: MARKS every enemy so every ally hits all of them harder, and HASTES the whole party at the same time. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Globemaster",
     },
     // ---- Hunter: martial. Attacks bank Adrenaline, every skill spends it —
@@ -238,6 +253,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A heavy blow. Spends Adrenaline.",
         upgrades: None,
+        requires: None,
         rank: "Wisker",
     },
     SkillDef {
@@ -248,6 +264,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "Heals YOURSELF for a share of your max HP. Spends Adrenaline.",
         upgrades: None,
+        requires: None,
         rank: "Stalker",
     },
     SkillDef {
@@ -258,6 +275,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage, and drains the target's ATB gauge so its turn comes later. Spends Adrenaline.",
         upgrades: None,
+        requires: None,
         rank: "Stalker",
     },
     SkillDef {
@@ -268,6 +286,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "The biggest single hit in the kit, at the biggest Adrenaline cost.",
         upgrades: None,
+        requires: None,
         rank: "Shikari",
     },
     SkillDef {
@@ -278,6 +297,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Power Strike, harder. Spends the same Adrenaline.",
         upgrades: Some("power_strike"),
+        requires: None,
         rank: "Predator",
     },
     SkillDef {
@@ -288,6 +308,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "The deep breath before the last push: heals YOURSELF far more than Second Wind and leaves Regen behind. ONCE per battle, and it spends Adrenaline.",
         upgrades: None,
+        requires: None,
         rank: "Master Hunter",
     },
     SkillDef {
@@ -298,6 +319,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "Frenzy, turned on the whole pack: the biggest hit in the kit, against EVERY enemy at once. Spends the same Adrenaline.",
         upgrades: Some("frenzy"),
+        requires: None,
         rank: "Apex",
     },
     SkillDef {
@@ -308,6 +330,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "The whole pack pinned at once: damage and a heavy gauge drain on EVERY enemy. ONCE per battle, and it spends Adrenaline.",
         upgrades: None,
+        requires: None,
         rank: "Master Hunter",
     },
     // ---- Psyker: Foci persist and fire every turn ----
@@ -319,7 +342,35 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus: each Psyker turn it damages the target, ignoring armour. Persists until revoked.",
         upgrades: None,
+        requires: None,
         rank: "Initiate",
+    },
+    // Gravity Well's own aspects. The doc's chain — Pressure crushes, Gravity slows what
+    // is being crushed, Anchor pins what is already slowed — is what makes this class a
+    // CONTROLLER from its first level rather than a damage tick until Temporal Anchor at
+    // 20. Each occupies its own Focus slot, so an early Psyker holding both halves of the
+    // chain is holding nothing else: depth costs width.
+    SkillDef {
+        key: "gravity",
+        name: "Gravity",
+        class: "psyker",
+        unlock: 5,
+        target: Target::Enemy,
+        description: "An aspect of Gravity Well: the crushed target's gauge fills slower for as long as both are held.",
+        upgrades: None,
+        requires: Some("gravity_well"),
+        rank: "Initiate",
+    },
+    SkillDef {
+        key: "anchor",
+        name: "Anchor",
+        class: "psyker",
+        unlock: 20,
+        target: Target::Enemy,
+        description: "An aspect of Gravity: what is already slowed is pinned, its gauge crawling, while all three are held.",
+        upgrades: None,
+        requires: Some("gravity"),
+        rank: "Tracer",
     },
     SkillDef {
         key: "kinetic_aegis",
@@ -329,6 +380,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "A Focus: each Psyker turn it grants YOURSELF Barrier. Persists until revoked.",
         upgrades: None,
+        requires: None,
         rank: "Initiate",
     },
     SkillDef {
@@ -339,6 +391,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus: a stronger armour-ignoring tick each Psyker turn. Persists until revoked.",
         upgrades: None,
+        requires: None,
         rank: "Tracer",
     },
     SkillDef {
@@ -349,6 +402,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus: each Psyker turn it drains the target's ATB gauge. Persists until revoked.",
         upgrades: None,
+        requires: None,
         rank: "Field Marshal",
     },
     SkillDef {
@@ -359,6 +413,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "A Focus that hits EVERY enemy each Psyker turn, ignoring armour.",
         upgrades: None,
+        requires: None,
         rank: "Field Marshal",
     },
     SkillDef {
@@ -369,6 +424,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus: fire damage each Psyker turn, so a target that resists physical still burns.",
         upgrades: None,
+        requires: None,
         rank: "Field Marshal",
     },
     SkillDef {
@@ -379,6 +435,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus that strips the target's armour as well as its HP.",
         upgrades: None,
+        requires: None,
         rank: "Lead Investigator",
     },
     SkillDef {
@@ -389,6 +446,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "A Focus: each Psyker turn it grants YOURSELF Evasion, so you are harder to hit for as long as it is held.",
         upgrades: None,
+        requires: None,
         rank: "Lead Investigator",
     },
     SkillDef {
@@ -399,6 +457,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A Focus that drains the target's gauge and damages it - control and pressure at once.",
         upgrades: None,
+        requires: None,
         rank: "Bureau Chief",
     },
     SkillDef {
@@ -409,16 +468,18 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "The heaviest Focus: armour-ignoring damage to every enemy, every Psyker turn.",
         upgrades: None,
+        requires: None,
         rank: "Director",
     },
     SkillDef {
-        key: "event_horizon",
-        name: "Event Horizon",
+        key: "gravity_vortex",
+        name: "Gravity Vortex",
         class: "psyker",
         unlock: 255,
         target: Target::AllEnemies,
-        description: "The last Focus: while it is held EVERY enemy's gauge fills at half speed, so the whole line acts half as often — and it grinds all of them each Psyker turn.",
+        description: "The last Focus: a sphere of warped spacetime over the whole line - every enemy's gauge fills at half speed while it is held, and all of them are ground down each Psyker turn.",
         upgrades: None,
+        requires: None,
         rank: "Director",
     },
     // ---- Resonant: a caster, so its ladder runs the whole way. It has no order and
@@ -431,6 +492,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Heals an ally for a large share of their max HP, PAID from your own. The healer bleeds so the party does not.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -441,6 +503,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Grants an ally Regen: HP back at the start of each of their turns.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -451,6 +514,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Grants an ally Barrier - temporary HP that soaks damage before their own.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -461,6 +525,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "A small heal for EVERY ally at once, paid from your own HP.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -471,6 +536,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Regen for the WHOLE party, and it costs you nothing.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -481,6 +547,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "A large heal for ONE ally, paid from your own HP.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -491,6 +558,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Heals the WHOLE party and grants them Regen, paid from your own HP.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -501,6 +569,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Heals ONE ally, Wards them and grants Regen in one turn — the heaviest single-target boon, and the heaviest HP cost to you.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -511,6 +580,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Heals the WHOLE party for most of their max HP, and spends most of your own to do it.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     SkillDef {
@@ -521,6 +591,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "The capstone: the whole party is healed and Warded at once, paid from your own HP. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
     // ---- Shifter: martial. Three tricks, learned early, then it lives on daggers
@@ -534,6 +605,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "A heavy strike that pierces most of the target's armour.",
         upgrades: None,
+        requires: None,
         rank: "Flicker Foot",
     },
     SkillDef {
@@ -544,6 +616,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "Blink: grants YOURSELF a large Evasion bonus that decays each of your turns. The best dodge in the game.",
         upgrades: None,
+        requires: None,
         rank: "Shift Rat",
     },
     SkillDef {
@@ -554,6 +627,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage plus a heavy gauge drain.",
         upgrades: None,
+        requires: None,
         rank: "Shift Rat",
     },
     SkillDef {
@@ -564,6 +638,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Takes the target's tempo - drains its ATB gauge - without hitting it.",
         upgrades: None,
+        requires: None,
         rank: "Shift Rat",
     },
     SkillDef {
@@ -574,6 +649,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Backstab, placed properly: a heavier strike that ignores the target's armour ENTIRELY rather than most of it.",
         upgrades: Some("backstab"),
+        requires: None,
         rank: "Void-Dancer",
     },
     SkillDef {
@@ -584,6 +660,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "The whole room worked at once: a Mug against EVERY enemy — damage, a heavy gauge drain, and you pick all of their pockets. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "The Named",
     },
     SkillDef {
@@ -594,6 +671,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Steal, with a hit on the way past: damage AND a gauge drain.",
         upgrades: Some("steal"),
+        requires: None,
         rank: "Void-Dancer",
     },
     // ---- Phoenix Guard: the Last City's anti-undead order (docs/lore/factions.md).
@@ -607,6 +685,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage that also drains the target's gauge, and bites far deeper into UNDEAD.",
         upgrades: None,
+        requires: None,
         rank: "Initiate",
     },
     SkillDef {
@@ -617,6 +696,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "Grants YOURSELF Barrier sized off your own max HP.",
         upgrades: None,
+        requires: None,
         rank: "Purifier",
     },
     SkillDef {
@@ -627,6 +707,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage that ZEROES the target's ATB gauge - a hard stagger. Extra against undead.",
         upgrades: None,
+        requires: None,
         rank: "Exemplar",
     },
     SkillDef {
@@ -637,6 +718,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "Damage to EVERY living enemy. Extra against undead.",
         upgrades: None,
+        requires: None,
         rank: "Luminary",
     },
     SkillDef {
@@ -647,6 +729,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP.",
         upgrades: None,
+        requires: None,
         rank: "Redeemer",
     },
     SkillDef {
@@ -657,6 +740,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "Consecrates the field: damage to EVERY living enemy that also ZEROES each of their ATB gauges. Extra against undead. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Apotheosis",
     },
     SkillDef {
@@ -667,6 +751,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "The order's own fire: heavy damage to EVERY enemy, far heavier against undead, and Barrier for the WHOLE party out of the same flame. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Apotheosis",
     },
     SkillDef {
@@ -677,6 +762,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "An execute: the more HP the target is missing, the harder it lands. Extra against undead.",
         upgrades: None,
+        requires: None,
         rank: "Apotheosis",
     },
     // ---- Smithwright: the Foundry's caste that BUILDS (docs/lore/factions.md). The kit
@@ -690,6 +776,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage that also drains the target's gauge - a staggering blow with the tool itself.",
         upgrades: None,
+        requires: None,
         rank: "Indentured Extractor",
     },
     SkillDef {
@@ -700,6 +787,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Caster,
         description: "Grants YOURSELF Barrier sized off your own max HP.",
         upgrades: None,
+        requires: None,
         rank: "Smelter Apprentice",
     },
     SkillDef {
@@ -710,6 +798,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Barrier for the WHOLE party, sized off each ally's own max HP.",
         upgrades: None,
+        requires: None,
         rank: "Journeyman Smithwright",
     },
     SkillDef {
@@ -720,6 +809,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Raises ONE ally's attack for the rest of the fight. No damage of its own.",
         upgrades: None,
+        requires: None,
         rank: "Smithwright",
     },
     SkillDef {
@@ -730,6 +820,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "Damage to EVERY enemy, ignoring armour.",
         upgrades: None,
+        requires: None,
         rank: "Master Smithwright",
     },
     SkillDef {
@@ -740,6 +831,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Tempering Blow for the WHOLE party: every ally's attack goes up for the rest of the fight. No damage of its own. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Master of the Foundry",
     },
     SkillDef {
@@ -750,6 +842,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Everything the trade knows, at once: the whole party is healed, given Barrier, AND has its attack raised for the rest of the fight. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Master of the Foundry",
     },
     SkillDef {
@@ -760,6 +853,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Heals AND shields the whole party at once.",
         upgrades: None,
+        requires: None,
         rank: "Master of the Foundry",
     },
     // ---- Keeper: the Open Flower in the field. A mender, not a duellist: everything
@@ -772,6 +866,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage (from Mnd, not Str) plus a gauge drain.",
         upgrades: None,
+        requires: None,
         rank: "Sprout",
     },
     SkillDef {
@@ -782,6 +877,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Heals an ally now AND grants them Regen after.",
         upgrades: None,
+        requires: None,
         rank: "Seedling",
     },
     SkillDef {
@@ -792,6 +888,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "Regen for the WHOLE party.",
         upgrades: None,
+        requires: None,
         rank: "Budling",
     },
     SkillDef {
@@ -802,6 +899,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Enemy,
         description: "Damage and a heavy gauge drain - its turn is a long way off.",
         upgrades: None,
+        requires: None,
         rank: "Flowerling",
     },
     SkillDef {
@@ -812,6 +910,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Ally,
         description: "Grants an ally Barrier and Regen together.",
         upgrades: None,
+        requires: None,
         rank: "Cultivator",
     },
     SkillDef {
@@ -822,6 +921,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::AllEnemies,
         description: "The ground itself closes in: damage (from Mnd, not Str) AND a gauge drain on EVERY enemy at once.",
         upgrades: None,
+        requires: None,
         rank: "Terra",
     },
     SkillDef {
@@ -832,6 +932,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "The capstone: the WHOLE party is healed, given Barrier, and given Regen — everything the order knows about keeping people alive, in one turn. ONCE per battle.",
         upgrades: None,
+        requires: None,
         rank: "Terra",
     },
     SkillDef {
@@ -842,6 +943,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "The capstone: the whole party is healed, shielded, and pushed up the turn order.",
         upgrades: None,
+        requires: None,
         rank: "Terra",
     },
     SkillDef {
@@ -852,6 +954,7 @@ pub const SKILLS: &[SkillDef] = &[
         target: Target::Party,
         description: "What the order is for: a fallen ally stands back up at part of their max HP, and the whole party is healed in the same breath. ONCE per battle, paid heavily out of your own HP.",
         upgrades: None,
+        requires: None,
         rank: "",
     },
 ];
@@ -1005,7 +1108,29 @@ pub fn skills_for_class_at(class: &str, level: i32) -> Vec<&'static SkillDef> {
     let owned: Vec<&SkillDef> =
         skills_for_class(class).into_iter().filter(|s| level >= s.unlock).collect();
     let superseded: Vec<&str> = owned.iter().filter_map(|s| s.upgrades).collect();
-    owned.into_iter().filter(|s| !superseded.contains(&s.key)).collect()
+    owned
+        .into_iter()
+        // An ASPECT is not a row of its own: it is reached from the manifestation it
+        // deepens ([`aspects_of`]), so the menu stays as wide as the class has *ideas*
+        // rather than as wide as it has buttons.
+        .filter(|s| s.requires.is_none() && !superseded.contains(&s.key))
+        .collect()
+}
+
+/// The aspects that deepen `key`, in unlock order — the rows a manifestation opens onto.
+pub fn aspects_of(key: &str) -> Vec<&'static SkillDef> {
+    let mut v: Vec<&SkillDef> = SKILLS.iter().filter(|s| s.requires == Some(key)).collect();
+    v.sort_by_key(|s| s.unlock);
+    v
+}
+
+/// Every aspect a hero owns at `level`, parent first — the whole chain, flattened, for
+/// the surfaces that need to know what is castable rather than what is on the menu.
+pub fn aspect_chain_at(class: &str, level: i32) -> Vec<&'static SkillDef> {
+    skills_for_class(class)
+        .into_iter()
+        .filter(|s| level >= s.unlock && s.requires.is_some())
+        .collect()
 }
 
 /// The chain an ability belongs to, base first — for a tooltip that wants to say

@@ -1836,6 +1836,8 @@ fn menu_entries(
     // The acting hero's `spent:<skill>` tokens, so a once-per-battle call that is gone
     // says so on its row instead of only being refused when pressed.
     spent: &[String],
+    // The Foci that hero is currently holding, which is what makes an ASPECT castable.
+    foci: &[String],
 ) -> Vec<MenuEntry> {
     let e = |label: &str, action| MenuEntry {
         label: label.to_string(),
@@ -1894,15 +1896,41 @@ fn menu_entries(
             v
         }
         MenuLevel::Manifest => {
-            // Manifestations carry their tooltip like every other ability now.
-            let mut v: Vec<MenuEntry> = meld_proto::skills::skills_for_class_at("psyker", hero_level)
-                .into_iter()
-                .map(|d| MenuEntry {
-                    label: d.name.to_string(),
+            // Manifestations carry their tooltip like every other ability now. An ASPECT
+            // is listed under the Focus it deepens and ONLY while that Focus is held — the
+            // engine refuses it otherwise, and a row that costs a turn to be told no is
+            // the thing this menu exists to prevent. It also teaches the chain: hold
+            // Gravity Well and Gravity appears beneath it.
+            fn row(d: &'static meld_proto::skills::SkillDef, depth: usize) -> MenuEntry {
+                MenuEntry {
+                    label: format!("{}{}", "  ".repeat(depth), d.name),
                     action: EntryAction::Manifest(d.key),
                     tooltip: d.description.to_string(),
-                })
-                .collect();
+                }
+            }
+            fn push_aspects(
+                v: &mut Vec<MenuEntry>,
+                parent: &str,
+                depth: usize,
+                hero_level: i32,
+                foci: &[String],
+            ) {
+                if !foci.iter().any(|k| k == parent) {
+                    return;
+                }
+                for a in meld_proto::skills::aspects_of(parent) {
+                    if hero_level < a.unlock {
+                        continue;
+                    }
+                    v.push(row(a, depth));
+                    push_aspects(v, a.key, depth + 1, hero_level, foci);
+                }
+            }
+            let mut v: Vec<MenuEntry> = Vec::new();
+            for d in meld_proto::skills::skills_for_class_at("psyker", hero_level) {
+                v.push(row(d, 0));
+                push_aspects(&mut v, d.key, 1, hero_level, foci);
+            }
             v.push(e("Back", EntryAction::Back));
             v
         }
@@ -2210,7 +2238,7 @@ mod potion_menu_tests {
     fn the_items_page_offers_only_potions_the_party_carries() {
         // Nothing held: one dead row plus Back, so the page cannot offer a potion
         // the server would refuse with "Out of …".
-        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[], &[]);
+        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[], &[], &[]);
         assert_eq!(empty.len(), 2, "{:?}", empty.iter().map(|e| &e.label).collect::<Vec<_>>());
         assert!(empty[0].label.contains("no potions"));
 
@@ -2220,6 +2248,7 @@ mod potion_menu_tests {
             "explorer",
             5,
             &held(&[("bloom_salve", 3), ("bulwark_tonic", 1)]),
+            &[],
             &[],
         );
         let labels: Vec<&str> = rows.iter().map(|e| e.label.as_str()).collect();
@@ -2234,11 +2263,12 @@ mod potion_menu_tests {
             5,
             &held(&[("bloom_herb", 9), ("town_portal", 2)]),
             &[],
+            &[],
         );
         assert!(rows[0].label.contains("no potions"), "{:?}", rows[0].label);
 
         // A zero stack is not an offer.
-        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]), &[]);
+        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]), &[], &[]);
         assert!(rows[0].label.contains("no potions"));
     }
 
@@ -2280,12 +2310,12 @@ mod potion_menu_tests {
     #[test]
     fn a_spent_once_per_battle_row_says_so() {
         let lvl = meld_proto::skills::unlock_level("now");
-        let fresh = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &[]);
+        let fresh = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &[], &[]);
         let now = fresh.iter().find(|e| matches!(e.action, EntryAction::Skill("now")));
         assert!(now.is_some(), "a Globemaster should be offered Now");
         assert_eq!(now.unwrap().label, "Now");
 
-        let after = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &["now".to_string()]);
+        let after = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &["now".to_string()], &[]);
         let now = after
             .iter()
             .find(|e| matches!(e.action, EntryAction::Skill("now")))
@@ -2402,11 +2432,37 @@ mod harvest_pop_tests {
         );
         assert!(roster.effect("power_strike").contains("Adrenaline"));
         // A Psyker's Manifest rows are abilities too, so they resolve the same way.
-        let foci = menu_entries(MenuLevel::Manifest, "psyker", 16, &[], &[]);
+        let foci = menu_entries(MenuLevel::Manifest, "psyker", 16, &[], &[], &[]);
         assert!(foci.iter().any(|e| e.action.skill_key() == Some("gravity_well")));
         // Rows that are not abilities have no key to look up, and must not panic.
         assert_eq!(EntryAction::Attack.skill_key(), None);
         assert_eq!(EntryAction::Back.skill_key(), None);
+    }
+
+    /// An ASPECT is offered only under a Focus that is actually held. The engine refuses
+    /// it otherwise, and a row you can press to be told no is exactly what the registry-
+    /// driven menu exists to prevent. Holding the parent is also how the chain teaches
+    /// itself — Gravity appears the moment Gravity Well is up.
+    #[test]
+    fn an_aspect_row_appears_only_under_a_held_focus() {
+        let key = |rows: &[MenuEntry], k: &str| rows.iter().any(|e| e.action.skill_key() == Some(k));
+
+        let cold = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &[]);
+        assert!(key(&cold, "gravity_well"), "the manifestation is always offered");
+        assert!(!key(&cold, "gravity"), "Gravity offered with nothing to deepen");
+        assert!(!key(&cold, "anchor"), "Anchor offered with nothing to deepen");
+
+        let held = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        let one = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &held(&["gravity_well"]));
+        assert!(key(&one, "gravity"), "Gravity hidden while its parent is held");
+        assert!(!key(&one, "anchor"), "Anchor skipped Gravity");
+
+        let two = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &held(&["gravity_well", "gravity"]));
+        assert!(key(&two, "anchor"), "Anchor hidden with the whole chain held");
+
+        // …and a hero too junior for the aspect never sees it, parent or no parent.
+        let junior = menu_entries(MenuLevel::Manifest, "psyker", 1, &[], &[], &held(&["gravity_well"]));
+        assert!(!key(&junior, "gravity"), "a level-1 Psyker was offered a level-5 aspect");
     }
 
     fn announce_app(screen: Screen) -> App {
