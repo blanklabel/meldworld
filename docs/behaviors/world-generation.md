@@ -172,9 +172,11 @@ Procedural portal positions are a function of the instance seed: the same instan
 **Source:** CANON.md §B (Distance → difficulty: loot rarity); GDD.md §3, §2.2
 
 1. Loot rarity weights shift **one band per tier**: each increment of `tier(d)` shifts the rarity weight table one band toward rarer outcomes **[TUNABLE]**.
-2. **Red-chest floor:** `GearItem`s with `insurance: red` cannot spawn below `d = 300` **[TUNABLE]**. Chests and monster drops at `d < 300` never yield red gear, regardless of rarity roll.
-3. Resource stratification (GDD.md §4): low-tier raw materials required for base crafting spawn only near the Center Hub; high-tier hubs drop rare materials. Exact material tables are content-defined.
-4. All loot rolls are server-side (CANON.md §S); the client is informed of results only.
+2. **Red-chest ramp:** `GearItem`s with `insurance: red` reach their full drop chance at the **red-chest floor** `d = 300` **[TUNABLE]** and ramp in below it — nothing below `[loot] gear_ramp_start_distance` (40), then linear from `gear_ramp_start_mult` of the chance up to all of it at the floor. Both chests and monster drops use the one ramp, so a chest is never a way around the curve. Every distance at or past the floor gets exactly `gear_drop_chance`, so the ramp is additive to deep tuning.
+   - The floor is **not** a hard cutoff, because it cannot be reached by most of a dive: with `area_count = 8` the chain's deep portal lands at `d ≈ 342–384`, so a cutoff at 300 leaves roughly 85% of every dive unable to drop gear at all. `d = 300` is where the gear game *lives*; the ramp is what stops it from being the only place gear exists.
+3. **Potion drops:** a felled encounter or an opened chest may also yield one potion, at `[loot] potion_drop_chance` **[TUNABLE]**, drawn uniformly from the consumables whose own tier is `≤ tier(d)` — so the hub ring yields the Apothecary basics and the deep bands open the trophy line. Excludes the Revive and Experience consumables, which roll separately at `[consumable] world_revive_item_chance` / `world_xp_item_chance`. Rolled on its own RNG sub-stream, so it cannot perturb the chit/trophy/gear rolls.
+4. Resource stratification (GDD.md §4): low-tier raw materials required for base crafting spawn only near the Center Hub; high-tier hubs drop rare materials. Exact material tables are content-defined.
+5. All loot rolls are server-side (CANON.md §S); the client is informed of results only.
 
 ---
 

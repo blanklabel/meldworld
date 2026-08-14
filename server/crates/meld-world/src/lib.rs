@@ -391,8 +391,11 @@ pub struct CreatureLoot {
     /// difficulty of getting it, the way the chit haul already does. Deliberately
     /// draws no RNG: a crafter can plan a hunt.
     pub material_qty: i32,
-    /// Red-chest gear, only rolled at/after `red_chest_floor_distance`.
+    /// Red-chest gear. Ramps in with depth (see [`gear_drop_chance_at`]).
     pub gear: Option<GearDrop>,
+    /// A `meld_proto::consumables` key, or empty for no potion (GR-8). Drawn from a
+    /// **separate** RNG sub-stream, so it cannot shift any other roll in this function.
+    pub potion: &'static str,
 }
 
 /// The playable classes' content keys, matching `meld_run::class_key`'s exact
@@ -577,6 +580,53 @@ fn gear_catalog_name(class_key: &str, slot: &str, tier: i32, floor_tier: i32) ->
     format!("{} {}", POWER_ADJECTIVES[idx], class_slot_noun(class_key, slot))
 }
 
+/// P(a felled encounter drops gear) at `distance`, before any reward spike (GR-8).
+///
+/// Zero below `[loot] gear_ramp_start_distance`, then linear from
+/// `gear_ramp_start_mult` of `gear_drop_chance` up to all of it at
+/// `red_chest_floor_distance` — the depth CANON §B names as the gear game's home.
+/// A hard cutoff at that floor is not usable as the only rule: the chain's deep
+/// portal sits barely past it, so a cutoff means a whole dive with the chase
+/// switched off. Every distance at or past the floor gets exactly
+/// `gear_drop_chance`, so nothing about deep loot moves.
+pub fn gear_drop_chance_at(balance: &Balance, distance: i64) -> f64 {
+    let l = &balance.loot;
+    let floor = balance.world_scaling.red_chest_floor_distance;
+    let start = l.gear_ramp_start_distance;
+    if distance < start {
+        return 0.0;
+    }
+    // A floor at or below the ramp start collapses the ramp rather than dividing by
+    // zero: a tuner who drops the floor to 0 means "full rate everywhere".
+    let t = if floor <= start {
+        1.0
+    } else {
+        ((distance - start) as f64 / (floor - start) as f64).clamp(0.0, 1.0)
+    };
+    let m = l.gear_ramp_start_mult.clamp(0.0, 1.0);
+    l.gear_drop_chance * (m + (1.0 - m) * t)
+}
+
+/// The potions a kill at `distance` may drop (GR-8), deepest-appropriate last.
+///
+/// Band-capped: a potion is eligible once `tier(distance)` reaches its own
+/// `ConsumableDef::tier`, which is what holds the trophy line behind the depth it was
+/// authored for. `Revive`/`Experience` are excluded because those two already have
+/// their own dedicated faucets (`[consumable] world_revive_item_chance` /
+/// `world_xp_item_chance`) — including them here would quietly double their rate.
+/// Derived from the registry rather than a key list, so a new potion joins the pool
+/// by existing.
+pub fn potion_drop_pool(balance: &Balance, distance: i64) -> Vec<&'static str> {
+    use meld_proto::consumables::{ConsumableEffect as E, CONSUMABLES};
+    let band = Scaling::new(balance).tier(distance) as i32;
+    CONSUMABLES
+        .iter()
+        .filter(|c| !matches!(c.effect, E::Revive | E::Experience))
+        .filter(|c| c.tier <= band)
+        .map(|c| c.key)
+        .collect()
+}
+
 /// Roll the loot a felled encounter yields to one participant, deterministically
 /// from `seed` (economy.md S1; balance `[loot]`). `distance` is the encounter's
 /// floored distance (drives chit/gear scaling) and `monster_count` the number of
@@ -614,12 +664,10 @@ pub fn roll_creature_loot(
         * loot_mult.max(0.0))
     .round() as i32)
         .max(1);
-    // Red-chest gear only generates at/after the red-chest floor
-    // (`world_scaling.red_chest_floor_distance`; spec §4 sets it to 300 — a
-    // shallow kill never drops gear); a reward spike (loot_mult) boosts (and
-    // can guarantee) the drop.
-    let gear = if distance >= balance.world_scaling.red_chest_floor_distance
-        && rng.unit() < (l.gear_drop_chance * loot_mult.max(0.0)).min(1.0)
+    // Red-chest gear ramps in with depth (`gear_drop_chance_at`) and a reward spike
+    // (loot_mult) boosts — and can guarantee — the drop. Still exactly ONE `rng.unit()`
+    // draw whatever the chance works out to, so the stream past here is unmoved.
+    let gear = if rng.unit() < (gear_drop_chance_at(balance, distance) * loot_mult.max(0.0)).min(1.0)
     {
         let tier = sc.tier(distance) as i32;
         let a_cfg = &balance.affix;
@@ -828,11 +876,24 @@ pub fn roll_creature_loot(
     } else {
         None
     };
+    // Its OWN sub-stream, not `rng`: a draw taken from the shared stream here would
+    // shift every gear/affix/rarity roll above it, which is the trap the trophy-qty
+    // calculation is written to avoid too.
+    let mut prng = Rng(seed ^ 0x9017_1047_9017_1047);
+    let pool = potion_drop_pool(balance, distance);
+    let potion = if !pool.is_empty()
+        && prng.unit() < (l.potion_drop_chance * loot_mult.max(0.0)).min(1.0)
+    {
+        pool[prng.below(pool.len())]
+    } else {
+        ""
+    };
     CreatureLoot {
         chits,
         material,
         material_qty,
         gear,
+        potion,
     }
 }
 
@@ -4586,12 +4647,12 @@ mod tests {
     }
 
     #[test]
-    fn red_gear_never_drops_below_the_red_chest_floor() {
+    fn red_gear_never_drops_below_the_ramp_start() {
         let b = Balance::load_default().unwrap();
         let floor = b.world_scaling.red_chest_floor_distance;
-        // Below the floor: no gear across many seeds.
+        let start = b.loot.gear_ramp_start_distance;
         for s in 0..200 {
-            assert!(roll_creature_loot(&b, floor - 1, 1, 1.0, s).gear.is_none());
+            assert!(roll_creature_loot(&b, start - 1, 1, 1.0, s).gear.is_none());
         }
         // At/after the floor: gear does appear for some seeds, at the right tier.
         let mut saw_gear = false;
@@ -4615,6 +4676,115 @@ mod tests {
             }
         }
         assert!(saw_gear, "red gear should drop at/after the floor for some seeds");
+    }
+
+    /// The bug GR-8 fixes is arithmetic between two tunables, so the test is
+    /// arithmetic too: there must be no reachable depth of an ordinary dive at which
+    /// the gear chase is switched off. `area_count` and the area-length curve decide
+    /// how far a dive goes, so this reads the world's OWN extent rather than a
+    /// written-down number that would not follow a retune.
+    #[test]
+    fn gear_can_drop_everywhere_a_dive_actually_reaches() {
+        let b = Balance::load_default().unwrap();
+        let deepest = (0..12)
+            .map(|s| Arena::generate(&b, s, false).portal.x.floor() as i64)
+            .min()
+            .unwrap();
+        assert!(
+            deepest > b.loot.gear_ramp_start_distance,
+            "a dive's own portal ({deepest}) must sit past the ramp start"
+        );
+        // Sample the whole walk out, not just the ends: a gap anywhere in here is a
+        // stretch of the dive where killing things cannot pay in gear.
+        for d in (b.loot.gear_ramp_start_distance..=deepest).step_by(20) {
+            let hits = (0..600).filter(|s| roll_creature_loot(&b, d, 1, 1.0, *s).gear.is_some()).count();
+            assert!(hits > 0, "d={d} is inside a normal dive and drops no gear at all");
+        }
+    }
+
+    #[test]
+    fn the_gear_ramp_climbs_and_lands_exactly_on_the_floor_rate() {
+        let b = Balance::load_default().unwrap();
+        let floor = b.world_scaling.red_chest_floor_distance;
+        let start = b.loot.gear_ramp_start_distance;
+        assert_eq!(gear_drop_chance_at(&b, start - 1), 0.0);
+        // Deep rates are the untouchable half of this change: everything at or past
+        // the floor must still be exactly `gear_drop_chance`, so no existing deep
+        // tuning moves and the ramp is provably additive.
+        for d in [floor, floor + 1, floor + 700, 40_000] {
+            assert!(
+                (gear_drop_chance_at(&b, d) - b.loot.gear_drop_chance).abs() < 1e-9,
+                "d={d} should sit at exactly the full rate"
+            );
+        }
+        let mid = start + (floor - start) / 2;
+        for (lo, hi) in [(start, mid), (mid, floor)] {
+            assert!(
+                gear_drop_chance_at(&b, hi) > gear_drop_chance_at(&b, lo),
+                "the ramp should climb from d={lo} to d={hi}"
+            );
+        }
+        assert!(
+            gear_drop_chance_at(&b, start) > 0.0
+                && gear_drop_chance_at(&b, start) < b.loot.gear_drop_chance,
+            "the shallow end should be a trickle, not the full faucet and not nothing"
+        );
+    }
+
+    #[test]
+    fn a_kill_can_drop_a_potion_and_the_band_gates_which_one() {
+        let b = Balance::load_default().unwrap();
+        let drops = |d: i64| -> Vec<&'static str> {
+            (0..400).filter_map(|s| {
+                let p = roll_creature_loot(&b, d, 1, 1.0, s).potion;
+                (!p.is_empty()).then_some(p)
+            }).collect()
+        };
+        let shallow = drops(30);
+        assert!(!shallow.is_empty(), "a shallow kill should sometimes drop a potion");
+        // The trophy line is authored for depth and the Apothecary's basics are not,
+        // so a hub-ring kill must never hand over a deep-band brew.
+        for key in &shallow {
+            let def = meld_proto::consumables::consumable(key).expect("a real potion");
+            assert_eq!(def.tier, 0, "{key} is above the shallow band");
+        }
+        let deep: std::collections::BTreeSet<_> = drops(4000).into_iter().collect();
+        assert!(
+            deep.len() > shallow.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            "the deep pool should be wider than the shallow one"
+        );
+        // The two progression consumables have their own faucets
+        // (`world_xp_item_chance` / `world_revive_item_chance`); appearing here too
+        // would silently double their rate.
+        for key in &deep {
+            let def = meld_proto::consumables::consumable(key).unwrap();
+            assert!(
+                !matches!(
+                    def.effect,
+                    meld_proto::consumables::ConsumableEffect::Revive
+                        | meld_proto::consumables::ConsumableEffect::Experience
+                ),
+                "{key} has a dedicated faucet and must stay out of the shared pool"
+            );
+        }
+    }
+
+    /// The potion roll is deliberately on its own RNG sub-stream, because a draw taken
+    /// from the shared one would have shifted every gear/rarity/affix roll above it.
+    #[test]
+    fn the_potion_roll_does_not_disturb_the_rest_of_the_loot() {
+        let mut b = Balance::load_default().unwrap();
+        let deep = 4000;
+        let with: Vec<_> = (0..200)
+            .map(|s| roll_creature_loot(&b, deep, 2, 1.0, s))
+            .map(|l| (l.chits, l.material, l.material_qty, l.gear))
+            .collect();
+        b.loot.potion_drop_chance = 0.0;
+        let without: Vec<_> = (0..200)
+            .map(|s| roll_creature_loot(&b, deep, 2, 1.0, s))
+            .map(|l| (l.chits, l.material, l.material_qty, l.gear))
+            .collect();
+        assert_eq!(with, without, "turning potions off must change nothing else");
     }
 
     #[test]

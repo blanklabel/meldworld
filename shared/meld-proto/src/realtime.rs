@@ -1154,6 +1154,51 @@ pub mod run {
         const TYPE: &'static str = "run.backpack_update";
     }
 
+    /// One hero's POUCH: the items that hero can actually reach in a fight.
+    ///
+    /// The bag and the pouches are separate containers, not one pile with a bigger
+    /// number. Loot always lands in the shared bag; moving it into a pouch is a
+    /// deliberate overworld act, which is what makes "who is carrying the heals"
+    /// a decision you make before the fight rather than during it.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct PouchView {
+        pub hero_slot: i32,
+        pub items: Vec<ItemStack>,
+        /// Slots this pouch holds (`[runs] hero_pouch_slots`), so the client can show
+        /// `4/10` without knowing balance.
+        pub capacity: i32,
+    }
+
+    /// S2C — the caller's per-hero pouches, whole. Sent at run start and after any
+    /// change (a transfer, or a potion drunk in battle). A snapshot rather than a
+    /// delta: a pouch is small and bounded, so re-sending it costs less than the
+    /// desync a dropped delta would cause.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Pouches {
+        pub pouches: Vec<PouchView>,
+    }
+    impl Message for Pouches {
+        const TYPE: &'static str = "run.pouches";
+    }
+
+    /// C2S — move `quantity` of `item_kind` between the shared bag and one hero's
+    /// pouch. Overworld only: the server refuses it while the caller is in a battle,
+    /// so a fight cannot be re-supplied from the bag mid-turn.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MoveItem {
+        pub item_kind: String,
+        /// Which hero's pouch is the other end of the move.
+        pub hero_slot: i32,
+        /// `true` = bag → pouch, `false` = pouch → bag.
+        pub to_pouch: bool,
+        /// Defaults to 1 when absent.
+        #[serde(default)]
+        pub quantity: i32,
+    }
+    impl Message for MoveItem {
+        const TYPE: &'static str = "run.move_item";
+    }
+
     /// C2S — equip (or unequip) a piece of this run's not-yet-banked loot gear
     /// onto one of the caller's hero slots. Unlike Vault equip (HTTP,
     /// persistent, effective from the next dive), this is run-scoped: it

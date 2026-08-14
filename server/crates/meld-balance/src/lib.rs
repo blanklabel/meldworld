@@ -89,7 +89,9 @@ pub struct Runs {
     pub base_run_level_per_distance: f64,
     pub encounter_party_scale: Vec<f64>,
     pub xp_split_across_party: bool,
-    pub backpack_slots: i32,
+    /// Slots in ONE hero's pouch. There is deliberately no Party-Inventory equivalent:
+    /// the shared inventory is unbounded, so a tunable for it would be a cap nobody
+    /// wants and a number the code would have to keep pretending to honour.
     pub hero_pouch_slots: i32,
     pub extraction_channel_ms: u64,
 
@@ -275,6 +277,13 @@ pub struct Loot {
     pub material_per_creature: f64,
     pub material_qty_per_tier: f64,
     pub gear_drop_chance: f64,
+    /// Shallowest distance a gear drop is possible at all (GR-8); below it, none.
+    pub gear_ramp_start_distance: i64,
+    /// Fraction of `gear_drop_chance` in force at `gear_ramp_start_distance`, ramping
+    /// to all of it at `WorldScaling::red_chest_floor_distance`.
+    pub gear_ramp_start_mult: f64,
+    /// P(a felled encounter also drops a band-appropriate potion) (GR-8).
+    pub potion_drop_chance: f64,
     /// Fraction of a reward-spike encounter's gear drops that are PERMANENT (blue).
     pub ephemeral_gear_chance: f64,
     pub ephemeral_power_mult: f64,

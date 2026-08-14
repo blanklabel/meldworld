@@ -161,6 +161,14 @@ Last City runs. GDD §7's rule holds — NPCs do not sell the *best gear*; they 
 basics, labour, and second chances. Any further NPC chits cost is a new sink and
 must be added to this table.
 
+**On K3 and world potion drops.** A felled encounter also drops a potion at
+`[loot] potion_drop_chance`, band-capped to the depth (see
+[world-generation.md](world-generation.md) Loot Rarity Banding), which softens K3
+rather than replacing it. The cap is what keeps that true: a drop tops up the
+consumable a dive actually spent, while the potion you *chose* to bring — and every
+potion above the local band — still comes from the Apothecary or an Alchemy bench. If
+K3's throughput needs defending, `potion_drop_chance` is the dial, not the drop.
+
 ### Transfers (chits conserved)
 
 | # | Transfer | From → To |

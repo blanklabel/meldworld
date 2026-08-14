@@ -45,6 +45,9 @@ pub enum ClientCmd {
     /// Drink a potion out of combat, from the overworld menu's Items column. Only
     /// the effects that outlive a fight work; the server refuses the rest.
     UseItem { item_kind: String, hero_slot: i32 },
+    /// Move an item between the Party Inventory and one hero's pouch. Overworld only —
+    /// the server refuses it mid-battle, so a fight is fought with what was packed.
+    MoveItem { item_kind: String, hero_slot: i32, to_pouch: bool },
     /// Begin an extraction channel at the single deep fixed portal.
     Extract,
     /// Consume a Town Portal item to extract from anywhere (the primary way out).
@@ -587,6 +590,12 @@ pub enum ServerMsg {
         items: Vec<(String, i32)>,
         chits: i64,
         gear: Vec<(String, i32)>,
+    },
+    /// Per-hero pouches, indexed by hero slot — the only items a hero can reach in a
+    /// fight.
+    Pouches {
+        pouches: Vec<Vec<(String, i32)>>,
+        capacity: i32,
     },
     Snapshot { entities: Vec<EntityView> },
     BattleStarted {
@@ -1910,6 +1919,15 @@ impl Inner {
                 wr::UseItem::TYPE,
                 json!({ "item_kind": item_kind, "hero_slot": hero_slot }),
             ),
+            ClientCmd::MoveItem { item_kind, hero_slot, to_pouch } => self.send_env(
+                wr::MoveItem::TYPE,
+                json!({
+                    "item_kind": item_kind,
+                    "hero_slot": hero_slot,
+                    "to_pouch": to_pouch,
+                    "quantity": 1
+                }),
+            ),
             ClientCmd::Extract => self.send_env(
                 wr::BeginExtraction::TYPE,
                 json!({ "method": "portal", "portal_entity_id": "portal", "item_id": null }),
@@ -2110,6 +2128,31 @@ impl Inner {
                         seams,
                     });
                 }
+            }
+            "run.pouches" => {
+                let cap = raw.payload["pouches"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|p| p["capacity"].as_i64())
+                    .unwrap_or(0) as i32;
+                let mut pouches: Vec<Vec<(String, i32)>> = Vec::new();
+                for p in raw.payload["pouches"].as_array().into_iter().flatten() {
+                    let slot = p["hero_slot"].as_i64().unwrap_or(0).max(0) as usize;
+                    let items: Vec<(String, i32)> = p["items"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|i| {
+                            let k = i["item_kind"].as_str()?.to_string();
+                            Some((k, i["quantity"].as_i64().unwrap_or(0) as i32))
+                        })
+                        .collect();
+                    if pouches.len() <= slot {
+                        pouches.resize(slot + 1, Vec::new());
+                    }
+                    pouches[slot] = items;
+                }
+                self.out.push_back(ServerMsg::Pouches { pouches, capacity: cap });
             }
             "run.backpack_update" => {
                 // A chest-open pays out in the same message shape as any other

@@ -185,7 +185,7 @@ before it could heal, so the walk to the next monster was where it died.
 
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
-| item_kind | string | Yes | No | — | A `CONSUMABLES` key held in the run backpack (`bloom_salve`, `elixir`, `waking_salt`, `insight_mote`). |
+| item_kind | string | Yes | No | — | A `CONSUMABLES` key held in the **Party Inventory or in `hero_slot`'s own pouch** (`bloom_salve`, `elixir`, `waking_salt`, `insight_mote`). In the field either container is in reach; only a battle restricts a hero to its own pouch. |
 | hero_slot | int | Yes | No | — | Which of the sender's heroes drinks it (0-based party slot). |
 
 **Server validation** — the sender's party is in a battle → `validation_error` (use the
@@ -200,13 +200,85 @@ The request names only *what* and *on whom*: the dose, the HP cap, and whether t
 effect applies at all are computed server-side from the registry and `balance.toml`, so
 an edited client can ask for the impossible but cannot receive it.
 
-**Results in** — `run.backpack_update` (`cause: "field_item"`) and a refreshed
-`run.party` carrying the new HP; an Insight Mote may also produce `run.level_up`.
+**Results in** — a refreshed `run.party` carrying the new HP, plus whichever container
+paid: `run.pouches` when the drinker's own pouch was spent, else
+`run.backpack_update` (`cause: "field_item"`). An Insight Mote may also produce
+`run.level_up`.
 
 **Example**
 
 ```json
 {"type": "run.use_item", "seq": 530, "ts": 1783729010000, "payload": {"item_kind": "bloom_salve", "hero_slot": 2}}
+```
+
+---
+
+### `run.move_item` (C2S)
+
+Moves an item between the **Party Inventory** (shared, unbounded, unreachable in a
+fight) and one hero's **pouch** (capped, and the only thing that hero can reach mid-
+battle). See [run-lifecycle.md](../../behaviors/run-lifecycle.md) for the two-container
+model this serves.
+
+**Source:** roadmap `GR-9`; design of record.
+**Direction:** C2S.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| item_kind | string | Yes | No | — | The item kind to move. |
+| hero_slot | int | Yes | No | — | Which hero's pouch is the other end of the move (0-based party slot). |
+| to_pouch | bool | Yes | No | — | `true` = Party Inventory → pouch; `false` = pouch → Party Inventory. |
+| quantity | int | No | No | 1 | How many to move. Clamped to what is held. |
+
+**Server validation** — the sender is in a battle → `invalid_state` (a fight is fought
+with what the heroes were already carrying); not in a run → `invalid_state`; `hero_slot`
+out of range → `validation_error`; nothing of that kind in the source, or the
+destination has no room for a new kind → `validation_error`, and **nothing moves**.
+
+Partial moves succeed: asking for 5 when 3 are held moves 3. Only the pouch can refuse
+for want of space — returning something to the Party Inventory is always allowed,
+because that container has no limit.
+
+**Results in** — `run.backpack_update` (`cause: "pouch_transfer"`, `added`/`removed`
+depending on direction) **and** `run.pouches` with the pouches whole.
+
+**Example**
+
+```json
+{"type": "run.move_item", "seq": 531, "ts": 1783729011000, "payload": {"item_kind": "bulwark_tonic", "hero_slot": 0, "to_pouch": true, "quantity": 2}}
+```
+
+---
+
+### `run.pouches` (S2C)
+
+The caller's per-hero pouches, whole. Sent at run start and after any change — a
+transfer, a potion drunk in battle, or a potion drunk in the field from a pouch. A
+snapshot rather than a delta: a pouch is `hero_pouch_slots` deep at most, so re-sending
+it costs less than the desync a dropped delta would cause.
+
+**Direction:** S2C (to the owning player only — a pouch is not party-visible state).
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| pouches | array of PouchView | Yes | No | — | One per hero, in party-slot order. |
+
+**PouchView**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| hero_slot | int | Yes | No | — | 0-based party slot this pouch belongs to. |
+| items | array of ItemStack | Yes | No | — | What that hero is carrying. |
+| capacity | int | Yes | No | — | Slots this pouch holds (`[runs] hero_pouch_slots`), so the client can render `3/10` without reading balance. |
+
+**Example**
+
+```json
+{"type": "run.pouches", "seq": 88, "ts": 1783729011000, "payload": {"pouches": [{"hero_slot": 0, "items": [{"item_id": "…", "item_kind": "bloom_salve", "quantity": 2}], "capacity": 10}, {"hero_slot": 1, "items": [], "capacity": 10}]}}
 ```
 
 ---

@@ -43,7 +43,7 @@ impl MenuSection {
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            MenuSection::Items => "Items",
+            MenuSection::Items => "Party Inventory",
             MenuSection::Materials => "Materials",
             MenuSection::Party => "Party",
             MenuSection::Map => "Map",
@@ -185,10 +185,38 @@ pub(crate) struct UseOnHeroButton {
     pub(crate) slot: usize,
 }
 
+/// Hand the staged item to this hero's pouch, so they can reach it in a fight.
+#[derive(Component)]
+pub(crate) struct GiveToHeroButton {
+    pub(crate) slot: usize,
+}
+
+/// Put one of a hero's pouch items back into the Party Inventory.
+#[derive(Component)]
+pub(crate) struct TakeBackButton {
+    pub(crate) slot: usize,
+    pub(crate) item_kind: String,
+}
+
+/// The potions sitting in the PARTY INVENTORY (not in anyone's pouch).
+///
+/// The battle screen's [`held_potions`] is the pouch-side twin of this: the two lists
+/// are disjoint on purpose, because an item is in exactly one container and which one
+/// decides whether a hero can reach it mid-fight.
+pub(crate) fn inventory_potions(backpack: &RunBackpack) -> Vec<(String, i32)> {
+    backpack
+        .items
+        .iter()
+        .filter(|(kind, qty)| *qty > 0 && meld_proto::consumables::is_consumable(kind))
+        .cloned()
+        .collect()
+}
+
 /// Whether a potion does anything OUTSIDE a fight. Barrier/Regen/Evasion/Adrenaline
 /// are combat state that would be gone by the next encounter, so the server refuses
-/// them out here (`run.use_item`) and the menu greys them rather than offering a
-/// button that can only fail. Kept in step with the server's own match.
+/// them out here (`run.use_item`). It gates the **DRINK NOW** rows only — every potion
+/// can still be GIVEN to a hero, since a fight-only potion is exactly the kind that
+/// needs to be in a pouch. Kept in step with the server's own match.
 fn usable_in_field(item_kind: &str) -> bool {
     use meld_proto::consumables::ConsumableEffect as E;
     matches!(
@@ -373,9 +401,15 @@ pub(crate) fn column_len(
             // The six slots plus the "Equip best" row under them.
             None => GEAR_CATEGORIES.len() + 1,
         },
-        (Some(MenuSection::Items), Some(MenuPane::UseOn)) => party_lines(roster, names).len(),
+        // The pane lists every hero twice for a field-usable potion (give, then drink)
+        // and once for a fight-only one, which has nothing to drink.
+        (Some(MenuSection::Items), Some(MenuPane::UseOn)) => {
+            let heroes = party_lines(roster, names).len();
+            let field = menu.item_kind.as_deref().is_some_and(usable_in_field);
+            if field { heroes * 2 } else { heroes }
+        }
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
-        (Some(MenuSection::Items), None) => held_potions(backpack).len().max(1),
+        (Some(MenuSection::Items), None) => inventory_potions(backpack).len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
         (Some(MenuSection::Map), None) => 3,
         // Reading only — the cursor has nothing to land on.
@@ -478,15 +512,19 @@ pub(crate) fn render_main_menu(
                     col.spawn(glass::divider());
                     match section {
                         MenuSection::Items => {
-                            if backpack.items.is_empty() {
+                            col.spawn(glass::text(
+                                "shared — a hero cannot reach this in a fight",
+                                14.0,
+                                glass::DIM,
+                            ));
+                            let shared = inventory_potions(&backpack);
+                            if shared.is_empty() {
                                 col.spawn(glass::text("(carrying nothing)", 16.0, glass::DIM));
                             }
-                            for (i, (kind, qty)) in held_potions(&backpack).into_iter().enumerate()
-                            {
-                                let name = meld_proto::consumables::consumable(&kind)
+                            for (i, (kind, qty)) in shared.iter().enumerate() {
+                                let name = meld_proto::consumables::consumable(kind)
                                     .map(|c| c.name.to_string())
                                     .unwrap_or_else(|| kind.clone());
-                                let field = usable_in_field(&kind);
                                 let focused = depth == 1 && menu.cursor == i;
                                 let chosen = menu.item_kind.as_deref() == Some(kind.as_str());
                                 col.spawn((
@@ -495,27 +533,55 @@ pub(crate) fn render_main_menu(
                                     glass::inset(focused || chosen),
                                 ))
                                 .with_children(|row| {
+                                    crate::icons::spawn_icon(row, wa.as_deref(), kind, 24.0);
                                     row.spawn(glass::text(
                                         format!("{name}  x{qty}"),
                                         18.0,
-                                        if field { glass::TEXT } else { glass::DIM },
+                                        glass::TEXT,
                                     ));
                                 });
-                                if let Some(def) = meld_proto::consumables::consumable(&kind) {
-                                    let sub = if field {
-                                        format!("   {}", def.description)
-                                    } else {
-                                        format!("   {}  (only in a fight)", def.description)
-                                    };
-                                    col.spawn(glass::text(sub, 14.0, glass::DIM));
-                                }
                             }
-                            if !backpack.items.is_empty() {
+                            if !shared.is_empty() {
                                 col.spawn(glass::text(
-                                    "pick a potion, then pick who drinks it",
+                                    "pick one, then give it to a hero or have them drink it",
                                     14.0,
                                     glass::DIM,
                                 ));
+                            }
+                            // The pouches, read-only here: this is the answer to "who is
+                            // carrying the heals", which is the question the split exists
+                            // to make you ask before you walk into something.
+                            col.spawn(glass::divider());
+                            col.spawn(glass::text("POUCHES", 18.0, glass::TITLE));
+                            let cap = backpack.pouch_capacity;
+                            for (slot, h) in party_lines(&roster, &hero_names).iter().enumerate() {
+                                let pouch = backpack.pouch(slot);
+                                col.spawn(glass::text(
+                                    format!("{}   {}/{cap}", h.name, pouch.len()),
+                                    17.0,
+                                    glass::TEXT,
+                                ));
+                                if pouch.is_empty() {
+                                    col.spawn(glass::text("   (empty)", 14.0, glass::DIM));
+                                }
+                                for (kind, qty) in pouch {
+                                    let name = meld_proto::consumables::consumable(kind)
+                                        .map(|c| c.name.to_string())
+                                        .unwrap_or_else(|| kind.clone());
+                                    col.spawn((
+                                        Button,
+                                        TakeBackButton { slot, item_kind: kind.clone() },
+                                        glass::row_chip(false),
+                                    ))
+                                    .with_children(|row| {
+                                        crate::icons::spawn_icon(row, wa.as_deref(), kind, 22.0);
+                                        row.spawn(glass::text(
+                                            format!("{name} x{qty}   - take back"),
+                                            15.0,
+                                            glass::DIM,
+                                        ));
+                                    });
+                                }
                             }
                         }
                         MenuSection::Materials => {
@@ -861,8 +927,10 @@ pub(crate) fn render_main_menu(
                     }
                     MenuPane::UseOn => {
                         let kind = menu.item_kind.clone().unwrap_or_default();
+                        let kind_ref = (!kind.is_empty()).then_some(kind.as_str());
+                        let field_usable = usable_in_field(&kind);
                         let def = meld_proto::consumables::consumable(&kind);
-                        col.spawn(glass::text("WHO DRINKS IT?", 26.0, glass::TITLE));
+                        col.spawn(glass::text("WHO CARRIES IT?", 26.0, glass::TITLE));
                         col.spawn(glass::text(
                             def.map(|c| c.name.to_string()).unwrap_or_else(|| kind.clone()),
                             16.0,
@@ -877,23 +945,63 @@ pub(crate) fn render_main_menu(
                                 c.effect == meld_proto::consumables::ConsumableEffect::Revive
                             })
                             .unwrap_or(false);
+                        // GIVE comes first and is offered for EVERY potion, including the
+                        // fight-only ones: handing a Bulwark Tonic to whoever will need it
+                        // is the whole point of a pouch, and it is the only thing you can
+                        // do with a potion that does nothing out here.
+                        col.spawn(glass::text("GIVE TO", 16.0, glass::TITLE));
+                        let cap = backpack.pouch_capacity;
                         for (i, h) in heroes.iter().enumerate() {
-                            let down = h.hp <= 0;
-                            let full = h.hp >= h.max_hp && h.max_hp > 0;
-                            let ok = if reviving { down } else { !down && !full };
+                            let pouch = backpack.pouch(i);
+                            let carried = pouch
+                                .iter()
+                                .find(|(k, _)| Some(k.as_str()) == kind_ref)
+                                .map_or(0, |(_, q)| *q);
+                            let room = pouch.len() < cap as usize || carried > 0;
                             let focused = depth == 2 && menu.cursor == i;
                             col.spawn((
                                 Button,
-                                UseOnHeroButton { slot: i },
+                                GiveToHeroButton { slot: i },
                                 glass::inset(focused),
                             ))
                             .with_children(|row| {
+                                let carrying =
+                                    if carried > 0 { format!("  (has {carried})") } else { String::new() };
                                 row.spawn(glass::text(
-                                    format!("{}   {}/{}", h.name, h.hp.max(0), h.max_hp),
-                                    19.0,
-                                    if ok { glass::TEXT } else { glass::DIM },
+                                    format!("{}   {}/{cap}{carrying}", h.name, pouch.len()),
+                                    18.0,
+                                    if room { glass::TEXT } else { glass::DIM },
                                 ));
                             });
+                        }
+                        if !field_usable {
+                            col.spawn(glass::text(
+                                "only works in a fight - give it to whoever will need it",
+                                14.0,
+                                glass::DIM,
+                            ));
+                        }
+                        if field_usable {
+                            col.spawn(glass::divider());
+                            col.spawn(glass::text("DRINK NOW", 16.0, glass::TITLE));
+                            for (i, h) in heroes.iter().enumerate() {
+                                let down = h.hp <= 0;
+                                let full = h.hp >= h.max_hp && h.max_hp > 0;
+                                let ok = if reviving { down } else { !down && !full };
+                                let focused = depth == 2 && menu.cursor == heroes.len() + i;
+                                col.spawn((
+                                    Button,
+                                    UseOnHeroButton { slot: i },
+                                    glass::inset(focused),
+                                ))
+                                .with_children(|row| {
+                                    row.spawn(glass::text(
+                                        format!("{}   {}/{}", h.name, h.hp.max(0), h.max_hp),
+                                        18.0,
+                                        if ok { glass::TEXT } else { glass::DIM },
+                                    ));
+                                });
+                            }
                         }
                     }
                     MenuPane::Equipment => {
@@ -1220,24 +1328,41 @@ pub(crate) fn main_menu_input(
                     overlay.kind = None;
                 }
             1 if menu.section == Some(MenuSection::Items) => {
-                let held = held_potions(&backpack);
-                if let Some((kind, _)) = held.get(menu.cursor).filter(|(k, _)| usable_in_field(k))
-                {
+                let held = inventory_potions(&backpack);
+                if let Some((kind, _)) = held.get(menu.cursor) {
                     menu.item_kind = Some(kind.clone());
                     menu.pane = Some(MenuPane::UseOn);
                     menu.cursor = 0;
                 }
             }
             2 if menu.pane == Some(MenuPane::UseOn) => {
-                if let Some(kind) = menu.item_kind.clone() {
-                    net.0.send(ClientCmd::UseItem {
-                        item_kind: kind,
-                        hero_slot: menu.cursor as i32,
-                    });
+                // The pane is GIVE rows then DRINK rows, so the cursor's half decides
+                // which it is — the same split the renderer lays out.
+                let heroes = roster.heroes.len().max(1);
+                let kind = menu.item_kind.clone();
+                match (kind, menu.cursor < heroes) {
+                    (Some(kind), true) => {
+                        net.0.send(ClientCmd::MoveItem {
+                            item_kind: kind,
+                            hero_slot: menu.cursor as i32,
+                            to_pouch: true,
+                        });
+                        menu.cursor = 0;
+                    }
+                    (Some(kind), false) => {
+                        net.0.send(ClientCmd::UseItem {
+                            item_kind: kind,
+                            hero_slot: (menu.cursor - heroes) as i32,
+                        });
+                        menu.pane = None;
+                        menu.item_kind = None;
+                        menu.cursor = 0;
+                    }
+                    (None, _) => {
+                        menu.pane = None;
+                        menu.cursor = 0;
+                    }
                 }
-                menu.pane = None;
-                menu.item_kind = None;
-                menu.cursor = 0;
             }
             1 if menu.section == Some(MenuSection::Party) => {
                 // Stepping into a hero opens its gear; Abilities is a click or a
@@ -1340,15 +1465,44 @@ pub(crate) fn return_to_town_click(
 pub(crate) fn use_item_click(
     potions: Query<(&Interaction, &UseItemButton), Changed<Interaction>>,
     targets: Query<(&Interaction, &UseOnHeroButton), Changed<Interaction>>,
+    gives: Query<(&Interaction, &GiveToHeroButton), Changed<Interaction>>,
+    takes: Query<(&Interaction, &TakeBackButton), Changed<Interaction>>,
     mut menu: ResMut<MainMenu>,
     net: NonSend<NetRes>,
 ) {
     for (interaction, btn) in &potions {
-        if *interaction == Interaction::Pressed && usable_in_field(&btn.item_kind) {
+        // Staging is NOT gated on `usable_in_field` any more: a fight-only potion still
+        // has to be handed to a hero, and refusing to open the pane for it made exactly
+        // the potions that need a pouch the ones you could not put in one.
+        if *interaction == Interaction::Pressed {
             menu.item_kind = Some(btn.item_kind.clone());
             menu.pane = Some(MenuPane::UseOn);
             menu.cursor = 0;
         }
+    }
+    for (interaction, btn) in &gives {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let Some(kind) = menu.item_kind.clone() else { continue };
+        net.0.send(ClientCmd::MoveItem {
+            item_kind: kind,
+            hero_slot: btn.slot as i32,
+            to_pouch: true,
+        });
+        // The pane stays OPEN so handing out three salves is three clicks rather than
+        // three trips back through the inventory list.
+        menu.cursor = 0;
+    }
+    for (interaction, btn) in &takes {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        net.0.send(ClientCmd::MoveItem {
+            item_kind: btn.item_kind.clone(),
+            hero_slot: btn.slot as i32,
+            to_pouch: false,
+        });
     }
     for (interaction, btn) in &targets {
         if *interaction != Interaction::Pressed {

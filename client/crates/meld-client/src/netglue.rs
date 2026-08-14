@@ -114,6 +114,10 @@ pub(crate) fn pump_net(
                 backpack.chits = chits;
                 backpack.gear = gear;
             }
+            ServerMsg::Pouches { pouches, capacity } => {
+                backpack.pouches = pouches;
+                backpack.pouch_capacity = capacity;
+            }
             ServerMsg::Party { heroes, synergies, combos, abilities } => {
                 roster.heroes = heroes;
                 // A party message with an empty roster is a formation/rename echo;

@@ -94,6 +94,12 @@ async fn a_wounded_hero_can_drink_on_the_overworld_and_a_useless_potion_stays_co
     let mut drink_sent = false;
     let mut healed_to: Option<i32> = None;
     let mut spent_in_field = 0i32;
+    // A field drink is paid by whichever container held it — the drinker's own pouch
+    // first, else the Party Inventory — so the test watches BOTH and asserts exactly one
+    // salve left the run. Watching only one container makes the assertion depend on
+    // where the starting kit happened to be dealt.
+    let mut pouch_salves = 0i32;
+    let mut pouch_salves_first: Option<i32> = None;
 
     let mut mover = tokio::time::interval(Duration::from_millis(80));
     mover.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -128,7 +134,6 @@ async fn a_wounded_hero_can_drink_on_the_overworld_and_a_useless_potion_stays_co
                                 salves += it["quantity"].as_i64().unwrap_or(0) as i32;
                             }
                         }
-                        assert!(salves > 0, "the starting kit should include salves to drink");
                         // Refusal #2: nobody is hurt yet.
                         ws.send(Message::Text(json!({
                             "type":"run.use_item","seq":seq,"ts":0,
@@ -143,6 +148,29 @@ async fn a_wounded_hero_can_drink_on_the_overworld_and_a_useless_potion_stays_co
                         }).to_string())).await.unwrap();
                         seq += 1;
                         probed_combat_only = true;
+                    }
+                    // The starting salves are dealt into the heroes' POUCHES, not the
+                    // Party Inventory, so this is where the kit shows up. Counting only
+                    // the inventory found none and made the field-drink untestable.
+                    "run.pouches" => {
+                        // A snapshot message, so ASSIGN rather than accumulate: it is
+                        // re-sent whole after every change.
+                        pouch_salves = 0;
+                        for p in v["payload"]["pouches"].as_array().into_iter().flatten() {
+                            for it in p["items"].as_array().into_iter().flatten() {
+                                if it["item_kind"].as_str() == Some("bloom_salve") {
+                                    pouch_salves += it["quantity"].as_i64().unwrap_or(0) as i32;
+                                }
+                            }
+                        }
+                        if pouch_salves_first.is_none() {
+                            pouch_salves_first = Some(pouch_salves);
+                            salves += pouch_salves;
+                            assert!(
+                                salves > 0,
+                                "the starting kit should include salves to drink"
+                            );
+                        }
                     }
                     "world.snapshot" => nav.observe(&v["payload"], &player_id),
                     "run.party" => {
@@ -219,7 +247,13 @@ async fn a_wounded_hero_can_drink_on_the_overworld_and_a_useless_potion_stays_co
     let now = healed_to.unwrap();
     assert!(now > was, "the salve should have healed: {was} -> {now} (max {max})");
     assert!(now <= max, "a heal must not overshoot max HP: {now} > {max}");
-    assert_eq!(spent_in_field, 1, "exactly one salve left the pack, tagged `field_item`");
+    let from_pouch = pouch_salves_first.expect("pouches were reported") - pouch_salves;
+    assert_eq!(
+        spent_in_field + from_pouch,
+        1,
+        "exactly one salve should leave the run \
+         (inventory {spent_in_field}, pouches {from_pouch})"
+    );
 
     assert!(
         refusals.iter().any(|m| m.contains("full health")),

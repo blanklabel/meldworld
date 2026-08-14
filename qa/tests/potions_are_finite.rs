@@ -1,6 +1,6 @@
-//! Potion consumption conformance (roadmap `GR-4`): a battle Item action spends one
-//! potion from the run backpack, the client is told so, and the fourth attempt on a
-//! three-potion stock is refused. Drives the real wire protocol.
+//! Potion consumption conformance (roadmap `GR-4`, `GR-9`): a battle Item action spends
+//! one potion from the ACTING HERO'S POUCH, the client is told so via `run.pouches`, and
+//! the fourth attempt on a three-potion stock is refused. Drives the real wire protocol.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 
@@ -80,6 +80,7 @@ async fn drinking_a_potion_spends_it_and_running_out_is_refused() {
     let mut target: Option<(f64, f64)> = None;
     let mut carried = 0i32;
     let mut spent = 0i32;
+    let mut pouched: Option<i32> = None;
     let mut refusals = 0i32;
     let mut drinks_sent = 0i32;
 
@@ -117,14 +118,26 @@ async fn drinking_a_potion_spends_it_and_running_out_is_refused() {
                         seq += 1;
                     }
                     "run.started" => {
-                        // The dive's OPENING stock rides on run.started; later changes
-                        // arrive as run.backpack_update deltas.
-                        for it in v["payload"]["backpack"].as_array().into_iter().flatten() {
-                            if it["item_kind"].as_str() == Some("bloom_salve") {
-                                carried += it["quantity"].as_i64().unwrap_or(0) as i32;
+                        phase = Phase::Walking;
+                    }
+                    // The battle Item action spends from the ACTING HERO'S POUCH, never
+                    // the Party Inventory, so the pouch is both where the starting kit
+                    // lands and where a drink is visible. `run.pouches` is a whole
+                    // snapshot, so each one is assigned, not accumulated.
+                    "run.pouches" => {
+                        let mut now = 0;
+                        for p in v["payload"]["pouches"].as_array().into_iter().flatten() {
+                            for it in p["items"].as_array().into_iter().flatten() {
+                                if it["item_kind"].as_str() == Some("bloom_salve") {
+                                    now += it["quantity"].as_i64().unwrap_or(0) as i32;
+                                }
                             }
                         }
-                        phase = Phase::Walking;
+                        match pouched {
+                            None => carried = now,
+                            Some(before) => spent += (before - now).max(0),
+                        }
+                        pouched = Some(now);
                     }
                     "world.snapshot" => {
                         let ents = v["payload"]["entities"].as_array().cloned().unwrap_or_default();
@@ -158,22 +171,17 @@ async fn drinking_a_potion_spends_it_and_running_out_is_refused() {
                     "run.backpack_update" => {
                         for ch in v["payload"]["changes"].as_array().into_iter().flatten() {
                             let kind = ch["item"]["item_kind"].as_str().unwrap_or("");
-                            let qty = ch["item"]["quantity"].as_i64().unwrap_or(0) as i32;
                             if kind != "bloom_salve" {
                                 continue;
                             }
-                            match ch["delta"].as_str().unwrap_or("") {
-                                "added" => carried += qty,
-                                "removed" => {
-                                    spent += qty;
-                                    assert_eq!(
-                                        ch["cause"].as_str(),
-                                        Some("battle_item"),
-                                        "a potion left the pack for the wrong reason"
-                                    );
-                                }
-                                _ => {}
-                            }
+                            // A battle drink must NOT show up as an inventory delta: the
+                            // pouch is what paid, and decrementing a shared stack the
+                            // client does not have is how a mirror drifts.
+                            assert_ne!(
+                                ch["cause"].as_str(),
+                                Some("battle_item"),
+                                "a battle drink reported against the Party Inventory"
+                            );
                         }
                     }
                     "battle.started" => {

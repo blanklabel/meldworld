@@ -51,12 +51,13 @@ encounter_party_scale = [1.0, 1.9, 3.0, 4.4]
 # lone hero absorbs the whole lesson, four share it. This is what makes the early
 # solo era level fast and the late four-hero era long, using the same encounters.
 xp_split_across_party = true
-# Carrying capacity, and the pressure that makes extraction a DECISION. Two pools:
-# the party's shared BAG, plus a personal pouch per hero — so a bigger party carries
-# more, but never enough to stop choosing. Same-kind stacks merge and cost no slot.
-# [TUNABLE]
-backpack_slots = 40                   # the shared bag (limits.md)
-hero_pouch_slots = 10                 # per hero, on top of the bag
+# Two containers, and only one of them has a limit. The **Party Inventory** is
+# UNBOUNDED — a slot cap there punishes finding things, which is the opposite of what
+# loot is for. Each hero's **pouch** is capped, because a pouch is the only thing a
+# hero can reach mid-fight: the cap is what turns "who is carrying the heals" into a
+# decision you make on the overworld. Same-kind stacks merge and cost no slot, so the
+# cap counts KINDS a hero carries, not quantity. [TUNABLE]
+hero_pouch_slots = 10
 # Extraction channel duration. Spec default is 10000 (10s, interruptible);
 # shortened here for snappy runs/tests. [TUNABLE]
 extraction_channel_ms = 2500
@@ -452,6 +453,23 @@ chits_jitter = 0.35
 material_per_creature = 1.0
 material_qty_per_tier = 0.2
 gear_drop_chance = 0.35
+# GR-8: the gear chance RAMPS from `gear_ramp_start_mult` of `gear_drop_chance` at
+# `gear_ramp_start_distance` to all of it at `world_scaling.red_chest_floor_distance`.
+# A flat cutoff at the floor cannot work here, because the two tunables that meet at
+# this line are set independently: the 8-area chain's deep portal lands at d≈342-384,
+# so a cutoff at d=300 leaves gear at a measured 0% for ~85% of every dive and 35%
+# only in the stretch you cross on the way out. The ramp keeps what CANON §B is
+# protecting — deep is where the gear game lives — with no depth at which the chase
+# does not exist at all. It reaches exactly 1.0 at the floor, so deep rates are
+# untouched by it. [TUNABLE]
+gear_ramp_start_distance = 40
+gear_ramp_start_mult = 0.15
+# GR-8: P(a felled encounter also drops a potion), band-capped by `tier(d)` against
+# each potion's own `ConsumableDef::tier`. The cap is what keeps the Apothecary and
+# Alchemy the RELIABLE supply — a drop is a top-up you are glad of, never a reason
+# not to brew — and holds the trophy line behind the depth it was authored for.
+# [TUNABLE]
+potion_drop_chance = 0.18
 # Of the gear a REWARD-SPIKE encounter drops (elite / gatekeeper / undead rite /
 # chest — anything carrying a `loot_mult`), the fraction that is PERMANENT (blue):
 # it survives death and wears down instead of burning. Ordinary creatures never drop

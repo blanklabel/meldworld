@@ -685,7 +685,7 @@ pub(crate) fn battle_click_target(
     if menu.level == MenuLevel::Target {
         if let Some(idx) = menu.rows.iter().position(|(_, v)| *v == eid) {
             let class = battle.active_class();
-            let held = held_potions(&backpack);
+            let held = held_potions(&backpack, battle.active_slot());
             select_entry(idx, &mut menu, &mut battle, &class, &held);
         }
         return;
@@ -1146,11 +1146,14 @@ pub(crate) fn page_len(
     }
 }
 
-/// The run backpack reduced to the potions it holds, in registry order — what the
-/// Items page may offer (GR-4).
-pub(crate) fn held_potions(backpack: &RunBackpack) -> Vec<(String, i32)> {
+/// The potions HERO `slot` is carrying — what the battle Items page may offer.
+///
+/// Reads that hero's pouch, never the Party Inventory: in a fight a hero can only
+/// reach its own kit, so offering the party's stock here would show rows the server
+/// then refuses. Who carries the heals is decided on the overworld.
+pub(crate) fn held_potions(backpack: &RunBackpack, slot: usize) -> Vec<(String, i32)> {
     backpack
-        .items
+        .pouch(slot)
         .iter()
         .filter(|(kind, qty)| *qty > 0 && meld_proto::consumables::is_consumable(kind))
         .cloned()
@@ -1180,7 +1183,7 @@ pub(crate) fn menu_keyboard(
         return;
     }
     // The Items page offers only what the party is carrying (GR-4).
-    let held = held_potions(&backpack);
+    let held = held_potions(&backpack, battle.active_slot());
     // The command menu keys off the *active hero's* class — a mixed party is
     // commanded hero by hero.
     let class = battle.active_class();
@@ -1316,7 +1319,7 @@ pub(crate) fn menu_click(
     if let Some(index) = pressed {
         menu.cursor = index;
         let class = battle.active_class();
-        let held = held_potions(&backpack);
+        let held = held_potions(&backpack, battle.active_slot());
         select_entry(index, &mut menu, &mut battle, &class, &held);
     }
 }
@@ -1447,7 +1450,7 @@ pub(crate) fn rebuild_command_menu(
             .map(|(l, _)| l.clone())
             .chain(std::iter::once("Back".to_string()))
             .collect(),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack, battle.active_slot()), &spent)
             .into_iter()
             .map(|e| e.label.to_string())
             .collect(),
@@ -1459,7 +1462,7 @@ pub(crate) fn rebuild_command_menu(
     // Adrenaline" is not a decision; "40 of 100 Adrenaline (25 per Attack)" is.
     let (tooltip, magnitudes): (String, String) = match level {
         MenuLevel::Target | MenuLevel::Revoke => (String::new(), String::new()),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack), &spent)
+        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack, battle.active_slot()), &spent)
             .get(menu.cursor)
             .map(|e| {
                 let key = e.action.skill_key().unwrap_or_default();
