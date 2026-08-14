@@ -544,9 +544,22 @@ pub(crate) fn mock_overlay_setup(
             ("town_portal".into(), 2),
             ("bloom_herb".into(), 7),
             ("cinder_ore".into(), 4),
+            ("bulwark_tonic".into(), 3),
+            ("elixir".into(), 1),
         ];
         backpack.chits = 1240;
         backpack.gear = vec![("Duneglass Charm".into(), 0)];
+        // Pouches deliberately UNEVEN — one hero loaded, one with a single potion, two
+        // empty. The Party Inventory column is meant to answer "who is carrying the
+        // heals" at a glance, and a screenshot where every pouch matches cannot show
+        // whether it does.
+        backpack.pouch_capacity = 10;
+        backpack.pouches = vec![
+            vec![("bloom_salve".into(), 4), ("ghostdust".into(), 1)],
+            vec![("bloom_salve".into(), 1)],
+            vec![],
+            vec![],
+        ];
         overlay.kind = Some(OverlayKind::Inventory);
         *tab = OverlayTab::Status;
         // `MELD_INVENTORY_TAB=equip` lands on the Equip tab with a category picker

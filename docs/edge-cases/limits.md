@@ -13,7 +13,8 @@ Related specs: [../behaviors/meta-progression.md](../behaviors/meta-progression.
 | Party size | 1–4 players per `MazeInstance` | Matchmaking/party formation rejects a 5th member: 400 `validation_error` | GDD.md §5; CANON.md §D13, §G (Party) |
 | Battle merge — normal encounters | Max 2 instances (up to 8 combatants) per `Battle` **[TUNABLE]** | Touching a full battle starts a separate battle instead of merging | CANON.md §D5 |
 | Battle merge — Gatekeeper | Max 4 instances (up to 16 combatants) **[TUNABLE]** | Same as above; Gatekeeper HP pools sized for 8 at spawn | CANON.md §D5, §B (ATB combat) |
-| Backpack capacity | 40 slots **[TUNABLE]** | Pickup/loot into a full Backpack is rejected; item stays on ground / in chest | Spec-defined (this file); Backpack per GDD.md §2.2, CANON.md §G |
+| Party Inventory capacity | **Unbounded** | A pickup is never refused — finding something must not cost you something you already found | Spec-defined (this file); the shared run inventory per GDD.md §2.2, CANON.md §G |
+| Hero pouch capacity | `[runs] hero_pouch_slots` = 10 **KINDS** per hero **[TUNABLE]** | A transfer of a new kind into a full pouch is refused (`validation_error`) and the item stays in the Party Inventory. Same-kind stacks merge and cost no slot, so the cap counts kinds, not quantity | Spec-defined ([../behaviors/run-lifecycle.md](../behaviors/run-lifecycle.md)) |
 | Stall listing slots | `4 + floor(mercantile_level/10) × 2`, range 4–24 **[TUNABLE]** | Listing beyond slot count: 400 `validation_error`. Note: formula max at L99 is 22; 24 clamp unreachable (design inconsistency, see Gotchas) | CANON.md §B (Economy) |
 | Stall placement — hub `d ≥ 1000` | Mercantile ≥ 30 **[TUNABLE]** | Deploy rejected: 403 `forbidden` | CANON.md §B (Economy) |
 | Stall placement — hub `d ≥ 3000` | Mercantile ≥ 60 **[TUNABLE]** | Deploy rejected: 403 `forbidden` | CANON.md §B (Economy) |

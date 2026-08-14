@@ -783,11 +783,21 @@ struct RunBackpack {
     chits: i64,
     /// Looted red-chest gear this run as (name, atk_bonus).
     gear: Vec<(String, i32)>,
+    /// Each hero's pouch by slot — what that hero can reach in a fight. Separate from
+    /// `items`, which is the Party Inventory and out of reach mid-battle.
+    pouches: Vec<Vec<(String, i32)>>,
+    /// Slots one pouch holds, so a row can read `3/10`.
+    pouch_capacity: i32,
 }
 
 impl RunBackpack {
     fn count(&self, kind: &str) -> i32 {
         self.items.iter().find(|(k, _)| k == kind).map_or(0, |(_, q)| *q)
+    }
+
+    /// What hero `slot` is carrying, in registry order.
+    fn pouch(&self, slot: usize) -> &[(String, i32)] {
+        self.pouches.get(slot).map(|p| p.as_slice()).unwrap_or(&[])
     }
 }
 
@@ -1068,6 +1078,14 @@ impl BattleData {
             .and_then(|a| self.view(a))
             .map(hero_class)
             .unwrap_or_else(|| "explorer".to_string())
+    }
+    /// Party slot of the active hero. `your_ids` is in party order and the server builds
+    /// its combatant list the same way, so this index is the hero's pouch index too.
+    fn active_slot(&self) -> usize {
+        self.active
+            .as_ref()
+            .and_then(|a| self.your_ids.iter().position(|id| id == a))
+            .unwrap_or(0)
     }
     /// Level of the active hero (for level-gated menus), default 1.
     fn active_level(&self) -> i32 {
@@ -2222,6 +2240,38 @@ mod potion_menu_tests {
         // A zero stack is not an offer.
         let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]), &[]);
         assert!(rows[0].label.contains("no potions"));
+    }
+
+    /// The battle Items page must read the ACTING hero's pouch and nothing else. The
+    /// server checks the same pouch, so sourcing this from the Party Inventory would
+    /// build a menu out of rows that are guaranteed to be refused — and it would say the
+    /// opposite of the rule the two containers exist to express.
+    #[test]
+    fn the_battle_items_page_reads_the_acting_heros_pouch_not_the_party_inventory() {
+        let bp = RunBackpack {
+            items: held(&[("elixir", 9), ("bloom_salve", 9)]),
+            pouches: vec![
+                held(&[("bloom_salve", 2)]),
+                vec![],
+                held(&[("ghostdust", 1)]),
+            ],
+            pouch_capacity: 10,
+            ..Default::default()
+        };
+        assert_eq!(crate::battle::held_potions(&bp, 0), held(&[("bloom_salve", 2)]));
+        // An empty pouch offers nothing, however full the shared inventory is — this is
+        // the case that makes running dry on the wrong hero a real outcome.
+        assert!(crate::battle::held_potions(&bp, 1).is_empty());
+        assert_eq!(crate::battle::held_potions(&bp, 2), held(&[("ghostdust", 1)]));
+        // A hero slot with no pouch at all must read as empty rather than panic.
+        assert!(crate::battle::held_potions(&bp, 7).is_empty());
+        // The 9 elixirs in the Party Inventory are reachable from NO pouch.
+        for slot in 0..4 {
+            assert!(
+                !crate::battle::held_potions(&bp, slot).iter().any(|(k, _)| k == "elixir"),
+                "slot {slot} could reach the shared inventory"
+            );
+        }
     }
 
     /// A once-per-battle call that has been spent says so on its own row. The server

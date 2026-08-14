@@ -124,7 +124,8 @@ Material spawn tiers are banded by distance so that the whole world stays econom
 
 - Material tier bands **mirror the biome tiers**: the loot tables of a band spawn materials of that band's tier.
 - **Tier-1 materials spawn only at `d < 300`** **[TUNABLE]**. In general, each material tier has a bounded spawn band; materials of tier *t* do not spawn in bands far above their home band, forcing deep-zone crafters to buy low-tier materials from players who farm near the center (via stalls and contracts — see [economy.md](economy.md)).
-- Loot rarity weights shift one band per `tier(d)`; red-chest gear cannot spawn below `d = 300` **[TUNABLE]**.
+- Loot rarity weights shift one band per `tier(d)`. Red-chest gear hits its **full** rate at `d = 300` and **ramps in** from `[loot] gear_ramp_start_distance` (40) below it, at `gear_ramp_start_mult` of the rate rising to all of it at 300 — see CANON §B. Nothing drops shallower than the ramp start.
+- A felled encounter may also drop a **potion** (`[loot] potion_drop_chance` **[TUNABLE]**), from the consumables whose own tier is at or below `tier(d)`, so the deep trophy line stays behind the depth it was authored for. The Apothecary and Alchemy remain the reliable supply; a drop is a top-up. The Revive and Experience consumables are excluded — they have their own world-drop rates.
 - Enforcement is in loot-table generation (server-authoritative loot rolls, CANON §S); there is no client-visible error — out-of-band materials simply never appear in drops.
 
 ---

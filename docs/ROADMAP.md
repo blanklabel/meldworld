@@ -324,6 +324,71 @@ burns on death/leave; some is single-use. See
     a `(no potions)` row when empty, so it can never offer what the server will refuse.
     The starting kit and the consumable/material split now use registry keys instead of
     string literals, so a new potion is never mistaken for a crafting material.
+- [x] **GR-8 — Loot that actually drops.** Two faucets were plumbed but shut, so a dive
+  produced almost nothing you had not paid for — the bug in Epic ①'s "every dive should
+  produce something exciting" was not that drops were *flat*, it was that there were
+  none.
+  - *Gear was gated above where anyone plays.* `roll_creature_loot` refused gear below
+    `red_chest_floor_distance` = 300, but the 8-area chain's deep portal sits at
+    `d ≈ 342–384` — two tunables set independently and never checked against each other.
+    Measured: **0 gear in 2000 kills at every depth up to d=299**, 34% from d=300, i.e.
+    the chase existed only in the stretch you cross on the way out, and dungeon chests
+    inherited the same gate. The hard cutoff is now a **ramp** (`[loot]
+    gear_ramp_start_distance` = 40, `gear_ramp_start_mult` = 0.15): 5% at d=40 climbing
+    to the full 35% at d=300. CANON §B's intent is preserved — deep is still where the
+    gear game lives — and the ramp reaches exactly 1.0 at the floor, so every deep drop
+    rate is untouched (held by test).
+  - *Potions had no drop path at all.* Every one of the eleven was shop- or craft-only:
+    after the starting 3 salves + 1 elixir, a dive yielded no consumable it had not
+    bought or brewed. A kill or a chest now also drops one at `[loot]
+    potion_drop_chance` = 0.18, from the pool whose own `ConsumableDef::tier` is at or
+    below `tier(d)` — the hub ring gives the Apothecary basics, the deep bands open the
+    trophy line, so the drop softens the K3 sink without replacing it. The pool is
+    derived from the registry (a new potion joins by existing) and excludes Revive and
+    Experience, which already have their own faucets and would otherwise double-roll.
+  - The potion draw takes its **own RNG sub-stream**: a draw from the shared one would
+    have shifted every gear/rarity/affix roll above it. A test turns potions off and
+    asserts the rest of the loot is byte-identical.
+  - **Remains:** `class_emblem_drops` is `vec![]` at all three call sites — a wire field
+    nothing has ever filled. Gatekeeper emblems belong to `FS-4`/`MP-1`.
+- [x] **GR-9 — Two containers: the Party Inventory and the hero pouches.** A hero can
+  only use what **that hero** is carrying in a fight. Everything found lands in the
+  shared **Party Inventory**, which is **unbounded** — a slot cap punishes finding
+  things, which is the opposite of what loot is for. Each hero has a capped **pouch**,
+  and moving items between the two is an overworld action, both directions
+  (`run.move_item`). The scarcity is **reach**, not capacity: the pouch cap is what
+  turns "who is carrying the heals" into a decision you make before the fight.
+  - *What was there before:* `backpack_slots` (40) and `hero_pouch_slots` (10) summed
+    into ONE flat number over ONE `Vec`, so the "pouch per hero" was capacity arithmetic
+    rather than a container — nothing tracked which hero carried what, and both the
+    client menu and the server's battle Item action read the whole pile. The two-tier
+    model existed only in the comment beside the two tunables.
+  - `PlayerRun::pouches` is now a real per-hero container, `run.pouches` rides the wire
+    as a whole snapshot (small and bounded, so cheaper than reconciling deltas), and the
+    battle Item action is checked and spent against `pouch_qty`/`spend_from_pouch` for
+    the **acting** hero — resolved from `player_combatants`' party-slot order. The
+    acting hero's pouch pays even when the potion targets an ally.
+  - `backpack_slots` is **gone** rather than left dead: a tunable claiming to cap a
+    container nothing caps is the same class of bug as `GR-8`'s gear floor.
+  - **Death takes both**, by the same rule — a pouch is not a safe-deposit box, so no
+    arrangement of your items survives a wipe, and `lost` reports them together. The
+    flee toll and a creature's steal reach pouches too (the steal tries a hero *first*,
+    since that is where the potions now live); `move_item` mints real `item_id`s because
+    the flee roll is keyed on them and blank ids would share one roll. A flee reports the
+    two halves **separately** — `backpack_update` removals for the inventory, a fresh
+    `run.pouches` for the rest — since a pouch loss announced against the shared
+    inventory would decrement a bag stack the client's mirror really does hold.
+  - *Field use stays generous:* out of combat **either** container is in reach, spending
+    the drinker's own copy first, so a potion you already handed out is never stranded.
+    The starting kit is dealt into pouches round-robin (balance's totals spent, not
+    multiplied per hero) so the first fight needs no transfer ritual; Town Portals stay
+    in the inventory, since extraction is a menu action.
+  - *Client:* the menu's column is **Party Inventory**, listing the shared stock plus
+    every hero's pouch (`3/10`, tap to take back); picking an item opens **GIVE TO** and,
+    for a field-usable one, **DRINK NOW**. Staging is no longer gated on
+    `usable_in_field` — that gate made the fight-only potions, the exact ones that need a
+    pouch, the ones you could not put in one. The battle Items page reads
+    `held_potions(backpack, active_slot)`.
 - [ ] **GR-4b — Consumable healing items (legacy line).** Field/battle-usable heal items that are
   **consumed on use** (decrement + destroy at zero). Wire into the existing async
   battle-injection path (GDD §6; [`behaviors/async-interaction.md`](behaviors/async-interaction.md))

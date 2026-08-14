@@ -34,7 +34,14 @@ use uuid::Uuid;
 /// mutable borrow of the runs ends before the messages go out.
 struct FleeLoss {
     pid: String,
+    /// Everything spilled, both containers — the tally the `battle.ended` line shows.
     dropped: Vec<ItemStack>,
+    /// Just the Party-Inventory half. The `run.backpack_update` removals must carry ONLY
+    /// these: a pouch stack reported against the shared inventory would decrement a bag
+    /// stack the client's mirror does hold, silently under-counting it.
+    dropped_bag: Vec<ItemStack>,
+    /// Whether any pouch spilled, so the pouches are re-sent only when they changed.
+    pouches_changed: bool,
     lost_chits: i64,
     /// The gear still in the pack AFTER the drop roll (what the client should show).
     gear: Vec<LootGear>,
@@ -1871,9 +1878,14 @@ impl WorldActor {
         self.arena.avatars.retain(|a| a.player_id != pid);
         let mut out = Vec::new();
         if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
-            let (run_id, lost, lost_chits) = (r.run_id.clone(), r.backpack.clone(), r.chits);
+            let mut lost = r.backpack.clone();
+            lost.extend(r.pouches.iter().flatten().cloned());
+            let (run_id, lost_chits) = (r.run_id.clone(), r.chits);
             r.result = Some(RunResult::Died);
             r.backpack.clear();
+            for pouch in r.pouches.iter_mut() {
+                pouch.clear();
+            }
             r.looted_gear.clear();
             r.chits = 0;
             out.push(out_msg(
@@ -3291,6 +3303,17 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wr::MoveItem::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_move_item(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::CancelHarvest::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_cancel_harvest(player_id, raw),
@@ -3798,11 +3821,46 @@ impl GameState {
             // class-unrestricted, so it already shows up in `comp`'s eventual
             // gear_bonuses load like any other equipped Vault item, in town
             // and on every dive alike, with no dive-time special-casing here.
+            // A pouch per hero, from the composition that actually went in. Sized HERE
+            // rather than lazily on the first XP award, because the starting kit is
+            // dealt into the pouches before any fight happens.
+            if let Some(r) = inst.run.run_mut(pid) {
+                r.pouches = vec![Vec::new(); comp.len()];
+            }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
             inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);
+        }
+        // Deal the starting POTIONS out of the bag and into the pouches, round-robin,
+        // so hero 1 can drink in the first fight without a transfer ritual first. The
+        // totals are balance's (`starting_salves`/`starting_elixirs`) and the round-robin
+        // spends them rather than handing each hero a full set, which would multiply the
+        // starting kit by the party size. Town Portals stay in the bag: extraction is a
+        // menu action, not a battle one, so a pouch slot spent on one is a slot wasted.
+        let balance = self.balance.clone();
+        for pid in &party_ids {
+            let Some(r) = inst.run.run_mut(pid) else { continue };
+            let heroes = r.pouches.len();
+            if heroes == 0 {
+                continue;
+            }
+            let kinds: Vec<(String, i32)> = r
+                .backpack
+                .iter()
+                .filter(|i| meld_proto::consumables::is_consumable(&i.item_kind))
+                .map(|i| (i.item_kind.clone(), i.quantity))
+                .collect();
+            let mut next = 0usize;
+            for (kind, qty) in kinds {
+                for _ in 0..qty {
+                    if r.move_item(next % heroes, &kind, 1, true, &balance) == 0 {
+                        break;
+                    }
+                    next += 1;
+                }
+            }
         }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
@@ -3896,6 +3954,7 @@ impl GameState {
             if !backpack_gear.is_empty() {
                 out.push(out_msg(pid, &wr::RunGear { gear: backpack_gear }));
             }
+            out.extend(inst.pouches_msg(pid));
             out.push(out_msg(
                 pid,
                 &{
@@ -4774,23 +4833,25 @@ impl WorldActor {
         } else {
             None
         };
+        // Which of the sender's heroes is acting. `owned` is built in party-slot order
+        // (see `form_battle`), so its index IS the hero slot — and the hero slot is what
+        // owns a pouch.
+        let actor_slot = owned.iter().position(|c| c == &actor_cid).unwrap_or(0);
         if let Some(kind) = &consume_kind {
+            // A hero may only drink what IT is carrying. The shared bag is out of reach
+            // in a fight, so being out of heals on the hero whose turn it is is a real
+            // outcome rather than a lookup that quietly succeeds from the party's stock.
             let have = self
                 .run
                 .run_mut(player_id)
-                .map(|r| {
-                    r.backpack
-                        .iter()
-                        .find(|i| &i.item_kind == kind)
-                        .map_or(0, |i| i.quantity)
-                })
-                .unwrap_or(0);
+                .map_or(0, |r| r.pouch_qty(actor_slot, kind));
             if have <= 0 {
+                let name = kind.replace('_', " ");
                 return (
                     vec![error(
                         player_id,
                         ErrorCode::ValidationError,
-                        format!("Out of {}.", kind.replace('_', " ")),
+                        format!("This hero is not carrying {name}."),
                         Some(raw.seq),
                     )],
                     Vec::new(),
@@ -4815,28 +4876,12 @@ impl WorldActor {
                 // ticks down and the menu can grey it out at zero).
                 if let Some(kind) = consume_kind {
                     if let Some(r) = self.run.run_mut(player_id) {
-                        if let Some(slot) = r.backpack.iter_mut().find(|i| i.item_kind == kind) {
-                            slot.quantity -= 1;
-                        }
-                        r.backpack.retain(|i| i.quantity > 0);
+                        r.spend_from_pouch(actor_slot, &kind);
                     }
-                    out.push(out_msg(
-                        player_id,
-                        &wr::BackpackUpdate {
-                            changes: vec![wr::BackpackChange {
-                                item: ItemStack {
-                                    item_id: String::new(),
-                                    item_kind: kind,
-                                    quantity: 1,
-                                    insurance: None,
-                                },
-                                delta: "removed".to_string(),
-                                cause: "battle_item".to_string(),
-                            }],
-                            chits_delta: 0,
-                            gear_added: Vec::new(),
-                        },
-                    ));
+                    // The pouch is what changed, not the bag — a `backpack_update` here
+                    // would decrement a bag stack the client does not have and leave its
+                    // mirror short by one.
+                    out.extend(self.pouches_msg(player_id));
                 }
                 let (evout, eff) = self.emit_battle_events(&submit.battle_id, events);
                 out.extend(evout);
@@ -6321,17 +6366,21 @@ impl WorldActor {
         let max_hp = heroes[slot].max_hp;
         let hp_now = heroes[slot].hp;
 
-        let have = self
+        // In the FIELD either container is in reach — you are standing still, so
+        // rummaging in the Party Inventory is fine. Only a battle restricts a hero to
+        // its own pouch, so a potion already moved onto someone is not stranded here.
+        let (in_bag, in_pouch) = self
             .run
             .run_mut(player_id)
-            .map(|r| {
-                r.backpack
+            .map_or((0, 0), |r| {
+                let bag = r
+                    .backpack
                     .iter()
                     .find(|i| i.item_kind == req.item_kind)
-                    .map_or(0, |i| i.quantity)
-            })
-            .unwrap_or(0);
-        if have <= 0 {
+                    .map_or(0, |i| i.quantity);
+                (bag, r.pouch_qty(slot, &req.item_kind))
+            });
+        if in_bag + in_pouch <= 0 {
             return reject(&format!("Out of {}.", req.item_kind.replace('_', " ")));
         }
 
@@ -6412,35 +6461,149 @@ impl WorldActor {
             }
         }
 
+        // Spend the HERO's own copy first. Draining the shared inventory while the
+        // drinker had one in their pouch would quietly unstock the party to keep one
+        // hero topped up — and the pouch is the copy that will matter in the next fight.
+        let from_pouch = in_pouch > 0;
         if let Some(r) = self.run.run_mut(player_id) {
-            if let Some(stack) = r.backpack.iter_mut().find(|i| i.item_kind == req.item_kind) {
-                stack.quantity -= 1;
+            if from_pouch {
+                r.spend_from_pouch(slot, &req.item_kind);
+            } else {
+                if let Some(stack) = r.backpack.iter_mut().find(|i| i.item_kind == req.item_kind) {
+                    stack.quantity -= 1;
+                }
+                r.backpack.retain(|i| i.quantity > 0);
             }
-            r.backpack.retain(|i| i.quantity > 0);
         }
-        out.push(out_msg(
-            player_id,
-            &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item: ItemStack {
-                        item_id: String::new(),
-                        item_kind: req.item_kind,
-                        quantity: 1,
-                        insurance: None,
-                    },
-                    delta: "removed".to_string(),
-                    cause: "field_item".to_string(),
-                }],
-                chits_delta: 0,
-                gear_added: Vec::new(),
-            },
-        ));
+        if from_pouch {
+            out.extend(self.pouches_msg(player_id));
+        } else {
+            out.push(out_msg(
+                player_id,
+                &wr::BackpackUpdate {
+                    changes: vec![wr::BackpackChange {
+                        item: ItemStack {
+                            item_id: String::new(),
+                            item_kind: req.item_kind,
+                            quantity: 1,
+                            insurance: None,
+                        },
+                        delta: "removed".to_string(),
+                        cause: "field_item".to_string(),
+                    }],
+                    chits_delta: 0,
+                    gear_added: Vec::new(),
+                },
+            ));
+        }
         // The roster is how the client learns the new HP (and level) — same message
         // the party panel already listens to.
         let refreshed = self.party_views(player_id);
         let (synergies, combos) = self.party_depth(player_id);
         let abilities = self.party_ability_views(player_id);
         out.push(out_msg(player_id, &wr::Party { heroes: refreshed, synergies, combos, abilities }));
+        (out, Vec::new())
+    }
+
+    /// `run.pouches` for one player, or nothing when they have no run. A whole
+    /// snapshot: a pouch is `hero_pouch_slots` deep at most, so re-sending it is
+    /// cheaper than reconciling deltas the client might have missed.
+    fn pouches_msg(&self, player_id: &str) -> Vec<Outgoing> {
+        let cap = self.balance.runs.hero_pouch_slots;
+        let Some(r) = self.run.runs.iter().find(|r| r.player_id == player_id) else {
+            return Vec::new();
+        };
+        let pouches = r
+            .pouches
+            .iter()
+            .enumerate()
+            .map(|(i, items)| wr::PouchView {
+                hero_slot: i as i32,
+                items: items.clone(),
+                capacity: cap,
+            })
+            .collect();
+        vec![out_msg(player_id, &wr::Pouches { pouches })]
+    }
+
+    /// Move an item between the shared bag and one hero's pouch (`run.move_item`).
+    ///
+    /// Refused during a battle: the whole point of the two containers is that a fight
+    /// is fought with what the heroes were already carrying, so allowing a mid-fight
+    /// restock would make the pouch a formality.
+    fn handle_move_item(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let req: wr::MoveItem = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return (
+                    vec![error(player_id, ErrorCode::ValidationError, "bad move_item", Some(raw.seq))],
+                    Vec::new(),
+                )
+            }
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return (
+                vec![error(
+                    player_id,
+                    ErrorCode::InvalidState,
+                    "Not in a fight — a hero carries what they set out with.",
+                    Some(raw.seq),
+                )],
+                Vec::new(),
+            );
+        }
+        let balance = self.balance.clone();
+        let qty = if req.quantity <= 0 { 1 } else { req.quantity };
+        let slot = if req.hero_slot < 0 { usize::MAX } else { req.hero_slot as usize };
+        let Some(r) = self.run.run_mut(player_id) else {
+            return (
+                vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                Vec::new(),
+            );
+        };
+        if slot >= r.pouches.len() {
+            return (
+                vec![error(player_id, ErrorCode::ValidationError, "No such hero.", Some(raw.seq))],
+                Vec::new(),
+            );
+        }
+        let moved = r.move_item(slot, &req.item_kind, qty, req.to_pouch, &balance);
+        if moved == 0 {
+            let why = if req.to_pouch {
+                "That hero's pouch is full."
+            } else {
+                "The bag is full."
+            };
+            return (
+                vec![error(player_id, ErrorCode::ValidationError, why, Some(raw.seq))],
+                Vec::new(),
+            );
+        }
+        // Both ends changed, so both are re-reported: the bag as a delta (the HUD counts
+        // items) and the pouches whole.
+        let item = ItemStack {
+            item_id: String::new(),
+            item_kind: req.item_kind.clone(),
+            quantity: moved,
+            insurance: None,
+        };
+        let mut out = vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item,
+                    delta: if req.to_pouch { "removed" } else { "added" }.to_string(),
+                    cause: "pouch_transfer".to_string(),
+                }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        )];
+        out.extend(self.pouches_msg(player_id));
         (out, Vec::new())
     }
 
@@ -6635,13 +6798,23 @@ impl WorldActor {
                 set_key: g.set_key.clone(),
             })
             .collect();
+        let mut chest_items = vec![loot_item];
+        if !loot.potion.is_empty() {
+            chest_items.push(ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: loot.potion.to_string(),
+                quantity: 1,
+                insurance: None,
+            });
+        }
         let mut run_gear_snapshot = None;
         if let Some(r) = self.run.run_mut(player_id) {
             // A full pack drops the loot on the floor of the world, so to speak: the
             // player is told, and the choice of what to carry stays theirs.
-            let carried = r.try_carry(loot_item.clone(), &balance);
-            if !carried {
-                tracing::debug!("pack full for {player_id}; {} not carried", loot_item.item_kind);
+            for item in &chest_items {
+                if !r.try_carry(item.clone(), &balance) {
+                    tracing::debug!("pack full for {player_id}; {} not carried", item.item_kind);
+                }
             }
             r.chits += loot.chits;
             r.looted_gear.extend(gear.iter().cloned());
@@ -6652,11 +6825,14 @@ impl WorldActor {
         let mut out = vec![out_msg(
             player_id,
             &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item: loot_item,
-                    delta: "added".to_string(),
-                    cause: "chest".to_string(),
-                }],
+                changes: chest_items
+                    .into_iter()
+                    .map(|item| wr::BackpackChange {
+                        item,
+                        delta: "added".to_string(),
+                        cause: "chest".to_string(),
+                    })
+                    .collect(),
                 chits_delta: loot.chits,
                 gear_added: gear,
             },
@@ -6720,6 +6896,15 @@ impl WorldActor {
                 insurance: None,
             };
             changes.push(wr::BackpackChange { item, delta: "added".to_string(), cause: "chest".to_string() });
+            if !l.potion.is_empty() {
+                let potion = ItemStack {
+                    item_id: Uuid::now_v7().to_string(),
+                    item_kind: l.potion.to_string(),
+                    quantity: 1,
+                    insurance: None,
+                };
+                changes.push(wr::BackpackChange { item: potion, delta: "added".to_string(), cause: "chest".to_string() });
+            }
             if let Some(g) = &l.gear {
                 gear_added.push(LootGear {
                     gear_id: Uuid::now_v7().to_string(),
@@ -6823,7 +7008,12 @@ impl GameState {
                         }
                         r.backpack.retain(|i| i.quantity > 0);
                     }
-                    let items = std::mem::take(&mut r.backpack);
+                    // A pouch comes home too: it is carried loot like anything in the
+                    // bag, just held by a hero instead of the party.
+                    let mut items = std::mem::take(&mut r.backpack);
+                    for pouch in std::mem::take(&mut r.pouches) {
+                        items.extend(pouch);
+                    }
                     let gear = std::mem::take(&mut r.looted_gear);
                     let chits = std::mem::replace(&mut r.chits, 0);
                     r.result = Some(RunResult::Extracted);
@@ -7500,6 +7690,21 @@ impl WorldActor {
                     k == "town_portal" || meld_proto::consumables::is_consumable(k)
                 };
                 let want_consumable = matches!(kind, K::Consumable);
+                // Lift a potion off a HERO before going through the bag: a pouch is what
+                // is on their person, and after the bag/pouch split it is where the
+                // party's potions actually live — a bag-only steal would mostly miss.
+                if want_consumable {
+                    for pouch in r.pouches.iter_mut() {
+                        if let Some(stack) = pouch
+                            .iter_mut()
+                            .find(|s| s.quantity > 0 && is_consumable(&s.item_kind))
+                        {
+                            stack.quantity -= 1;
+                            pouch.retain(|s| s.quantity > 0);
+                            return;
+                        }
+                    }
+                }
                 if let Some(stack) = r
                     .backpack
                     .iter_mut()
@@ -7810,6 +8015,12 @@ impl WorldActor {
                         quantity: loot.material_qty,
                         insurance: None,
                     };
+                    let potion_item = (!loot.potion.is_empty()).then(|| ItemStack {
+                        item_id: Uuid::now_v7().to_string(),
+                        item_kind: loot.potion.to_string(),
+                        quantity: 1,
+                        insurance: None,
+                    });
                     // Any gear drop becomes a wire LootGear with a fresh server id
                     // (base == max durability at creation).
                     let gear_drops: Vec<LootGear> = loot
@@ -7842,6 +8053,9 @@ impl WorldActor {
                     let mut run_gear_snapshot = None;
                     if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
                         r.backpack.push(loot_item.clone());
+                        if let Some(p) = &potion_item {
+                            r.backpack.push(p.clone());
+                        }
                         r.chits += loot.chits;
                         r.looted_gear.extend(gear_drops.iter().cloned());
                         if !gear_drops.is_empty() {
@@ -7856,7 +8070,10 @@ impl WorldActor {
                             xp: xp_reward,
                             run_level_after: *run_level,
                         }],
-                        loot: vec![loot_item.clone()],
+                        loot: [Some(loot_item.clone()), potion_item.clone()]
+                            .into_iter()
+                            .flatten()
+                            .collect(),
                         chits_found: loot.chits,
                         gear_drops: gear_drops.clone(),
                         class_emblem_drops: vec![],
@@ -7866,11 +8083,15 @@ impl WorldActor {
                     out.push(out_msg(
                         pid,
                         &wr::BackpackUpdate {
-                            changes: vec![wr::BackpackChange {
-                                item: loot_item,
-                                delta: "added".to_string(),
-                                cause: "battle_loot".to_string(),
-                            }],
+                            changes: [Some((loot_item, "battle_loot")), potion_item.map(|p| (p, "potion_drop"))]
+                                .into_iter()
+                                .flatten()
+                                .map(|(item, cause)| wr::BackpackChange {
+                                    item,
+                                    delta: "added".to_string(),
+                                    cause: cause.to_string(),
+                                })
+                                .collect(),
                             chits_delta: loot.chits,
                             gear_added: gear_drops,
                         },
@@ -7986,17 +8207,17 @@ impl WorldActor {
                     .iter()
                     .filter(|r| bp.contains(&r.party_id))
                     .map(|r| {
-                        (
-                            r.player_id.clone(),
-                            r.run_id.clone(),
-                            r.backpack.clone(),
-                            r.chits,
-                        )
+                        let mut lost = r.backpack.clone();
+                        lost.extend(r.pouches.iter().flatten().cloned());
+                        (r.player_id.clone(), r.run_id.clone(), lost, r.chits)
                     })
                     .collect();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     r.result = Some(RunResult::Died);
                     r.backpack.clear();
+                    for pouch in r.pouches.iter_mut() {
+                        pouch.clear();
+                    }
                     r.looted_gear.clear();
                     r.chits = 0;
                 }
@@ -8060,17 +8281,31 @@ impl WorldActor {
                     let base = seed ^ hash_str(&r.player_id);
                     let lost_chits = ((r.chits.max(0) as f64) * frac).floor() as i64;
                     r.chits -= lost_chits;
-                    // Roll each backpack stack independently (keyed by its stable id, so
-                    // the outcome is deterministic and reproducible).
-                    let mut dropped: Vec<ItemStack> = Vec::new();
-                    r.backpack.retain(|it| {
-                        if roll_unit(base ^ hash_str(&it.item_id)) < drop_chance {
-                            dropped.push(it.clone());
-                            false
-                        } else {
-                            true
-                        }
-                    });
+                    // Roll each stack independently (keyed by its stable id, so the
+                    // outcome is deterministic and reproducible) — across the Party
+                    // Inventory AND every pouch. A pouch that were exempt would make
+                    // "stuff the potions onto the heroes" a way to flee for free, and a
+                    // pouch is carried on the run like anything else.
+                    let spill = |items: &mut Vec<ItemStack>| {
+                        let mut out: Vec<ItemStack> = Vec::new();
+                        items.retain(|it| {
+                            if roll_unit(base ^ hash_str(&it.item_id)) < drop_chance {
+                                out.push(it.clone());
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        out
+                    };
+                    let dropped_bag = spill(&mut r.backpack);
+                    let mut dropped = dropped_bag.clone();
+                    let mut pouches_changed = false;
+                    for pouch in r.pouches.iter_mut() {
+                        let lost = spill(pouch);
+                        pouches_changed |= !lost.is_empty();
+                        dropped.extend(lost);
+                    }
                     // And each piece of not-yet-banked red-chest gear.
                     let before_gear = r.looted_gear.len();
                     r.looted_gear
@@ -8079,12 +8314,23 @@ impl WorldActor {
                     losses.push(FleeLoss {
                         pid: r.player_id.clone(),
                         dropped,
+                        dropped_bag,
+                        pouches_changed,
                         lost_chits,
                         gear: r.looted_gear.clone(),
                         gear_changed,
                     });
                 }
-                for FleeLoss { pid, dropped, lost_chits, gear, gear_changed } in losses {
+                for FleeLoss {
+                    pid,
+                    dropped,
+                    dropped_bag,
+                    pouches_changed,
+                    lost_chits,
+                    gear,
+                    gear_changed,
+                } in losses
+                {
                     // `battle.ended`/Fled takes the client out of the battle screen and
                     // back to the overworld (see the client's `BattleEnded` handler).
                     // For the Fled outcome these fields report what was DROPPED (not
@@ -8105,8 +8351,8 @@ impl WorldActor {
                     // Authoritatively mutate the client's mirrored backpack: the same
                     // message shape every other backpack change uses (the client just
                     // applies the removals + negative chit delta).
-                    if !dropped.is_empty() || lost_chits > 0 {
-                        let changes = dropped
+                    if !dropped_bag.is_empty() || lost_chits > 0 {
+                        let changes = dropped_bag
                             .iter()
                             .map(|it| wr::BackpackChange {
                                 item: it.clone(),
@@ -8122,6 +8368,9 @@ impl WorldActor {
                                 gear_added: vec![],
                             },
                         ));
+                    }
+                    if pouches_changed {
+                        out.extend(inst.pouches_msg(&pid));
                     }
                     // Correct the run-loot (equip tab) with a fresh full snapshot when
                     // any red-chest gear was dropped.
@@ -8362,6 +8611,7 @@ mod unlock_gate_tests {
             run_level: *levels.iter().max().unwrap_or(&1),
             xp: 0,
             backpack: vec![],
+            pouches: vec![],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,

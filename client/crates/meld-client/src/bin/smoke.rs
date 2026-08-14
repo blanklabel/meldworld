@@ -59,6 +59,7 @@ fn main() {
                 | ServerMsg::HuntProgress { .. }
                 | ServerMsg::Bounties { .. } => {}
                 ServerMsg::Loadouts { .. } => {}
+                ServerMsg::Pouches { .. } => {}
                 ServerMsg::Connected { player_id } => {
                     eprintln!("[smoke] authenticated as {player_id}; entering maze");
                     // Lead hero = the chosen class (the bot commands hero 0); the

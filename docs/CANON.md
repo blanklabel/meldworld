@@ -98,7 +98,8 @@ All constants **[TUNABLE]** unless noted structural.
 - `tier(d) = floor(d / 100)` — loot/monster tier band.
 - Monster level: `mlevel(d) = max(1, round(d / 12.5))` (so d=500 → L40, matching hub base levels).
 - Monster stat scale: `stat_mult(d) = (1 + d/500)^1.25` for `d ≤ 5000`; past the final curated hub, `stat_mult(d) = stat_mult(5000) × 1.5^((d − 5000)/500)` (exponential endgame, structural).
-- Loot rarity weights shift one band per tier; red-chest gear cannot spawn below `d = 300`.
+- Loot rarity weights shift one band per tier. Red-chest gear reaches its **full** drop rate at `d = 300` and **ramps in** below it: nothing below `d = 40`, then linear from `gear_ramp_start_mult` of the rate up to all of it at 300. `d = 300` is where the gear *game* lives, not a hard cutoff — a cutoff there is unreachable in practice, since the pre-generated area chain's deep portal sits at only `d ≈ 342–384`, so it would leave most of every dive with the chase switched off. `[TUNABLE]` `[loot] gear_ramp_start_distance`, `gear_ramp_start_mult`.
+- A felled encounter may also drop a **potion**, at `[loot] potion_drop_chance`, drawn from the consumables whose own tier is at or below `tier(d)`. Excludes the Revive and Experience consumables, which have their own dedicated world-drop rates (`[consumable] world_revive_item_chance` / `world_xp_item_chance`).
 
 ### Hubs & run levels
 - Hubs at `d = 0, 500, 1000, 1500, …, 5000` (11 curated hubs, structural). Beyond 5000: no hubs, infinite scaling.

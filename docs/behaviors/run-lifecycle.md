@@ -42,6 +42,61 @@ Each `Player` in an instance has their own `Run` record; terminal states are per
 
 ---
 
+## Two containers: the Party Inventory and the hero pouches
+
+**Source:** roadmap `GR-9`; design of record. Wire: `run.pouches`, `run.move_item`.
+
+A run holds items in **two** places, and which one an item is in decides whether a
+hero can use it in a fight.
+
+| | **Party Inventory** | **Hero pouch** (one per hero) |
+|---|---|---|
+| Capacity | **Unbounded** | `[runs] hero_pouch_slots` **kinds** **[TUNABLE]** |
+| Receives loot | **Always** — every pickup, drop, harvest tick and chest lands here | Never directly |
+| Reachable in battle | **No** | Only by **its own** hero |
+| Reachable in the field | Yes | Yes |
+| On death | Deleted | Deleted |
+
+1. **Everything found goes to the Party Inventory.** Loot, harvest payouts, chest
+   contents and ground pickups are never routed into a pouch, so a fight never
+   re-stocks itself by accident. Moving something into a pouch is always a deliberate
+   act by the player.
+2. **The inventory has no limit.** A pickup is never refused for want of space. The
+   scarcity in this system is *reach*, not *capacity* — punishing a player for finding
+   things is the opposite of what loot is for.
+3. **A pouch is capped, and the cap counts KINDS.** Same-kind stacks merge and cost no
+   slot, so a hero can carry ten Bloom Salves in one slot but not eleven *different*
+   potions. The cap exists to make "who is carrying the heals" a real decision.
+4. **Transfers are an overworld action, both ways.** `run.move_item {item_kind,
+   hero_slot, to_pouch, quantity}` moves items in either direction. The server
+   **refuses it while the caller is in a battle** (`invalid_state`) — a fight is fought
+   with what the heroes were already carrying. It moves as much as it can and reports
+   the amount moved, so asking for 5 when 3 are held moves 3 rather than failing whole.
+   A refused transfer leaves the item where it was.
+5. **In battle, an Item action is checked against the ACTING hero's pouch only**
+   (`validation_error` naming that hero otherwise). The party's stock is irrelevant:
+   running dry on the hero whose turn it is is a real outcome. The acting hero's pouch
+   pays even when the potion targets an ally.
+6. **In the field, either container is in reach** — you are standing still, so
+   `run.use_item` accepts a potion from the Party Inventory *or* from the target hero's
+   pouch, spending the hero's own copy first so the shared stock is not quietly drained
+   to top one hero up.
+7. **The starting kit is dealt into the pouches** round-robin at run start, so the
+   first fight works without a transfer ritual. Balance's totals are spent, not
+   multiplied per hero. Town Portals stay in the Party Inventory: extraction is a menu
+   action, never a battle one, so a pouch slot spent on one is a slot wasted.
+8. **Extraction banks both containers.** A pouch is carried loot like anything else.
+9. **The flee toll rolls both containers** ([combat-atb.md](combat-atb.md)). An exempt
+   pouch would make "stuff the potions onto the heroes" a way to flee for free. The
+   `run.backpack_update` removals carry **only** the Party-Inventory half, with a fresh
+   `run.pouches` for the other — reporting a pouch loss against the shared inventory
+   would decrement a bag stack the client's mirror does hold.
+10. **A creature that steals a consumable takes it off a hero first**, then the
+    inventory — a pouch is what is on their person, and it is where the party's potions
+    actually live.
+
+---
+
 ## Flow: Harvesting (the gather channel)
 
 **Source:** GDD.md §4.1; roadmap `MS-2`; design of record
@@ -103,7 +158,7 @@ gathering a decision rather than a walk.
 
 1. A player's run ends in `died` when their side of a `Battle` is defeated (see [combat-atb.md](./combat-atb.md)) — including a battle started against their sleeping avatar while disconnected.
 2. The server atomically performs the terminal transition `active → died`:
-   - The `Backpack` and all its contents are **permanently deleted** (including any unextracted red gear, equipped or carried).
+   - The **Party Inventory and every hero's pouch** are **permanently deleted**, along with any unextracted red gear, equipped or carried. Both containers obey exactly the same rule: a pouch is not a safe-deposit box, so there is no arrangement of your items that survives a wipe. The `run.member_result` `lost` list reports both together.
    - The accumulated `run_level` is **deleted**.
    - Blue-chest gear is returned to the Hub with `max_durability × 0.9`, rounded down, floor 0 **[TUNABLE]** (CANON.md §D6: −10% of current max durability per death). Gear at 0 max durability is unequippable until repaired by a Forging crafter.
 3. Nothing else persistent changes: chits in the `Vault`, Meld Skills, class unlocks, and cosmetics are untouched by death.

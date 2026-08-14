@@ -112,7 +112,13 @@ pub struct PlayerRun {
     /// Per-hero banked XP toward each hero's own next level.
     pub hero_xp: Vec<i64>,
     pub xp: i64,
+    /// The party's shared BAG. Everything found this dive lands here, and nothing in
+    /// it can be used in a fight — see [`PlayerRun::pouches`].
     pub backpack: Vec<ItemStack>,
+    /// Per-hero POUCHES, aligned with the party's slots: the only items a hero can
+    /// reach mid-battle. Filled by moving things out of the bag on the overworld, so
+    /// deciding who carries the heals happens before the fight starts, not during it.
+    pub pouches: Vec<Vec<ItemStack>>,
     /// Chits found this run (economy.md S1). Lives in the backpack conceptually;
     /// banked into the Vault on extraction, deleted with the run on death.
     pub chits: i64,
@@ -168,6 +174,7 @@ impl PlayerRun {
             let base = self.run_level;
             self.hero_levels.resize(size, base);
             self.hero_xp.resize(size, 0);
+            self.sync_pouches();
         }
         if xp <= 0 {
             return 0;
@@ -190,44 +197,128 @@ impl PlayerRun {
         gained
     }
 
-    /// This hero's level inside the dive; the run's headline level until the hero has
-    /// earned anything of its own.
-    /// Try to put `item` in the backpack. Returns false when the pack is FULL, so the
-    /// caller can tell the player rather than silently swallowing the drop.
-    ///
-    /// A dive's carrying capacity is the pressure that makes extraction a decision:
-    /// with an unbounded pack you never choose between the heavy thing and the
-    /// valuable thing, and you never turn back early because you are full.
-    /// Same-kind stacks merge and do not consume a slot.
-    /// Total slots this run can carry: the party's shared bag plus a pouch per hero.
-    /// A bigger party carries more, but never enough to stop choosing.
-    pub fn carry_capacity(&self, balance: &Balance) -> usize {
-        let heroes = self.hero_levels.len().max(1);
-        (balance.runs.backpack_slots.max(0) as usize)
-            + heroes * (balance.runs.hero_pouch_slots.max(0) as usize)
+    /// Slots in ONE hero's pouch. The pouch is the only bounded container: the limit
+    /// is there to force a CHOICE about who carries what, not to punish hauling, which
+    /// is why the Party Inventory beside it is unbounded.
+    pub fn pouch_capacity(&self, balance: &Balance) -> usize {
+        balance.runs.hero_pouch_slots.max(0) as usize
     }
 
-    pub fn try_carry(&mut self, item: ItemStack, balance: &Balance) -> bool {
-        if let Some(stack) = self
-            .backpack
+    /// Put `item` in the Party Inventory. Always succeeds — the shared inventory has no
+    /// slot limit, so finding something good is never punished by having to leave
+    /// something else behind. Same-kind stacks merge.
+    pub fn try_carry(&mut self, item: ItemStack, _balance: &Balance) -> bool {
+        Self::insert_into(&mut self.backpack, item, usize::MAX)
+    }
+
+    /// Add to a container, merging same-kind stacks. Returns false only when a NEW
+    /// kind would exceed `capacity` — a stack that merges never costs a slot, so
+    /// topping up something already carried always fits.
+    fn insert_into(into: &mut Vec<ItemStack>, item: ItemStack, capacity: usize) -> bool {
+        if let Some(stack) = into
             .iter_mut()
             .find(|s| s.item_kind == item.item_kind && s.insurance == item.insurance)
         {
             stack.quantity += item.quantity;
             return true;
         }
-        if self.backpack.len() >= self.carry_capacity(balance).max(1) {
+        if into.len() >= capacity {
             return false;
         }
-        self.backpack.push(item);
+        into.push(item);
         true
     }
 
-    /// Whether the pack has no room for a NEW kind of item.
-    pub fn pack_full(&self, balance: &Balance) -> bool {
-        self.backpack.len() >= self.carry_capacity(balance).max(1)
+    /// Keep `pouches` aligned with the party's slots. Called wherever the party grows,
+    /// so a hero can never be commanded without somewhere to carry its own kit.
+    pub fn sync_pouches(&mut self) {
+        self.pouches.resize_with(self.hero_levels.len(), Vec::new);
     }
 
+    /// How many of `kind` hero `slot` is carrying — what the battle Item action is
+    /// checked against.
+    pub fn pouch_qty(&self, slot: usize, kind: &str) -> i32 {
+        self.pouches
+            .get(slot)
+            .and_then(|p| p.iter().find(|i| i.item_kind == kind))
+            .map_or(0, |i| i.quantity)
+    }
+
+    /// Spend one of `kind` from hero `slot`'s pouch. False when that hero is not
+    /// carrying it — the pouch is the authority on what a hero may drink, so a
+    /// caller must not fall back to the bag on failure.
+    pub fn spend_from_pouch(&mut self, slot: usize, kind: &str) -> bool {
+        let Some(pouch) = self.pouches.get_mut(slot) else {
+            return false;
+        };
+        let Some(stack) = pouch.iter_mut().find(|i| i.item_kind == kind && i.quantity > 0) else {
+            return false;
+        };
+        stack.quantity -= 1;
+        pouch.retain(|i| i.quantity > 0);
+        true
+    }
+
+    /// Move `quantity` of `kind` between the shared bag and hero `slot`'s pouch.
+    ///
+    /// Moves as much as it can and reports the amount actually moved, rather than
+    /// refusing outright: asking for 5 when 3 are held (or when only 3 fit) should
+    /// leave the player with 3 moved, not an error and nothing done. Zero means the
+    /// move was impossible — nothing held, no room, or a hero slot that does not exist.
+    pub fn move_item(
+        &mut self,
+        slot: usize,
+        kind: &str,
+        quantity: i32,
+        to_pouch: bool,
+        balance: &Balance,
+    ) -> i32 {
+        if quantity <= 0 || slot >= self.pouches.len() {
+            return 0;
+        }
+        let (cap, insurance, held) = {
+            let src = if to_pouch { &self.backpack } else { &self.pouches[slot] };
+            let Some(stack) = src.iter().find(|i| i.item_kind == kind && i.quantity > 0) else {
+                return 0;
+            };
+            // Only the pouch can refuse; putting something back is always allowed.
+            let cap = if to_pouch { self.pouch_capacity(balance) } else { usize::MAX };
+            (cap, stack.insurance, stack.quantity)
+        };
+        let dst_has_kind = {
+            let dst = if to_pouch { &self.pouches[slot] } else { &self.backpack };
+            dst.iter().any(|i| i.item_kind == kind && i.insurance == insurance)
+        };
+        if !dst_has_kind {
+            let dst_len = if to_pouch { self.pouches[slot].len() } else { self.backpack.len() };
+            if dst_len >= cap {
+                return 0;
+            }
+        }
+        let moved = quantity.min(held);
+        {
+            let src = if to_pouch { &mut self.backpack } else { &mut self.pouches[slot] };
+            if let Some(stack) = src.iter_mut().find(|i| i.item_kind == kind) {
+                stack.quantity -= moved;
+            }
+            src.retain(|i| i.quantity > 0);
+        }
+        // A real id, not an empty one: the flee toll rolls per stack keyed on
+        // `item_id`, so stacks sharing a blank id would share one roll and drop or
+        // survive together.
+        let item = ItemStack {
+            item_id: uuid::Uuid::now_v7().to_string(),
+            item_kind: kind.to_string(),
+            quantity: moved,
+            insurance,
+        };
+        let dst = if to_pouch { &mut self.pouches[slot] } else { &mut self.backpack };
+        Self::insert_into(dst, item, cap);
+        moved
+    }
+
+    /// This hero's level inside the dive; the run's headline level until the hero has
+    /// earned anything of its own.
     pub fn hero_level(&self, slot: usize) -> i32 {
         self.hero_levels.get(slot).copied().unwrap_or(self.run_level)
     }
@@ -288,6 +379,7 @@ impl InstanceRun {
                 hero_xp: Vec::new(),
                 xp: 0,
                 backpack: Vec::new(),
+                pouches: Vec::new(),
                 chits: 0,
                 looted_gear: Vec::new(),
                 max_distance_reached: 0,
@@ -881,6 +973,7 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            pouches: vec![],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
@@ -1004,6 +1097,7 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            pouches: vec![],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
@@ -1423,6 +1517,7 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            pouches: vec![],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
@@ -1516,6 +1611,7 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            pouches: vec![],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
@@ -1567,6 +1663,7 @@ mod tests {
                 run_level: 1,
                 xp: 0,
                 backpack: vec![],
+                pouches: vec![],
                 chits: 0,
                 looted_gear: vec![],
                 max_distance_reached: 0,
@@ -1653,10 +1750,8 @@ mod tests {
 
 
 
-    #[test]
-    fn a_full_pack_refuses_new_kinds_but_still_stacks_what_it_has() {
-        let b = Balance::load_default().unwrap();
-        let mut r = PlayerRun {
+    fn run_with_pouches(heroes: usize) -> PlayerRun {
+        PlayerRun {
             run_id: "r".into(),
             player_id: "p".into(),
             username: "u".into(),
@@ -1664,32 +1759,37 @@ mod tests {
             run_level: 1,
             xp: 0,
             backpack: vec![],
+            pouches: vec![Vec::new(); heroes],
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
             result: None,
             party_id: 0,
-            hero_levels: vec![1],
-            hero_xp: vec![0],
-        };
+            hero_levels: vec![1; heroes],
+            hero_xp: vec![0; heroes],
+        }
+    }
+
+    /// The Party Inventory has NO slot limit — finding something must never cost you
+    /// something you already found. The bounded container is the pouch, and its limit
+    /// exists to make "who carries the heals" a choice, not to tax hauling.
+    #[test]
+    fn the_party_inventory_never_refuses_and_stacks_what_it_has() {
+        let b = Balance::load_default().unwrap();
+        let mut r = run_with_pouches(1);
         let item = |kind: &str| ItemStack {
             item_id: format!("i-{kind}"),
             item_kind: kind.to_string(),
             quantity: 1,
             insurance: None,
         };
-        let slots = r.carry_capacity(&b);
-        for n in 0..slots {
-            assert!(r.try_carry(item(&format!("kind{n}")), &b), "slot {n} refused early");
+        for n in 0..500 {
+            assert!(r.try_carry(item(&format!("kind{n}")), &b), "kind {n} was refused");
         }
-        assert!(r.pack_full(&b));
-        // A NEW kind has nowhere to go — and the caller is told, rather than the drop
-        // vanishing silently.
-        assert!(!r.try_carry(item("one_too_many"), &b));
-        assert_eq!(r.backpack.len(), slots);
-        // But more of something already carried always fits: stacks are not slots.
+        assert_eq!(r.backpack.len(), 500);
+        // More of something already carried merges rather than taking a new row.
         assert!(r.try_carry(item("kind0"), &b));
-        assert_eq!(r.backpack.len(), slots, "a merged stack consumed a slot");
+        assert_eq!(r.backpack.len(), 500, "a merged stack took a row");
         assert_eq!(
             r.backpack.iter().find(|s| s.item_kind == "kind0").unwrap().quantity,
             2
@@ -1790,35 +1890,96 @@ mod tests {
         );
     }
 
+    /// A transfer must CONSERVE items. Anything that leaves one container has to arrive
+    /// in the other — a move that silently drops the difference is worse than a refusal,
+    /// because the player only finds out when they reach for it in a fight.
     #[test]
-    fn capacity_is_the_shared_bag_plus_a_pouch_per_hero() {
+    fn moving_items_conserves_them_in_both_directions() {
         let b = Balance::load_default().unwrap();
-        let cap = |heroes: usize| {
-            let r = PlayerRun {
-                run_id: "r".into(),
-                player_id: "p".into(),
-                username: "u".into(),
-                character_class: CharacterClass::Hunter,
-                run_level: 1,
-                xp: 0,
-                backpack: vec![],
-                chits: 0,
-                looted_gear: vec![],
-                max_distance_reached: 0,
-                result: None,
-                party_id: 0,
-                hero_levels: vec![1; heroes],
-                hero_xp: vec![0; heroes],
-            };
-            r.carry_capacity(&b)
+        let mut r = run_with_pouches(2);
+        r.backpack.push(ItemStack {
+            item_id: "i1".into(),
+            item_kind: "bloom_salve".into(),
+            quantity: 5,
+            insurance: None,
+        });
+        let total = |r: &PlayerRun| -> i32 {
+            r.backpack.iter().chain(r.pouches.iter().flatten()).map(|i| i.quantity).sum()
         };
-        let bag = b.runs.backpack_slots as usize;
-        let pouch = b.runs.hero_pouch_slots as usize;
-        assert_eq!(cap(1), bag + pouch);
-        assert_eq!(cap(4), bag + 4 * pouch);
-        // A bigger party carries more — but the bag is the bulk of it, so a fourth
-        // hero does not quadruple what you can haul out.
-        assert!(cap(4) < cap(1) * 2, "a full party carries too much more than a solo");
+        assert_eq!(r.move_item(1, "bloom_salve", 2, true, &b), 2);
+        assert_eq!(r.pouch_qty(1, "bloom_salve"), 2);
+        assert_eq!(total(&r), 5);
+        assert_eq!(r.move_item(1, "bloom_salve", 1, false, &b), 1);
+        assert_eq!(r.pouch_qty(1, "bloom_salve"), 1);
+        assert_eq!(total(&r), 5);
+        // Asking for more than is held moves what there is rather than failing whole.
+        assert_eq!(r.move_item(1, "bloom_salve", 99, false, &b), 1);
+        assert_eq!(r.pouch_qty(1, "bloom_salve"), 0);
+        assert_eq!(total(&r), 5);
+        assert_eq!(r.move_item(0, "nothing_like_this", 1, true, &b), 0);
+        assert_eq!(r.move_item(9, "bloom_salve", 1, true, &b), 0, "no such hero");
+        assert_eq!(total(&r), 5);
+    }
+
+    /// A hero reaches only its OWN pouch in a fight. If `spend_from_pouch` fell back to
+    /// the Party Inventory the two containers would collapse back into one pile and the
+    /// decision they exist to create would vanish.
+    #[test]
+    fn a_hero_can_only_spend_from_its_own_pouch() {
+        let b = Balance::load_default().unwrap();
+        let mut r = run_with_pouches(3);
+        r.backpack.push(ItemStack {
+            item_id: "i1".into(),
+            item_kind: "elixir".into(),
+            quantity: 4,
+            insurance: None,
+        });
+        assert_eq!(r.move_item(2, "elixir", 1, true, &b), 1);
+        assert!(r.spend_from_pouch(2, "elixir"), "hero 2 is carrying one");
+        assert!(!r.spend_from_pouch(2, "elixir"), "and has now spent it");
+        assert!(!r.spend_from_pouch(0, "elixir"), "hero 0 never carried one");
+        assert!(!r.spend_from_pouch(9, "elixir"), "no such hero");
+        // Three still sit in the Party Inventory, and being there did not help.
+        assert_eq!(
+            r.backpack.iter().find(|i| i.item_kind == "elixir").unwrap().quantity,
+            3
+        );
+    }
+
+    /// A pouch is bounded and the same size for every hero, so who carries what is a
+    /// choice rather than a function of party composition.
+    #[test]
+    fn every_hero_gets_the_same_bounded_pouch() {
+        let b = Balance::load_default().unwrap();
+        let mut r = run_with_pouches(4);
+        let pouch = r.pouch_capacity(&b);
+        assert!(pouch > 0, "a pouch with no slots means no hero can carry anything");
+        for kind in 0..pouch {
+            r.backpack.push(ItemStack {
+                item_id: format!("i{kind}"),
+                item_kind: format!("kind{kind}"),
+                quantity: 1,
+                insurance: None,
+            });
+            assert_eq!(r.move_item(2, &format!("kind{kind}"), 1, true, &b), 1);
+        }
+        r.backpack.push(ItemStack {
+            item_id: "over".into(),
+            item_kind: "one_too_many".into(),
+            quantity: 1,
+            insurance: None,
+        });
+        assert_eq!(
+            r.move_item(2, "one_too_many", 1, true, &b),
+            0,
+            "a full pouch should refuse a new kind"
+        );
+        // Refusing left the item where it was rather than destroying it.
+        assert!(r.backpack.iter().any(|i| i.item_kind == "one_too_many"));
+        // Every other hero still has an empty pouch of the same size.
+        for slot in [0, 1, 3] {
+            assert!(r.pouches[slot].is_empty());
+        }
     }
 
 
