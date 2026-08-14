@@ -83,9 +83,44 @@ market is the multiplier*).
 
 **④ Polish the feel — as important as any new system.** A slice becomes "want to play"
 through feel & clarity, not more mechanics.
-- [ ] **P1-2 — Combat & moment-to-moment feel pass.** Hit feedback/juice, damage/heal
+- [x] **P1-2 — Combat & moment-to-moment feel pass.** Hit feedback/juice, damage/heal
   readability, turn/telegraph clarity, pacing — make the ATB *feel* good, not just be
   correct. Screenshot/video-verify (CLAUDE.md "Visual verification").
+  - **Most of the juice was already there** and nobody had recorded it: the struck sprite
+    flashes white, recoils and judders, the attacker lunges and plays its own action clip,
+    and the numbers carry a vocabulary (`CRIT!` gold, `WEAK!` big and shaking, `RESIST!` /
+    `IMMUNE!` / `ABSORB!` behind the Psyker's threat-sight). #216 gave conditions a palette
+    on the cells, the creature bars and the sprites themselves; #227 got the victory menu
+    out of the way. What was missing was narrower than the line suggested.
+  - **A number now belongs to the combatant it landed on.** `render_hit_fx` anchored by
+    *identity* — `monster_combatant` (only ever `enemies.first()`) drew top-centre and
+    everything else fell through `your_ids.position(…).unwrap_or(0)`, so every enemy past
+    the first, and every joined ally, printed its damage over **hero slot 0's cell**. Packs
+    are standard and the level-50/75/100 rungs added a wave of all-enemy abilities, so one
+    Purging Light sprayed its whole sweep onto the first hero. Each number is now projected
+    over its own arena actor, the way `render_enemy_panel` already hangs the HP bars — the
+    class of bug, not the instance. The hero-cell path survives only as a fallback, and
+    only for a hero we actually field: printing someone else's number on slot 0 was the
+    fault.
+  - **Simultaneous hits stack instead of overstriking.** `Hit::stack` records how many live
+    numbers already shared that target, and each is lifted clear (`stack_step`, held above
+    the font size by test) with an alternating sway — an all-enemy sweep used to resolve
+    four numbers onto one pixel.
+  - **Turn clarity is the enemy's own ATB gauge, not a turn-order list.** It already ships:
+    a second bar under each foe's name/HP, gated on Predator's Eye's top tier
+    (`hunter_intel_atb_at`, run level 6). Left with the **Hunter** per `CL-2` — sizing up
+    prey is the guild's trade — and the stale comment calling it the Explorer's is fixed.
+  - **The feel is tunable at last** (`meld_client::feel`). The timings and magnitudes were
+    bare `const`s plus magic literals inside the animation systems, so dialing them in was
+    a recompile per guess. One `BattleFeel` resource with the shipped values as defaults
+    and a runtime override — `MELD_FEEL="lunge_ttl=0.5,number_rise=70"` / `?feel=`. A bad
+    knob warns and is skipped rather than failing the boot. Authoritative pacing
+    (`tick_ms`, `gauge_fill_divisor`, `turn_timeout_ms`) stays in `balance.toml`, since it
+    is a rule rather than a look. `number_height` was picked *with* the dial: 2.0 put every
+    number through the sprite's own art, 3.1 clears the head and sits just off the target
+    diamond.
+  - Verified natively (`MELD_BATTLE`, whose mockup is now the fixture for both bugs — a
+    second **live** enemy that is not `enemies.first()`, and two numbers on one target).
 - [ ] **P1-3 — New-player onboarding & progression legibility.** The first hour: teach the
   loop, and make "am I getting stronger?" legible (gear power, level, what to do next).
 - → **LC-2** (fix the reversed-walk bug — a visible rough edge new players hit).

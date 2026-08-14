@@ -275,6 +275,20 @@ pub(crate) fn unlock_mockup_flag() -> Option<String> {
     params.get("unlock").filter(|s| !s.is_empty())
 }
 
+/// `MELD_FEEL="lunge_ttl=0.5,number_rise=70"` / `?feel=` — override any
+/// [`crate::BattleFeel`] knob at launch, so the combat feel can be dialed in against a
+/// running fight instead of a recompile per guess.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn feel_flag() -> Option<String> {
+    std::env::var("MELD_FEEL").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn feel_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("feel").filter(|s| !s.is_empty())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn levelup_mockup_flag() -> bool {
     std::env::var("MELD_LEVELUP").is_ok()

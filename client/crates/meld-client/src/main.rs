@@ -36,6 +36,7 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Last City hub: districts, plaza, HUD
+mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
 mod flags; // launch-time `MELD_*` / `?query` toggles
 mod icons; // one icon per item kind: its own sprite if we drew it, else a type glyph
 mod menu; // the three-column cascading main menu (nav -> section -> pane)
@@ -48,6 +49,7 @@ mod screens; // Join, co-op Lobby, Ended summary
 mod world_render; // asset load + scene setup, biome ground, sky/weather/water
 pub(crate) use battle::*;
 pub(crate) use city::*;
+pub(crate) use feel::*;
 pub(crate) use flags::*;
 pub(crate) use mocks::*;
 pub(crate) use netglue::*;
@@ -158,6 +160,7 @@ fn main() {
         .init_resource::<BattleMenu>()
         .init_resource::<BattleCam>()
         .init_resource::<PartyView>()
+        .insert_resource(BattleFeel::from_flags())
         .init_resource::<HitFx>()
         .init_resource::<AtbFlash>()
         .init_resource::<AllyPanel>()
@@ -1456,7 +1459,7 @@ struct AccountHeroNames {
 struct HitFx {
     items: Vec<Hit>,
     /// Attacker id → seconds since it landed a damaging action (dropped past
-    /// [`ATTACK_LUNGE_TTL`]); [`animate_battle_actors`] lunges that sprite.
+    /// [`BattleFeel::lunge_ttl`]); [`animate_battle_actors`] lunges that sprite.
     acts: HashMap<String, f32>,
     /// Actor id → the animation clip to play once for a just-resolved action (its
     /// `attack` or a specific special). Consumed by `drive_battle_action_clips`,
@@ -1473,6 +1476,10 @@ struct Hit {
     age: f32,
     /// Font-size multiplier — WEAK! hits pop bigger (screen-shaking flourish).
     scale: f32,
+    /// How many live numbers already shared this target when it landed. An all-enemy
+    /// ability resolves its whole sweep in one message, so without this every number
+    /// would draw at the identical anchor and overstrike into noise.
+    stack: u8,
 }
 /// A monster's ability shout bubble (see `HitFx::callouts`).
 struct Callout {
@@ -1485,19 +1492,6 @@ struct Callout {
     /// Telegraphs flash (channeling); instant callouts just fade.
     flashing: bool,
 }
-/// Seconds a floating number lives.
-const HIT_TTL: f32 = 1.0;
-/// Seconds a target stays "flashed" after being hit.
-const FLASH_TTL: f32 = 0.18;
-/// Seconds a struck sprite is knocked back before easing home.
-const HIT_RECOIL_TTL: f32 = 0.3;
-/// Seconds a struck sprite flashes white (a subset of the recoil).
-const HIT_WHITE_TTL: f32 = 0.12;
-/// Seconds an attacker's lunge (step in + back) lasts.
-const ATTACK_LUNGE_TTL: f32 = 0.34;
-/// Seconds a hero's cell/ATB bar flashes when its gauge fills (turn ready).
-const ATB_FLASH_TTL: f32 = 0.55;
-
 /// Tracks the "your turn!" pop: when a hero newly enters `BattleData::ready`, its
 /// id gets a fading flash (see [`advance_atb_flash`]) that [`party_cell`] renders as
 /// a quick brighten of the ATB bar + cell border.
@@ -1505,7 +1499,7 @@ const ATB_FLASH_TTL: f32 = 0.55;
 struct AtbFlash {
     /// Heroes that were ready last frame, to detect the rising edge.
     prev: HashSet<String>,
-    /// Active flashes: hero id → seconds elapsed (dropped past [`ATB_FLASH_TTL`]).
+    /// Active flashes: hero id → seconds elapsed (dropped past [`BattleFeel::atb_flash_ttl`]).
     age: HashMap<String, f32>,
 }
 

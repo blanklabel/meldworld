@@ -52,6 +52,7 @@ pub(crate) fn mock_battle_setup(
     mut target: ResMut<BattleTarget>,
     mut flash: ResMut<AtbFlash>,
     mut roster: ResMut<PartyRoster>,
+    mut perks: ResMut<PerksRes>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if !battle_mockup_flag() {
@@ -74,21 +75,26 @@ pub(crate) fn mock_battle_setup(
     // (h1 stepping in) show statically. The fx systems no-op in the mock, so these
     // seeded ages don't advance.
     hitfx.acts.insert("h1".to_string(), 0.11);
-    // Canned hit feedback so the floating numbers + flash are visible statically.
-    hitfx.items.push(Hit {
-        target: "grendel".into(),
-        text: "-17".into(),
-        color: Color::srgb(1.0, 0.5, 0.4),
-        age: 0.06,
-        scale: 1.0,
-    });
-    hitfx.items.push(Hit {
-        target: "h3".into(),
-        text: "+12".into(),
-        color: Color::srgb(0.5, 1.0, 0.6),
-        age: 0.0,
-        scale: 1.0,
-    });
+    // Canned hit feedback so the floating numbers + flash are visible statically. This
+    // is also the fixture for the two anchoring bugs: `wight` is not `enemies.first()`,
+    // so its number used to print over hero slot 0, and grendel takes TWO at once —
+    // an all-enemy sweep's numbers used to land on the identical pixel.
+    let mut hit = |target: &str, text: &str, color: Color, age: f32| {
+        let stack = hitfx.items.iter().filter(|h| h.target == target).count() as u8;
+        hitfx.items.push(Hit {
+            target: target.into(),
+            text: text.into(),
+            color,
+            age,
+            scale: 1.0,
+            stack,
+        });
+    };
+    let red = Color::srgb(1.0, 0.5, 0.4);
+    hit("grendel", "-17", red, 0.06);
+    hit("grendel", "-9", red, 0.06);
+    hit("wight", "-23", red, 0.06);
+    hit("h3", "+12", Color::srgb(0.5, 1.0, 0.6), 0.0);
     let hero = |id: &str, hp, gauge, class: &str, back: bool| {
         let mut statuses = vec![format!("class:{class}")];
         if back {
@@ -138,7 +144,19 @@ pub(crate) fn mock_battle_setup(
             level: 1,
             statuses: vec![],
         },
-        // A second foe, downed — shows the KO gray-out (death indicator).
+        // A second LIVE foe: the pack case, and the one whose numbers were mis-anchored.
+        CombatantView {
+            id: "wight".into(),
+            name: "Wight".into(),
+            hp: 31,
+            max_hp: 48,
+            gauge: 0.4,
+            is_player: false,
+            player_id: None,
+            level: 1,
+            statuses: vec![],
+        },
+        // A third foe, downed — shows the KO gray-out (death indicator).
         CombatantView {
             id: "stalker".into(),
             name: "Stalker".into(),
@@ -159,6 +177,9 @@ pub(crate) fn mock_battle_setup(
             c.statuses.extend(toks.iter().map(|s| s.to_string()));
         }
     };
+    // Predator's Eye at its top tier, so the enemy ATB gauge under each foe's HP bar
+    // (the one thing that tells you whose turn is coming) is in the frame.
+    perks.0.hunter_intel = 3;
     add(&mut battle, "h1", &["barrier:8", "regen:3"]);
 
     add(&mut battle, "h3", &["evasion:20"]);
