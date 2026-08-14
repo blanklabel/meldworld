@@ -2945,9 +2945,10 @@ pub(crate) fn render_hit_fx(
 }
 
 /// Turn a resolved effect into a floating number (skips zero/no-op effects).
-/// `show_elements` is the Psyker perk gate (spec §6): only a party whose
-/// Psyker has unlocked threat-sight reads WEAK!/RESIST!/IMMUNE!/ABSORB! —
-/// everyone else sees plain numbers (an immune hit still shows its 0).
+/// `show_elements` is the Hunter's threat-sense gate (spec §6): only a party whose
+/// Hunter has unlocked it reads WEAK!/RESIST!/IMMUNE!/ABSORB! — everyone else sees
+/// plain numbers (an immune hit still shows its 0). Reading what a creature is made of
+/// is the same trade as reading its level and its gauge.
 pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool) {
     let modifier = if show_elements { e.modifier.as_deref() } else { None };
     let mut scale = 1.0;

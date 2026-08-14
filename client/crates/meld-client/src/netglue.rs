@@ -333,7 +333,7 @@ pub(crate) fn pump_net(
                 // Elemental WEAK!/RESIST!/IMMUNE!/ABSORB! feedback is Psyker
                 // threat-sight (spec §6): unlocked when the party's Psyker perk
                 // is live, plain numbers otherwise.
-                let show_elements = perks.0.psyker_threat > 0;
+                let show_elements = perks.0.hunter_threat > 0;
                 let mut did_damage = false;
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.

@@ -614,15 +614,37 @@ burns on death/leave; some is single-use. See
   *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
   `game.rs::compute_perks`) — each class's *presence* in the party grants an
   earned overworld capability that scales with the shared `run_level`: the
-  **Shifter grants a corner minimap** (+ mob/portal dots, coverage grows with
-  level), the **Explorer grants enemy-HP intel**, Phoenix Guard shrinks creature aggro
-  range, Resonant grants overworld regen. **This is where overworld map-reveal and
-  threat-reading belong — they're *what a class can do*, a reason to bring it, not
-  universal UI.** Remaining: flesh the system out — round out perks per class
-  (Psyker has none yet), tier them across run level, surface them clearly in the
+  **Explorer grants the minimap** (+ mob/portal dots, coverage grows with level),
+  the **Hunter grants creature intel**, the **Shifter** reads doors and loot,
+  Phoenix Guard shrinks creature aggro range, Resonant grants walking regen, and the
+  two crafters read their own trade's materials. **This is where overworld map-reveal
+  and threat-reading belong — they're *what a class can do*, a reason to bring it, not
+  universal UI.** Remaining: tier them across run level, surface them clearly in the
   HUD, and fold it into CANON with a §/D-number. Anything giving map/threat
   *awareness in the maze* should extend this system, not bypass it. (Contrast UX-1,
   which is town-only, and UX-2, which is universal accessibility.)
+  - 🟡 *Threat sense is the Hunter's now.* Marking elites/gatekeepers and aggressive
+    mobs, and the widened mob reveal radius, sat with the **Psyker** — where it
+    duplicated the Hunter's whole trade (reading a creature before you commit),
+    stopped growing at run level 3, and had half of itself invisible: you cannot tell
+    you are seeing further than you otherwise would. It is the long-range half of the
+    predator's eye, so it lives beside `hunter_intel`. The client's elemental verdicts
+    (`WEAK!`/`RESIST!`/`IMMUNE!`) ride the same gate — what a creature is made of is
+    the same question as what level it is. `psyker_*` stays a serde alias so a message
+    in flight from an older server still parses.
+  - 🟡 *A passive must not do the job the class is FOR.* The Resonant's walking regen
+    healed the **whole party**, so a party carrying the best healer in the game never
+    needed healing between fights and its kit went unspent. It now tends only the
+    **Resonants themselves**. A Keeper's alembic field still reaches everyone standing
+    in it — a field is a PLACE you choose to stand, not something you get for bringing
+    someone — so the two sources bank their sub-1 remainders separately, or the field's
+    overflow would heal straight through the Resonant-only rule.
+  - **Open: the Psyker now has NO overworld perk at all**, and that is asserted by name
+    (`the_psyker_is_the_one_class_still_owed_an_overworld_perk`) rather than left to be
+    noticed — the Smithwright and the Keeper walked around with nothing for a whole
+    release because no test ever said so. Whatever it gets should be something it
+    *does* (manifestations reaching outside the fight), not another way to see, since
+    seeing is now the Hunter's and mapping is the Explorer's.
 
 ---
 

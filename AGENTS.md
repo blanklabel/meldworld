@@ -590,7 +590,8 @@ Larceny, Hallowed Ground, Second Life.
 
 **Crafters have a SECOND ladder, and it is the perk system.** Every class earns an
 overworld perk that scales with run level — the Explorer's lantern and map, the Hunter's
-prey-sense, the Shifter's Shift-sense, the Psyker's threat-sense, the Resonant's walking
+prey-sense (level, HP, battle gauge — and threat sense, which is the same eye at range),
+the Shifter's Shift-sense, the Resonant's walking
 regen, the Phoenix Guard's bulwark — and the two PROFESSION classes had none at all, which
 is the pair whose whole identity is what they do between fights. `compute_perks` is now a
 free function (it reads only balance) so it is unit-tested, and
@@ -605,6 +606,21 @@ release and nothing said so.
 - **Keeper** — *Forager's Path* (reagent beds revealed at range), *Green Thumb* (a tick
   sometimes pays two units), *Rooted Ground* (the alembic's regen field reaches further and
   heals harder), *The Whole Vein* (a unit sometimes costs the bed no stock).
+
+**A passive must not do the job the class is FOR.** The Resonant's walking regen used to
+mend the whole party between fights, so a party carrying the best healer in the game never
+needed healing and its kit went unspent. It now tends **only the Resonants themselves**; the
+Keeper's alembic field still reaches everyone, because a field is a PLACE you choose to
+stand rather than something you get for bringing someone. Both pour through `pour_regen`,
+which takes the eligible slots — the two sources bank their sub-1 remainders separately, or
+the field's overflow would heal straight through the Resonant-only rule.
+
+**The Psyker is the one class with NO overworld perk**, and that is asserted by name
+(`the_psyker_is_the_one_class_still_owed_an_overworld_perk`) rather than left to be
+noticed. Its threat sense moved to the Hunter, where it stopped duplicating the intel lane
+and stopped capping out at run level 3. What replaces it is open work under `CL-2` — the
+test fails the moment it earns one, which is the cue to drop the carve-out in
+`no_class_walks_the_overworld_with_nothing`.
 
 A crafter reads only the half of the world its own trade is built on — the Foundry sees
 `ore`, the Open Flower sees `reagent`, keyed off the material registry's class. Node-sense

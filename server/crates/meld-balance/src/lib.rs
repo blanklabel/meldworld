@@ -1037,16 +1037,16 @@ pub struct Perks {
     pub shifter_trap_radius_per_level: f32,
     /// Extra minimap coverage per run level above the unlock.
     pub explorer_map_radius_per_level: f32,
-    // --- Psyker: threat sense. ---
+    // --- Hunter: threat sense (the long-range half of the predator's eye). ---
     /// Run level that marks elite/gatekeeper mobs.
-    pub psyker_threat_elites_at: i32,
+    pub hunter_threat_elites_at: i32,
     /// Run level that additionally marks aggressive mobs.
-    pub psyker_threat_aggro_at: i32,
+    pub hunter_threat_aggro_at: i32,
     /// Extended mob interest radius (tiles) at unlock — dangerous mobs revealed
     /// beyond the normal snapshot radius.
-    pub psyker_reveal_base: f64,
+    pub hunter_reveal_base: f64,
     /// Extra reveal radius per run level.
-    pub psyker_reveal_per_level: f64,
+    pub hunter_reveal_per_level: f64,
     // --- Resonant: overworld regen. ---
     /// HP/sec restored to each carried hero while walking the overworld, per run
     /// level (0 at level 0). Applied server-side; feeds next fight's start HP.
