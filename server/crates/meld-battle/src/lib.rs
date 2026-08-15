@@ -416,6 +416,16 @@ pub fn hero_attack_type(class_key: &str) -> DamageType {
         "explorer" | "ranger" | "dragoon" => DamageType::Pierce,
         "shifter" | "alchemist_knight" | "bard" => DamageType::Slash,
         "phoenix_guard" | "sage" | "resonant" => DamageType::Blunt,
+        // The Hunter's blade, and the Smithwright's tool — both were missing, so the two
+        // fell to `None` below and had been swinging TRUE damage: every creature
+        // resistance and immunity ignored, and (once the row trade landed) the front line
+        // held for free. The Hunter is the martial baseline; a class list is a list a
+        // class gets left off, which is how the rename in #206 lost it.
+        "hunter" => DamageType::Slash,
+        "smithwright" => DamageType::Blunt,
+        // The Keeper's damage rides Mnd, not Str, so its swing is not a physical blow —
+        // which is also why it keeps its full output from the back rank.
+        "keeper" => DamageType::Mind,
         "psyker" => DamageType::Mind,
         _ => DamageType::None,
     }
@@ -529,6 +539,7 @@ pub struct Battle {
     timeout_ticks: u64,
     defend_reduction: f64,
     back_row_damage_mult: f64,
+    back_row_attack_mult: f64,
     /// AD-2: how long a combo primer stays live on a target.
     combo_window_ticks: u64,
     pack_aura_atk_mult: f64,
@@ -810,6 +821,7 @@ impl Battle {
             timeout_ticks: (balance.battle.turn_timeout_ms / tick_ms).max(1),
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
+            back_row_attack_mult: balance.battle.back_row_attack_mult,
             combo_window_ticks: balance.adventure.combo_window_ticks,
             pack_aura_atk_mult: balance.encounters.pack_aura_atk_mult,
             pack_guard_per_minion: balance.encounters.pack_guard_per_minion,
@@ -1304,6 +1316,23 @@ impl Battle {
     /// attacker's scaled attack. Defence grows about +1 per hero level while creature
     /// attack grows only with distance, so without that floor a levelled hero simply
     /// stops taking damage and the game never gets harder than its tutorial.
+    /// The physical attack `actor_i` actually swings with, at `mult` of its own `atk`.
+    ///
+    /// **The back row's trade lives here.** Standing back halves what physical blows do to
+    /// you (`apply_damage_reaching`) and halves what your own physical blows do in return.
+    /// Without the second half the optimal formation was the whole party in the back rank
+    /// for a flat 2x effective HP, and `handle_set_formation` has no rule against it —
+    /// the trade IS the rule. A caster gives up nothing standing back because its damage
+    /// is not physical, which is exactly why the back row is a caster's home.
+    ///
+    /// Every physical attack goes through here rather than reading `.atk` at the call
+    /// site, because a call site that reads it directly is a swing nobody charged for.
+    fn phys_atk(&self, actor_i: usize, mult: f64) -> i32 {
+        let atk = self.fighters[actor_i].atk as f64;
+        let row = if self.fighters[actor_i].back_row { self.back_row_attack_mult } else { 1.0 };
+        (atk * mult * row).round() as i32
+    }
+
     fn damage(&self, atk: i32, def: i32, target_defending: bool) -> i32 {
         let floor = (atk as f64) * self.damage_floor_fraction;
         let mut raw = ((atk - def) as f64).max(floor);
@@ -1339,14 +1368,23 @@ impl Battle {
                 .position(|f| f.alive && f.kind != CombatantKind::Player)
                 .ok_or(Reject::NotFound)?,
         };
+        let attack_type = self.fighters[actor_i].basic_attack_type;
+        // The back rank's trade, and this path can be exact about it: only a PHYSICAL
+        // swing is weakened by standing back, so a hero whose weapon carries an elemental
+        // `brand` (AD-3) keeps its full damage from the back row — which is a real reason
+        // to want one.
+        let row = if attack_type.is_physical() && self.fighters[actor_i].back_row {
+            self.back_row_attack_mult
+        } else {
+            1.0
+        };
         // CR-6: a minion fights above its weight while its leader lives, and below it
         // once the pack has routed.
-        let atk = ((self.fighters[actor_i].atk as f64) * self.pack_attack_mult(actor_i))
+        let atk = ((self.fighters[actor_i].atk as f64) * self.pack_attack_mult(actor_i) * row)
             .round()
             .max(1.0) as i32;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
-        let attack_type = self.fighters[actor_i].basic_attack_type;
         let mut effects = match self.roll_dodge(target_i) {
             Some(dodge) => dodge,
             None => {
@@ -1458,7 +1496,6 @@ impl Battle {
             } else {
                 (self.hunter_apex_mult, 0.0)
             };
-            let atk = self.fighters[actor_i].atk;
             let enemies: Vec<usize> = self
                 .fighters
                 .iter()
@@ -1468,7 +1505,7 @@ impl Battle {
                 .collect();
             let mut effects = Vec::new();
             for t in enemies {
-                let scaled = (atk as f64 * mult).round() as i32;
+                let scaled = self.phys_atk(actor_i, mult);
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
                 if drain > 0.0 && self.fighters[t].alive {
@@ -1506,7 +1543,7 @@ impl Battle {
         };
         // Spend the banked Adrenaline (reflected in wire statuses on the next snapshot).
         self.fighters[actor_i].adrenaline -= cost;
-        let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+        let scaled_atk = self.phys_atk(actor_i, mult);
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
         let mut effects = match self.roll_dodge(target_i) {
@@ -1654,7 +1691,7 @@ impl Battle {
                         .position(|f| f.alive && f.kind != CombatantKind::Player)
                         .ok_or(Reject::NotFound)?,
                 };
-                let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                let scaled_atk = self.phys_atk(actor_i, mult);
                 let def = self.fighters[target_i].def;
                 let defending = self.fighters[target_i].defending;
                 effects = match self.roll_dodge(target_i) {
@@ -2116,7 +2153,7 @@ impl Battle {
         // The order's whole purpose: silvered and holy tools bite far deeper into
         // the risen than into anything else alive.
         let mult = mult * self.undead_bonus(target_i);
-        let scaled_atk = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+        let scaled_atk = self.phys_atk(actor_i, mult);
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
         let mut effects = match self.roll_dodge(target_i) {
@@ -2271,7 +2308,7 @@ impl Battle {
             let mut effects = Vec::new();
             for target_i in targets {
                 if mult > 0.0 {
-                    let scaled = (self.fighters[actor_i].atk as f64 * mult).round() as i32;
+                    let scaled = self.phys_atk(actor_i, mult);
                     let def = self.fighters[target_i].def;
                     let defending = self.fighters[target_i].defending;
                     match self.roll_dodge(target_i) {
@@ -2333,7 +2370,6 @@ impl Battle {
                     .position(|f| f.alive && f.kind != CombatantKind::Player)
                     .ok_or(Reject::NotFound)?,
             };
-            let atk = self.fighters[actor_i].atk;
             // Grand Larceny works the whole room; everything else picks one mark.
             let targets: Vec<usize> = vec![target_i];
             let (mult, pierce, drain) = match skill_kind {
@@ -2346,7 +2382,7 @@ impl Battle {
             let mut effects = Vec::new();
             for t in targets {
                 let defending = self.fighters[t].defending;
-                let scaled_atk = (atk as f64 * mult).round() as i32;
+                let scaled_atk = self.phys_atk(actor_i, mult);
                 let def = (self.fighters[t].def as f64 * (1.0 - pierce)).round() as i32;
                 match self.roll_dodge(t) {
                     Some(dodge) => effects.extend(dodge),
@@ -3815,7 +3851,7 @@ impl Battle {
             }
             _ => {
                 let dmg = (((raw as f64) * mult).floor() as i32).max(self.min_damage);
-                let mut fx = self.apply_damage(target_i, dmg);
+                let mut fx = self.apply_damage_reaching(target_i, dmg, ty.is_physical());
                 for e in &mut fx {
                     if matches!(e.kind, EffectKind::Damage) {
                         e.modifier_flag = flag;
@@ -3826,7 +3862,21 @@ impl Battle {
         }
     }
 
+    /// Physical damage — the default path. A blow with no declared type is a weapon
+    /// blow, so it answers to the back row like every other one.
     fn apply_damage(&mut self, target_i: usize, dmg: i32) -> Vec<ResolvedEffect> {
+        self.apply_damage_reaching(target_i, dmg, true)
+    }
+
+    /// `physical` decides whether the target's RANK protects it. A spell, a Focus or an
+    /// elemental breath reaches the back rank at full force; only a physical blow has to
+    /// cross the front line to land.
+    fn apply_damage_reaching(
+        &mut self,
+        target_i: usize,
+        dmg: i32,
+        physical: bool,
+    ) -> Vec<ResolvedEffect> {
         // AD-2 combos: the skill resolving right now may be cashing in a primer
         // another hero left on this target, and may leave one of its own.
         let (dmg, combo_hit) = self.resolve_combo(target_i, dmg);
@@ -3844,8 +3894,10 @@ impl Battle {
         } else {
             dmg
         };
-        // Back-row formation softens every incoming blow (before Barrier/HP).
-        let dmg = if self.fighters[target_i].back_row {
+        // Back-row formation softens an incoming PHYSICAL blow (before Barrier/HP).
+        // It used to soften everything, which made the back row a free 2x effective HP
+        // for the whole party — nothing reached past it and nothing was given up for it.
+        let dmg = if physical && self.fighters[target_i].back_row {
             (dmg as f64 * self.back_row_damage_mult).round() as i32
         } else {
             dmg
@@ -4459,6 +4511,12 @@ mod tests {
             speed,
         );
         f.faction = "beast".to_string();
+        // Every creature the world builds carries a typed basic attack
+        // (`creature_basic_attack_type`, which falls back to Pierce), and the type is what
+        // decides whether the back rank protects its target. An untyped test monster dealt
+        // `DamageType::None`, which reaches past the row — so the fixture disagreed with
+        // every creature in the game.
+        f.basic_attack_type = DamageType::Pierce;
         f
     }
 
@@ -4639,6 +4697,85 @@ mod tests {
         let back = first_hit(true);
         assert_eq!(front, 11, "front-row hero takes the full 11");
         assert_eq!(back, 6, "back-row hero takes half (round(5.5) = 6)");
+    }
+
+    /// Every class a player can field swings a REAL type. `DamageType::None` bypasses the
+    /// modifier map entirely — every resistance and immunity ignored — and now the row
+    /// trade too, so a class missing from `hero_attack_type` is a class quietly dealing
+    /// true damage. The Hunter, Smithwright and Keeper were all missing.
+    #[test]
+    fn no_fielded_class_swings_untyped() {
+        for key in meld_proto::skills::all_classes() {
+            assert_ne!(
+                hero_attack_type(&key),
+                DamageType::None,
+                "{key} has no basic attack type, so it deals TRUE damage"
+            );
+        }
+    }
+
+    /// The back rank stops a BLOW, not a spell. A creature whose basic attack is elemental
+    /// reaches the back row at full force — which is what stops the formation being a flat
+    /// 2x effective HP and makes a creature's damage type a reason to re-form.
+    #[test]
+    fn a_spell_reaches_the_back_row_at_full_force() {
+        let b = balance();
+        let first_hit = |ty: DamageType| -> i32 {
+            let mut hero = player("h", 1);
+            hero.back_row = true;
+            let mut m = monster("m", 1000, 200);
+            m.basic_attack_type = ty;
+            let mut battle =
+                Battle::new("b1".into(), EncounterClass::Standard, vec![hero], vec![m], &b, 7);
+            for _ in 0..200 {
+                battle.tick();
+                let hp = player_hp(&battle, "h");
+                if hp < 40 {
+                    return 40 - hp;
+                }
+            }
+            panic!("monster never landed a hit");
+        };
+        assert_eq!(first_hit(DamageType::Pierce), 6, "a physical blow is softened by the rank");
+        assert_eq!(first_hit(DamageType::Fire), 11, "fire was stopped by standing further back");
+    }
+
+    /// The other half of the trade: standing back halves your own PHYSICAL output, so the
+    /// whole party in the back rank is a real cost rather than free mitigation. A caster
+    /// gives up nothing, because its damage is not physical.
+    #[test]
+    fn the_back_row_gives_up_half_its_own_physical_damage() {
+        let b = balance();
+        let hit = |back: bool| -> i32 {
+            let mut hero = player("h", 200);
+            // A real class, so the hero swings a real (physical) weapon type — an empty
+            // `class_key` falls to `DamageType::None`, which no fielded hero ever has.
+            hero.class_key = "hunter".to_string();
+            hero.back_row = back;
+            let mut battle = Battle::new(
+                "b1".into(),
+                EncounterClass::Standard,
+                vec![hero],
+                vec![monster("m", 100000, 1)],
+                &b,
+                7,
+            );
+            tick_to_ready(&mut battle, "h");
+            let before = battle.fighters.iter().find(|f| f.combatant_id == "m").unwrap().hp;
+            battle
+                .submit("h", "a1".into(), BattleActionKind::Attack, Some(vec!["m".into()]), None, None)
+                .expect("attack rejected");
+            let after = battle.fighters.iter().find(|f| f.combatant_id == "m").unwrap().hp;
+            before - after
+        };
+        let front = hit(false);
+        let back = hit(true);
+        assert!(front > 0 && back > 0);
+        assert!(
+            back < front,
+            "a back-row hero swung for {back}, the same as the front row's {front} — the \
+             formation is free mitigation again"
+        );
     }
 
     /// A Psyker fighter: focus_max slots, given level, no innate attack use.

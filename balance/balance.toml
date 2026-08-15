@@ -153,6 +153,12 @@ defend_damage_reduction = 0.5    # content-defined; spike default
 # `back_row_target_weight` of the time (otherwise it redirects to the weakest
 # exposed front-row hero). Martial classes hold the front. [TUNABLE]
 back_row_damage_mult = 0.5
+# …and the other half of the trade: a hero in the back rank also deals this share of its
+# own PHYSICAL damage. Without it the back row was a free 2x effective HP for the whole
+# party — nothing reached past it and nothing was given up for it, so the optimal formation
+# was everyone standing back. A caster loses nothing here (its damage is not physical),
+# which is exactly why the back row is a caster's home and the front line is a martial's.
+back_row_attack_mult = 0.5
 back_row_target_weight = 0.5
 party_size_per_player = 4        # each player controls up to this many heroes (GDD: per-player party) [TUNABLE]
 skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]

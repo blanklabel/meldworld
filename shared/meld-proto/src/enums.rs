@@ -81,6 +81,17 @@ pub enum DamageType {
 }
 
 impl DamageType {
+    /// Whether this is a PHYSICAL type — a blow that has to reach across the rank.
+    ///
+    /// The front/back row trade is scoped to these: standing back halves what a physical
+    /// blow does to you and what your own physical blows do in return. Everything else —
+    /// a spell, a Focus, a creature's elemental breath — reaches the back rank at full
+    /// force and is unaffected by where its caster stands, which is what makes a caster's
+    /// natural home the back row and gives a martial class a real reason to hold the front.
+    pub fn is_physical(self) -> bool {
+        matches!(self, DamageType::Blunt | DamageType::Slash | DamageType::Pierce)
+    }
+
     /// Parse the UPPERCASE wire key ("FIRE") used in `damage_modifiers` maps.
     pub fn from_wire(key: &str) -> Option<DamageType> {
         Some(match key {
