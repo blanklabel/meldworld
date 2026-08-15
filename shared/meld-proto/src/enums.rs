@@ -330,3 +330,31 @@ mod tests {
         assert_eq!(crate::equipment::class_key(CharacterClass::Hunter), "hunter");
     }
 }
+
+/// How a creature picks who to hit (CR-9). One rule for every creature made every fight
+/// read the same: the pack always went for the lowest HP, so a party learned one lesson and
+/// it held from the hub to the deep. A profile is set per creature KIND, upgraded by
+/// encounter class (an Elite or a Gatekeeper is smarter than the trash around it), and
+/// rolled toward the smarter end as creature level climbs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetProfile {
+    /// Finish the wounded — the original behaviour, and still the most common.
+    Weakest,
+    /// No pattern at all. Unpredictable rather than stupid: you cannot plan around it.
+    Random,
+    /// Hunt the back rank on purpose. The counter to hiding your casters behind a wall.
+    Backline,
+    /// Go for the ROLE that makes the party work — the healer first, then the casters.
+    Role,
+    /// Converge: the whole pack shares one mark and commits to it, and says so out loud.
+    GangUp,
+}
+
+impl TargetProfile {
+    /// Whether this profile reads the party rather than the HP bars. Used to decide which
+    /// creatures are "smart" when the level roll upgrades them.
+    pub fn is_tactical(self) -> bool {
+        matches!(self, TargetProfile::Backline | TargetProfile::Role | TargetProfile::GangUp)
+    }
+}

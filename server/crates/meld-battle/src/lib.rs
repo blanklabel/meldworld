@@ -15,7 +15,7 @@ use meld_proto::abilities::{
 use meld_proto::common::Combatant as WireCombatant;
 use meld_proto::enums::{
     BattleActionKind, BattleOutcome, CombatantKind, DamageType, EffectKind, EncounterClass,
-    ModifierFlag, PackRole,
+    ModifierFlag, PackRole, TargetProfile,
 };
 use meld_proto::Id;
 
@@ -143,6 +143,9 @@ pub struct Fighter {
     /// The [`DamageType`] this fighter's basic attack carries. Creature kinds
     /// and hero classes each have a typed basic swing; defaults untyped.
     pub basic_attack_type: DamageType,
+    /// How this creature picks who to hit (CR-9). Set at assembly from the creature's
+    /// kind, its encounter class and its level; heroes keep the default and never use it.
+    pub target_profile: TargetProfile,
     /// Per-ability (pool index) tick at which it may be used again.
     ability_ready_at: HashMap<usize, u64>,
     /// An in-flight telegraphed ability: (pool index, executes_at tick). While
@@ -168,6 +171,23 @@ pub struct Fighter {
 }
 
 impl Fighter {
+    /// The name to SAY about this fighter. A hero carries its own on `statuses` as
+    /// `name:<name>` (heroes are named per account); anything else falls back to its class
+    /// or combatant id, so a shout is never blank.
+    pub fn display_name(&self) -> String {
+        self.statuses
+            .iter()
+            .find_map(|s| s.strip_prefix("name:"))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                if self.class_key.is_empty() {
+                    self.combatant_id.clone()
+                } else {
+                    self.class_key.clone()
+                }
+            })
+    }
+
     /// Build a fresh fighter (gauge 0, alive iff `hp > 0`). Stats are already
     /// world-scaled by the caller (no mid-fight rescale).
     #[allow(clippy::too_many_arguments)]
@@ -230,6 +250,7 @@ impl Fighter {
             boss_kind: String::new(),
             damage_modifiers: HashMap::new(),
             basic_attack_type: DamageType::None,
+            target_profile: TargetProfile::Weakest,
             ability_ready_at: HashMap::new(),
             channel: None,
             timed_statuses: Vec::new(),
@@ -540,6 +561,10 @@ pub struct Battle {
     defend_reduction: f64,
     back_row_damage_mult: f64,
     back_row_attack_mult: f64,
+    gang_switch_chance: f64,
+    /// The mark a ganging pack is converging on (CR-9). Shared across the whole side, so
+    /// "gang up" means the pack commits together rather than each creature deciding alone.
+    gang_target: Option<Id>,
     /// AD-2: how long a combo primer stays live on a target.
     combo_window_ticks: u64,
     pack_aura_atk_mult: f64,
@@ -822,6 +847,8 @@ impl Battle {
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
             back_row_attack_mult: balance.battle.back_row_attack_mult,
+            gang_switch_chance: balance.ai.gang_switch_chance,
+            gang_target: None,
             combo_window_ticks: balance.adventure.combo_window_ticks,
             pack_aura_atk_mult: balance.encounters.pack_aura_atk_mult,
             pack_guard_per_minion: balance.encounters.pack_guard_per_minion,
@@ -3377,8 +3404,6 @@ impl Battle {
     /// encounter has creatures fighting each other as well as the party. A
     /// `flees` creature bolts (leaves the battle) once its HP is low.
     fn resolve_monster_turn(&mut self, actor_i: usize) -> Option<Resolution> {
-        let actor_faction = self.fighters[actor_i].faction.clone();
-
         // Skittish creatures flee a losing battle instead of attacking.
         if self.fighters[actor_i].flees {
             let f = &self.fighters[actor_i];
@@ -3407,36 +3432,10 @@ impl Battle {
         // a player, or a rival-faction creature. Going for the lowest HP means a
         // wounded rival draws a creature away from the party, so a mixed-faction
         // encounter naturally has creatures turning on each other.
-        let actor_id = self.fighters[actor_i].combatant_id.clone();
-        let hostile: Vec<usize> = self
-            .fighters
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| {
-                f.alive
-                    && f.combatant_id != actor_id
-                    && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp)?;
-        // Back-row protection: if the weakest foe hides in the back row, the creature
-        // only commits to it `back_row_target_weight` of the time — otherwise the
-        // blow redirects to the weakest exposed front-row foe (if any). The RNG only
-        // advances in this back-row case, so front-row-only encounters stay identical.
-        let target_i = if self.fighters[weakest].back_row {
-            let front = hostile
-                .iter()
-                .copied()
-                .filter(|&i| !self.fighters[i].back_row)
-                .min_by_key(|&i| self.fighters[i].hp);
-            match front {
-                Some(f) if self.next_rand_unit() >= self.back_row_target_weight => f,
-                _ => weakest,
-            }
-        } else {
-            weakest
-        };
+        // CR-9: who this creature goes for is its own profile's business, and a ganging
+        // pack says out loud when it picks or moves its mark.
+        let (target, shout) = self.choose_target(actor_i);
+        let target_i = target?;
         let atk = self.fighters[actor_i].atk;
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
@@ -3449,7 +3448,11 @@ impl Battle {
             }
         };
         self.reset_gauge(actor_i);
-        Some(Resolution { callout_text: None,
+        Some(Resolution {
+            // A pack converging on your healer with no explanation reads as the game
+            // cheating, so the mark is shouted on the turn it is set or moved — the same
+            // bubble a telegraphed ability uses.
+            callout_text: shout,
             action_id: None,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Attack,
@@ -3704,7 +3707,17 @@ impl Battle {
 
     /// The weakest living hostile, honouring back-row protection — the same
     /// heuristic (and RNG discipline) as the basic monster attack.
-    fn pick_weakest_hostile(&mut self, actor_i: usize) -> Option<usize> {
+    /// Who `actor_i` attacks, honouring its [`TargetProfile`] (CR-9).
+    ///
+    /// This is the ONE place a creature picks a target. It used to be two near-identical
+    /// copies — one inline in `resolve_monster_turn`, one here for abilities — which meant
+    /// a creature could hunt the back rank with its basic attack and go for the weakest
+    /// with its ability.
+    ///
+    /// Returns the chosen index and, when a gang-up mark is newly set or moved, the line to
+    /// shout about it: a pack converging on your healer with no explanation reads as the
+    /// game cheating.
+    fn choose_target(&mut self, actor_i: usize) -> (Option<usize>, Option<String>) {
         let actor_faction = self.fighters[actor_i].faction.clone();
         let actor_id = self.fighters[actor_i].combatant_id.clone();
         let hostile: Vec<usize> = self
@@ -3718,20 +3731,98 @@ impl Battle {
             })
             .map(|(i, _)| i)
             .collect();
-        let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp)?;
-        if self.fighters[weakest].back_row {
-            let front = hostile
-                .iter()
-                .copied()
-                .filter(|&i| !self.fighters[i].back_row)
-                .min_by_key(|&i| self.fighters[i].hp);
-            match front {
-                Some(f) if self.next_rand_unit() >= self.back_row_target_weight => Some(f),
-                _ => Some(weakest),
-            }
-        } else {
-            Some(weakest)
+        if hostile.is_empty() {
+            return (None, None);
         }
+        match self.fighters[actor_i].target_profile {
+            TargetProfile::Weakest => (Some(self.weakest_with_cover(&hostile)), None),
+            // No pattern: unpredictable rather than stupid. Still respects the rank, so a
+            // front line is worth holding even against a mindless thing.
+            TargetProfile::Random => {
+                let pick = (self.next_rand_unit() * hostile.len() as f64) as usize;
+                (Some(hostile[pick.min(hostile.len() - 1)]), None)
+            }
+            // Hunts the back rank ON PURPOSE — the counter to hiding every caster behind a
+            // wall. Falls back to the weakest when there is no back rank to hunt.
+            TargetProfile::Backline => {
+                let back = hostile
+                    .iter()
+                    .copied()
+                    .filter(|&i| self.fighters[i].back_row)
+                    .min_by_key(|&i| self.fighters[i].hp);
+                (Some(back.unwrap_or_else(|| self.weakest_with_cover(&hostile))), None)
+            }
+            TargetProfile::Role => (Some(self.by_role(&hostile)), None),
+            TargetProfile::GangUp => {
+                let live = self
+                    .gang_target
+                    .as_ref()
+                    .and_then(|id| self.idx(id))
+                    .filter(|&i| self.fighters[i].alive && hostile.contains(&i));
+                // Re-pick when the mark is gone, or occasionally on purpose so a pack can
+                // switch to a better target mid-fight instead of committing until it dies.
+                let switch = live.is_none() || self.next_rand_unit() < self.gang_switch_chance;
+                if !switch {
+                    return (live, None);
+                }
+                let pick = self.by_role(&hostile);
+                let moved = live != Some(pick);
+                self.gang_target = Some(self.fighters[pick].combatant_id.clone());
+                let shout = moved.then(|| {
+                    let who = self.fighters[pick].display_name();
+                    if live.is_some() {
+                        format!("The pack turns on {who}!")
+                    } else {
+                        format!("The pack marks {who}!")
+                    }
+                });
+                (Some(pick), shout)
+            }
+        }
+    }
+
+    /// The weakest hostile, with the back rank's cover applied — the original rule.
+    fn weakest_with_cover(&mut self, hostile: &[usize]) -> usize {
+        let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp).expect("non-empty");
+        if !self.fighters[weakest].back_row {
+            return weakest;
+        }
+        let front = hostile
+            .iter()
+            .copied()
+            .filter(|&i| !self.fighters[i].back_row)
+            .min_by_key(|&i| self.fighters[i].hp);
+        match front {
+            Some(f) if self.next_rand_unit() >= self.back_row_target_weight => f,
+            _ => weakest,
+        }
+    }
+
+    /// The hostile whose ROLE matters most: the healer that undoes your work, then the
+    /// casters that control the fight, then whoever is closest to falling. This is what
+    /// makes a smart creature frightening — it is not doing more damage, it is spending it
+    /// where the party can least afford it.
+    fn by_role(&mut self, hostile: &[usize]) -> usize {
+        let rank = |k: &str| match k {
+            "resonant" | "keeper" => 0,
+            "psyker" => 1,
+            "smithwright" | "explorer" => 2,
+            _ => 3,
+        };
+        *hostile
+            .iter()
+            .min_by_key(|&&i| {
+                let f = &self.fighters[i];
+                (rank(&f.class_key), f.hp)
+            })
+            .expect("non-empty")
+    }
+
+    /// A creature's single-enemy ABILITY aims the same way its basic attack does — one
+    /// creature, one idea about who matters. These were two separate rules, so an ambusher
+    /// hunted the back rank with its claws and the weakest hero with its breath.
+    fn pick_weakest_hostile(&mut self, actor_i: usize) -> Option<usize> {
+        self.choose_target(actor_i).0
     }
 
     /// `stats[scaling_base] × coefficient`, rounded — the spec's base formula.
@@ -4712,6 +4803,91 @@ mod tests {
                 "{key} has no basic attack type, so it deals TRUE damage"
             );
         }
+    }
+
+    /// CR-9: a creature fights to its own profile, and the profiles are actually
+    /// different from each other. One rule for every creature made every fight read the
+    /// same — the pack always went for the lowest HP, hub to deep.
+    #[test]
+    fn a_creature_hits_who_its_profile_says() {
+        let b = balance();
+        // A wounded tank up front, a healthy healer in the back. Every profile has a
+        // different opinion about which one matters.
+        let build = |profile: TargetProfile| {
+            let mut tank = player("tank", 1);
+            tank.class_key = "phoenix_guard".into();
+            tank.hp = 5;
+            let mut healer = player("healer", 1);
+            healer.class_key = "resonant".into();
+            healer.back_row = true;
+            let mut m = monster("m", 1000, 200);
+            m.target_profile = profile;
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![tank, healer],
+                vec![m],
+                &b,
+                7,
+            )
+        };
+        let struck = |profile: TargetProfile| -> String {
+            let mut battle = build(profile);
+            for _ in 0..400 {
+                battle.tick();
+                for f in &battle.fighters {
+                    if f.kind == CombatantKind::Player && f.hp < f.max_hp.min(if f.combatant_id == "tank" { 5 } else { f.max_hp }) {
+                        return f.combatant_id.clone();
+                    }
+                }
+            }
+            panic!("nobody was hit");
+        };
+        // Weakest finishes the wounded tank; Backline and Role both go past it for the
+        // healer standing behind — for different reasons, which is the point.
+        assert_eq!(struck(TargetProfile::Weakest), "tank", "Weakest ignored the wounded hero");
+        assert_eq!(struck(TargetProfile::Backline), "healer", "Backline did not hunt the rank");
+        assert_eq!(struck(TargetProfile::Role), "healer", "Role did not go for the healer");
+    }
+
+    /// A pack converging on your healer with no explanation reads as the game cheating, so
+    /// the mark is SHOUTED when it is set — and the pack shares one mark rather than each
+    /// creature deciding alone.
+    #[test]
+    fn a_ganging_pack_announces_its_mark_and_shares_it() {
+        let b = balance();
+        let mut healer = player("healer", 1);
+        healer.class_key = "resonant".into();
+        let mut tank = player("tank", 1);
+        tank.class_key = "phoenix_guard".into();
+        let mut a = monster("m1", 1000, 200);
+        a.target_profile = TargetProfile::GangUp;
+        let mut c = monster("m2", 1000, 200);
+        c.target_profile = TargetProfile::GangUp;
+        let mut battle =
+            Battle::new("b".into(), EncounterClass::Standard, vec![healer, tank], vec![a, c], &b, 7);
+
+        let mut shouts = Vec::new();
+        for _ in 0..200 {
+            for ev in battle.tick() {
+                if let Event::Resolved(r) = ev {
+                    if let Some(t) = r.callout_text.clone() {
+                        shouts.push(t);
+                    }
+                }
+            }
+            if !shouts.is_empty() {
+                break;
+            }
+        }
+        assert!(!shouts.is_empty(), "the pack marked someone in silence");
+        assert!(
+            shouts[0].contains("marks") || shouts[0].contains("turns on"),
+            "the shout does not say what happened: {:?}",
+            shouts[0]
+        );
+        // Both creatures converge on the same mark — that is what "gang up" means.
+        assert!(battle.gang_target.is_some(), "no shared mark was set");
     }
 
     /// The back rank stops a BLOW, not a spell. A creature whose basic attack is elemental

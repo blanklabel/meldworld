@@ -174,6 +174,27 @@ from a slow one. The **fighter itself** wears the colour too, as a rim around it
 (`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
 in a fight the eye is on the arena.
 
+**The back row is a TRADE.** Standing in the back rank halves the **physical** damage you
+take and halves the **physical** damage you deal (`back_row_damage_mult` /
+`back_row_attack_mult`). It used to only do the first, so the optimal formation was the
+whole party standing back for a flat 2x effective HP — nothing reached past the row and
+nothing was given up for it. A spell, a Focus or an elemental breath reaches the back rank
+at **full force** (`DamageType::is_physical`), so a caster gives up nothing there — which
+is why the back row is a caster's home and the front line is a martial's — and a weapon
+carrying an elemental `brand` keeps full damage from the back. Every physical swing reads
+its power through `phys_atk`; a call site that touches `.atk` directly is a swing nobody
+charged for. **A class missing from `hero_attack_type` deals TRUE damage** (`None` bypasses
+the modifier map entirely) — the Hunter, Smithwright and Keeper all were, for a long time.
+
+**A creature fights to a PROFILE** (`meld_proto::TargetProfile`, CR-9): Weakest, Random,
+Backline, Role, GangUp. Set from the kind's own nature, then the encounter class (a
+champion is smarter than its escort), then a level roll — deeper creatures are smarter on
+average — seeded off the creature's own id so it never flickers and never perturbs another
+roll. `choose_target` is the ONE place a creature picks; it was two near-identical copies,
+so an ambusher hunted the back rank with its claws and the weakest hero with its breath. A
+**gang-up mark is shouted** when set or moved, because a pack converging on your healer
+with no explanation reads as the game cheating.
+
 **A number belongs to the combatant it landed on — anchor to the ACTOR, never to a role.**
 `render_hit_fx` used to place a floating number by identity: `monster_combatant` (which is
 only ever `enemies.first()`) drew top-centre and everything else fell through a
