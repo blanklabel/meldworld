@@ -704,12 +704,23 @@ burns on death/leave; some is single-use. See
     in it — a field is a PLACE you choose to stand, not something you get for bringing
     someone — so the two sources bank their sub-1 remainders separately, or the field's
     overflow would heal straight through the Resonant-only rule.
-  - **Open: the Psyker now has NO overworld perk at all**, and that is asserted by name
-    (`the_psyker_is_the_one_class_still_owed_an_overworld_perk`) rather than left to be
-    noticed — the Smithwright and the Keeper walked around with nothing for a whole
-    release because no test ever said so. Whatever it gets should be something it
-    *does* (manifestations reaching outside the fight), not another way to see, since
-    seeing is now the Hunter's and mapping is the Explorer's.
+  - 🟡 *The Psyker reaches out and holds things.* Seeing went to the Hunter and the map
+    is the Explorer's, so what is left for the order of manifestations is a **verb**:
+    tapping a creature **pins** it where it stands (`run.psyker_hold`). It stops moving,
+    chasing and skirmishing — but it is still touchable and still fights, because a pin
+    is an opening the party chooses to take rather than a way to delete an encounter.
+    Engaging a pinned creature opens the fight with **every hero's gauge full**, which is
+    the whole reason to spend one. On a **cooldown**, not a cost, and the numbers answer
+    one question: *can a Psyker keep everything it can reach pinned forever?* To sustain
+    N pins you must lay one every `seconds / N`, so the cooldown stays above that line —
+    held by a test that walks **every level 1..=255**, because the first tuning of these
+    numbers passed at level 1 and failed at 255. **Mind Link** (a later rung)
+    force-includes co-op teammates in the snapshot at any distance, positions only. The
+    pin is announced in the world as a `HELD` plate: an affordance you cannot read is one
+    you will not use, and the opening expires.
+  - *Design note for whatever comes next:* every class now earns something on the
+    overworld, so `no_class_walks_the_overworld_with_nothing` is back to covering the
+    whole roster with no carve-out.
 
 ---
 

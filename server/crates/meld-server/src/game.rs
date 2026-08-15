@@ -957,6 +957,8 @@ struct WorldActor {
     /// "Overworld Regen" perk (regen is HP/sec but `hero_hp` is integer, so we
     /// bank the sub-1 remainder here and apply whole HP as it accrues).
     regen_accum: HashMap<String, RegenAccum>,
+    /// When each player's Psyker last pinned a creature (ms), for the cooldown.
+    hold_last_ms: HashMap<String, u64>,
     /// DG-3: hand-designed dungeon entrances placed as the world streams (a chanced
     /// per-section draw from the biome's authored pool). Rendered in the overworld
     /// snapshot as `entrance:<dungeon>`; touch one to descend (`enter_dungeon`).
@@ -1254,6 +1256,27 @@ pub(crate) fn compute_perks(
                     + p.shifter_trap_radius_per_level * above(p.shifter_trap_sense_at);
             }
         }
+        // Psyker — telekinesis. Seeing went to the Hunter and the map is the Explorer's,
+        // so what is left for the order of manifestations is a VERB: it reaches out and
+        // pins a creature where it stands. Duration and count grow; the cooldown shortens
+        // to a floor, because a pin with no gap between uses walks past all content.
+        if has(CharacterClass::Psyker) && lvl >= p.psyker_hold_at {
+            let over = above(p.psyker_hold_at);
+            out.psyker_hold_seconds = (p.psyker_hold_seconds_base
+                + p.psyker_hold_seconds_per_level * over)
+                .min(p.psyker_hold_seconds_cap);
+            out.psyker_hold_cooldown = (p.psyker_hold_cooldown_base
+                - p.psyker_hold_cooldown_per_level * over)
+                .max(p.psyker_hold_cooldown_floor);
+            out.psyker_hold_radius = p.psyker_hold_radius;
+            out.psyker_hold_targets = if lvl >= p.psyker_hold_targets_at {
+                let step = p.psyker_hold_targets_per_level.max(1);
+                (2 + (lvl - p.psyker_hold_targets_at) / step).min(p.psyker_hold_targets_cap) as u8
+            } else {
+                1
+            };
+            out.psyker_mind_link = lvl >= p.psyker_mind_link_at;
+        }
         // Resonant — overworld regen (HP/sec).
         if has(CharacterClass::Resonant) {
             out.resonant_regen = p.resonant_regen_per_level * lvl as f32;
@@ -1344,7 +1367,13 @@ impl WorldActor {
                 entity_id: m.entity_id.clone(),
                 position: m.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("mob:{}:{}", m.monster_kind, m.faction)),
+                // A pinned creature says so, so the party can SEE the opening it paid a
+                // cooldown for — an affordance you cannot read is one you will not use.
+                avatar_state: Some(if m.held_for > 0.0 {
+                    format!("mob:{}:{}:held", m.monster_kind, m.faction)
+                } else {
+                    format!("mob:{}:{}", m.monster_kind, m.faction)
+                }),
                 level: Some(m.elevation),
                 // Overworld mob intel (client shows each field only when the
                 // viewer's Explorer/Psyker perk unlocks it — see `run.perks`).
@@ -1606,6 +1635,14 @@ impl WorldActor {
                     );
                     idxs.extend(sensed);
                     idxs.extend(marked.iter().copied());
+                    // Mind Link (CL-2): a Psyker deep enough keeps its co-op teammates in
+                    // the snapshot however far off they are. POSITIONS only — the map is
+                    // the Explorer's, so this answers "where are they", never "what do
+                    // they see". Force-included like the portal rather than by widening
+                    // the shared cull, which would show everyone everybody.
+                    if perks.psyker_mind_link {
+                        idxs.extend(0..self.arena.avatars.len());
+                    }
                     idxs.retain(|i| !hidden.contains(i));
                     idxs.sort_unstable();
                     idxs.dedup();
@@ -2488,6 +2525,10 @@ impl WorldActor {
             .iter()
             .map(|(m, cid)| (m, cid.clone()))
             .collect();
+        // A pinned creature is the whole point of the pin: the party chose the moment, so
+        // it opens with every gauge full. Read off the creature that was actually TOUCHED,
+        // not the group — pinning one of a pack does not surprise the pack.
+        let surprise = inst.arena.monsters[monster_idx].held_for > 0.0;
         let battle = build_battle(
             battle_id.clone(),
             &party,
@@ -2497,6 +2538,7 @@ impl WorldActor {
             seed,
             &hp_overrides,
             &row_overrides,
+            surprise,
         );
         // Store the group's stable ids (indices are only valid until the next prune).
         let monster_ids: Vec<String> = group_idxs
@@ -2676,6 +2718,9 @@ impl WorldActor {
             seed,
             &hp_overrides,
             &row_overrides,
+            // Joining a fight already in progress is not a surprise: the moment was
+            // chosen by whoever started it.
+            false,
         );
         let slot = BattleSlot {
             battle,
@@ -3292,6 +3337,15 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wr::PsykerHold::TYPE => {
+                let out = match self.world.as_mut() {
+                    Some(w) => w.handle_psyker_hold(player_id, raw),
+                    None => {
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))]
+                    }
+                };
+                out
+            }
             wr::UseItem::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_use_item(player_id, raw),
@@ -3644,6 +3698,7 @@ impl GameState {
                 harvest: HashMap::new(),
                 building: HashMap::new(),
                 regen_accum: HashMap::new(),
+                hold_last_ms: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
                 location: HashMap::new(),
@@ -6186,6 +6241,56 @@ impl WorldActor {
                 quality: 0.0,
             }))],
         )
+    }
+
+    /// CL-2 — a Psyker pins a creature where it stands. Every gate is server-side: the
+    /// party must field a Psyker deep enough, the cooldown must have run out, the creature
+    /// must be in reach and on the same terrace, and the party must not already be holding
+    /// its limit. A refusal is silent (an empty reply): the client greys the affordance
+    /// out from the same `run.perks` numbers, so a refusal here means a stale client
+    /// rather than something a player needs told.
+    fn handle_psyker_hold(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wr::PsykerHold = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(player_id, ErrorCode::ValidationError, "bad hold", Some(raw.seq))]
+            }
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return Vec::new();
+        }
+        let perks = self.perks_for(player_id);
+        if perks.psyker_hold_targets == 0 || perks.psyker_hold_seconds <= 0.0 {
+            return Vec::new();
+        }
+        let now = now_ms();
+        let cooldown_ms = (perks.psyker_hold_cooldown * 1000.0) as u64;
+        if let Some(last) = self.hold_last_ms.get(player_id) {
+            if now.saturating_sub(*last) < cooldown_ms {
+                return Vec::new();
+            }
+        }
+        // Already at the limit? Count what this player is still holding.
+        let live = self.arena.monsters.iter().filter(|m| m.held_for > 0.0).count();
+        if live >= perks.psyker_hold_targets as usize {
+            return Vec::new();
+        }
+        let Some(a) = self.arena.avatar(player_id) else { return Vec::new() };
+        let (apos, alevel) = (a.position, a.elevation);
+        let reach = perks.psyker_hold_radius as f64;
+        let seconds = perks.psyker_hold_seconds as f64;
+        let Some(m) = self.arena.monsters.iter_mut().find(|m| {
+            m.entity_id == req.entity_id
+                && !m.defeated
+                && !m.in_battle
+                && m.elevation == alevel
+                && apos.distance_to(&m.position) <= reach
+        }) else {
+            return Vec::new();
+        };
+        m.held_for = seconds;
+        self.hold_last_ms.insert(player_id.to_string(), now);
+        Vec::new()
     }
 
     fn handle_harvest(
@@ -8883,27 +8988,61 @@ mod crafter_perk_tests {
         let neutral = format!("{:?}", compute_perks(&b.perks, &[], 50));
         for key in meld_proto::skills::all_classes() {
             let Some(class) = meld_proto::equipment::class_from_key(&key) else { continue };
-            // The Psyker is the one KNOWN gap, asserted below so it stays loud. Its
-            // threat sense went to the Hunter, where it belonged; what replaces it is
-            // open work under `CL-2`.
-            if class == CharacterClass::Psyker {
-                continue;
-            }
             let p = format!("{:?}", compute_perks(&b.perks, &[class], 50));
             assert!(p != neutral, "{key} earns no overworld perk at all");
         }
     }
 
-    /// The exception above, pinned. When the Psyker earns its own overworld perk this
-    /// fails — which is the reminder to delete the carve-out rather than leave a class
-    /// silently exempt from the rule. The Smithwright and the Keeper walked around with
-    /// nothing for a whole release because no test ever said so.
+    /// The Psyker's overworld perk is a VERB, which is what was left once seeing went to
+    /// the Hunter and the map stayed the Explorer's. The pin grows in both directions a
+    /// player can feel — longer, and eventually more than one — while the cooldown
+    /// shortens to a floor rather than to nothing, because a pin with no gap between uses
+    /// walks past every encounter in the game.
     #[test]
-    fn the_psyker_is_the_one_class_still_owed_an_overworld_perk() {
+    fn the_psyker_reaches_out_and_holds_things() {
         let b = meld_balance::Balance::load_default().unwrap();
-        let neutral = format!("{:?}", compute_perks(&b.perks, &[], 50));
-        let psyker = format!("{:?}", compute_perks(&b.perks, &[CharacterClass::Psyker], 50));
-        assert_eq!(psyker, neutral, "the Psyker has a perk now — drop the carve-out");
+        let at = |lv| compute_perks(&b.perks, &[CharacterClass::Psyker], lv);
+
+        let early = at(b.perks.psyker_hold_at);
+        assert_eq!(early.psyker_hold_targets, 1, "the pin starts on one creature");
+        assert!(early.psyker_hold_seconds > 0.0 && early.psyker_hold_radius > 0.0);
+        assert!(!early.psyker_mind_link, "Mind Link is earned later than the pin");
+
+        let deep = at(255);
+        assert!(deep.psyker_hold_seconds > early.psyker_hold_seconds, "the pin never lengthens");
+        assert!(deep.psyker_hold_targets > early.psyker_hold_targets, "it never widens");
+        assert!(deep.psyker_hold_cooldown < early.psyker_hold_cooldown, "it never quickens");
+        assert!(deep.psyker_mind_link, "Mind Link never arrives");
+
+        // The floor and the caps hold — otherwise the deep game is a Psyker pinning the
+        // whole world permanently.
+        assert!(deep.psyker_hold_cooldown >= b.perks.psyker_hold_cooldown_floor);
+        assert!(deep.psyker_hold_seconds <= b.perks.psyker_hold_seconds_cap);
+        assert!(deep.psyker_hold_targets as i32 <= b.perks.psyker_hold_targets_cap);
+        // The load-bearing one, at EVERY level rather than only at the caps: to sustain N
+        // pins you must lay one every `seconds / N`, so the cooldown has to stay above
+        // that line or a Psyker walks through content with the world held still. The
+        // first tuning of these numbers passed at level 1 and failed at 255.
+        for lv in 1..=255 {
+            let p = at(lv);
+            if p.psyker_hold_targets == 0 {
+                continue;
+            }
+            let needed = p.psyker_hold_seconds / p.psyker_hold_targets as f32;
+            assert!(
+                p.psyker_hold_cooldown > needed,
+                "level {lv}: a pin every {needed}s sustains all {} targets on a {}s cooldown",
+                p.psyker_hold_targets,
+                p.psyker_hold_cooldown
+            );
+        }
+
+        // And nobody else reaches out at all.
+        for other in [CharacterClass::Hunter, CharacterClass::Explorer, CharacterClass::Resonant] {
+            let p = compute_perks(&b.perks, &[other], 255);
+            assert_eq!(p.psyker_hold_targets, 0, "{other:?} can pin creatures");
+            assert!(!p.psyker_mind_link, "{other:?} has Mind Link");
+        }
     }
 
     /// Threat sense is the Hunter's: the long-range half of the same eye that reads a

@@ -177,8 +177,16 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         )),
         "phase_shift" => focus(format!("+{} dodge", pct(b.psyker_phase_evasion))),
 
-        "event_horizon" => focus(join(&[
-            format!("{} to EVERY enemy, ignoring armour", dmg(b.psyker_horizon_tick_mult)),
+        "gravity" => focus(format!(
+            "the crushed target's gauge fills at {} speed while both are held",
+            pct(b.status_slow_mult)
+        )),
+        "anchor" => focus(format!(
+            "the slowed target is pinned: its gauge fills at {} speed while all three are held",
+            pct(b.psyker_anchor_slow_mult)
+        )),
+        "gravity_vortex" => focus(join(&[
+            format!("{} to EVERY enemy, ignoring armour", dmg(b.psyker_vortex_tick_mult)),
             format!("every enemy's gauge fills at {} speed while held", pct(b.status_slow_mult)),
         ])),
 

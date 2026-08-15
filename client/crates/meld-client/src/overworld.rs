@@ -938,6 +938,88 @@ pub(crate) fn overworld_click_menu(
     }
 }
 
+/// CL-2 — tap a creature to have the party's Psyker PIN it where it stands. The reach,
+/// the cooldown and how many can be held at once are all the server's (`run.perks`); this
+/// only decides *which* creature was pointed at and asks. A refusal is a no-op there, so
+/// the affordance is gated here too — a button that does nothing teaches nothing.
+///
+/// Deliberately separate from [`overworld_click_menu`], which hit-tests the player's OWN
+/// avatar to open the menu: the two never want the same sprite, and folding a second
+/// target set into that system would make one click mean two things.
+pub(crate) fn psyker_hold_click(
+    mouse: Res<ButtonInput<MouseButton>>,
+    touches: Res<Touches>,
+    windows: Query<&Window>,
+    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    perks: Res<PerksRes>,
+    look: Res<hd2d::Look>,
+    net: NonSend<NetRes>,
+    overlay: Res<Overlay>,
+    ui_hit: Query<&Interaction, With<Button>>,
+    mut press: Local<Option<Vec2>>,
+) {
+    if overlay.kind.is_some() || session.channeling || perks.0.psyker_hold_targets == 0 {
+        return;
+    }
+    let win = windows.iter().next();
+    let mut point = None;
+    if let Some(w) = win {
+        if mouse.just_pressed(MouseButton::Left) {
+            *press = w.cursor_position();
+        }
+        if mouse.just_released(MouseButton::Left) {
+            if let (Some(p0), Some(p1)) = (*press, w.cursor_position()) {
+                if p0.distance(p1) < 6.0 {
+                    point = Some(p1);
+                }
+            }
+            *press = None;
+        }
+    }
+    for t in touches.iter_just_pressed() {
+        point = Some(t.position());
+    }
+    let Some(p) = point else { return };
+    if ui_hit.iter().any(|i| *i != Interaction::None) {
+        return;
+    }
+    let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
+    let Some(me) = world.entities.get(&session.player_id) else { return };
+
+    // Nearest creature whose sprite the tap landed on, and which is actually in reach —
+    // the server checks reach too, but asking for something it will refuse just spends
+    // the press.
+    let reach = perks.0.psyker_hold_radius;
+    let mut best: Option<(f32, String)> = None;
+    for (id, e) in world.entities.iter() {
+        if !matches!(e.kind, EntityKind::Monster) || e.held {
+            continue;
+        }
+        if Vec2::new(e.x - me.x, e.y - me.y).length() > reach {
+            continue;
+        }
+        let base_y = e.level as f32 * STEP_HEIGHT + crate::world_render::terrain_height(e.x, e.y);
+        let feet_w = Vec3::new(e.x, base_y, e.y);
+        let head_w = feet_w + Vec3::Y * (look.sprite_y * 2.0);
+        let (Ok(feet_s), Ok(head_s)) = (
+            cam.world_to_viewport(cam_tf, feet_w),
+            cam.world_to_viewport(cam_tf, head_w),
+        ) else {
+            continue;
+        };
+        let radius = ((head_s - feet_s).length() * 0.6).max(30.0);
+        let d = seg_point_dist(p, feet_s, head_s);
+        if d < radius && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, id.clone()));
+        }
+    }
+    if let Some((_, entity_id)) = best {
+        net.0.send(ClientCmd::PsykerHold { entity_id });
+    }
+}
+
 /// Server-frame (x = east, y = south) steering vector for this frame, filled by
 /// keyboard, the virtual joystick, or tap-to-move — whichever is active. Consumed
 /// by [`emit_move`]. Unifying here is what makes keyboard + touch interchangeable.
@@ -2034,7 +2116,11 @@ pub(crate) fn update_mob_nameplates(
     // A QUARRY plate is not a perk — it is the hunt you are holding — so the intel/threat
     // early-out must not swallow it.
     let any_quarry = world.entities.values().any(|e| e.quarry);
-    if intel == 0 && threat == 0 && !any_quarry {
+    // Neither a QUARRY nor a HELD plate is a perk readout — they are the hunt you are
+    // holding and the pin you just spent — so the intel/threat early-out must not
+    // swallow either.
+    let any_held = world.entities.values().any(|e| e.held);
+    if intel == 0 && threat == 0 && !any_quarry && !any_held {
         return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else {
@@ -2088,6 +2174,15 @@ pub(crate) fn update_mob_nameplates(
                         Text::new("QUARRY"),
                         TextFont { font_size: 11.0, ..default() },
                         TextColor(Color::srgb(1.0, 0.85, 0.35)),
+                    ));
+                }
+                // A pinned creature has to READ as pinned, or the cooldown was spent on
+                // something invisible — and the opening it buys expires.
+                if ent.held {
+                    c.spawn((
+                        Text::new("HELD"),
+                        TextFont { font_size: 11.0, ..default() },
+                        TextColor(Color::srgb(0.62, 0.72, 1.0)),
                     ));
                 }
                 if !marker.is_empty() {
@@ -3057,6 +3152,7 @@ mod tests {
             encounter_class: None,
             aggression: None,
             quarry: false,
+            held: false,
             bodies_required: 1,
         }
     }
@@ -3352,6 +3448,7 @@ mod explored_map_tests {
             encounter_class: None,
             aggression: None,
             quarry: false,
+            held: false,
             bodies_required: 1,
         }
     }
@@ -3754,6 +3851,7 @@ mod station_tests {
             encounter_class: None,
             aggression: None,
             quarry: false,
+            held: false,
             bodies_required: 1,
         };
         world.entities.insert("me".into(), me.clone());

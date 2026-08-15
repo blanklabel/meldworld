@@ -55,6 +55,7 @@ pub enum ClientCmd {
     /// Begin working a resource node the avatar is standing next to — a channel that
     /// drips one unit per tick until stopped (MS-2).
     Harvest { entity_id: String },
+    PsykerHold { entity_id: String },
     /// Put the tool down on purpose, keeping every unit already banked.
     CancelHarvest,
     /// Open a treasure chest the avatar is standing next to.
@@ -200,6 +201,9 @@ pub struct EntityView {
     /// This creature is the quarry of a hunt the viewer is working (AD-4). Server-decided
     /// and per-viewer: the same creature is not a quarry to the teammate beside them.
     pub quarry: bool,
+    /// This creature is PINNED by a Psyker right now (CL-2): it cannot move, and a fight
+    /// begun against it opens with the whole party's gauges full.
+    pub held: bool,
     /// For dungeon entrances: how many heroes the doors inside want standing on
     /// plates at once. 1 for anything a lone player can finish.
     pub bodies_required: u8,
@@ -481,6 +485,11 @@ pub struct PerksLine {
     pub smithwright_ore_radius: f32,
     pub keeper_reagent_radius: f32,
     pub resonant_regen: f32,
+    pub psyker_hold_targets: u8,
+    pub psyker_hold_seconds: f32,
+    pub psyker_hold_cooldown: f32,
+    pub psyker_hold_radius: f32,
+    pub psyker_mind_link: bool,
     pub phoenix_guard_aggro_mult: f32,
 }
 
@@ -499,6 +508,11 @@ impl Default for PerksLine {
             smithwright_ore_radius: 0.0,
             keeper_reagent_radius: 0.0,
             resonant_regen: 0.0,
+            psyker_hold_targets: 0,
+            psyker_hold_seconds: 0.0,
+            psyker_hold_cooldown: 0.0,
+            psyker_hold_radius: 0.0,
+            psyker_mind_link: false,
             phoenix_guard_aggro_mult: 1.0,
         }
     }
@@ -1936,6 +1950,9 @@ impl Inner {
                 wr::BeginExtraction::TYPE,
                 json!({ "method": "town_portal", "portal_entity_id": null, "item_id": null }),
             ),
+            ClientCmd::PsykerHold { entity_id } => {
+                self.send_env(wr::PsykerHold::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::Harvest { entity_id } => {
                 self.send_env(wr::Harvest::TYPE, json!({ "entity_id": entity_id }))
             }
@@ -2311,6 +2328,14 @@ impl Inner {
                     smithwright_ore_radius: f("smithwright_ore_radius"),
                     keeper_reagent_radius: f("keeper_reagent_radius"),
                     resonant_regen: f("resonant_regen"),
+                    psyker_hold_targets: u("psyker_hold_targets"),
+                    psyker_hold_seconds: f("psyker_hold_seconds"),
+                    psyker_hold_cooldown: f("psyker_hold_cooldown"),
+                    psyker_hold_radius: f("psyker_hold_radius"),
+                    psyker_mind_link: p
+                        .get("psyker_mind_link")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     // Neutral default is 1.0 (no Phoenix Guard), not 0.0.
                     phoenix_guard_aggro_mult: p["phoenix_guard_aggro_mult"].as_f64().unwrap_or(1.0) as f32,
                 };
@@ -2418,6 +2443,7 @@ impl Inner {
                             let mut bodies_required: u8 = 1;
                             let mut opened = false;
                             let mut quarry = false;
+                            let mut held = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
                                 Some("stair") => (EntityKind::Stair, None, None),
@@ -2432,8 +2458,9 @@ impl Inner {
                                     (EntityKind::Chest, None, None)
                                 }
                                 Some(s) if s.starts_with("mob:") => {
-                                    let (k, f, q) = parse_mob_state(s);
+                                    let (k, f, q, h) = parse_mob_state(s);
                                     quarry = q;
+                                    held = h;
                                     (
                                         EntityKind::Monster,
                                         Some(k.to_string()),
@@ -2492,6 +2519,7 @@ impl Inner {
                                 encounter_class: if is_mob { e.encounter_class } else { None },
                                 aggression: if is_mob { e.aggression } else { None },
                                 quarry,
+                                held,
                                 bodies_required,
                             }
                         })
@@ -2722,15 +2750,17 @@ impl Inner {
 /// Turn a craft reply into one line for the panel. A refusal is reported as loudly as
 /// a success: the server's own message ("Insufficient materials (need 2 heartoak_bark)",
 /// "alchemy level 1 is below the required level 9") is already the right sentence.
-/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:quarry]` — into its parts.
+/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:quarry|:held]` — into its
+/// parts.
 ///
 /// The trailing marker is optional and per-viewer (AD-4), which is exactly why this is one
 /// function: reading the faction with a `split_once` swallowed `hostile:quarry` whole.
-fn parse_mob_state(state: &str) -> (&str, &str, bool) {
+fn parse_mob_state(state: &str) -> (&str, &str, bool, bool) {
     let mut parts = state.strip_prefix("mob:").unwrap_or(state).split(':');
     let kind = parts.next().unwrap_or("");
     let faction = parts.next().unwrap_or("");
-    (kind, faction, parts.next() == Some("quarry"))
+    let marker = parts.next();
+    (kind, faction, marker == Some("quarry"), marker == Some("held"))
 }
 
 /// GET the Den's board and hand it back over `tx`.
@@ -3198,20 +3228,28 @@ mod mob_state_tests {
     use super::*;
 
     #[test]
-    fn a_mob_state_keeps_its_faction_whether_or_not_it_is_a_quarry() {
+    fn a_mob_state_keeps_its_faction_whatever_marker_it_carries() {
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal"),
-            ("forest_bloom_stalker", "fungal", false)
+            ("forest_bloom_stalker", "fungal", false, false)
         );
         // The marker must not be read as part of the faction — the faction drives the
         // creature's colour, and `fungal:quarry` is not a colour.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:quarry"),
-            ("forest_bloom_stalker", "fungal", true)
+            ("forest_bloom_stalker", "fungal", true, false)
+        );
+        // CL-2's pin rides the same slot, and must not be read as a quarry either.
+        assert_eq!(
+            parse_mob_state("mob:forest_bloom_stalker:fungal:held"),
+            ("forest_bloom_stalker", "fungal", false, true)
         );
         // A factionless mob, and an unknown trailing token, both stay readable.
-        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false));
-        assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:something"), ("dune_wyrm", "wyrm", false));
+        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false, false));
+        assert_eq!(
+            parse_mob_state("mob:dune_wyrm:wyrm:something"),
+            ("dune_wyrm", "wyrm", false, false)
+        );
     }
 }
 

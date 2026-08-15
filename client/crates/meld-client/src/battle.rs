@@ -1076,7 +1076,9 @@ pub(crate) fn select_entry(
 
     let hero_level = battle.view(&active).map(|c| c.level).unwrap_or(1);
     let spent = spent_tokens(battle, &active);
-    let entries = menu_entries(menu.level, class, hero_level, held, &spent);
+    // The held Foci are what make an aspect row appear (see `menu_entries`).
+    let foci = held_foci(battle, &active);
+    let entries = menu_entries(menu.level, class, hero_level, held, &spent, &foci);
     let Some(entry) = entries.get(index) else {
         return;
     };
@@ -1139,11 +1141,22 @@ pub(crate) fn page_len(
     hero_level: i32,
     held: &[(String, i32)],
     spent: &[String],
+    foci: &[String],
 ) -> usize {
     match menu.level {
         MenuLevel::Target | MenuLevel::Revoke => menu.rows.len() + 1,
-        level => menu_entries(level, class, hero_level, held, spent).len(),
+        level => menu_entries(level, class, hero_level, held, spent, foci).len(),
     }
+}
+
+/// The Focus kinds a hero is holding right now, off its `focus:<kind>:<stacks>` tokens.
+/// An ASPECT is only offered under a parent that is actually held, so both the row list
+/// and the row COUNT (cursor wrapping) have to ask the same question.
+pub(crate) fn held_foci(battle: &BattleData, hero: &str) -> Vec<String> {
+    battle
+        .view(hero)
+        .map(|v| parse_foci(&v.statuses).1.into_iter().map(|(k, _)| k).collect())
+        .unwrap_or_default()
 }
 
 /// The potions HERO `slot` is carrying — what the battle Items page may offer.
@@ -1284,7 +1297,8 @@ pub(crate) fn menu_keyboard(
     // row, ENTER/SPACE selects.
     let hero_level = battle.active_level();
     let spent = battle.active.clone().map(|a| spent_tokens(&battle, &a)).unwrap_or_default();
-    let n = page_len(&menu, &class, hero_level, &held, &spent).max(1);
+    let foci = battle.active.clone().map(|a| held_foci(&battle, &a)).unwrap_or_default();
+    let n = page_len(&menu, &class, hero_level, &held, &spent, &foci).max(1);
     if keys.just_pressed(KeyCode::ArrowDown) {
         menu.cursor = (menu.cursor + 1) % n;
     }
@@ -1431,6 +1445,7 @@ pub(crate) fn rebuild_command_menu(
     let is_psyker = class == "psyker";
     let hero_level = battle.active_level();
     let spent = spent_tokens(&battle, &active_id);
+    let foci = held_foci(&battle, &active_id);
     let commanding = battle.hero_label(&active_id);
     let can_switch = next_commandable(&battle).is_some();
 
@@ -1450,7 +1465,14 @@ pub(crate) fn rebuild_command_menu(
             .map(|(l, _)| l.clone())
             .chain(std::iter::once("Back".to_string()))
             .collect(),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack, battle.active_slot()), &spent)
+        _ => menu_entries(
+            level,
+            &class,
+            hero_level,
+            &held_potions(&backpack, battle.active_slot()),
+            &spent,
+            &foci,
+        )
             .into_iter()
             .map(|e| e.label.to_string())
             .collect(),
@@ -1462,7 +1484,14 @@ pub(crate) fn rebuild_command_menu(
     // Adrenaline" is not a decision; "40 of 100 Adrenaline (25 per Attack)" is.
     let (tooltip, magnitudes): (String, String) = match level {
         MenuLevel::Target | MenuLevel::Revoke => (String::new(), String::new()),
-        _ => menu_entries(level, &class, hero_level, &held_potions(&backpack, battle.active_slot()), &spent)
+        _ => menu_entries(
+            level,
+            &class,
+            hero_level,
+            &held_potions(&backpack, battle.active_slot()),
+            &spent,
+            &foci,
+        )
             .get(menu.cursor)
             .map(|e| {
                 let key = e.action.skill_key().unwrap_or_default();

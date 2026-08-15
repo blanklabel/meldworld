@@ -117,6 +117,12 @@ pub struct Fighter {
     /// Max simultaneous Foci (0 = not a Psyker; Psykers channel instead of the
     /// normal attack/skill kit — see [`Battle::resolve_psyker`]).
     pub focus_max: usize,
+    /// Casts this Psyker may make WITHOUT spending the turn. Mind's Eye seeds the pool at
+    /// battle start (the doc's "activate up to two Manifestations without expending your
+    /// Action" at initiative); Dual Manifestation tops it back up each Psyker turn. Both
+    /// are the same primitive — a cast that does not cost the turn — so there is one
+    /// counter to reason about rather than two overlapping rules.
+    pub free_casts: u32,
     /// Active Manifestations occupying Focus slots (Psyker only).
     pub foci: Vec<Focus>,
     /// True while a `defend` stance is active (until this fighter next acts).
@@ -217,6 +223,7 @@ impl Fighter {
             pack_role: PackRole::None,
             back_row: false,
             focus_max: 0,
+            free_casts: 0,
             foci: Vec::new(),
             defending: false,
             abilities: Vec::new(),
@@ -368,17 +375,26 @@ fn is_dot_status(name: &str) -> bool {
 /// slow, and the Explorer's own `marked`/`distracted` silently throttled whatever carried
 /// them. A status list is a thing to add to on purpose, not to fall into.
 fn is_slowing_status(name: &str) -> bool {
-    matches!(name, "web" | "chill" | "bind" | HORIZON_STATUS)
+    matches!(name, "web" | "chill" | "bind" | VORTEX_STATUS | GRAVITY_STATUS | ANCHOR_STATUS)
 }
 
-/// Event Horizon's mark. It SLOWS the gauge's fill rate rather than capping the gauge,
+/// Gravity Well's second aspect: what is being crushed is also dragged. An ordinary slow.
+pub const GRAVITY_STATUS: &str = "gravity";
+
+/// Its third: what is already slowed is PINNED. A deeper multiplier than any other slow —
+/// still a rate and never a cap, for the same reason the Vortex is not one: a creature's
+/// `speed_stat` never scales, so anything that stops the gauge advancing stops the
+/// creature acting for the rest of the fight.
+pub const ANCHOR_STATUS: &str = "anchored";
+
+/// Gravity Vortex's mark. It SLOWS the gauge's fill rate rather than capping the gauge,
 /// and the difference is the whole ability: creature `speed_stat` is a fixed constant
 /// (40–125) that never scales, while a hero's climbs with Dex, so by level 255 a Psyker
 /// takes several turns per creature turn. A cap at half would therefore mean the creature
 /// is knocked back below the line every time it approaches it — it would never act again,
 /// which is a soft-lock rather than a capstone. A rate multiplier cannot do that: the
 /// creature always advances, just at half pace.
-pub const HORIZON_STATUS: &str = "horizon";
+pub const VORTEX_STATUS: &str = "vortex";
 
 /// The lasting effects that STACK, and therefore answer to `max_effect_stacks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,24 +435,13 @@ fn prepend_effects(res: &mut Resolution, pre: Vec<ResolvedEffect>) {
 /// The level at which a Manifestation becomes castable (content; structural). A
 /// Psyker unlocks more manifestations as it levels.
 pub fn manifest_unlock_level(kind: &str) -> Option<i32> {
-    match kind {
-        // The unlock numbers live in one place (meld_proto::skills); this just
-        // gates "is a real manifestation" so unknown kinds return None.
-        "gravity_well"
-        | "kinetic_aegis"
-        | "mind_spike"
-        | "temporal_anchor"
-        | "kinetic_wave"
-        | "thermal_flux"
-        | "matter_dissolution"
-        | "phase_shift"
-        | "dominate_mind"
-        | "reality_collapse"
-        | "event_horizon" => {
-            Some(meld_proto::skills::unlock_level(kind))
-        }
-        _ => None,
-    }
+    // ASK THE REGISTRY. This was a hand-kept list of eleven keys — in the very function
+    // whose test is named "gated by the registry not by a hand-kept list" — so a new
+    // manifestation was castable only once someone remembered to add it here, and until
+    // then it sat in the menu costing a turn and doing nothing.
+    meld_proto::skills::skill(kind)
+        .filter(|d| d.class == "psyker")
+        .map(|d| d.unlock)
 }
 
 /// One resolved effect on a target (maps to `battle.action_resolved.effects[]`).
@@ -559,8 +564,15 @@ pub struct Battle {
     barrier_decay_fraction: f64,
     regen_decay_fraction: f64,
     max_effect_stacks: u8,
-    psyker_horizon_tick_mult: f64,
-    psyker_horizon_ticks: u64,
+    psyker_vortex_tick_mult: f64,
+    psyker_anchor_slow_mult: f64,
+    psyker_aspect_ticks: u64,
+    psyker_dual_manifest_at: i32,
+    psyker_expansion_at: i32,
+    psyker_expansion_per_level: i32,
+    psyker_expansion_cap: i32,
+    psyker_expansion_mult: f64,
+    psyker_vortex_ticks: u64,
     resonant_second_life_revive_fraction: f64,
     resonant_second_life_heal_fraction: f64,
     resonant_second_life_self_cost: f64,
@@ -827,8 +839,15 @@ impl Battle {
             barrier_decay_fraction: balance.battle.barrier_decay_fraction,
             regen_decay_fraction: balance.battle.regen_decay_fraction,
             max_effect_stacks: balance.battle.max_effect_stacks,
-            psyker_horizon_tick_mult: balance.battle.psyker_horizon_tick_mult,
-            psyker_horizon_ticks: balance.battle.psyker_horizon_ticks,
+            psyker_vortex_tick_mult: balance.battle.psyker_vortex_tick_mult,
+            psyker_anchor_slow_mult: balance.battle.psyker_anchor_slow_mult,
+            psyker_aspect_ticks: balance.battle.psyker_aspect_ticks,
+            psyker_dual_manifest_at: balance.battle.psyker_dual_manifest_at,
+            psyker_expansion_at: balance.battle.psyker_expansion_at,
+            psyker_expansion_per_level: balance.battle.psyker_expansion_per_level,
+            psyker_expansion_cap: balance.battle.psyker_expansion_cap,
+            psyker_expansion_mult: balance.battle.psyker_expansion_mult,
+            psyker_vortex_ticks: balance.battle.psyker_vortex_ticks,
             resonant_second_life_revive_fraction: balance
                 .battle
                 .resonant_second_life_revive_fraction,
@@ -1045,6 +1064,7 @@ impl Battle {
         // slowing status (web/chill/bind/…) halves the fill rate.
         let n = self.fighters.len();
         let slow_mult = self.status_slow_mult;
+        let anchor_mult = self.psyker_anchor_slow_mult;
         let haste_mult = self.explorer_haste_mult;
         let now = self.tick_count;
         for i in 0..n {
@@ -1052,6 +1072,10 @@ impl Battle {
             if !f.alive || f.awaiting || f.gauge >= 1.0 || f.channel.is_some() {
                 continue;
             }
+            let pinned = f
+                .timed_statuses
+                .iter()
+                .any(|(name, until)| *until > now && name == ANCHOR_STATUS);
             let slowed = f
                 .timed_statuses
                 .iter()
@@ -1062,8 +1086,15 @@ impl Battle {
                 .any(|(name, until)| *until > now && name == HASTE_STATUS);
             // A bind and a haste can both be on: they multiply, so hastening someone out
             // of a web is worth doing rather than being cancelled by it.
-            let rate_mult = if slowed { slow_mult } else { 1.0 }
-                * if hastened { haste_mult } else { 1.0 };
+            // The STRONGEST slow wins rather than stacking — two multipliers on one gauge
+            // is how a rate becomes a cap by accident.
+            let rate_mult = if pinned {
+                anchor_mult
+            } else if slowed {
+                slow_mult
+            } else {
+                1.0
+            } * if hastened { haste_mult } else { 1.0 };
             f.gauge =
                 (f.gauge + f.speed_stat as f64 * rate_mult / self.gauge_divisor).min(1.0);
         }
@@ -2384,6 +2415,7 @@ impl Battle {
         // player aimed them at; casting/reinforcing the same kind on a new enemy just
         // redirects it (see [`Focus::target_id`]).
         let op = op.unwrap_or("hold");
+        let mut cast_landed = false;
         let mut parts = op.splitn(2, ':');
         let verb = parts.next().unwrap_or("hold");
         let arg = parts.next().unwrap_or("");
@@ -2394,13 +2426,23 @@ impl Battle {
                 let unlocked = manifest_unlock_level(arg).is_some_and(|lv| level >= lv);
                 let slot_free = self.fighters[actor_i].foci.len() < self.fighters[actor_i].focus_max;
                 let already = self.fighters[actor_i].foci.iter().any(|f| f.kind == arg);
-                if unlocked && slot_free && !already {
+                // An ASPECT only lands on what its parent is already holding, and it lands
+                // on the SAME target — Gravity drags the thing Pressure is crushing, not a
+                // second creature across the arena. Asking for the parent's target rather
+                // than trusting the aim is what stops the chain being three unrelated Foci.
+                let parent = meld_proto::skills::skill(arg).and_then(|d| d.requires);
+                let parent_target = match parent {
+                    Some(pk) => self.fighters[actor_i].foci.iter().find(|f| f.kind == pk).map(|f| f.target_id.clone()),
+                    None => Some(aim.clone()),
+                };
+                if let (true, true, false, Some(tgt)) = (unlocked, slot_free, already, parent_target) {
                     self.fighters[actor_i].foci.push(Focus {
                         kind: arg.to_string(),
                         stacks: 1,
-                        target_id: aim.clone(),
+                        target_id: tgt.clone(),
                     });
-                    effects.extend(self.tick_manifest(actor_i, arg, 1, aim.as_deref())); // fires immediately
+                    effects.extend(self.tick_manifest(actor_i, arg, 1, tgt.as_deref())); // fires immediately
+                    cast_landed = true;
                 }
             }
             "reinforce" => {
@@ -2420,12 +2462,29 @@ impl Battle {
             }
             "revoke" => {
                 self.fighters[actor_i].foci.retain(|f| f.kind != arg);
+                self.drop_orphaned_aspects(actor_i);
             }
             _ => {} // hold
         }
 
         self.fighters[actor_i].defending = false;
-        self.reset_gauge(actor_i);
+        // Dual Manifestation: past its level every Psyker turn refunds one cast, so the
+        // pool Mind's Eye seeded at the top of the fight never runs dry. Topped up BEFORE
+        // the spend below, so the turn that earns it can use it.
+        if verb == "cast" && self.fighters[actor_i].level >= self.psyker_dual_manifest_at {
+            self.fighters[actor_i].free_casts = self.fighters[actor_i].free_casts.max(1);
+        }
+        // A free cast does not cost the turn: the gauge is left full, so the Psyker acts
+        // again immediately. This is Mind's Eye and Dual Manifestation both — one counter,
+        // because two rules that each mean "this cast was free" would be two rules to keep
+        // in step. Only a cast that LANDED may spend one (`cast_landed`), or a refused
+        // aspect would quietly burn the opening it was meant to buy.
+        let free = verb == "cast" && cast_landed && self.fighters[actor_i].free_casts > 0;
+        if free {
+            self.fighters[actor_i].free_casts -= 1;
+        } else {
+            self.reset_gauge(actor_i);
+        }
         Resolution { callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
@@ -2433,6 +2492,39 @@ impl Battle {
             auto,
             flee_success: None,
             effects,
+        }
+    }
+
+    /// Open the fight with every living HERO's gauge full — the party walked into a
+    /// creature a Psyker had pinned, so it picked the moment and moves first. Only the
+    /// player side is filled: a surprise that also readied the creature would be no
+    /// surprise at all.
+    pub fn open_with_full_party_gauges(&mut self) {
+        for f in self.fighters.iter_mut() {
+            if f.alive && f.kind == CombatantKind::Player {
+                f.gauge = 1.0;
+            }
+        }
+    }
+
+    /// Drop any aspect whose parent Focus is gone. Let go of Pressure and the Gravity
+    /// dragging on it has nothing to hold — otherwise revoking the base of a chain would
+    /// leave its aspects running free, which is a slow nothing is paying a slot for.
+    /// Loops because a chain is three deep: dropping Gravity must also drop Anchor.
+    fn drop_orphaned_aspects(&mut self, actor_i: usize) {
+        loop {
+            let held: Vec<String> =
+                self.fighters[actor_i].foci.iter().map(|f| f.kind.clone()).collect();
+            let before = held.len();
+            self.fighters[actor_i].foci.retain(|f| {
+                match meld_proto::skills::skill(&f.kind).and_then(|d| d.requires) {
+                    Some(parent) => held.iter().any(|k| k == parent),
+                    None => true,
+                }
+            });
+            if self.fighters[actor_i].foci.len() == before {
+                return;
+            }
         }
     }
 
@@ -2448,6 +2540,15 @@ impl Battle {
         match kind {
             "gravity_well" => {
                 self.tick_offense(psyker_i, kind, self.psyker_gravity_tick_mult, stacks, target_id)
+            }
+            // The aspects re-apply their mark every Psyker turn, so the hold lasts exactly
+            // as long as the Focus is held and lapses on its own once it is let go.
+            "gravity" | "anchor" => {
+                let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
+                    return Vec::new();
+                };
+                let status = if kind == "anchor" { ANCHOR_STATUS } else { GRAVITY_STATUS };
+                vec![self.apply_timed(t, status, self.psyker_aspect_ticks)]
             }
             "mind_spike" => {
                 self.tick_offense(psyker_i, kind, self.psyker_spike_tick_mult, stacks, target_id)
@@ -2518,9 +2619,9 @@ impl Battle {
             // Collapse does it harder and ignores armour entirely.
             // The Psyker's capstone: the whole line acts at half speed for as long as it
             // is held, re-applied every Psyker turn so it never lapses while the Focus is up.
-            "event_horizon" => {
+            "gravity_vortex" => {
                 let power = self.fighters[psyker_i].spell_power as f64;
-                let dmg = (power * self.psyker_horizon_tick_mult * stacks as f64).round() as i32;
+                let dmg = (power * self.psyker_vortex_tick_mult * stacks as f64).round() as i32;
                 let enemies: Vec<usize> = self
                     .fighters
                     .iter()
@@ -2534,7 +2635,7 @@ impl Battle {
                         self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
                     );
                     if self.fighters[t].alive {
-                        let fx = self.apply_timed(t, HORIZON_STATUS, self.psyker_horizon_ticks);
+                        let fx = self.apply_timed(t, VORTEX_STATUS, self.psyker_vortex_ticks);
                         effects.push(fx);
                     }
                 }
@@ -2975,7 +3076,42 @@ impl Battle {
         let power = self.fighters[psyker_i].spell_power;
         let dmg = ((power as f64) * mult * stacks as f64).round() as i32;
         // Manifestations are psychic — MIND-typed, so elemental profiles apply.
-        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind)
+        let mut effects = self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind);
+        // Expansion (the doc's passive on Gravity Well, generalised): the Focus also
+        // reaches other living enemies, for a share of the tick. A controller should widen
+        // with level — the alternative, hitting the one target harder, is the one thing
+        // this class is not for.
+        let extra = self.expansion_reach(psyker_i);
+        if extra > 0 {
+            let spill = (dmg as f64 * self.psyker_expansion_mult).round() as i32;
+            let others: Vec<usize> = self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(i, f)| {
+                    *i != t && f.alive && f.kind == CombatantKind::Monster && f.hp > 0
+                })
+                .map(|(i, _)| i)
+                .take(extra)
+                .collect();
+            for o in others {
+                effects.extend(self.apply_typed_damage(o, spill.max(self.min_damage), DamageType::Mind));
+            }
+        }
+        effects
+    }
+
+    /// How many enemies BEYOND its own target an offensive Focus reaches, from the
+    /// Psyker's level. Zero until Expansion unlocks, so an early Psyker still picks one
+    /// creature and grinds it.
+    fn expansion_reach(&self, psyker_i: usize) -> usize {
+        let level = self.fighters[psyker_i].level;
+        if self.psyker_expansion_at <= 0 || level < self.psyker_expansion_at {
+            return 0;
+        }
+        let step = self.psyker_expansion_per_level.max(1);
+        let grown = 1 + (level - self.psyker_expansion_at) / step;
+        grown.clamp(1, self.psyker_expansion_cap.max(1)) as usize
     }
 
     /// Control Manifestation tick: drain the aimed enemy's ATB gauge, delaying its turns.
@@ -4651,6 +4787,250 @@ mod tests {
             collapse_dmg > wave_dmg,
             "the level-100 capstone ({collapse_dmg}) hits softer than the L25 Wave ({wave_dmg})"
         );
+    }
+
+    /// The doc's controller chain: Pressure crushes, Gravity drags what is crushed, Anchor
+    /// pins what is dragged. An aspect is refused unless its parent is already held, which
+    /// is what makes the Psyker spend slots to escalate rather than press three buttons.
+    #[test]
+    fn an_aspect_needs_its_parent_and_falls_with_it() {
+        let b = balance();
+        let mk = || {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![psyker("p", 400, 255, 5)],
+                vec![monster("m1", 100000, 1), monster("m2", 100000, 1)],
+                &b,
+                7,
+            )
+        };
+        // The action id must differ per submit or the engine dedupes it as a replay — a
+        // refused cast and its retry are two different presses.
+        let mut nth = 0;
+        let mut op = |battle: &mut Battle, kind: &str, verb: &str| {
+            nth += 1;
+            tick_to_ready(battle, "p");
+            let _ = battle.submit(
+                "p",
+                format!("op{nth}:{verb}:{kind}"),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some(format!("{verb}:{kind}")),
+                None,
+            );
+        };
+        let held = |battle: &Battle| -> Vec<String> {
+            let i = battle.fighters.iter().position(|f| f.combatant_id == "p").unwrap();
+            battle.fighters[i].foci.iter().map(|f| f.kind.clone()).collect()
+        };
+
+        // Gravity alone is refused — there is nothing being crushed for it to drag.
+        let mut orphan = mk();
+        op(&mut orphan, "gravity", "cast");
+        assert!(held(&orphan).is_empty(), "Gravity landed with no Gravity Well under it");
+
+        // With the parent held it lands, and Anchor then needs Gravity in turn.
+        let mut chain = mk();
+        op(&mut chain, "gravity_well", "cast");
+        op(&mut chain, "anchor", "cast");
+        assert!(!held(&chain).contains(&"anchor".to_string()), "Anchor skipped Gravity");
+        op(&mut chain, "gravity", "cast");
+        op(&mut chain, "anchor", "cast");
+        assert_eq!(held(&chain), vec!["gravity_well", "gravity", "anchor"], "the chain");
+
+        // Letting the base go drops the whole chain: an aspect with no parent is a slow
+        // nothing is paying a Focus slot for.
+        op(&mut chain, "gravity_well", "revoke");
+        assert!(held(&chain).is_empty(), "revoking the base left its aspects running");
+    }
+
+    /// Anchor is the deepest slow in the game and is still a RATE. A creature's
+    /// `speed_stat` never scales with distance, so a gauge that stops advancing is a
+    /// creature that never acts again — a soft-lock, not a capstone.
+    #[test]
+    fn anchor_pins_the_gauge_without_ever_locking_it() {
+        let b = balance();
+        assert!(
+            b.battle.psyker_anchor_slow_mult > 0.0,
+            "a zero anchor multiplier is a gauge that never advances"
+        );
+        assert!(
+            b.battle.psyker_anchor_slow_mult < b.battle.status_slow_mult,
+            "Anchor should bite harder than an ordinary web/chill"
+        );
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![psyker("p", 400, 255, 5)],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        for (kind, verb) in [("gravity_well", "cast"), ("gravity", "cast"), ("anchor", "cast")] {
+            tick_to_ready(&mut battle, "p");
+            let _ = battle.submit(
+                "p",
+                format!("op:{verb}:{kind}"),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some(format!("{verb}:{kind}")),
+                None,
+            );
+        }
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        assert!(
+            battle.fighters[mi]
+                .timed_statuses
+                .iter()
+                .any(|(n, _)| n == ANCHOR_STATUS),
+            "the pinned creature wears no anchor"
+        );
+        // It still advances — pinned, not stopped.
+        battle.fighters[mi].gauge = 0.0;
+        let before = battle.fighters[mi].gauge;
+        for _ in 0..60 {
+            battle.tick();
+        }
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        assert!(
+            battle.fighters[mi].gauge > before || battle.fighters[mi].gauge >= 1.0,
+            "an anchored creature's gauge never moved — that is a lock"
+        );
+    }
+
+    /// Mind's Eye: the opening Foci are free, so a controller does not spend the first
+    /// three turns of every fight doing nothing but setting up. A free cast leaves the
+    /// gauge full — the Psyker acts again immediately — and the pool is finite.
+    #[test]
+    fn minds_eye_opens_the_fight_without_spending_it() {
+        let b = balance();
+        let mut f = psyker("p", 400, 50, 5);
+        // The level -> count curve is `meld-run`'s (the engine never sees a level curve);
+        // what is pinned HERE is what the engine does with the pool it is handed.
+        f.free_casts = 2;
+        let budget = f.free_casts;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![f],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "p");
+        let pi = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        let _ = battle.submit(
+            "p",
+            "op1".into(),
+            BattleActionKind::Skill,
+            Some(vec!["m1".into()]),
+            Some("cast:gravity_well".into()),
+            None,
+        );
+        let pi2 = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        assert_eq!(pi, pi2);
+        assert!(
+            battle.fighters[pi].gauge >= 1.0,
+            "a free cast spent the turn — the whole point is that it does not"
+        );
+        assert_eq!(battle.fighters[pi].free_casts, budget - 1, "the pool did not decrement");
+    }
+
+    /// A refused cast must not burn the opening it was meant to buy — the aspect chain
+    /// makes "rejected" an ordinary outcome, not an edge case.
+    #[test]
+    fn a_refused_cast_costs_no_free_cast() {
+        let b = balance();
+        let mut f = psyker("p", 400, 50, 5);
+        f.free_casts = 2;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![f],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "p");
+        // Gravity with no Gravity Well under it: refused.
+        let _ = battle.submit(
+            "p",
+            "op1".into(),
+            BattleActionKind::Skill,
+            Some(vec!["m1".into()]),
+            Some("cast:gravity".into()),
+            None,
+        );
+        let pi = battle.fighters.iter().position(|x| x.combatant_id == "p").unwrap();
+        assert_eq!(battle.fighters[pi].free_casts, 2, "a refusal spent a free cast");
+    }
+
+    /// Expansion: an offensive Focus reaches other living enemies too. A controller widens
+    /// with level; hitting one target harder is the one thing this class is not for.
+    #[test]
+    fn expansion_spreads_a_focus_across_the_line() {
+        let b = balance();
+        let mk = |level: i32| {
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![psyker("p", 400, level, 5)],
+                vec![monster("m1", 100000, 1), monster("m2", 100000, 1)],
+                &b,
+                7,
+            )
+        };
+        let cast = |battle: &mut Battle| {
+            tick_to_ready(battle, "p");
+            let _ = battle.submit(
+                "p",
+                "op1".into(),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some("cast:gravity_well".into()),
+                None,
+            );
+        };
+        let hp = |battle: &Battle, id: &str| {
+            battle.fighters.iter().find(|f| f.combatant_id == id).unwrap().hp
+        };
+
+        // Below the unlock the second creature is untouched.
+        let mut early = mk(1);
+        cast(&mut early);
+        assert_eq!(hp(&early, "m2"), 100000, "an early Psyker splashed the line");
+
+        // Past it, the same single-target Focus grinds the neighbour too — for less.
+        let mut wide = mk(b.battle.psyker_expansion_at);
+        cast(&mut wide);
+        let primary = 100000 - hp(&wide, "m1");
+        let spill = 100000 - hp(&wide, "m2");
+        assert!(spill > 0, "Expansion reached nobody");
+        assert!(spill < primary, "the spill ({spill}) is not softer than the primary ({primary})");
+    }
+
+    /// The reward for spending a pin: the party walked into a creature it had held, so it
+    /// picked the moment and moves first. Only the PLAYER side is readied — a surprise
+    /// that also filled the creature's gauge would be no surprise at all.
+    #[test]
+    fn a_surprise_opens_with_the_party_ready_and_the_creature_not() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![psyker("p", 40, 10, 3)],
+            vec![monster("m1", 100, 1)],
+            &b,
+            7,
+        );
+        let gauge = |bt: &Battle, id: &str| {
+            bt.fighters.iter().find(|f| f.combatant_id == id).unwrap().gauge
+        };
+        assert!(gauge(&battle, "p") < 1.0, "a normal fight does not open ready");
+        battle.open_with_full_party_gauges();
+        assert!(gauge(&battle, "p") >= 1.0, "the party did not get the first move");
+        assert!(gauge(&battle, "m1") < 1.0, "the surprise also readied the creature");
     }
 
     #[test]
@@ -7006,12 +7386,12 @@ mod deep_ladder_tests {
         assert!(hit(60) > hit(20), "more Mnd should mean more thorns");
     }
 
-    /// Event Horizon SLOWS the line rather than capping its gauge, and the difference is
+    /// Gravity Vortex SLOWS the line rather than capping its gauge, and the difference is
     /// whether the enemy ever acts again. Creature speed is a fixed constant while a hero's
     /// climbs with Dex, so a deep Psyker takes several turns per creature turn — a cap at
     /// half would knock the creature back below the line every time it approached one.
     #[test]
-    fn event_horizon_slows_the_line_but_never_locks_it() {
+    fn gravity_vortex_slows_the_line_but_never_locks_it() {
         let b = Balance::load_default().unwrap();
         // A Psyker four times the creature's speed: the worst case for a cap.
         let mut p = Fighter::new("p".into(), CombatantKind::Player, Some("pl".into()), None,
@@ -7034,7 +7414,7 @@ mod deep_ladder_tests {
             for ev in bt.tick() {
                 if let Event::TurnReady { combatant_id } = ev {
                     if combatant_id == "p" {
-                        let op = if seated { "hold" } else { "cast:event_horizon" };
+                        let op = if seated { "hold" } else { "cast:gravity_vortex" };
                         seated = true;
                         let _ = bt.submit(
                             "p",
@@ -7052,7 +7432,7 @@ mod deep_ladder_tests {
         assert!(seated, "the Focus was never seated");
         assert!(
             bt.fighters[0].hp < start_hp,
-            "Event Horizon locked the creature out entirely — it never landed a blow"
+            "Gravity Vortex locked the creature out entirely — it never landed a blow"
         );
         assert!(
             peak_gauge > 0.5,
