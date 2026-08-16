@@ -177,6 +177,24 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         )),
         "phase_shift" => focus(format!("+{} dodge", pct(b.psyker_phase_evasion))),
 
+        "shield" => focus(format!(
+            "Barrier for {} of EVERY ally's max HP each turn",
+            pct(b.psyker_shield_party_fraction)
+        )),
+        "acceleration" => focus(format!(
+            "fills {} of one ally's ATB gauge each turn",
+            pct(b.psyker_accel_gauge)
+        )),
+        "freeze" => focus(format!(
+            "the burning target's gauge fills at {} speed - {} if it was already slowed",
+            pct(b.status_slow_mult),
+            pct(b.psyker_anchor_slow_mult)
+        )),
+        "brittle" => focus("strips EVERY elemental resistance, permanently - 1 damage type left".to_string()),
+        "blackout" => focus(format!(
+            "0% dodge and 0% evasion while held ({} ticks per turn)",
+            b.psyker_blackout_ticks
+        )),
         "gravity" => focus(format!(
             "the crushed target's gauge fills at {} speed while both are held",
             pct(b.status_slow_mult)
