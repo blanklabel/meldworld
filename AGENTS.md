@@ -654,8 +654,16 @@ the Explorer.
 in the class doc is a chain with prerequisites, not one effect: Gravity Well is Pressure,
 then **Gravity** on what is being crushed, then **Anchor** on what is already slowed.
 `SkillDef.requires` names the parent; an aspect may only be cast onto a target already
-holding it, takes the parent's OWN target, occupies its own Focus slot, and falls when the
-parent does (`drop_orphaned_aspects` loops — a chain is three deep). Both tiers of slow are
+holding it, occupies its own Focus slot, and falls when the parent does
+(`drop_orphaned_aspects` loops — a chain is three deep). It takes the parent's OWN target
+**only when it lands on the same side**: Gravity drags what Pressure is crushing, but
+Acceleration hurries an ALLY while its parent grinds an enemy, so it keeps its own aim.
+Seven aspects ship — Gravity/Anchor, **Shield** (the ward covers the party), **Acceleration**
+(fills an ally's gauge), **Freeze** (slows, and pins anything already slowed), **Brittle**
+(strips every elemental resistance for good) and **Blackout** (it cannot dodge at all).
+The doc's REACTION aspects (Dampen, Static, Vent, Flicker, Rewind) and its POSITIONAL ones
+(Push, Pull, Warp) stay unbuilt: this engine has no reactions and no battlefield positions,
+and reinventing them as something else wearing the name is worse than leaving them out. Both tiers of slow are
 **rates, never caps**, and the strongest wins rather than stacking. An aspect is **not a
 menu row**: `skills_for_class_at` excludes it, `aspects_of` returns it, and the battle menu
 lists it indented under a parent that is currently held — so the menu grows in DEPTH without

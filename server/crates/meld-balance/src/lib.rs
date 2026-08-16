@@ -190,6 +190,12 @@ pub struct Battle {
     pub psyker_expansion_mult: f64,
     /// Ticks an aspect's mark outlives the Psyker turn that applied it.
     pub psyker_aspect_ticks: u64,
+    /// Shield: Barrier granted per ally per turn, as a share of that ally's max HP.
+    pub psyker_shield_party_fraction: f64,
+    /// Acceleration: gauge filled on the chosen ally each Psyker turn.
+    pub psyker_accel_gauge: f64,
+    /// Blackout: ticks the target is left unable to dodge.
+    pub psyker_blackout_ticks: u64,
     pub psyker_vortex_ticks: u64,
     pub resonant_second_life_revive_fraction: f64,
     pub resonant_second_life_heal_fraction: f64,

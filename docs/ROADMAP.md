@@ -669,9 +669,20 @@ burns on death/leave; some is single-use. See
     armour irrelevant). Focus slots now grow 2 → 5 across the same span. The client's
     hand-kept four-entry manifest list is gone — every surface reads the registry, so
     it cannot silently stop offering what the engine learned to resolve.
-  - **Remains from the Psyker doc:** Psi Points as a real cost, the Psychic Strain save
-    that threatens a Focus when the Psyker is hit, and per-Manifestation aspects with
-    prerequisites (Pressure → Gravity → Anchor).
+  - *Also shipped:* **the aspect chains are finished.** Seven aspects across six
+    manifestations — Gravity Well's Pressure → Gravity → Anchor, plus **Shield** (Kinetic
+    Aegis: the Barrier covers the whole party), **Acceleration** (Temporal Anchor: fills an
+    ALLY's gauge — the only Focus in the kit that helps someone, and the reason an aspect
+    inherits its parent's target only when it lands on the same side), **Freeze** (Thermal
+    Flux: slows, and pins anything already slowed), **Brittle** (Matter Dissolution: strips
+    every elemental resistance permanently) and **Blackout** (Dominate Mind: it cannot dodge
+    at all — checked before the roll, because "cannot dodge" that still rolls is a promise
+    the engine breaks one time in twenty).
+  - **Remains from the Psyker doc:** Psi Points as a real cost, and the Psychic Strain save
+    that threatens a Focus when the Psyker is hit. The doc's REACTION aspects (Dampen,
+    Static, Vent, Flicker, Rewind) and POSITIONAL ones (Push, Pull, Warp) are deliberately
+    **not** built: this engine has no reactions and no battlefield positions, so they would
+    have to be reinvented as something else wearing the name.
   - *Also shipped:* **the overworld perk swap** (`CL-2`) — each perk now sits with the
     class whose fantasy it is. The **minimap** moved to the **Explorer** ("a world
     known" — the order that maps the world carries the map). The **predator's eye**

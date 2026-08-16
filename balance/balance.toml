@@ -225,6 +225,13 @@ psyker_expansion_per_level = 70
 psyker_expansion_cap = 3
 psyker_expansion_mult = 0.5         # share of the primary tick each extra enemy takes
 psyker_aspect_ticks = 40          # ticks an aspect's mark outlives the turn that applied it
+# The rest of the doc's aspect chains, one per manifestation whose aspect ports to an ATB.
+# (Its reaction aspects — Dampen, Static, Vent, Flicker, Rewind — and its positional ones —
+# Push, Pull, Warp — have no home here: this engine has no reactions and no battlefield
+# positions. Those stay unbuilt rather than reinvented as something else wearing the name.)
+psyker_shield_party_fraction = 0.06   # Shield: Barrier per ally per turn, as a share of max HP
+psyker_accel_gauge = 0.22             # Acceleration: gauge filled on the chosen ALLY per turn
+psyker_blackout_ticks = 30            # Blackout: ticks the target cannot dodge for
 psyker_vortex_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)

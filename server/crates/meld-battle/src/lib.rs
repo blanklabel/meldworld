@@ -408,6 +408,11 @@ pub const GRAVITY_STATUS: &str = "gravity";
 /// creature acting for the rest of the fight.
 pub const ANCHOR_STATUS: &str = "anchored";
 
+/// Dominate Mind's Blackout: senses cut, so the target cannot dodge at all. Accuracy in
+/// this engine lives on the DEFENDER (`roll_dodge`), so "it cannot see you coming" has to
+/// land there rather than as a bonus on the attacker.
+pub const BLIND_STATUS: &str = "blinded";
+
 /// Gravity Vortex's mark. It SLOWS the gauge's fill rate rather than capping the gauge,
 /// and the difference is the whole ability: creature `speed_stat` is a fixed constant
 /// (40–125) that never scales, while a hero's climbs with Dex, so by level 255 a Psyker
@@ -603,6 +608,9 @@ pub struct Battle {
     psyker_vortex_tick_mult: f64,
     psyker_anchor_slow_mult: f64,
     psyker_aspect_ticks: u64,
+    psyker_shield_party_fraction: f64,
+    psyker_accel_gauge: f64,
+    psyker_blackout_ticks: u64,
     psyker_dual_manifest_at: i32,
     psyker_expansion_at: i32,
     psyker_expansion_per_level: i32,
@@ -881,6 +889,9 @@ impl Battle {
             psyker_vortex_tick_mult: balance.battle.psyker_vortex_tick_mult,
             psyker_anchor_slow_mult: balance.battle.psyker_anchor_slow_mult,
             psyker_aspect_ticks: balance.battle.psyker_aspect_ticks,
+            psyker_shield_party_fraction: balance.battle.psyker_shield_party_fraction,
+            psyker_accel_gauge: balance.battle.psyker_accel_gauge,
+            psyker_blackout_ticks: balance.battle.psyker_blackout_ticks,
             psyker_dual_manifest_at: balance.battle.psyker_dual_manifest_at,
             psyker_expansion_at: balance.battle.psyker_expansion_at,
             psyker_expansion_per_level: balance.battle.psyker_expansion_per_level,
@@ -2493,9 +2504,24 @@ impl Battle {
                 // on the SAME target — Gravity drags the thing Pressure is crushing, not a
                 // second creature across the arena. Asking for the parent's target rather
                 // than trusting the aim is what stops the chain being three unrelated Foci.
-                let parent = meld_proto::skills::skill(arg).and_then(|d| d.requires);
+                let def = meld_proto::skills::skill(arg);
+                let parent = def.and_then(|d| d.requires);
+                // An aspect must have its parent held — and inherits the parent's TARGET
+                // only when it lands on the same side. Gravity drags the thing Pressure is
+                // crushing; Acceleration hurries an ALLY while its parent grinds an enemy,
+                // so it keeps its own aim. Inheriting blindly would have aimed the
+                // Psyker's haste at the creature it was slowing.
                 let parent_target = match parent {
-                    Some(pk) => self.fighters[actor_i].foci.iter().find(|f| f.kind == pk).map(|f| f.target_id.clone()),
+                    Some(pk) => {
+                        let held = self.fighters[actor_i].foci.iter().find(|f| f.kind == pk);
+                        match (held, def.map(|d| d.target)) {
+                            (None, _) => None,
+                            (Some(_), Some(meld_proto::skills::Target::Enemy)) => {
+                                held.map(|f| f.target_id.clone())
+                            }
+                            (Some(_), _) => Some(aim.clone()),
+                        }
+                    }
                     None => Some(aim.clone()),
                 };
                 if let (true, true, false, Some(tgt)) = (unlocked, slot_free, already, parent_target) {
@@ -2604,13 +2630,93 @@ impl Battle {
             "gravity_well" => {
                 self.tick_offense(psyker_i, kind, self.psyker_gravity_tick_mult, stacks, target_id)
             }
-            // The aspects re-apply their mark every Psyker turn, so the hold lasts exactly
-            // as long as the Focus is held and lapses on its own once it is let go.
-            "gravity" | "anchor" => {
+            // Shield widens the ward: the Aegis covers the whole party rather than only
+            // its caster. The Psyker's own share still comes from the parent Focus.
+            "shield" => {
+                let allies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut fx = Vec::new();
+                for a in allies {
+                    let raw = (self.fighters[a].max_hp as f64
+                        * self.psyker_shield_party_fraction
+                        * stacks as f64)
+                        .round() as i32;
+                    fx.extend(self.grant_barrier(a, raw));
+                }
+                fx
+            }
+            // Acceleration runs time FAST for an ally — the mirror of the drain its parent
+            // puts on an enemy, and the only Focus in the kit that helps someone.
+            "acceleration" => {
+                let Some(t) = self.focus_ally_target(psyker_i, target_id) else {
+                    return Vec::new();
+                };
+                let fill = self.psyker_accel_gauge * stacks as f64;
+                self.fighters[t].gauge = (self.fighters[t].gauge + fill).min(1.0);
+                vec![ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("hasted".to_string()),
+                    hp_after: self.fighters[t].hp,
+                }]
+            }
+            // Brittle strips what the corrosion has eaten through: every resistance the
+            // target had is gone for good, so the whole party's damage types land in full.
+            // Permanent, like its parent's armour shred — the corrosion does not grow back.
+            "brittle" => {
                 let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
                     return Vec::new();
                 };
-                let status = if kind == "anchor" { ANCHOR_STATUS } else { GRAVITY_STATUS };
+                let stripped = self.fighters[t]
+                    .damage_modifiers
+                    .iter()
+                    .filter(|(_, &m)| m < 1.0)
+                    .count();
+                self.fighters[t].damage_modifiers.retain(|_, m| *m >= 1.0);
+                if stripped == 0 {
+                    return Vec::new();
+                }
+                vec![ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: self.fighters[t].combatant_id.clone(),
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("brittle".to_string()),
+                    hp_after: self.fighters[t].hp,
+                }]
+            }
+            // Blackout cuts the senses: it cannot dodge at all while this is held.
+            "blackout" => {
+                let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
+                    return Vec::new();
+                };
+                vec![self.apply_timed(t, BLIND_STATUS, self.psyker_blackout_ticks)]
+            }
+            // The aspects re-apply their mark every Psyker turn, so the hold lasts exactly
+            // as long as the Focus is held and lapses on its own once it is let go.
+            // Freeze is Gravity's twin on a burning target: an ordinary slow, deepening to
+            // a pin on anything already slowed.
+            "gravity" | "anchor" | "freeze" => {
+                let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
+                    return Vec::new();
+                };
+                let already_slowed = self.fighters[t]
+                    .timed_statuses
+                    .iter()
+                    .any(|(n, until)| *until > self.tick_count && is_slowing_status(n));
+                let status = match kind {
+                    "anchor" => ANCHOR_STATUS,
+                    // Freeze pins what was already crawling, and merely slows what was not.
+                    "freeze" if already_slowed => ANCHOR_STATUS,
+                    _ => GRAVITY_STATUS,
+                };
                 vec![self.apply_timed(t, status, self.psyker_aspect_ticks)]
             }
             "mind_spike" => {
@@ -2734,6 +2840,27 @@ impl Battle {
     /// The enemy index an offensive Focus hits this tick: its stored target if that
     /// enemy is alive, else the first living enemy — written back onto the Focus so the
     /// aim sticks after a retarget. `None` when no enemy is alive.
+    /// The ALLY a supportive Focus is aimed at — the aim it was cast with if that hero is
+    /// still standing, else the most wounded living one, so a Focus never quietly does
+    /// nothing because its target fell.
+    fn focus_ally_target(&self, psyker_i: usize, target_id: Option<&str>) -> Option<usize> {
+        if let Some(id) = target_id {
+            if let Some(i) = self.idx(id) {
+                if self.fighters[i].alive && self.fighters[i].kind == CombatantKind::Player {
+                    return Some(i);
+                }
+            }
+        }
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| {
+                *i != psyker_i && f.alive && f.kind == CombatantKind::Player
+            })
+            .min_by_key(|(_, f)| f.hp)
+            .map(|(i, _)| i)
+    }
+
     fn focus_enemy_target(
         &mut self,
         psyker_i: usize,
@@ -3871,6 +3998,12 @@ impl Battle {
             .active_actor
             .is_some_and(|a| self.has_timed_status(a, Self::DISTRACT_STATUS));
         let extra = if distracted { self.explorer_misdirection_miss } else { 0.0 };
+        // Blackout (Dominate Mind): senses cut, so it cannot get out of the way at all —
+        // checked before the roll rather than as a penalty, because "cannot dodge" that
+        // still rolls is a promise the engine breaks one time in twenty.
+        if self.has_timed_status(target_i, BLIND_STATUS) {
+            return None;
+        }
         let chance =
             (self.fighters[target_i].dodge + self.fighters[target_i].evasion + extra).min(0.95);
         if chance > 0.0 && self.next_rand_unit() < chance {
@@ -5156,6 +5289,127 @@ mod tests {
         // nothing is paying a Focus slot for.
         op(&mut chain, "gravity_well", "revoke");
         assert!(held(&chain).is_empty(), "revoking the base left its aspects running");
+    }
+
+    /// Every aspect the doc gave a manifestation, on the manifestation it belongs to —
+    /// and each one doing something the others do not. An aspect that duplicated its
+    /// neighbour would be a Focus slot nobody has a reason to spend.
+    #[test]
+    fn each_aspect_does_its_own_thing() {
+        let b = balance();
+        let mk = || {
+            let mut ally = player("ally", 1);
+            ally.class_key = "explorer".into();
+            Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![psyker("p", 400, 255, 5), ally],
+                vec![monster("m1", 100000, 1)],
+                &b,
+                7,
+            )
+        };
+        let mut nth = 0;
+        let mut cast = |battle: &mut Battle, kind: &str, aim: &str| {
+            nth += 1;
+            tick_to_ready(battle, "p");
+            let _ = battle.submit(
+                "p",
+                format!("op{nth}:{kind}"),
+                BattleActionKind::Skill,
+                Some(vec![aim.to_string()]),
+                Some(format!("cast:{kind}")),
+                None,
+            );
+        };
+        let idx = |bt: &Battle, id: &str| bt.fighters.iter().position(|f| f.combatant_id == id).unwrap();
+
+        // Shield widens the ward from the caster to the whole party.
+        let mut sh = mk();
+        cast(&mut sh, "kinetic_aegis", "p");
+        let ally_before = sh.fighters[idx(&sh, "ally")].barrier;
+        cast(&mut sh, "shield", "p");
+        assert!(
+            sh.fighters[idx(&sh, "ally")].barrier > ally_before,
+            "Shield left the rest of the party unwarded"
+        );
+
+        // Acceleration keeps its OWN aim: its parent grinds an enemy, it hurries an ally.
+        let mut ac = mk();
+        cast(&mut ac, "temporal_anchor", "m1");
+        let ai = idx(&ac, "ally");
+        ac.fighters[ai].gauge = 0.0;
+        cast(&mut ac, "acceleration", "ally");
+        assert!(
+            ac.fighters[idx(&ac, "ally")].gauge > 0.0,
+            "Acceleration was aimed at its parent's enemy instead of the ally"
+        );
+
+        // Brittle strips resistances for good.
+        let mut br = mk();
+        let mi = idx(&br, "m1");
+        br.fighters[mi].damage_modifiers.insert(DamageType::Fire, 0.5);
+        cast(&mut br, "matter_dissolution", "m1");
+        cast(&mut br, "brittle", "m1");
+        let mi = idx(&br, "m1");
+        assert!(
+            br.fighters[mi].damage_modifiers.get(&DamageType::Fire).is_none_or(|m| *m >= 1.0),
+            "Brittle left a resistance standing"
+        );
+
+        // Blackout means it cannot dodge AT ALL — not "usually".
+        let mut bl = mk();
+        cast(&mut bl, "dominate_mind", "m1");
+        cast(&mut bl, "blackout", "m1");
+        let mi = idx(&bl, "m1");
+        bl.fighters[mi].dodge = 0.9;
+        bl.fighters[mi].evasion = 0.9;
+        for _ in 0..50 {
+            assert!(bl.roll_dodge(mi).is_none(), "a blinded creature dodged");
+        }
+    }
+
+    /// Freeze is Gravity's twin on a burning target: an ordinary slow, deepening to a PIN
+    /// on anything already crawling. The escalation is the reason to hold both.
+    #[test]
+    fn freeze_pins_what_was_already_slowed() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![psyker("p", 400, 255, 5)],
+            vec![monster("m1", 100000, 1)],
+            &b,
+            7,
+        );
+        let mut nth = 0;
+        let mut cast = |battle: &mut Battle, kind: &str| {
+            nth += 1;
+            tick_to_ready(battle, "p");
+            let _ = battle.submit(
+                "p",
+                format!("op{nth}:{kind}"),
+                BattleActionKind::Skill,
+                Some(vec!["m1".into()]),
+                Some(format!("cast:{kind}")),
+                None,
+            );
+        };
+        cast(&mut battle, "thermal_flux");
+        cast(&mut battle, "freeze");
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        let has = |bt: &Battle, i: usize, n: &str| {
+            bt.fighters[i].timed_statuses.iter().any(|(s, _)| s == n)
+        };
+        assert!(has(&battle, mi, GRAVITY_STATUS), "Freeze did not slow an unslowed target");
+        assert!(!has(&battle, mi, ANCHOR_STATUS), "Freeze pinned something that was not slowed");
+
+        // Now with the target already crawling, the same aspect pins it.
+        let _ = battle.apply_timed(mi, "chill", 200);
+        cast(&mut battle, "revoke:freeze");
+        cast(&mut battle, "freeze");
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
+        assert!(has(&battle, mi, ANCHOR_STATUS), "Freeze did not pin an already-slowed target");
     }
 
     /// Anchor is the deepest slow in the game and is still a RATE. A creature's
