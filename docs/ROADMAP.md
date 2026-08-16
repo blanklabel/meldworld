@@ -198,11 +198,55 @@ the dive→extract→dive loop. This epic finishes M1–M3.
 
 Right now the party is fixed at dive time; players can't rearrange or save teams.
 
-- [ ] **PT-1 — Change party rows (front / back row).** Let a player assign each
+- [x] **PT-1 — Change party rows (front / back row).** Let a player assign each
   hero to a front or back row and swap them, with the row affecting combat
   (melee reach / damage taken / target priority — pick the rule, add its
   `[TUNABLE]`, cite it in `combat-atb`). Server-authoritative; rides existing
   party/roster surface. Editable in Last City (LC-4) and on the party screen.
+  - *Shipped:* `run.set_formation`, persisted on `heroes.back_row`, the toggle on each
+    hero's own cell, `row:back` on the wire, and back-row heroes rendered deeper as
+    busts. Both combat rules chosen: **damage taken** and **target priority**.
+  - **The row is a TRADE, and it was not.** `back_row_damage_mult` halved every incoming
+    blow and nothing was given up for it, so the optimal formation was the whole party in
+    the back rank for a flat **2x effective party HP** — `handle_set_formation` has no
+    rule against it and needs none, because the trade is the rule. Now: only a
+    **physical** blow is stopped by the rank (a spell, a Focus or an elemental breath
+    reaches it at full force), and a back-row hero gives up half its own **physical**
+    output in return. A caster loses nothing standing back, which is exactly why the back
+    row is a caster's home and the front line is a martial's — and a hero whose weapon
+    carries an elemental `brand` (`AD-3`) keeps full damage from the back, which is a real
+    reason to want one.
+  - **Three classes had been dealing TRUE damage.** `hero_attack_type` listed five classes
+    and fell through to `DamageType::None`, which bypasses the modifier map entirely — the
+    **Hunter** (the martial baseline, and where the Explorer's kit moved in #206), the
+    **Smithwright** and the **Keeper** were all missing, so all three ignored every
+    creature resistance and immunity and would have held the front line for free.
+    `no_fielded_class_swings_untyped` reads the class list off the registry now.
+- [x] **CR-9 — Creatures fight to a profile, not one rule.** Every creature in the game
+  picked its target the same way — lowest HP, with a back-row redirect — so a party
+  learned one lesson at the hub and it held to the deep. Five profiles
+  (`meld_proto::TargetProfile`): **Weakest** (finish the wounded), **Random**
+  (unpredictable rather than stupid), **Backline** (hunts the rank on purpose — the
+  counter to hiding every caster behind a wall), **Role** (the healer first, then the
+  casters — not more damage, damage spent where the party can least afford it), and
+  **GangUp** (the pack shares one mark and commits to it).
+  - **Three inputs, in order of authority:** the kind's own nature (an ambusher slips
+    past the line, a pack animal converges, a big mindless body swings at whatever is in
+    front of it); then the **encounter class** — an Elite, Gatekeeper or boss is smarter
+    than its escort whatever its kind; then **level**, because deeper creatures are
+    smarter *on average* (`[ai] smart_*`: a share of ordinary spawns rolls tactical past
+    a floor, climbing to a cap). Rolled off the creature's own id, so the same creature in
+    the same fight always thinks the same way and promoting one cannot shift any other
+    roll in the battle.
+  - **A gang-up mark is announced.** A pack converging on your healer with no explanation
+    reads as the game cheating, so the mark is shouted on the turn it is set *or moved*
+    (`Resolution::callout_text`, the same bubble a telegraphed ability uses) — and it can
+    move: `gang_switch_chance` lets a pack switch to a better target mid-fight instead of
+    committing to one hero until it dies.
+  - **One targeting function, finally.** The rule existed as two near-identical copies —
+    one inline in `resolve_monster_turn`, one in `pick_weakest_hostile` for abilities — so
+    a creature could hunt the back rank with its claws and the weakest hero with its
+    breath. `choose_target` is the single place a creature decides.
 - [x] **PT-2 — Save, name, and swap party loadouts in town.** Named compositions
   AND the gear they wore, saved and re-applied at the Drill Yard (whose placeholder
   had promised "build templates" all along). `party_loadouts` + HTTP CRUD +

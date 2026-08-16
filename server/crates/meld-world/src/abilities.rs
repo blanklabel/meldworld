@@ -10,7 +10,7 @@
 use meld_proto::abilities::{
     AbilityEffect, AbilityEffectKind, AbilityTarget, MonsterAbility, ScalingBase, StealTargetKind,
 };
-use meld_proto::enums::DamageType;
+use meld_proto::enums::{DamageType, TargetProfile};
 
 /// Shorthand constructors — the tables below stay readable.
 fn dmg(base: ScalingBase, coeff: f64, ty: DamageType, target: AbilityTarget) -> AbilityEffect {
@@ -447,6 +447,71 @@ pub fn creature_damage_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
 
 /// The [`DamageType`] a creature kind's *basic* attack carries (the fallback
 /// swing the AI mixes into every pool). Physical for most; a few exotics burn.
+/// The targeting profile a creature of `kind` fights with at `level`, in an encounter of
+/// `encounter_class` (CR-9).
+///
+/// Three inputs, in order of authority:
+///
+/// 1. **The kind's own nature.** An ambusher goes for the back rank; a pack animal
+///    converges; a mindless thing swings at whatever is nearest. This is the creature's
+///    character and it never changes.
+/// 2. **The encounter class.** An Elite, a Gatekeeper or a boss is *smarter than the trash
+///    around it* — it is promoted to a tactical profile even when its kind is not.
+/// 3. **Level.** Deeper creatures are smarter ON AVERAGE: past `[ai] smart_level_floor` a
+///    share of ordinary spawns rolls into a tactical profile, and the share climbs with
+///    level to a ceiling. Rolled off the creature's own id + level so it is reproducible
+///    rather than wall-clock — the same creature in the same fight always thinks the same
+///    way.
+pub fn creature_target_profile(
+    kind: &str,
+    encounter_class: &str,
+    level: i32,
+    seed: u64,
+    b: &meld_balance::Ai,
+) -> TargetProfile {
+    // 1. The kind's own nature.
+    let innate = match kind {
+        // Ambushers and skirmishers slip past the front line by trade.
+        "sand_shade" | "gloamhound" | "forest_bloom_stalker" => TargetProfile::Backline,
+        // Pack animals converge on one mark.
+        "thornback_boar" | "rustfang" | "ironmaw" => TargetProfile::GangUp,
+        // Things that read minds go for the mind that matters.
+        "choirmother" | "hollowbishop" | "sepulcher" => TargetProfile::Role,
+        // Big mindless bodies swing at whatever is in front of them.
+        "dune_colossus" | "magma_golem" | "weepingcolossus" | "myconid_brute" => {
+            TargetProfile::Random
+        }
+        _ => TargetProfile::Weakest,
+    };
+    if innate.is_tactical() {
+        return innate;
+    }
+    // 2. A champion is smarter than its escort, whatever it is.
+    match encounter_class {
+        "gatekeeper" => return TargetProfile::Role,
+        "elite" | "undead_rite" => return TargetProfile::GangUp,
+        _ => {}
+    }
+    // 3. …and depth makes ordinary creatures smarter on average.
+    if level < b.smart_level_floor {
+        return innate;
+    }
+    let over = (level - b.smart_level_floor) as f64;
+    let chance = (b.smart_chance_base + b.smart_chance_per_level * over).min(b.smart_chance_cap);
+    // splitmix64 on the creature's own identity: reproducible, and independent of the
+    // battle RNG so promoting a creature cannot shift any other roll in the fight.
+    let mut h = seed ^ (level as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    if ((h >> 11) as f64 / (1u64 << 53) as f64) < chance {
+        // Which kind of smart it becomes is also its own: half hunt the line, half converge.
+        if h & 1 == 0 { TargetProfile::Backline } else { TargetProfile::GangUp }
+    } else {
+        innate
+    }
+}
+
 pub fn creature_basic_attack_type(kind: &str) -> DamageType {
     match kind {
         "thornback_boar" | "dune_colossus" | "magma_golem" | "glacier_maw" | "myconid_brute" => {
@@ -468,6 +533,55 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CR-9: a champion is smarter than its escort, and depth makes ordinary creatures
+    /// smarter ON AVERAGE — the two rules that stop every fight in the game reading the
+    /// same way.
+    #[test]
+    fn creatures_get_smarter_with_rank_and_with_depth() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let ai = &b.ai;
+        // A champion is promoted whatever its kind, at any level.
+        assert!(creature_target_profile("dune_wyrm", "elite", 1, 7, ai).is_tactical());
+        assert!(creature_target_profile("dune_wyrm", "gatekeeper", 1, 7, ai).is_tactical());
+
+        // A kind with its own nature keeps it regardless of rank — that IS its character.
+        assert_eq!(
+            creature_target_profile("sand_shade", "standard", 1, 7, ai),
+            TargetProfile::Backline
+        );
+
+        // …and ordinary spawns get smarter with depth. Measured over many creatures rather
+        // than asserted on one, because the roll is per creature.
+        let share = |level: i32| {
+            let n = 400;
+            let smart = (0..n)
+                .filter(|i| {
+                    creature_target_profile("dune_wyrm", "standard", level, *i as u64, ai)
+                        .is_tactical()
+                })
+                .count();
+            smart as f64 / n as f64
+        };
+        assert_eq!(share(ai.smart_level_floor - 1), 0.0, "upgraded below the floor");
+        let shallow = share(ai.smart_level_floor);
+        let deep = share(200);
+        assert!(deep > shallow, "depth bought no cunning: {shallow} -> {deep}");
+        assert!(deep <= ai.smart_chance_cap + 0.1, "the cap is not a cap: {deep}");
+    }
+
+    /// The roll is off the creature's own identity, so the same creature in the same fight
+    /// always thinks the same way — a profile that flickered between ticks would be a
+    /// creature that changes its mind for no reason a player can see.
+    #[test]
+    fn a_creatures_profile_is_reproducible() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        for seed in [1u64, 99, 12345] {
+            let a = creature_target_profile("dune_wyrm", "standard", 60, seed, &b.ai);
+            let again = creature_target_profile("dune_wyrm", "standard", 60, seed, &b.ai);
+            assert_eq!(a, again);
+        }
+    }
 
     #[test]
     fn every_creature_kind_has_a_pool_and_all_pools_are_well_formed() {

@@ -735,9 +735,22 @@ pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
     table[idx].max(0.1)
 }
 
-// Eight, and each one is a distinct fact the assembly needs: who, against what, in which
-// run, at what balance, from which seed, carrying which wounds, in which formation.
-// Bundling them into a struct would move the arity rather than remove it.
+/// A stable 64-bit hash of a combatant id — the seed for any per-creature roll that must
+/// be reproducible without reaching for the battle RNG (which would make one creature's
+/// roll shift every later one).
+fn hash_id(id: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in id.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+
+// Nine, and each one is a distinct fact the assembly needs: who, against what, in which
+// run, at what balance, from which seed, carrying which wounds, in which formation, and
+// whether the party chose the moment. Bundling them into a struct would move the arity
+// rather than remove it.
 #[allow(clippy::too_many_arguments)]
 pub fn build_battle(
     battle_id: Id,
@@ -828,6 +841,18 @@ pub fn build_battle(
                 .collect();
             f.basic_attack_type =
                 meld_world::abilities::creature_basic_attack_type(ability_key);
+            // CR-9: how it picks who to hit. Its kind's nature first, then its encounter
+            // class (a champion is smarter than its escort), then a level roll — deeper
+            // creatures are smarter on average. Seeded off the creature's own combatant id
+            // so the same creature in the same fight always thinks the same way, and so
+            // promoting one cannot shift any other roll in the battle.
+            f.target_profile = meld_world::abilities::creature_target_profile(
+                ability_key,
+                &m.encounter_class,
+                m.level,
+                hash_id(cid),
+                &balance.ai,
+            );
             f
         })
         .collect();

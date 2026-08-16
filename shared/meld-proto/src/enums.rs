@@ -81,6 +81,17 @@ pub enum DamageType {
 }
 
 impl DamageType {
+    /// Whether this is a PHYSICAL type — a blow that has to reach across the rank.
+    ///
+    /// The front/back row trade is scoped to these: standing back halves what a physical
+    /// blow does to you and what your own physical blows do in return. Everything else —
+    /// a spell, a Focus, a creature's elemental breath — reaches the back rank at full
+    /// force and is unaffected by where its caster stands, which is what makes a caster's
+    /// natural home the back row and gives a martial class a real reason to hold the front.
+    pub fn is_physical(self) -> bool {
+        matches!(self, DamageType::Blunt | DamageType::Slash | DamageType::Pierce)
+    }
+
     /// Parse the UPPERCASE wire key ("FIRE") used in `damage_modifiers` maps.
     pub fn from_wire(key: &str) -> Option<DamageType> {
         Some(match key {
@@ -317,5 +328,33 @@ mod tests {
             CharacterClass::Hunter
         );
         assert_eq!(crate::equipment::class_key(CharacterClass::Hunter), "hunter");
+    }
+}
+
+/// How a creature picks who to hit (CR-9). One rule for every creature made every fight
+/// read the same: the pack always went for the lowest HP, so a party learned one lesson and
+/// it held from the hub to the deep. A profile is set per creature KIND, upgraded by
+/// encounter class (an Elite or a Gatekeeper is smarter than the trash around it), and
+/// rolled toward the smarter end as creature level climbs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetProfile {
+    /// Finish the wounded — the original behaviour, and still the most common.
+    Weakest,
+    /// No pattern at all. Unpredictable rather than stupid: you cannot plan around it.
+    Random,
+    /// Hunt the back rank on purpose. The counter to hiding your casters behind a wall.
+    Backline,
+    /// Go for the ROLE that makes the party work — the healer first, then the casters.
+    Role,
+    /// Converge: the whole pack shares one mark and commits to it, and says so out loud.
+    GangUp,
+}
+
+impl TargetProfile {
+    /// Whether this profile reads the party rather than the HP bars. Used to decide which
+    /// creatures are "smart" when the level roll upgrades them.
+    pub fn is_tactical(self) -> bool {
+        matches!(self, TargetProfile::Backline | TargetProfile::Role | TargetProfile::GangUp)
     }
 }

@@ -145,6 +145,8 @@ pub struct Battle {
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,
     pub back_row_damage_mult: f64,
+    /// Share of its own PHYSICAL damage a back-row hero deals — the other half of the trade.
+    pub back_row_attack_mult: f64,
     pub back_row_target_weight: f64,
     pub party_size_per_player: usize,
     pub skill_power_mult: f64,
@@ -1013,6 +1015,15 @@ pub struct WorldGen {
 /// Creature AI tunables (overworld movement + encounter grouping).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ai {
+    /// CR-9: creature level below which no ordinary spawn is upgraded to a tactical
+    /// targeting profile.
+    pub smart_level_floor: i32,
+    /// Share of ordinary spawns upgraded at the floor, its growth per level, and its cap.
+    pub smart_chance_base: f64,
+    pub smart_chance_per_level: f64,
+    pub smart_chance_cap: f64,
+    /// Chance per attacking turn that a ganging pack re-picks its mark.
+    pub gang_switch_chance: f64,
     pub wander_speed: f64,
     pub chase_speed: f64,
     pub aggro_radius: f64,

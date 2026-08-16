@@ -153,6 +153,12 @@ defend_damage_reduction = 0.5    # content-defined; spike default
 # `back_row_target_weight` of the time (otherwise it redirects to the weakest
 # exposed front-row hero). Martial classes hold the front. [TUNABLE]
 back_row_damage_mult = 0.5
+# …and the other half of the trade: a hero in the back rank also deals this share of its
+# own PHYSICAL damage. Without it the back row was a free 2x effective HP for the whole
+# party — nothing reached past it and nothing was given up for it, so the optimal formation
+# was everyone standing back. A caster loses nothing here (its damage is not physical),
+# which is exactly why the back row is a caster's home and the front line is a martial's.
+back_row_attack_mult = 0.5
 back_row_target_weight = 0.5
 party_size_per_player = 4        # each player controls up to this many heroes (GDD: per-player party) [TUNABLE]
 skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]
@@ -1114,6 +1120,19 @@ peak_min_distance = 45.0         # nearest hub distance an authored peak may spa
 # --- Forest (d 0–100) ---
 # Creature AI (overworld movement + encounter grouping). All [TUNABLE].
 [ai]
+# CR-9 creature targeting: deeper creatures are smarter ON AVERAGE. Below the floor every
+# ordinary spawn fights on its kind's own nature; past it a share rolls into a tactical
+# profile (hunting the back rank, or converging on one mark), and the share climbs with
+# level to a ceiling. Elites/Gatekeepers/bosses are promoted regardless — a champion is
+# smarter than its escort. Rolled off the creature's own id, so the same creature in the
+# same fight always thinks the same way.
+smart_level_floor = 8            # creature level below which nobody is upgraded
+smart_chance_base = 0.10         # share upgraded at the floor…
+smart_chance_per_level = 0.012   # …climbing per level above it…
+smart_chance_cap = 0.55          # …and never past this
+# A gang-up mark is re-picked this often (per attacking turn) so a pack can switch to a
+# better target mid-fight rather than committing to one hero until it dies.
+gang_switch_chance = 0.15
 wander_speed = 1.6            # tiles/sec for passive/idle drifting near home
 chase_speed = 4.2            # tiles/sec when hunting a player
 aggro_radius = 11.0          # aggressive creatures chase players within this range

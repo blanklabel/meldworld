@@ -79,7 +79,7 @@ pub(crate) fn mock_battle_setup(
     // is also the fixture for the two anchoring bugs: `wight` is not `enemies.first()`,
     // so its number used to print over hero slot 0, and grendel takes TWO at once —
     // an all-enemy sweep's numbers used to land on the identical pixel.
-    let mut hit = |target: &str, text: &str, color: Color, age: f32| {
+    let hit = |hitfx: &mut HitFx, target: &str, text: &str, color: Color, age: f32| {
         let stack = hitfx.items.iter().filter(|h| h.target == target).count() as u8;
         hitfx.items.push(Hit {
             target: target.into(),
@@ -91,10 +91,19 @@ pub(crate) fn mock_battle_setup(
         });
     };
     let red = Color::srgb(1.0, 0.5, 0.4);
-    hit("grendel", "-17", red, 0.06);
-    hit("grendel", "-9", red, 0.06);
-    hit("wight", "-23", red, 0.06);
-    hit("h3", "+12", Color::srgb(0.5, 1.0, 0.6), 0.0);
+    hit(&mut hitfx, "grendel", "-17", red, 0.06);
+    hit(&mut hitfx, "grendel", "-9", red, 0.06);
+    hit(&mut hitfx, "wight", "-23", red, 0.06);
+    hit(&mut hitfx, "h3", "+12", Color::srgb(0.5, 1.0, 0.6), 0.0);
+    // CR-9: a ganging pack shouts its mark. Seeded so the bubble is screenshottable
+    // without standing up a server and waiting for a pack to converge on someone.
+    hitfx.callouts.push(Callout {
+        combatant_id: "grendel".into(),
+        text: "The pack marks Hero 3!".into(),
+        age: 0.0,
+        ttl: 1.4,
+        flashing: false,
+    });
     let hero = |id: &str, hp, gauge, class: &str, back: bool| {
         let mut statuses = vec![format!("class:{class}")];
         if back {
