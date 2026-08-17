@@ -4589,6 +4589,35 @@ mod tests {
         assert!(found.is_some(), "no seed placed the end fight past its floor at all");
     }
 
+    /// The `MELD_END_FIGHT` harness moves the fight to the hub by lowering its floor, so a
+    /// tuning pass can be WATCHED instead of modelled. This pins that the override actually
+    /// places it — and close enough to spawn to walk to, which is the whole point.
+    #[test]
+    fn lowering_the_floor_brings_the_end_fight_to_the_hub() {
+        let mut b = Balance::load_default().unwrap();
+        b.encounters.end_fight_min_distance = 30.0;
+        let mut placed = 0;
+        for seed in 0..8u64 {
+            let mut arena = Arena::generate(&b, seed, false);
+            arena.ensure_frontier(&b, 200.0);
+            let enders: Vec<&MonsterSpawn> =
+                arena.monsters.iter().filter(|m| m.encounter_class == "world_end").collect();
+            if enders.len() == b.encounters.end_fight_bosses {
+                let deepest = enders
+                    .iter()
+                    .map(|m| m.position.distance_floor())
+                    .max()
+                    .unwrap_or(0);
+                assert!(
+                    (30..250).contains(&deepest),
+                    "seed {seed}: the harness put the end fight at {deepest} — not a walk"
+                );
+                placed += 1;
+            }
+        }
+        assert!(placed > 0, "lowering the floor never placed the end fight at all");
+    }
+
     /// The tutorial dive is an on-ramp and must never contain it, however far a first-time
     /// player somehow walks.
     #[test]

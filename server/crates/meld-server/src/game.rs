@@ -3738,11 +3738,36 @@ impl GameState {
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or_else(world_seed);
+            // `MELD_END_FIGHT=1` — bring THE END FIGHT to the hub instead of walking an hour
+            // out to it. It only moves where the encounter is placed: the three bosses carry
+            // AUTHORED absolute stats (`set_piece`), so the fight you meet at d30 is
+            // numerically the fight you would meet at d3200. That is the whole reason this
+            // harness can be a one-line override rather than a fake.
+            //
+            // It does NOT make the fight winnable — a starting party dies in about a hit and
+            // a half, which is the tuning working. Pair it with `MELD_GEAR_TIER` below to see
+            // the other side of the gear gate.
+            let balance = match std::env::var("MELD_END_FIGHT") {
+                Ok(v) if v != "0" => {
+                    let mut b = (*self.balance).clone();
+                    b.encounters.end_fight_min_distance =
+                        std::env::var("MELD_END_FIGHT_AT")
+                            .ok()
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                            .unwrap_or(30.0);
+                    tracing::warn!(
+                        at = b.encounters.end_fight_min_distance,
+                        "MELD_END_FIGHT: the end fight is placed near the hub (DEV/QA)"
+                    );
+                    Arc::new(b)
+                }
+                _ => self.balance.clone(),
+            };
             self.world = Some(WorldActor {
-                balance: self.balance.clone(),
+                balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
-                arena: Arena::generate_with(&self.balance, seed, tutorial, force_biome),
-                run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance, now_ms()),
+                arena: Arena::generate_with(&balance, seed, tutorial, force_biome),
+                run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
@@ -3939,6 +3964,33 @@ impl GameState {
             }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
+            // `MELD_GEAR_TIER=<n>` — DEV/QA: dress every hero as if it were wearing a full
+            // set of tier-`n` insured epics, without a Vault full of them. The end fight is
+            // tuned as a GEAR CHECK, and the difference between a geared and an ungeared
+            // party there is 3.5x survivability — so without this the only observable case
+            // is the ungeared one, and the number that matters cannot be looked at.
+            //
+            // Mirrors what `equipped_gear_bonuses` derives from a real six-slot set: one
+            // weapon's worth of atk, four armour pieces' worth of def, each carrying two
+            // epic stat affixes.
+            let gear = match std::env::var("MELD_GEAR_TIER")
+                .ok()
+                .and_then(|v| v.trim().parse::<i32>().ok())
+            {
+                Some(tier) if tier > 0 => {
+                    let l = &inst.balance.loot;
+                    let af = &inst.balance.affix;
+                    let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
+                    let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
+                    let atk = (piece + affix).round() as i32;
+                    let def = (4.0 * (piece + affix)).round() as i32;
+                    tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
+                    gear.iter()
+                        .map(|_| meld_db::GearBonus { atk, def, ..Default::default() })
+                        .collect()
+                }
+                _ => gear,
+            };
             inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);

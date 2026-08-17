@@ -394,6 +394,24 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
   `[[floor]]` def in the content pool, e.g. `guardia_forest`), so you can screenshot
   a *specific* dungeon instead of whichever the entrance rolled.
 
+- **`MELD_END_FIGHT=1`** (+ optional `MELD_END_FIGHT_AT=<distance>`, default 30) drops
+  **the end fight** — EW's three named bosses — next to the hub instead of an hour's walk
+  out at d3200. It only moves WHERE the encounter is placed: the bosses carry authored
+  absolute stats (`set_piece`), so the fight you meet at d30 is numerically the one you
+  would meet at d3200. Keep `MELD_END_FIGHT_AT` above `[ai] hub_safe_radius` (13) or no
+  creature spawns there to promote and nothing is placed at all.
+- **`MELD_GEAR_TIER=<n>`** dresses every hero as though wearing a full six-slot set of
+  tier-`n` insured epics, without a Vault full of them. The end fight is tuned as a **gear
+  check** (tier-32 gear is ~3.5x survivability there), so without this the only observable
+  case is the ungeared one — which is exactly the number that does not need checking.
+  ⚠️ **Neither flag gets you an automatic screenshot OF the fight.** Autoplay walks the
+  clear path and the bosses sit at a scattered creature position, so it does not reliably
+  collide with them; the placement is verified by
+  `lowering_the_floor_brings_the_end_fight_to_the_hub` rather than by a captured frame.
+  Watching the fight itself still wants a `qa/` bot that steers into it — which is what a
+  real tuning pass should use anyway, since it can report rounds and damage rather than a
+  picture.
+
 Combine with `MELD_AUTOPLAY` + the file-channel screenshot request. The wrapper
 `client/scripts/view_biome.sh <biome> [seed] [frames]` boots the embedded binary with
 those flags, sets a pulled-back survey camera via `LOOK_FILE`, and drops
