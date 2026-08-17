@@ -636,6 +636,10 @@ struct Session {
     /// The party — one class key per hero slot (wire form: "explorer" / "psyker" /
     /// "resonant"). Sent on enter_maze. Chosen in TOWN, not at login.
     party: Vec<String>,
+    /// PG-2: the departure hub to dive from — a `meld_proto::hubs` key, or `None` for the
+    /// deepest one this account has reached. The server clamps it against the account's own
+    /// record either way, so this is a preference and never an authority.
+    hub: Option<String>,
     /// True once this party came from somewhere real — the account's persisted
     /// composition or the player's own pick — rather than the newcomer default. Town
     /// prompts only when it is false, so a returning player is never re-asked.
@@ -654,6 +658,7 @@ struct Session {
 impl Default for Session {
     fn default() -> Self {
         Session {
+            hub: None,
             player_id: String::new(),
             username: String::new(),
             password: String::new(),
@@ -955,6 +960,9 @@ struct LevelUpRoot;
 struct UnlocksRes {
     owned: Vec<String>,
     party_slots: i32,
+    /// PG-2: the account's all-time deepest distance. The hub chooser lists
+    /// `meld_proto::hubs::hubs_reached(this)`.
+    deepest_ever: i32,
     pending: std::collections::VecDeque<meld_client::net::UnlockLine>,
     current: Option<meld_client::net::UnlockLine>,
     elapsed: f32,

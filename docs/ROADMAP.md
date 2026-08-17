@@ -734,6 +734,58 @@ burns on death/leave; some is single-use. See
     The arithmetic behind these two levers was right and the game was still unplayable
     once (creature attack was scaled by party size and wiped level-1 parties), so the
     numbers get checked by playing them.
+- [x] **PG-2 — Departure hubs: the ladder becomes reachable.** `base_run_level(distance)`
+  has always existed and is tested; `departure_hub_distance` is hard-coded to `0` in
+  `game.rs`, so every hero starts every dive at level 1 and everything above roughly level
+  16 — which is now most of the game's abilities — is authored ahead of what any player can
+  reach (see `PG-1`'s ⚠️ note). A hub at distance D starts every hero at
+  `1 + 0.078 × D`. This is the unblocker, and it is small, because every part already
+  exists.
+  - **A hub is somewhere you have BEEN.** Not a purchase and not a trigger: the gate is
+    your own deepest recorded distance. The record is already server-owned and already
+    written off **validated movement** — the `vanguard` table (`P1-1`), which cannot be
+    client-submitted. Read the **all-time** max across seasons, never the live season: a
+    season reset must not revoke a hub you demonstrably reached.
+  - **Build it as a LOOKUP, not a hub entity.** The run reads one integer. Server-owned
+    hubs are rows in "what is the deepest departure point available to this account";
+    when `BD-5` lands, a player's forward town becomes another row and nothing is
+    rewritten. Do **not** give a hub its own placement/ownership/lifecycle model — that
+    is the `Structure` primitive, and `BD-2`'s discipline is explicit (*one primitive,
+    many functions — do not build towns, anchors, portals, camps as separate systems*).
+  - *Shipped:* `meld_proto::hubs` (seven hubs, d0 → d3250), `deepest_distance_ever` reading
+    `MAX(max_distance)` across every season, `run.enter_maze { hub }`, and `[H]` at the
+    Threshold cycling only the hubs you have stood on. `game.rs`'s hard-coded `0` is gone.
+    **Clamped, never rejected** — the same shape as `party` being clamped to owned classes:
+    a client naming a hub it has not earned gets the deepest one it has, so a stale client
+    still gets a dive. No new persistence: the `vanguard` table was already the record.
+    The chooser needs a starting level to display and the client has no `balance.toml`, so
+    `hubs::start_level` carries the formula — checked against the real `base_run_level` at
+    every hub by `the_hub_chooser_agrees_with_the_real_curve`, because a copied formula is
+    a formula that drifts.
+  - **The end of the game sits at d≈3250,** and it falls out of the maths rather than
+    being picked: `base_run_level` reaches the `max_hero_level` cap of **255** at
+    **d3256**, where `mlevel(d) = 260` — creature level matched to the hero ceiling.
+    Past there a deeper hub buys nothing (heroes are capped) while creatures scale
+    forever, so it is the last distance that is a fair fight by construction. The
+    combat ratios hold steady the whole way out for a full party (≈1 turn to fell a
+    standard creature, ≈10 turns and ~7 hits-to-drop-a-hero against a Gatekeeper, at
+    d500 *and* d3256), so an **`EW` end-world boss can sit at d3250 built from the
+    multipliers already in balance** — no special-casing. Note the ratios only hold
+    once `encounter_party_scale` is included; hero attack alone outgrows creature
+    `stat_mult` by ~5x, and it is the party-size HP ramp that closes it.
+  - **Build order, and why the player-built version is not this item.** `BD-5`'s forward
+    town *sustains* Run Level — it is a second **source** for the same integer, not a
+    different system. But it is the sixth link in its own chain and gated behind the two
+    largest deferred epics:
+    `SC-3` (world persistence — *a town that dies at instance-close is pointless*; PR-a
+    and PR-b landed, the `WorldActor`-as-its-own-task boundary, multi-world, hub handoff
+    and Postgres hibernation remain) → `CR-4` (the sim budget `BD-0` must fit inside with
+    no new budget) → `BD-1` (wood/stone) → `BD-2` + `BD-9` (the `Structure` primitive and
+    builder mode, built together) → `BD-4` (creatures siege structures, extends `CR-2`) →
+    **`BD-5`** (towns, and the forward-town Run Level rule) → `BD-7` (persistence wiring)
+    → `BD-11` (NPC garrisons, so a hub survives its owner being offline) → `SOC` (guild
+    ownership). Ship `PG-2` server-owned now so the ladder is reachable; the lookup is
+    what lets `BD-5` add to it instead of replacing it.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

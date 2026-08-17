@@ -318,6 +318,17 @@ mark is owed its reward however long the walk home takes. The menu's **Quests** 
 gated on owning `class_hunter` — the menu never advertises what you have not earned — and
 is reading-only, because the reward is taken at the board.
 
+**A dive departs from a hub you have STOOD on** (PG-2, `meld_proto::hubs`). A hub at
+distance D starts every hero at `base_run_level(D)` = `1 + 0.078 × D`, so the deepest
+(d3250) starts them at the 255 cap — which is why that distance is the structural end of the
+game: past it a hub buys nothing while creatures keep scaling. The gate is the account's own
+all-time deepest distance from the `vanguard` table (written off *validated movement*, read
+across ALL seasons — a season rollover must not revoke ground you stood on). It is a
+**lookup, not an entity**: the run reads one integer, so when `BD-5`'s player-built forward
+towns land they add a row rather than replacing a system — a hub deliberately has no
+placement or ownership of its own, because that is the `Structure` primitive. A requested
+hub is **clamped, never rejected**, exactly as `party` is clamped to owned classes.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a

@@ -459,6 +459,13 @@ pub mod run {
         /// roster; the server also reads/writes them via the `/v1/heroes` HTTP API.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub names: Option<Vec<String>>,
+        /// Which departure hub to dive from (PG-2) — a `meld_proto::hubs` key. The server
+        /// validates it against the caller's own deepest recorded distance and CLAMPS to
+        /// the deepest they have actually reached rather than rejecting, the way
+        /// `party` is clamped to owned classes: a stale client should get a dive, not an
+        /// error. Absent means the Center Hub.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub hub: Option<String>,
         /// Solo dive: a private instance for just the caller (no other humans).
         /// When absent/false, legacy behavior groups all waiting players (used by
         /// the headless bot tests); the co-op path is the `lobby.*` flow.
@@ -843,6 +850,12 @@ pub mod run {
         /// Whether to announce these with the banner. False on the connect-time
         /// inventory: nobody wants four banners at login.
         pub banner: bool,
+        /// PG-2: the deepest distance this account has ever reached, all-time. A departure
+        /// hub is a thing the account owns, so it rides the inventory — and the client
+        /// derives the hub LIST from `meld_proto::hubs` rather than being sent one, so the
+        /// two sides cannot disagree about which hubs exist.
+        #[serde(default)]
+        pub deepest_ever: i32,
     }
     /// One unlock, described well enough for the banner and the locked row.
     #[derive(Debug, Clone, Serialize, Deserialize)]

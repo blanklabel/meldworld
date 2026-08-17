@@ -450,6 +450,34 @@ impl Db {
     /// Monotonic: the stored record only ever grows, and `achieved_at` is stamped
     /// only when the record improves, so the earliest-to-the-frontier tie-break
     /// holds (spec "Ranking rules"). Returns `true` on a new personal best.
+    /// The deepest distance this player has EVER reached, across every season (PG-2).
+    ///
+    /// All-time on purpose: the live-season read is what the board shows, but a season
+    /// rollover must not revoke a departure hub you demonstrably stood on. `0` when there
+    /// is no record at all, which is a brand-new account — and the Center Hub clears that.
+    pub async fn deepest_distance_ever(&self, player_id: Uuid) -> Result<i32, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let row: Option<(i32,)> = sqlx::query_as(
+                    "SELECT COALESCE(MAX(max_distance), 0) FROM vanguard WHERE player_id = $1",
+                )
+                .bind(player_id)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(|r| r.0).unwrap_or(0))
+            }
+            Backend::Mem(m) => {
+                let g = m.lock().unwrap();
+                Ok(g.vanguard
+                    .iter()
+                    .filter(|((_, pid), _)| *pid == player_id)
+                    .map(|(_, (d, _))| *d)
+                    .max()
+                    .unwrap_or(0))
+            }
+        }
+    }
+
     pub async fn record_vanguard_distance(
         &self,
         player_id: Uuid,
