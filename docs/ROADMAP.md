@@ -678,6 +678,17 @@ burns on death/leave; some is single-use. See
     every elemental resistance permanently) and **Blackout** (Dominate Mind: it cannot dodge
     at all — checked before the roll, because "cannot dodge" that still rolls is a promise
     the engine breaks one time in twenty).
+  - *Balance pass on the above, and it found four things.* **Blackout was dead code** — it
+    read as "the target cannot dodge", but `Fighter::dodge` is only ever set for heroes and
+    no creature ability grants Evasion, so it took away something no creature had. A blinded
+    creature's own blows go wide instead, which is what this engine can express. **Brittle
+    was stronger than its source** (all resistances at once vs the doc's one) and now takes
+    the strongest one per turn. **Shield reached other players' heroes** in co-op, a property
+    the game reserves to set bonuses; it is scoped to its caster's own party, and
+    `the_smithwright_is_the_best_party_warder` now guards that axis the way
+    `the_healer_is_the_best_healer` guards the other. And **`cap_role_hunters`** holds an
+    encounter to one role-hunter: measured, a capped pack puts 20% of its damage on the
+    healer where an uncapped one put 100%.
   - **Remains from the Psyker doc:** Psi Points as a real cost, and the Psychic Strain save
     that threatens a Focus when the Psyker is hit. The doc's REACTION aspects (Dampen,
     Static, Vent, Flicker, Rewind) and POSITIONAL ones (Push, Pull, Warp) are deliberately

@@ -194,8 +194,10 @@ pub struct Battle {
     pub psyker_shield_party_fraction: f64,
     /// Acceleration: gauge filled on the chosen ally each Psyker turn.
     pub psyker_accel_gauge: f64,
-    /// Blackout: ticks the target is left unable to dodge.
+    /// Blackout: ticks the blinding lasts.
     pub psyker_blackout_ticks: u64,
+    /// Added to the defender's dodge while a BLINDED creature is the attacker.
+    pub psyker_blackout_miss: f64,
     pub psyker_vortex_ticks: u64,
     pub resonant_second_life_revive_fraction: f64,
     pub resonant_second_life_heal_fraction: f64,

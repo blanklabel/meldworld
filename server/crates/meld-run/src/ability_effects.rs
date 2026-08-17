@@ -564,6 +564,45 @@ mod tests {
         }
     }
 
+    /// The mirror of `the_healer_is_the_best_healer`, for the other support axis. Nothing
+    /// protected it, and the Psyker's Shield walked straight past the Smithwright: the
+    /// Foundry's whole identity is putting a Barrier on the party, and a Focus that tops
+    /// everyone up EVERY turn for one slot beats a cast that costs a turn each time.
+    ///
+    /// Per-grant is the honest comparison. A Focus ticks for free once held, so its grant
+    /// has to be the smaller one or "who is the best warder" stops being a question a
+    /// player asks.
+    #[test]
+    fn the_smithwright_is_the_best_party_warder() {
+        let b = Balance::load_default().unwrap();
+        let smith = b.smithwright.bulwark_barrier_fraction;
+        let psyker = b.battle.psyker_shield_party_fraction;
+        let explorer = b.battle.explorer_stable_ground_fraction;
+        assert!(
+            psyker < smith,
+            "Psyker Shield ({psyker}) grants more party Barrier per tick than Plant the \
+             Bulwark ({smith}) does per CAST — and the Focus ticks for free"
+        );
+        assert!(
+            psyker < explorer,
+            "Psyker Shield ({psyker}) out-wards Stable Ground ({explorer})"
+        );
+    }
+
+    /// Blackout has to stay under Misdirection: making a foe swing wide is the Explorer's
+    /// L10 identity, and a Psyker aspect held on one creature should not out-blind it.
+    #[test]
+    fn blackout_does_not_out_dazzle_the_explorer() {
+        let b = Balance::load_default().unwrap();
+        assert!(
+            b.battle.psyker_blackout_miss < b.battle.explorer_misdirection_miss,
+            "Blackout ({}) blinds harder than Misdirection ({})",
+            b.battle.psyker_blackout_miss,
+            b.battle.explorer_misdirection_miss
+        );
+    }
+
+
     /// Every ability in the registry gets a number, or the row is back to flavour —
     /// which is the bug this module exists to fix. A new ability with no arm here
     /// fails loudly rather than shipping a blank line.

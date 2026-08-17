@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
-use meld_proto::enums::{CharacterClass, CombatantKind, EncounterClass, RunResult};
+use meld_proto::enums::{CharacterClass, CombatantKind, EncounterClass, RunResult, TargetProfile};
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
 
@@ -735,6 +735,33 @@ pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
     table[idx].max(0.1)
 }
 
+/// **At most one creature per encounter hunts the party's ROLES.**
+///
+/// Profiles are rolled per creature, independently, so nothing stopped a pack of five all
+/// coming to the same conclusion — and `Role` means "kill the healer first". Five creatures
+/// arriving at that answer separately is not five decisions, it is one decision applied five
+/// times, and the healer cannot survive it.
+///
+/// Landed the same release as the back-row change (physical-only mitigation), and the two
+/// compound: four of the nine innately-tactical kinds — Choirmother, Hollowbishop, Sepulcher,
+/// Gloamhound — carry a non-physical basic attack, so the rank does not protect the healer
+/// from them either. The first `Role` creature in the encounter keeps it; the rest fall back
+/// to hunting the weakest, which is still pressure without being a coordinated execution.
+/// `GangUp` is deliberately left alone: it already converges on ONE shared mark, and it
+/// announces itself.
+fn cap_role_hunters(enemies: &mut [Fighter]) {
+    let mut seen = false;
+    for f in enemies.iter_mut() {
+        if f.target_profile != TargetProfile::Role {
+            continue;
+        }
+        if seen {
+            f.target_profile = TargetProfile::Weakest;
+        }
+        seen = true;
+    }
+}
+
 /// A stable 64-bit hash of a combatant id — the seed for any per-creature roll that must
 /// be reproducible without reaching for the battle RNG (which would make one creature's
 /// roll shift every later one).
@@ -783,7 +810,7 @@ pub fn build_battle(
 
     // One enemy Fighter per grouped creature, carrying its faction + flee flag so
     // the battle can pit factions against each other.
-    let enemy_fighters: Vec<Fighter> = enemies
+    let mut enemy_fighters: Vec<Fighter> = enemies
         .iter()
         .map(|(m, cid)| {
             // FS-4 unique boss mechanics: an Elite/Gatekeeper carrying a named
@@ -856,6 +883,7 @@ pub fn build_battle(
             f
         })
         .collect();
+    cap_role_hunters(&mut enemy_fighters);
 
     // The encounter class is the strongest present (gatekeeper > elite > standard).
     let encounter_class = enemies
@@ -1036,6 +1064,40 @@ mod tests {
         assert_eq!(base_run_level(0, &b), 1);
         assert_eq!(base_run_level(500, &b), 40);
     }
+
+    /// At most ONE creature per encounter hunts the party's roles. Five creatures reaching
+    /// "kill the healer first" independently is not five decisions, it is one decision
+    /// applied five times — and the healer cannot survive it.
+    #[test]
+    fn only_one_creature_per_encounter_hunts_the_healer() {
+        let mut pack: Vec<Fighter> = (0..5)
+            .map(|i| {
+                let mut f = Fighter::new(
+                    format!("m{i}"),
+                    CombatantKind::Monster,
+                    None,
+                    Some("choirmother".into()),
+                    1,
+                    100,
+                    10,
+                    2,
+                    50,
+                );
+                f.target_profile = TargetProfile::Role;
+                f
+            })
+            .collect();
+        cap_role_hunters(&mut pack);
+        let hunters = pack.iter().filter(|f| f.target_profile == TargetProfile::Role).count();
+        assert_eq!(hunters, 1, "a whole pack converged on the healer independently");
+        // The rest still apply pressure — they fall back, they do not go passive.
+        assert_eq!(
+            pack.iter().filter(|f| f.target_profile == TargetProfile::Weakest).count(),
+            4,
+            "the demoted creatures should hunt the weakest, not stop fighting"
+        );
+    }
+
 
     #[test]
     fn xp_award_levels_up() {
