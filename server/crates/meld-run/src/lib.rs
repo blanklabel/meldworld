@@ -1058,6 +1058,28 @@ mod tests {
         }
     }
 
+    /// The client has no `balance.toml`, so `meld_proto::hubs::start_level` carries a copy
+    /// of `base_run_level`'s formula purely so a chooser can say "heroes start at 40". A
+    /// copy is a thing that drifts, so it is checked against the real one at every hub —
+    /// and against the level cap, which is what makes the deepest hub the end of the ladder.
+    #[test]
+    fn the_hub_chooser_agrees_with_the_real_curve() {
+        let b = Balance::load_default().unwrap();
+        for h in meld_proto::hubs::HUBS {
+            assert_eq!(
+                meld_proto::hubs::start_level(h.distance),
+                base_run_level(h.distance, &b),
+                "{} advertises a different starting level than the run would give it",
+                h.key
+            );
+        }
+        let deepest = meld_proto::hubs::HUBS.last().unwrap();
+        assert!(
+            base_run_level(deepest.distance, &b) <= b.runs.max_hero_level,
+            "the deepest hub starts heroes above the level cap"
+        );
+    }
+
     #[test]
     fn base_run_levels_match_canon() {
         let b = Balance::load_default().unwrap();

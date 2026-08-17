@@ -28,7 +28,7 @@ pub const GUEST_PASSWORD: &str = "meld-guest-password";
 pub enum ClientCmd {
     Connect { username: String, password: String },
     /// Enter the maze with the built party (one class key per hero slot).
-    EnterMaze { party: Vec<String>, tutorial: bool },
+    EnterMaze { party: Vec<String>, tutorial: bool, hub: Option<String> },
     Move { dx: f64, dy: f64 },
     /// Battle commands. `actor` is which of the player's heroes acts; `target` is the
     /// chosen combatant (an enemy for Attack/offensive Skill, an ally for a
@@ -569,6 +569,10 @@ pub enum ServerMsg {
         owned: Vec<String>,
         party_slots: i32,
         banner: bool,
+        /// PG-2: the account's all-time deepest distance — the bar every departure hub is
+        /// gated on. The hub LIST comes from `meld_proto::hubs`, so this is the only number
+        /// that has to travel.
+        deepest_ever: i32,
     },
     /// The party gained a level — play the classic stat-gain screen.
     LevelUp {
@@ -1838,9 +1842,9 @@ impl Inner {
             // The client's direct enter is always a solo (private) dive; co-op
             // goes through the lobby. (Bot tests that want grouping send raw JSON
             // without `solo`.)
-            ClientCmd::EnterMaze { party, tutorial } => self.send_env(
+            ClientCmd::EnterMaze { party, tutorial, hub } => self.send_env(
                 wr::EnterMaze::TYPE,
-                json!({ "party": party, "solo": true, "tutorial": tutorial }),
+                json!({ "party": party, "solo": true, "tutorial": tutorial, "hub": hub }),
             ),
             ClientCmd::Move { dx, dy } => {
                 self.input_seq += 1;
@@ -2377,6 +2381,7 @@ impl Inner {
                         .unwrap_or_default(),
                     party_slots: raw.payload["party_slots"].as_i64().unwrap_or(1) as i32,
                     banner: raw.payload["banner"].as_bool().unwrap_or(false),
+                    deepest_ever: raw.payload["deepest_ever"].as_i64().unwrap_or(0) as i32,
                 });
             }
             "run.level_up" => {

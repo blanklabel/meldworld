@@ -67,6 +67,9 @@ fn main() {
                     net.send(ClientCmd::EnterMaze {
                         party: vec![class.clone()],
                         tutorial: false,
+                        // The smoke bot always dives from the Center Hub: it asserts the
+                        // whole loop from a fresh account, which has reached nowhere else.
+                        hub: None,
                     });
                 }
                 ServerMsg::RunStarted { .. } => {

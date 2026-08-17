@@ -378,7 +378,11 @@ pub(crate) fn city_action_buttons(
                     session.entered = true;
                     session.coop = false;
                     session.status = "stepping through The Threshold...".to_string();
-                    net.0.send(ClientCmd::EnterMaze { party: session.party.clone(), tutorial: false });
+                    net.0.send(ClientCmd::EnterMaze {
+                        party: session.party.clone(),
+                        tutorial: false,
+                        hub: session.hub.clone(),
+                    });
                 }
             }
             CityAct::Party => {
@@ -685,6 +689,22 @@ pub(crate) fn city_input(
     let at_threshold = city
         .near
         .is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Dive));
+    // PG-2: [H] at the Threshold cycles which departure hub to leave from — the deeper
+    // the hub, the higher every hero starts. The list is only the hubs this account has
+    // actually STOOD on (`hubs_reached` of its all-time deepest distance), so a new player
+    // sees one entry and never a menu of locked rows. The server clamps regardless.
+    if keys.just_pressed(KeyCode::KeyH) && at_threshold {
+        let reached = meld_proto::hubs::hubs_reached(unlocks.deepest_ever);
+        let here = session
+            .hub
+            .as_deref()
+            .and_then(|k| reached.iter().position(|h| h.key == k))
+            .unwrap_or(reached.len().saturating_sub(1));
+        let next = reached[(here + 1) % reached.len()];
+        session.hub = Some(next.key.to_string());
+        let start = meld_proto::hubs::start_level(next.distance);
+        session.status = format!("departing from {} - heroes start at {start}", next.name);
+    }
     let dive = keys.just_pressed(KeyCode::Enter)
         || (keys.just_pressed(KeyCode::KeyE) && at_threshold)
         || (autoplay.0 && !city_idle.0);
@@ -702,6 +722,7 @@ pub(crate) fn city_input(
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
             tutorial: tutorial_dive,
+            hub: session.hub.clone(),
         });
         return;
     }

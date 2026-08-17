@@ -546,6 +546,10 @@ struct Session {
     /// roadmap WG-2); every dive after gets a randomized biome order + start.
     /// Defaults `false` until loaded; the load lands before the first `enter_maze`.
     has_dived: bool,
+    /// PG-2: the deepest distance this account has EVER reached, all-time. The bar every
+    /// departure hub is gated on — loaded on connect from the `vanguard` record, which is
+    /// written off validated movement and cannot be client-submitted.
+    deepest_ever: i32,
     /// Account-permanent unlocks (roadmap CL-1) — which party slots and classes
     /// this account has earned. Loaded on connect; `None` until then, and a party
     /// built before the load lands is NOT gated (the load beats the first
@@ -626,12 +630,14 @@ fn unlock_inventory(
     owned: &[String],
     newly: &[&'static meld_proto::unlocks::UnlockDef],
     banner: bool,
+    deepest_ever: i32,
 ) -> wr::Unlocked {
     wr::Unlocked {
         unlocks: newly.iter().map(|d| meld_proto::unlocks::view(d)).collect(),
         owned: owned.to_vec(),
         party_slots: meld_proto::unlocks::party_slots(owned),
         banner,
+        deepest_ever,
     }
 }
 
@@ -2989,6 +2995,7 @@ impl GameState {
                         hero_names: None,
                         hero_rows: None,
                         has_dived: false,
+                        deepest_ever: 0,
                         unlocks: None,
                         pending_materials: Vec::new(),
                         hunts: None,
@@ -3099,7 +3106,8 @@ impl GameState {
         let _ = self
             .db_writes
             .send(DbWrite::Unlocks(player_id.to_string(), keys));
-        let msg = unlock_inventory(&owned, &newly, true);
+        let deepest = self.sessions.get(player_id).map(|s| s.deepest_ever).unwrap_or(0);
+        let msg = unlock_inventory(&owned, &newly, true, deepest);
         self.dispatch(vec![out_msg(player_id, &msg)]);
     }
 
@@ -3632,7 +3640,8 @@ impl GameState {
             )];
         }
         let wants_tutorial = req.as_ref().and_then(|e| e.tutorial).unwrap_or(false);
-        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial)
+        let wants_hub = req.as_ref().and_then(|e| e.hub.clone());
+        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial, wants_hub)
     }
 
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
@@ -3644,17 +3653,27 @@ impl GameState {
         initiator: &str,
         client_seq: Option<u32>,
         wants_tutorial: bool,
+        // The departure hub the initiator asked for (PG-2), if any. Clamped below.
+        wants_hub: Option<String>,
     ) -> Vec<Outgoing> {
-        // Every dive departs from the Center Hub, so `base_run_level` is always 1 and
-        // every hero starts every dive at level 1 (XP is dive-scoped by design — see
-        // docs/proposals/progression-and-unlocks.md).
+        // PG-2 — where this dive departs from, and therefore what level its heroes start
+        // at (`meld_run::base_run_level`). This was hard-coded to the Center Hub, which is
+        // why every hero started every dive at level 1 and the ladder above roughly level
+        // 16 was authored ahead of anything reachable.
         //
-        // THIS is the one line that makes the deep ability ladder reachable. Deeper
-        // departure hubs are a later feature; when they land, this becomes the chosen
-        // hub's distance and `meld_run::base_run_level` does the rest. Until then,
-        // abilities above roughly level 16 are authored ahead of the system that
-        // reaches them — do NOT "fix" that by rescaling the ladder down.
-        let departure_hub_distance = 0;
+        // **CLAMPED, not rejected**, exactly as `party` is clamped to owned classes: a
+        // client naming a hub the account has not reached gets the deepest one it HAS,
+        // rather than an error. The bar is the account's own all-time deepest distance,
+        // read from the `vanguard` record — server-written off validated movement, so a
+        // client cannot ask its way deeper than it has walked.
+        let deepest_ever =
+            self.sessions.get(initiator).map(|s| s.deepest_ever).unwrap_or(0);
+        let requested = wants_hub.as_deref().and_then(meld_proto::hubs::hub);
+        let hub = match requested {
+            Some(h) if h.distance <= deepest_ever => h,
+            _ => meld_proto::hubs::deepest_hub(deepest_ever),
+        };
+        let departure_hub_distance = hub.distance;
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
         // Create the shared instance on the first entry.
@@ -4261,7 +4280,9 @@ impl GameState {
         let ids: Vec<String> = members.into_iter().map(|(pid, _)| pid).collect();
         // Co-op dives are always the normal randomized run (the tutorial is a solo,
         // first-load onboarding — never the shared lobby path).
-        self.form_run(ids, player_id, Some(seq), false)
+        // A co-op dive departs from the INITIATOR's deepest hub — the lobby leader is the
+        // one whose record the run is scoped to, and `form_run` clamps it anyway.
+        self.form_run(ids, player_id, Some(seq), false, None)
     }
 
 }
@@ -5723,11 +5744,21 @@ impl GameState {
                         s.has_dived = dived;
                     }
                 }
+                // PG-2: which departure hubs this account has earned by standing on them.
+                if let Ok(deepest) = self.db.deepest_distance_ever(uid).await {
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.deepest_ever = deepest;
+                    }
+                }
                 // CL-1: what this account owns. Sent straight back with
                 // `banner: false` so the party builder can grey the rows it
                 // cannot field without four banners firing at login.
                 if let Ok(owned) = self.db.get_unlocks(uid).await {
-                    let inventory = unlock_inventory(&owned, &[], false);
+                    // `deepest_ever` was loaded just above, so the inventory carries the
+                    // hub bar in the same message the party builder already reads.
+                    let deepest =
+                        self.sessions.get(&pid).map(|s| s.deepest_ever).unwrap_or(0);
+                    let inventory = unlock_inventory(&owned, &[], false, deepest);
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.unlocks = Some(owned);
                     }
