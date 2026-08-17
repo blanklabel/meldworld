@@ -157,6 +157,14 @@ pub struct VanguardEntry {
     pub fights: i32,
     #[serde(default)]
     pub flees: i32,
+    /// The END FIGHT's mark — `"wood"` for felling three of the world's bosses together,
+    /// and room above it for whatever the real end is worth. Absent on a posting that has
+    /// not felled it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub star: Option<String>,
+    /// Milliseconds the cleared run took. Absent unless starred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_ms: Option<i64>,
 }
 
 /// `GET /v1/vanguard` / `GET /v1/vanguard/:season` response.

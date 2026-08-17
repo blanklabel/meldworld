@@ -906,6 +906,23 @@ pub mod run {
         const TYPE: &'static str = "run.harvest";
     }
 
+    /// S2C — the END FIGHT is down (EW, first cut). The dive ends here: you are put back in
+    /// Last City holding what you carried out plus `pieces` insured rewards, and your heroes
+    /// are level 1 again, because levels were only ever dive-scoped.
+    ///
+    /// `omen` is deliberately unexplained. Three of the world's bosses stood together and
+    /// the ground still is not still — whatever that means is EW-4's to answer.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct WorldEndFelled {
+        pub omen: String,
+        /// Milliseconds from the dive starting to the fight ending — what the board stars.
+        pub clear_ms: i64,
+        pub pieces: i32,
+    }
+    impl Message for WorldEndFelled {
+        const TYPE: &'static str = "run.world_end_felled";
+    }
+
     /// What a Vanguard posting records: not only how deep, but HOW. A run that fought 500
     /// encounters and one that fought none reach the same tile by completely different
     /// means, and both are worth reading on the board.

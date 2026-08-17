@@ -734,7 +734,7 @@ burns on death/leave; some is single-use. See
     The arithmetic behind these two levers was right and the game was still unplayable
     once (creature attack was scaled by party size and wiped level-1 parties), so the
     numbers get checked by playing them.
-- [x] **PG-2 — Departure hubs: the ladder becomes reachable.** `base_run_level(distance)`
+- [ ] **PG-2 — Departure hubs: the ladder becomes reachable.** 🟡 *Designed, deliberately NOT wired.* `base_run_level(distance)`
   has always existed and is tested; `departure_hub_distance` is hard-coded to `0` in
   `game.rs`, so every hero starts every dive at level 1 and everything above roughly level
   16 — which is now most of the game's abilities — is authored ahead of what any player can
@@ -752,7 +752,16 @@ burns on death/leave; some is single-use. See
     rewritten. Do **not** give a hub its own placement/ownership/lifecycle model — that
     is the `Structure` primitive, and `BD-2`'s discipline is explicit (*one primitive,
     many functions — do not build towns, anchors, portals, camps as separate systems*).
-  - *Shipped:* `meld_proto::hubs` (seven hubs, d0 → d3250), `deepest_distance_ever` reading
+  - ⚠️ **HELD OFF.** The registry, the all-time distance read and the "have you been there"
+    gate all exist and are tested, but `form_run` ignores them and the chooser is gone: it
+    was **half-wired**, because `add_avatar` spawns every dive at the ORIGIN regardless, so
+    departing from a deep hub handed out a level-40 party in the tutorial ring — a
+    level-select with fiction on it. Finishing it needs spawn-at-distance *and* frontier
+    generation around that distance, and extraction (the deep portal, the west-return
+    border) still assumes d0 is the start. It may also not be needed: the end-world depth is
+    about an hour away on foot, so the ladder it was meant to unblock may not need
+    unblocking. Left inert rather than half-live.
+  - *Built and inert:* `meld_proto::hubs` (seven hubs, d0 → d3250), `deepest_distance_ever` reading
     `MAX(max_distance)` across every season, `run.enter_maze { hub }`, and `[H]` at the
     Threshold cycling only the hubs you have stood on. `game.rs`'s hard-coded `0` is gone.
     **Clamped, never rejected** — the same shape as `party` being clamped to owned classes:
@@ -1609,7 +1618,30 @@ spike that makes the whole economy cohere.
 > Cradle") and **Ometus** — a call is needed on Slake inheriting Ometus's desire domain
 > so Ometus can be elevated to the meta-antagonist (see the doc's reconciliation).
 
-- [ ] **EW-0 — Boss framework (extends `FS-4`).** `WorldBoss` defs, raid-scale merge cap,
+- [ ] **EW-0 — Boss framework (extends `FS-4`).** 🟡 *A first cut of the END FIGHT ships:*
+  past `[encounters] end_fight_min_distance` (d3200) one encounter becomes **three named
+  bosses standing together** — peers, not a boss with a retinue — guaranteed rather than
+  rolled and placed **once per instance**, because it is the thing the walk out is pointed
+  at. d3200 is where it sits because `base_run_level` reaches the 255 cap at d3256: the last
+  distance that is a fair fight by construction. Reports as Gatekeeper-class, so it is not
+  fleeable like trash.
+  - **Felling it ends the dive.** Three **insured** pieces go into the run's loot and the
+    player is enqueued for an already-due extraction — the same route `west_return` uses, so
+    the tested banking path carries everything home rather than a second one being written.
+    Heroes come back at level 1 because levels were only ever dive-scoped; nothing resets
+    them.
+  - **A wood star and a clear time** land on the Vanguard posting (`record_world_end`).
+    Wood is the first rung on purpose: three of the world's bosses is the current top of the
+    game, and the material leaves room above it for whatever the real end is worth. A deeper
+    posting later in the season keeps a star already earned — the star is for the fight, not
+    the tile.
+  - **The omen is deliberately unexplained:** *"Three of them fell together. The land is not
+    stabilized."* What that means is `EW-4`'s to answer, and the roster it will answer with
+    (Termina / Nestiph / Slake → Ometus) is already designed in
+    [`proposals/endgame-bosses.md`](proposals/endgame-bosses.md).
+  - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
+    unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
+    encounter path instead. `WorldBoss` defs, raid-scale merge cap,
   the three-boss unlock gate on `World`, the arena hook. The apex of FS-4's unique-boss
   work.
 - [ ] **EW-1 — Termina** (Seized Engine/Brass Corpse arena; machine/rail/reassembly).

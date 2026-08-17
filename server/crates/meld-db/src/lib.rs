@@ -402,6 +402,10 @@ impl Db {
             "at_level INTEGER NOT NULL DEFAULT 0",
             "fights INTEGER NOT NULL DEFAULT 0",
             "flees INTEGER NOT NULL DEFAULT 0",
+            // The END FIGHT's mark, and how long it took. NULLable: most postings have not
+            // felled it, and 0 would read as "cleared instantly".
+            "star TEXT",
+            "clear_ms BIGINT",
         ] {
             sqlx::query(&format!("ALTER TABLE vanguard ADD COLUMN IF NOT EXISTS {col}"))
                 .execute(pool)
@@ -538,13 +542,78 @@ impl Db {
                     at_level: 0,
                     fights: 0,
                     flees: 0,
+                    star: false,
+                    clear_ms: None,
                 });
                 if e.distance < distance {
-                    *e = MemVanguard { distance, at: Utc::now(), at_level, fights, flees };
+                    // A deeper posting keeps a star already earned this season — the star is
+                    // for felling the end fight, not for the tile it happened on.
+                    *e = MemVanguard {
+                        distance,
+                        at: Utc::now(),
+                        at_level,
+                        fights,
+                        flees,
+                        star: e.star,
+                        clear_ms: e.clear_ms,
+                    };
                     Ok(true)
                 } else {
                     Ok(false)
                 }
+            }
+        }
+    }
+
+    /// Star a posting: the END FIGHT is down, and the board says so and how long it took.
+    ///
+    /// A **wood** star is the first rung on purpose — beating three of the world's bosses
+    /// together is the current top of the game, and the material leaves room above it for
+    /// whatever the real end (EW-4's Ometus) turns out to be worth.
+    pub async fn record_world_end(
+        &self,
+        player_id: Uuid,
+        season: i32,
+        stamp: &meld_proto::realtime::run::VanguardStamp,
+        clear_ms: i64,
+    ) -> Result<bool, DbError> {
+        // Post the depth first so a star always sits on a real row, then star it. Keeping
+        // the star's own `WHERE` off the distance means a slower clear never overwrites a
+        // faster one just because it went one tile deeper.
+        let _ = self
+            .record_vanguard_distance(
+                player_id,
+                season,
+                stamp.distance.max(1),
+                stamp.level,
+                stamp.fights,
+                stamp.flees,
+            )
+            .await?;
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "UPDATE vanguard SET star = 'wood', clear_ms = $3
+                      WHERE season = $1 AND player_id = $2
+                        AND (clear_ms IS NULL OR clear_ms > $3)",
+                )
+                .bind(season)
+                .bind(player_id)
+                .bind(clear_ms)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                if let Some(v) = m.vanguard.get_mut(&(season, player_id)) {
+                    if v.clear_ms.is_none_or(|c| c > clear_ms) {
+                        v.star = true;
+                        v.clear_ms = Some(clear_ms);
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             }
         }
     }
@@ -562,7 +631,7 @@ impl Db {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
                     "SELECT v.player_id, p.username, v.max_distance, v.achieved_at,
-                            v.at_level, v.fights, v.flees
+                            v.at_level, v.fights, v.flees, v.star, v.clear_ms
                        FROM vanguard v JOIN players p USING (player_id)
                       WHERE v.season = $1
                       ORDER BY v.max_distance DESC, v.achieved_at ASC, v.player_id ASC
@@ -582,6 +651,8 @@ impl Db {
                         at_level: r.get("at_level"),
                         fights: r.get("fights"),
                         flees: r.get("flees"),
+                        star: r.get("star"),
+                        clear_ms: r.get("clear_ms"),
                     })
                     .collect())
             }
@@ -600,6 +671,8 @@ impl Db {
                             at_level: v.at_level,
                             fights: v.fights,
                             flees: v.flees,
+                            star: v.star.then(|| "wood".to_string()),
+                            clear_ms: v.clear_ms,
                         })
                     })
                     .collect();
@@ -1206,6 +1279,8 @@ impl Db {
                             at_level: r.get("at_level"),
                             fights: r.get("fights"),
                             flees: r.get("flees"),
+                            star: r.get("star"),
+                            clear_ms: r.get("clear_ms"),
                         },
                         r.get::<i64, _>("rank"),
                     )
@@ -1226,6 +1301,8 @@ impl Db {
                             at_level: v.at_level,
                             fights: v.fights,
                             flees: v.flees,
+                            star: v.star.then(|| "wood".to_string()),
+                            clear_ms: v.clear_ms,
                         })
                     })
                     .collect();
@@ -4914,6 +4991,8 @@ struct MemVanguard {
     at_level: i32,
     fights: i32,
     flees: i32,
+    star: bool,
+    clear_ms: Option<i64>,
 }
 
 /// One stored Vanguard Board record (roadmap P1-1). Unranked — rank is assigned
@@ -4928,6 +5007,8 @@ pub struct VanguardRow {
     pub at_level: i32,
     pub fights: i32,
     pub flees: i32,
+    pub star: Option<String>,
+    pub clear_ms: Option<i64>,
 }
 
 /// Seasons are back-to-back 13-week UTC epochs with no off-season gap

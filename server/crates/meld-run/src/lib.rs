@@ -354,13 +354,23 @@ pub struct InstanceRun {
     pub departure_hub_distance: i32,
     pub base_run_level: i32,
     pub runs: Vec<PlayerRun>,
+    /// Wall-clock ms the instance opened — the only thing here that is not pure, and it is
+    /// stamped at the boundary rather than read in the engine. The END FIGHT's clear time is
+    /// measured from it, and a time is the whole point of starring a run.
+    pub started_ms: u64,
     next_party_id: u32,
 }
 
 impl InstanceRun {
-    pub fn new(instance_id: Id, departure_hub_distance: i32, balance: &Balance) -> Self {
+    pub fn new(
+        instance_id: Id,
+        departure_hub_distance: i32,
+        balance: &Balance,
+        started_ms: u64,
+    ) -> Self {
         InstanceRun {
             instance_id,
+            started_ms,
             departure_hub_distance,
             base_run_level: base_run_level(departure_hub_distance, balance),
             runs: Vec::new(),
@@ -901,6 +911,9 @@ pub fn build_battle(
             "gatekeeper" => EncounterClass::Gatekeeper,
             // The undead rite is champion-tier: reporting it as Standard would let
             // it be fled like trash and read as trash on the wire.
+            // The end fight reports as Gatekeeper-class: raid-tier, and not fleeable like
+            // trash. Three named bosses is not an Elite encounter.
+            "world_end" => EncounterClass::Gatekeeper,
             "elite" | "undead_rite" => EncounterClass::Elite,
             _ => EncounterClass::Standard,
         })
@@ -930,7 +943,7 @@ mod tests {
     #[test]
     fn the_headline_level_is_the_best_heros_level() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let r = &mut runs.runs[0];
 
@@ -981,7 +994,7 @@ mod tests {
         ] {
             let key = class_key(class);
             let runs = {
-                let mut r = InstanceRun::new("i".into(), 0, &b);
+                let mut r = InstanceRun::new("i".into(), 0, &b, 0);
                 r.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
                 r
             };
@@ -1289,7 +1302,7 @@ mod tests {
 
     /// A one-hero party at a given level, for attribute-derivation assertions.
     fn solo_fighter(class: CharacterClass, level: i32, b: &Balance) -> Fighter {
-        let mut runs = InstanceRun::new("i".into(), 0, b);
+        let mut runs = InstanceRun::new("i".into(), 0, b, 0);
         runs.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
         runs.runs[0].run_level = level;
         let party: Vec<PartyMember> = vec![("p".into(), "c".into(), class, GearBonus::default())];
@@ -1381,7 +1394,7 @@ mod tests {
     #[test]
     fn build_battle_applies_hp_overrides() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![(
             "p1".into(),
             "u1".into(),
@@ -1407,7 +1420,7 @@ mod tests {
     #[test]
     fn boss_kind_drives_the_assembled_fighters_kit_and_name() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
         let mut arena = meld_world::Arena::generate(&b, 7, false);
         arena.ensure_frontier(&b, 400.0); // cross a biome seam so a gatekeeper spawns
@@ -1442,7 +1455,7 @@ mod tests {
     #[test]
     fn row_override_beats_the_class_default() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![
             ("p".into(), "u".into(), CharacterClass::Psyker, "r1".into()),
             ("p".into(), "u".into(), CharacterClass::Explorer, "r2".into()),
@@ -1464,7 +1477,7 @@ mod tests {
     #[test]
     fn gear_bonus_adds_into_atk_def_speed() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let bare: Vec<PartyMember> =
             vec![("p".into(), "c".into(), CharacterClass::Explorer, GearBonus::default())];
@@ -1484,7 +1497,7 @@ mod tests {
     #[test]
     fn ward_and_keyword_affixes_reach_the_fighter() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let warded: Vec<PartyMember> = vec![(
             "p".into(),
@@ -1510,7 +1523,7 @@ mod tests {
     #[test]
     fn a_synergy_affix_pays_out_only_when_its_ally_is_in_the_party() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let synergy = GearBonus {
             synergies: vec![("resonant".to_string(), 6, 2)],
@@ -1542,7 +1555,7 @@ mod tests {
     #[test]
     fn a_unique_s_drawback_costs_what_it_says() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let plain: Vec<PartyMember> =
             vec![("p".into(), "c".into(), CharacterClass::Explorer, GearBonus::default())];
@@ -1574,7 +1587,7 @@ mod tests {
     #[test]
     fn a_completed_set_pays_every_hero_in_the_party() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         let member = |class: CharacterClass, bonus: GearBonus| -> PartyMember {
             ("p".into(), "c".into(), class, bonus)
@@ -1617,7 +1630,7 @@ mod tests {
     fn a_branded_weapon_types_the_hero_s_swing() {
         use meld_proto::enums::DamageType;
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Explorer, "r".into())]);
         // Unbranded, a hero's swing is untyped — it can never hit a weakness.
         let plain: Vec<PartyMember> =
@@ -1648,7 +1661,7 @@ mod tests {
     #[test]
     fn a_class_pair_synergy_arms_the_whole_party() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p".into(), "u".into(), CharacterClass::PhoenixGuard, "r".into())]);
         let member = |class: CharacterClass| -> PartyMember {
             ("p".into(), "c".into(), class, GearBonus::default())
@@ -1716,7 +1729,7 @@ mod tests {
     #[test]
     fn a_fight_is_scoped_to_the_roster_even_when_only_one_hero_is_left() {
         let b = Balance::load_default().unwrap();
-        let mut runs = InstanceRun::new("i".into(), 0, &b);
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
         let arena = meld_world::Arena::generate(&b, 5, true);
 
@@ -1901,7 +1914,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let mut runs = InstanceRun::new("i".into(), 0, &b);
+            let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
             runs.add_party(
                 (0..size)
                     .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
@@ -1994,7 +2007,7 @@ mod tests {
                 .collect()
         };
         let runs = {
-            let mut r = InstanceRun::new("i".into(), 0, &b);
+            let mut r = InstanceRun::new("i".into(), 0, &b, 0);
             r.add_party(
                 (0..4)
                     .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
@@ -2181,7 +2194,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let mut runs = InstanceRun::new("i".into(), 0, &b);
+            let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
             runs.add_party(
                 (0..size)
                     .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
