@@ -786,6 +786,21 @@ burns on death/leave; some is single-use. See
     → `BD-11` (NPC garrisons, so a hub survives its owner being offline) → `SOC` (guild
     ownership). Ship `PG-2` server-owned now so the ladder is reachable; the lookup is
     what lets `BD-5` add to it instead of replacing it.
+- [x] **P1-4 — The board records HOW you got deep, and going quietly is a title.**
+  The Vanguard record was a distance and a timestamp, which made two completely different
+  runs look identical: 500 encounters and none reach the same tile. A posting now carries
+  its **route** — the level it was reached at, fights taken, and fights fled — additive
+  columns with defaults, so postings made before this simply report nothing about theirs.
+  - **The walk is a PLAYSTYLE, not an exploit.** A player outruns every chaser in the game
+    (`chase_speed` 4.2 against `avatar_speed` 6.0) and fights are opt-in, so slipping deep
+    untouched is real and skilful — and it costs you: you arrive at your hub's base level
+    with nothing learned and nothing looted. The **Pacifist** title
+    (`UnlockKind::Title` — the first unlock that grants no power at all) marks reaching 500
+    deep having taken no fight whatsoever. A **fled** fight still counts as a fight taken,
+    because `PlayerRun::fights` increments when a battle is ASSEMBLED rather than when it
+    is won: the Pacifist is people who were never seen, not people who ran.
+  - The milestone rides the same high-water mark as the depth hunt, so both are asked once
+    per new deepest tile rather than on every step of the walk out.
 - [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
   rather than always-available. Ship the unlock model (which classes an account
   owns), gate party building to owned classes, and wire the two sources: **Gatekeeper

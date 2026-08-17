@@ -25,6 +25,10 @@ pub enum UnlockKind {
     PartySlot(i32),
     /// A class becomes selectable in the party builder.
     Class(CharacterClass),
+    /// A TITLE — an account-permanent mark of how something was done, granting no power.
+    /// The first thing here is the Pacifist, and the distinction matters: a title is the
+    /// game noticing a way of playing rather than paying you to play that way.
+    Title,
 }
 
 /// The condition that grants an unlock. Evaluated server-side against a
@@ -52,6 +56,15 @@ pub enum Trigger {
     /// A piece of gear is FORGED — the first time you made something instead of
     /// finding it. The Foundry notices people who make things.
     GearForged,
+    /// A new deepest tile at `distance` or beyond, reached with **no fight taken at all**
+    /// this run.
+    ///
+    /// Walking past everything is not an exploit to close — a player outruns every chaser
+    /// (`chase_speed` 4.2 against 6.0) and fights are opt-in, so slipping deep untouched is
+    /// a real skill with a real cost: you arrive at your hub's base level with nothing
+    /// learned and nothing looted. This notices it. A FLED fight still counts as a fight
+    /// taken, so the Pacifist is people who were never seen, not people who ran.
+    PacifistDepth { distance: i32 },
     /// A resource node is worked dry. The Open Flower notices people who tend.
     NodeExhausted,
 }
@@ -94,6 +107,15 @@ pub const UNLOCKS: &[UnlockDef] = &[
         trigger: Trigger::HeroesAtLevel { heroes: 1, level: 10 },
         trigger_text: "Bring any hero to level 10.",
         banner: "You have carried enough alone. Someone else can carry the rest.",
+        requires: None,
+    },
+    UnlockDef {
+        key: "title_pacifist",
+        name: "Pacifist",
+        kind: UnlockKind::Title,
+        trigger: Trigger::PacifistDepth { distance: 500 },
+        trigger_text: "Reach 500 units deep without taking a single fight.",
+        banner: "You went out that far and nothing ever knew you were there.",
         requires: None,
     },
     UnlockDef {
@@ -257,6 +279,9 @@ pub fn view(def: &UnlockDef) -> crate::realtime::run::UnlockView {
             Some(crate::equipment::class_key(c).to_string()),
             None,
         ),
+        // A title grants no power, so it names no class and opens no slot — the party
+        // builder ignores it and only the banner has anything to say.
+        UnlockKind::Title => ("title", None, None),
     };
     crate::realtime::run::UnlockView {
         key: def.key.to_string(),
@@ -283,6 +308,10 @@ pub enum Milestone {
     PartyWiped { heroes: i32 },
     GearForged,
     NodeExhausted,
+    /// A new deepest tile, and how many fights the run had taken by then. Both travel
+    /// together so the Pacifist can be judged on the spot — asking "was it untouched?"
+    /// later would need a history the run does not keep.
+    ReachedUntouched { distance: i32, fights: i32 },
 }
 
 /// Which unlocks a milestone grants, given what's already owned. Returns only
@@ -305,6 +334,10 @@ pub fn granted_by(milestone: Milestone, owned: &[String]) -> Vec<&'static Unlock
             (Trigger::PartyWipe { heroes }, Milestone::PartyWiped { heroes: got }) => got >= heroes,
             (Trigger::GearForged, Milestone::GearForged) => true,
             (Trigger::NodeExhausted, Milestone::NodeExhausted) => true,
+            (
+                Trigger::PacifistDepth { distance },
+                Milestone::ReachedUntouched { distance: got, fights },
+            ) => fights == 0 && got >= distance,
             _ => false,
         })
         .collect()
@@ -313,6 +346,28 @@ pub fn granted_by(milestone: Milestone, owned: &[String]) -> Vec<&'static Unlock
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Pacifist is people who were never SEEN, not people who ran. A fled fight was
+    /// still a fight taken, and `fights` is incremented when a battle is assembled rather
+    /// than when it is won, so fleeing cannot launder a run into a quiet one.
+    #[test]
+    fn the_pacifist_is_earned_by_never_fighting_at_all() {
+        let untouched = |d, f| {
+            granted_by(Milestone::ReachedUntouched { distance: d, fights: f }, &[])
+                .iter()
+                .any(|u| u.key == "title_pacifist")
+        };
+        assert!(untouched(500, 0), "500 deep with no fights earned nothing");
+        assert!(untouched(3250, 0), "deeper still counts");
+        assert!(!untouched(500, 1), "one fight is not pacifism");
+        assert!(!untouched(499, 0), "granted short of the bar");
+        // And it is a TITLE: no slot, no class, no power.
+        let def = UNLOCKS.iter().find(|u| u.key == "title_pacifist").unwrap();
+        assert!(matches!(def.kind, UnlockKind::Title));
+        let v = view(def);
+        assert_eq!(v.kind, "title");
+        assert!(v.class_key.is_none() && v.slot.is_none());
+    }
 
     fn keys(v: Vec<&'static UnlockDef>) -> Vec<&'static str> {
         v.into_iter().map(|u| u.key).collect()

@@ -126,6 +126,13 @@ pub struct PlayerRun {
     /// owned Vault gear (gear-item-models.md); discarded on death.
     pub looted_gear: Vec<LootGear>,
     pub max_distance_reached: i32,
+    /// Encounters this run entered. Rides the Vanguard record beside the distance,
+    /// because *how* you got deep is the interesting half: 500 fights and 0 fights are the
+    /// same tile and completely different runs.
+    pub fights: i32,
+    /// Fights this run successfully fled. A flee is not a failure — it is the other way
+    /// past a creature — so the board reports it rather than hiding it.
+    pub flees: i32,
     pub result: Option<RunResult>,
     /// Which party (enter-maze group) this run belongs to. Battles merge across
     /// party ids (the Expandable Party raid mechanic).
@@ -383,6 +390,8 @@ impl InstanceRun {
                 chits: 0,
                 looted_gear: Vec::new(),
                 max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
                 result: None,
                 party_id,
             });
@@ -1136,6 +1145,8 @@ mod tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: Vec::new(),
@@ -1260,6 +1271,8 @@ mod tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: Vec::new(),
@@ -1680,6 +1693,8 @@ mod tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: Vec::new(),
@@ -1774,6 +1789,8 @@ mod tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: Vec::new(),
@@ -1826,6 +1843,8 @@ mod tests {
                 chits: 0,
                 looted_gear: vec![],
                 max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
                 result: None,
                 party_id: 0,
                 hero_levels: vec![1; size],
@@ -1923,6 +1942,8 @@ mod tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: vec![1; heroes],

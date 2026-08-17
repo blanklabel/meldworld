@@ -147,6 +147,16 @@ pub struct VanguardEntry {
     pub max_distance: i32,
     /// Server time (unix millis) the record was first reached — the tie-break.
     pub achieved_at: i64,
+    /// HOW the run got there. The board ranks on distance, but a posting reached at level
+    /// 255 after 500 fights and one reached at level 1 after none are the same tile by
+    /// completely different means — and walking past everything is a real way to travel,
+    /// not an exploit. Defaults to 0 on postings made before the board recorded a route.
+    #[serde(default)]
+    pub at_level: i32,
+    #[serde(default)]
+    pub fights: i32,
+    #[serde(default)]
+    pub flees: i32,
 }
 
 /// `GET /v1/vanguard` / `GET /v1/vanguard/:season` response.

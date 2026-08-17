@@ -222,6 +222,9 @@ async fn vanguard_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<R
             username: r.username,
             max_distance: r.max_distance,
             achieved_at: r.achieved_at.timestamp_millis(),
+            at_level: r.at_level,
+            fights: r.fights,
+            flees: r.flees,
         });
     Ok((
         StatusCode::OK,
@@ -245,6 +248,9 @@ async fn vanguard_entries(st: &ApiState, season: i32) -> Result<Vec<VanguardEntr
             username: r.username,
             max_distance: r.max_distance,
             achieved_at: r.achieved_at.timestamp_millis(),
+            at_level: r.at_level,
+            fights: r.fights,
+            flees: r.flees,
         })
         .collect())
 }

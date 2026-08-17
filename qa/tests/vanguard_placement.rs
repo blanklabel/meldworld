@@ -31,7 +31,7 @@ async fn placement_ranks_against_the_whole_season_and_breaks_ties_like_the_board
         // Exactly two players tie on 500; the rest are strictly deeper, and none of
         // them may land back on 500.
         let d = if i < 2 { 500 } else { 1000 + i * 100 };
-        db.record_vanguard_distance(p.player_id, season, d)
+        db.record_vanguard_distance(p.player_id, season, d, 0, 0, 0)
             .await
             .unwrap();
         ids.push((p.player_id, d));

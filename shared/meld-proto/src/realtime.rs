@@ -906,6 +906,18 @@ pub mod run {
         const TYPE: &'static str = "run.harvest";
     }
 
+    /// What a Vanguard posting records: not only how deep, but HOW. A run that fought 500
+    /// encounters and one that fought none reach the same tile by completely different
+    /// means, and both are worth reading on the board.
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    pub struct VanguardStamp {
+        pub distance: i32,
+        /// The player's headline level (their best hero's) at the moment of the posting.
+        pub level: i32,
+        pub fights: i32,
+        pub flees: i32,
+    }
+
     /// C2S — a Psyker PINS a creature where it stands (CL-2). Telekinesis is the one
     /// thing this order does that nobody else can, so its overworld perk is a verb
     /// rather than another way to see. The creature stops moving for
