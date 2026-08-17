@@ -225,7 +225,7 @@ enum DbWrite {
     /// Post a new deepest distance to the Vanguard Board: (player, distance).
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
-    Vanguard(String, i32),
+    Vanguard(String, wr::VanguardStamp),
     /// Clear a player's pending-backpack queue: its contents were just drained
     /// into a freshly-formed run's live Backpack.
     ClearPendingBackpack(String),
@@ -306,10 +306,20 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     }
                 }
             }
-            DbWrite::Vanguard(pid, distance) => {
+            DbWrite::Vanguard(pid, stamp) => {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     let season = meld_db::current_season();
-                    if let Err(e) = db.record_vanguard_distance(uid, season, distance).await {
+                    if let Err(e) = db
+                        .record_vanguard_distance(
+                            uid,
+                            season,
+                            stamp.distance,
+                            stamp.level,
+                            stamp.fights,
+                            stamp.flees,
+                        )
+                        .await
+                    {
                         tracing::error!("vanguard post failed for {pid}: {e}");
                     }
                 }
@@ -2531,6 +2541,14 @@ impl WorldActor {
             .iter()
             .map(|(m, cid)| (m, cid.clone()))
             .collect();
+        // The Vanguard board reports HOW a run got deep, so an encounter is counted the
+        // moment it is assembled — not on victory, because a fight you fled was still a
+        // fight you took.
+        for r in inst.run.runs.iter_mut() {
+            if r.player_id == toucher {
+                r.fights += 1;
+            }
+        }
         // A pinned creature is the whole point of the pin: the party chose the moment, so
         // it opens with every gauge full. Read off the creature that was actually TOUCHED,
         // not the group — pinning one of a pack does not surprise the pack.
@@ -4408,15 +4426,35 @@ impl WorldActor {
             return Vec::new();
         }
         run.max_distance_reached = d;
+        // The board records HOW you got here, not only how far. 500 fights and 0 fights are
+        // the same tile and completely different runs, and going quietly is a real way to
+        // travel (see `unlocks`' Pacifist) rather than an exploit to close.
+        let stamp = wr::VanguardStamp {
+            distance: d,
+            level: run.run_level,
+            fights: run.fights,
+            flees: run.flees,
+        };
         let _ = self
             .db_writes
-            .send(DbWrite::Vanguard(player_id.to_string(), d));
+            .send(DbWrite::Vanguard(player_id.to_string(), stamp));
         // A depth hunt rides the same high-water mark, so it is asked once per new
-        // deepest tile rather than on every step of the walk out.
-        vec![WorldEffect::Hunt {
-            player_id: player_id.to_string(),
-            fact: HuntFact::Depth(d),
-        }]
+        // deepest tile rather than on every step of the walk out — and so does the
+        // Pacifist, which is the same question asked of the same moment.
+        let fights = run.fights;
+        vec![
+            WorldEffect::Hunt {
+                player_id: player_id.to_string(),
+                fact: HuntFact::Depth(d),
+            },
+            WorldEffect::Milestone {
+                player_id: player_id.to_string(),
+                milestone: meld_proto::unlocks::Milestone::ReachedUntouched {
+                    distance: d,
+                    fights,
+                },
+            },
+        ]
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -7622,6 +7660,16 @@ impl WorldActor {
                     // `insight` status and this side pays it. Without this the mote
                     // was drunk, consumed, and did nothing at all.
                     out.extend(self.bank_insight(battle_id, &res));
+                    // A successful flee is the other way past a creature, so the board
+                    // counts it rather than hiding it — running is a tactic, not a failure.
+                    if res.flee_success == Some(true) {
+                        let who: Vec<String> = self.members_of_battle(battle_id);
+                        for r in self.run.runs.iter_mut() {
+                            if who.contains(&r.player_id) {
+                                r.flees += 1;
+                            }
+                        }
+                    }
                     let members = self.members_of_battle(battle_id);
                     let msg = wb::ActionResolved {
                         battle_id: battle_id.to_string(),
@@ -8751,6 +8799,8 @@ mod unlock_gate_tests {
             chits: 0,
             looted_gear: vec![],
             max_distance_reached: 0,
+                fights: 0,
+                flees: 0,
             result: None,
             party_id: 0,
             hero_levels: levels.to_vec(),

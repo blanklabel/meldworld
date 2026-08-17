@@ -347,6 +347,7 @@ pub(crate) fn mock_overlay_setup(
                 kind: match def.kind {
                     meld_proto::unlocks::UnlockKind::PartySlot(_) => "party_slot".into(),
                     meld_proto::unlocks::UnlockKind::Class(_) => "class".into(),
+                    meld_proto::unlocks::UnlockKind::Title => "title".into(),
                 },
                 class_key: match def.kind {
                     meld_proto::unlocks::UnlockKind::Class(c) => {

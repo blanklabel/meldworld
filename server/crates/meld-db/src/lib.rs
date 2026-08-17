@@ -395,6 +395,18 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // Additive: the board records HOW a run got deep, not only how far. Columns added
+        // after the table shipped, so `IF NOT EXISTS` and a default keep old rows readable
+        // (an existing posting simply reports nothing about its route).
+        for col in [
+            "at_level INTEGER NOT NULL DEFAULT 0",
+            "fights INTEGER NOT NULL DEFAULT 0",
+            "flees INTEGER NOT NULL DEFAULT 0",
+        ] {
+            sqlx::query(&format!("ALTER TABLE vanguard ADD COLUMN IF NOT EXISTS {col}"))
+                .execute(pool)
+                .await?;
+        }
         // Board reads are `ORDER BY max_distance DESC, achieved_at ASC` within one
         // season — index that exact shape so the live board stays a cheap query.
         sqlx::query(
@@ -471,18 +483,27 @@ impl Db {
                 Ok(g.vanguard
                     .iter()
                     .filter(|((_, pid), _)| *pid == player_id)
-                    .map(|(_, (d, _))| *d)
+                    .map(|(_, v)| v.distance)
                     .max()
                     .unwrap_or(0))
             }
         }
     }
 
+    /// Post a new deepest tile, with HOW the run got there (level / fights / flees).
+    ///
+    /// The route travels with the distance because it is the interesting half: 500 fights
+    /// and 0 fights are the same tile and completely different runs. The whole row moves
+    /// together on a deeper posting — a shallower one is still a true no-op, so a route is
+    /// never stitched from two different runs.
     pub async fn record_vanguard_distance(
         &self,
         player_id: Uuid,
         season: i32,
         distance: i32,
+        at_level: i32,
+        fights: i32,
+        flees: i32,
     ) -> Result<bool, DbError> {
         if distance <= 0 {
             return Ok(false);
@@ -492,23 +513,34 @@ impl Db {
                 // The `WHERE` makes a shallower post a true no-op: neither the
                 // distance nor the timestamp moves.
                 let res = sqlx::query(
-                    "INSERT INTO vanguard (season, player_id, max_distance) VALUES ($1, $2, $3)
+                    "INSERT INTO vanguard (season, player_id, max_distance, at_level, fights, flees)
+                     VALUES ($1, $2, $3, $4, $5, $6)
                      ON CONFLICT (season, player_id) DO UPDATE
-                       SET max_distance = $3, achieved_at = now()
+                       SET max_distance = $3, at_level = $4, fights = $5, flees = $6,
+                           achieved_at = now()
                        WHERE vanguard.max_distance < $3",
                 )
                 .bind(season)
                 .bind(player_id)
                 .bind(distance)
+                .bind(at_level)
+                .bind(fights)
+                .bind(flees)
                 .execute(pool)
                 .await?;
                 Ok(res.rows_affected() > 0)
             }
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
-                let e = m.vanguard.entry((season, player_id)).or_insert((0, Utc::now()));
-                if e.0 < distance {
-                    *e = (distance, Utc::now());
+                let e = m.vanguard.entry((season, player_id)).or_insert(MemVanguard {
+                    distance: 0,
+                    at: Utc::now(),
+                    at_level: 0,
+                    fights: 0,
+                    flees: 0,
+                });
+                if e.distance < distance {
+                    *e = MemVanguard { distance, at: Utc::now(), at_level, fights, flees };
                     Ok(true)
                 } else {
                     Ok(false)
@@ -529,7 +561,8 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT v.player_id, p.username, v.max_distance, v.achieved_at
+                    "SELECT v.player_id, p.username, v.max_distance, v.achieved_at,
+                            v.at_level, v.fights, v.flees
                        FROM vanguard v JOIN players p USING (player_id)
                       WHERE v.season = $1
                       ORDER BY v.max_distance DESC, v.achieved_at ASC, v.player_id ASC
@@ -546,6 +579,9 @@ impl Db {
                         username: r.get("username"),
                         max_distance: r.get("max_distance"),
                         achieved_at: r.get::<DateTime<Utc>, _>("achieved_at"),
+                        at_level: r.get("at_level"),
+                        fights: r.get("fights"),
+                        flees: r.get("flees"),
                     })
                     .collect())
             }
@@ -555,12 +591,15 @@ impl Db {
                     .vanguard
                     .iter()
                     .filter(|((s, _), _)| *s == season)
-                    .filter_map(|((_, pid), (dist, at))| {
+                    .filter_map(|((_, pid), v)| {
                         m.players.get(pid).map(|p| VanguardRow {
                             player_id: *pid,
                             username: p.username.clone(),
-                            max_distance: *dist,
-                            achieved_at: *at,
+                            max_distance: v.distance,
+                            achieved_at: v.at,
+                            at_level: v.at_level,
+                            fights: v.fights,
+                            flees: v.flees,
                         })
                     })
                     .collect();
@@ -1164,6 +1203,9 @@ impl Db {
                             username: r.get("username"),
                             max_distance: r.get("max_distance"),
                             achieved_at: r.get::<DateTime<Utc>, _>("achieved_at"),
+                            at_level: r.get("at_level"),
+                            fights: r.get("fights"),
+                            flees: r.get("flees"),
                         },
                         r.get::<i64, _>("rank"),
                     )
@@ -1175,12 +1217,15 @@ impl Db {
                     .vanguard
                     .iter()
                     .filter(|((s, _), _)| *s == season)
-                    .filter_map(|((_, pid), (dist, at))| {
+                    .filter_map(|((_, pid), v)| {
                         m.players.get(pid).map(|p| VanguardRow {
                             player_id: *pid,
                             username: p.username.clone(),
-                            max_distance: *dist,
-                            achieved_at: *at,
+                            max_distance: v.distance,
+                            achieved_at: v.at,
+                            at_level: v.at_level,
+                            fights: v.fights,
+                            flees: v.flees,
                         })
                     })
                     .collect();
@@ -3566,7 +3611,7 @@ struct Mem {
     /// unlocks: the (player, unlock_key) pairs an account owns.
     unlocks: HashSet<(Uuid, String)>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
-    vanguard: HashMap<(i32, Uuid), (i32, DateTime<Utc>)>,
+    vanguard: HashMap<(i32, Uuid), MemVanguard>,
     /// hunts (progress, claimed), keyed by (player_id, hunt_key).
     hunts: HashMap<(Uuid, String), (i32, bool)>,
     /// bounties, keyed by bounty_id.
@@ -4253,14 +4298,14 @@ mod tests {
         let shallow = db.register("vg_shallow", &shallow_password).await.unwrap();
         let season = current_season();
 
-        assert!(db.record_vanguard_distance(deep.player_id, season, 400).await.unwrap());
-        assert!(db.record_vanguard_distance(shallow.player_id, season, 120).await.unwrap());
+        assert!(db.record_vanguard_distance(deep.player_id, season, 400, 0, 0, 0).await.unwrap());
+        assert!(db.record_vanguard_distance(shallow.player_id, season, 120, 0, 0, 0).await.unwrap());
         // A shallower run never replaces a deeper record, and reports no new best.
-        assert!(!db.record_vanguard_distance(deep.player_id, season, 200).await.unwrap());
-        assert!(db.record_vanguard_distance(deep.player_id, season, 900).await.unwrap());
+        assert!(!db.record_vanguard_distance(deep.player_id, season, 200, 0, 0, 0).await.unwrap());
+        assert!(db.record_vanguard_distance(deep.player_id, season, 900, 0, 0, 0).await.unwrap());
         // Distance 0 (never left the hub) does not put you on the board at all.
         let never = db.register("vg_never", &never_password).await.unwrap();
-        assert!(!db.record_vanguard_distance(never.player_id, season, 0).await.unwrap());
+        assert!(!db.record_vanguard_distance(never.player_id, season, 0, 0, 0, 0).await.unwrap());
 
         let board = db.vanguard_board(season, 100).await.unwrap();
         assert_eq!(board.len(), 2);
@@ -4284,7 +4329,7 @@ mod tests {
                 .register(&format!("vg_cut{i}"), &Uuid::new_v4().to_string())
                 .await
                 .unwrap();
-            db.record_vanguard_distance(p.player_id, season, 1000 - i * 10)
+            db.record_vanguard_distance(p.player_id, season, 1000 - i * 10, 0, 0, 0)
                 .await
                 .unwrap();
             last = p.player_id;
@@ -4860,6 +4905,17 @@ mod tests {
 
 // ------------------------------------------------------- the Vanguard Board ---
 
+/// One in-memory Vanguard posting. A named struct rather than a tuple because it grew a
+/// route (level / fights / flees) and a five-tuple stops saying what its fields are.
+#[derive(Debug, Clone, Copy)]
+struct MemVanguard {
+    distance: i32,
+    at: DateTime<Utc>,
+    at_level: i32,
+    fights: i32,
+    flees: i32,
+}
+
 /// One stored Vanguard Board record (roadmap P1-1). Unranked — rank is assigned
 /// by the reader from the query's order, so a slice of the board still ranks 1..n.
 #[derive(Debug, Clone)]
@@ -4868,6 +4924,10 @@ pub struct VanguardRow {
     pub username: String,
     pub max_distance: i32,
     pub achieved_at: DateTime<Utc>,
+    /// How the run got there — see `record_vanguard_distance`.
+    pub at_level: i32,
+    pub fights: i32,
+    pub flees: i32,
 }
 
 /// Seasons are back-to-back 13-week UTC epochs with no off-season gap
