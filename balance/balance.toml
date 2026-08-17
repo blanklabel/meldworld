@@ -597,9 +597,23 @@ undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [T
 # level 1, holding what you carried out plus three insured pieces.
 end_fight_min_distance = 3200
 end_fight_bosses = 3
-end_fight_hp_mult = 4.0          # each of the three, against a standard creature at depth
-end_fight_atk_mult = 1.5
-end_fight_xp_mult = 6.0
+# AUTHORED, not a multiple of the local creature. At d3200 an ordinary creature already
+# runs ~10k HP and two-shots a hero, because the deep curve is tuned for a party that
+# departed from a DEEP HUB — and hubs are held off (PG-2). So `x4 of local` made this ~14x
+# harder than anything a party can actually bring: the numbers below are tuned against the
+# party that really arrives (walked/fought out, ~level 100), giving roughly a 20-round fight
+# where a hero survives ~4 hits. Raise them when hubs land and parties arrive at 255.
+#
+# `encounter_party_scale` still multiplies HP by party size on top of these, so a solo
+# player meets 1.0x and a full party 4.4x — the authored number is the per-boss baseline.
+end_fight_boss_hp = 1800
+end_fight_boss_atk = 190
+end_fight_boss_xp = 40000
+# The biggest reward spike in the game — above a Gatekeeper's 9.0. This is what buys the
+# end fight its chance at a UNIQUE and a SET piece: the three insured pieces come from
+# `rolled_gear`, which cannot produce either by design ("a champion must stay the better
+# source of a great item"), so the spike is what makes the apex actually the apex.
+end_fight_loot_mult = 14.0
 end_fight_reward_pieces = 3      # insured pieces awarded for felling it
 end_fight_reward_tier = 32       # tier(3200) = 32, so the reward matches the ground it fell on
 undead_rite_min_tier = 4         # never shallower than this

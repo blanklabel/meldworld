@@ -500,7 +500,14 @@ only if you respect two shared, machine-global resources: the **server port** an
   as a bug.
   Prefer this over adding wire fields for slice-scoped additions.
 - **Distance is the difficulty axis.** `tier(d)=floor(d/100)`, `mlevel(d)=max(1,round(d/12.5))`,
-  `stat_mult(d)=(1+d/500)^1.25`. All threshold checks use the **floored integer** distance.
+  and creature power is **three different curves, not one**: attack
+  `stat_mult(d)=(1+d/500)^2.0`, defence `(1+d/500)^0.7`, and HP **linear in tier**
+  (`1 + 5.4 × tier(d)`). At d3200 that is 55x attack and **171x HP** — so anything sized as
+  "a multiple of the local creature" out there is far bigger than it reads. The single
+  `^1.25` this line used to claim was wrong on all three counts, and sizing a set piece
+  against it produced a boss ~14x harder than any party can bring. **Read
+  `[world_scaling]`, never this sentence, before tuning anything against depth.**
+  All threshold checks use the **floored integer** distance.
 - **Git worktree layout.** Work happens in worktrees under `.claude/worktrees/`. Branch off
   `main`; commit/push only when asked. Co-author trailer: `Co-Authored-By: Claude <noreply@anthropic.com>`.
   Many agents share this repo at once — see [Working alongside other agents](#working-alongside-other-agents-up-to-20-concurrent)

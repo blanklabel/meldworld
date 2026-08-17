@@ -771,17 +771,21 @@ burns on death/leave; some is single-use. See
     `hubs::start_level` carries the formula — checked against the real `base_run_level` at
     every hub by `the_hub_chooser_agrees_with_the_real_curve`, because a copied formula is
     a formula that drifts.
-  - **The end of the game sits at d≈3250,** and it falls out of the maths rather than
-    being picked: `base_run_level` reaches the `max_hero_level` cap of **255** at
-    **d3256**, where `mlevel(d) = 260` — creature level matched to the hero ceiling.
-    Past there a deeper hub buys nothing (heroes are capped) while creatures scale
-    forever, so it is the last distance that is a fair fight by construction. The
-    combat ratios hold steady the whole way out for a full party (≈1 turn to fell a
-    standard creature, ≈10 turns and ~7 hits-to-drop-a-hero against a Gatekeeper, at
-    d500 *and* d3256), so an **`EW` end-world boss can sit at d3250 built from the
-    multipliers already in balance** — no special-casing. Note the ratios only hold
-    once `encounter_party_scale` is included; hero attack alone outgrows creature
-    `stat_mult` by ~5x, and it is the party-size HP ramp that closes it.
+  - **The end of the game sits at d≈3250** by the LEVEL curve: `base_run_level` reaches
+    the `max_hero_level` cap of **255** at **d3256**, where `mlevel(d) = 260` — creature
+    level matched to the hero ceiling. Past there a deeper hub buys nothing while creatures
+    scale forever.
+  - ⚠️ **The "combat ratios hold the whole way out" claim that used to sit here was wrong.**
+    It used `stat_mult = (1+d/500)^1.25` from AGENTS.md, which was stale in three ways: the
+    real attack exponent is **2.0**, defence is **0.7**, and creature HP is a separate
+    LINEAR curve (`1 + 5.4 × tier`). At d3200 that is 55x attack and **171x HP**, not the
+    12x the old formula gave. What actually holds is narrower and more interesting: for a
+    **hub-matched** party the fight LENGTH stays flat (~15 rounds per ordinary creature from
+    d200 to d3200) while durability erodes gracefully (18 hits-to-drop at d200 → 3.5 at
+    d3200). For a party that walked or fought out **without** hubs it does not hold at all —
+    ~37 rounds per creature and 1.2 hits-to-drop at d3200. **The deep world is tuned for
+    hub-fed parties.** That is the real argument for hubs, and it is why the end fight is
+    authored with absolute stats instead of a multiple of its surroundings.
   - **Build order, and why the player-built version is not this item.** `BD-5`'s forward
     town *sustains* Run Level — it is a second **source** for the same integer, not a
     different system. But it is the sixth link in its own chain and gated behind the two
@@ -1639,6 +1643,25 @@ spike that makes the whole economy cohere.
     stabilized."* What that means is `EW-4`'s to answer, and the roster it will answer with
     (Termina / Nestiph / Slake → Ometus) is already designed in
     [`proposals/endgame-bosses.md`](proposals/endgame-bosses.md).
+  - *Retuned after checking it against the real curves, which found four things.* It was
+    sized as `x4 of a local creature`, and at d3200 a local creature already runs ~10k HP
+    and two-shots a hero — so the fight was **442 rounds and a 0.3-round wipe**, i.e.
+    impossible. It is **authored** now (`set_piece`, absolute HP/atk) because a set piece is
+    not a promoted spawn, and tuned against the party that can actually arrive on foot
+    (~level 100): ~20 rounds, a hero surviving ~4 hits, pinned by
+    `the_end_fight_is_a_fight_and_not_an_execution`.
+    **`"world_end"` was missing from `creature_target_profile`**, so the biggest fight in the
+    game got no champion promotion and rolled its profile like trash; it is `Role` now, and
+    `cap_role_hunters` leaves exactly one of the three hunting the healer — three doing it
+    independently ends the fight in a round.
+    **The victory handler returned early**, so felling it skipped XP, class records, hunt
+    credit and ordinary drops — it paid less than a boar. It ends the run LAST now, after
+    every reward has landed. Ending the run is the point: this is a roguelite, so the apex
+    banks and sends you home.
+    **Three insured pieces were the wrong reward alone**: `rolled_gear` cannot produce a
+    unique or a set piece by design, so the apex was a worse *source* than a Gatekeeper at
+    d300. `end_fight_loot_mult` (14.0, above a Gatekeeper's 9.0) makes it the best in the
+    game; the guaranteed pieces are the floor, not the prize.
   - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
     unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
     encounter path instead. `WorldBoss` defs, raid-scale merge cap,

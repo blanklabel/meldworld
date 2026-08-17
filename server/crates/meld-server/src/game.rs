@@ -8082,6 +8082,9 @@ impl WorldActor {
         }
 
         let mut dead: Vec<String> = Vec::new();
+        // Filled by the victory arm; drained after `inst`'s borrow ends, because ending the
+        // run needs `&mut self` and the arm still holds the instance.
+        let mut end_fight_winners: Vec<String> = Vec::new();
 
         match outcome {
             BattleOutcome::Victory => {
@@ -8100,19 +8103,7 @@ impl WorldActor {
                         m.in_battle = false;
                     }
                 }
-                if was_end_fight {
-                    let winners: Vec<String> = inst
-                        .run
-                        .runs
-                        .iter()
-                        .filter(|r| bp.contains(&r.party_id))
-                        .map(|r| r.player_id.clone())
-                        .collect();
-                    for pid in winners {
-                        out.extend(self.finish_end_fight(&pid));
-                    }
-                    return (out, Vec::new());
-                }
+
                 // Award XP to every participant; note who leveled so we can refresh
                 // their party panel (stats change on level-up).
                 // Snapshot what the per-hero award needs before the runs are borrowed
@@ -8303,6 +8294,12 @@ impl WorldActor {
                     .iter()
                     .filter_map(|id| inst.arena.monster_by_id(id))
                     .map(|m| match m.encounter_class.as_str() {
+                        // The apex has to be the best SOURCE in the game, not just a
+                        // guaranteed floor: `rolled_gear` (what the three insured pieces
+                        // come from) deliberately cannot produce a unique or a set piece,
+                        // so without a spike here the end fight was a worse source than a
+                        // Gatekeeper standing in a pass at d300.
+                        "world_end" => balance.encounters.end_fight_loot_mult,
                         "gatekeeper" => balance.encounters.gatekeeper_loot_mult,
                         "undead_rite" => balance.encounters.undead_rite_loot_mult,
                         "elite" => balance.encounters.elite_loot_mult,
@@ -8468,6 +8465,22 @@ impl WorldActor {
                             },
                         ));
                     }
+                }
+                // THE END FIGHT ends the dive — and it does so LAST, after the XP, the
+                // class records, the hunt credit and the ordinary drops have all landed.
+                // Returning early here skipped every one of them, so felling the top of
+                // the game paid less than felling a boar.
+                //
+                // Ending the run is the point: this is a roguelite, so the reward is
+                // banked and the party comes home rather than carrying on deeper.
+                if was_end_fight {
+                    end_fight_winners = inst
+                        .run
+                        .runs
+                        .iter()
+                        .filter(|r| bp.contains(&r.party_id))
+                        .map(|r| r.player_id.clone())
+                        .collect();
                 }
             }
             BattleOutcome::Defeat => {
@@ -8738,6 +8751,12 @@ impl WorldActor {
         // Perk tiers scale with run level, so they only change on a level-up.
         for pid in &leveled {
             out.push(out_msg(pid, &self.perks_for(pid)));
+        }
+        // THE END FIGHT ends the dive, and does it LAST — every reward above has landed by
+        // now. This is the roguelite bargain: the top of the game pays out and sends you
+        // home rather than letting you carry on deeper.
+        for pid in &end_fight_winners {
+            out.extend(self.finish_end_fight(pid));
         }
         (out, effects)
     }

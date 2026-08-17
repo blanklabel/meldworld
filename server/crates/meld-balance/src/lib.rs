@@ -345,9 +345,13 @@ pub struct Encounters {
     /// THE END FIGHT (EW): distance past which one encounter becomes three named bosses.
     pub end_fight_min_distance: f64,
     pub end_fight_bosses: usize,
-    pub end_fight_hp_mult: f64,
-    pub end_fight_atk_mult: f64,
-    pub end_fight_xp_mult: f64,
+    /// AUTHORED per-boss stats — see the balance comment for why this is not a multiplier.
+    pub end_fight_boss_hp: i32,
+    pub end_fight_boss_atk: i32,
+    pub end_fight_boss_xp: i64,
+    /// The reward spike the end fight rolls its drops at — above a Gatekeeper's, so it is
+    /// the best unique/set source in the game rather than only a guaranteed floor.
+    pub end_fight_loot_mult: f64,
     pub end_fight_reward_pieces: i32,
     pub end_fight_reward_tier: i32,
     pub undead_rite_min_tier: i32,

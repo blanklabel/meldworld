@@ -1084,6 +1084,65 @@ mod tests {
     /// of `base_run_level`'s formula purely so a chooser can say "heroes start at 40". A
     /// copy is a thing that drifts, so it is checked against the real one at every hub —
     /// and against the level cap, which is what makes the deepest hub the end of the ladder.
+    /// THE END FIGHT has to be beatable by the party that can actually REACH it, and the
+    /// only route there today is on foot (hubs are held off), which lands a party around
+    /// level 100. Sized as a multiple of the local creature it was ~14x harder than that —
+    /// at d3200 an ordinary creature already runs ~10k HP and two-shots a hero, because the
+    /// deep curve is tuned for hub-fed parties that do not exist yet.
+    ///
+    /// So it is AUTHORED, and this pins the shape: a long fight (not a formality, not an
+    /// endurance test) against heroes that can take a few hits (not one).
+    #[test]
+    fn the_end_fight_is_a_fight_and_not_an_execution() {
+        let b = Balance::load_default().unwrap();
+        let e = &b.encounters;
+        let sc = meld_world::Scaling::new(&b);
+        let d = e.end_fight_min_distance as i64;
+
+        // A hero at the level a party really arrives at, on foot.
+        let party = vec![("p".to_string(), "c".to_string(), CharacterClass::Hunter, GearBonus::default())];
+        let runs = InstanceRun::new("i".into(), 0, &b, 0);
+        let mut hero = party_fighters(&party, &runs, &b, &[])[0].clone();
+        hero.level = 100;
+        // Approximate the level-100 hero the attribute curve gives (party_fighters builds
+        // level 1); what matters here is the ORDER of magnitude, not the exact stat.
+        let a = &b.attributes;
+        let ph = &b.player.get("hunter").expect("hunter stats");
+        let str_ = ph.str + ph.str_per_level * 99;
+        let wll = ph.wll + ph.wll_per_level * 99;
+        let hero_atk = ph.base_atk + ((str_ - ph.str) as f64 * a.str_to_atk).round() as i32;
+        let hero_hp = ph.base_hp + ((wll - ph.wll) as f64 * a.wll_to_hp).round() as i32;
+        let hero_def = ph.base_def + ((wll - ph.wll) as f64 * a.wll_to_def).round() as i32;
+
+        let boss_def = (2.0 * sc.def_mult(d)).round() as i32;
+        let per_hero = (hero_atk - boss_def).max((hero_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
+        let party_hp = e.end_fight_boss_hp as f64
+            * e.end_fight_bosses as f64
+            * encounter_party_scale(4, &b);
+        let rounds = party_hp / (4.0 * per_hero as f64);
+        let incoming = (e.end_fight_boss_atk - hero_def)
+            .max((e.end_fight_boss_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
+        let hits = hero_hp as f64 / incoming as f64;
+
+        assert!(
+            (8.0..40.0).contains(&rounds),
+            "the end fight takes {rounds:.0} rounds for a level-100 party — a formality \
+             under 8, an endurance test over 40"
+        );
+        assert!(
+            (2.5..8.0).contains(&hits),
+            "a level-100 hero survives {hits:.1} boss hits — under 2.5 is an execution, \
+             over 8 is not a threat"
+        );
+        // And it must out-reward a Gatekeeper, or the apex is a worse source than a pass.
+        assert!(
+            e.end_fight_loot_mult > e.gatekeeper_loot_mult,
+            "the end fight rolls a smaller spike ({}) than a Gatekeeper ({})",
+            e.end_fight_loot_mult,
+            e.gatekeeper_loot_mult
+        );
+    }
+
     #[test]
     fn the_hub_chooser_agrees_with_the_real_curve() {
         let b = Balance::load_default().unwrap();
