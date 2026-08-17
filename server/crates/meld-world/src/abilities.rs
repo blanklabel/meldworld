@@ -507,6 +507,11 @@ pub fn creature_target_profile(
     }
     // 2. A champion is smarter than its escort, whatever it is.
     match encounter_class {
+        // THE END FIGHT. Three peers, each hunting the role that makes the party work —
+        // and `cap_role_hunters` then leaves exactly ONE of them doing it, which is the
+        // whole reason that cap exists: three bosses independently deciding to kill the
+        // healer ends the fight in about one round.
+        "world_end" => return TargetProfile::Role,
         "gatekeeper" => return TargetProfile::Role,
         "elite" | "undead_rite" => return TargetProfile::GangUp,
         _ => {}

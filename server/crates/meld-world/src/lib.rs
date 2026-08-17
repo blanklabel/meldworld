@@ -1526,6 +1526,22 @@ impl MonsterSpawn {
     /// (FS-4): scale its HP/atk/XP and tag the encounter class — which drives the
     /// loot multiplier on the kill, the battle merge cap, and the client's size +
     /// tint. Call once, on a standard spawn.
+    /// Give this spawn AUTHORED stats rather than a multiple of whatever it rode in on.
+    ///
+    /// A set piece is not a promoted local spawn. At d3200 an ordinary creature is already
+    /// ~10k HP and two-shots a hero, because the deep curve is tuned for a party that
+    /// departed from a deep hub — and departure hubs are held off (`PG-2`). Expressing the
+    /// end fight as `x4 of local` therefore made it ~14x harder than anything a party can
+    /// actually bring, so it is authored instead: absolute numbers, tuned against the party
+    /// that can really arrive, and raised when hubs land.
+    fn set_piece(&mut self, hp: i32, atk: i32, xp: i64, class: &str) {
+        self.max_hp = hp.max(1);
+        self.hp = self.max_hp;
+        self.atk = atk.max(1);
+        self.xp_reward = xp.max(0);
+        self.encounter_class = class.to_string();
+    }
+
     fn promote(&mut self, hp_mult: f64, atk_mult: f64, xp_mult: f64, class: &str) {
         self.max_hp = ((self.max_hp as f64) * hp_mult).round().max(1.0) as i32;
         self.hp = self.max_hp;
@@ -2733,10 +2749,10 @@ impl Arena {
                             self.monsters[j].area_min_x = start_x;
                             j
                         };
-                        self.monsters[bidx].promote(
-                            enc.end_fight_hp_mult,
-                            enc.end_fight_atk_mult,
-                            enc.end_fight_xp_mult,
+                        self.monsters[bidx].set_piece(
+                            enc.end_fight_boss_hp,
+                            enc.end_fight_boss_atk,
+                            enc.end_fight_boss_xp,
                             "world_end",
                         );
                         // Three DIFFERENT bosses: the same name three times reads as a bug.
