@@ -1084,63 +1084,85 @@ mod tests {
     /// of `base_run_level`'s formula purely so a chooser can say "heroes start at 40". A
     /// copy is a thing that drifts, so it is checked against the real one at every hub —
     /// and against the level cap, which is what makes the deepest hub the end of the ladder.
-    /// THE END FIGHT has to be beatable by the party that can actually REACH it, and the
-    /// only route there today is on foot (hubs are held off), which lands a party around
-    /// level 100. Sized as a multiple of the local creature it was ~14x harder than that —
-    /// at d3200 an ordinary creature already runs ~10k HP and two-shots a hero, because the
-    /// deep curve is tuned for hub-fed parties that do not exist yet.
+    /// THE END FIGHT is a **gear check**, and this pins that it stays one.
     ///
-    /// So it is AUTHORED, and this pins the shape: a long fight (not a formality, not an
-    /// endurance test) against heroes that can take a few hits (not one).
+    /// It is the apex, so it expects really good loot: a level-100 party in tier-32 insured
+    /// gear should get a long, dangerous fight, and the same party wearing nothing should be
+    /// deleted. Sized as a multiple of the local creature it was neither — at d3200 an
+    /// ordinary creature already runs ~10k HP and two-shots a hero, so the fight came out at
+    /// 442 rounds and a 0.3-round wipe. It is authored (`set_piece`) for exactly this reason.
+    ///
+    /// The subtle constraint is `damage_floor_fraction`: defence can never cut a blow below
+    /// a quarter of the attacker's power, so above `hero_def / 0.75` more armour buys
+    /// NOTHING and the fight stops caring what you wear. The attack number has to sit inside
+    /// that window or the gear gate quietly disappears.
     #[test]
-    fn the_end_fight_is_a_fight_and_not_an_execution() {
+    fn the_end_fight_is_a_gear_check() {
         let b = Balance::load_default().unwrap();
         let e = &b.encounters;
-        let sc = meld_world::Scaling::new(&b);
-        let d = e.end_fight_min_distance as i64;
-
-        // A hero at the level a party really arrives at, on foot.
-        let party = vec![("p".to_string(), "c".to_string(), CharacterClass::Hunter, GearBonus::default())];
-        let runs = InstanceRun::new("i".into(), 0, &b, 0);
-        let mut hero = party_fighters(&party, &runs, &b, &[])[0].clone();
-        hero.level = 100;
-        // Approximate the level-100 hero the attribute curve gives (party_fighters builds
-        // level 1); what matters here is the ORDER of magnitude, not the exact stat.
         let a = &b.attributes;
-        let ph = &b.player.get("hunter").expect("hunter stats");
-        let str_ = ph.str + ph.str_per_level * 99;
-        let wll = ph.wll + ph.wll_per_level * 99;
-        let hero_atk = ph.base_atk + ((str_ - ph.str) as f64 * a.str_to_atk).round() as i32;
-        let hero_hp = ph.base_hp + ((wll - ph.wll) as f64 * a.wll_to_hp).round() as i32;
-        let hero_def = ph.base_def + ((wll - ph.wll) as f64 * a.wll_to_def).round() as i32;
+        let l = &b.loot;
+        let af = &b.affix;
+        let ph = b.player.get("hunter").expect("hunter stats");
+        let floor = b.combat_math.damage_floor_fraction;
+        let tier = e.end_fight_reward_tier;
 
-        let boss_def = (2.0 * sc.def_mult(d)).round() as i32;
-        let per_hero = (hero_atk - boss_def).max((hero_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
-        let party_hp = e.end_fight_boss_hp as f64
-            * e.end_fight_bosses as f64
-            * encounter_party_scale(4, &b);
-        let rounds = party_hp / (4.0 * per_hero as f64);
-        let incoming = (e.end_fight_boss_atk - hero_def)
-            .max((e.end_fight_boss_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
-        let hits = hero_hp as f64 / incoming as f64;
+        // A level-100 hero: the level a party actually reaches on foot (hubs are held off).
+        let lv = 100;
+        let str_ = ph.str + ph.str_per_level * (lv - 1);
+        let wll = ph.wll + ph.wll_per_level * (lv - 1);
+        let hp = ph.base_hp + ((wll - ph.wll) as f64 * a.wll_to_hp).round() as i32;
+        let bare_atk = ph.base_atk + ((str_ - ph.str) as f64 * a.str_to_atk).round() as i32;
+        let bare_def = ph.base_def + ((wll - ph.wll) as f64 * a.wll_to_def).round() as i32;
 
+        // …and the same hero in really good loot: six slots at the reward tier, insured,
+        // epic (so two stat affixes each). One weapon carries atk; four armour pieces carry
+        // def (`main_hand` -> atk, `accessory` -> spd, the rest -> def).
+        let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
+        let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
+        let geared_atk = bare_atk + (piece + affix).round() as i32;
+        let geared_def = bare_def + (4.0 * (piece + affix)).round() as i32;
+
+        let boss_def = (2.0 * meld_world::Scaling::new(&b).def_mult(3200)) as i32;
+        let hit = |atk: i32, def: i32| (atk - def).max((atk as f64 * floor) as i32);
+        let rounds = |atk: i32| {
+            e.end_fight_boss_hp as f64 * e.end_fight_bosses as f64 * encounter_party_scale(4, &b)
+                / (4.0 * hit(atk, boss_def) as f64)
+        };
+        let survives =
+            |def: i32| hp as f64 / hit(e.end_fight_boss_atk, def) as f64;
+
+        // The gate: gear has to buy a real multiple of survivability, not a rounding error.
+        let gain = survives(geared_def) / survives(bare_def);
         assert!(
-            (8.0..40.0).contains(&rounds),
-            "the end fight takes {rounds:.0} rounds for a level-100 party — a formality \
-             under 8, an endurance test over 40"
+            gain >= 2.0,
+            "really good loot buys only {gain:.1}x survivability here — the apex is a level \
+             check, not a gear check"
+        );
+        // Armour must not be floored out: past `def / 0.75` the fight ignores what you wear.
+        assert!(
+            (e.end_fight_boss_atk as f64) < geared_def as f64 / floor.max(0.01) * 0.75 + 1.0,
+            "boss attack {} floors through tier-{tier} armour, so gear stops mattering",
+            e.end_fight_boss_atk
+        );
+        // Geared: a long, dangerous fight. Bare: deleted.
+        assert!(
+            (15.0..35.0).contains(&rounds(geared_atk)),
+            "a geared party clears it in {:.0} rounds",
+            rounds(geared_atk)
         );
         assert!(
-            (2.5..8.0).contains(&hits),
-            "a level-100 hero survives {hits:.1} boss hits — under 2.5 is an execution, \
-             over 8 is not a threat"
+            (3.0..8.0).contains(&survives(geared_def)),
+            "a geared hero survives {:.1} hits",
+            survives(geared_def)
+        );
+        assert!(
+            survives(bare_def) < 2.0,
+            "an ungeared hero survives {:.1} hits — the apex does not expect loot at all",
+            survives(bare_def)
         );
         // And it must out-reward a Gatekeeper, or the apex is a worse source than a pass.
-        assert!(
-            e.end_fight_loot_mult > e.gatekeeper_loot_mult,
-            "the end fight rolls a smaller spike ({}) than a Gatekeeper ({})",
-            e.end_fight_loot_mult,
-            e.gatekeeper_loot_mult
-        );
+        assert!(e.end_fight_loot_mult > e.gatekeeper_loot_mult);
     }
 
     #[test]

@@ -1647,9 +1647,19 @@ spike that makes the whole economy cohere.
     sized as `x4 of a local creature`, and at d3200 a local creature already runs ~10k HP
     and two-shots a hero — so the fight was **442 rounds and a 0.3-round wipe**, i.e.
     impossible. It is **authored** now (`set_piece`, absolute HP/atk) because a set piece is
-    not a promoted spawn, and tuned against the party that can actually arrive on foot
-    (~level 100): ~20 rounds, a hero surviving ~4 hits, pinned by
-    `the_end_fight_is_a_fight_and_not_an_execution`.
+    not a promoted spawn — and it is tuned as a **GEAR CHECK**, because the apex should
+    expect really good loot. At 3900 HP / 420 atk each, a level-100 party in tier-32 insured
+    gear gets a ~25-round fight surviving ~5 hits; the same party wearing nothing dies in 1.5
+    hits and would need 43 rounds. **Gear buys 3.5x survivability**, and
+    `the_end_fight_is_a_gear_check` pins that MULTIPLE rather than the raw numbers, so a
+    retune has to preserve the shape.
+    ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
+    blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
+    tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
+    The first pass at "make it really hard" put boss attack near 1000, which floored straight
+    through the gear: geared and bare both died in ~2 hits and the gate silently vanished.
+    On this damage model **"harder" means more HP, not more attack** — attack past the floor
+    threshold is where difficulty stops being a conversation with the player's build.
     **`"world_end"` was missing from `creature_target_profile`**, so the biggest fight in the
     game got no champion promotion and rolled its profile like trash; it is `Role` now, and
     `cap_role_hunters` leaves exactly one of the three hunting the healer — three doing it
