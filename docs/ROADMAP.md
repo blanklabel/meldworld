@@ -1694,6 +1694,18 @@ spike that makes the whole economy cohere.
     about twice as fast as the martial party the fight is tuned for, and takes little damage.
     Fully closing that means the Dex→speed curve or the class itself, which is every fight in
     the game rather than this encounter, and is not a call to make inside a set piece.
+  - 🟡 *A bot harness exists but does not yet measure it* (`qa/tests/end_fight.rs`,
+    `#[ignore]`d with the reason). It drives a real party, finds encounters, commands every
+    hero and reports turns / HP lost / outcome — and it immediately found two things nobody
+    knew:
+    - **A level-1 four-hero party loses its first non-tutorial fight.** Acting on 24 of 24
+      turns, it deals ~240 into one level-2 216 HP creature at d14 and still loses to
+      dodges. The tutorial's on-ramp is doing far more work than anyone had measured, and a
+      player who skips it is not on a gentle curve — they are on a coin flip.
+    - **A bot cannot drive a Psyker.** `action: "attack"` resolves through `resolve_psyker`
+      with no op, which is `hold`, so a Psyker party does nothing at all (13 turns, no
+      damage). Measuring the caster stack that broke this encounter needs the bot to cast
+      Foci.
   - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
     unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
     encounter path instead. `WorldBoss` defs, raid-scale merge cap,

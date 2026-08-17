@@ -1114,6 +1114,7 @@ dependencies = [
  "meld-proto",
  "meld-run",
  "meld-server",
+ "meld-world",
  "reqwest",
  "serde_json",
  "sqlx",
