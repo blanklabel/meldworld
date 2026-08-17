@@ -1371,6 +1371,16 @@ pub struct MonsterSpawn {
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: String,
+    /// THE END FIGHT: which damage family this one of the three shrugs off — `"mind"`,
+    /// `"physical"` or `"elemental"`, empty for everything else.
+    ///
+    /// Each of the three carries a DIFFERENT ward on purpose, so **no single damage source
+    /// clears the encounter**. A stack of four Psykers deletes anything that only has
+    /// armour to hide behind (Foci ignore defence entirely and ride Mnd, which comes from
+    /// levelling rather than loot) — measured at 6 rounds against the intended 25, taking
+    /// no hits at all. A ward the Psyker cannot burn through is what makes bringing a mixed
+    /// party the answer, without touching the class that earned its kit.
+    pub set_piece_ward: String,
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1432,6 +1442,7 @@ impl MonsterSpawn {
             boss_kind: String::new(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
+            set_piece_ward: String::new(),
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -2758,6 +2769,11 @@ impl Arena {
                         // Three DIFFERENT bosses: the same name three times reads as a bug.
                         let boss = all[(erng.below(all.len().max(1)) + n) % all.len().max(1)];
                         self.monsters[bidx].become_boss(boss);
+                        // …and three DIFFERENT wards, so no single damage source clears the
+                        // encounter. Rotated rather than rolled: the encounter must always
+                        // cover all three families, or a seed could hand out a free run.
+                        self.monsters[bidx].set_piece_ward =
+                            ["mind", "physical", "elemental"][n % 3].to_string();
                     }
                 }
                 if i > 0

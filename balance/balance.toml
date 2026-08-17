@@ -625,6 +625,18 @@ end_fight_boss_xp = 40000
 # `rolled_gear`, which cannot produce either by design ("a champion must stay the better
 # source of a great item"), so the spike is what makes the apex actually the apex.
 end_fight_loot_mult = 14.0
+# Each of the three shrugs off a DIFFERENT damage family (mind / physical / elemental), so
+# no single source clears the encounter. This exists because armour is not a real defence
+# against the Psyker: Foci ignore defence outright and ride Mnd, which comes from levelling
+# rather than loot — four Psykers cleared the fight in 6 rounds against the intended 25 and
+# took no hits at all. A ward they cannot burn through makes a MIXED party the answer without
+# nerfing the class that earned its kit.
+end_fight_ward_mult = 0.35        # damage of the warded family that actually lands
+# …and a set piece is not a big creature: gauge slows (Gravity Vortex, Anchor, a web) can
+# never take one below this share of its normal fill rate. Unclamped, a single Vortex plus an
+# Anchor left each boss acting 0.3 times in the entire fight, so `end_fight_boss_atk` — the
+# whole danger of the encounter — simply never happened.
+end_fight_slow_floor = 0.6
 end_fight_reward_pieces = 3      # insured pieces awarded for felling it
 end_fight_reward_tier = 32       # tier(3200) = 32, so the reward matches the ground it fell on
 undead_rite_min_tier = 4         # never shallower than this

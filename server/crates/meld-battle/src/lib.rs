@@ -146,6 +146,11 @@ pub struct Fighter {
     /// How this creature picks who to hit (CR-9). Set at assembly from the creature's
     /// kind, its encounter class and its level; heroes keep the default and never use it.
     pub target_profile: TargetProfile,
+    /// Floor on how far a gauge SLOW may drag this fighter's fill rate (0 = no floor).
+    /// A set piece is not a big creature: unclamped, one Gravity Vortex plus an Anchor left
+    /// each end-fight boss acting 0.3 times in a whole fight, so the encounter's entire
+    /// danger never happened.
+    pub slow_floor: f64,
     /// Per-ability (pool index) tick at which it may be used again.
     ability_ready_at: HashMap<usize, u64>,
     /// An in-flight telegraphed ability: (pool index, executes_at tick). While
@@ -251,6 +256,7 @@ impl Fighter {
             damage_modifiers: HashMap::new(),
             basic_attack_type: DamageType::None,
             target_profile: TargetProfile::Weakest,
+            slow_floor: 0.0,
             ability_ready_at: HashMap::new(),
             channel: None,
             timed_statuses: Vec::new(),
@@ -1144,13 +1150,16 @@ impl Battle {
             // of a web is worth doing rather than being cancelled by it.
             // The STRONGEST slow wins rather than stacking — two multipliers on one gauge
             // is how a rate becomes a cap by accident.
-            let rate_mult = if pinned {
+            let slowed_to = if pinned {
                 anchor_mult
             } else if slowed {
                 slow_mult
             } else {
                 1.0
-            } * if hastened { haste_mult } else { 1.0 };
+            };
+            // A set piece resists being controlled out of the fight entirely.
+            let slowed_to = slowed_to.max(f.slow_floor);
+            let rate_mult = slowed_to * if hastened { haste_mult } else { 1.0 };
             f.gauge =
                 (f.gauge + f.speed_stat as f64 * rate_mult / self.gauge_divisor).min(1.0);
         }

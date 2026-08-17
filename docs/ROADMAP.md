@@ -1672,6 +1672,28 @@ spike that makes the whole economy cohere.
     unique or a set piece by design, so the apex was a worse *source* than a Gatekeeper at
     d300. `end_fight_loot_mult` (14.0, above a Gatekeeper's 9.0) makes it the best in the
     game; the guaranteed pieces are the floor, not the prize.
+  - *Hardened against the build that deleted it.* **Four Psykers cleared it in 6 rounds
+    against the intended 25, taking no hits at all** — because Foci ignore defence outright
+    and ride Mnd, which comes from levelling rather than loot, so neither the armour nor the
+    gear gate was in their path; and one Gravity Vortex plus an Anchor left each boss acting
+    **0.3 times in the whole fight**, so the encounter's entire danger never happened. Two
+    authored defences, neither of which touches the class:
+    - **Three different wards.** Each of the three shrugs off one damage family — mind /
+      physical / elemental (`end_fight_ward_mult`), merged ON TOP of its own kind's profile
+      so it keeps its identity. Rotated, never rolled, so the encounter always covers all
+      three and no seed hands out a free run. `no_single_damage_family_clears_the_end_fight`
+      holds it. This roughly halves a Psyker stack's rate against the boss that wards it,
+      and makes a MIXED party the answer.
+    - **A slow floor** (`end_fight_slow_floor`, above both `status_slow_mult` and
+      `psyker_anchor_slow_mult`, or the clamp would do nothing). A set piece is not a big
+      creature: control can delay it, not remove it from the fight.
+  - ⚠️ **What is NOT closed: action economy.** A Psyker's Dex growth puts it at speed ~247
+    by level 100 against a creature's fixed ~100, so four of them take roughly **ten actions
+    per boss action**. The wards and the floor cut the stack from ~6 rounds to ~11 against
+    an intended 25, and the bosses now get real turns — but an all-caster party is still
+    about twice as fast as the martial party the fight is tuned for, and takes little damage.
+    Fully closing that means the Dex→speed curve or the class itself, which is every fight in
+    the game rather than this encounter, and is not a call to make inside a set piece.
   - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
     unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
     encounter path instead. `WorldBoss` defs, raid-scale merge cap,

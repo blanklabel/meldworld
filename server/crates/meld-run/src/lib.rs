@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
-use meld_proto::enums::{CharacterClass, CombatantKind, EncounterClass, RunResult, TargetProfile};
+use meld_proto::enums::{
+    CharacterClass, CombatantKind, DamageType, EncounterClass, RunResult, TargetProfile,
+};
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
 
@@ -892,6 +894,30 @@ pub fn build_battle(
             // creatures are smarter on average. Seeded off the creature's own combatant id
             // so the same creature in the same fight always thinks the same way, and so
             // promoting one cannot shift any other roll in the battle.
+            // THE END FIGHT's ward and its slow floor. Merged ON TOP of the kind's own
+            // elemental profile, so a boss keeps its identity and gains the set piece's
+            // resistance rather than having one replace the other.
+            if !m.set_piece_ward.is_empty() {
+                let mult = balance.encounters.end_fight_ward_mult;
+                let fams: &[DamageType] = match m.set_piece_ward.as_str() {
+                    "mind" => &[DamageType::Mind, DamageType::Ethereal],
+                    "physical" => {
+                        &[DamageType::Blunt, DamageType::Slash, DamageType::Pierce]
+                    }
+                    _ => &[
+                        DamageType::Fire,
+                        DamageType::Ice,
+                        DamageType::Water,
+                        DamageType::Lightning,
+                        DamageType::Wind,
+                        DamageType::Earth,
+                    ],
+                };
+                for ty in fams {
+                    f.damage_modifiers.insert(*ty, mult);
+                }
+                f.slow_floor = balance.encounters.end_fight_slow_floor;
+            }
             f.target_profile = meld_world::abilities::creature_target_profile(
                 ability_key,
                 &m.encounter_class,
@@ -1084,6 +1110,70 @@ mod tests {
     /// of `base_run_level`'s formula purely so a chooser can say "heroes start at 40". A
     /// copy is a thing that drifts, so it is checked against the real one at every hub —
     /// and against the level cap, which is what makes the deepest hub the end of the ladder.
+    /// **No single damage source clears the end fight.** Four Psykers deleted it in 6 rounds
+    /// against the intended 25, taking no hits — because Foci ignore defence outright and
+    /// ride Mnd, which comes from levelling rather than loot, so neither the armour nor the
+    /// gear gate was in their path at all. Each of the three now shrugs off a DIFFERENT
+    /// family, which makes a mixed party the answer without nerfing the class.
+    #[test]
+    fn no_single_damage_family_clears_the_end_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = meld_world::Arena::generate(&b, 4, false);
+        for _ in 0..80 {
+            arena.ensure_frontier(&b, b.encounters.end_fight_min_distance + 900.0);
+        }
+        let enders: Vec<&meld_world::MonsterSpawn> = arena
+            .monsters
+            .iter()
+            .filter(|m| m.encounter_class == "world_end")
+            .collect();
+        if enders.is_empty() {
+            return; // this seed placed it past the streamed frontier; other seeds cover it
+        }
+        let wards: std::collections::HashSet<&str> =
+            enders.iter().map(|m| m.set_piece_ward.as_str()).collect();
+        assert_eq!(
+            wards.len(),
+            3,
+            "the three bosses share wards ({wards:?}) — one damage type clears the fight"
+        );
+        for want in ["mind", "physical", "elemental"] {
+            assert!(wards.contains(want), "nothing in the encounter wards {want}");
+        }
+
+        // …and the ward has to actually bite: a Psyker's Mind tick on the mind-warded boss
+        // must land for meaningfully less than on the others.
+        let mult = b.encounters.end_fight_ward_mult;
+        assert!(
+            (0.05..0.6).contains(&mult),
+            "a ward multiplier of {mult} either does nothing or is an immunity"
+        );
+    }
+
+    /// A set piece is not a big creature: control cannot remove it from the fight. One
+    /// Gravity Vortex plus an Anchor left each boss acting **0.3 times in the whole fight**,
+    /// so `end_fight_boss_atk` — the entire danger of the encounter — never happened.
+    #[test]
+    fn control_cannot_take_the_end_fight_out_of_the_fight() {
+        let b = Balance::load_default().unwrap();
+        let floor = b.encounters.end_fight_slow_floor;
+        assert!(
+            (0.4..0.9).contains(&floor),
+            "a slow floor of {floor} either ignores control entirely or does not stop it"
+        );
+        // It must sit ABOVE the deepest slow in the game, or the clamp changes nothing.
+        assert!(
+            floor > b.battle.psyker_anchor_slow_mult,
+            "the floor ({floor}) is under Anchor's multiplier ({}), so Anchor still wins",
+            b.battle.psyker_anchor_slow_mult
+        );
+        assert!(
+            floor > b.battle.status_slow_mult,
+            "the floor ({floor}) is under an ordinary web/chill ({}), so nothing is clamped",
+            b.battle.status_slow_mult
+        );
+    }
+
     /// THE END FIGHT is a **gear check**, and this pins that it stays one.
     ///
     /// It is the apex, so it expects really good loot: a level-100 party in tier-32 insured
