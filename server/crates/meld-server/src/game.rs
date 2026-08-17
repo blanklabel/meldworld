@@ -226,6 +226,8 @@ enum DbWrite {
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
     Vanguard(String, wr::VanguardStamp),
+    /// THE END FIGHT is down: the same posting, plus the wood star and the clear time.
+    WorldEnd(String, wr::VanguardStamp, i64),
     /// Clear a player's pending-backpack queue: its contents were just drained
     /// into a freshly-formed run's live Backpack.
     ClearPendingBackpack(String),
@@ -321,6 +323,14 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                         .await
                     {
                         tracing::error!("vanguard post failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::WorldEnd(pid, stamp, clear_ms) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    let season = meld_db::current_season();
+                    if let Err(e) = db.record_world_end(uid, season, &stamp, clear_ms).await {
+                        tracing::error!("world-end post failed for {pid}: {e}");
                     }
                 }
             }
@@ -3684,14 +3694,20 @@ impl GameState {
         // rather than an error. The bar is the account's own all-time deepest distance,
         // read from the `vanguard` record — server-written off validated movement, so a
         // client cannot ask its way deeper than it has walked.
-        let deepest_ever =
-            self.sessions.get(initiator).map(|s| s.deepest_ever).unwrap_or(0);
-        let requested = wants_hub.as_deref().and_then(meld_proto::hubs::hub);
-        let hub = match requested {
-            Some(h) if h.distance <= deepest_ever => h,
-            _ => meld_proto::hubs::deepest_hub(deepest_ever),
-        };
-        let departure_hub_distance = hub.distance;
+        //
+        // **HELD OFF ON PURPOSE (PG-2).** The registry, the "have you been there" gate and
+        // the chooser all exist, but nothing honours them yet: `add_avatar` spawns every
+        // dive at the ORIGIN regardless, so departing from a deep hub would have handed out
+        // a level-40 party in the tutorial ring — a level-select with fiction on it rather
+        // than a departure point. Wiring it needs spawn-at-distance *and* frontier
+        // generation around that distance, and extraction (the deep portal, the west-return
+        // border) still assumes d0 is the start.
+        //
+        // It is also not clearly needed: reaching the end-world depth takes about an hour
+        // on foot, so the ladder it was meant to unblock may not need unblocking. Left
+        // inert rather than half-wired.
+        let _ = wants_hub;
+        let departure_hub_distance = 0;
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
         // Create the shared instance on the first entry.
@@ -3724,7 +3740,7 @@ impl GameState {
                 balance: self.balance.clone(),
                 db_writes: self.db_writes.clone(),
                 arena: Arena::generate_with(&self.balance, seed, tutorial, force_biome),
-                run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance),
+                run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
@@ -4455,6 +4471,94 @@ impl WorldActor {
                 },
             },
         ]
+    }
+
+    /// THE END FIGHT is down (EW, first cut). The reward, the omen, and the way home.
+    ///
+    /// Three insured pieces go into `looted_gear` and then the player is enqueued for an
+    /// already-due extraction — the same route `west_return` uses — so the tested banking
+    /// path carries everything home rather than this growing a second one. Heroes come back
+    /// at level 1 because levels were only ever dive-scoped; nothing has to reset them.
+    fn finish_end_fight(&mut self, player_id: &str) -> Vec<Outgoing> {
+        let enc = self.balance.encounters.clone();
+        let balance = self.balance.clone();
+        let started = self.run.started_ms;
+        let Some(run) = self
+            .run
+            .runs
+            .iter_mut()
+            .find(|r| r.player_id == player_id && r.result.is_none())
+        else {
+            return Vec::new();
+        };
+        // Insured, so it survives the walk home and every death after it: this is the one
+        // thing in the game handed over for felling the world's own resistance.
+        for n in 0..enc.end_fight_reward_pieces.max(0) {
+            let seed = hash_str(&format!("{}-end-{n}", run.run_id));
+            let slots = meld_proto::equipment::SLOTS;
+            let slot = slots[(n as usize) % slots.len()];
+            let class_key = meld_run::class_key(run.character_class);
+            let g = meld_world::rolled_gear(
+                &balance,
+                enc.end_fight_reward_tier,
+                "epic",
+                0.0,
+                slot,
+                class_key,
+                "ashfall",
+                seed,
+            );
+            run.looted_gear.push(LootGear {
+                gear_id: Uuid::now_v7().to_string(),
+                name: g.name.clone(),
+                rarity: g.rarity.clone(),
+                slot: g.slot.clone(),
+                class_key: g.class_key.clone(),
+                insurance: g.insurance,
+                tier: g.tier,
+                atk_bonus: g.atk_bonus,
+                def_bonus: g.def_bonus,
+                spd_bonus: g.spd_bonus,
+                base_max_durability: g.max_durability,
+                max_durability: g.max_durability,
+                equipped_hero_slot: None,
+                damage_modifiers: g.damage_modifiers.clone(),
+                family: g.family.clone(),
+                armor_weight: g.armor_weight.clone(),
+                affixes: g.affixes.clone(),
+                unique_key: g.unique_key.clone(),
+                set_key: g.set_key.clone(),
+            });
+        }
+        let clear_ms = (now_ms() as i64 - started as i64).max(0);
+        let stamp = wr::VanguardStamp {
+            distance: run.max_distance_reached,
+            level: run.run_level,
+            fights: run.fights,
+            flees: run.flees,
+        };
+        let pieces = enc.end_fight_reward_pieces;
+        let _ = self.db_writes.send(DbWrite::WorldEnd(
+            player_id.to_string(),
+            stamp,
+            clear_ms,
+        ));
+        // Home the tested way: an already-due extraction, banked next tick.
+        self.extraction.insert(
+            player_id.to_string(),
+            Extraction { completes_at: now_ms(), method: "world_end".to_string() },
+        );
+        vec![out_msg(
+            player_id,
+            &wr::WorldEndFelled {
+                // Deliberately unexplained. Three of them stood together and it changed
+                // nothing about the ground — EW-4 is what answers this.
+                omen: "Three of them fell together. The land is not stabilized."
+                    .to_string(),
+                clear_ms,
+                pieces,
+            },
+        )]
     }
 
     /// WG-4: if the player has walked WEST of the return border (behind the hub),
@@ -7981,6 +8085,13 @@ impl WorldActor {
 
         match outcome {
             BattleOutcome::Victory => {
+                // Was this THE END FIGHT? Asked before the corpses are cleared, because
+                // the encounter class lives on the creature and is gone a line later.
+                let was_end_fight = monster_ids.iter().any(|id| {
+                    inst.arena
+                        .monster_by_id(id)
+                        .is_some_and(|m| m.encounter_class == "world_end")
+                });
                 // The whole encounter is cleared from the overworld (prune_defeated
                 // then reclaims these corpses at the end of the tick).
                 for id in &monster_ids {
@@ -7988,6 +8099,19 @@ impl WorldActor {
                         m.defeated = true;
                         m.in_battle = false;
                     }
+                }
+                if was_end_fight {
+                    let winners: Vec<String> = inst
+                        .run
+                        .runs
+                        .iter()
+                        .filter(|r| bp.contains(&r.party_id))
+                        .map(|r| r.player_id.clone())
+                        .collect();
+                    for pid in winners {
+                        out.extend(self.finish_end_fight(&pid));
+                    }
+                    return (out, Vec::new());
                 }
                 // Award XP to every participant; note who leveled so we can refresh
                 // their party panel (stats change on level-up).

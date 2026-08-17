@@ -379,6 +379,25 @@ pub fn boss_faction(boss_kind: &str) -> Option<&'static str> {
 }
 
 /// Every boss whose lineage is `faction`.
+/// Every named boss (FS-4), whatever its lineage — what the END FIGHT draws its three
+/// peers from, since that encounter is the world itself resisting rather than one faction.
+pub const ALL_BOSSES: &[&str] = &[
+    "choirmother",
+    "hollowbishop",
+    "miredrowned",
+    "sepulcher",
+    "ironmaw",
+    "rustfang",
+    "gloamhound",
+    "weepingcolossus",
+    "pyrewarden",
+    "ashenleviathan",
+];
+
+pub fn all_bosses() -> &'static [&'static str] {
+    ALL_BOSSES
+}
+
 pub fn bosses_of_faction(faction: &str) -> Vec<&'static str> {
     [
         "choirmother",

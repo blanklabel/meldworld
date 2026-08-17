@@ -342,6 +342,14 @@ pub struct Encounters {
     pub undead_rite_loot_mult: f64,
     pub pack_spread: f64,
     pub undead_rite_chance: f64,
+    /// THE END FIGHT (EW): distance past which one encounter becomes three named bosses.
+    pub end_fight_min_distance: f64,
+    pub end_fight_bosses: usize,
+    pub end_fight_hp_mult: f64,
+    pub end_fight_atk_mult: f64,
+    pub end_fight_xp_mult: f64,
+    pub end_fight_reward_pieces: i32,
+    pub end_fight_reward_tier: i32,
     pub undead_rite_min_tier: i32,
     /// Distance below which a standard creature is never promoted to Elite. Without
     /// it an Elite — a named boss with `elite_hp_mult` behind it — can be the second

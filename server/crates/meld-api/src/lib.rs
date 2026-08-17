@@ -225,6 +225,8 @@ async fn vanguard_me(State(st): State<ApiState>, headers: HeaderMap) -> Result<R
             at_level: r.at_level,
             fights: r.fights,
             flees: r.flees,
+            star: r.star.clone(),
+            clear_ms: r.clear_ms,
         });
     Ok((
         StatusCode::OK,
@@ -251,6 +253,8 @@ async fn vanguard_entries(st: &ApiState, season: i32) -> Result<Vec<VanguardEntr
             at_level: r.at_level,
             fights: r.fights,
             flees: r.flees,
+            star: r.star.clone(),
+            clear_ms: r.clear_ms,
         })
         .collect())
 }

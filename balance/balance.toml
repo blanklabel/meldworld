@@ -588,6 +588,20 @@ minion_xp_mult = 0.55
 # once the world is dangerous enough for it to read as a set-piece rather than an
 # ambush.
 undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [TUNABLE]
+# THE END FIGHT (EW, first cut). Past this distance one encounter becomes three named
+# bosses standing together — not a boss with a retinue, three peers — and it is GUARANTEED
+# rather than rolled, because it is the thing the whole walk is pointed at. d3200 is where
+# it sits because `base_run_level` reaches the 255 cap at d3256: the last distance that is
+# still a fair fight by construction (see PG-2). Fleeing is off the table (it reports as a
+# Gatekeeper-class encounter), and felling it ENDS the dive — you are put back in town, at
+# level 1, holding what you carried out plus three insured pieces.
+end_fight_min_distance = 3200
+end_fight_bosses = 3
+end_fight_hp_mult = 4.0          # each of the three, against a standard creature at depth
+end_fight_atk_mult = 1.5
+end_fight_xp_mult = 6.0
+end_fight_reward_pieces = 3      # insured pieces awarded for felling it
+end_fight_reward_tier = 32       # tier(3200) = 32, so the reward matches the ground it fell on
 undead_rite_min_tier = 4         # never shallower than this
 # An Elite is a NAMED BOSS with elite_hp_mult behind it. Ungated, one can be the
 # second creature a level-1 party meets — measured as a guaranteed wipe, which is

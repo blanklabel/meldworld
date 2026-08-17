@@ -1917,6 +1917,9 @@ pub struct Arena {
     /// the centred area-0 onboarding. Otherwise biomes are drawn per-section
     /// (roadmap WG-2/WG-3) and area 0 is a normal procedural section.
     tutorial: bool,
+    /// THE END FIGHT is placed once per instance and never rolled again — it is the thing
+    /// the walk out is pointed at, not a spawn type that can recur.
+    end_fight_placed: bool,
     /// DEV/QA harness override: when set to a `BIOMES` name, EVERY section is forced to
     /// that biome so a specific biome's maze can be loaded + inspected on demand instead
     /// of waiting for a random draw to surface it. `None` in normal play. Set at the
@@ -2175,6 +2178,7 @@ impl Arena {
     ) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
+            end_fight_placed: false,
             seed,
             areas: Vec::new(),
             monsters: Vec::new(),
@@ -2691,6 +2695,55 @@ impl Arena {
                 // roll so a rite is never demoted into one.
                 let leader_idx = idx;
                 let mut became_rite = false;
+                // THE END FIGHT (EW, first cut): past `end_fight_min_distance` one encounter
+                // becomes THREE named bosses standing together — peers, not a boss with a
+                // retinue. Guaranteed rather than rolled, and only once per instance,
+                // because it is the thing the whole walk out is pointed at; checked before
+                // the rite and the pack roll so nothing can demote it.
+                if !self.tutorial
+                    && !self.end_fight_placed
+                    && pos.x >= enc.end_fight_min_distance
+                    && self.monsters[leader_idx].encounter_class == "standard"
+                {
+                    self.end_fight_placed = true;
+                    became_rite = true;
+                    let all = abilities::all_bosses();
+                    for n in 0..enc.end_fight_bosses.max(1) {
+                        let bidx = if n == 0 {
+                            leader_idx
+                        } else {
+                            let angle = erng.unit() * std::f64::consts::TAU;
+                            let dist = enc.pack_spread * (0.5 + 0.5 * erng.unit());
+                            let bpos = corridor_offset(
+                                pos,
+                                dist * angle.cos(),
+                                dist * angle.sin(),
+                                self.radial_half,
+                                self.corridor_lateral.max(1.0),
+                            );
+                            let j = self.monsters.len();
+                            let bseed = erng.next_u64();
+                            self.monsters.push(MonsterSpawn::build(
+                                balance,
+                                format!("mob-{j}"),
+                                kind,
+                                bpos,
+                                bseed,
+                            ));
+                            self.monsters[j].area_min_x = start_x;
+                            j
+                        };
+                        self.monsters[bidx].promote(
+                            enc.end_fight_hp_mult,
+                            enc.end_fight_atk_mult,
+                            enc.end_fight_xp_mult,
+                            "world_end",
+                        );
+                        // Three DIFFERENT bosses: the same name three times reads as a bug.
+                        let boss = all[(erng.below(all.len().max(1)) + n) % all.len().max(1)];
+                        self.monsters[bidx].become_boss(boss);
+                    }
+                }
                 if i > 0
                     && !self.tutorial
                     && tier_at_distance(balance, pos.x) >= enc.undead_rite_min_tier
@@ -4464,6 +4517,75 @@ mod tests {
         b.worldgen.terraces_per_area = 3.0;
         b.worldgen.max_level = 2;
         b
+    }
+
+    /// THE END FIGHT (EW, first cut): past `end_fight_min_distance` one encounter becomes
+    /// three named bosses standing together — and exactly one, once, because it is the thing
+    /// the walk out is pointed at rather than a spawn type that recurs.
+    #[test]
+    fn the_end_fight_is_three_bosses_placed_once() {
+        let b = Balance::load_default().unwrap();
+        let floor = b.encounters.end_fight_min_distance;
+        // Stream far enough out that the section past the floor exists.
+        let mut found = None;
+        for seed in 0..6u64 {
+            let mut arena = Arena::generate(&b, seed, false);
+            for _ in 0..80 {
+                arena.ensure_frontier(&b, floor + 900.0);
+            }
+            let enders: Vec<&MonsterSpawn> =
+                arena.monsters.iter().filter(|m| m.encounter_class == "world_end").collect();
+            if !enders.is_empty() {
+                assert_eq!(
+                    enders.len(),
+                    b.encounters.end_fight_bosses,
+                    "seed {seed}: the end fight placed {} bosses",
+                    enders.len()
+                );
+                // Measured as DISTANCE FROM THE ORIGIN, not `position.x`: the placement gate
+                // is in corridor space (where x is the radius) while a stored position is
+                // world space after the radial bend, so `position.x` is `r * cos(theta)` and
+                // is legitimately smaller. Comparing the two frames is the WG-4 trap.
+                //
+                // The encounter is past the floor; its three peers then scatter around the
+                // leader by `pack_spread` like any group. What matters is that they stand
+                // together — touching one pulls all three (`group_around`).
+                let dist = |m: &&MonsterSpawn| m.position.distance_floor() as f64;
+                let deepest = enders.iter().map(dist).fold(f64::MIN, f64::max);
+                let shallowest = enders.iter().map(dist).fold(f64::MAX, f64::min);
+                assert!(deepest >= floor, "the end fight was placed at {deepest}, short of {floor}");
+                assert!(
+                    deepest - shallowest <= b.encounters.pack_spread * 2.0,
+                    "the three bosses are {} apart — that is not one encounter",
+                    deepest - shallowest
+                );
+                for m in &enders {
+                    assert!(!m.boss_kind.is_empty(), "an end-fight boss has no identity");
+                }
+                // Three DIFFERENT names: the same boss three times reads as a bug.
+                let names: std::collections::HashSet<&str> =
+                    enders.iter().map(|m| m.boss_kind.as_str()).collect();
+                assert!(names.len() > 1, "the end fight is the same boss repeated: {names:?}");
+                found = Some(enders.len());
+                break;
+            }
+        }
+        assert!(found.is_some(), "no seed placed the end fight past its floor at all");
+    }
+
+    /// The tutorial dive is an on-ramp and must never contain it, however far a first-time
+    /// player somehow walks.
+    #[test]
+    fn the_tutorial_never_holds_the_end_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 3, true);
+        for _ in 0..80 {
+            arena.ensure_frontier(&b, b.encounters.end_fight_min_distance + 900.0);
+        }
+        assert!(
+            !arena.monsters.iter().any(|m| m.encounter_class == "world_end"),
+            "the tutorial placed the end fight"
+        );
     }
 
     /// A Psyker's pin stops a creature moving — and NOTHING else. It is still touchable
