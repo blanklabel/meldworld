@@ -408,9 +408,13 @@ pub const GRAVITY_STATUS: &str = "gravity";
 /// creature acting for the rest of the fight.
 pub const ANCHOR_STATUS: &str = "anchored";
 
-/// Dominate Mind's Blackout: senses cut, so the target cannot dodge at all. Accuracy in
-/// this engine lives on the DEFENDER (`roll_dodge`), so "it cannot see you coming" has to
-/// land there rather than as a bonus on the attacker.
+/// Dominate Mind's Blackout: sensory input suppressed, so the target's own blows go wide.
+///
+/// It first read as "it cannot dodge", which was **dead code**: `Fighter::dodge` is only
+/// ever assigned in `party_fighters` (heroes), and no creature ability grants Evasion, so a
+/// creature's dodge is always 0 and taking it away took nothing. Accuracy in this engine
+/// lives on the DEFENDER (`roll_dodge` reads the ATTACKER's `distracted`), so "it cannot
+/// see" has to land the same way a dazzle does.
 pub const BLIND_STATUS: &str = "blinded";
 
 /// Gravity Vortex's mark. It SLOWS the gauge's fill rate rather than capping the gauge,
@@ -611,6 +615,7 @@ pub struct Battle {
     psyker_shield_party_fraction: f64,
     psyker_accel_gauge: f64,
     psyker_blackout_ticks: u64,
+    psyker_blackout_miss: f64,
     psyker_dual_manifest_at: i32,
     psyker_expansion_at: i32,
     psyker_expansion_per_level: i32,
@@ -892,6 +897,7 @@ impl Battle {
             psyker_shield_party_fraction: balance.battle.psyker_shield_party_fraction,
             psyker_accel_gauge: balance.battle.psyker_accel_gauge,
             psyker_blackout_ticks: balance.battle.psyker_blackout_ticks,
+            psyker_blackout_miss: balance.battle.psyker_blackout_miss,
             psyker_dual_manifest_at: balance.battle.psyker_dual_manifest_at,
             psyker_expansion_at: balance.battle.psyker_expansion_at,
             psyker_expansion_per_level: balance.battle.psyker_expansion_per_level,
@@ -1238,7 +1244,16 @@ impl Battle {
                     self.check_terminal(&mut events);
                     continue;
                 }
-                if let Some(mut res) = self.take_monster_turn(i, &mut events) {
+                // `roll_dodge` reads the ATTACKER's `distracted`/`blinded` off
+                // `active_actor`, and this was only ever set in `submit` — i.e. for a
+                // PLAYER's action. So a creature's own swing never carried its state, and
+                // the Explorer's Misdirection had never once made a creature miss. Its test
+                // set `active_actor` by hand and asserted the arithmetic, so it passed while
+                // the ability did nothing in a real fight.
+                self.active_actor = Some(i);
+                let taken = self.take_monster_turn(i, &mut events);
+                self.active_actor = None;
+                if let Some(mut res) = taken {
                     prepend_effects(&mut res, upkeep);
                     events.push(Event::Resolved(res));
                 }
@@ -2633,11 +2648,17 @@ impl Battle {
             // Shield widens the ward: the Aegis covers the whole party rather than only
             // its caster. The Psyker's own share still comes from the parent Focus.
             "shield" => {
+                // This Psyker's OWN party. Filtering on `kind == Player` reached every
+                // joined ally in a co-op battle too, and a bonus that crosses to another
+                // player's heroes is a property the game reserves to set bonuses.
+                let owner = self.fighters[psyker_i].player_id.clone();
                 let allies: Vec<usize> = self
                     .fighters
                     .iter()
                     .enumerate()
-                    .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                    .filter(|(_, f)| {
+                        f.alive && f.kind == CombatantKind::Player && f.player_id == owner
+                    })
                     .map(|(i, _)| i)
                     .collect();
                 let mut fx = Vec::new();
@@ -2674,15 +2695,18 @@ impl Battle {
                 let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) else {
                     return Vec::new();
                 };
-                let stripped = self.fighters[t]
+                // ONE resistance per tick — the doc's scope ("one damage type"), not the
+                // whole profile. Stripping every resistance in a single cast deleted
+                // elemental matchups as a consideration for the rest of the fight; taking
+                // the strongest one each turn keeps it a sustained commitment instead.
+                let worst = self.fighters[t]
                     .damage_modifiers
                     .iter()
                     .filter(|(_, &m)| m < 1.0)
-                    .count();
-                self.fighters[t].damage_modifiers.retain(|_, m| *m >= 1.0);
-                if stripped == 0 {
-                    return Vec::new();
-                }
+                    .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(ty, _)| *ty);
+                let Some(ty) = worst else { return Vec::new() };
+                self.fighters[t].damage_modifiers.remove(&ty);
                 vec![ResolvedEffect {
                     modifier_flag: None,
                     target_id: self.fighters[t].combatant_id.clone(),
@@ -3998,12 +4022,13 @@ impl Battle {
             .active_actor
             .is_some_and(|a| self.has_timed_status(a, Self::DISTRACT_STATUS));
         let extra = if distracted { self.explorer_misdirection_miss } else { 0.0 };
-        // Blackout (Dominate Mind): senses cut, so it cannot get out of the way at all —
-        // checked before the roll rather than as a penalty, because "cannot dodge" that
-        // still rolls is a promise the engine breaks one time in twenty.
-        if self.has_timed_status(target_i, BLIND_STATUS) {
-            return None;
-        }
+        // Blackout (Dominate Mind): a BLINDED attacker swings wide, on top of any dazzle.
+        // Same side of the equation as `distracted`, because that is where this engine keeps
+        // accuracy — a creature has no dodge of its own to take away.
+        let blinded = self
+            .active_actor
+            .is_some_and(|a| self.has_timed_status(a, BLIND_STATUS));
+        let extra = extra + if blinded { self.psyker_blackout_miss } else { 0.0 };
         let chance =
             (self.fighters[target_i].dodge + self.fighters[target_i].evasion + extra).min(0.95);
         if chance > 0.0 && self.next_rand_unit() < chance {
@@ -5298,12 +5323,17 @@ mod tests {
     fn each_aspect_does_its_own_thing() {
         let b = balance();
         let mk = || {
+            let caster = psyker("p", 400, 255, 5);
             let mut ally = player("ally", 1);
             ally.class_key = "explorer".into();
+            // ONE party: the `player()` helper hands every fighter its own `player_id`,
+            // which models four separate players rather than one player's four heroes.
+            // Shield reaches its caster's own party, so the fixture has to be a party.
+            ally.player_id = caster.player_id.clone();
             Battle::new(
                 "b".into(),
                 EncounterClass::Standard,
-                vec![psyker("p", 400, 255, 5), ally],
+                vec![caster, ally],
                 vec![monster("m1", 100000, 1)],
                 &b,
                 7,
@@ -5357,16 +5387,190 @@ mod tests {
             "Brittle left a resistance standing"
         );
 
-        // Blackout means it cannot dodge AT ALL — not "usually".
+        // Blackout marks the target blinded, so its own blows go wide. That the miss
+        // actually happens is `a_blinded_creature_swings_wide`'s job — here we only check
+        // the aspect lands its mark on the creature its parent is holding.
         let mut bl = mk();
         cast(&mut bl, "dominate_mind", "m1");
         cast(&mut bl, "blackout", "m1");
         let mi = idx(&bl, "m1");
-        bl.fighters[mi].dodge = 0.9;
-        bl.fighters[mi].evasion = 0.9;
-        for _ in 0..50 {
-            assert!(bl.roll_dodge(mi).is_none(), "a blinded creature dodged");
-        }
+        assert!(
+            bl.fighters[mi].timed_statuses.iter().any(|(n, _)| n == BLIND_STATUS),
+            "Blackout left the target seeing"
+        );
+    }
+
+    /// Misdirection's dazzle, driven through REAL turns rather than asserted as arithmetic.
+    ///
+    /// Its existing test set `active_actor` by hand and then checked that
+    /// `dodge + misdirection_miss > dodge` — which is true of any positive number and says
+    /// nothing about the game. The engine only ever set `active_actor` for a player's
+    /// action, so a distracted creature swung with full accuracy for as long as the ability
+    /// has existed. A test that fakes the state it is meant to be verifying cannot fail.
+    #[test]
+    fn a_distracted_creature_actually_misses() {
+        let b = balance();
+        let landed = |dazzle: bool| -> i32 {
+            let mut hero = player("h", 1);
+            hero.class_key = "hunter".into();
+            hero.hp = 100_000;
+            hero.max_hp = 100_000;
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![hero],
+                vec![monster("m", 100_000, 200)],
+                &b,
+                7,
+            );
+            if dazzle {
+                let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+                battle.apply_timed(mi, Battle::DISTRACT_STATUS, 100_000);
+            }
+            for _ in 0..2000 {
+                battle.tick();
+            }
+            let h = battle.fighters.iter().find(|f| f.combatant_id == "h").unwrap();
+            h.max_hp - h.hp
+        };
+        let plain = landed(false);
+        let dazzled = landed(true);
+        assert!(plain > 0, "the control creature never landed a blow");
+        assert!(
+            dazzled < plain,
+            "a distracted creature dealt {dazzled} against an undistracted one's {plain} — \
+             Misdirection is not making anything miss"
+        );
+    }
+
+    /// Blackout first read as "the target cannot dodge", which was **dead code**: creature
+    /// dodge is only ever set for heroes and no creature ability grants Evasion, so it took
+    /// away something no creature had. A blinded creature's own blows go wide instead —
+    /// which is a thing this engine can actually express.
+    #[test]
+    fn a_blinded_creature_swings_wide() {
+        let b = balance();
+        let landed = |blind: bool| -> i32 {
+            let mut hero = player("h", 1);
+            hero.class_key = "hunter".into();
+            hero.hp = 100_000;
+            hero.max_hp = 100_000;
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![hero],
+                vec![monster("m", 100_000, 200)],
+                &b,
+                7,
+            );
+            if blind {
+                let mi = battle.fighters.iter().position(|f| f.combatant_id == "m").unwrap();
+                battle.apply_timed(mi, BLIND_STATUS, 100_000);
+            }
+            for _ in 0..2000 {
+                battle.tick();
+            }
+            let h = battle.fighters.iter().find(|f| f.combatant_id == "h").unwrap();
+            h.max_hp - h.hp
+        };
+        let seeing = landed(false);
+        let blinded = landed(true);
+        assert!(seeing > 0, "the control creature never landed a blow");
+        assert!(
+            blinded < seeing,
+            "a blinded creature dealt {blinded} against a seeing one's {seeing} — Blackout \
+             is doing nothing again"
+        );
+    }
+
+    /// **Measured, not assumed.** Two changes landed together — the back rank stopped
+    /// softening non-physical damage, and creatures started hunting roles — and both point
+    /// at the same hero. This drives a real four-hero party through real turns and reports
+    /// what share of the incoming damage the healer actually eats.
+    ///
+    /// The bound is what matters: a Role-hunting, non-physical creature is *supposed* to be
+    /// frightening (that is the counter to parking a healer behind a wall), but if it takes
+    /// most of the party's total damage then the back row has stopped meaning anything and
+    /// the encounter is a healer-deletion puzzle rather than a fight.
+    #[test]
+    fn a_role_hunter_pressures_the_healer_without_erasing_it() {
+        let b = balance();
+        let share = |foes: &[(TargetProfile, DamageType)]| -> f64 {
+            let mut party = Vec::new();
+            for (id, class, back) in [
+                ("front1", "hunter", false),
+                ("front2", "phoenix_guard", false),
+                ("healer", "resonant", true),
+                ("caster", "psyker", true),
+            ] {
+                let mut h = player(id, 1); // speed 1: heroes never act, so only the creature does
+                h.class_key = class.into();
+                h.back_row = back;
+                h.hp = 100_000;
+                h.max_hp = 100_000;
+                party.push(h);
+            }
+            let foes: Vec<Fighter> = foes
+                .iter()
+                .enumerate()
+                .map(|(i, (profile, ty))| {
+                    let mut m = monster(&format!("m{i}"), 100_000, 200);
+                    m.target_profile = *profile;
+                    m.basic_attack_type = *ty;
+                    m
+                })
+                .collect();
+            let mut battle =
+                Battle::new("b".into(), EncounterClass::Standard, party, foes, &b, 7);
+            for _ in 0..4000 {
+                battle.tick();
+            }
+            let lost = |id: &str| {
+                let f = battle.fighters.iter().find(|f| f.combatant_id == id).unwrap();
+                (f.max_hp - f.hp) as f64
+            };
+            let total: f64 = ["front1", "front2", "healer", "caster"].iter().map(|i| lost(i)).sum();
+            assert!(total > 0.0, "the creature never landed anything");
+            lost("healer") / total
+        };
+
+        // The baseline the game shipped for a long time: a physical creature going for
+        // whoever is weakest. The healer is behind a wall and takes none of it.
+        let baseline = share(&[(TargetProfile::Weakest, DamageType::Pierce)]);
+        // One role-hunter, and it is a real creature: the Choirmother is innately Role AND
+        // Mind-typed, so it seeks the healer and the rank does not soften the blow. Every
+        // point it deals lands on the healer — which is the profile working as designed.
+        let hunted = share(&[(TargetProfile::Role, DamageType::Mind)]);
+        assert!(
+            hunted > baseline,
+            "a role-hunter put no more pressure on the healer than a wandering blow \
+             ({hunted:.2} vs {baseline:.2}) — the profile is not doing anything"
+        );
+
+        // THE INVARIANT. A pack, post-`cap_role_hunters`: one hunter, the rest on the
+        // weakest. Before the cap all five rolled independently and could all pick the
+        // healer, which is not five decisions — it is one decision applied five times, and
+        // nothing the party can answer. With the cap the damage spreads.
+        let pack = share(&[
+            (TargetProfile::Role, DamageType::Mind),
+            (TargetProfile::Weakest, DamageType::Pierce),
+            (TargetProfile::Weakest, DamageType::Pierce),
+            (TargetProfile::Weakest, DamageType::Pierce),
+            (TargetProfile::Weakest, DamageType::Pierce),
+        ]);
+        let all_hunting = share(&[(TargetProfile::Role, DamageType::Mind); 5]);
+        eprintln!(
+            "healer share — lone wanderer {baseline:.2} · lone hunter {hunted:.2} · \
+             capped pack {pack:.2} · uncapped pack {all_hunting:.2}"
+        );
+        assert!(
+            pack < 0.6,
+            "even with the cap a pack still puts {pack:.0}% of its damage on the healer"
+        );
+        assert!(
+            all_hunting > pack,
+            "the cap changed nothing ({all_hunting:.2} vs {pack:.2})"
+        );
     }
 
     /// Freeze is Gravity's twin on a burning target: an ordinary slow, deepening to a PIN

@@ -187,7 +187,10 @@ charged for. **A class missing from `hero_attack_type` deals TRUE damage** (`Non
 the modifier map entirely) — the Hunter, Smithwright and Keeper all were, for a long time.
 
 **A creature fights to a PROFILE** (`meld_proto::TargetProfile`, CR-9): Weakest, Random,
-Backline, Role, GangUp. Set from the kind's own nature, then the encounter class (a
+Backline, Role, GangUp. **At most ONE creature per encounter may be `Role`**
+(`cap_role_hunters`): profiles roll independently, so a pack of five could all reach "kill
+the healer first", which is not five decisions but one applied five times. Measured — a
+capped pack puts **20%** of its damage on the healer where an uncapped one put **100%**. Set from the kind's own nature, then the encounter class (a
 champion is smarter than its escort), then a level roll — deeper creatures are smarter on
 average — seeded off the creature's own id so it never flickers and never perturbs another
 roll. `choose_target` is the ONE place a creature picks; it was two near-identical copies,
@@ -660,7 +663,11 @@ holding it, occupies its own Focus slot, and falls when the parent does
 Acceleration hurries an ALLY while its parent grinds an enemy, so it keeps its own aim.
 Seven aspects ship — Gravity/Anchor, **Shield** (the ward covers the party), **Acceleration**
 (fills an ally's gauge), **Freeze** (slows, and pins anything already slowed), **Brittle**
-(strips every elemental resistance for good) and **Blackout** (it cannot dodge at all).
+(strips ONE elemental resistance a turn, for good) and **Blackout** (its own blows go wide).
+**Accuracy lives on the DEFENDER here** (`roll_dodge` reads the ATTACKER's `distracted` /
+`blinded` off `active_actor`), so "it cannot see" has to land as a bonus to whoever it is
+swinging at — a creature has no dodge of its own to take away (`Fighter::dodge` is only ever
+set for heroes).
 The doc's REACTION aspects (Dampen, Static, Vent, Flicker, Rewind) and its POSITIONAL ones
 (Push, Pull, Warp) stay unbuilt: this engine has no reactions and no battlefield positions,
 and reinventing them as something else wearing the name is worse than leaving them out. Both tiers of slow are

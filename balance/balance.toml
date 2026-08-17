@@ -231,7 +231,12 @@ psyker_aspect_ticks = 40          # ticks an aspect's mark outlives the turn tha
 # positions. Those stay unbuilt rather than reinvented as something else wearing the name.)
 psyker_shield_party_fraction = 0.06   # Shield: Barrier per ally per turn, as a share of max HP
 psyker_accel_gauge = 0.22             # Acceleration: gauge filled on the chosen ALLY per turn
-psyker_blackout_ticks = 30            # Blackout: ticks the target cannot dodge for
+psyker_blackout_ticks = 30            # Blackout: ticks the blinding lasts per turn
+# Added to the DEFENDER's dodge while a blinded creature is the one swinging — accuracy
+# lives on the defender in this engine, the same place a dazzle lands. Under the Explorer's
+# `explorer_misdirection_miss` (0.30): Misdirection is that class's whole L10 identity, and
+# an aspect held on one creature should not out-blind it.
+psyker_blackout_miss = 0.25
 psyker_vortex_ticks = 80
 # Per-tick magnitudes (multiplied by the Focus's stack count, 1–2):
 psyker_gravity_tick_mult = 0.55   # Gravity Well: dmg = atk*mult*stacks (ignores def)
