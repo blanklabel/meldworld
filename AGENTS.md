@@ -505,8 +505,7 @@ cargo build -p meld-mcp     # `.mcp.json` points at target/debug/meld-mcp
 ```
 
 `new_game` takes the DEV/QA overrides as arguments rather than env vars: `party`, `seed`,
-`tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. **`MELD_START_LEVEL`** is
-new and is the third of the `MELD_END_FIGHT` / `MELD_GEAR_TIER` family — everything past
+`tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. `MELD_START_LEVEL` sets a DISTANCE and lets the level follow from it (`base_run_level` and creature level both read 40 at d500), because level and depth are the same fact and a party holding one without the other cannot exist. It streams the frontier out and spawns you on the ring; extraction still assumes d0, which is why it is a TEST flag and not a departure hub — everything past
 roughly level 16 is authored for a party that walked an hour to reach it, and PG-2's hubs
 are deliberately inert, so without it the only level deep content could be observed at was
 1, the one level it was never tuned for.
