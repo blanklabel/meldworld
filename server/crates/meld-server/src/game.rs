@@ -447,6 +447,9 @@ fn effective_gear_bonus(
         def: vault.def,
         spd: vault.spd,
         modifiers: vault.modifiers,
+        armor_weights: vault.armor_weights,
+        ward: vault.ward,
+        element_power: vault.element_power,
         barrier: vault.barrier,
         regen: vault.regen,
         evasion: vault.evasion,
@@ -463,6 +466,11 @@ fn effective_gear_bonus(
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {
             continue;
+        }
+        // Armour looted THIS run answers for damage types too — the piece is being worn,
+        // so leaving its weight out would mean run-scoped plate protected nothing.
+        if !g.armor_weight.is_empty() {
+            bonus.armor_weights.push(g.armor_weight.clone());
         }
         match g.slot.as_str() {
             "main_hand" => bonus.atk = g.atk_bonus,
@@ -4064,8 +4072,50 @@ impl GameState {
                     let atk = (piece + affix).round() as i32;
                     let def = (4.0 * (piece + affix)).round() as i32;
                     tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
+                    // Four armour pieces of the weight the CLASS actually wears, so the
+                    // dressed party answers for damage types the way a real set would.
+                    // Without this the harness could see the atk/def half of gear and not
+                    // the resistance half — which is the half the apex is gated on.
+                    let comp = inst.party_classes.get(pid).cloned().unwrap_or_default();
                     gear.iter()
-                        .map(|_| meld_db::GearBonus { atk, def, ..Default::default() })
+                        .enumerate()
+                        .map(|(i, _)| {
+                            let weight = comp
+                                .get(i)
+                                .and_then(|c| {
+                                    meld_proto::equipment::armor_weights(*c).first().copied()
+                                })
+                                .map(|w| w.wire().to_string());
+                            // `MELD_GEAR_WARD=<TYPE>` dresses the set with an elemental ward
+                            // on every piece — what a player who KNEW what they were walking
+                            // into would bring. Without it the harness can only show gear's
+                            // physical half, and a fire fight is not answered by plate.
+                            let ward = std::env::var("MELD_GEAR_WARD").ok().and_then(|t| {
+                                let key = t.trim().to_uppercase();
+                                meld_proto::enums::DamageType::from_wire(&key).map(|_| key)
+                            });
+                            // A tier-`n` set rolls Aegis (flat ward) and Furnace (element
+                            // power) lines like any other epic, so the harness grants them
+                            // too — otherwise a dressed party shows gear's physical half and
+                            // none of its elemental one, which is the half the apex needs.
+                            let ward_stat = (af.magnitude_per_tier * tier as f64
+                                * af.count_epic as f64)
+                                .round() as i32;
+                            meld_db::GearBonus {
+                                atk,
+                                def,
+                                ward: ward_stat,
+                                armor_weights: weight
+                                    .into_iter()
+                                    .flat_map(|w| std::iter::repeat_n(w, 4))
+                                    .collect(),
+                                modifiers: ward
+                                    .into_iter()
+                                    .flat_map(|k| std::iter::repeat_n((k, 0.75), 4))
+                                    .collect(),
+                                ..Default::default()
+                            }
+                        })
                         .collect()
                 }
                 _ => gear,

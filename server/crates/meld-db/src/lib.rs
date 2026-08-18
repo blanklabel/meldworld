@@ -2970,6 +2970,10 @@ impl Db {
                                 &mut b.modifiers,
                                 &row.get::<String, _>("damage_modifiers"),
                             );
+                            let weight = row.get::<String, _>("armor_weight");
+                            if !weight.is_empty() {
+                                b.armor_weights.push(weight);
+                            }
                             apply_affixes(
                                 b,
                                 &row.get::<String, _>("affixes"),
@@ -3001,6 +3005,9 @@ impl Db {
                                 b.def += g.def_bonus;
                                 b.spd += g.spd_bonus;
                                 append_modifier_entries(&mut b.modifiers, &g.damage_modifiers);
+                                if !g.armor_weight.is_empty() {
+                                    b.armor_weights.push(g.armor_weight.clone());
+                                }
                             }
                         }
                     }
@@ -3463,6 +3470,16 @@ pub struct GearBonus {
     /// AD-1 set pieces worn by this hero: (set key, count). Battle assembly turns
     /// the completed ones into a PARTY-wide bonus.
     pub set_pieces: Vec<(String, usize)>,
+    /// Flat `ward` from "of the Aegis" affixes — elemental/psychic resistance as a stat, so
+    /// GEAR can answer a boss that fights with fire rather than leaving that to Mnd alone.
+    pub ward: i32,
+    /// "of the Furnace": extra damage DEALT of one element, as a percentage.
+    /// (DamageType wire key, percent).
+    pub element_power: Vec<(String, i32)>,
+    /// The `armor_weight` of every piece of ARMOUR this hero wears. What a weight is good
+    /// and bad against is a game rule and how big a step is is balance, so this layer only
+    /// carries the fact — battle assembly turns it into a resistance profile.
+    pub armor_weights: Vec<String>,
     /// Synergy affixes that have not been resolved yet: (ally class key, atk, def).
     /// Battle assembly knows the party composition, so it decides which of these
     /// actually pay out — a drop that asks for an ally is a *party* build decision.
@@ -3498,6 +3515,12 @@ fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
             "evasion" => b.evasion += m,
             "adrenaline_primed" => b.adrenaline += m,
             "focus_slot" => b.focus_slots += m,
+            "ward" => b.ward += m,
+            "element_power" => {
+                if let Some(el) = &a.element {
+                    b.element_power.push((el.clone(), m));
+                }
+            }
             "brand" if b.brand.is_none() => b.brand = a.element.clone(),
             "resist" => {
                 if let Some(el) = &a.element {

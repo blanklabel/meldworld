@@ -186,7 +186,72 @@ its power through `phys_atk`; a call site that touches `.atk` directly is a swin
 charged for. **A class missing from `hero_attack_type` deals TRUE damage** (`None` bypasses
 the modifier map entirely) — the Hunter, Smithwright and Keeper all were, for a long time.
 
-**Hero DEFENCE only stops a creature's BASIC ATTACK.** A creature ability's damage is
+**What you WEAR decides what hurts you, and it is the same rule for a creature's hide.**
+Armour has a weight (`ArmorWeight`: heavy / medium / light / robe) and each weight answers
+the three physical types differently — plate turns an edge and fears a hammer, mail defeats a
+cut and lets a spike through, padded leather soaks impact and opens to a blade, and a robe is
+not armour at all (worst against every physical type, best against fire, ice, lightning and
+mind). The SHAPE lives in `meld_proto::equipment::weight_profile` as signed steps so a client
+can render it; the size of a step is `[armor_resist] step`, because a coefficient is balance's.
+Steps are **per piece** and fold through `fold_damage_modifiers` (1 + Σ(m−1), clamped 0..2),
+so a full plate set is an identity and one piece is a nudge — and a class allowed two weights
+has a real mixed-loadout decision. Keep a full set well inside the clamp: at 0.0 or 2.0 a
+resistance stops being a trade and becomes a switch.
+
+Creatures answer the same question through `abilities::Body` (Rigid / Plated / Hide / Soft /
+Amorphous), in ABSOLUTE multipliers rather than steps, because a creature is one body and
+nothing stacks. **The physical half of a creature's profile is no longer authored per kind**
+— it was, and it was wrong in the same direction nearly everywhere: every colossus, golem and
+ice maw RESISTED blunt, because the table had been written as "a tough thing resists physical"
+instead of by material. A hammer is what breaks stone. A per-kind *elemental* entry still
+overrides the body; a per-kind *physical* one is rejected by
+`the_per_kind_table_no_longer_authors_physical_types`.
+
+Every weight and every body must resist something AND fear something — that is the rule, not a
+property of the current numbers (`every_armor_weight_is_a_trade`, `a_body_is_a_trade`). A robe
+must also be worse against every physical type than real armour is against its own weakest,
+or cloth is just a cuirass with better rolls, which is what the first draft accidentally was.
+
+**Resistance is the defensive stat that actually works**, which is why it is the answer to the
+gear-gate problem below: ability damage skips `def` entirely but always passes
+`modifier_for`. Measured on the end fight, though, plate is the WRONG armour there — those
+bosses lead with fire and hammers, and plate is weak to blunt, so a dressed party gains far
+less than its armour value suggests. That is the system working: it made "what do I wear
+against this" a question with an answer.
+
+**`def` answers a blade; `ward` answers a spell.** Two defensive stats, each subtracted from
+its own half of the damage types: `def` (from **Wll**) from physical, `ward` (from **Mnd**)
+from everything elemental or psychic, `DamageType::None` from neither. Both are bounded by
+`damage_floor_fraction`, so stacking either is a discount and never an immunity — immunity is
+what `damage_modifiers` is for. This is why **Mnd has a defensive half**, the way Dex buys
+dodge as well as speed: a caster is no longer simply squishy.
+
+The mitigation lives in ONE place, `apply_ability_damage`. Two paths deliberately do not use
+it: a basic attack subtracts `def` itself (along with the defend reduction and its crit), and
+a burn/poison DoT is a fraction of the victim's OWN max HP, already scaled to the target.
+Everything else — every hero skill, every creature ability — goes through it. **Before this,
+non-physical ability damage was subtracted by nothing at all**, because `def` was only ever
+consulted for a basic attack; a boss that fought with fire and breath ignored every point of
+armour a party had earned. Creatures get a `ward` too, at `[armor_resist]
+creature_ward_fraction` of their `def` — under 1.0 on purpose, so casting stays the answer to
+something armoured rather than being deleted by giving every creature a magic shield.
+
+**Gear answers elements through two affixes**: "of the Aegis" (flat `ward`) and "of the
+Furnace" (extra damage DEALT of one element) — the offensive twin of "of Warding"'s resist.
+`brand` decides what your attacks ARE and Furnace decides what that is worth, so the two are a
+build: brand to ice and stack ice power to answer something that shrugs off fire. Both roll
+straight off the `AFFIXES` pool, and `every_affix_can_actually_roll_on_something` holds every
+affix in the registry to being reachable loot rather than paper.
+
+⚠️ **`ward` from Mnd alone makes LEVEL the elemental defence, which is why the Aegis affix
+matters.** Measured on
+the end fight, adding ward took the geared party from 33 hero-turns to 43 (+30% survival) —
+real, and it applies equally to a party wearing nothing, because Mnd does not come from loot.
+Gear now gates *physical* ability damage through `def`; for gear to gate the elemental half it
+needs a **ward affix**, which does not exist yet. That is the remaining piece of `EW-0`'s
+gear-check story.
+
+ A creature ability's damage is
 `stat x coefficient` through `apply_typed_damage`, which applies the target's
 `damage_modifiers` and `min_damage` and then stops — `atk - def` and
 `damage_floor_fraction` live in `physical_hit`, which only the basic `Attack` action reaches.

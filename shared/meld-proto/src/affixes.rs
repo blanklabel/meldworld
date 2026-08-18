@@ -84,6 +84,14 @@ pub const AFFIXES: &[AffixDef] = &[
     def("spd", AffixClass::Stat, 0.6, None, "of Quickness"),
     def("resist", AffixClass::Element, 1.0, None, "of Warding"),
     def("brand", AffixClass::Element, 1.0, None, "of the Kiln"),
+    // Damage DEALT of one element, the offensive twin of `resist`. `brand` decides what your
+    // attacks are; this decides how much that is worth — so the two together are a build
+    // rather than a coin flip, and a party can answer a fire boss by hitting it with ice.
+    def("element_power", AffixClass::Element, 1.0, None, "of the Furnace"),
+    // Flat `ward`: elemental/psychic resistance as a STAT, the counterpart of the `def`
+    // affix. Without this, `ward` grew only from Mnd, which made level the elemental
+    // defence and left gear unable to answer a boss that fights with fire at all.
+    def("ward", AffixClass::Ward, 1.0, None, "of the Aegis"),
     def("barrier", AffixClass::Ward, 2.0, None, "of the Bulwark"),
     def("regen", AffixClass::Ward, 0.5, None, "of Mending"),
     def("evasion", AffixClass::Ward, 0.5, None, "of the Ghost"),

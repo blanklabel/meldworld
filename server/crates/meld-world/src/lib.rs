@@ -212,6 +212,21 @@ fn section_biome(
 
 /// Creature content ids that spawn in a biome. Structural (content-extensible);
 /// stats for each key live in `balance.toml` under `[creature.<key>]`.
+/// Every ordinary creature kind the world can place, biome order. Derived from
+/// [`creatures_for_biome`] rather than listed again, so a rule about creatures is held
+/// against all of them and a new kind cannot be quietly left out of one.
+pub fn all_creature_kinds() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for biome in BIOMES {
+        for k in creatures_for_biome(biome) {
+            if !out.contains(k) {
+                out.push(k);
+            }
+        }
+    }
+    out
+}
+
 fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     // Each biome's 3rd creature is a distinct archetype — a fast aggressive SWARMER
     // or a slow tanky BRUISER — so the combat rhythm varies as you explore. Appended
@@ -948,6 +963,7 @@ pub(crate) fn roll_affixes(
         let magnitude = match d.class {
             // A brand has no magnitude; a resist does.
             _ if d.key == "brand" => 1,
+            // Both element affixes read as a PERCENTAGE — resisted, or dealt extra.
             aff::AffixClass::Element => (a.resist_pct_per_tier * tier).clamp(1, a.resist_pct_cap),
             _ => ((a.magnitude_per_tier * tier.max(1) as f64 * d.scale * jitter).round() as i32)
                 .max(1),
@@ -6669,6 +6685,54 @@ mod tests {
             let loot = roll_creature_loot(&b, 320, 3, 1.0, seed);
             if let Some(g) = loot.gear {
                 assert!(g.set_key.is_empty(), "a set piece dropped below its tier floor");
+            }
+        }
+    }
+
+    /// Every affix in the registry has to be REACHABLE, or it is a design that exists only
+    /// on paper. The two newest — "of the Aegis" (ward) and "of the Furnace" (element power)
+    /// — are the reason this is a test: the pool is derived from `AFFIXES`, so adding one
+    /// should be enough, and this proves it rather than assuming it.
+    #[test]
+    fn every_affix_can_actually_roll_on_something() {
+        let b = Balance::load_default().unwrap();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for seed in 0..4000u64 {
+            let mut rng = Rng(seed);
+            for slot in ["main_hand", "chest", "accessory"] {
+                for class in CLASS_KEYS {
+                    for aff in roll_affixes(&b, &mut rng, 40, "legendary", true, class, slot, "ashfall") {
+                        seen.insert(aff.key.clone());
+                    }
+                }
+            }
+        }
+        for d in meld_proto::affixes::AFFIXES {
+            assert!(
+                seen.contains(d.key),
+                "{} ({}) never rolled on anything — it is unreachable loot",
+                d.key,
+                d.suffix
+            );
+        }
+    }
+
+    /// An element affix names the element it answers, or it is a resistance to nothing.
+    #[test]
+    fn an_element_affix_always_names_its_element() {
+        let b = Balance::load_default().unwrap();
+        for seed in 0..500u64 {
+            let mut rng = Rng(seed);
+            for aff in roll_affixes(&b, &mut rng, 30, "epic", false, "psyker", "main_hand", "tundra") {
+                let Some(d) = meld_proto::affixes::find(&aff.key) else { continue };
+                if matches!(d.class, meld_proto::affixes::AffixClass::Element) {
+                    let el = aff.element.as_deref().unwrap_or("");
+                    assert!(
+                        meld_proto::enums::DamageType::from_wire(el).is_some(),
+                        "{} rolled with element {el:?}",
+                        aff.key
+                    );
+                }
             }
         }
     }

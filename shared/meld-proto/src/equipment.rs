@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::enums::CharacterClass;
+use crate::enums::{CharacterClass, DamageType};
 
 /// What kind of thing an equippable item is. Weapons and shields are families;
 /// armor carries an [`ArmorWeight`] instead; accessories are unrestricted.
@@ -159,6 +159,57 @@ pub fn allows_family(class: CharacterClass, family: ItemFamily) -> bool {
 
 pub fn allows_weight(class: CharacterClass, weight: ArmorWeight) -> bool {
     armor_weights(class).contains(&weight)
+}
+
+/// How a piece of armour of this weight answers ONE damage type: a signed number of
+/// STEPS, negative resisting and positive taking it worse. The magnitude of a step is a
+/// `[TUNABLE]` (`[armor_resist]`), because a coefficient is balance's and `meld-proto` is
+/// shared with a client that has no `balance.toml`.
+pub type ResistSteps = i8;
+
+/// What a weight of armour is good and bad against — the trade-off that makes weight a
+/// CHOICE rather than a wearability gate.
+///
+/// A plate cuirass turns an edge and does nothing about a war hammer; mail spreads a cut
+/// across its rings and lets a spike through one; a padded jerkin soaks impact and opens
+/// to a blade. A robe is not armour at all — it answers with wards, so it takes every
+/// physical blow worse and shrugs off what is thrown rather than swung. Steel also
+/// conducts, which is why the heavy suit fears lightning.
+///
+/// Every weight has at least one resistance AND at least one weakness. That is the rule
+/// (`every_armor_weight_is_a_trade`), not a property of these particular numbers: a weight
+/// that is only ever better is a weight everybody wears.
+pub fn weight_profile(weight: ArmorWeight) -> &'static [(DamageType, ResistSteps)] {
+    use DamageType::*;
+    match weight {
+        // Plate: an edge skids, a point is worse, a hammer is what it fears. And it is a
+        // steel shell wrapped around a person in a lightning storm.
+        //
+        // These step COUNTS and `[armor_resist] step` are coupled: the step is sized by the
+        // early game (a level-1 caster has no margin), and the counts are sized so a hammer
+        // is still meaningfully better than a sword against plate at that step
+        // (`what_you_wear_decides_what_hurts_you` asserts the ratio). Change one and check
+        // the other.
+        ArmorWeight::Heavy => &[(Slash, -2), (Pierce, -1), (Blunt, 2), (Lightning, 1)],
+        // Mail: rings defeat a cut and a spike goes between them.
+        ArmorWeight::Medium => &[(Slash, -1), (Pierce, 2), (Blunt, 1)],
+        // Padded leather: made for impact, not for edges. Light enough to keep moving,
+        // which is why the elements find less of you.
+        ArmorWeight::Light => &[(Blunt, -2), (Slash, 1), (Pierce, 1), (Fire, -1)],
+        // Cloth and wards: no answer at all to being hit, and the best answer to being
+        // burned, frozen or read.
+        // Worse against every physical type than any real armour is against its own worst
+        // one — cloth is not a trade between blade and hammer, it is the absence of both.
+        ArmorWeight::Robe => &[
+            (Slash, 3),
+            (Blunt, 3),
+            (Pierce, 3),
+            (Fire, -1),
+            (Ice, -1),
+            (Lightning, -1),
+            (Mind, -2),
+        ],
+    }
 }
 
 /// The class a `gear.class_key` / `[player.<key>]` string names.
@@ -331,6 +382,94 @@ pub fn can_wear(
 
 #[cfg(test)]
 mod tests {
+    /// A weight that is only ever better is a weight everybody wears. Every one of them has
+    /// to give something up, and none may be so lopsided that its answer is "wear this".
+    #[test]
+    fn every_armor_weight_is_a_trade() {
+        for w in [ArmorWeight::Heavy, ArmorWeight::Medium, ArmorWeight::Light, ArmorWeight::Robe] {
+            let p = weight_profile(w);
+            assert!(!p.is_empty(), "{w:?} answers for nothing");
+            assert!(
+                p.iter().any(|(_, s)| *s < 0),
+                "{w:?} resists nothing, so nobody would wear it"
+            );
+            assert!(
+                p.iter().any(|(_, s)| *s > 0),
+                "{w:?} is weak to nothing, so everybody would wear it"
+            );
+            // One damage type, one answer — a duplicate entry silently doubles a step.
+            let mut seen: Vec<DamageType> = p.iter().map(|(t, _)| *t).collect();
+            let before = seen.len();
+            seen.sort_by_key(|t| t.to_wire());
+            seen.dedup();
+            assert_eq!(before, seen.len(), "{w:?} names a damage type twice");
+            for (ty, steps) in p {
+                assert_ne!(*ty, DamageType::None, "{w:?} tries to resist TRUE damage");
+                assert!((-3..=3).contains(steps), "{w:?} uses {steps} steps on {ty:?}");
+            }
+        }
+    }
+
+    /// The physical trio is where weight is SUPPOSED to matter, so every weight has to have
+    /// an opinion about all three — a weight silent on blunt is a weight a hammer ignores.
+    #[test]
+    fn every_weight_answers_for_every_physical_type() {
+        for w in [ArmorWeight::Heavy, ArmorWeight::Medium, ArmorWeight::Light, ArmorWeight::Robe] {
+            for ty in [DamageType::Slash, DamageType::Blunt, DamageType::Pierce] {
+                assert!(
+                    weight_profile(w).iter().any(|(t, _)| *t == ty),
+                    "{w:?} has nothing to say about {ty:?}"
+                );
+            }
+        }
+    }
+
+    /// The rock-paper-scissors the fiction promises: a hammer beats plate, a spear beats
+    /// mail, an edge beats leather. Pinned as a RELATION, so a retune has to keep the shape.
+    #[test]
+    fn the_physical_triangle_holds() {
+        let at = |w: ArmorWeight, ty: DamageType| {
+            weight_profile(w).iter().find(|(t, _)| *t == ty).map(|(_, s)| *s).unwrap_or(0)
+        };
+        assert!(at(ArmorWeight::Heavy, DamageType::Blunt) > 0, "plate should fear a hammer");
+        assert!(at(ArmorWeight::Heavy, DamageType::Slash) < 0, "plate should turn an edge");
+        assert!(at(ArmorWeight::Medium, DamageType::Pierce) > 0, "mail should fear a point");
+        assert!(at(ArmorWeight::Light, DamageType::Slash) > 0, "leather should fear an edge");
+        assert!(at(ArmorWeight::Light, DamageType::Blunt) < 0, "padding should soak impact");
+        // And the robe's bargain: worst at being hit, best at being burned or read.
+        for ty in [DamageType::Slash, DamageType::Blunt, DamageType::Pierce] {
+            assert!(at(ArmorWeight::Robe, ty) > 0, "a robe should fear {ty:?}");
+        }
+        assert!(at(ArmorWeight::Robe, DamageType::Mind) < 0, "a robe is wards, and wards read");
+        // Cloth must be worse against EVERY physical type than any armour is against the one
+        // it likes least — otherwise a robe is a plate cuirass with better elemental rolls,
+        // which is what the first draft of these numbers accidentally was.
+        let worst_armor = [ArmorWeight::Heavy, ArmorWeight::Medium, ArmorWeight::Light]
+            .into_iter()
+            .flat_map(|w| [DamageType::Slash, DamageType::Blunt, DamageType::Pierce].map(move |t| at(w, t)))
+            .max()
+            .unwrap();
+        for ty in [DamageType::Slash, DamageType::Blunt, DamageType::Pierce] {
+            assert!(
+                at(ArmorWeight::Robe, ty) > worst_armor,
+                "a robe takes {ty:?} no worse than real armour's weakest point"
+            );
+        }
+    }
+
+    /// Every class can actually reach a weight, or `weight_profile` is decoration for it.
+    #[test]
+    fn every_class_can_wear_something_with_a_profile() {
+        // Off the SKILL registry rather than a list here, so a new class cannot be added
+        // and quietly left out of the rule.
+        for key in crate::skills::all_classes() {
+            let c = class_from_key(&key).unwrap_or_else(|| panic!("{key} is not a class key"));
+            let ws = armor_weights(c);
+            assert!(!ws.is_empty(), "{c:?} can wear no armour at all");
+            assert!(ws.iter().all(|w| !weight_profile(*w).is_empty()));
+        }
+    }
+
 
     /// "Best" has to mean best FOR THAT CLASS. Gear carries only atk/def/spd, so a flat sum
     /// would hand a Psyker the warhammer and a Phoenix Guard the dagger.

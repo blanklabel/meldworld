@@ -494,6 +494,15 @@ pub struct GearBonus {
     /// every equipped piece; folded and clamped by [`fold_damage_modifiers`]
     /// at battle assembly (spec §5).
     pub modifiers: Vec<(String, f64)>,
+    /// Flat `ward` from "of the Aegis" affixes.
+    pub ward: i32,
+    /// "of the Furnace": extra damage DEALT of one element, as a percentage.
+    pub element_power: Vec<(String, i32)>,
+    /// The `armor_weight` of each piece of ARMOUR worn (`heavy`/`medium`/`light`/`robe`).
+    /// Carried as the wire string rather than a resolved profile because what a weight is
+    /// good and bad against is a rule (`meld_proto::equipment::weight_profile`) and how big
+    /// a step is is balance — neither belongs in the DB layer that reads the rows.
+    pub armor_weights: Vec<String>,
 }
 
 /// Fold a hero's raw per-item elemental entries into one profile (spec §5
@@ -501,6 +510,28 @@ pub struct GearBonus {
 /// resists (0.75) stack to a half-resist (0.5) instead of multiplying into a
 /// weakness — clamped to the spec's 0.0–2.0 bounds [TUNABLE bounds live in
 /// the spec; structural here].
+/// The per-item modifier entries a hero's WORN WEIGHTS contribute, ready to fold in beside
+/// the pieces' own rolled elemental wards.
+///
+/// This is where "what am I wearing" becomes "what hurts me". A step is
+/// `[armor_resist] step`; the direction and count of steps per damage type is
+/// [`meld_proto::equipment::weight_profile`]. Every piece contributes, so a full plate set
+/// is a real slash resistance and a real blunt weakness, and a mixed loadout is a blunted
+/// version of both — which is the point of letting a class wear more than one weight.
+pub fn weight_modifiers(weights: &[String], balance: &Balance) -> Vec<(String, f64)> {
+    let step = balance.armor_resist.step;
+    let mut out = Vec::new();
+    for w in weights {
+        let Some(weight) = meld_proto::equipment::ArmorWeight::from_wire(w) else {
+            continue;
+        };
+        for (ty, steps) in meld_proto::equipment::weight_profile(weight) {
+            out.push((ty.to_wire().to_string(), 1.0 + (*steps as f64) * step));
+        }
+    }
+    out
+}
+
 pub fn fold_damage_modifiers(
     entries: &[(String, f64)],
 ) -> std::collections::HashMap<meld_proto::enums::DamageType, f64> {
@@ -595,6 +626,11 @@ pub fn party_fighters(
             let def = (stats.base_def + grow(wll, stats.wll, a.wll_to_def) + bonus.def
                 - bonus.penalty_def)
                 .max(0);
+            // Wll answers a blade, Mnd answers a spell. Gear's `def` is deliberately NOT
+            // added here: armour is steel, and what stops fire is the mind behind it plus
+            // whatever ward the piece happens to carry (which rides `damage_modifiers`).
+            let ward = (stats.base_ward + grow(mnd, stats.mnd, a.mnd_to_ward) + bonus.ward)
+                .max(0);
             let speed = (stats.speed_stat + grow(dex, stats.dex, a.dex_to_speed) + bonus.spd
                 - bonus.penalty_spd)
                 .max(1);
@@ -621,8 +657,20 @@ pub fn party_fighters(
             f.wll = wll;
             f.spell_power = spell_power;
             f.dodge = dodge;
+            f.ward = ward;
+            // "of the Furnace" — extra damage dealt of one element, summed across pieces and
+            // kept as a multiplier so the engine can apply it wherever that element lands.
+            for (el, pct) in &bonus.element_power {
+                if let Some(ty) = meld_proto::enums::DamageType::from_wire(el) {
+                    *f.element_power.entry(ty).or_insert(1.0) += *pct as f64 / 100.0;
+                }
+            }
             // Elemental wards from gear (spec §5): folded + clamped 0.0–2.0.
-            f.damage_modifiers = fold_damage_modifiers(&bonus.modifiers);
+            // Worn weights and rolled wards fold together through the one path, so a
+            // plate cuirass with a fire ward on it is both facts at once.
+            let mut entries = bonus.modifiers.clone();
+            entries.extend(weight_modifiers(&bonus.armor_weights, balance));
+            f.damage_modifiers = fold_damage_modifiers(&entries);
             // AD-3: a branded weapon types the hero's basic swing, so a party can
             // finally exploit a creature's elemental weakness instead of only
             // resisting its attacks. Creature profiles already existed; heroes had
@@ -894,6 +942,9 @@ pub fn build_battle(
             let ability_key = if m.boss_kind.is_empty() { &m.monster_kind } else { &m.boss_kind };
             f.boss_kind = m.boss_kind.clone();
             f.abilities = meld_world::abilities::creature_abilities(ability_key);
+            // A creature's elemental resistance rides its defence curve, since it has no Mnd
+            // to grow one from — kept under 1.0 so casting stays the answer to armour.
+            f.ward = ((m.def as f64) * balance.armor_resist.creature_ward_fraction).round() as i32;
             f.damage_modifiers = meld_world::abilities::creature_damage_modifiers(ability_key)
                 .into_iter()
                 .collect();
@@ -1308,6 +1359,86 @@ mod tests {
         );
     }
 
+    /// Armour answers for damage TYPES, through the same `modifier_for` a creature's hide
+    /// uses. Plate turns an edge and fears a hammer; a robe is the reverse; and the whole
+    /// point is that the two heroes take DIFFERENT damage from the same blow.
+    #[test]
+    fn what_you_wear_decides_what_hurts_you() {
+        let b = Balance::load_default().unwrap();
+        let plate: Vec<String> = std::iter::repeat_n("heavy".to_string(), 4).collect();
+        let robes: Vec<String> = std::iter::repeat_n("robe".to_string(), 4).collect();
+
+        let p = fold_damage_modifiers(&weight_modifiers(&plate, &b));
+        let r = fold_damage_modifiers(&weight_modifiers(&robes, &b));
+        let slash = meld_proto::enums::DamageType::Slash;
+        let blunt = meld_proto::enums::DamageType::Blunt;
+
+        assert!(p[&slash] < 1.0, "plate takes a full slash ({})", p[&slash]);
+        assert!(p[&blunt] > 1.0, "plate shrugs off a hammer ({})", p[&blunt]);
+        assert!(r[&slash] > 1.0, "a robe turns a blade ({})", r[&slash]);
+        // Real armour is strictly better than cloth at being hit — that is what armour IS.
+        assert!(p[&slash] < r[&slash] && p[&blunt] < r[&blunt]);
+        // The interesting property is not which is better, it is that **the weapon you bring
+        // matters against plate and does not against cloth**: plate has a wide spread between
+        // its best and worst physical answer, a robe has none. That spread is the whole
+        // reason a party cares whether the thing in front of it carries an axe or a maul.
+        let spread = |m: &std::collections::HashMap<meld_proto::enums::DamageType, f64>| {
+            m[&blunt] / m[&slash]
+        };
+        assert!(
+            spread(&p) > 1.5,
+            "a hammer is only {:.2}x a sword against plate — weight is cosmetic",
+            spread(&p)
+        );
+        assert!(
+            (spread(&r) - 1.0).abs() < 0.01,
+            "a robe prefers one physical type over another ({:.2}x), which cloth should not",
+            spread(&r)
+        );
+
+        // A full set is an IDENTITY, never a switch: the 0.0/2.0 clamp means an immunity or
+        // a doubling, and a resistance that reaches either stops being a trade-off.
+        for (label, m) in [("plate", &p), ("robe", &r)] {
+            for (ty, v) in m.iter() {
+                assert!(
+                    *v > 0.15 && *v < 1.85,
+                    "a full {label} set reaches {v} against {ty:?} — that is a switch, not a trade"
+                );
+            }
+        }
+    }
+
+    /// One piece is a nudge and a full set is an identity — otherwise mixing weights, which
+    /// several classes may do, would be pointless.
+    #[test]
+    fn armor_resistance_stacks_with_how_much_you_wear() {
+        let b = Balance::load_default().unwrap();
+        let slash = meld_proto::enums::DamageType::Slash;
+        let one = fold_damage_modifiers(&weight_modifiers(&["heavy".into()], &b));
+        let four = fold_damage_modifiers(&weight_modifiers(
+            &std::iter::repeat_n("heavy".to_string(), 4).collect::<Vec<_>>(),
+            &b,
+        ));
+        assert!(four[&slash] < one[&slash], "wearing more plate does not resist more");
+        assert!(one[&slash] > 0.9, "a single piece should be a nudge, not a build");
+
+        // A mixed loadout lands between the two pure ones, which is what makes the choice
+        // interesting for a class that may wear either.
+        let mixed = fold_damage_modifiers(&weight_modifiers(
+            &["heavy".into(), "heavy".into(), "robe".into(), "robe".into()],
+            &b,
+        ));
+        assert!(mixed[&slash] > four[&slash], "mixing in robes should soften the slash resist");
+    }
+
+    /// An unknown weight is skipped rather than panicking or defaulting to a stance: a row
+    /// written by an older build must not silently hand out plate.
+    #[test]
+    fn an_unknown_armor_weight_grants_nothing() {
+        let b = Balance::load_default().unwrap();
+        assert!(weight_modifiers(&["mithril".into(), "".into()], &b).is_empty());
+    }
+
     #[test]
     fn base_run_levels_match_canon() {
         let b = Balance::load_default().unwrap();
@@ -1698,6 +1829,39 @@ mod tests {
         assert_eq!(f1.atk, f0.atk + 5);
         assert_eq!(f1.def, f0.def + 3);
         assert_eq!(f1.speed_stat, f0.speed_stat + 2);
+    }
+
+    /// The whole chain, end to end: what a hero WEARS reaches the `Fighter` the engine asks
+    /// about damage types. Folding in isolation is not proof — the entries have to survive
+    /// battle assembly, which is where the harness's dressed sets and the Vault's real ones
+    /// both arrive.
+    #[test]
+    fn worn_resistance_reaches_the_fighter_the_engine_asks() {
+        use meld_proto::enums::DamageType;
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::PhoenixGuard, "r".into())]);
+        let dressed: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            CharacterClass::PhoenixGuard,
+            GearBonus {
+                armor_weights: std::iter::repeat_n("heavy".to_string(), 4).collect(),
+                // Four quarter-resist fire wards, the way an epic set rolls them.
+                modifiers: std::iter::repeat_n(("FIRE".to_string(), 0.75), 4).collect(),
+                ..Default::default()
+            },
+        )];
+        let f = party_fighters(&dressed, &runs, &b, &[]).pop().unwrap();
+
+        // The weight's physical stance is there…
+        let slash = f.damage_modifiers[&DamageType::Slash];
+        let blunt = f.damage_modifiers[&DamageType::Blunt];
+        assert!(slash < 1.0 && blunt > 1.0, "plate: slash {slash}, blunt {blunt}");
+        // …and so is the rolled elemental ward, folded with it rather than replacing it.
+        let fire = f.damage_modifiers[&DamageType::Fire];
+        assert!(fire < 0.5, "four quarter-resist wards left fire at {fire}");
+        assert!(fire >= 0.0, "a ward went NEGATIVE, which is absorption, not resistance");
     }
 
     #[test]

@@ -49,6 +49,7 @@ pub struct Balance {
     pub resource: Resources,
     pub perks: Perks,
     pub biome_gate: BiomeGate,
+    pub armor_resist: ArmorResist,
 }
 
 /// The distance at which each biome starts appearing in a randomized run, keyed by
@@ -125,6 +126,8 @@ pub struct Attributes {
     pub dodge_dex_floor: i32,
     pub dodge_per_dex: f64,
     pub dodge_cap: f64,
+    /// Mnd -> `ward`, the elemental/psychic counterpart of `wll_to_def`.
+    pub mnd_to_ward: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -635,6 +638,12 @@ pub struct Keeper {
 pub type EquipBest = std::collections::HashMap<String, [f64; 3]>;
 
 /// Potion magnitudes + Apothecary prices (GR-4 / EC-2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArmorResist {
+    pub step: f64,
+    pub creature_ward_fraction: f64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Consumable {
     pub barrier_amount: i32,
@@ -1248,6 +1257,9 @@ pub struct PlayerStats {
     pub mnd_per_level: i32,
     pub dex_per_level: i32,
     pub wll_per_level: i32,
+    /// Elemental/psychic resistance at level 1 — `base_def`'s counterpart, grown by Mnd.
+    #[serde(default)]
+    pub base_ward: i32,
 }
 
 impl PlayerStats {

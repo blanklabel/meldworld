@@ -429,25 +429,84 @@ pub fn boss_palette_band(monster_level: i32) -> u8 {
     }
 }
 
+/// What a creature is MADE OF, which is what decides how it answers a blade, a point and a
+/// hammer. The creature-side mirror of a hero's `ArmorWeight`: same question, same answer
+/// shape, so "plate turns an edge and fears a hammer" is one rule the whole game obeys
+/// rather than a thing heroes happen to do.
+///
+/// This exists because the per-kind table had been authored as "a tough thing resists the
+/// physical types", which is backwards for most materials — every colossus, golem and ice
+/// maw in the game RESISTED blunt, when a hammer is exactly what shatters stone and ice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Body {
+    /// Stone, ice, crystal, fired clay. Blades skid off it; it CRACKS.
+    Rigid,
+    /// Iron and steel constructs, heavy carapace. Turns an edge, dents and rings under
+    /// impact — a hero's plate, worn on the inside.
+    Plated,
+    /// Thick hide, scale, fur over muscle. Spines and depth defeat a point; impact carries
+    /// straight through it.
+    Hide,
+    /// Flesh, fungal mass, fat. Opens to an edge and absorbs a blow.
+    Soft,
+    /// Sand, smoke, shadow, flame-held-in-a-shape. There is very little there to hit at all,
+    /// which is the whole reason the Phoenix Guard exists.
+    Amorphous,
+}
+
+/// How a body answers each physical type — ABSOLUTE multipliers, not steps, because a
+/// creature is one body wearing its own hide and there is nothing to stack (a hero's armour
+/// is per-piece and folds; see `[armor_resist]`).
+///
+/// Every body resists something and fears something, exactly as every armour weight does
+/// (`a_body_is_a_trade`).
+pub fn body_profile(body: Body) -> &'static [(DamageType, f64)] {
+    match body {
+        // A hammer is what stone is for.
+        Body::Rigid => &[(Blunt, 1.4), (Slash, 0.6), (Pierce, 0.7)],
+        // An edge skids, a spike finds a seam, a hammer rings it like a bell.
+        Body::Plated => &[(Blunt, 1.3), (Slash, 0.5), (Pierce, 0.85)],
+        // Depth and spines beat a point; impact does not care how thick you are.
+        Body::Hide => &[(Blunt, 1.15), (Pierce, 0.7), (Slash, 0.9)],
+        // Cuts open, soaks a blow.
+        Body::Soft => &[(Slash, 1.25), (Pierce, 1.1), (Blunt, 0.8)],
+        // Nothing solid to swing at. Its answer to being hit is that it mostly is not.
+        Body::Amorphous => &[(Slash, 0.5), (Blunt, 0.5), (Pierce, 0.75)],
+    }
+}
+
+/// What each creature kind is made of. Unlisted kinds are [`Body::Hide`] — the ordinary
+/// case of a living thing with skin, and the safest default for a new creature.
+pub fn creature_body(kind: &str) -> Body {
+    match kind {
+        "dune_colossus" | "glacier_maw" | "weepingcolossus" => Body::Rigid,
+        "magma_golem" | "ironmaw" | "rustfang" => Body::Plated,
+        "sand_shade" | "ember_wisp" | "gloamhound" => Body::Amorphous,
+        "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger"
+        | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" => Body::Soft,
+        _ => Body::Hide,
+    }
+}
+
 /// A creature kind's elemental profile — `damage_modifiers` in the spec.
 /// `> 1.0` weakness, `< 1.0` resistance, `0.0` immunity, `< 0.0` absorption
 /// (heals for the absolute value). Types not listed default to `1.0`.
-pub fn creature_damage_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
+fn creature_elemental_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
     match kind {
         "forest_bloom_stalker" => vec![(Fire, 2.0), (Water, 0.5), (Earth, 0.5)],
-        "thornback_boar" => vec![(Pierce, 0.75), (Mind, 1.5)],
+        "thornback_boar" => vec![(Mind, 1.5)],
         "sporeling" => vec![(Fire, 2.0), (Poison, 0.0)],
         "dune_wyrm" => vec![(Water, 2.0), (Earth, 0.5), (Fire, 0.75)],
-        "sand_shade" => vec![(Celestial, 2.0), (Shadow, -0.5), (Blunt, 0.75)],
-        "dune_colossus" => vec![(Water, 1.5), (Lightning, 1.5), (Blunt, 0.5), (Pierce, 0.5)],
+        "sand_shade" => vec![(Celestial, 2.0), (Shadow, -0.5)],
+        "dune_colossus" => vec![(Water, 1.5), (Lightning, 1.5)],
         "cinder_imp" => vec![(Water, 2.0), (Ice, 1.5), (Fire, -1.0)],
-        "magma_golem" => vec![(Water, 2.0), (Ice, 2.0), (Fire, 0.0), (Poison, 0.0), (Blunt, 0.75)],
+        "magma_golem" => vec![(Water, 2.0), (Ice, 2.0), (Fire, 0.0), (Poison, 0.0)],
         "ember_wisp" => vec![(Water, 2.0), (Wind, 1.5), (Fire, -1.0), (Earth, 0.75)],
         "frost_lurker" => vec![(Fire, 2.0), (Ice, 0.5)],
         "ice_revenant" => vec![(Fire, 1.5), (Celestial, 2.0), (Ice, -0.5), (Poison, 0.0), (Shadow, 0.5)],
-        "glacier_maw" => vec![(Fire, 2.0), (Ice, 0.0), (Blunt, 0.75)],
+        "glacier_maw" => vec![(Fire, 2.0), (Ice, 0.0)],
         "bog_serpent" => vec![(Ice, 1.5), (Poison, -0.5), (Earth, 0.75)],
-        "myconid_brute" => vec![(Fire, 2.0), (Poison, 0.0), (Slash, 1.25)],
+        "myconid_brute" => vec![(Fire, 2.0), (Poison, 0.0)],
         "bog_stinger" => vec![(Fire, 1.5), (Wind, 1.5), (Poison, 0.0)],
         // -------------------------------------------------- bosses (FS-4) --
         "gloamhound" => vec![(Celestial, 1.5), (Shadow, -0.25), (Fire, 0.75)],
@@ -456,13 +515,32 @@ pub fn creature_damage_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         "pyrewarden" => vec![(Water, 1.5), (Ice, 1.25), (Fire, 0.0)],
         "sepulcher" => vec![(Celestial, 2.0), (Shadow, -0.25), (Mind, 0.5)],
         "hollowbishop" => vec![(Celestial, 1.5), (Mind, -0.25), (Shadow, 0.5)],
-        "ironmaw" => vec![(Water, 1.5), (Earth, 0.5), (Lightning, 0.0), (Blunt, 0.5)],
-        "weepingcolossus" => vec![(Celestial, 1.25), (Ethereal, 0.5), (Blunt, 0.5), (Pierce, 0.75)],
+        "ironmaw" => vec![(Water, 1.5), (Earth, 0.5), (Lightning, 0.0)],
+        "weepingcolossus" => vec![(Celestial, 1.25), (Ethereal, 0.5)],
         "miredrowned" => vec![(Fire, 1.5), (Ice, 1.25), (Poison, 0.0), (Water, -0.25)],
         "ashenleviathan" => vec![(Water, 2.0), (Ice, 1.5), (Fire, 0.0), (Infernal, 0.0)],
         _ => vec![],
     }
 }
+/// A creature kind's full damage profile: what its BODY does about blades, points and
+/// hammers, plus what its nature does about the elements.
+///
+/// The physical half comes from [`creature_body`] and is no longer authored per kind — it
+/// had been, and it was wrong in the same direction almost everywhere (every colossus and
+/// golem resisted Blunt). A per-kind ELEMENTAL entry still wins over the body, so an
+/// authored exception is possible; a per-kind physical entry is not, because that is the
+/// mistake this split exists to prevent.
+pub fn creature_damage_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
+    let mut out: Vec<(DamageType, f64)> = body_profile(creature_body(kind)).to_vec();
+    for (ty, m) in creature_elemental_modifiers(kind) {
+        match out.iter_mut().find(|(t, _)| *t == ty) {
+            Some(slot) => slot.1 = m,
+            None => out.push((ty, m)),
+        }
+    }
+    out
+}
+
 
 /// The [`DamageType`] a creature kind's *basic* attack carries (the fallback
 /// swing the AI mixes into every pool). Physical for most; a few exotics burn.
@@ -556,6 +634,80 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
 
 #[cfg(test)]
 mod tests {
+    /// A body that is only ever better is a body nothing can fight. Same rule the hero's
+    /// armour weights obey (`every_armor_weight_is_a_trade`) — this is the creature half of
+    /// the symmetry.
+    #[test]
+    fn a_body_is_a_trade() {
+        for b in [Body::Rigid, Body::Plated, Body::Hide, Body::Soft, Body::Amorphous] {
+            let p = body_profile(b);
+            assert!(p.iter().any(|(_, m)| *m < 1.0), "{b:?} resists nothing");
+            assert!(
+                p.iter().any(|(_, m)| *m > 1.0) || b == Body::Amorphous,
+                "{b:?} fears nothing physical"
+            );
+            for (ty, _) in p {
+                assert!(ty.is_physical(), "{b:?} claims {ty:?}, which is not a physical type");
+            }
+        }
+    }
+
+    /// **A hammer is what stone is for.** This is the bug the audit found: the per-kind table
+    /// had every colossus, golem and ice maw RESISTING Blunt, because it was authored as
+    /// "tough things resist physical" instead of by material. Nothing rigid or plated may
+    /// resist a hammer again.
+    #[test]
+    fn nothing_made_of_stone_or_steel_shrugs_off_a_hammer() {
+        for kind in ["dune_colossus", "glacier_maw", "weepingcolossus", "magma_golem", "ironmaw"] {
+            let m: Vec<(DamageType, f64)> = creature_damage_modifiers(kind);
+            let blunt = m.iter().find(|(t, _)| *t == Blunt).map(|(_, v)| *v).expect(kind);
+            let slash = m.iter().find(|(t, _)| *t == Slash).map(|(_, v)| *v).expect(kind);
+            assert!(blunt > 1.0, "{kind} resists Blunt at {blunt} — a hammer breaks stone");
+            assert!(slash < 1.0, "{kind} should turn an edge, not take it at {slash}");
+        }
+    }
+
+    /// And the other direction: soft things open to a blade and soak a blow.
+    #[test]
+    fn soft_things_fear_an_edge() {
+        for kind in ["sporeling", "myconid_brute", "forest_bloom_stalker"] {
+            let m = creature_damage_modifiers(kind);
+            let slash = m.iter().find(|(t, _)| *t == Slash).map(|(_, v)| *v).expect(kind);
+            let blunt = m.iter().find(|(t, _)| *t == Blunt).map(|(_, v)| *v).expect(kind);
+            assert!(slash > 1.0, "{kind} shrugs off a blade at {slash}");
+            assert!(blunt < 1.0, "{kind} should soak impact, not take {blunt}");
+        }
+    }
+
+    /// Every creature answers for all three physical types, so no weapon choice is ever
+    /// simply irrelevant against something.
+    #[test]
+    fn every_creature_has_a_physical_stance() {
+        for kind in crate::all_creature_kinds().into_iter().chain(ALL_BOSSES.iter().copied()) {
+            let m = creature_damage_modifiers(kind);
+            for ty in [Blunt, Slash, Pierce] {
+                assert!(
+                    m.iter().any(|(t, _)| *t == ty),
+                    "{kind} has nothing to say about {ty:?}"
+                );
+            }
+        }
+    }
+
+    /// An ELEMENTAL entry may override the body; a PHYSICAL one may not exist, because that
+    /// is exactly how the backwards values got in.
+    #[test]
+    fn the_per_kind_table_no_longer_authors_physical_types() {
+        for kind in crate::all_creature_kinds().into_iter().chain(ALL_BOSSES.iter().copied()) {
+            for (ty, _) in creature_elemental_modifiers(kind) {
+                assert!(
+                    !ty.is_physical(),
+                    "{kind} authors {ty:?} per-kind — physical answers come from its Body"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     /// CR-9: a champion is smarter than its escort, and depth makes ordinary creatures

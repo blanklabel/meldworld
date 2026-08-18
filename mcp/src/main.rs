@@ -114,6 +114,7 @@ fn tool_schemas() -> Value {
                     "gear_tier": { "type": "integer", "description": "DEV: dress every hero in a full six-slot set of tier-n insured epics." },
                     "end_fight_at": { "type": "number", "description": "DEV: place the END FIGHT at this distance instead of d3200. Must exceed the hub safe radius (13)." },
                     "biome": { "type": "string", "description": "DEV: pin every section to one biome (forest, desert, ashfall, tundra, mire)." },
+                    "ward": { "type": "string", "description": "DEV: dress the gear set with an elemental ward (FIRE, ICE, MIND, …) — what a prepared party brings. Armour WEIGHT only answers slash/blunt/pierce." },
                     "potions": { "type": "integer", "description": "DEV: deal this many salves AND elixirs into the pouches instead of the 3/1 starting kit — a party that shopped before diving. A salve heals 40% of max HP." }
                 }
             }
@@ -236,6 +237,7 @@ async fn call(game: &mut Option<Session>, name: &str, args: &Value) -> Result<St
         boot.end_fight_at = args["end_fight_at"].as_f64();
         boot.biome = args["biome"].as_str().map(String::from);
         boot.potions = args["potions"].as_i64().map(|v| v as i32);
+        boot.ward = args["ward"].as_str().map(|w| w.to_uppercase());
         boot.dungeon = args["dungeon"].as_str().map(String::from);
         // Drop the old game FIRST: its server is holding a port and a game loop, and two
         // live sessions would both be reading the process-global MELD_* overrides.
@@ -266,6 +268,9 @@ async fn call(game: &mut Option<Session>, name: &str, args: &Value) -> Result<St
             }
             if let Some(v) = &b.biome {
                 how.push(format!("biome {v}"));
+            }
+            if let Some(v) = &b.ward {
+                how.push(format!("ward {v}"));
             }
             format!(
                 "new game on {} — {}\n{}\n{}",
