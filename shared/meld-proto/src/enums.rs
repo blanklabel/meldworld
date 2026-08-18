@@ -114,6 +114,53 @@ impl DamageType {
             _ => return None,
         })
     }
+
+    /// The UPPERCASE wire key for this type — [`from_wire`](DamageType::from_wire)'s
+    /// inverse, held against it by `damage_type_wire_keys_round_trip` so a new variant
+    /// cannot be added to one direction only.
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            DamageType::Blunt => "BLUNT",
+            DamageType::Slash => "SLASH",
+            DamageType::Pierce => "PIERCE",
+            DamageType::Water => "WATER",
+            DamageType::Ice => "ICE",
+            DamageType::Fire => "FIRE",
+            DamageType::Lightning => "LIGHTNING",
+            DamageType::Wind => "WIND",
+            DamageType::Earth => "EARTH",
+            DamageType::Poison => "POISON",
+            DamageType::Infernal => "INFERNAL",
+            DamageType::Celestial => "CELESTIAL",
+            DamageType::Shadow => "SHADOW",
+            DamageType::Mind => "MIND",
+            DamageType::Ethereal => "ETHEREAL",
+            DamageType::None => "NONE",
+        }
+    }
+
+    /// Every variant, so a rule about damage types can be held against the whole set
+    /// rather than a hand-written list that a new element gets left off.
+    pub fn all() -> &'static [DamageType] {
+        &[
+            DamageType::Blunt,
+            DamageType::Slash,
+            DamageType::Pierce,
+            DamageType::Water,
+            DamageType::Ice,
+            DamageType::Fire,
+            DamageType::Lightning,
+            DamageType::Wind,
+            DamageType::Earth,
+            DamageType::Poison,
+            DamageType::Infernal,
+            DamageType::Celestial,
+            DamageType::Shadow,
+            DamageType::Mind,
+            DamageType::Ethereal,
+            DamageType::None,
+        ]
+    }
 }
 
 /// How the target's `damage_modifiers` bent a resolved damage effect

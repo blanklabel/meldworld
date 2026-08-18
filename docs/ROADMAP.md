@@ -1770,14 +1770,52 @@ spike that makes the whole economy cohere.
     - This looks like an oversight rather than a design: nothing documents abilities as
       armour-ignoring, and the Psyker's Foci are called out *specifically* for ignoring
       armour, which would be a meaningless distinction if every ability already did.
-    - **Three ways out, and the choice is a design call, not a tune.** (a) route ability
-      damage through the same mitigation as a basic attack — correct-looking, but it
-      changes every fight in the game; (b) give this set piece physical-damage abilities —
-      narrow, and fights the fiction of a fire-breathing Pyrewarden; (c) make the apex's
-      gate **elemental resistance** rather than defence, which is what `damage_modifiers`
-      and the existing three-ward design already reach for, and would need
-      `MELD_GEAR_TIER` to grant resistances too. **(c) is the recommendation**; (a) is the
-      bigger and possibly more correct fix, and belongs to whoever owns the damage model.
+    - **Option (c) has now SHIPPED as a general mechanic** — armour answers damage TYPES.
+      Every `ArmorWeight` carries a physical stance (plate turns an edge and fears a hammer;
+      mail defeats a cut and lets a spike through; leather soaks impact and opens to a blade;
+      a robe is worst at all three and best against fire/ice/lightning/mind), folded per piece
+      through `fold_damage_modifiers`, with the shape in
+      `meld_proto::equipment::weight_profile` and the step size in `[armor_resist]`.
+      Creatures answer the same question through `abilities::Body`. Held by
+      `every_armor_weight_is_a_trade`, `the_physical_triangle_holds`, `a_body_is_a_trade` and
+      `worn_resistance_reaches_the_fighter_the_engine_asks`.
+      - **It does not rescue THIS fight, for a legible reason.** Measured with resistances
+        live: geared 33 hero-turns / 76%, ungeared 29 / 68%, fire-warded 28 / 77% — all
+        inside the coin-flip band. These bosses lead with **fire and hammers**, and plate is
+        weak to blunt, so the armour a Phoenix Guard can wear is close to the worst answer
+        available. Which is the mechanic working: "what do I wear against this" now has an
+        answer, and for this encounter the answer is "not plate".
+      - **`def`/`ward` split shipped.** `def` (Wll) is subtracted from physical damage and a
+        new `ward` (Mnd) from everything elemental or psychic, in one place
+        (`apply_ability_damage`) — so ability damage is mitigated at all, which it previously
+        was not. Measured: the geared party went from 33 hero-turns to **43**, two bosses down
+        and the third at 376/4400 (**97%**), and an ungeared run WON at 42 turns. Both inside
+        the coin-flip band, which is the point: **`ward` is an attribute, so it makes LEVEL
+        the elemental defence, not gear.** A **ward affix on gear** is the missing piece for
+        the apex to be a loot check on its elemental half.
+      - The fight is now materially closer to winnable than when it was tuned (210/1000 was
+        set before ability damage was mitigated at all), so it wants re-measuring across
+        SEVERAL runs before any further retune.
+      - ✅ **THE GEAR GATE NOW EXISTS**, and it took two affixes to get there: **"of the
+        Aegis"** (flat `ward`) and **"of the Furnace"** (extra damage DEALT of one element,
+        the offensive twin of "of Warding"). Both roll off the registry pool, so adding them
+        was enough — `every_affix_can_actually_roll_on_something` proves every affix in the
+        game is reachable loot rather than paper. Measured on the same boss trio:
+        **geared → VICTORY in 39 hero-turns with the tank untouched at 1042/1042; ungeared →
+        defeat at 76%, whole party dead.** That is a qualitative difference, not the coin flip
+        the earlier runs were.
+      - ⚠️ **The trio is ROLLED, so "the end fight" is several fights.** A second seed drew
+        Hollow Bishop / Gloamhound / Ashen Leviathan instead, and the same geared party lost
+        in 16 hero-turns having removed 40% — because Gloamhound is `Body::Amorphous` and
+        halves all physical damage, which a martial party cannot answer. Every number above is
+        therefore *one trio*, and the apex's difficulty has a spread nobody had measured.
+        A tuning pass should sample trios, or the encounter should constrain the draw.
+      - **Remaining for a real apex gate:** either bosses whose damage armour can answer, or
+        elemental wards that a full set actually rolls (epics roll one biome-themed
+        quarter-resist; `MELD_GEAR_WARD` models a prepared set in the harness). Still NOT
+        done: (a) routing ability damage through `def` — the bigger, possibly more correct
+        fix, which changes every fight in the game and belongs to whoever owns the damage
+        model.
   - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
     unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
     encounter path instead. `WorldBoss` defs, raid-scale merge cap,

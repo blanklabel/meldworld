@@ -43,6 +43,10 @@ pub struct Boot {
     /// dives, so measuring the apex against the 3-salve starting kit measures an
     /// unprepared party — and a salve is 40% of a hero's max HP.
     pub potions: Option<i32>,
+    /// Dress the harness set with an elemental ward (`MELD_GEAR_WARD`) — what a player who
+    /// knew what they were walking into would bring. Armour weight only answers blades,
+    /// points and hammers, so without this a fire fight cannot show gear mattering at all.
+    pub ward: Option<String>,
 }
 
 impl Default for Boot {
@@ -60,6 +64,7 @@ impl Default for Boot {
             biome: None,
             dungeon: None,
             potions: None,
+            ward: None,
         }
     }
 }
@@ -283,6 +288,7 @@ impl Session {
         set_or_clear("MELD_GEAR_TIER", boot.gear_tier.map(|t| t.to_string()));
         set_or_clear("MELD_START_LEVEL", boot.start_level.map(|l| l.to_string()));
         set_or_clear("MELD_POTIONS", boot.potions.map(|n| n.to_string()));
+        set_or_clear("MELD_GEAR_WARD", boot.ward.clone());
         match boot.end_fight_at {
             Some(d) => {
                 std::env::set_var("MELD_END_FIGHT", "1");

@@ -116,7 +116,19 @@ str_to_atk = 1.0        # +physical attack per Str above base (Str -> damage)
 mnd_to_power = 1.2      # +manifestation/skill power per Mnd above base (Mnd -> magic dmg)
 dex_to_speed = 1.5      # +ATB speed_stat per Dex above base (Dex -> act faster)
 wll_to_hp = 2.5         # +max HP per Wll above base (Wll -> HP)
-wll_to_def = 0.25       # +defence per Wll above base (Wll -> resistance)
+wll_to_def = 0.25       # +defence per Wll above base (Wll -> PHYSICAL resistance)
+# Wll answers a blade; MND answers a spell. `def` is subtracted from physical damage and
+# `ward` from everything elemental or psychic, which is what stops a caster from being simply
+# squishy and gives Mnd a defensive half — the same way Dex buys dodge as well as speed.
+# Before this, non-physical ability damage was subtracted by NOTHING at all: `def` only ever
+# reached a basic attack, so armour was close to irrelevant against every boss in the game.
+mnd_to_ward = 0.25      # +ward per Mnd above base (Mnd -> ELEMENTAL/psychic resistance)
+# ⚠️ `base_ward` (per class) is deliberately 0 for martials and 1 for casters, NOT the 2-4 it
+# started at. Ward is subtracted FLAT, and an early creature ability deals about 4 — so a
+# base of 4 floored it to 1 and made a level-1 party nearly immune to the elemental half of
+# the game. (`field_item`'s bot could no longer get wounded at all, which is how this was
+# caught.) Same trap as flat magnitudes on heroes: what reads as small next to a level-100
+# number is total next to a level-1 one. Ward is meant to be EARNED from Mnd.
 dodge_dex_floor = 10    # Dex at/below this gives no dodge (martial/caster classes
                         # start here or below, so their dodge is earned by leveling;
                         # the Shifter is the deliberate exception — its base Dex is
@@ -921,6 +933,35 @@ phoenix_guard = [0.8, 1.4, 0.2]   # the wall. Slow on purpose
 smithwright = [1.0, 1.2, 0.4]     # front line that props others up
 keeper = [0.3, 1.0, 1.0]          # a mender: its damage rides Mnd too
 
+# What a piece of armour's WEIGHT does about each damage type (AD/GR). `meld-proto`'s
+# `weight_profile` owns the SHAPE — which types a weight resists and which it takes worse —
+# and this owns the size of one step, because a coefficient is balance's.
+#
+# These are PER PIECE, and `fold_damage_modifiers` adds the deltas across everything worn
+# (1 + sum of (m-1), clamped 0..2). A full four-piece plate set lands at 0.76 against a slash
+# and 1.12 against a blunt; a robe at 1.36 against everything physical.
+#
+# **Sized by the EARLY game, not the late one.** At 0.045 a robe took 1.54x physical, and the
+# default party (two robe-wearers) started losing its first fights — `field_item`'s bot died
+# on the on-ramp rather than living long enough to drink a potion. A level-1 caster has 34 HP
+# and no margin at all, so the step that reads as flavour at level 100 is lethal at level 1.
+# Raise it and you re-break the on-ramp; raise it a lot and a full set floors out at 0.0/2.0,
+# where a resistance stops being a trade-off and becomes a switch. [TUNABLE]
+[armor_resist]
+step = 0.03
+# A creature's own `ward` — its elemental/psychic resistance — as a fraction of its physical
+# `def`. Creatures have no Mnd to grow it from, so it rides the defence curve instead.
+#
+# Deliberately BELOW 1.0: casting has to stay the answer to something armoured, or the
+# Psyker's whole identity ("Foci ignore defence and ride Mnd") is deleted by giving every
+# creature a magic shield. At 0.6 a spell still beats plate on a golem, just not for free.
+# [TUNABLE]
+creature_ward_fraction = 0.6
+# A creature's own profile (`creature_damage_modifiers`) is authored in absolute multipliers
+# rather than steps, because a creature is one thing wearing its own hide — there is nothing
+# to stack. Both sides resolve through the same `modifier_for`, so a hero's plate and a magma
+# golem's crust are the same mechanic asked the same question.
+
 [consumable]
 barrier_amount = 18             # Bulwark Tonic: Barrier granted [TUNABLE]
 regen_amount = 6                # Mending Draught: Regen per turn [TUNABLE]
@@ -1599,6 +1640,7 @@ xp = 72
 base_hp = 40
 base_atk = 12
 base_def = 3
+base_ward = 0
 speed_stat = 110
 # Attributes: level-1 baseline + per-level auto-gain. The Explorer is the martial
 # baseline: it hardens (Str for damage, Wll for HP) with a little Dex. [TUNABLE]
@@ -1622,6 +1664,7 @@ wll_per_level = 2
 base_hp = 40
 base_atk = 12
 base_def = 3
+base_ward = 0
 speed_stat = 110
 str = 12
 mnd = 4
@@ -1636,6 +1679,7 @@ wll_per_level = 2
 base_hp = 34
 base_atk = 13
 base_def = 2
+base_ward = 1
 speed_stat = 100
 # The Psyker's whole kit scales with Mnd (manifestation power); it gains Mnd fast
 # with a trickle of Dex/Wll and almost no Str. [TUNABLE]
@@ -1654,6 +1698,7 @@ wll_per_level = 1
 base_hp = 46
 base_atk = 8
 base_def = 3
+base_ward = 1
 speed_stat = 95
 # The Resonant spends HP to heal, so it stacks Wll (HP) and Mnd (heal/skill
 # power) and barely moves Str/Dex. [TUNABLE]
@@ -1674,6 +1719,7 @@ wll_per_level = 3
 base_hp = 32
 base_atk = 14
 base_def = 2
+base_ward = 0
 speed_stat = 125
 # Dex-forward: fast turns + innate dodge, backed by enough Str for its strikes to
 # bite; almost no Mnd, thin Wll (it lives by not getting hit). [TUNABLE]
@@ -1693,6 +1739,7 @@ wll_per_level = 1
 base_hp = 52
 base_atk = 13
 base_def = 6
+base_ward = 1
 speed_stat = 85
 # All Str (isometric strength → blunt damage) and Wll (density → HP + armour); it
 # hardens into an ever-thicker wall and never gets faster or dodgier. [TUNABLE]
@@ -1713,6 +1760,7 @@ wll_per_level = 4
 base_hp = 50
 base_atk = 14
 base_def = 5
+base_ward = 0
 speed_stat = 88
 str = 14
 mnd = 5
@@ -1729,6 +1777,7 @@ wll_per_level = 3
 base_hp = 40
 base_atk = 8
 base_def = 3
+base_ward = 1
 speed_stat = 96
 str = 6
 mnd = 13

@@ -139,6 +139,16 @@ pub struct Fighter {
     /// Elemental profile: `DamageType → multiplier` (spec §1). `>1` weak,
     /// `<1` resist, `0` immune, `<0` absorb; missing types default to 1.0.
     /// Monsters get theirs from content; heroes aggregate theirs from gear.
+    /// Elemental/psychic resistance — `def`'s counterpart, grown from Mnd. Subtracted from
+    /// non-physical ABILITY damage the way `def` is subtracted from a physical blow.
+    ///
+    /// Before this existed, non-physical ability damage was reduced by nothing at all: `def`
+    /// is only ever consulted for a basic attack, so a boss that fights with spells and
+    /// breath ignored every point of armour a party had earned.
+    pub ward: i32,
+    /// "of the Furnace": how much MORE this fighter's damage of a type is worth. The
+    /// offensive twin of `damage_modifiers`, which is what a target does about it.
+    pub element_power: HashMap<DamageType, f64>,
     pub damage_modifiers: HashMap<DamageType, f64>,
     /// The [`DamageType`] this fighter's basic attack carries. Creature kinds
     /// and hero classes each have a typed basic swing; defaults untyped.
@@ -253,6 +263,8 @@ impl Fighter {
             defending: false,
             abilities: Vec::new(),
             boss_kind: String::new(),
+            ward: 0,
+            element_power: HashMap::new(),
             damage_modifiers: HashMap::new(),
             basic_attack_type: DamageType::None,
             target_profile: TargetProfile::Weakest,
@@ -1442,7 +1454,12 @@ impl Battle {
         };
         // CR-6: a minion fights above its weight while its leader lives, and below it
         // once the pack has routed.
-        let atk = ((self.fighters[actor_i].atk as f64) * self.pack_attack_mult(actor_i) * row)
+        let atk = ((self.fighters[actor_i].atk as f64)
+            * self.pack_attack_mult(actor_i)
+            * row
+            // A BRANDED weapon carries an element, so element power pays on a basic attack
+            // too — otherwise "of the Furnace" would be a caster-only line.
+            * self.element_amp(actor_i, attack_type))
             .round()
             .max(1.0) as i32;
         let def = self.fighters[target_i].def;
@@ -2789,7 +2806,7 @@ impl Battle {
                 };
                 let power = self.fighters[psyker_i].spell_power as f64;
                 let dmg = (power * self.psyker_thermal_tick_mult * stacks as f64).round() as i32;
-                self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Fire)
+                self.apply_ability_damage(t, dmg.max(self.min_damage), DamageType::Fire)
             }
             // Matter Dissolution corrodes: damage, and the target's armour is worn
             // down permanently for as long as the Focus is held. Armour scales with
@@ -2834,7 +2851,7 @@ impl Battle {
                 let mut effects = Vec::new();
                 for t in enemies {
                     effects.extend(
-                        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
+                        self.apply_ability_damage(t, dmg.max(self.min_damage), DamageType::Mind),
                     );
                     if self.fighters[t].alive {
                         let fx = self.apply_timed(t, VORTEX_STATUS, self.psyker_vortex_ticks);
@@ -2861,7 +2878,7 @@ impl Battle {
                 let mut effects = Vec::new();
                 for t in enemies {
                     effects.extend(
-                        self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind),
+                        self.apply_ability_damage(t, dmg.max(self.min_damage), DamageType::Mind),
                     );
                 }
                 effects
@@ -3299,7 +3316,7 @@ impl Battle {
         let power = self.fighters[psyker_i].spell_power;
         let dmg = ((power as f64) * mult * stacks as f64).round() as i32;
         // Manifestations are psychic — MIND-typed, so elemental profiles apply.
-        let mut effects = self.apply_typed_damage(t, dmg.max(self.min_damage), DamageType::Mind);
+        let mut effects = self.apply_ability_damage(t, dmg.max(self.min_damage), DamageType::Mind);
         // Expansion (the doc's passive on Gravity Well, generalised): the Focus also
         // reaches other living enemies, for a share of the tick. A controller should widen
         // with level — the alternative, hitting the one target harder, is the one thing
@@ -3318,7 +3335,7 @@ impl Battle {
                 .take(extra)
                 .collect();
             for o in others {
-                effects.extend(self.apply_typed_damage(o, spill.max(self.min_damage), DamageType::Mind));
+                effects.extend(self.apply_ability_damage(o, spill.max(self.min_damage), DamageType::Mind));
             }
         }
         effects
@@ -3720,7 +3737,7 @@ impl Battle {
                     let ty = eff.damage_type.unwrap_or(DamageType::None);
                     for t in targets {
                         if self.fighters[t].alive {
-                            effects.extend(self.apply_typed_damage(t, raw, ty));
+                            effects.extend(self.apply_ability_damage(t, raw, ty));
                         }
                     }
                 }
@@ -4083,6 +4100,59 @@ impl Battle {
     /// Immunity lands a 0; absorption heals `|Final|` instead; everything else
     /// flows through [`Self::apply_damage`] (barrier, back-row, KO) with the
     /// modifier flag stamped on the Damage effect.
+    /// How much more this fighter's damage of `ty` is worth — "of the Furnace" (AD-1
+    /// `element_power`), the offensive twin of the target's `damage_modifiers`.
+    ///
+    /// `brand` decides what your attacks ARE and this decides what that is worth, so the two
+    /// together are a build: brand your weapon to ice and stack ice power to answer a boss
+    /// that shrugs off fire. `1.0` when the fighter has none, so it is always safe to apply.
+    fn element_amp(&self, actor_i: usize, ty: DamageType) -> f64 {
+        if ty == DamageType::None {
+            return 1.0;
+        }
+        self.fighters[actor_i].element_power.get(&ty).copied().unwrap_or(1.0)
+    }
+
+    /// Mitigate ABILITY damage, then land it.
+    ///
+    /// **`def` answers a blade; `ward` answers a spell.** One place decides which, because
+    /// the alternative was what shipped: six ability call sites passing raw damage straight
+    /// past every defensive stat in the game, so armour was decoration against anything that
+    /// did not throw a basic attack.
+    ///
+    /// A basic attack does NOT come through here — it subtracts `def` itself, along with the
+    /// defend reduction and its crit, and calls [`Self::apply_typed_damage`] directly. And a
+    /// DoT does not either: burn and poison are a fraction of the victim's OWN max HP, so
+    /// they are already scaled to the target and subtracting armour twice would make them
+    /// vanish on anyone wearing any.
+    fn apply_ability_damage(
+        &mut self,
+        target_i: usize,
+        raw: i32,
+        ty: DamageType,
+    ) -> Vec<ResolvedEffect> {
+        // The ATTACKER's element power lands before the target's armour does — a bigger
+        // fire is still a fire, and then the target answers it. `active_actor` is the acting
+        // fighter for both a player submit and a creature turn.
+        let raw = match self.active_actor {
+            Some(a) => ((raw as f64) * self.element_amp(a, ty)).round() as i32,
+            None => raw,
+        };
+        // True damage answers to nothing, which is the whole point of it.
+        let mitigated = if ty == DamageType::None {
+            raw
+        } else {
+            let shield = if ty.is_physical() {
+                self.fighters[target_i].def
+            } else {
+                self.fighters[target_i].ward
+            };
+            let floor = (raw as f64) * self.damage_floor_fraction;
+            (((raw - shield) as f64).max(floor).round() as i32).max(self.min_damage)
+        };
+        self.apply_typed_damage(target_i, mitigated, ty)
+    }
+
     fn apply_typed_damage(
         &mut self,
         target_i: usize,
@@ -7530,6 +7600,120 @@ mod tests {
         let i = battle.idx("psy").unwrap();
         let _ = battle.resolve_item(i, Some("fury_philtre"), None, None);
         assert_eq!(battle.fighters[i].adrenaline, 0, "banked rage it cannot hold");
+    }
+
+    /// **`def` answers a blade; `ward` answers a spell.** Both are subtracted from ABILITY
+    /// damage, and each only from its own half — the split the whole stat exists for.
+    ///
+    /// Before `ward`, non-physical ability damage was subtracted by NOTHING: `def` is only
+    /// consulted for a basic attack, so a boss that fights with fire and breath ignored every
+    /// point of armour a party had earned, and no gear could gate it.
+    #[test]
+    fn def_answers_a_blade_and_ward_answers_a_spell() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].def = 30;
+        battle.fighters[i].ward = 0;
+        battle.fighters[i].max_hp = 100_000;
+        battle.fighters[i].hp = 100_000;
+
+        let hit = |bt: &mut Battle, ty: DamageType| -> i32 {
+            let before = bt.fighters[i].hp;
+            let _ = bt.apply_ability_damage(i, 100, ty);
+            before - bt.fighters[i].hp
+        };
+
+        // Armour, and no ward: the sword is blunted, the fire is not.
+        let slash = hit(&mut battle, DamageType::Slash);
+        let fire = hit(&mut battle, DamageType::Fire);
+        assert_eq!(slash, 70, "def should have taken 30 off a physical ability");
+        assert_eq!(fire, 100, "def must NOT reduce fire — that is what ward is for");
+
+        // Now swap which stat the hero has, and the answers swap with it.
+        battle.fighters[i].def = 0;
+        battle.fighters[i].ward = 30;
+        assert_eq!(hit(&mut battle, DamageType::Slash), 100, "ward must not stop a blade");
+        assert_eq!(hit(&mut battle, DamageType::Fire), 70, "ward should have blunted the fire");
+
+        // True damage answers to neither, which is the whole point of it.
+        battle.fighters[i].def = 60;
+        battle.fighters[i].ward = 60;
+        assert_eq!(hit(&mut battle, DamageType::None), 100, "true damage was mitigated");
+    }
+
+    /// Neither stat can make a hero untouchable: `damage_floor_fraction` bounds the
+    /// subtraction the same way it bounds a basic attack, so stacking ward is a discount and
+    /// never an immunity. (Immunity is what `damage_modifiers` is for, deliberately.)
+    #[test]
+    fn no_amount_of_ward_makes_an_ability_free() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 100_000;
+        battle.fighters[i].hp = 100_000;
+        battle.fighters[i].ward = 100_000;
+        let before = battle.fighters[i].hp;
+        let _ = battle.apply_ability_damage(i, 100, DamageType::Fire);
+        let dealt = before - battle.fighters[i].hp;
+        assert!(dealt >= 25, "the floor should keep at least a quarter through: {dealt}");
+        assert!(dealt < 100);
+    }
+
+    /// "of the Furnace" pays on what you DEAL, and "of the Aegis" on what you take — the two
+    /// halves the user asked for, and they compose: a bigger fire still meets the target's
+    /// armour and its profile afterwards.
+    #[test]
+    fn element_affixes_cut_both_ways() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 100_000, 1)],
+            &b,
+            42,
+        );
+        let a = battle.idx("a").unwrap();
+        let m = battle.idx("m").unwrap();
+        battle.active_actor = Some(a);
+
+        let deal = |bt: &mut Battle| -> i32 {
+            let before = bt.fighters[m].hp;
+            let _ = bt.apply_ability_damage(m, 100, DamageType::Fire);
+            before - bt.fighters[m].hp
+        };
+        let plain = deal(&mut battle);
+
+        // +50% fire dealt.
+        battle.fighters[a].element_power.insert(DamageType::Fire, 1.5);
+        let hotter = deal(&mut battle);
+        assert!(hotter > plain, "element power did nothing: {plain} -> {hotter}");
+
+        // …and it is ELEMENT-specific, not a flat damage bonus.
+        let ice_before = battle.fighters[m].hp;
+        let _ = battle.apply_ability_damage(m, 100, DamageType::Ice);
+        let ice = ice_before - battle.fighters[m].hp;
+        assert_eq!(ice, plain, "fire power should not amplify ice");
+
+        // The defensive twin: ward blunts what arrives, whatever the attacker stacked.
+        battle.fighters[m].ward = 40;
+        let warded = deal(&mut battle);
+        assert!(warded < hotter, "ward did not reduce an amplified spell");
     }
 
     #[test]
