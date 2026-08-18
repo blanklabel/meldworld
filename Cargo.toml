@@ -20,6 +20,7 @@ members = [
     "server/crates/meld-run",
     "server/crates/meld-server",
     "qa",
+    "mcp",
 ]
 # The Bevy client is its own workspace (BUILD-PLAN §1 M0.1/M0.3: server and
 # client workspaces are separate, sharing only the meld-proto crate by path).

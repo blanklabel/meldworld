@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "meldworld": {
+      "command": "./target/debug/meld-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -453,6 +453,16 @@ pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> 
     stats.base_hp + grow(wll, stats.wll, balance.attributes.wll_to_hp)
 }
 
+/// The HP each hero in `comp` opens a dive on.
+///
+/// A dive starts at FULL health, and "full" is the max at the level being dived at — so
+/// this is [`max_hp_at_level`] and must stay [`max_hp_at_level`]. Deriving the opening HP
+/// any other way agrees with the ceiling only while every dive starts at level 1: a party
+/// departing at level 100 otherwise opens at 52 of 1042 HP, and nothing says so.
+pub fn starting_hp(comp: &[CharacterClass], level: i32, balance: &Balance) -> Vec<i32> {
+    comp.iter().map(|c| max_hp_at_level(*c, level, balance)).collect()
+}
+
 /// One hero's summed combat bonuses from their own equipped gear (per-hero
 /// equip slots — each hero in a party can wear different gear).
 #[derive(Debug, Clone, Default)]
@@ -1174,82 +1184,72 @@ mod tests {
         );
     }
 
-    /// THE END FIGHT is a **gear check**, and this pins that it stays one.
+    /// THE END FIGHT has to be **winnable**, and this pins the division nobody did.
     ///
-    /// It is the apex, so it expects really good loot: a level-100 party in tier-32 insured
-    /// gear should get a long, dangerous fight, and the same party wearing nothing should be
-    /// deleted. Sized as a multiple of the local creature it was neither — at d3200 an
-    /// ordinary creature already runs ~10k HP and two-shots a hero, so the fight came out at
-    /// 442 rounds and a 0.3-round wipe. It is authored (`set_piece`) for exactly this reason.
+    /// The previous version of this test asserted "clears in 15–35 rounds" and "a geared
+    /// hero survives 3–8 hits" side by side, and never compared them — so it passed while
+    /// describing a party that dies five times over before the bosses are down. Playing it
+    /// through `mcp/` measured exactly that: 14 hero-turns, 11.5% of the bosses' health,
+    /// wipe. The model was right the whole time; the arithmetic stopped one line early.
     ///
-    /// The subtle constraint is `damage_floor_fraction`: defence can never cut a blow below
-    /// a quarter of the attacker's power, so above `hero_def / 0.75` more armour buys
-    /// NOTHING and the fight stops caring what you wear. The attack number has to sit inside
-    /// that window or the gear gate quietly disappears.
+    /// So the numbers here are **calibrated from played runs**, not re-derived: a level-100
+    /// party in tier-32 gear puts out ~470 damage per hero-turn and takes ~189 per hero-turn
+    /// at `end_fight_boss_atk = 420`. Incoming scales with the attack number; output does
+    /// not. Both constants are floors — the reference policy heals reactively, does not keep
+    /// Barrier up, and spreads damage across three bosses instead of focusing one — so a
+    /// party that plays well beats these figures and a careless one does worse.
+    ///
+    /// ⚠️ **This is deliberately NOT a gear check any more, because the game cannot express
+    /// one here yet.** See the `EW-0` roadmap entry: a creature's ABILITY damage never
+    /// subtracts hero defence (`apply_typed_damage` applies resistances and the minimum,
+    /// then stops), and only its basic `Attack` goes through `atk - def`. These bosses act
+    /// almost entirely through abilities, so armour is close to irrelevant to them —
+    /// measured, an UNGEARED level-100 party lasted 26 hero-turns against a geared party's
+    /// 25. No value of `end_fight_boss_atk` creates a gate through a stat the fight barely
+    /// reads, so asserting one here would only pin a fiction.
     #[test]
-    fn the_end_fight_is_a_gear_check() {
+    fn the_end_fight_is_hard_and_winnable() {
         let b = Balance::load_default().unwrap();
         let e = &b.encounters;
-        let a = &b.attributes;
-        let l = &b.loot;
-        let af = &b.affix;
-        let ph = b.player.get("hunter").expect("hunter stats");
-        let floor = b.combat_math.damage_floor_fraction;
-        let tier = e.end_fight_reward_tier;
 
-        // A level-100 hero: the level a party actually reaches on foot (hubs are held off).
-        let lv = 100;
-        let str_ = ph.str + ph.str_per_level * (lv - 1);
-        let wll = ph.wll + ph.wll_per_level * (lv - 1);
-        let hp = ph.base_hp + ((wll - ph.wll) as f64 * a.wll_to_hp).round() as i32;
-        let bare_atk = ph.base_atk + ((str_ - ph.str) as f64 * a.str_to_atk).round() as i32;
-        let bare_def = ph.base_def + ((wll - ph.wll) as f64 * a.wll_to_def).round() as i32;
+        // Measured through the real wire, not derived. See the note above. Both figures are
+        // from runs where the party DRANK — the starting kit is ~1130 HP of healing on a
+        // 2648 HP party, so a measurement without potions is a measurement of a party that
+        // left 42% of its effective health in its pockets.
+        const OUTPUT_PER_HERO_TURN: f64 = 357.0;
+        const TURNS_SURVIVED_AT_REFERENCE_ATK: f64 = 18.5;
+        const REFERENCE_ATK: f64 = 420.0;
 
-        // …and the same hero in really good loot: six slots at the reward tier, insured,
-        // epic (so two stat affixes each). One weapon carries atk; four armour pieces carry
-        // def (`main_hand` -> atk, `accessory` -> spd, the rest -> def).
-        let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
-        let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
-        let geared_atk = bare_atk + (piece + affix).round() as i32;
-        let geared_def = bare_def + (4.0 * (piece + affix)).round() as i32;
+        // Incoming damage scales with the attack number, so the turns a party lasts scales
+        // inversely with it. This is what makes attack the FIGHT-LENGTH dial and HP the
+        // win-condition dial: cutting HP alone leaves a party dying at the same turn count.
+        let turns_survived =
+            TURNS_SURVIVED_AT_REFERENCE_ATK * (REFERENCE_ATK / e.end_fight_boss_atk as f64);
+        let total_boss_hp = e.end_fight_boss_hp as f64
+            * e.end_fight_bosses as f64
+            * encounter_party_scale(4, &b);
+        let turns_to_kill = total_boss_hp / OUTPUT_PER_HERO_TURN;
+        let margin = turns_to_kill / turns_survived;
 
-        let boss_def = (2.0 * meld_world::Scaling::new(&b).def_mult(3200)) as i32;
-        let hit = |atk: i32, def: i32| (atk - def).max((atk as f64 * floor) as i32);
-        let rounds = |atk: i32| {
-            e.end_fight_boss_hp as f64 * e.end_fight_bosses as f64 * encounter_party_scale(4, &b)
-                / (4.0 * hit(atk, boss_def) as f64)
-        };
-        let survives =
-            |def: i32| hp as f64 / hit(e.end_fight_boss_atk, def) as f64;
-
-        // The gate: gear has to buy a real multiple of survivability, not a rounding error.
-        let gain = survives(geared_def) / survives(bare_def);
+        // THE division. Below 1.0 the reference party wins outright; above it, winning takes
+        // playing better than the reference. Past 1.6 no amount of skill closes the gap and
+        // the encounter is the impossible one again.
         assert!(
-            gain >= 2.0,
-            "really good loot buys only {gain:.1}x survivability here — the apex is a level \
-             check, not a gear check"
+            margin <= 1.6,
+            "the end fight needs {turns_to_kill:.0} hero-turns to kill and survives \
+             {turns_survived:.0} — {margin:.1}x more fight than party, i.e. unwinnable"
         );
-        // Armour must not be floored out: past `def / 0.75` the fight ignores what you wear.
+        // And it must not be a walkover: the apex should be in doubt.
         assert!(
-            (e.end_fight_boss_atk as f64) < geared_def as f64 / floor.max(0.01) * 0.75 + 1.0,
-            "boss attack {} floors through tier-{tier} armour, so gear stops mattering",
-            e.end_fight_boss_atk
+            margin >= 0.7,
+            "the end fight dies in {turns_to_kill:.0} hero-turns while the party survives \
+             {turns_survived:.0} — {margin:.1}x, so the apex is a formality"
         );
-        // Geared: a long, dangerous fight. Bare: deleted.
+        // Long enough to be a fight rather than a coin flip.
         assert!(
-            (15.0..35.0).contains(&rounds(geared_atk)),
-            "a geared party clears it in {:.0} rounds",
-            rounds(geared_atk)
-        );
-        assert!(
-            (3.0..8.0).contains(&survives(geared_def)),
-            "a geared hero survives {:.1} hits",
-            survives(geared_def)
-        );
-        assert!(
-            survives(bare_def) < 2.0,
-            "an ungeared hero survives {:.1} hits — the apex does not expect loot at all",
-            survives(bare_def)
+            turns_survived >= 16.0,
+            "the party lasts {turns_survived:.0} hero-turns — four rounds is an ambush, \
+             not the end of the game"
         );
         // And it must out-reward a Gatekeeper, or the apex is a worse source than a pass.
         assert!(e.end_fight_loot_mult > e.gatekeeper_loot_mult);
@@ -1270,6 +1270,38 @@ mod tests {
         assert!(
             base_run_level(deepest.distance, &b) <= b.runs.max_hero_level,
             "the deepest hub starts heroes above the level cap"
+        );
+    }
+
+    /// The HP a dive opens on IS the ceiling it fights under, at every level on the
+    /// ladder — not only at 1, where a level-1 constant and a level-aware derivation
+    /// happen to be the same number. Found by playing a level-100 party and reading its
+    /// own party screen: 52 of 1042.
+    #[test]
+    fn a_hero_starts_a_dive_at_full_health_whatever_level_it_leaves_at() {
+        let b = Balance::load_default().unwrap();
+        let comp = [
+            CharacterClass::PhoenixGuard,
+            CharacterClass::Hunter,
+            CharacterClass::Psyker,
+            CharacterClass::Resonant,
+        ];
+        for level in [1, 10, 40, 100, b.runs.max_hero_level] {
+            let opening = starting_hp(&comp, level, &b);
+            for (i, class) in comp.iter().enumerate() {
+                let ceiling = max_hp_at_level(*class, level, &b);
+                assert_eq!(
+                    opening[i], ceiling,
+                    "a {class:?} departing at level {level} opens at {} of {ceiling}",
+                    opening[i]
+                );
+            }
+        }
+        // And the ladder has to actually climb, or the assertion above is satisfied by a
+        // constant and proves nothing.
+        assert!(
+            starting_hp(&comp, 100, &b)[0] > 4 * starting_hp(&comp, 1, &b)[0],
+            "HP barely grows with level, so this test cannot catch the bug it is for"
         );
     }
 

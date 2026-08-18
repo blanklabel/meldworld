@@ -151,6 +151,18 @@ the dive→extract→dive loop. This epic finishes M1–M3.
   other players' avatars in **The Commons**. See
   [`proposals/last-city.md`](proposals/last-city.md) "how a 4-player game hosts a
   city of hundreds" (M1) and its wire/HTTP surface section.
+  - 🟡 *Chat landed early, additively, ahead of the presence loop* — `chat.say` /
+    `chat.line` in [`meld_proto::realtime::chat`](../shared/meld-proto/src/realtime.rs),
+    handled at the **Router** level in `game.rs` (never the world: a world-scoped handler
+    swallows every line said by anyone not currently in a maze, which is most people most
+    of the time). Two channels, `party` (the people you are among — in the maze with you,
+    or in town with you) and `world`. Deliberately **not** proximity yet: distance makes a
+    line silently vanish, and "did that send?" is the worst first experience of a chat
+    box; LC-1's ward sharding is what narrows it later. Sender and timestamp are stamped
+    server-side, because a chat line's whole value is trusting who it came from. Driven by
+    AX-1's `say` / `chat` tools, so an agent and a human in one world can actually talk.
+    **Remains:** the town presence loop, proximity scoping, emotes, and rendering other
+    players in The Commons.
 - [ ] **LC-2 — Fix the reversed walk direction.** In Last City the hero sprite
   walks *opposite* the pressed arrow (push one way → walk the other). Camera-
   relative movement sign/axis bug in the city controller (client
@@ -804,6 +816,12 @@ burns on death/leave; some is single-use. See
   runs look identical: 500 encounters and none reach the same tile. A posting now carries
   its **route** — the level it was reached at, fights taken, and fights fled — additive
   columns with defaults, so postings made before this simply report nothing about theirs.
+  - 🩹 *Follow-up fix:* `vanguard_me`'s SELECT never listed the five new columns its row
+    mapping reads, so `/v1/leaderboards/vanguard/me` panicked with `ColumnNotFound` and
+    500'd for **every** player on Postgres — `main` was red on `qa/tests/vanguard_board.rs`.
+    A `sqlx::Row` resolves `get` against the RESULT SET rather than the table, so adding a
+    column to the schema and to the struct compiles cleanly and fails at runtime; the
+    in-memory backend has its own path, which is why nothing local caught it.
   - **The walk is a PLAYSTYLE, not an exploit.** A player outruns every chaser in the game
     (`chase_speed` 4.2 against `avatar_speed` 6.0) and fights are opt-in, so slipping deep
     untouched is real and skilful — and it costs you: you arrive at your hub's base level
@@ -1705,7 +1723,58 @@ spike that makes the whole economy cohere.
     - **A bot cannot drive a Psyker.** `action: "attack"` resolves through `resolve_psyker`
       with no op, which is `hold`, so a Psyker party does nothing at all (13 turns, no
       damage). Measuring the caster stack that broke this encounter needs the bot to cast
-      Foci.
+      Foci. *Now solved* — the wire form is `cast:<kind>` / `reinforce:<kind>`, and the MCP
+      harness (`mcp/`) speaks it.
+  - ✅ **TUNED BY PLAYING IT, and the model turned out to be right all along.** Every pass
+    above was arithmetic; `mcp/` walked a level-100 party in tier-32 gear into all three
+    bosses and fought them. First measurement: **14 hero-turns, wiped, 11.5%** of their
+    health removed. Then the reason, which was sitting inside the test the whole time —
+    `the_end_fight_is_a_gear_check` asserted "clears in 15–35 rounds" and "a geared hero
+    survives 3–8 hits" **side by side and never divided them**. 3.5 / 25 = 14%, which is
+    what the fight measured. The model was correct; the arithmetic stopped one line early.
+    - Retuned `end_fight_boss_hp` 3900 → **1000** and `end_fight_boss_atk` 420 → **210**.
+      Incoming scales with the attack number and party output does not, so **attack buys
+      fight LENGTH and HP buys the win condition** — HP alone cannot fix it, because
+      survival is pinned at ~14 hero-turns whatever the bosses' health is. Measured at the
+      new values: **25 hero-turns, one boss dead, a second at 77/4400, 75% removed** — the
+      reference party loses, and one that focus-fires instead of spreading across three
+      bosses wins.
+    - **Potions are part of the reference party, and they decide it.** The starting kit
+      (`starting_salves` 3 + `starting_elixirs` 1, dealt into pouches round-robin) is ~1130 HP
+      of healing on a 2648 HP party — 42% of its effective health. Four runs of the same
+      geared party at the new values, differing only in potion use: never drinks → defeat at
+      75%; drinks on itself → **victory**, one hero left; pours into the lowest-% hero →
+      defeat at 67%; pours where the most HP returns → **victory**, one hero left. The fight
+      is decided by play, which is what an apex should be.
+      - A potion heals a fraction of the DRINKER's max HP, so the same bottle is 417 on the
+        Phoenix Guard and 113 on the Psyker. Cross-hero pouring already worked end to end
+        (engine `ally_target`, client Item row opens the ally picker); only the harness's
+        policy was drinking on self.
+    - `the_end_fight_is_a_gear_check` is replaced by
+      **`the_end_fight_is_hard_and_winnable`**, which does the division and is calibrated
+      from played runs rather than re-derived. Against the old numbers it now says: *"needs
+      110 hero-turns to kill and survives 14 — 7.8x more fight than party, i.e.
+      unwinnable."* It cannot silently encode a loss again.
+  - 🔴 **The gear check does not exist, and no tuning can create it.** Measured: an
+    **UNGEARED** level-100 party lasted **26 hero-turns to the geared party's 25**, removing
+    67% against 75%. Gear bought nothing. The cause is general, not a set-piece problem:
+    **a creature's ABILITY damage never subtracts hero defence.** `apply_typed_damage`
+    applies the target's `damage_modifiers` and `min_damage` and stops; only the basic
+    `Attack` action goes through `physical_hit`'s `atk - def`. These three bosses deal
+    almost all their damage through abilities (`Cinder Lash`, `Crush Bite`, `Ash Maw`,
+    `Pyre Eruption`), so armour is close to irrelevant to them — and `end_fight_boss_atk` is
+    therefore not a gear dial at all.
+    - This looks like an oversight rather than a design: nothing documents abilities as
+      armour-ignoring, and the Psyker's Foci are called out *specifically* for ignoring
+      armour, which would be a meaningless distinction if every ability already did.
+    - **Three ways out, and the choice is a design call, not a tune.** (a) route ability
+      damage through the same mitigation as a basic attack — correct-looking, but it
+      changes every fight in the game; (b) give this set piece physical-damage abilities —
+      narrow, and fights the fiction of a fire-breathing Pyrewarden; (c) make the apex's
+      gate **elemental resistance** rather than defence, which is what `damage_modifiers`
+      and the existing three-ward design already reach for, and would need
+      `MELD_GEAR_TIER` to grant resistances too. **(c) is the recommendation**; (a) is the
+      bigger and possibly more correct fix, and belongs to whoever owns the damage model.
   - **Remains:** the `WorldBoss` defs themselves, the raid-scale merge cap, the three-boss
     unlock gate, and the arena hook. This cut reuses the FS-4 named bosses and the ordinary
     encounter path instead. `WorldBoss` defs, raid-scale merge cap,
@@ -2074,12 +2143,34 @@ keeps agent participation low-risk. Sequenced so the cheap QA layer lands over
 today's protocol; the living-world layer follows **SC-3**. Focus **adventure first**,
 then the rest.
 
-- [ ] **AX-1 — MCP over the wire protocol.** An MCP server that lets an agent
-  **connect**, **read** authoritative state (overworld snapshot, battle state,
-  run/backpack), and **submit intents** (movement; battle actions; `run.harvest` /
-  `begin_extraction` / `join_battle`). A thin adapter over the `meld-proto` envelope
-  — **no client-side combat math** — reusing the `qa/` bot plumbing. Deliverable: an
-  agent completes a full dive→fight→extract loop through the MCP.
+- [x] **AX-1 — MCP over the wire protocol.** Shipped as [`mcp/`](../mcp/) (`meld-mcp`),
+  a stdio MCP server that boots the whole game in-process on a `memory://` DB — no
+  Postgres, no port to collide with, a fresh world per `new_game`. Tools: `new_game`,
+  `look`, `walk`, `battle`, `abilities`, `act`, `auto_battle`, `interact`, `say`, `chat`,
+  `wait`. Every one is a **player intent over the real wire protocol**; nothing reads
+  `MazeInstance`, because a harness that reaches into the engine measures the model, and
+  the model is what has been wrong every previous time. JSON-RPC framing is hand-rolled on
+  `serde_json` (~60 lines) rather than adding a crate to an offline build.
+  **Deliverable met:** a full dive → fight → extract loop, banking
+  `forest_bloom_petal` + potions into the Vault.
+  - **`MELD_START_LEVEL`** joins `MELD_END_FIGHT` / `MELD_GEAR_TIER` as a DEV/QA override,
+    surfaced as a `new_game` argument. Deep content is authored for ~level 100 and PG-2's
+    hubs are inert, so the only level it could previously be observed at was 1 — the one
+    level it was never tuned for.
+  - **It found a latent bug on its first geared run**: starting HP came from the class's
+    level-1 `base_hp` while the ceiling came from `max_hp_at_level`, so a party departing
+    at level 100 opened the dive at **52 of 1042 HP**. Harmless while every dive starts at
+    level 1, and live the moment PG-2 lands. Both now go through
+    `meld_run::starting_hp`, held by
+    `a_hero_starts_a_dive_at_full_health_whatever_level_it_leaves_at`.
+  - **The clock does not stop while an agent thinks.** A fighter awaiting input stops
+    filling its own gauge; everything else keeps ticking. 33 seconds spent composing the
+    next tool call is an entire boss fight, resolved by the 15-second auto-act — which is
+    how the first end-fight run was measured with heroes that never acted. Anything being
+    measured must happen inside ONE tool call. Widening `turn_timeout_ms` does **not** fix
+    it: a longer window is strictly more enemy turns.
+  - *Observed, not chased:* a successful extraction reports
+    `max_distance_reached: 0` on `run.member_result` for a run that reached d6.
 - [ ] **AX-2 — Agent-as-playtester harness.** Drive the whole loop with a reasoning
   agent and emit **balance telemetry** — win/extract/die rates by distance, and the
   feel of the loss knife-edge. The honest way to measure the "desperate but not

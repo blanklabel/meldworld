@@ -601,24 +601,38 @@ end_fight_bosses = 3
 # runs ~10k HP and two-shots a hero, because the deep curve is tuned for a party that
 # departed from a DEEP HUB — and hubs are held off (PG-2). So `x4 of local` made this ~14x
 # harder than anything a party can actually bring: the numbers below are tuned against the
-# party that really arrives (walked/fought out, ~level 100), giving roughly a 20-round fight
-# where a hero survives ~4 hits. Raise them when hubs land and parties arrive at 255.
+# party that really arrives (walked/fought out, ~level 100). Raise them when hubs land and
+# parties arrive at 255.
 #
 # `encounter_party_scale` still multiplies HP by party size on top of these, so a solo
 # player meets 1.0x and a full party 4.4x — the authored number is the per-boss baseline.
 #
-# **It expects REALLY GOOD LOOT, and that is the gate.** Sized so a level-100 party in
-# tier-32 insured gear gets a ~25-round fight surviving ~5 hits, while the same party
-# wearing nothing dies in 1.5 hits and would need 43 rounds. Gear buys **3.5x
-# survivability** here, which is what makes the apex a gear check rather than a level check.
+# **It is MEANT to expect really good loot, and today it does not** — see the warning on
+# the attack line below. That intent is live design work, not a property these numbers hold.
 #
-# The attack number is bounded by `damage_floor_fraction` (0.25): defence can never cut a
-# blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
-# tier-32 armour) MORE armour buys nothing and the fight stops caring what you wear. 420
-# sits well inside that window on purpose — raise it and you delete the gear gate along with
-# the bare party.
-end_fight_boss_hp = 3900
-end_fight_boss_atk = 420
+# TUNED BY PLAYING IT (mcp/), after three passes of arithmetic shipped it impossible.
+# Incoming damage scales with the attack number and party output does not, so ATTACK is the
+# fight-LENGTH dial and HP is the win-condition dial — cutting HP alone leaves the party
+# dying on the same turn, just with more of the bosses' health gone.
+#
+# At 210/1000 the fight sits on a knife edge that PLAY decides, which is what an apex should
+# be. Four measured runs of the same geared level-100 party, differing only in how it used
+# its three starting potions:
+#   never drinks .................. defeat, 75% removed
+#   drinks on itself .............. VICTORY, 38 hero-turns, one hero left at 872/1042
+#   pours into the lowest-% hero .. defeat, 67% removed
+#   pours where most HP returns ... VICTORY, 37 hero-turns, one hero left at 860/1042
+# `the_end_fight_is_hard_and_winnable` pins the ratio behind that, calibrated from these
+# runs. POTIONS ARE PART OF THE REFERENCE: the starting kit is ~1130 HP of healing on a
+# 2648 HP party, so a measurement without them understates the party by 42%.
+#
+# ⚠️ Attack here is NOT a gear dial. A creature's ability damage never subtracts hero
+# defence (only its basic attack does), and these bosses act almost entirely through
+# abilities — measured, an UNGEARED party lasted 26 hero-turns to a geared party's 25. Until
+# that is resolved (see EW-0), raising or lowering this changes the fight for everyone
+# equally and gates nothing.
+end_fight_boss_hp = 1000
+end_fight_boss_atk = 210
 end_fight_boss_xp = 40000
 # The biggest reward spike in the game — above a Gatekeeper's 9.0. This is what buys the
 # end fight its chance at a UNIQUE and a SET piece: the three insured pieces come from

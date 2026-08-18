@@ -294,12 +294,18 @@ async fn attempt(party: &'static str, comp: &[&str], budget: Duration) -> Attemp
 ///    tutorial's on-ramp is doing more work than anyone had measured.
 /// 2. **The bot cannot drive a Psyker.** Sending `action: "attack"` resolves through
 ///    `resolve_psyker` with no op, which is `hold` — a Psyker party does literally nothing
-///    (13 turns, no damage). Measuring the caster stack that broke this encounter needs the
-///    bot to cast Foci, which is real work and is the next piece.
+///    (13 turns, no damage). *Solved, elsewhere:* the wire form is an OP, `cast:<kind>` /
+///    `reinforce:<kind>`, and anything unrecognised falls through to `hold`. `mcp/` speaks it
+///    and drives a Psyker; this bot still sends the bare action and so still cannot.
 ///
 /// What IS built here: a party that walks, finds encounters, commands every hero, and
-/// reports turns / HP lost / outcome. Un-ignore it once the bot can cast and the party can
-/// be handed a level.
+/// reports turns / HP lost / outcome. Un-ignore it once it sends `cast:` for a Psyker and the
+/// party can be handed a level — `MELD_START_LEVEL` now exists for the second half.
+///
+/// **`mcp/` has since measured this encounter directly** (level-100 party, tier-32 gear, the
+/// bosses brought to the hub) and drove the retune this file was built to inform. A bot test
+/// is still the right home for a REGRESSION guard; the MCP is the right tool for the
+/// exploratory pass, because it can be asked questions nobody wrote down in advance.
 #[ignore = "cannot reach the end fight yet: a level-1 party loses its first non-tutorial             fight, and the bot cannot cast Foci — see the doc comment"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_end_fight_is_not_trivialised_by_one_build() {

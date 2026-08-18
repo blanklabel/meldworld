@@ -1257,7 +1257,12 @@ impl Db {
                 // Same ordering as `vanguard_board`, so a player's rank here and their
                 // position on the board agree.
                 let row = sqlx::query(
+                    // Every column the row mapping below reads — a `sqlx::Row` resolves
+                    // `get` against the RESULT SET, not the table, so a column that exists
+                    // in `vanguard` but is left out here panics the request handler with
+                    // `ColumnNotFound` at runtime rather than failing to compile.
                     "SELECT v.player_id, p.username, v.max_distance, v.achieved_at,
+                            v.at_level, v.fights, v.flees, v.star, v.clear_ms,
                             (SELECT count(*) + 1 FROM vanguard w
                               WHERE w.season = v.season
                                 AND (-w.max_distance, w.achieved_at, w.player_id)

@@ -1314,6 +1314,65 @@ pub mod run {
     }
 }
 
+// ------------------------------------------------------------------- chat ---
+
+/// Saying something to the other people on the server.
+///
+/// LC-1 scopes the full thing — ward-sharded presence and **proximity** chat on a separate
+/// town loop. This is the two messages that epic needs anyway, landed early and additively,
+/// because a game you can only be alone in is a different game: an agent driving the MCP
+/// harness and a human in the same world had no way to say a word to each other.
+///
+/// Deliberately NOT proximity: distance would make a line silently vanish, and "did that
+/// send?" is the worst possible first experience of a chat box. A channel is a named room
+/// you can reason about — the party you dived with, or everyone connected.
+pub mod chat {
+    use super::*;
+
+    /// Which room a line goes to.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Channel {
+        /// Everyone in the sender's own maze instance. The default: the people you can
+        /// actually affect.
+        #[default]
+        Party,
+        /// Every authenticated session, in a dive or not — so someone in town can answer
+        /// someone who is deep, which is the whole reason to have a second channel.
+        World,
+    }
+
+    /// C2S — say something. The server stamps who and when; a client that claimed either
+    /// would be a client that can impersonate.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Say {
+        pub text: String,
+        #[serde(default)]
+        pub channel: Channel,
+    }
+    impl Message for Say {
+        const TYPE: &'static str = "chat.say";
+    }
+
+    /// S2C — somebody said something. Echoed to the sender too, so the transcript every
+    /// client holds is the server's, in the server's order.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Line {
+        pub player_id: Id,
+        pub username: String,
+        pub text: String,
+        pub channel: Channel,
+        pub ts: u64,
+    }
+    impl Message for Line {
+        const TYPE: &'static str = "chat.line";
+    }
+
+    /// The longest thing anyone may say at once. A cap belongs on the wire type rather
+    /// than at the one call site that happens to enforce it today.
+    pub const TEXT_MAX: usize = 400;
+}
+
 // -------------------------------------------------------------------- lobby ---
 
 /// Pre-maze co-op lobby: create/join a party by code, ready up, and the host
