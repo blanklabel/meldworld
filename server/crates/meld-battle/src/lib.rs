@@ -1118,6 +1118,33 @@ impl Battle {
 
     /// Current HP of a combatant by id (for carrying wounds across a run's
     /// encounters — persistent HP lives on the server between battles).
+    /// Which AFFLICTIONS a combatant is still carrying when the fight ends.
+    ///
+    /// Afflictions no longer expire, so a poison survives the encounter that inflicted it —
+    /// and the run is what has to remember, because a `Fighter` is rebuilt every battle. This
+    /// is the read half of that; `Battle::afflict` is the write half.
+    pub fn combatant_afflictions(&self, combatant_id: &str) -> Vec<String> {
+        let Some(i) = self.idx(combatant_id) else {
+            return Vec::new();
+        };
+        self.fighters[i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| meld_proto::statuses::is_affliction(n))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Put an affliction back on a fighter at battle start — what the run remembered.
+    /// No expiry: it holds until cured, exactly as it did in the fight that inflicted it.
+    pub fn afflict(&mut self, combatant_id: &str, name: &str) {
+        if let Some(i) = self.idx(combatant_id) {
+            if !self.fighters[i].timed_statuses.iter().any(|(n, _)| n == name) {
+                self.fighters[i].timed_statuses.push((name.to_string(), u64::MAX));
+            }
+        }
+    }
+
     pub fn combatant_hp(&self, combatant_id: &str) -> Option<i32> {
         self.fighters
             .iter()

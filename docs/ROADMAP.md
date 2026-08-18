@@ -1835,6 +1835,54 @@ spike that makes the whole economy cohere.
 
 ---
 
+## Epic CN — Conditions that matter (afflictions, cures, revives)
+
+Afflictions used to expire on a timer, which made outlasting one the correct play and made
+most of them decoration. They now **hold until cured**, boons still fade, cures answer a
+CONDITION rather than a checklist, and two menders can raise the fallen at a reachable rung.
+
+- [x] **CN-1 — Afflictions hold, boons fade, and cures are specific.** `meld_proto::statuses`
+  classifies every condition and groups afflictions into four families — Venom, Bindings,
+  Senses, Mind. Each mender row lifts one (Keeper's Poultice draws venom at rung 5; the
+  Resonant's Sanctuary calms a mind at 35); only a tier-3 **Panacea** answers all four. An
+  unknown condition counts as a BOON on purpose: a new boon mistaken for an affliction becomes
+  permanent and breaks every fight, the reverse merely keeps the old timer.
+- [x] **CN-2 — A revive you can reach.** The only one was the Resonant's level-255 capstone, so
+  losing a hero at level 20 left a rare Waking Salt as the only hope. **Revitalize** (50) raises
+  one, **Terra's Gift** (50) raises them all, both through `raise_fallen` — the gauge resets, so
+  you return at the END of the queue rather than with a free turn.
+- [x] **CN-3 — Afflictions are RUN-scoped, and the road feels them.** They ride
+  `hero_afflictions` beside `hero_hp`, harvested when a fight ends and re-applied when the next
+  begins, so walking away from what poisoned you is not a cure. On the overworld **Venom** bites
+  per STEP (charged by distance, not time — there is no waiting it out, so time would only
+  punish existing) and **Bindings** drags a march to `bindings_move_mult` of its speed
+  (`apply_move` normalises only magnitudes above 1, so a sub-unit heading is the hook —
+  `a_sub_unit_heading_moves_you_less_far` guards it).
+  - ⚠️ Venom floors at **1 HP** rather than killing: ending a run needs a
+    `WorldEffect::ReleaseFromRun` and `handle_move` returns messages, not effects. A poison that
+    can finish a party should go through the same teardown a defeat uses.
+- [ ] **CN-4 — The conditions themselves, as designed.** `dread` was applied by six boss
+  abilities and **did nothing at all**; `frenzied` was never applied by anything. Both are now
+  specified:
+  - **Dread** — the hero may not attack or use abilities on ENEMIES, but may still defend, drink,
+    heal itself or an ally, or even hit an ally. It keeps agency and removes what matters.
+  - **Confused** — acts, but may hit the wrong target.
+  - **Frenzied** — control is taken away (auto-attacks), damage up, accuracy down. **Any healing
+    reverts it.** A candidate affix: bank extra Adrenaline while frenzied, which would make it a
+    build rather than only a punishment.
+  - **Paralyzed** — cannot act; the gauge fills and the turn is skipped. **A whole party
+    paralyzed is an instant death**, which is what stops it being an unbounded soft-lock.
+  - **A physical hit clears `dread` and `confused`** — on a creature as much as a hero. Being
+    struck brings you round, and it gives a martial party an answer that is not a bottle.
+- [ ] **CN-5 — The overworld conditions the client owns.** `distracted` reverses the movement
+  buttons; `blinded` blacks out most of the screen. Both are presentation over the run-scoped
+  state CN-3 already ships, so they are client work: input mapping and a screen mask.
+- [ ] **CN-6 — Cures out of combat.** A cure drunk on the road is currently REFUSED ("Nothing has
+  hold of you out here") because until CN-3 nothing persisted; now that it does, the overworld
+  `use_item` path should lift the family it names. Same for whether a Barrier may be drunk before
+  a fight — with boons still fading that refusal stays right, and it is the one place the
+  original "why can't I just drink a potion" complaint is still correct.
+
 ## Epic AD — Adventure depth (gear, affixes, synergy & the chase)
 
 The Adventurer's retention layers — what turns "a working dive" into "one more dive."

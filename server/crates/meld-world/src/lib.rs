@@ -6693,6 +6693,31 @@ mod tests {
     /// on paper. The two newest — "of the Aegis" (ward) and "of the Furnace" (element power)
     /// — are the reason this is a test: the pool is derived from `AFFIXES`, so adding one
     /// should be enough, and this proves it rather than assuming it.
+    /// A slowed party really is slower: `apply_move` normalises only magnitudes ABOVE 1, so a
+    /// sub-unit direction is the hook that lets an affliction drag a march. If that ever
+    /// changes, being webbed becomes cosmetic and this is what says so.
+    #[test]
+    fn a_sub_unit_heading_moves_you_less_far() {
+        let b = Balance::load_default().unwrap();
+        let mut full = Arena::generate(&b, 7, false);
+        let mut slow = Arena::generate(&b, 7, false);
+        full.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
+        slow.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
+
+        for i in 1..=20 {
+            full.apply_move("p", 1.0, 0.0, i);
+            slow.apply_move("p", 0.55, 0.0, i);
+        }
+        let far = full.avatar("p").map(|a| a.position.x).unwrap_or(0.0);
+        let near = slow.avatar("p").map(|a| a.position.x).unwrap_or(0.0);
+        assert!(
+            near < far,
+            "a 0.55 heading travelled {near}, the same as a full one ({far}) — a slow would be \
+             cosmetic"
+        );
+        assert!(near > 0.0, "it should still move, just less");
+    }
+
     #[test]
     fn every_affix_can_actually_roll_on_something() {
         let b = Balance::load_default().unwrap();

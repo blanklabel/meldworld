@@ -989,6 +989,16 @@ struct WorldActor {
     /// across the run's battles so wounds persist (no free heal between fights).
     /// Reset to full only when a player (re)enters the maze — a fresh dive.
     hero_hp: HashMap<String, Vec<i32>>,
+    /// player_id -> per-hero AFFLICTIONS carried between encounters, parallel to `hero_hp`.
+    ///
+    /// Afflictions do not expire, so a poison has to outlive the fight that inflicted it — and
+    /// a `Fighter` is rebuilt every battle, so the run is what remembers. This is what makes a
+    /// condition something you carry down the road rather than something the next loading
+    /// screen washes off.
+    hero_afflictions: HashMap<String, Vec<Vec<String>>>,
+    /// Movement inputs since a poisoned party last took its bite — venom is charged by
+    /// DISTANCE, not by time.
+    venom_steps: HashMap<String, i32>,
     /// player_id -> per-hero class (the mixed party composition), parallel to
     /// `hero_hp`. Each slot's class drives its stats/kit for the whole run.
     party_classes: HashMap<String, Vec<CharacterClass>>,
@@ -2596,7 +2606,7 @@ impl WorldActor {
         // it opens with every gauge full. Read off the creature that was actually TOUCHED,
         // not the group — pinning one of a pack does not surprise the pack.
         let surprise = inst.arena.monsters[monster_idx].held_for > 0.0;
-        let battle = build_battle(
+        let mut battle = build_battle(
             battle_id.clone(),
             &party,
             &enemies_ref,
@@ -2607,6 +2617,18 @@ impl WorldActor {
             &row_overrides,
             surprise,
         );
+        // Whatever still had hold of a hero when the last fight ended has hold of it now.
+        // Afflictions do not expire, so walking away from the creature that poisoned you is
+        // not a cure — a `Fighter` is rebuilt per battle, so the run is what remembers.
+        for (pid, cids) in &player_combatants {
+            if let Some(carried) = inst.hero_afflictions.get(pid) {
+                for (slot, cid) in cids.iter().enumerate() {
+                    for name in carried.get(slot).into_iter().flatten() {
+                        battle.afflict(cid, name);
+                    }
+                }
+            }
+        }
         // Store the group's stable ids (indices are only valid until the next prune).
         let monster_ids: Vec<String> = group_idxs
             .iter()
@@ -3883,6 +3905,8 @@ impl GameState {
                 },
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
+                hero_afflictions: HashMap::new(),
+                venom_steps: HashMap::new(),
                 party_classes: HashMap::new(),
                 gear_bonuses: HashMap::new(),
                 hero_names: HashMap::new(),
@@ -4558,6 +4582,77 @@ impl GameState {
 }
 
 impl WorldActor {
+    /// What the party's afflictions cost it on the road: how much of its speed it keeps, and
+    /// whether venom bites on this step.
+    ///
+    /// Venom is counted per STEP rather than per second on purpose. There is no waiting a
+    /// poison out any more — it needs a cure — so charging by time would only punish a player
+    /// for existing, while charging by distance makes "march on with poison in you" the real
+    /// decision it should be.
+    fn affliction_toll(&mut self, pid: &str) -> (f64, bool) {
+        use meld_proto::statuses::{family_of, Family};
+        let carried = match self.hero_afflictions.get(pid) {
+            Some(c) => c,
+            None => return (1.0, false),
+        };
+        let mut bound = false;
+        let mut venom = false;
+        for slot in carried {
+            for name in slot {
+                match family_of(name) {
+                    Some(Family::Bindings) => bound = true,
+                    Some(Family::Venom) => venom = true,
+                    _ => {}
+                }
+            }
+        }
+        let drag = if bound {
+            self.balance.affliction.bindings_move_mult.clamp(0.05, 1.0)
+        } else {
+            1.0
+        };
+        if !venom {
+            return (drag, false);
+        }
+        let every = self.balance.affliction.venom_steps_per_tick.max(1);
+        let n = self.venom_steps.entry(pid.to_string()).or_insert(0);
+        *n += 1;
+        let bites = *n % every == 0;
+        (drag, bites)
+    }
+
+    /// Venom takes its bite out of every hero carrying it, and can kill the run.
+    fn venom_bites(&mut self, pid: &str) {
+        use meld_proto::statuses::{family_of, Family};
+        let dmg = self.balance.affliction.venom_hp_per_step.max(1);
+        let poisoned: Vec<usize> = match self.hero_afflictions.get(pid) {
+            Some(c) => c
+                .iter()
+                .enumerate()
+                .filter(|(_, names)| {
+                    names.iter().any(|n| family_of(n) == Some(Family::Venom))
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            None => return,
+        };
+        // Ground to a knee, never finished. Ending a run needs a
+        // `WorldEffect::ReleaseFromRun`, which this call site cannot emit — `handle_move`
+        // returns messages, not effects — so rather than half-wire a death path, venom floors
+        // at 1 HP. It still bites: you arrive at the next fight nearly dead, which is a real
+        // cost and the reason to carry a cure. Making a poison able to finish a party is a
+        // follow-up, and it should go through the same teardown a defeat uses.
+        if let Some(hps) = self.hero_hp.get_mut(pid) {
+            for i in poisoned {
+                if let Some(h) = hps.get_mut(i) {
+                    if *h > 1 {
+                        *h = (*h - dmg).max(1);
+                    }
+                }
+            }
+        }
+    }
+
     fn handle_move(
         &mut self,
         player_id: &str,
@@ -4627,13 +4722,22 @@ impl WorldActor {
                 Vec::new(),
             );
         }
-        // Movement is ignored while in battle (avatar not `active`).
+        // What is gripping the party is felt out here, not only in the arena. Afflictions do
+        // not expire, so one caught in a fight follows the party down the road — and if the
+        // road does not feel it, "you are poisoned" is a word on a HUD.
+        let (drag, bleed) = self.affliction_toll(player_id);
+        // Movement is ignored while in battle (avatar not `active`). A sub-unit direction is
+        // used AS GIVEN by `apply_move` (it only normalises magnitudes above 1), so scaling it
+        // is how being webbed or chilled slows a march.
         self.arena.apply_move(
             player_id,
-            intent.move_dir.x,
-            intent.move_dir.y,
+            intent.move_dir.x * drag,
+            intent.move_dir.y * drag,
             intent.input_seq,
         );
+        if bleed {
+            self.venom_bites(player_id);
+        }
 
         let deeper = self.post_vanguard(player_id);
 
@@ -8341,6 +8445,13 @@ impl WorldActor {
                         *slot_hp = hp;
                     }
                 }
+                // …and what is still gripping each hero, for the same reason: no free
+                // cleanse between fights any more than a free heal.
+                let carried: Vec<Vec<String>> = cids
+                    .iter()
+                    .map(|cid| inst.battles[bidx].battle.combatant_afflictions(cid))
+                    .collect();
+                inst.hero_afflictions.insert(pid.clone(), carried);
             }
         }
 

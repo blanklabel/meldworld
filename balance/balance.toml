@@ -953,6 +953,18 @@ keeper = [0.3, 1.0, 1.0]          # a mender: its damage rides Mnd too
 # and no margin at all, so the step that reads as flavour at level 100 is lethal at level 1.
 # Raise it and you re-break the on-ramp; raise it a lot and a full set floors out at 0.0/2.0,
 # where a resistance stops being a trade-off and becomes a switch. [TUNABLE]
+# What an AFFLICTION does to you on the ROAD. Afflictions no longer expire, so one you caught
+# in a fight follows you out of it — and out here it has to be felt, or "you are poisoned" is a
+# word on a HUD.
+#
+# Venom is per STEP rather than per second, so standing still to wait it out does nothing (there
+# is no waiting it out — it needs a cure) but a long march with poison in you is a real cost.
+# [TUNABLE]
+[affliction]
+venom_hp_per_step = 1            # HP each poisoned/burning hero loses per movement input
+venom_steps_per_tick = 12        # …once every this many inputs, so a march bleeds gradually
+bindings_move_mult = 0.55        # webbed/chilled/bound: how much of your speed you keep
+
 [armor_resist]
 step = 0.03
 # A creature's own `ward` — its elemental/psychic resistance — as a fraction of its physical

@@ -50,6 +50,7 @@ pub struct Balance {
     pub perks: Perks,
     pub biome_gate: BiomeGate,
     pub armor_resist: ArmorResist,
+    pub affliction: Affliction,
 }
 
 /// The distance at which each biome starts appearing in a randomized run, keyed by
@@ -640,6 +641,13 @@ pub struct Keeper {
 pub type EquipBest = std::collections::HashMap<String, [f64; 3]>;
 
 /// Potion magnitudes + Apothecary prices (GR-4 / EC-2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Affliction {
+    pub venom_hp_per_step: i32,
+    pub venom_steps_per_tick: i32,
+    pub bindings_move_mult: f64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArmorResist {
     pub step: f64,
