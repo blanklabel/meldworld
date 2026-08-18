@@ -3870,7 +3870,27 @@ impl GameState {
         // on foot, so the ladder it was meant to unblock may not need unblocking. Left
         // inert rather than half-wired.
         let _ = wants_hub;
-        let departure_hub_distance = 0;
+        // `MELD_START_LEVEL=<n>` — DEV/QA, beside MELD_END_FIGHT / MELD_GEAR_TIER / MELD_POTIONS.
+        //
+        // It sets a DISTANCE, and the level follows from it, because level and depth are the
+        // same fact in this game and decoupling them measures a party that cannot exist. The
+        // two curves already agree: `base_run_level(d) = 1 + 0.078d` and creature level
+        // `= d/12.5` both read 40 at d500, so a party started at its own level's distance meets
+        // creatures of its own level — which is the whole point of asking for a level at all.
+        //
+        // Earlier this only overrode `base_run_level`, which handed out a level-40 party
+        // standing in the level-1 ring. Every "middle game" number taken that way was really a
+        // measurement of over-levelled trivia: d0→d185 cost such a party 5 HP across 10 fights.
+        let dev_distance = std::env::var("MELD_START_LEVEL")
+            .ok()
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|l| *l > 1)
+            .map(|l| {
+                let per = self.balance.runs.base_run_level_per_distance.max(1e-6);
+                let capped = l.min(self.balance.runs.max_hero_level);
+                (((capped - 1) as f64) / per).round() as i32
+            });
+        let departure_hub_distance = dev_distance.unwrap_or(0);
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
         // Create the shared instance on the first entry.
@@ -3928,25 +3948,7 @@ impl GameState {
                 balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
                 arena: Arena::generate_with(&balance, seed, tutorial, force_biome),
-                run: {
-                    let mut r =
-                        InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms());
-                    // `MELD_START_LEVEL=<n>` — DEV/QA, the third of this family beside
-                    // MELD_END_FIGHT and MELD_GEAR_TIER. Everything past roughly level 16 is
-                    // authored for a party that walked an hour to reach it, and PG-2's hubs
-                    // (the real answer) are deliberately inert — so without this the only
-                    // level anything deep can be observed at is 1, which is the one level it
-                    // was never tuned for.
-                    if let Some(l) = std::env::var("MELD_START_LEVEL")
-                        .ok()
-                        .and_then(|v| v.trim().parse::<i32>().ok())
-                        .filter(|l| *l > 0)
-                    {
-                        r.base_run_level = l.min(balance.runs.max_hero_level);
-                        tracing::warn!(level = r.base_run_level, "MELD_START_LEVEL (DEV/QA)");
-                    }
-                    r
-                },
+                run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 hero_afflictions: HashMap::new(),
@@ -4065,6 +4067,31 @@ impl GameState {
         }
         for pid in &party_ids {
             inst.arena.add_avatar(pid.clone(), speed);
+        }
+        // A DEV/QA deep start has to move the party as well as its level, and the world has to
+        // exist out there first: `ensure_frontier` streams a few sections per call (it caps
+        // growth so a teleport cannot explode the tick), so it is pumped until it stops
+        // producing rings or a bound is hit. Then the avatars are placed on the ring itself.
+        //
+        // The rest of PG-2 is still not wired — extraction still assumes d0 is the start —
+        // which is exactly why this is a TEST flag and not a departure hub.
+        if departure_hub_distance > 0 {
+            let reach = departure_hub_distance as f64;
+            for _ in 0..256 {
+                if inst.arena.ensure_frontier(&self.balance, reach).is_empty() {
+                    break;
+                }
+            }
+            for pid in &party_ids {
+                if let Some(a) = inst.arena.avatar_mut(pid) {
+                    a.position = Position::new(reach, 0.0);
+                }
+            }
+            tracing::warn!(
+                distance = departure_hub_distance,
+                level = inst.run.base_run_level,
+                "MELD_START_LEVEL: party started deep (DEV/QA)"
+            );
         }
         // (Re)enter = a fresh dive: build each player's mixed party composition and
         // start every hero at its class's full HP. Within the run this HP persists
