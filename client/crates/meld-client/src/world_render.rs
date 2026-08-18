@@ -1252,19 +1252,43 @@ pub(crate) fn terrain_offset() -> (f32, f32) {
 /// main thread touches it), and `terrain_height` is called on the render thread.
 static PEAKS: std::sync::RwLock<Vec<[f32; 4]>> = std::sync::RwLock::new(Vec::new());
 
+/// The peaks that came with `run.started` — the initial chain's, which no section message
+/// ever re-sends. Held apart from the streamed ones so rebuilding the set after a retile
+/// does not drop them.
+static BASE_PEAKS: std::sync::RwLock<Vec<[f32; 4]>> = std::sync::RwLock::new(Vec::new());
+/// Streamed sections' peaks, keyed by section index so a re-sent section REPLACES its own
+/// contribution instead of adding a second mountain beside the first.
+static SECTION_PEAKS: std::sync::RwLock<std::collections::BTreeMap<u32, Vec<[f32; 4]>>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
+
 /// Replace this run's peak set (call on `run.started`).
 pub(crate) fn set_peaks(peaks: Vec<[f32; 4]>) {
+    if let Ok(mut by_section) = SECTION_PEAKS.write() {
+        by_section.clear();
+    }
+    if let Ok(mut b) = BASE_PEAKS.write() {
+        *b = peaks.clone();
+    }
     if let Ok(mut p) = PEAKS.write() {
         *p = peaks;
     }
 }
-/// Append a streamed section's peaks (call on `world.terrain_section`).
-pub(crate) fn append_peaks(peaks: &[[f32; 4]]) {
-    if peaks.is_empty() {
+/// Set one SECTION's peaks (call on `world.terrain_section`), replacing whatever that
+/// section contributed before.
+///
+/// Keyed by section rather than appended, because a section is now re-sent — that is how
+/// a Shift retiles the ground — and appending would have grown a second mountain on top
+/// of the first every time one landed. `set_peaks` (a fresh run) clears the keying with
+/// it, since `run.started` carries the whole initial chain in one go.
+pub(crate) fn set_section_peaks(index: u32, peaks: &[[f32; 4]]) {
+    let Ok(mut by_section) = SECTION_PEAKS.write() else { return };
+    if peaks.is_empty() && !by_section.contains_key(&index) {
         return;
     }
-    if let Ok(mut p) = PEAKS.write() {
-        p.extend_from_slice(peaks);
+    by_section.insert(index, peaks.to_vec());
+    let streamed: Vec<[f32; 4]> = by_section.values().flatten().copied().collect();
+    if let (Ok(mut p), Ok(base)) = (PEAKS.write(), BASE_PEAKS.read()) {
+        *p = base.iter().copied().chain(streamed).collect();
     }
 }
 /// A snapshot of the current peaks (for the ground shader uniform).
@@ -1508,9 +1532,6 @@ pub(crate) fn drive_ashfall(
 
 // ============================ time of day + weather ========================
 
-/// Seconds for one full day → night → day cycle.
-pub(crate) const DAY_LEN: f32 = 210.0;
-
 /// Time of day (`t`: 0 = midnight, 0.5 = noon) + weather (`0` clear .. `1` rain),
 /// which together drive the sun, ambient, sky/fog colour, stars, and rain.
 #[derive(Resource)]
@@ -1539,6 +1560,9 @@ impl Default for Sky {
             weather: 0.0,
             wind: 0.0,
             phase: 0,
+            // The OPENING dry spell, deliberately shorter than `fair_secs`: rain is rare
+            // now, and a player who never sees weather in their first session does not
+            // know the sky does anything.
             phase_timer: 90.0,
             super_storm: false,
             cycle: 0,
@@ -1586,9 +1610,13 @@ pub(crate) fn mix_col(a: Color, b: Color, t: f32) -> Color {
 }
 
 /// Advance the day clock and roll the weather (longer clear spells than rain).
-pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
+pub(crate) fn advance_sky(
+    time: Res<Time>,
+    feel: Res<crate::feel::WorldFeel>,
+    mut sky: ResMut<Sky>,
+) {
     let dt = time.delta_secs();
-    sky.t = (sky.t + dt / DAY_LEN).fract();
+    sky.t = (sky.t + dt / feel.day_len.max(1.0)).fract();
     // Weather phase machine: Fair → Gust (wind rises, a storm is coming) → Storm (rain)
     // → Clearing → Fair. Wind LEADS the rain, so the trees start tossing before the
     // downpour arrives. Occasionally the storm is a "super storm" that soaks the whole
@@ -1596,12 +1624,7 @@ pub(crate) fn advance_sky(time: Res<Time>, mut sky: ResMut<Sky>) {
     sky.phase_timer -= dt;
     if sky.phase_timer <= 0.0 {
         sky.phase = (sky.phase + 1) % 4;
-        sky.phase_timer = match sky.phase {
-            0 => 210.0, // Fair — long, calm dry spell
-            1 => 16.0,  // Gust — the windy warning before rain
-            2 => 22.0,  // Storm — rain falls
-            _ => 14.0,  // Clearing — rain stops, wind dies down
-        };
+        sky.phase_timer = feel.phase_secs(sky.phase);
         if sky.phase == 2 {
             // Entering a storm: roll for a super storm (~1 in 5). splitmix64 of the
             // cycle so it varies without a global RNG.

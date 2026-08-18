@@ -159,3 +159,135 @@ mod tests {
         assert_eq!(f, BattleFeel { lunge_distance: 0.9, ..BattleFeel::default() });
     }
 }
+
+/// World feel: how fast the sky turns and how often it rains.
+///
+/// The same argument as [`BattleFeel`] and the same shape — these are *presentation*
+/// pacing, they had drifted into a bare `const` plus four magic literals inside
+/// `advance_sky`, and they are exactly the numbers you want to turn with the game in
+/// front of you. `MELD_WORLD_FEEL="day_len=900,fair_secs=800"` natively, `?worldfeel=…`
+/// in the browser.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub(crate) struct WorldFeel {
+    /// Seconds for one full day → night → day cycle.
+    pub day_len: f32,
+    /// The long dry spell between storms. This is the knob that decides how often it
+    /// rains: the other three phases are the storm itself and are short by design.
+    pub fair_secs: f32,
+    /// Wind rises before the rain arrives, so the trees toss before the downpour.
+    pub gust_secs: f32,
+    /// How long rain actually falls.
+    pub storm_secs: f32,
+    /// Rain stops, wind dies down.
+    pub clearing_secs: f32,
+}
+
+impl Default for WorldFeel {
+    fn default() -> Self {
+        Self {
+            // A full cycle was 3.5 minutes, which made the sun a strobe — you could watch
+            // dawn and dusk inside one fight. Ten minutes still shows a player both halves
+            // in a normal dive without the sky ever being the thing they notice.
+            day_len: 600.0,
+            // Rain was ~8% of all weather and a storm arrived every ~4 minutes, so the
+            // overworld read as permanently overcast. The dry spell is what governs the
+            // rate, so it is the only one that moved.
+            fair_secs: 600.0,
+            gust_secs: 16.0,
+            storm_secs: 22.0,
+            clearing_secs: 14.0,
+        }
+    }
+}
+
+impl WorldFeel {
+    /// Seconds the phase after `phase` lasts (`0` Fair, `1` Gust, `2` Storm, `3` Clearing).
+    pub(crate) fn phase_secs(&self, phase: u8) -> f32 {
+        match phase {
+            0 => self.fair_secs,
+            1 => self.gust_secs,
+            2 => self.storm_secs,
+            _ => self.clearing_secs,
+        }
+    }
+
+    pub(crate) fn apply(&mut self, spec: &str) {
+        for pair in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let Some((key, raw)) = pair.split_once('=') else {
+                warn!("MELD_WORLD_FEEL: `{pair}` is not key=value");
+                continue;
+            };
+            let Ok(v) = raw.trim().parse::<f32>() else {
+                warn!("MELD_WORLD_FEEL: `{raw}` is not a number");
+                continue;
+            };
+            match key.trim() {
+                "day_len" => self.day_len = v,
+                "fair_secs" => self.fair_secs = v,
+                "gust_secs" => self.gust_secs = v,
+                "storm_secs" => self.storm_secs = v,
+                "clearing_secs" => self.clearing_secs = v,
+                other => warn!("MELD_WORLD_FEEL: no such knob `{other}`"),
+            }
+        }
+    }
+
+    pub(crate) fn from_flags() -> Self {
+        let mut feel = Self::default();
+        if let Some(spec) = crate::flags::world_feel_flag() {
+            feel.apply(&spec);
+        }
+        feel
+    }
+}
+
+#[cfg(test)]
+mod world_feel_tests {
+    use super::*;
+
+    /// `sky.t += dt / day_len` — a zero or negative day is a division that stops the sun
+    /// or runs it backwards, and every phase timer counts down from its own value.
+    #[test]
+    fn every_world_duration_is_positive() {
+        let f = WorldFeel::default();
+        for (name, secs) in [
+            ("day_len", f.day_len),
+            ("fair_secs", f.fair_secs),
+            ("gust_secs", f.gust_secs),
+            ("storm_secs", f.storm_secs),
+            ("clearing_secs", f.clearing_secs),
+        ] {
+            assert!(secs > 0.0, "{name} must be positive, got {secs}");
+        }
+    }
+
+    /// Rain is punctuation, not the setting. The overworld shipped ~8% wet with a storm
+    /// every four minutes, which read as permanent overcast.
+    #[test]
+    fn it_rains_rarely_and_the_dry_spell_is_what_says_so() {
+        let f = WorldFeel::default();
+        let cycle = f.fair_secs + f.gust_secs + f.storm_secs + f.clearing_secs;
+        let wet = f.storm_secs / cycle;
+        assert!(wet < 0.06, "raining {:.0}% of the time", wet * 100.0);
+        assert!(
+            f.fair_secs > f.gust_secs + f.storm_secs + f.clearing_secs,
+            "the storm is longer than the calm between storms"
+        );
+    }
+
+    /// You should be able to walk out a dive and see the sky turn, without the sun
+    /// strobing through a whole day inside one fight.
+    #[test]
+    fn a_day_outlasts_a_storm_but_not_a_session() {
+        let f = WorldFeel::default();
+        assert!(f.day_len > f.storm_secs * 4.0, "the sun turns faster than the weather");
+        assert!(f.day_len <= 1800.0, "a half-hour of night is a player who cannot see");
+    }
+
+    #[test]
+    fn overrides_apply_and_a_bad_knob_is_skipped() {
+        let mut f = WorldFeel::default();
+        f.apply("day_len=900, nonsense=3, fair_secs=oops");
+        assert_eq!(f, WorldFeel { day_len: 900.0, ..WorldFeel::default() });
+    }
+}

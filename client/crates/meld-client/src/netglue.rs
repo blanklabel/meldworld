@@ -177,11 +177,11 @@ pub(crate) fn pump_net(
                     }
                     world_path.drawn = false;
                 }
-                // Streamed sections carry their own authored mountains — append them so the
-                // ground shader + entity Y raise the new peaks as the player walks out.
-                if !section.peaks.is_empty() {
-                    crate::world_render::append_peaks(&section.peaks);
-                }
+                // Streamed sections carry their own authored mountains, keyed by section so
+                // the ground shader + entity Y raise them as the player walks out — and so
+                // a RE-sent section (how a Shift retiles the ground) replaces its own
+                // mountains rather than growing a second one beside each of the first.
+                crate::world_render::set_section_peaks(section.index, &section.peaks);
                 terrain.sections.insert(section.index, section);
             }
             ServerMsg::DungeonScene { active, theme, floor, width, height } => {

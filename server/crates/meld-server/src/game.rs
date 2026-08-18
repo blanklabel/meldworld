@@ -8492,7 +8492,16 @@ impl WorldActor {
         let (rh, cl) = (self.arena.radial_half(), self.arena.corridor_lateral());
         for &i in &outcome.sections {
             let Some(area) = self.arena.areas.get(i) else { continue };
-            let msg = terrain_section_msg(area, Vec::new(), rh, cl, Vec::new());
+            // The section's NEW mountains ride with it. The client keys peaks by section,
+            // so this replaces whatever that ring used to raise rather than adding to it —
+            // which is what lets a Shift to Desert actually flatten a range.
+            let peaks = outcome
+                .peaks
+                .iter()
+                .find(|(n, _)| *n == i)
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default();
+            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks);
             for pid in &members {
                 out.push(out_msg(pid, &msg));
             }

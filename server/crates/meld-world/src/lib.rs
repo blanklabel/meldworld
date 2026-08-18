@@ -4567,8 +4567,9 @@ impl Arena {
             self.areas[i].shifted_at = roll.generation + 1;
         }
 
-        // The ground rearranges LAST, so the scatter can see the creatures and nodes the
-        // new land just grew and refuse to bury them.
+        // Topography first, then props: both go last, so the scatter sees the creatures
+        // and nodes the new land just grew and refuses to bury them.
+        let peaks = self.reroll_peaks(balance, first, last, to, roll.biome_pick);
         wiped.extend(self.reroll_props(balance, first, last, to, roll.biome_pick));
         let moved = self.rescue_stranded(first, last);
 
@@ -4580,6 +4581,7 @@ impl Arena {
             wiped,
             caught,
             moved,
+            peaks,
         }
     }
 
@@ -4596,6 +4598,82 @@ impl Arena {
             None => return "forest",
         };
         self.incoming_biome(balance, roll, from, radius)
+    }
+
+    /// Re-cut a shifted region's TOPOGRAPHY: its **peaks**, the authored climbable
+    /// mountains that are what elevation actually is in this world (discrete terraces are
+    /// retired — `[worldgen] terraces_per_area = 0` — and the rest of the relief is a
+    /// continuous heightmap keyed off one per-world offset).
+    ///
+    /// This is the half of "the land changed shape" that renders. A peak is biome-weighted
+    /// through the same `biome_terrace_mult` generation uses, so the Shift inherits the
+    /// contrast for free: shifting to Ashfall raises mountains where a plain was, shifting
+    /// to Desert flattens them.
+    ///
+    /// A peak is a **smooth walkable dome** summed onto the height field, which is exactly
+    /// why it is safe to re-roll mid-run where a discontinuous height offset would not be:
+    /// it cannot produce an uncrossable wall at the region's edge, and it cannot strand
+    /// anyone standing on it — the slope stays climbable by construction
+    /// (`height <= radius * PEAK_MAX_ASPECT`).
+    ///
+    /// Returns the region's new peaks per section, so the retile message can carry them.
+    fn reroll_peaks(
+        &mut self,
+        balance: &Balance,
+        first: usize,
+        last: usize,
+        biome: &'static str,
+        seed: u64,
+    ) -> Vec<(usize, Vec<[f32; 4]>)> {
+        let wg = &balance.worldgen;
+        let (inner, outer) = self.shift_band(first, last);
+        let keep: Vec<bool> = self
+            .peaks
+            .iter()
+            .map(|p| {
+                let r = self.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
+                r < inner || r >= outer
+            })
+            .collect();
+        let mut it = keep.into_iter();
+        self.peaks.retain(|_| it.next().unwrap_or(true));
+        let mult = biome_terrace_mult(biome);
+        let mut out = Vec::new();
+        for i in first..=last.min(self.areas.len().saturating_sub(1)) {
+            let (start_x, end_x) = (self.areas[i].start_x, self.areas[i].end_x);
+            let mut rng = Rng(seed ^ 0x9EA1_B055_0BEE_0001 ^ (i as u64).wrapping_mul(0x9E37_79B9));
+            let mut mine = Vec::new();
+            // The route's midpoint through this ring, in the frame the peaks live in — a
+            // landmark is only a landmark if it is beside the road you are on.
+            let anchor = self
+                .path
+                .iter()
+                .copied()
+                .find(|p| {
+                    let r = self.corridorize(p).x;
+                    r >= start_x && r < end_x
+                })
+                .filter(|_| !self.tutorial);
+            if let Some(base) = anchor {
+                if start_x >= wg.peak_min_distance && rng.unit() < wg.path_climb_chance * mult {
+                    let radius = wg.peak_radius;
+                    let height = radius * meld_proto::terrain::PEAK_MAX_ASPECT as f64 * 0.9;
+                    // Off the road, so the climb is a side-trip rather than a toll gate.
+                    let side = if rng.unit() < 0.5 { 1.0 } else { -1.0 };
+                    let away = radius * 0.55;
+                    let len = base.x.hypot(base.y).max(1.0);
+                    let (nx, ny) = (-base.y / len, base.x / len);
+                    let summit =
+                        Position::new(base.x + nx * side * away, base.y + ny * side * away);
+                    let peak =
+                        [summit.x as f32, summit.y as f32, radius as f32, height as f32];
+                    self.peaks.push(peak);
+                    mine.push(peak);
+                }
+            }
+            out.push((i, mine));
+        }
+        out
     }
 
     /// Re-scatter a shifted span's impassable props: the old biome's are gone and the
@@ -4716,15 +4794,27 @@ impl Arena {
         removed
     }
 
-    /// The rescue. The new land was strewn without asking who was standing there, so
-    /// anyone a fresh prop landed on is walked back to **the start of the region** — the
-    /// clear-path waypoint at its inner edge, on level 0, which is by construction open
-    /// ground and by construction connected to the way home.
+    /// The rescue. The new land was cut and strewn without asking who was standing there,
+    /// so anyone it left somewhere they cannot be is walked back to **the start of the
+    /// region** — the clear-path waypoint at its inner edge, on level 0, which is by
+    /// construction open ground and by construction connected to the way home.
     ///
-    /// This is the trade the re-roll buys: props may land wherever the new biome wants
-    /// them, including on your head, and the answer is to move the player rather than to
-    /// constrain the world. Returns everyone moved, so the server can correct their
-    /// client rather than let it fight the server's position for a second.
+    /// This is the trade the re-roll buys: the ground may become whatever the new biome
+    /// wants, including a cliff where you were standing, and the answer is to move the
+    /// player rather than to constrain the world.
+    ///
+    /// Two ways to be stranded, and both are checked: a fresh prop landed on you, or the
+    /// ground under you rose. The second matters more than it looks — a terrace is only
+    /// leavable by a connector, and the one that would have served the plateau you are
+    /// suddenly standing on was placed for a plateau that no longer exists.
+    ///
+    /// **The trail is safe from this**, and that is the emergent rule worth knowing: the
+    /// clear-path tube holds no prop and no raised terrace by construction, so a player
+    /// who stayed on the route is never moved and the Shift costs them only HP. Walking
+    /// off-trail is what puts you somewhere the world can rearrange out from under you.
+    ///
+    /// Returns everyone moved, so the server can correct their client rather than let it
+    /// fight the authoritative position for a second.
     fn rescue_stranded(&mut self, first: usize, last: usize) -> Vec<(Id, Position)> {
         let (inner, outer) = self.shift_band(first, last);
         let entry = self.region_entry(first);
@@ -4732,13 +4822,14 @@ impl Arena {
             .avatars
             .iter()
             .filter(|a| {
-                let r = self.corridorize(&a.position).x;
-                if r < inner || r >= outer {
+                let c = self.corridorize(&a.position);
+                if c.x < inner || c.x >= outer {
                     return false;
                 }
-                self.obstacles
-                    .iter()
-                    .any(|o| a.position.distance_to(&o.position) < o.radius + self.player_radius)
+                area_level_at(&self.areas, &c) != 0
+                    || self.obstacles.iter().any(|o| {
+                        a.position.distance_to(&o.position) < o.radius + self.player_radius
+                    })
             })
             .map(|a| (a.player_id.clone(), entry))
             .collect();
@@ -5124,6 +5215,69 @@ mod tests {
             assert_ne!(before, after, "the props were reskinned, not re-scattered");
             assert_eq!(levels, a.areas.iter().map(|s| s.terrain.level.clone()).collect::<Vec<_>>());
             assert_eq!(path, a.path, "the Shift re-routed the clear path");
+        }
+
+        /// Elevation in this world is the continuous heightmap plus **peaks** — discrete
+        /// terraces are retired — so peaks are what "the land changed shape" has to mean.
+        /// A biome carries its own mountain weighting, so a Shift inherits the contrast:
+        /// Ashfall raises ranges where Desert would flatten them.
+        #[test]
+        fn a_shift_re_cuts_the_regions_mountains() {
+            let (b, mut a) = world();
+            let mut changed = 0;
+            for g in 0..30u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                let (inner, outer) = a.shift_band(first, last);
+                let before: Vec<[f32; 4]> = a
+                    .peaks
+                    .iter()
+                    .filter(|p| {
+                        let r = a.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
+                        r >= inner && r < outer
+                    })
+                    .copied()
+                    .collect();
+                let out = a.apply_shift(&b, &roll, first, last);
+                let after: Vec<[f32; 4]> = a
+                    .peaks
+                    .iter()
+                    .filter(|p| {
+                        let r = a.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
+                        r >= inner && r < outer
+                    })
+                    .copied()
+                    .collect();
+                assert_eq!(
+                    after.len(),
+                    out.peaks.iter().map(|(_, p)| p.len()).sum::<usize>(),
+                    "the reported peaks are not the peaks that stand there"
+                );
+                if before != after {
+                    changed += 1;
+                }
+            }
+            assert!(changed > 0, "30 Shifts never re-cut a single mountain");
+        }
+
+        /// A dome must stay climbable, or a Shift can raise a wall nobody gets over — the
+        /// exact soft-lock that rules out re-rolling the height field itself.
+        #[test]
+        fn a_re_cut_mountain_is_still_walkable() {
+            let (b, mut a) = world();
+            for g in 0..30u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                a.apply_shift(&b, &roll, first, last);
+            }
+            for p in &a.peaks {
+                let (radius, height) = (p[2], p[3]);
+                assert!(radius > 0.0, "a peak with no footprint is a spike");
+                assert!(
+                    height <= radius * meld_proto::terrain::PEAK_MAX_ASPECT,
+                    "a {height}-high peak over a {radius} radius is a cliff, not a climb"
+                );
+            }
         }
 
         /// Feasibility is the invariant a re-roll could break, and it is kept the same way
