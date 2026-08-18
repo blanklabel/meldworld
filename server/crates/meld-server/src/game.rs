@@ -6937,6 +6937,14 @@ impl WorldActor {
                 };
                 new_hp = Some((hp_now + raw_heal).min(max_hp));
             }
+            // A cure has nothing to lift out here YET. Afflictions live on the battle
+            // `Fighter`, which is rebuilt per fight, so none of them survive the encounter
+            // that inflicted one — until they are run-scoped, a Clarity Draught or a Panacea
+            // drunk on the road would be a bottle spent on nothing. Refused rather than
+            // consumed, which is this whole function's rule.
+            E::Cleanse | E::Panacea => {
+                return reject("Nothing has hold of you out here.");
+            }
             E::Revive => {
                 if hp_now > 0 {
                     return reject("They're still standing.");

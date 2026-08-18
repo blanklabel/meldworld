@@ -36,6 +36,12 @@ pub enum ConsumableEffect {
     Evasion,
     /// Bank Adrenaline (Explorer only; inert on anyone else, like the affix).
     Adrenaline,
+    /// Lift the MIND afflictions (dread, a rage that is not yours). One family, one bottle.
+    Cleanse,
+    /// Lift EVERY affliction — a Panacea, and priced like one. The only blanket cure in the
+    /// game, because a cheap bottle that answered everything would make every affliction a
+    /// non-event.
+    Panacea,
     /// Bring a FALLEN hero back. The only way back up — a level-up no longer
     /// revives anyone, so a wipe has to be answered with an item.
     Revive,
@@ -85,6 +91,22 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 0,
         potency: 0,
         description: "Field medicine. Closes what is open.",
+    },
+    ConsumableDef {
+        key: "clarity_draught",
+        name: "Clarity Draught",
+        effect: ConsumableEffect::Cleanse,
+        tier: 0,
+        potency: 0,
+        description: "Whatever has hold of you, it lets go.",
+    },
+    ConsumableDef {
+        key: "panacea",
+        name: "Panacea",
+        effect: ConsumableEffect::Panacea,
+        tier: 3,
+        potency: 0,
+        description: "Everything that has hold of you lets go at once. Rare, and dear.",
     },
     ConsumableDef {
         key: "elixir",

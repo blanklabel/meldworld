@@ -299,6 +299,8 @@ pub struct Battle {
     pub basic_attack_weight: i32,
     /// Fraction of a victim's carried chits a `steal chits` effect takes.
     pub steal_chits_fraction: f64,
+    pub resonant_revitalize_revive_fraction: f64,
+    pub keeper_terras_gift_revive_fraction: f64,
 }
 
 /// Creature loot tunables (economy.md sources S1). See the `[loot]` block in

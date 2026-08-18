@@ -641,6 +641,7 @@ pub struct Battle {
     psyker_expansion_mult: f64,
     psyker_vortex_ticks: u64,
     resonant_second_life_revive_fraction: f64,
+    keeper_terras_gift_revive_fraction: f64,
     resonant_second_life_heal_fraction: f64,
     resonant_second_life_self_cost: f64,
     resonant_transfuse_heal_fraction: f64,
@@ -747,6 +748,15 @@ struct AllyBoon {
     self_cost: f64,
     /// Whether it lands on the whole party.
     party: bool,
+    /// Fraction of max HP a FALLEN ally is raised at, or 0.0 for a row that cannot raise.
+    /// A revive at a reachable rung matters: before this the only one in the game was the
+    /// Resonant's level-255 capstone, so a party that lost a hero at level 20 had nothing but
+    /// a rare Waking Salt drop.
+    revive: f64,
+    /// The affliction family this row also lifts, if any. Afflictions no longer expire, so
+    /// each mender row answers ONE kind of condition — Sanctuary calms a mind, it does not
+    /// draw venom.
+    cure: Option<meld_proto::statuses::Family>,
 }
 
 /// Every deep Resonant ability, keyed by its registry key.
@@ -769,6 +779,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_mend_all_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             sanctuary: AllyBoon {
@@ -776,6 +788,8 @@ impl ResonantDeep {
                 regen: b.resonant_sanctuary_regen_fraction,
                 barrier: 0.0,
                 self_cost: 0.0,
+                revive: 0.0,
+                cure: Some(meld_proto::statuses::Family::Mind),
                 party: true,
             },
             revitalize: AllyBoon {
@@ -783,6 +797,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_revitalize_self_cost,
+                revive: b.resonant_revitalize_revive_fraction,
+                cure: None,
                 party: false,
             },
             lifewell: AllyBoon {
@@ -790,6 +806,8 @@ impl ResonantDeep {
                 regen: b.resonant_lifewell_regen_fraction,
                 barrier: 0.0,
                 self_cost: b.resonant_lifewell_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             bloodbond: AllyBoon {
@@ -797,6 +815,8 @@ impl ResonantDeep {
                 regen: b.resonant_bloodbond_regen_fraction,
                 barrier: b.resonant_bloodbond_barrier_fraction,
                 self_cost: b.resonant_bloodbond_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: false,
             },
             martyr: AllyBoon {
@@ -804,6 +824,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_martyr_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             bloom: AllyBoon {
@@ -811,6 +833,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: b.resonant_bloom_barrier_fraction,
                 self_cost: b.resonant_bloom_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
         }
@@ -925,6 +949,9 @@ impl Battle {
             resonant_second_life_revive_fraction: balance
                 .battle
                 .resonant_second_life_revive_fraction,
+            keeper_terras_gift_revive_fraction: balance
+                .battle
+                .keeper_terras_gift_revive_fraction,
             resonant_second_life_heal_fraction: balance.battle.resonant_second_life_heal_fraction,
             resonant_second_life_self_cost: balance.battle.resonant_second_life_self_cost,
             resonant_transfuse_heal_fraction: balance.battle.resonant_transfuse_heal_fraction,
@@ -1968,6 +1995,11 @@ impl Battle {
                 effects.extend(self.apply_heal(t, heal));
                 let fx = self.grant_regen(t, self.keeper.poultice_regen_fraction);
                 effects.extend(fx);
+                // A poultice DRAWS THE POISON OUT — and afflictions no longer wear off, so
+                // the earliest mender row in the game has to be able to lift one or a party
+                // that catches something at level 5 simply carries it.
+                let cured = self.cure(t, meld_proto::statuses::Family::Venom);
+                effects.extend(cured);
             }
             "bloomfield" => {
                 for a in living_allies(self) {
@@ -1985,6 +2017,20 @@ impl Battle {
                 effects.extend(fx);
             }
             "terras_gift" => {
+                // The Open Flower's idea is growth and REBIRTH, so its rung-50 party row is
+                // where the order's revive lives — reachable, unlike a level-255 capstone.
+                let fallen: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.kind == CombatantKind::Player && !f.alive)
+                    .map(|(i, _)| i)
+                    .collect();
+                for a in fallen {
+                    let frac = self.keeper_terras_gift_revive_fraction;
+                    let fx = self.raise_fallen(a, frac);
+                    effects.extend(fx);
+                }
                 for a in living_allies(self) {
                     let heal = self.scaled_to(a, self.keeper.gift_heal_fraction);
                     effects.extend(self.apply_heal(a, heal));
@@ -2949,7 +2995,11 @@ impl Battle {
             self.fighters
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                // A party row that can RAISE has to reach the fallen; every other one skips
+                // them, because healing a corpse does nothing.
+                .filter(|(_, f)| {
+                    f.kind == CombatantKind::Player && (f.alive || boon.revive > 0.0)
+                })
                 .map(|(i, _)| i)
                 .collect()
         } else {
@@ -2966,6 +3016,16 @@ impl Battle {
             if boon.regen > 0.0 {
                 let fx = self.grant_regen(t, boon.regen);
                 effects.extend(fx);
+            }
+            // A fallen ally is RAISED rather than healed — healing a corpse does nothing, so
+            // without this a revive row would silently do nothing on the one target it is for.
+            if boon.revive > 0.0 && !self.fighters[t].alive {
+                let fx = self.raise_fallen(t, boon.revive);
+                effects.extend(fx);
+            }
+            if let Some(family) = boon.cure {
+                let cured = self.cure(t, family);
+                effects.extend(cured);
             }
             if boon.barrier > 0.0 {
                 let raw = ((self.fighters[t].max_hp as f64) * boon.barrier).round() as i32;
@@ -3157,18 +3217,9 @@ impl Battle {
                         let heal = self.scaled_to(a, self.resonant_second_life_heal_fraction);
                         effects.extend(self.apply_heal(a, heal));
                     } else {
-                        let hp = self.scaled_to(a, self.resonant_second_life_revive_fraction);
-                        self.fighters[a].hp = hp;
-                        self.fighters[a].alive = true;
-                        self.fighters[a].gauge = 0.0;
-                        effects.push(ResolvedEffect {
-                            modifier_flag: None,
-                            target_id: self.fighters[a].combatant_id.clone(),
-                            kind: EffectKind::Heal,
-                            amount: Some(hp),
-                            status: Some("revived".to_string()),
-                            hp_after: hp,
-                        });
+                        let frac = self.resonant_second_life_revive_fraction;
+                        let fx = self.raise_fallen(a, frac);
+                        effects.extend(fx);
                     }
                 }
                 let cost = self.scaled_to(caster_i, self.resonant_second_life_self_cost);
@@ -3235,7 +3286,12 @@ impl Battle {
         // (poison/burn burn a max-HP fraction each of the victim's turns,
         // typed — so an immunity/absorption profile applies to the DoT too).
         let now = self.tick_count;
-        self.fighters[i].timed_statuses.retain(|(_, until)| *until > now);
+        // An AFFLICTION does not wear off — it holds until something cures it, so a poisoned
+        // party spends a turn on the cure instead of waiting out a timer. A BOON still fades,
+        // or the opening turns of a fight would be the whole fight.
+        self.fighters[i]
+            .timed_statuses
+            .retain(|(n, until)| *until > now || meld_proto::statuses::is_affliction(n));
         let dots: Vec<String> = self.fighters[i]
             .timed_statuses
             .iter()
@@ -3456,6 +3512,8 @@ impl Battle {
                 let amount = ((self.consumable_barrier as f64) * dose).round() as i32;
                 self.grant_barrier(target_i, amount)
             }
+            E::Cleanse => self.cure(target_i, meld_proto::statuses::Family::Mind),
+            E::Panacea => self.cure(target_i, meld_proto::statuses::Family::All),
             E::Regen => {
                 let amount = ((self.consumable_regen as f64) * dose).round() as i32;
                 let max_hp = self.fighters[target_i].max_hp.max(1);
@@ -4100,6 +4158,67 @@ impl Battle {
     /// Immunity lands a 0; absorption heals `|Final|` instead; everything else
     /// flows through [`Self::apply_damage`] (barrier, back-row, KO) with the
     /// modifier flag stamped on the Damage effect.
+    /// Bring a FALLEN fighter back, standing at `fraction` of its max HP.
+    ///
+    /// Extracted from `second_life` so a revive is one behaviour rather than one per ability:
+    /// the gauge is reset (you come back at the back of the queue, not with a free turn) and
+    /// the effect is tagged `revived` so the client can say so.
+    fn raise_fallen(&mut self, i: usize, fraction: f64) -> Vec<ResolvedEffect> {
+        if self.fighters[i].alive {
+            return Vec::new();
+        }
+        let hp = self.scaled_to(i, fraction).max(1);
+        self.fighters[i].hp = hp;
+        self.fighters[i].alive = true;
+        self.fighters[i].gauge = 0.0;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::Heal,
+            amount: Some(hp),
+            status: Some("revived".to_string()),
+            hp_after: hp,
+        }]
+    }
+
+    /// Lift the afflictions of ONE family, reporting an effect per condition removed.
+    ///
+    /// This is the other half of afflictions not expiring: without a cure they would simply be
+    /// permanent, which is punishment rather than decision. It is deliberately per-FAMILY —
+    /// a poultice draws venom out and has nothing to say about being blinded, and one cheap
+    /// bottle that answered everything would make every affliction a non-event. Only
+    /// `Family::All` (a Panacea) lifts the lot, and it is priced like it. Boons are never
+    /// touched: a cure that stripped your own Barrier would be a trap.
+    fn cure(
+        &mut self,
+        target_i: usize,
+        family: meld_proto::statuses::Family,
+    ) -> Vec<ResolvedEffect> {
+        use meld_proto::statuses::cures;
+        let lifted: Vec<String> = self.fighters[target_i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| cures(family, n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.fighters[target_i].timed_statuses.retain(|(n, _)| !cures(family, n));
+        // Nothing else to unwind: a slow's RATE is computed from these tokens each tick
+        // (`status_slow_mult`), so dropping the token is the cure. `slow_floor` is left alone
+        // — it is a set piece's protection against being controlled out of the fight, not a
+        // condition anybody would want lifted.
+        lifted
+            .into_iter()
+            .map(|n| ResolvedEffect {
+                target_id: self.fighters[target_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some(format!("cured:{n}")),
+                hp_after: self.fighters[target_i].hp,
+                modifier_flag: None,
+            })
+            .collect()
+    }
+
     /// How much more this fighter's damage of `ty` is worth — "of the Furnace" (AD-1
     /// `element_power`), the offensive twin of the target's `damage_modifiers`.
     ///
@@ -7714,6 +7833,158 @@ mod tests {
         battle.fighters[m].ward = 40;
         let warded = deal(&mut battle);
         assert!(warded < hotter, "ward did not reduce an amplified spell");
+    }
+
+    /// An AFFLICTION holds until something lifts it; a BOON still fades. Outlasting a debuff
+    /// by standing still is not a decision, and a permanent Barrier is not a buff.
+    #[test]
+    fn afflictions_hold_and_boons_fade() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 100_000;
+        battle.fighters[i].hp = 100_000;
+        // Both applied with a SHORT expiry, so only the classification can save one.
+        let soon = battle.tick_count + 1;
+        battle.fighters[i].timed_statuses.push(("poison".into(), soon));
+        battle.fighters[i].timed_statuses.push(("hasted".into(), soon));
+
+        battle.tick_count += 10;
+        let _ = battle.start_of_turn(i);
+
+        let held: Vec<String> =
+            battle.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect();
+        assert!(held.contains(&"poison".to_string()), "poison wore off on its own: {held:?}");
+        assert!(!held.contains(&"hasted".to_string()), "haste never faded: {held:?}");
+    }
+
+    /// …and a cure is what lifts it, leaving boons alone — a cleanse that stripped your own
+    /// Barrier would be a trap.
+    #[test]
+    fn a_cure_lifts_every_affliction_and_no_boon() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        let far = battle.tick_count + 10_000;
+        for n in ["poison", "web", "marked", "blinded", "hasted"] {
+            battle.fighters[i].timed_statuses.push((n.to_string(), far));
+        }
+        let fx = battle.cure(i, meld_proto::statuses::Family::All);
+        assert_eq!(fx.len(), 4, "should have lifted the four afflictions, got {fx:?}");
+        let held: Vec<String> =
+            battle.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(held, vec!["hasted".to_string()], "left holding {held:?}");
+    }
+
+    /// The earliest mender row in the game has to be able to lift one, or a party that
+    /// catches something at level 5 simply carries it for the rest of the dive.
+    #[test]
+    fn a_poultice_draws_the_poison_out() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("k", 5), player("h", 5)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let keeper = battle.idx("k").unwrap();
+        let hurt = battle.idx("h").unwrap();
+        battle.fighters[keeper].class_key = "keeper".into();
+        battle.fighters[hurt].hp = 1;
+        let far = battle.tick_count + 10_000;
+        battle.fighters[hurt].timed_statuses.push(("poison".into(), far));
+
+        let target = battle.fighters[hurt].combatant_id.clone();
+        let _ = battle
+            .resolve_keeper(keeper, "poultice", Some(&target), None)
+            .expect("poultice resolves");
+        assert!(
+            !battle.fighters[hurt]
+                .timed_statuses
+                .iter()
+                .any(|(n, _)| n == "poison"),
+            "the poultice healed but left the poison in"
+        );
+    }
+
+    /// A cure answers a CONDITION, not a checklist. A poultice draws venom out and has
+    /// nothing to say about being blinded — only a Panacea answers everything, and it is
+    /// priced like it.
+    #[test]
+    fn a_cure_is_specific_and_only_a_panacea_is_not() {
+        use meld_proto::statuses::Family;
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        let far = battle.tick_count + 10_000;
+        let load = |bt: &mut Battle| {
+            bt.fighters[i].timed_statuses.clear();
+            for n in ["poison", "web", "blinded", "dread", "hasted"] {
+                bt.fighters[i].timed_statuses.push((n.to_string(), far));
+            }
+        };
+        let held = |bt: &Battle| -> Vec<String> {
+            bt.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect()
+        };
+
+        load(&mut battle);
+        let _ = battle.cure(i, Family::Venom);
+        assert!(!held(&battle).contains(&"poison".into()), "venom should lift poison");
+        assert!(held(&battle).contains(&"blinded".into()), "venom cured a blindness");
+        assert!(held(&battle).contains(&"dread".into()), "venom cured a dread");
+
+        load(&mut battle);
+        let _ = battle.cure(i, Family::All);
+        assert_eq!(held(&battle), vec!["hasted".to_string()], "a Panacea should answer all four");
+    }
+
+    /// A revive at a REACHABLE rung. The only one in the game was a level-255 capstone, so a
+    /// party that lost a hero at level 20 had nothing but a rare drop.
+    #[test]
+    fn a_mender_can_raise_the_fallen_at_rung_fifty() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("r", 50), player("d", 50)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let medic = battle.idx("r").unwrap();
+        let dead = battle.idx("d").unwrap();
+        battle.fighters[medic].class_key = "resonant".into();
+        battle.fighters[dead].alive = false;
+        battle.fighters[dead].hp = 0;
+
+        let _ = battle.resolve_resonant(medic, "revitalize", dead);
+        assert!(battle.fighters[dead].alive, "revitalize left the hero down");
+        assert!(battle.fighters[dead].hp > 0);
+        // Back at the END of the queue, not with a free turn.
+        assert_eq!(battle.fighters[dead].gauge, 0.0);
     }
 
     #[test]

@@ -457,6 +457,12 @@ resonant_bloom_self_cost = 0.35
 # living are mended, once a battle, for most of the Resonant's own. Nothing else in the
 # game raises the dead mid-fight, so it is priced as the thing you spend a run on.
 resonant_second_life_revive_fraction = 0.5
+# A revive at a REACHABLE rung. Before these, the only one in the game was the Resonant's
+# level-255 capstone, so a party that lost a hero at level 20 had nothing but a rare Waking
+# Salt drop. Both sit at rung 50 and both are thematically the class's own: the best healer in
+# the game, and an order whose whole idea is growth and rebirth. [TUNABLE]
+resonant_revitalize_revive_fraction = 0.3
+keeper_terras_gift_revive_fraction = 0.25
 resonant_second_life_heal_fraction = 0.35
 resonant_second_life_self_cost = 0.7
 
