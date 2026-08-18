@@ -646,6 +646,9 @@ pub struct Affliction {
     pub venom_hp_per_step: i32,
     pub venom_steps_per_tick: i32,
     pub bindings_move_mult: f64,
+    pub paralysis_break_base: f64,
+    pub paralysis_break_per_wll: f64,
+    pub paralysis_break_cap: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

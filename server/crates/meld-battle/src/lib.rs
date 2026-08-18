@@ -720,6 +720,9 @@ pub struct Battle {
     burn_dot_fraction: f64,
     basic_attack_weight: i32,
     min_damage: i32,
+    paralysis_break_base: f64,
+    paralysis_break_per_wll: f64,
+    paralysis_break_cap: f64,
     damage_floor_fraction: f64,
     creature_flee_hp_fraction: f64,
     flee_base: f64,
@@ -1032,6 +1035,9 @@ impl Battle {
             burn_dot_fraction: balance.battle.burn_dot_fraction,
             basic_attack_weight: balance.battle.basic_attack_weight,
             min_damage: balance.combat_math.min_damage,
+            paralysis_break_base: balance.affliction.paralysis_break_base,
+            paralysis_break_per_wll: balance.affliction.paralysis_break_per_wll,
+            paralysis_break_cap: balance.affliction.paralysis_break_cap,
             damage_floor_fraction: balance.combat_math.damage_floor_fraction,
             creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
@@ -1278,6 +1284,21 @@ impl Battle {
             // the turn is offered rather than by refusing the action, because being asked to
             // choose and then told no is worse than not being asked.
             if self.has(i, "paralyzed") {
+                // A slim hope, on WILL — the attribute that already answers "how much of you
+                // is yours". Rolled at the top of the held turn, so breaking it costs the turn
+                // you broke it on rather than handing back a free action.
+                let odds = (self.paralysis_break_base
+                    + self.paralysis_break_per_wll * self.fighters[i].wll as f64)
+                    .min(self.paralysis_break_cap);
+                if self.next_rand_unit() < odds {
+                    let broke = self.shake_off(i, &["paralyzed"]);
+                    let mut res = self.skipped_turn(i, "broke_free");
+                    res.effects.extend(broke);
+                    self.fighters[i].awaiting = false;
+                    events.push(Event::Resolved(res));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
                 let upkeep = self.start_of_turn(i);
                 if !self.fighters[i].alive {
                     events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
@@ -1406,6 +1427,17 @@ impl Battle {
         if self.seen_actions.contains(&action_id) {
             return Err(Reject::DuplicateAction);
         }
+        // CONFUSED: the order you gave is not the order that happens. BOTH halves are rolled
+        // — what you do and who you do it to — because a confusion that only mis-aims is a
+        // targeting penalty, not a confusion. Applied here, at the one gate every player
+        // action passes, so it covers skills and items and not just a swing.
+        //
+        // The player still gets to CHOOSE; the condition is that the choice does not hold.
+        let (action, skill_kind, target_ids) = if self.has(i, "confused") {
+            self.scramble(i, action, skill_kind)
+        } else {
+            (action, skill_kind, target_ids)
+        };
         // DREAD: you cannot bring yourself to go at the thing that frightened you — but you
         // are not removed from the fight. Defend, drink, mend yourself or an ally, even swing
         // at one: all still yours. Only what is aimed at an ENEMY is refused.
@@ -1560,30 +1592,6 @@ impl Battle {
                 .iter()
                 .position(|f| f.alive && f.kind != CombatantKind::Player)
                 .ok_or(Reject::NotFound)?,
-        };
-        // CONFUSED: you swing, but not necessarily at what you meant. Resolved HERE rather
-        // than at submit so the player still gets to choose — the condition is that the
-        // choice does not always hold.
-        let target_i = if self.has(actor_i, "confused") {
-            let allies: Vec<usize> = self
-                .fighters
-                .iter()
-                .enumerate()
-                .filter(|(j, f)| {
-                    *j != actor_i && f.alive && f.kind == self.fighters[actor_i].kind
-                })
-                .map(|(j, _)| j)
-                .collect();
-            match allies.is_empty() {
-                true => target_i,
-                false => {
-                    let pick = ((self.next_rand_unit() * allies.len() as f64) as usize)
-                        .min(allies.len() - 1);
-                    allies[pick]
-                }
-            }
-        } else {
-            target_i
         };
         let attack_type = self.fighters[actor_i].basic_attack_type;
         // The back rank's trade, and this path can be exact about it: only a PHYSICAL
@@ -4301,6 +4309,54 @@ impl Battle {
             callout_text: None,
             effects: vec![effect],
         }
+    }
+
+    /// Replace a confused fighter's order with a random one: a random action from what it can
+    /// actually do, at a random living combatant — friend or foe, itself included.
+    ///
+    /// Deliberately does NOT roll `Item`: a confusion that drank your last Panacea would spend
+    /// a resource the player cannot get back, which is a different and much crueller mechanic
+    /// than swinging at the wrong person.
+    fn scramble(
+        &mut self,
+        i: usize,
+        action: BattleActionKind,
+        skill_kind: Option<String>,
+    ) -> (BattleActionKind, Option<String>, Option<Vec<Id>>) {
+        let level = self.fighters[i].level;
+        let class = self.fighters[i].class_key.clone();
+        let kit: Vec<String> = meld_proto::skills::skills_for_class_at(&class, level)
+            .into_iter()
+            .map(|s| s.key.to_string())
+            .collect();
+        // Attack, Defend, and every row the hero owns — one flat pool, so a caster is as
+        // likely to flail as to miscast.
+        let choices = 2 + kit.len();
+        let pick = ((self.next_rand_unit() * choices as f64) as usize).min(choices - 1);
+        let (act, skill) = match pick {
+            0 => (BattleActionKind::Attack, None),
+            1 => (BattleActionKind::Defend, None),
+            n => {
+                let key = kit[n - 2].clone();
+                // A Psyker's rows are OPS, not ability keys — a bare key falls through to
+                // `hold`, which would make confusion a free pass for the class.
+                let key = if class == "psyker" { format!("cast:{key}") } else { key };
+                (BattleActionKind::Skill, Some(key))
+            }
+        };
+        let living: Vec<Id> = self
+            .fighters
+            .iter()
+            .filter(|f| f.alive)
+            .map(|f| f.combatant_id.clone())
+            .collect();
+        let target = (!living.is_empty()).then(|| {
+            let t = ((self.next_rand_unit() * living.len() as f64) as usize)
+                .min(living.len() - 1);
+            vec![living[t].clone()]
+        });
+        let _ = (action, skill_kind);
+        (act, skill, target)
     }
 
     /// Whether a fighter is carrying `name`.
@@ -8301,6 +8357,83 @@ mod tests {
         );
     }
 
+    /// CONFUSION rolls BOTH halves — what you do and who you do it to. A confusion that only
+    /// mis-aims is a targeting penalty; the point is that the order you gave is not the order
+    /// that happens.
+    #[test]
+    fn confusion_scrambles_the_action_and_the_target() {
+        let b = balance();
+        let mut actions = std::collections::HashSet::new();
+        let mut targets = std::collections::HashSet::new();
+        // Many rolls, because "random" is the assertion — one sample proves nothing.
+        for seed in 0..60u64 {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("a", 40), player("b", 40)],
+                vec![monster("m", 5_000, 1)],
+                &b,
+                seed,
+            );
+            let i = battle.idx("a").unwrap();
+            battle.fighters[i].class_key = "resonant".into();
+            battle.fighters[i].timed_statuses.push(("confused".into(), u64::MAX));
+            let (act, skill, target) =
+                battle.scramble(i, BattleActionKind::Attack, None);
+            actions.insert(format!("{act:?}:{}", skill.unwrap_or_default()));
+            targets.insert(target.map(|t| t[0].clone()).unwrap_or_default());
+        }
+        assert!(actions.len() > 2, "the action barely varies: {actions:?}");
+        assert!(targets.len() > 1, "it always hits the same combatant: {targets:?}");
+        // …and it can land on a friend, which is the whole flavour of the thing.
+        assert!(targets.iter().any(|t| t == "b" || t == "a"), "never once hit its own side");
+    }
+
+    /// PARALYSIS can be broken by WILL — a slim hope, and a high-Will hero has a better one.
+    /// Without a way out that is not a cure, a party with no mender simply loses.
+    #[test]
+    fn will_can_break_a_paralysis() {
+        let b = balance();
+        let odds = |wll: i32| -> f64 {
+            (b.affliction.paralysis_break_base + b.affliction.paralysis_break_per_wll * wll as f64)
+                .min(b.affliction.paralysis_break_cap)
+        };
+        assert!(odds(200) > odds(10), "Will should matter to breaking free");
+        assert!(odds(10) > 0.0, "even a frail hero gets a chance");
+        assert!(odds(100_000) <= b.affliction.paralysis_break_cap, "the cap should hold");
+        assert!(
+            b.affliction.paralysis_break_cap < 1.0,
+            "paralysis must never be shruggable outright, or curing it is pointless"
+        );
+
+        // And it actually fires. TWO heroes on purpose: one paralysed hero alone IS a wholly
+        // paralysed party, which is an instant defeat, so a solo fixture ends the battle
+        // before a single break can be rolled.
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 40), player("c", 40)],
+            vec![monster("m", 5_000, 1)],
+            &b,
+            7,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].wll = 400;
+        battle.fighters[i].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        // The fixture's second argument is SPEED, not level — at 40 the gauge takes ~130
+        // ticks to fill, so a 400-tick budget only buys about three attempts and a run of bad
+        // luck reads as a broken feature.
+        let mut freed = false;
+        for _ in 0..4_000 {
+            let _ = battle.tick();
+            if !battle.fighters[i].timed_statuses.iter().any(|(n, _)| n == "paralyzed") {
+                freed = true;
+                break;
+            }
+        }
+        assert!(freed, "a 400-Will hero never broke a paralysis in 4000 ticks");
+    }
+
     #[test]
     fn a_branded_attack_exploits_a_creature_s_weakness() {
         let b = balance();
@@ -9211,3 +9344,4 @@ mod deep_ladder_tests {
     }
 
 }
+

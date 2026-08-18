@@ -964,6 +964,14 @@ keeper = [0.3, 1.0, 1.0]          # a mender: its damage rides Mnd too
 venom_hp_per_step = 1            # HP each poisoned/burning hero loses per movement input
 venom_steps_per_tick = 12        # …once every this many inputs, so a march bleeds gradually
 bindings_move_mult = 0.55        # webbed/chilled/bound: how much of your speed you keep
+# PARALYSIS is the one affliction that takes the turn itself, so it gets a way out that is not
+# only a cure: each turn the held fighter tries to break it, on WILL — the attribute that
+# already answers "how much of you is yours" (it buys HP and physical defence). Small on
+# purpose: it is a slim hope, not a reason to skip the cure, and the cap stops a high-Wll
+# Phoenix Guard shrugging paralysis off outright. [TUNABLE]
+paralysis_break_base = 0.08      # chance per turn before Will
+paralysis_break_per_wll = 0.004  # …plus this per point of Will
+paralysis_break_cap = 0.45       # …never better than this
 
 [armor_resist]
 step = 0.03
