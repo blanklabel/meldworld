@@ -22,6 +22,7 @@ is the human table of contents.
 - [`behaviors/`](behaviors/) — observable behavior: [world generation](behaviors/world-generation.md),
   [verticality](behaviors/verticality.md), [dungeons](behaviors/dungeons.md),
   [run lifecycle](behaviors/run-lifecycle.md), [combat/ATB](behaviors/combat-atb.md),
+- [`behaviors/conditions.md`](behaviors/conditions.md) — every affliction and boon, what it does in battle and on the road, and what lifts it.
   [economy](behaviors/economy.md), [meta-progression](behaviors/meta-progression.md),
   [disconnect handling](behaviors/disconnect-handling.md),
   [async interaction](behaviors/async-interaction.md),

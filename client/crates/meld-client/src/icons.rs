@@ -104,6 +104,9 @@ pub(crate) fn glyph(kind: &str) -> (&'static str, Color) {
             E::Adrenaline => (nf::LIGHTNING.0, Color::srgb(0.95, 0.72, 0.35)),
             E::Revive => (nf::HEART_PLUS.0, gold),
             E::Experience => (nf::BOOK.0, arcane),
+            // A cure reads as a cure: one family, or the lot.
+            E::Cleanse => (nf::LEAF.0, arcane),
+            E::Panacea => (nf::HEART_PLUS.0, arcane),
         };
     }
     if let Some(m) = meld_proto::materials::material(kind) {

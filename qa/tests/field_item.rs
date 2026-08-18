@@ -27,6 +27,21 @@ async fn start_server() -> String {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1;
+    // FORCE the precondition instead of waiting for the world to supply it. This test is
+    // about the overworld Item path — that a wounded hero may drink and a battle-only bottle
+    // may not — and it was reaching that state by wandering until something happened to hurt
+    // somebody. That is a coin flip on the difficulty curve, and it failed roughly half the
+    // time regardless of what the curve was doing (confirmed by zeroing the resistance work
+    // and watching it fail anyway). `insight_mote` already does exactly this for its own
+    // probabilistic input, setting `world_xp_item_chance = 1.0`.
+    //
+    // The lever is the HERO, not the creature. Cranking creature attack (tried: x4) wounds
+    // nobody — it KILLS them, and the run ends before a potion is ever drunk. A hero with a
+    // great deal of HP is chipped by the first exchange and cannot die to it, so "wounded but
+    // alive" is reached every run instead of on a lucky one.
+    for p in balance.player.values_mut() {
+        p.base_hp *= 20;
+    }
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),

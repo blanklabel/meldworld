@@ -598,6 +598,12 @@ pub mod run {
         /// default (casters back) until overridden. See [`SetFormation`].
         #[serde(default)]
         pub back_row: bool,
+        /// Afflictions this hero is carrying RIGHT NOW, out of combat included — they no
+        /// longer expire, so one caught in a fight follows the hero down the road. The client
+        /// needs them out here to reverse the controls of a distracted hero and black out a
+        /// blinded one, and to grey a cure that would lift nothing.
+        #[serde(default)]
+        pub afflictions: Vec<String>,
     }
 
     /// S2C — the caller's current party roster (sent at run start and refreshed on

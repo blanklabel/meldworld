@@ -641,6 +641,7 @@ pub struct Battle {
     psyker_expansion_mult: f64,
     psyker_vortex_ticks: u64,
     resonant_second_life_revive_fraction: f64,
+    keeper_terras_gift_revive_fraction: f64,
     resonant_second_life_heal_fraction: f64,
     resonant_second_life_self_cost: f64,
     resonant_transfuse_heal_fraction: f64,
@@ -719,6 +720,9 @@ pub struct Battle {
     burn_dot_fraction: f64,
     basic_attack_weight: i32,
     min_damage: i32,
+    paralysis_break_base: f64,
+    paralysis_break_per_wll: f64,
+    paralysis_break_cap: f64,
     damage_floor_fraction: f64,
     creature_flee_hp_fraction: f64,
     flee_base: f64,
@@ -747,6 +751,15 @@ struct AllyBoon {
     self_cost: f64,
     /// Whether it lands on the whole party.
     party: bool,
+    /// Fraction of max HP a FALLEN ally is raised at, or 0.0 for a row that cannot raise.
+    /// A revive at a reachable rung matters: before this the only one in the game was the
+    /// Resonant's level-255 capstone, so a party that lost a hero at level 20 had nothing but
+    /// a rare Waking Salt drop.
+    revive: f64,
+    /// The affliction family this row also lifts, if any. Afflictions no longer expire, so
+    /// each mender row answers ONE kind of condition — Sanctuary calms a mind, it does not
+    /// draw venom.
+    cure: Option<meld_proto::statuses::Family>,
 }
 
 /// Every deep Resonant ability, keyed by its registry key.
@@ -769,6 +782,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_mend_all_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             sanctuary: AllyBoon {
@@ -776,6 +791,8 @@ impl ResonantDeep {
                 regen: b.resonant_sanctuary_regen_fraction,
                 barrier: 0.0,
                 self_cost: 0.0,
+                revive: 0.0,
+                cure: Some(meld_proto::statuses::Family::Mind),
                 party: true,
             },
             revitalize: AllyBoon {
@@ -783,6 +800,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_revitalize_self_cost,
+                revive: b.resonant_revitalize_revive_fraction,
+                cure: None,
                 party: false,
             },
             lifewell: AllyBoon {
@@ -790,6 +809,8 @@ impl ResonantDeep {
                 regen: b.resonant_lifewell_regen_fraction,
                 barrier: 0.0,
                 self_cost: b.resonant_lifewell_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             bloodbond: AllyBoon {
@@ -797,6 +818,8 @@ impl ResonantDeep {
                 regen: b.resonant_bloodbond_regen_fraction,
                 barrier: b.resonant_bloodbond_barrier_fraction,
                 self_cost: b.resonant_bloodbond_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: false,
             },
             martyr: AllyBoon {
@@ -804,6 +827,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: 0.0,
                 self_cost: b.resonant_martyr_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
             bloom: AllyBoon {
@@ -811,6 +836,8 @@ impl ResonantDeep {
                 regen: 0.0,
                 barrier: b.resonant_bloom_barrier_fraction,
                 self_cost: b.resonant_bloom_self_cost,
+                revive: 0.0,
+                cure: None,
                 party: true,
             },
         }
@@ -925,6 +952,9 @@ impl Battle {
             resonant_second_life_revive_fraction: balance
                 .battle
                 .resonant_second_life_revive_fraction,
+            keeper_terras_gift_revive_fraction: balance
+                .battle
+                .keeper_terras_gift_revive_fraction,
             resonant_second_life_heal_fraction: balance.battle.resonant_second_life_heal_fraction,
             resonant_second_life_self_cost: balance.battle.resonant_second_life_self_cost,
             resonant_transfuse_heal_fraction: balance.battle.resonant_transfuse_heal_fraction,
@@ -1005,6 +1035,9 @@ impl Battle {
             burn_dot_fraction: balance.battle.burn_dot_fraction,
             basic_attack_weight: balance.battle.basic_attack_weight,
             min_damage: balance.combat_math.min_damage,
+            paralysis_break_base: balance.affliction.paralysis_break_base,
+            paralysis_break_per_wll: balance.affliction.paralysis_break_per_wll,
+            paralysis_break_cap: balance.affliction.paralysis_break_cap,
             damage_floor_fraction: balance.combat_math.damage_floor_fraction,
             creature_flee_hp_fraction: balance.ai.flee_hp_fraction,
             flee_base: balance.battle.flee_base,
@@ -1091,6 +1124,33 @@ impl Battle {
 
     /// Current HP of a combatant by id (for carrying wounds across a run's
     /// encounters — persistent HP lives on the server between battles).
+    /// Which AFFLICTIONS a combatant is still carrying when the fight ends.
+    ///
+    /// Afflictions no longer expire, so a poison survives the encounter that inflicted it —
+    /// and the run is what has to remember, because a `Fighter` is rebuilt every battle. This
+    /// is the read half of that; `Battle::afflict` is the write half.
+    pub fn combatant_afflictions(&self, combatant_id: &str) -> Vec<String> {
+        let Some(i) = self.idx(combatant_id) else {
+            return Vec::new();
+        };
+        self.fighters[i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| meld_proto::statuses::is_affliction(n))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Put an affliction back on a fighter at battle start — what the run remembered.
+    /// No expiry: it holds until cured, exactly as it did in the fight that inflicted it.
+    pub fn afflict(&mut self, combatant_id: &str, name: &str) {
+        if let Some(i) = self.idx(combatant_id) {
+            if !self.fighters[i].timed_statuses.iter().any(|(n, _)| n == name) {
+                self.fighters[i].timed_statuses.push((name.to_string(), u64::MAX));
+            }
+        }
+    }
+
     pub fn combatant_hp(&self, combatant_id: &str) -> Option<i32> {
         self.fighters
             .iter()
@@ -1220,6 +1280,63 @@ impl Battle {
             if !alive || !full {
                 continue;
             }
+            // PARALYSED: the gauge fills and the turn is spent standing there. Handled before
+            // the turn is offered rather than by refusing the action, because being asked to
+            // choose and then told no is worse than not being asked.
+            if self.has(i, "paralyzed") {
+                // A slim hope, on WILL — the attribute that already answers "how much of you
+                // is yours". Rolled at the top of the held turn, so breaking it costs the turn
+                // you broke it on rather than handing back a free action.
+                let odds = (self.paralysis_break_base
+                    + self.paralysis_break_per_wll * self.fighters[i].wll as f64)
+                    .min(self.paralysis_break_cap);
+                if self.next_rand_unit() < odds {
+                    let broke = self.shake_off(i, &["paralyzed"]);
+                    let mut res = self.skipped_turn(i, "broke_free");
+                    res.effects.extend(broke);
+                    self.fighters[i].awaiting = false;
+                    events.push(Event::Resolved(res));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                let upkeep = self.start_of_turn(i);
+                if !self.fighters[i].alive {
+                    events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                let mut res = self.skipped_turn(i, "paralyzed");
+                prepend_effects(&mut res, upkeep);
+                self.fighters[i].awaiting = false;
+                self.reset_gauge(i);
+                events.push(Event::Resolved(res));
+                self.check_terminal(&mut events);
+                continue;
+            }
+            // FRENZIED: control is taken away. It swings on its own, harder and wilder — the
+            // player is not offered the choice, which IS the condition.
+            if self.has(i, "frenzied") {
+                let upkeep = self.start_of_turn(i);
+                if !self.fighters[i].alive {
+                    events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                let foe = self.choose_target(i).0;
+                let mut res = match foe {
+                    Some(t) => {
+                        let tid = self.fighters[t].combatant_id.clone();
+                        self.resolve_attack(i, &tid, None)
+                            .unwrap_or_else(|_| self.skipped_turn(i, "frenzied"))
+                    }
+                    None => self.skipped_turn(i, "frenzied"),
+                };
+                prepend_effects(&mut res, upkeep);
+                self.fighters[i].awaiting = false;
+                events.push(Event::Resolved(res));
+                self.check_terminal(&mut events);
+                continue;
+            }
             if is_player {
                 if !awaiting {
                     self.fighters[i].awaiting = true;
@@ -1309,6 +1426,40 @@ impl Battle {
         }
         if self.seen_actions.contains(&action_id) {
             return Err(Reject::DuplicateAction);
+        }
+        // CONFUSED: the order you gave is not the order that happens. BOTH halves are rolled
+        // — what you do and who you do it to — because a confusion that only mis-aims is a
+        // targeting penalty, not a confusion. Applied here, at the one gate every player
+        // action passes, so it covers skills and items and not just a swing.
+        //
+        // The player still gets to CHOOSE; the condition is that the choice does not hold.
+        let (action, skill_kind, target_ids) = if self.has(i, "confused") {
+            self.scramble(i, action, skill_kind)
+        } else {
+            (action, skill_kind, target_ids)
+        };
+        // DREAD: you cannot bring yourself to go at the thing that frightened you — but you
+        // are not removed from the fight. Defend, drink, mend yourself or an ally, even swing
+        // at one: all still yours. Only what is aimed at an ENEMY is refused.
+        if self.has(i, "dread") {
+            let at_enemy = match action {
+                BattleActionKind::Attack => true,
+                BattleActionKind::Skill => skill_kind
+                    .as_deref()
+                    .map(|k| {
+                        let bare = k.rsplit(':').next().unwrap_or(k);
+                        matches!(
+                            meld_proto::skills::target_of(bare),
+                            meld_proto::skills::Target::Enemy
+                                | meld_proto::skills::Target::AllEnemies
+                        )
+                    })
+                    .unwrap_or(true),
+                _ => false,
+            };
+            if at_enemy {
+                return Err(Reject::InvalidState("Too afraid to face it."));
+            }
         }
         if !self.fighters[i].awaiting || self.fighters[i].gauge < 1.0 {
             return Err(Reject::InvalidState("Actor gauge is not full."));
@@ -1968,6 +2119,11 @@ impl Battle {
                 effects.extend(self.apply_heal(t, heal));
                 let fx = self.grant_regen(t, self.keeper.poultice_regen_fraction);
                 effects.extend(fx);
+                // A poultice DRAWS THE POISON OUT — and afflictions no longer wear off, so
+                // the earliest mender row in the game has to be able to lift one or a party
+                // that catches something at level 5 simply carries it.
+                let cured = self.cure(t, meld_proto::statuses::Family::Venom);
+                effects.extend(cured);
             }
             "bloomfield" => {
                 for a in living_allies(self) {
@@ -1985,6 +2141,20 @@ impl Battle {
                 effects.extend(fx);
             }
             "terras_gift" => {
+                // The Open Flower's idea is growth and REBIRTH, so its rung-50 party row is
+                // where the order's revive lives — reachable, unlike a level-255 capstone.
+                let fallen: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.kind == CombatantKind::Player && !f.alive)
+                    .map(|(i, _)| i)
+                    .collect();
+                for a in fallen {
+                    let frac = self.keeper_terras_gift_revive_fraction;
+                    let fx = self.raise_fallen(a, frac);
+                    effects.extend(fx);
+                }
                 for a in living_allies(self) {
                     let heal = self.scaled_to(a, self.keeper.gift_heal_fraction);
                     effects.extend(self.apply_heal(a, heal));
@@ -2949,7 +3119,11 @@ impl Battle {
             self.fighters
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+                // A party row that can RAISE has to reach the fallen; every other one skips
+                // them, because healing a corpse does nothing.
+                .filter(|(_, f)| {
+                    f.kind == CombatantKind::Player && (f.alive || boon.revive > 0.0)
+                })
                 .map(|(i, _)| i)
                 .collect()
         } else {
@@ -2966,6 +3140,16 @@ impl Battle {
             if boon.regen > 0.0 {
                 let fx = self.grant_regen(t, boon.regen);
                 effects.extend(fx);
+            }
+            // A fallen ally is RAISED rather than healed — healing a corpse does nothing, so
+            // without this a revive row would silently do nothing on the one target it is for.
+            if boon.revive > 0.0 && !self.fighters[t].alive {
+                let fx = self.raise_fallen(t, boon.revive);
+                effects.extend(fx);
+            }
+            if let Some(family) = boon.cure {
+                let cured = self.cure(t, family);
+                effects.extend(cured);
             }
             if boon.barrier > 0.0 {
                 let raw = ((self.fighters[t].max_hp as f64) * boon.barrier).round() as i32;
@@ -3157,18 +3341,9 @@ impl Battle {
                         let heal = self.scaled_to(a, self.resonant_second_life_heal_fraction);
                         effects.extend(self.apply_heal(a, heal));
                     } else {
-                        let hp = self.scaled_to(a, self.resonant_second_life_revive_fraction);
-                        self.fighters[a].hp = hp;
-                        self.fighters[a].alive = true;
-                        self.fighters[a].gauge = 0.0;
-                        effects.push(ResolvedEffect {
-                            modifier_flag: None,
-                            target_id: self.fighters[a].combatant_id.clone(),
-                            kind: EffectKind::Heal,
-                            amount: Some(hp),
-                            status: Some("revived".to_string()),
-                            hp_after: hp,
-                        });
+                        let frac = self.resonant_second_life_revive_fraction;
+                        let fx = self.raise_fallen(a, frac);
+                        effects.extend(fx);
                     }
                 }
                 let cost = self.scaled_to(caster_i, self.resonant_second_life_self_cost);
@@ -3235,7 +3410,12 @@ impl Battle {
         // (poison/burn burn a max-HP fraction each of the victim's turns,
         // typed — so an immunity/absorption profile applies to the DoT too).
         let now = self.tick_count;
-        self.fighters[i].timed_statuses.retain(|(_, until)| *until > now);
+        // An AFFLICTION does not wear off — it holds until something cures it, so a poisoned
+        // party spends a turn on the cure instead of waiting out a timer. A BOON still fades,
+        // or the opening turns of a fight would be the whole fight.
+        self.fighters[i]
+            .timed_statuses
+            .retain(|(n, until)| *until > now || meld_proto::statuses::is_affliction(n));
         let dots: Vec<String> = self.fighters[i]
             .timed_statuses
             .iter()
@@ -3456,6 +3636,8 @@ impl Battle {
                 let amount = ((self.consumable_barrier as f64) * dose).round() as i32;
                 self.grant_barrier(target_i, amount)
             }
+            E::Cleanse => self.cure(target_i, meld_proto::statuses::Family::Mind),
+            E::Panacea => self.cure(target_i, meld_proto::statuses::Family::All),
             E::Regen => {
                 let amount = ((self.consumable_regen as f64) * dose).round() as i32;
                 let max_hp = self.fighters[target_i].max_hp.max(1);
@@ -3502,13 +3684,19 @@ impl Battle {
         let max_hp = self.fighters[actor_i].max_hp;
         let after = (before + raw.max(1)).min(max_hp);
         self.fighters[actor_i].hp = after;
-        vec![ResolvedEffect { modifier_flag: None,
+        // CARE TAKES THE WHEEL BACK. A frenzy is someone else steering, and being healed at
+        // all ends it — so a mender is the answer to a berserk ally rather than a race to
+        // out-damage them, and it is one place healing matters beyond the HP bar.
+        let mut out = vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[actor_i].combatant_id.clone(),
             kind: EffectKind::Heal,
             amount: Some(after - before),
             status: None,
             hp_after: after,
-        }]
+        }];
+        let calmed = self.shake_off(actor_i, meld_proto::statuses::CLEARED_BY_HEALING);
+        out.extend(calmed);
+        out
     }
 
     /// Assemble a non-flee, non-auto player [`Resolution`].
@@ -4100,6 +4288,169 @@ impl Battle {
     /// Immunity lands a 0; absorption heals `|Final|` instead; everything else
     /// flows through [`Self::apply_damage`] (barrier, back-row, KO) with the
     /// modifier flag stamped on the Damage effect.
+    /// A turn spent doing nothing, reported so the client can say WHY rather than showing a
+    /// hero that silently did not act.
+    fn skipped_turn(&mut self, i: usize, why: &str) -> Resolution {
+        let effect = ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some(why.to_string()),
+            hp_after: self.fighters[i].hp,
+        };
+        self.reset_gauge(i);
+        Resolution {
+            action_id: None,
+            actor_id: self.fighters[i].combatant_id.clone(),
+            action: BattleActionKind::Defend,
+            auto: true,
+            flee_success: None,
+            callout_text: None,
+            effects: vec![effect],
+        }
+    }
+
+    /// Replace a confused fighter's order with a random one: a random action from what it can
+    /// actually do, at a random living combatant — friend or foe, itself included.
+    ///
+    /// Deliberately does NOT roll `Item`: a confusion that drank your last Panacea would spend
+    /// a resource the player cannot get back, which is a different and much crueller mechanic
+    /// than swinging at the wrong person.
+    fn scramble(
+        &mut self,
+        i: usize,
+        action: BattleActionKind,
+        skill_kind: Option<String>,
+    ) -> (BattleActionKind, Option<String>, Option<Vec<Id>>) {
+        let level = self.fighters[i].level;
+        let class = self.fighters[i].class_key.clone();
+        let kit: Vec<String> = meld_proto::skills::skills_for_class_at(&class, level)
+            .into_iter()
+            .map(|s| s.key.to_string())
+            .collect();
+        // Attack, Defend, and every row the hero owns — one flat pool, so a caster is as
+        // likely to flail as to miscast.
+        let choices = 2 + kit.len();
+        let pick = ((self.next_rand_unit() * choices as f64) as usize).min(choices - 1);
+        let (act, skill) = match pick {
+            0 => (BattleActionKind::Attack, None),
+            1 => (BattleActionKind::Defend, None),
+            n => {
+                let key = kit[n - 2].clone();
+                // A Psyker's rows are OPS, not ability keys — a bare key falls through to
+                // `hold`, which would make confusion a free pass for the class.
+                let key = if class == "psyker" { format!("cast:{key}") } else { key };
+                (BattleActionKind::Skill, Some(key))
+            }
+        };
+        let living: Vec<Id> = self
+            .fighters
+            .iter()
+            .filter(|f| f.alive)
+            .map(|f| f.combatant_id.clone())
+            .collect();
+        let target = (!living.is_empty()).then(|| {
+            let t = ((self.next_rand_unit() * living.len() as f64) as usize)
+                .min(living.len() - 1);
+            vec![living[t].clone()]
+        });
+        let _ = (action, skill_kind);
+        (act, skill, target)
+    }
+
+    /// Whether a fighter is carrying `name`.
+    fn has(&self, i: usize, name: &str) -> bool {
+        self.fighters[i].timed_statuses.iter().any(|(n, _)| n == name)
+    }
+
+    /// Knock conditions off a fighter, reporting one effect each. The shared tail of "a blow
+    /// brings you round" and "care takes the wheel back".
+    fn shake_off(&mut self, i: usize, which: &[&str]) -> Vec<ResolvedEffect> {
+        let lifted: Vec<String> = self.fighters[i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| which.contains(&n.as_str()))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if lifted.is_empty() {
+            return Vec::new();
+        }
+        self.fighters[i].timed_statuses.retain(|(n, _)| !which.contains(&n.as_str()));
+        lifted
+            .into_iter()
+            .map(|n| ResolvedEffect {
+                modifier_flag: None,
+                target_id: self.fighters[i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some(format!("cured:{n}")),
+                hp_after: self.fighters[i].hp,
+            })
+            .collect()
+    }
+
+    /// Bring a FALLEN fighter back, standing at `fraction` of its max HP.
+    ///
+    /// Extracted from `second_life` so a revive is one behaviour rather than one per ability:
+    /// the gauge is reset (you come back at the back of the queue, not with a free turn) and
+    /// the effect is tagged `revived` so the client can say so.
+    fn raise_fallen(&mut self, i: usize, fraction: f64) -> Vec<ResolvedEffect> {
+        if self.fighters[i].alive {
+            return Vec::new();
+        }
+        let hp = self.scaled_to(i, fraction).max(1);
+        self.fighters[i].hp = hp;
+        self.fighters[i].alive = true;
+        self.fighters[i].gauge = 0.0;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::Heal,
+            amount: Some(hp),
+            status: Some("revived".to_string()),
+            hp_after: hp,
+        }]
+    }
+
+    /// Lift the afflictions of ONE family, reporting an effect per condition removed.
+    ///
+    /// This is the other half of afflictions not expiring: without a cure they would simply be
+    /// permanent, which is punishment rather than decision. It is deliberately per-FAMILY —
+    /// a poultice draws venom out and has nothing to say about being blinded, and one cheap
+    /// bottle that answered everything would make every affliction a non-event. Only
+    /// `Family::All` (a Panacea) lifts the lot, and it is priced like it. Boons are never
+    /// touched: a cure that stripped your own Barrier would be a trap.
+    fn cure(
+        &mut self,
+        target_i: usize,
+        family: meld_proto::statuses::Family,
+    ) -> Vec<ResolvedEffect> {
+        use meld_proto::statuses::cures;
+        let lifted: Vec<String> = self.fighters[target_i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| cures(family, n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.fighters[target_i].timed_statuses.retain(|(n, _)| !cures(family, n));
+        // Nothing else to unwind: a slow's RATE is computed from these tokens each tick
+        // (`status_slow_mult`), so dropping the token is the cure. `slow_floor` is left alone
+        // — it is a set piece's protection against being controlled out of the fight, not a
+        // condition anybody would want lifted.
+        lifted
+            .into_iter()
+            .map(|n| ResolvedEffect {
+                target_id: self.fighters[target_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some(format!("cured:{n}")),
+                hp_after: self.fighters[target_i].hp,
+                modifier_flag: None,
+            })
+            .collect()
+    }
+
     /// How much more this fighter's damage of `ty` is worth — "of the Furnace" (AD-1
     /// `element_power`), the offensive twin of the target's `damage_modifiers`.
     ///
@@ -4222,6 +4573,14 @@ impl Battle {
         } else {
             dmg
         };
+        // A BLOW BRINGS YOU ROUND. Being struck knocks dread and confusion out of whoever
+        // takes it — theirs or yours — which gives a party with no mender an answer that is
+        // not a bottle, and makes hitting a terrified creature a way to wake it up too.
+        let woken = if physical {
+            self.shake_off(target_i, meld_proto::statuses::CLEARED_BY_A_HIT)
+        } else {
+            Vec::new()
+        };
         // Back-row formation softens an incoming PHYSICAL blow (before Barrier/HP).
         // It used to soften everything, which made the back row a free 2x effective HP
         // for the whole party — nothing reached past it and nothing was given up for it.
@@ -4248,6 +4607,7 @@ impl Battle {
             status: None,
             hp_after: t.hp,
         }];
+        effects.extend(woken);
         if dead {
             effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
@@ -4456,7 +4816,31 @@ impl Battle {
             events.push(Event::Ended {
                 outcome: BattleOutcome::Defeat,
             });
+        } else if self.wholly_paralysed() {
+            // EVERY hero held still is a death, not a stalemate. Paralysis skips the turn, so
+            // a party where nobody can act would otherwise stand there while the creatures
+            // worked through them — an unbounded soft-lock of exactly the kind a gauge CAP
+            // used to cause. Ending it is what keeps the condition bounded.
+            self.ended = true;
+            events.push(Event::Ended {
+                outcome: BattleOutcome::Defeat,
+            });
         }
+    }
+
+    /// Whether every hero still standing is paralysed — nobody left who can act.
+    fn wholly_paralysed(&self) -> bool {
+        let mut any = false;
+        for (i, f) in self.fighters.iter().enumerate() {
+            if f.kind != CombatantKind::Player || !f.alive {
+                continue;
+            }
+            any = true;
+            if !self.has(i, "paralyzed") {
+                return false;
+            }
+        }
+        any
     }
 
     /// Flee chance (combat-atb.md): `base − penalty·max(0, tier_gap)`, floored.
@@ -7716,6 +8100,340 @@ mod tests {
         assert!(warded < hotter, "ward did not reduce an amplified spell");
     }
 
+    /// An AFFLICTION holds until something lifts it; a BOON still fades. Outlasting a debuff
+    /// by standing still is not a decision, and a permanent Barrier is not a buff.
+    #[test]
+    fn afflictions_hold_and_boons_fade() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 100_000;
+        battle.fighters[i].hp = 100_000;
+        // Both applied with a SHORT expiry, so only the classification can save one.
+        let soon = battle.tick_count + 1;
+        battle.fighters[i].timed_statuses.push(("poison".into(), soon));
+        battle.fighters[i].timed_statuses.push(("hasted".into(), soon));
+
+        battle.tick_count += 10;
+        let _ = battle.start_of_turn(i);
+
+        let held: Vec<String> =
+            battle.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect();
+        assert!(held.contains(&"poison".to_string()), "poison wore off on its own: {held:?}");
+        assert!(!held.contains(&"hasted".to_string()), "haste never faded: {held:?}");
+    }
+
+    /// …and a cure is what lifts it, leaving boons alone — a cleanse that stripped your own
+    /// Barrier would be a trap.
+    #[test]
+    fn a_cure_lifts_every_affliction_and_no_boon() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        let far = battle.tick_count + 10_000;
+        for n in ["poison", "web", "marked", "blinded", "hasted"] {
+            battle.fighters[i].timed_statuses.push((n.to_string(), far));
+        }
+        let fx = battle.cure(i, meld_proto::statuses::Family::All);
+        assert_eq!(fx.len(), 4, "should have lifted the four afflictions, got {fx:?}");
+        let held: Vec<String> =
+            battle.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(held, vec!["hasted".to_string()], "left holding {held:?}");
+    }
+
+    /// The earliest mender row in the game has to be able to lift one, or a party that
+    /// catches something at level 5 simply carries it for the rest of the dive.
+    #[test]
+    fn a_poultice_draws_the_poison_out() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("k", 5), player("h", 5)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let keeper = battle.idx("k").unwrap();
+        let hurt = battle.idx("h").unwrap();
+        battle.fighters[keeper].class_key = "keeper".into();
+        battle.fighters[hurt].hp = 1;
+        let far = battle.tick_count + 10_000;
+        battle.fighters[hurt].timed_statuses.push(("poison".into(), far));
+
+        let target = battle.fighters[hurt].combatant_id.clone();
+        let _ = battle
+            .resolve_keeper(keeper, "poultice", Some(&target), None)
+            .expect("poultice resolves");
+        assert!(
+            !battle.fighters[hurt]
+                .timed_statuses
+                .iter()
+                .any(|(n, _)| n == "poison"),
+            "the poultice healed but left the poison in"
+        );
+    }
+
+    /// A cure answers a CONDITION, not a checklist. A poultice draws venom out and has
+    /// nothing to say about being blinded — only a Panacea answers everything, and it is
+    /// priced like it.
+    #[test]
+    fn a_cure_is_specific_and_only_a_panacea_is_not() {
+        use meld_proto::statuses::Family;
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        let far = battle.tick_count + 10_000;
+        let load = |bt: &mut Battle| {
+            bt.fighters[i].timed_statuses.clear();
+            for n in ["poison", "web", "blinded", "dread", "hasted"] {
+                bt.fighters[i].timed_statuses.push((n.to_string(), far));
+            }
+        };
+        let held = |bt: &Battle| -> Vec<String> {
+            bt.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect()
+        };
+
+        load(&mut battle);
+        let _ = battle.cure(i, Family::Venom);
+        assert!(!held(&battle).contains(&"poison".into()), "venom should lift poison");
+        assert!(held(&battle).contains(&"blinded".into()), "venom cured a blindness");
+        assert!(held(&battle).contains(&"dread".into()), "venom cured a dread");
+
+        load(&mut battle);
+        let _ = battle.cure(i, Family::All);
+        assert_eq!(held(&battle), vec!["hasted".to_string()], "a Panacea should answer all four");
+    }
+
+    /// A revive at a REACHABLE rung. The only one in the game was a level-255 capstone, so a
+    /// party that lost a hero at level 20 had nothing but a rare drop.
+    #[test]
+    fn a_mender_can_raise_the_fallen_at_rung_fifty() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("r", 50), player("d", 50)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let medic = battle.idx("r").unwrap();
+        let dead = battle.idx("d").unwrap();
+        battle.fighters[medic].class_key = "resonant".into();
+        battle.fighters[dead].alive = false;
+        battle.fighters[dead].hp = 0;
+
+        let _ = battle.resolve_resonant(medic, "revitalize", dead);
+        assert!(battle.fighters[dead].alive, "revitalize left the hero down");
+        assert!(battle.fighters[dead].hp > 0);
+        // Back at the END of the queue, not with a free turn.
+        assert_eq!(battle.fighters[dead].gauge, 0.0);
+    }
+
+    /// DREAD forbids going at the thing that frightened you and NOTHING else. The hero keeps
+    /// every other option — that is what separates a fear from a stun.
+    #[test]
+    fn dread_stops_you_facing_the_enemy_and_leaves_the_rest() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].gauge = 1.0;
+        battle.fighters[i].awaiting = true;
+        battle.fighters[i].timed_statuses.push(("dread".into(), u64::MAX));
+        let foe = battle.fighters[battle.idx("m").unwrap()].combatant_id.clone();
+
+        let hit = battle.submit(
+            &battle.fighters[i].combatant_id.clone(),
+            "x1".into(),
+            BattleActionKind::Attack,
+            Some(vec![foe]),
+            None,
+            None,
+        );
+        assert!(hit.is_err(), "a frightened hero attacked the thing it fears");
+
+        // …but defending is still its own choice.
+        let guard = battle.submit(
+            &battle.fighters[i].combatant_id.clone(),
+            "x2".into(),
+            BattleActionKind::Defend,
+            None,
+            None,
+            None,
+        );
+        assert!(guard.is_ok(), "dread should not stop you defending: {guard:?}");
+    }
+
+    /// A BLOW BRINGS YOU ROUND — and a heal takes the wheel back from a frenzy. Both are how a
+    /// party answers a condition without carrying the right bottle.
+    #[test]
+    fn a_hit_wakes_you_and_a_heal_calms_you() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 10_000;
+        battle.fighters[i].hp = 5_000;
+        for n in ["dread", "confused", "frenzied"] {
+            battle.fighters[i].timed_statuses.push((n.to_string(), u64::MAX));
+        }
+
+        let _ = battle.apply_damage_reaching(i, 10, true);
+        let held = |bt: &Battle| -> Vec<String> {
+            bt.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect()
+        };
+        assert!(!held(&battle).contains(&"dread".into()), "a blow left the dread");
+        assert!(!held(&battle).contains(&"confused".into()), "a blow left the confusion");
+        assert!(held(&battle).contains(&"frenzied".into()), "a blow should NOT calm a frenzy");
+
+        let _ = battle.apply_heal(i, 50);
+        assert!(!held(&battle).contains(&"frenzied".into()), "healing left the frenzy");
+    }
+
+    /// A party where nobody can act is DEAD, not deadlocked. Paralysis skips the turn, so
+    /// without this the creatures would work through a party standing still — the unbounded
+    /// soft-lock a gauge cap used to cause.
+    #[test]
+    fn a_wholly_paralysed_party_is_a_defeat() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20), player("c", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let a = battle.idx("a").unwrap();
+        let c = battle.idx("c").unwrap();
+        battle.fighters[a].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        let mut events = Vec::new();
+        battle.check_terminal(&mut events);
+        assert!(events.is_empty(), "one paralysed hero is not a wipe");
+
+        battle.fighters[c].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        battle.check_terminal(&mut events);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Ended { outcome: BattleOutcome::Defeat }
+            )),
+            "a wholly paralysed party should be a defeat, got {events:?}"
+        );
+    }
+
+    /// CONFUSION rolls BOTH halves — what you do and who you do it to. A confusion that only
+    /// mis-aims is a targeting penalty; the point is that the order you gave is not the order
+    /// that happens.
+    #[test]
+    fn confusion_scrambles_the_action_and_the_target() {
+        let b = balance();
+        let mut actions = std::collections::HashSet::new();
+        let mut targets = std::collections::HashSet::new();
+        // Many rolls, because "random" is the assertion — one sample proves nothing.
+        for seed in 0..60u64 {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("a", 40), player("b", 40)],
+                vec![monster("m", 5_000, 1)],
+                &b,
+                seed,
+            );
+            let i = battle.idx("a").unwrap();
+            battle.fighters[i].class_key = "resonant".into();
+            battle.fighters[i].timed_statuses.push(("confused".into(), u64::MAX));
+            let (act, skill, target) =
+                battle.scramble(i, BattleActionKind::Attack, None);
+            actions.insert(format!("{act:?}:{}", skill.unwrap_or_default()));
+            targets.insert(target.map(|t| t[0].clone()).unwrap_or_default());
+        }
+        assert!(actions.len() > 2, "the action barely varies: {actions:?}");
+        assert!(targets.len() > 1, "it always hits the same combatant: {targets:?}");
+        // …and it can land on a friend, which is the whole flavour of the thing.
+        assert!(targets.iter().any(|t| t == "b" || t == "a"), "never once hit its own side");
+    }
+
+    /// PARALYSIS can be broken by WILL — a slim hope, and a high-Will hero has a better one.
+    /// Without a way out that is not a cure, a party with no mender simply loses.
+    #[test]
+    fn will_can_break_a_paralysis() {
+        let b = balance();
+        let odds = |wll: i32| -> f64 {
+            (b.affliction.paralysis_break_base + b.affliction.paralysis_break_per_wll * wll as f64)
+                .min(b.affliction.paralysis_break_cap)
+        };
+        assert!(odds(200) > odds(10), "Will should matter to breaking free");
+        assert!(odds(10) > 0.0, "even a frail hero gets a chance");
+        assert!(odds(100_000) <= b.affliction.paralysis_break_cap, "the cap should hold");
+        assert!(
+            b.affliction.paralysis_break_cap < 1.0,
+            "paralysis must never be shruggable outright, or curing it is pointless"
+        );
+
+        // And it actually fires. TWO heroes on purpose: one paralysed hero alone IS a wholly
+        // paralysed party, which is an instant defeat, so a solo fixture ends the battle
+        // before a single break can be rolled.
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 40), player("c", 40)],
+            vec![monster("m", 5_000, 1)],
+            &b,
+            7,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].wll = 400;
+        battle.fighters[i].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        // The fixture's second argument is SPEED, not level — at 40 the gauge takes ~130
+        // ticks to fill, so a 400-tick budget only buys about three attempts and a run of bad
+        // luck reads as a broken feature.
+        let mut freed = false;
+        for _ in 0..4_000 {
+            let _ = battle.tick();
+            if !battle.fighters[i].timed_statuses.iter().any(|(n, _)| n == "paralyzed") {
+                freed = true;
+                break;
+            }
+        }
+        assert!(freed, "a 400-Will hero never broke a paralysis in 4000 ticks");
+    }
+
     #[test]
     fn a_branded_attack_exploits_a_creature_s_weakness() {
         let b = balance();
@@ -8626,3 +9344,4 @@ mod deep_ladder_tests {
     }
 
 }
+

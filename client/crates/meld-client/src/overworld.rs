@@ -87,6 +87,56 @@ pub(crate) fn spawn_heat_bar(p: &mut ChildSpawnerCommands) {
     });
 }
 
+
+/// The blackout a BLINDED party sees: a full-screen mask with a small clear circle around
+/// the middle, so you can see your own feet and nothing else.
+#[derive(Component)]
+pub(crate) struct BlindMask;
+
+/// Spawn the mask once, hidden. It is four opaque panels leaving a gap in the centre rather
+/// than a texture, because the gap has to scale with the window and a bitmap would not.
+pub(crate) fn spawn_blind_mask(mut commands: Commands) {
+    for (left, right, top, bottom) in [
+        (0.0, 0.0, 0.0, 62.0),   // above the gap
+        (0.0, 0.0, 62.0, 0.0),   // below it
+        (0.0, 62.0, 38.0, 38.0), // left of it
+        (62.0, 0.0, 38.0, 38.0), // right of it
+    ] {
+        commands.spawn((
+            BlindMask,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(left),
+                right: Val::Percent(right),
+                top: Val::Percent(top),
+                bottom: Val::Percent(bottom),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.96)),
+            Visibility::Hidden,
+            GlobalZIndex(40),
+        ));
+    }
+}
+
+/// Show it exactly while somebody in the party is blinded.
+///
+/// This is PRESENTATION only. The server already stops sending a blinded party the creatures
+/// (see `snapshot_msgs`), because a client-side blackout is a suggestion and a hacked client
+/// would simply ignore it — you still walk into what you cannot see, and the fight starts.
+pub(crate) fn update_blind_mask(
+    roster: Res<crate::PartyRoster>,
+    mut mask: Query<&mut Visibility, With<BlindMask>>,
+) {
+    let blind = roster
+        .heroes
+        .iter()
+        .any(|h| h.afflictions.iter().any(|a| a == "blinded"));
+    for mut v in &mut mask {
+        *v = if blind { Visibility::Visible } else { Visibility::Hidden };
+    }
+}
+
 /// Keep the bar in step with the open heat: show/hide it, put the yellow where this
 /// blow's band is, and sweep the marker.
 pub(crate) fn update_heat_bar(
@@ -1050,6 +1100,7 @@ pub(crate) struct JoystickKnob;
 /// (keyboard/joystick) overrides and cancels any tap-to-move.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gather_steer(
+    roster: Res<crate::PartyRoster>,
     keys: Res<ButtonInput<KeyCode>>,
     touches: Res<Touches>,
     autoplay: Res<Autoplay>,
@@ -1096,6 +1147,12 @@ pub(crate) fn gather_steer(
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) { right_amt -= 1.0; }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) { right_amt += 1.0; }
     let mut mv = fwd * fwd_amt + right * right_amt;
+    // DISTRACTED: the controls fight you. Applied to the KEYBOARD/stick heading only —
+    // a tap-to-move destination is a place you pointed at, and reversing that would read as
+    // the game ignoring the click rather than as a condition.
+    if roster.heroes.iter().any(|h| h.afflictions.iter().any(|a| a == "distracted")) {
+        mv = -mv;
+    }
     if autoplay.0 && !world_idle_flag() {
         mv += Vec2::new(1.0, 0.0); // demo walks world-east, camera-independent
     }

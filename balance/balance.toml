@@ -457,6 +457,12 @@ resonant_bloom_self_cost = 0.35
 # living are mended, once a battle, for most of the Resonant's own. Nothing else in the
 # game raises the dead mid-fight, so it is priced as the thing you spend a run on.
 resonant_second_life_revive_fraction = 0.5
+# A revive at a REACHABLE rung. Before these, the only one in the game was the Resonant's
+# level-255 capstone, so a party that lost a hero at level 20 had nothing but a rare Waking
+# Salt drop. Both sit at rung 50 and both are thematically the class's own: the best healer in
+# the game, and an order whose whole idea is growth and rebirth. [TUNABLE]
+resonant_revitalize_revive_fraction = 0.3
+keeper_terras_gift_revive_fraction = 0.25
 resonant_second_life_heal_fraction = 0.35
 resonant_second_life_self_cost = 0.7
 
@@ -947,6 +953,26 @@ keeper = [0.3, 1.0, 1.0]          # a mender: its damage rides Mnd too
 # and no margin at all, so the step that reads as flavour at level 100 is lethal at level 1.
 # Raise it and you re-break the on-ramp; raise it a lot and a full set floors out at 0.0/2.0,
 # where a resistance stops being a trade-off and becomes a switch. [TUNABLE]
+# What an AFFLICTION does to you on the ROAD. Afflictions no longer expire, so one you caught
+# in a fight follows you out of it — and out here it has to be felt, or "you are poisoned" is a
+# word on a HUD.
+#
+# Venom is per STEP rather than per second, so standing still to wait it out does nothing (there
+# is no waiting it out — it needs a cure) but a long march with poison in you is a real cost.
+# [TUNABLE]
+[affliction]
+venom_hp_per_step = 1            # HP each poisoned/burning hero loses per movement input
+venom_steps_per_tick = 12        # …once every this many inputs, so a march bleeds gradually
+bindings_move_mult = 0.55        # webbed/chilled/bound: how much of your speed you keep
+# PARALYSIS is the one affliction that takes the turn itself, so it gets a way out that is not
+# only a cure: each turn the held fighter tries to break it, on WILL — the attribute that
+# already answers "how much of you is yours" (it buys HP and physical defence). Small on
+# purpose: it is a slim hope, not a reason to skip the cure, and the cap stops a high-Wll
+# Phoenix Guard shrugging paralysis off outright. [TUNABLE]
+paralysis_break_base = 0.08      # chance per turn before Will
+paralysis_break_per_wll = 0.004  # …plus this per point of Will
+paralysis_break_cap = 0.45       # …never better than this
+
 [armor_resist]
 step = 0.03
 # A creature's own `ward` — its elemental/psychic resistance — as a fraction of its physical

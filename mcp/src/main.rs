@@ -175,6 +175,18 @@ fn tool_schemas() -> Value {
             }
         },
         {
+            "name": "travel",
+            "description": "March outward toward a distance, FIGHTING what gets in the way, and report the arc: depth reached, fights won/lost, hp and potions spent, levels gained. This is how you measure the middle game — walk stops at every fight and auto_battle plays only one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to_distance": { "type": "integer", "description": "Stop on reaching this distance from the origin (default 500). Creature level is roughly distance/12.5, so d500 is level-40 country." },
+                    "policy": { "type": "string", "enum": ["attack", "kit"], "description": "How to fight what it meets. Default kit." },
+                    "max_ms": { "type": "integer", "description": "Give up after this long (default 300000, max 3600000)." }
+                }
+            }
+        },
+        {
             "name": "interact",
             "description": "The world verbs [E] covers, named explicitly: harvest a node, open a chest, descend an entrance, extract, pin a creature (Psyker), join a teammate's fight, drink a potion.",
             "inputSchema": {
@@ -344,6 +356,7 @@ async fn call(game: &mut Option<Session>, name: &str, args: &Value) -> Result<St
         "walk" => walk(s, args).await,
         "act" => act(s, args).await,
         "auto_battle" => auto_battle(s, args).await,
+        "travel" => travel(s, args).await,
         "interact" => interact(s, args).await,
         other => Err(format!("unknown tool {other}")),
     }
@@ -567,15 +580,10 @@ fn pick_target(b: &session::Battle, pick: Option<&Value>, skill: Option<&str>) -
     }
 }
 
-async fn auto_battle(s: &Session, args: &Value) -> Result<String, String> {
-    let budget = Duration::from_millis(args["max_ms"].as_u64().unwrap_or(120_000).min(600_000));
-    let use_kit = args["policy"].as_str().unwrap_or("kit") == "kit";
-    let deadline = tokio::time::Instant::now() + budget;
-
-    let opening = {
-        let st = s.state.lock().await;
-        st.battle.as_ref().map(|b| b.opening_hp).unwrap_or(0)
-    };
+/// Play the fight in progress to its end, on the policy. Shared by `auto_battle` (measure one
+/// encounter) and `travel` (measure a journey), because a journey is mostly fights and a
+/// second copy of this loop is a second place for the policy to drift.
+async fn play_out_battle(s: &Session, use_kit: bool, deadline: tokio::time::Instant) {
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
@@ -651,6 +659,19 @@ async fn auto_battle(s: &Session, args: &Value) -> Result<String, String> {
         })
         .await;
     }
+
+}
+
+async fn auto_battle(s: &Session, args: &Value) -> Result<String, String> {
+    let budget = Duration::from_millis(args["max_ms"].as_u64().unwrap_or(120_000).min(600_000));
+    let use_kit = args["policy"].as_str().unwrap_or("kit") == "kit";
+    let deadline = tokio::time::Instant::now() + budget;
+
+    let opening = {
+        let st = s.state.lock().await;
+        st.battle.as_ref().map(|b| b.opening_hp).unwrap_or(0)
+    };
+    play_out_battle(s, use_kit, deadline).await;
 
     let mut st = s.state.lock().await;
     let log = st.drain_log();
@@ -755,6 +776,160 @@ fn choose_order(me: &session::Comb, party: &[&session::Comb], pouch: &[(String, 
         .max_by_key(|s| s.unlock)
         .map(|s| Order::Skill(s.key.to_string()))
         .unwrap_or(Order::Attack)
+}
+
+/// The direction of the next clear-path waypoint AHEAD of us, as a unit vector.
+///
+/// "Ahead" is by radius rather than by list order: the party may be dropped anywhere along the
+/// trail, and steering at a waypoint already behind it walks the journey backwards.
+fn next_waypoint(st: &session::State) -> Option<(f64, f64)> {
+    let here = st.pos;
+    let r_here = (here.0 * here.0 + here.1 * here.1).sqrt();
+    let (wx, wy) = *st
+        .path
+        .iter()
+        // Meaningfully further out, not merely ahead: the trail meanders, so a waypoint
+        // 2 units out can be almost entirely SIDEWAYS, and steering at it makes no radial
+        // progress at all.
+        .filter(|(x, y)| (x * x + y * y).sqrt() > r_here + 10.0)
+        .min_by(|a, b| {
+            let d = |p: &(f64, f64)| (p.0 - here.0).powi(2) + (p.1 - here.1).powi(2);
+            d(a).total_cmp(&d(b))
+        })?;
+    let (dx, dy) = (wx - here.0, wy - here.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    (len > 1e-6).then(|| (dx / len, dy / len))
+}
+
+/// March outward, fighting what gets in the way, and report the ARC.
+///
+/// This is the tool the end-fight work needed and did not have. `walk` stops the moment a
+/// fight starts and `auto_battle` plays one encounter — so measuring the JOURNEY meant a human
+/// alternating them by hand, and the fights in between resolved themselves on the 15-second
+/// auto-act while the harness idled. A level-40 party aiming at d500 got **d27 in two
+/// minutes** that way.
+///
+/// What it reports is the shape of the middle game: how deep you got, how many fights that
+/// cost, what you spent to win them, and where you died if you did. Those are the numbers
+/// "can a party actually reach the end-world" is made of, and nothing in the repo could
+/// produce them before.
+async fn travel(s: &Session, args: &Value) -> Result<String, String> {
+    let target = args["to_distance"].as_i64().unwrap_or(500);
+    let budget = Duration::from_millis(args["max_ms"].as_u64().unwrap_or(300_000).min(3_600_000));
+    let use_kit = args["policy"].as_str().unwrap_or("kit") == "kit";
+    let deadline = tokio::time::Instant::now() + budget;
+
+    let (start_d, start_level) = {
+        let st = s.state.lock().await;
+        (st.distance(), st.base_level)
+    };
+    let (mut fights, mut wins, mut losses, mut fled) = (0u32, 0u32, 0u32, 0u32);
+    let mut hp_spent: i64 = 0;
+    let mut deepest = start_d;
+    // Following a meandering trail moves you sideways for stretches, so "no progress" has to
+    // mean no progress over a WHILE. Two slices of equal floored radius is just a bend.
+    let mut last_progress_d = start_d;
+    let mut quiet_slices = 0u32;
+    let mut potions_start: i64 = -1;
+
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        {
+            let st = s.state.lock().await;
+            if potions_start < 0 {
+                potions_start = pouch_total(&st);
+            }
+            deepest = deepest.max(st.distance());
+            if !st.run_active || st.distance() >= target {
+                break;
+            }
+        }
+        // Follow the world's guaranteed clear path rather than marching at the horizon.
+        // Obstacles are kept out of its tube by construction, so it is the only heading that
+        // cannot wedge — due east stalls against the first cliff it meets.
+        let heading = {
+            let st = s.state.lock().await;
+            next_waypoint(&st).unwrap_or((1.0, 0.0))
+        };
+        s.steer(Steer::Dir(heading.0, heading.1));
+        // Walk until something interrupts, then deal with it. A short slice keeps the loop
+        // responsive to a fight starting without spinning.
+        let interrupted = s
+            .wait_until(Duration::from_millis(4000), |st| {
+                st.in_battle() || !st.run_active || st.distance() >= target
+            })
+            .await;
+        if !interrupted {
+            let here = s.state.lock().await.distance();
+            if here >= last_progress_d + 2 {
+                last_progress_d = here;
+                quiet_slices = 0;
+            } else {
+                quiet_slices += 1;
+                // ~40s of walking without gaining ground is wedged, not winding.
+                if quiet_slices >= 10 {
+                    break;
+                }
+            }
+            continue;
+        }
+        quiet_slices = 0;
+
+        let in_fight = s.state.lock().await.in_battle();
+        if in_fight {
+            s.steer(Steer::Stop);
+            let before = s.state.lock().await.battle.as_ref().map(|b| b.opening_hp).unwrap_or(0);
+            fights += 1;
+            play_out_battle(s, use_kit, deadline).await;
+            let st = s.state.lock().await;
+            if let Some(b) = st.last_battle.as_ref() {
+                hp_spent += (before - b.party_hp()).max(0) as i64;
+                match b.ended.as_deref() {
+                    Some("victory") => wins += 1,
+                    Some("fled") => fled += 1,
+                    Some(_) => losses += 1,
+                    None => {}
+                }
+            }
+        }
+    }
+    s.steer(Steer::Stop);
+
+    let mut st = s.state.lock().await;
+    let log = st.drain_log();
+    let potions_left = pouch_total(&st);
+    let levels: Vec<String> = st
+        .heroes
+        .iter()
+        .map(|h| {
+            format!(
+                "{} {}",
+                h["class_key"].as_str().unwrap_or("?"),
+                h["level"].as_i64().unwrap_or(0)
+            )
+        })
+        .collect();
+    let reached = st.distance();
+    let ended = st.run_result.clone();
+    Ok(format!(
+        "TRAVEL d{start_d} -> d{reached} (deepest d{deepest} of a target d{target})\n         fights {fights}: {wins} won, {losses} lost, {fled} fled\n         hp spent {hp_spent}   potions used {}\n         levels: started {start_level}, now {}\n         {}{}",
+        (potions_start - potions_left).max(0),
+        levels.join(", "),
+        match &ended {
+            Some(r) => format!("RUN OVER: {r}\n"),
+            None if reached >= target => "arrived.\n".to_string(),
+            None => "still going (budget or a wall).\n".to_string(),
+        },
+        tail(&log)
+    ))
+}
+
+/// Everything in every hero's pouch, so "what did the journey cost" can include the bottles.
+fn pouch_total(st: &session::State) -> i64 {
+    st.pouches.iter().flat_map(|p| p.iter()).map(|(_, n)| *n).sum()
 }
 
 async fn interact(s: &Session, args: &Value) -> Result<String, String> {

@@ -162,6 +162,49 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**An AFFLICTION does not wear off; a BOON does.** Poison, a web, a mark, a dread — these hold
+until something CURES them, because outlasting a debuff by standing still is not a decision.
+Haste, Barrier, Regen and Evasion still expire and decay, or the opening turns of a fight would
+be the whole fight. The classification is `meld_proto::statuses` (`AFFLICTIONS` / `BOONS`), read
+by both sides, and an unknown condition is treated as a BOON on purpose: a new boon mistaken for
+an affliction becomes permanent and breaks every fight, while the reverse merely keeps the old
+timer.
+
+**A cure answers a CONDITION, not a checklist.** `statuses::Family` — Venom (poison, burn),
+Bindings (slowed/web/chill/bind), Senses (marked/distracted/blinded), Mind (dread/frenzied) —
+and each mender row lifts ONE: the Keeper's **Poultice** (5) draws venom, the Resonant's
+**Sanctuary** (35) calms a mind. Only a **Panacea** answers all four, and it is priced like it;
+a cheap bottle that cured everything would make every affliction a non-event. Every affliction
+must belong to a family (`every_affliction_belongs_to_a_family`) or nothing can lift it.
+
+**A revive has to be REACHABLE.** The only one in the game was the Resonant's level-255
+capstone, so a party that lost a hero at level 20 had nothing but a rare Waking Salt drop.
+The Resonant's **Revitalize** (50) raises one fallen ally and the Keeper's **Terra's Gift** (50)
+raises them all — both through `raise_fallen`, which resets the gauge so you come back at the
+END of the queue rather than with a free turn. A party row that can raise is the only kind whose
+targets include the dead; every other one skips them, because healing a corpse does nothing.
+
+**A blow brings you round; care takes the wheel back.** A physical hit clears `dread` and
+`confused` from whoever takes it — creature or hero — and any healing ends `frenzied`. Both are
+how a party answers a condition without carrying the right bottle, and both cut in the enemy's
+favour too. `dread` forbids acting on ENEMIES and nothing else (defend, drink, mend yourself or
+an ally, even swing at one, all still yours); `confused` swings at the wrong person; `frenzied`
+takes the choice away and attacks on its own; `paralyzed` skips the turn, and **a wholly
+paralysed party is a DEFEAT** — otherwise nobody can act while the creatures work through them,
+which is the unbounded soft-lock a gauge CAP used to cause.
+
+**BLINDNESS IS ENFORCED SERVER-SIDE, because people will hack the client.** A blinded party is
+not SENT the creatures — `snapshot_msgs` drops them into the same `hidden` set that hides
+another player's bounty mark. The client's blackout is presentation on top of that, and a
+patched client that skips the mask still learns nothing. `check_touch` runs off server positions
+regardless, so **you walk into what you cannot see and the fight starts anyway**. Any future
+"you cannot see X" condition belongs in that cull, never in the renderer alone.
+
+⚠️ **Afflictions were BATTLE-scoped and now are not.** `timed_statuses` still lives on the
+`Fighter`, which is rebuilt per fight — so the RUN remembers instead (`hero_afflictions`, beside
+`hero_hp`), harvested when a battle ends and re-applied when the next starts. That is what makes
+"until cured" mean something on the road, where venom bites per step and bindings drag a march.
+
 **A condition repaints the readout.** Statuses are not just icons: a hero's cell and a
 creature's HP bar take the condition's colour, from a palette named after things rather than
 built from primaries — poison purple, marked mustard, slow blue sage, rage red for

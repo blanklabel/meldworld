@@ -226,6 +226,11 @@ pub struct State {
     /// the shared bag is out of reach — so a policy that reads the backpack would offer
     /// potions no hero can actually reach.
     pub pouches: Vec<Vec<(String, i64)>>,
+    /// Waypoints of the world's GUARANTEED clear path, hub to deep portal — obstacles are
+    /// rejection-sampled out of its tube by construction, so following it is the one route
+    /// that always exists. Marching due east instead wedges against a cliff: measured, a
+    /// party aiming at d500 stalled at d222 doing exactly that.
+    pub path: Vec<(f64, f64)>,
     /// Set the moment the end fight is felled — the one event this whole harness exists for.
     pub world_end: Option<String>,
     pub steering: String,
@@ -566,6 +571,14 @@ fn apply(s: &mut State, v: &Value) -> bool {
         }
         "run.started" => {
             s.run_active = true;
+            s.path = p["path"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|q| Some((q["x"].as_f64()?, q["y"].as_f64()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
             s.base_level = p["base_run_level"].as_i64().unwrap_or(1) as i32;
             s.note(format!("dive started — heroes at level {}", s.base_level));
         }
@@ -596,6 +609,15 @@ fn apply(s: &mut State, v: &Value) -> bool {
                     .unwrap_or_default();
             }
             s.pouches = out;
+        }
+        // A streamed section extends the trail; without this the path runs out at the end of
+        // the initial chain and travel goes blind again exactly when it gets interesting.
+        "world.terrain_section" => {
+            for q in p["path"].as_array().unwrap_or(&empty) {
+                if let (Some(x), Some(y)) = (q["x"].as_f64(), q["y"].as_f64()) {
+                    s.path.push((x, y));
+                }
+            }
         }
         "run.perks" => {
             s.perks = p["perks"]

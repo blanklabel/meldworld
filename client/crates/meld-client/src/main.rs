@@ -355,6 +355,7 @@ fn main() {
             OnEnter(Screen::Overworld),
             (
                 overworld_ui,
+                overworld::spawn_blind_mask,
                 despawn::<BattleActor>,
                 despawn::<CityScene>,
                 despawn::<WorldEntity>,
@@ -439,6 +440,7 @@ fn main() {
                 update_minimap,
                 update_minimap_distance,
                 (remember_explored, station_input, heat_input, update_heat_bar),
+                overworld::update_blind_mask,
             )
                 .run_if(in_state(Screen::Overworld)),
         )

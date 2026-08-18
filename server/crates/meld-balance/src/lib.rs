@@ -50,6 +50,7 @@ pub struct Balance {
     pub perks: Perks,
     pub biome_gate: BiomeGate,
     pub armor_resist: ArmorResist,
+    pub affliction: Affliction,
 }
 
 /// The distance at which each biome starts appearing in a randomized run, keyed by
@@ -299,6 +300,8 @@ pub struct Battle {
     pub basic_attack_weight: i32,
     /// Fraction of a victim's carried chits a `steal chits` effect takes.
     pub steal_chits_fraction: f64,
+    pub resonant_revitalize_revive_fraction: f64,
+    pub keeper_terras_gift_revive_fraction: f64,
 }
 
 /// Creature loot tunables (economy.md sources S1). See the `[loot]` block in
@@ -638,6 +641,16 @@ pub struct Keeper {
 pub type EquipBest = std::collections::HashMap<String, [f64; 3]>;
 
 /// Potion magnitudes + Apothecary prices (GR-4 / EC-2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Affliction {
+    pub venom_hp_per_step: i32,
+    pub venom_steps_per_tick: i32,
+    pub bindings_move_mult: f64,
+    pub paralysis_break_base: f64,
+    pub paralysis_break_per_wll: f64,
+    pub paralysis_break_cap: f64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ArmorResist {
     pub step: f64,
