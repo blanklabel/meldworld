@@ -1743,9 +1743,12 @@ spike that makes the whole economy cohere.
       (`starting_salves` 3 + `starting_elixirs` 1, dealt into pouches round-robin) is ~1130 HP
       of healing on a 2648 HP party — 42% of its effective health. Four runs of the same
       geared party at the new values, differing only in potion use: never drinks → defeat at
-      75%; drinks on itself → **victory**, one hero left; pours into the lowest-% hero →
-      defeat at 67%; pours where the most HP returns → **victory**, one hero left. The fight
-      is decided by play, which is what an apex should be.
+      75%; drinks on itself → victory, one hero left; pours into the lowest-% hero → defeat
+      at 67%; pours where the most HP returns → victory in 37 hero-turns *or* defeat at 76%,
+      **run to run at an identical seed**. That last part is the finding: ATB is real-time,
+      so the order actions land in is not reproducible and the reference policy is on a coin
+      flip. A competent player wins reliably, a careless one does not — the shape wanted, but
+      a single run is not a verdict, and future tuning should take several.
       - A potion heals a fraction of the DRINKER's max HP, so the same bottle is 417 on the
         Phoenix Guard and 113 on the Psyker. Cross-hero pouring already worked end to end
         (engine `ally_target`, client Item row opens the ally picker); only the harness's

@@ -1197,7 +1197,10 @@ mod tests {
     /// at `end_fight_boss_atk = 420`. Incoming scales with the attack number; output does
     /// not. Both constants are floors — the reference policy heals reactively, does not keep
     /// Barrier up, and spreads damage across three bosses instead of focusing one — so a
-    /// party that plays well beats these figures and a careless one does worse.
+    /// party that plays well beats these figures and a careless one does worse. And they are
+    /// AVERAGES: at these values the reference policy wins or loses run to run at an
+    /// identical seed, because ATB is real-time and action ordering is not reproducible — so
+    /// a margin near 1.0 means "decided by play", not "wins".
     ///
     /// ⚠️ **This is deliberately NOT a gear check any more, because the game cannot express
     /// one here yet.** See the `EW-0` roadmap entry: a creature's ABILITY damage never
