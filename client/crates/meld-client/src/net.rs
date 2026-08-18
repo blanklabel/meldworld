@@ -17,7 +17,8 @@ use std::sync::mpsc;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use meld_proto::common::Combatant;
 use meld_proto::realtime::{
-    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message as _,
+    battle as wb, lobby as wl, movement as wm, onboarding as wo, run as wr, session as ws,
+    world as ww, Message as _,
 };
 use meld_proto::RawEnvelope;
 use serde_json::{json, Value};
@@ -93,6 +94,10 @@ pub enum ClientCmd {
     LobbyReady { ready: bool },
     LobbyStart,
     LobbyLeave,
+    /// Dismiss the town welcome tour (finished OR skipped) — persisted per-account.
+    OnboardingTownSeen,
+    /// Dismiss the first-dive briefing — persisted per-account.
+    OnboardingRunSeen,
 }
 
 /// A render-ready combatant view for the battle screen.
@@ -567,6 +572,11 @@ pub enum ServerMsg {
     },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
     Perks { perks: PerksLine },
+    /// `onboarding.status` — what this account has already dismissed (the town
+    /// welcome tour, the first-dive briefing). Sent once, post-connect-load —
+    /// race-free w.r.t. a returning player's saved state (never rides the
+    /// immediate `Connected` message, which fires before the load can land).
+    OnboardingStatus { town_seen: bool, run_seen: bool },
     /// CL-1: what the account owns, plus anything just earned to announce.
     Unlocked {
         newly: Vec<UnlockLine>,
@@ -2013,6 +2023,8 @@ impl Inner {
             }
             ClientCmd::LobbyStart => self.send_env(wl::Start::TYPE, json!({})),
             ClientCmd::LobbyLeave => self.send_env(wl::Leave::TYPE, json!({})),
+            ClientCmd::OnboardingTownSeen => self.send_env(wo::TownSeen::TYPE, json!({})),
+            ClientCmd::OnboardingRunSeen => self.send_env(wo::RunSeen::TYPE, json!({})),
             ClientCmd::Connect { .. } => {}
         }
     }
@@ -2403,6 +2415,12 @@ impl Inner {
                     party_slots: raw.payload["party_slots"].as_i64().unwrap_or(1) as i32,
                     banner: raw.payload["banner"].as_bool().unwrap_or(false),
                     deepest_ever: raw.payload["deepest_ever"].as_i64().unwrap_or(0) as i32,
+                });
+            }
+            "onboarding.status" => {
+                self.out.push_back(ServerMsg::OnboardingStatus {
+                    town_seen: raw.payload["town_seen"].as_bool().unwrap_or(false),
+                    run_seen: raw.payload["run_seen"].as_bool().unwrap_or(false),
                 });
             }
             "run.level_up" => {

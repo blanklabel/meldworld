@@ -130,6 +130,7 @@ fn main() {
                 | ServerMsg::Backpack { .. }
                 | ServerMsg::Party { .. }
                 | ServerMsg::Perks { .. }
+                | ServerMsg::OnboardingStatus { .. }
                 | ServerMsg::LevelUp { .. }
                 | ServerMsg::Unlocked { .. }
                 | ServerMsg::WorldPath { .. }

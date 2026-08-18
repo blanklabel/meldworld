@@ -149,6 +149,16 @@ impl Db {
         sqlx::query("ALTER TABLE players ADD COLUMN IF NOT EXISTS has_dived BOOLEAN NOT NULL DEFAULT false")
             .execute(pool)
             .await?;
+        // Onboarding: whether this account has dismissed the town welcome tour
+        // (finished it or ticked "don't show again") and the first-dive briefing.
+        // Same idempotent-ALTER pattern as has_dived, so existing accounts default
+        // to false (they'll see the popups once, same as any other new-ish account).
+        sqlx::query("ALTER TABLE players ADD COLUMN IF NOT EXISTS tutorial_town_seen BOOLEAN NOT NULL DEFAULT false")
+            .execute(pool)
+            .await?;
+        sqlx::query("ALTER TABLE players ADD COLUMN IF NOT EXISTS tutorial_run_seen BOOLEAN NOT NULL DEFAULT false")
+            .execute(pool)
+            .await?;
         // The Vault: per-player persistent chits balance + banked item stacks.
         // (Gear/gems/durability land with the gear slice; materials/consumables
         // are stacked by kind here.) One statement per query() — sqlx uses
@@ -1670,6 +1680,80 @@ impl Db {
         Ok(())
     }
 
+    pub async fn get_tutorial_town_seen(&self, player_id: Uuid) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let row = sqlx::query("SELECT tutorial_town_seen FROM players WHERE player_id = $1")
+                    .bind(player_id)
+                    .fetch_optional(pool)
+                    .await?;
+                Ok(row.map(|r| r.get::<bool, _>("tutorial_town_seen")).unwrap_or(false))
+            }
+            Backend::Mem(m) => Ok(m
+                .lock()
+                .unwrap()
+                .players
+                .get(&player_id)
+                .map(|p| p.tutorial_town_seen)
+                .unwrap_or(false)),
+        }
+    }
+
+    /// Mark that this account has dismissed the town welcome tour. Idempotent.
+    pub async fn set_tutorial_town_seen(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("UPDATE players SET tutorial_town_seen = true WHERE player_id = $1")
+                    .bind(player_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                if let Some(p) = m.lock().unwrap().players.get_mut(&player_id) {
+                    p.tutorial_town_seen = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn get_tutorial_run_seen(&self, player_id: Uuid) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let row = sqlx::query("SELECT tutorial_run_seen FROM players WHERE player_id = $1")
+                    .bind(player_id)
+                    .fetch_optional(pool)
+                    .await?;
+                Ok(row.map(|r| r.get::<bool, _>("tutorial_run_seen")).unwrap_or(false))
+            }
+            Backend::Mem(m) => Ok(m
+                .lock()
+                .unwrap()
+                .players
+                .get(&player_id)
+                .map(|p| p.tutorial_run_seen)
+                .unwrap_or(false)),
+        }
+    }
+
+    /// Mark that this account has dismissed the first-dive briefing. Idempotent.
+    pub async fn set_tutorial_run_seen(&self, player_id: Uuid) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query("UPDATE players SET tutorial_run_seen = true WHERE player_id = $1")
+                    .bind(player_id)
+                    .execute(pool)
+                    .await?;
+            }
+            Backend::Mem(m) => {
+                if let Some(p) = m.lock().unwrap().players.get_mut(&player_id) {
+                    p.tutorial_run_seen = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Bank a run's backpack into the player's Vault atomically (extraction).
     /// Upserts each item stack and adds `chits`; creates the vault row if absent.
     pub async fn bank_extraction(
@@ -1838,6 +1922,8 @@ impl Db {
                         created_at,
                         active_title: None,
                         has_dived: false,
+                        tutorial_town_seen: false,
+                        tutorial_run_seen: false,
                     },
                 );
                 m.chits.insert(player_id, 0);
@@ -3741,6 +3827,8 @@ struct MemPlayer {
     created_at: DateTime<Utc>,
     active_title: Option<String>,
     has_dived: bool,
+    tutorial_town_seen: bool,
+    tutorial_run_seen: bool,
 }
 
 impl MemPlayer {

@@ -46,6 +46,7 @@ mod netglue; // server messages → state, demo driver, despawn + font install
 mod overlays; // inventory/equip/status, gear tooltip, loot report, level-up
 mod overworld; // movement/camera, sprite reconciler, terrain, followers, minimap
 mod screens; // Join, co-op Lobby, Ended summary
+mod tutorial; // onboarding: the town welcome tour + the first-dive briefing
 mod world_render; // asset load + scene setup, biome ground, sky/weather/water
 pub(crate) use battle::*;
 pub(crate) use city::*;
@@ -196,6 +197,7 @@ fn main() {
         .init_resource::<PerksRes>()
         .init_resource::<LevelUpQueue>()
         .init_resource::<UnlocksRes>()
+        .init_resource::<Tutorial>()
         .init_resource::<LoadoutData>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
@@ -316,6 +318,21 @@ fn main() {
             )
                 .run_if(in_state(Screen::City)),
         )
+        // Onboarding: the town welcome tour. A separate call rather than folded into
+        // the City tuple above, which is already at Bevy's practical flat-tuple ceiling.
+        .add_systems(
+            Update,
+            (
+                tutorial::render_town_tour,
+                tutorial::tour_buttons,
+                tutorial::tour_keyboard,
+                tutorial::tour_checkbox_click,
+                // Styles the real tap-action bar in place; lives in city.rs since it
+                // touches that module's own `TapActionBar` marker.
+                city::highlight_tap_action_bar,
+            )
+                .run_if(in_state(Screen::City)),
+        )
         // Lobby (co-op)
         .add_systems(OnEnter(Screen::Lobby), lobby_ui)
         .add_systems(OnExit(Screen::Lobby), despawn::<LobbyRoot>)
@@ -391,6 +408,11 @@ fn main() {
                 render_overlay,
             )
                 .run_if(in_state(Screen::Overworld)),
+        )
+        // Onboarding: the first-dive briefing.
+        .add_systems(
+            Update,
+            tutorial::first_run_popup.run_if(in_state(Screen::Overworld)),
         )
         .add_systems(
             Update,
@@ -995,6 +1017,30 @@ struct UnlockBannerRoot;
 struct Announce<'w> {
     levelup: ResMut<'w, LevelUpQueue>,
     unlocks: ResMut<'w, UnlocksRes>,
+    tutorial: ResMut<'w, Tutorial>,
+}
+
+/// Per-account onboarding popups: the town welcome tour and the first-dive
+/// briefing. Both gate on `loaded` — until the post-connect server sync
+/// (`onboarding.status`) lands, neither popup may render, or a RETURNING
+/// player would flash the first-timer UI during the race window before their
+/// real flags arrive.
+#[derive(Resource, Default)]
+struct Tutorial {
+    /// True once `onboarding.status` has been received at least once this session.
+    loaded: bool,
+    town_seen: bool,
+    run_seen: bool,
+    /// Town tour step index while it's actively showing (0..=3); `None` = not
+    /// currently running (either finished/skipped, or not yet started/loaded).
+    town_step: Option<u8>,
+    /// The "don't show this tutorial again" checkbox state, live while step 0
+    /// is showing.
+    skip_checked: bool,
+    /// One-shot arm flag for the first-dive briefing: set by the `RunStarted`
+    /// handler the moment a fresh run is confirmed, cleared once the briefing
+    /// has been shown/dismissed so re-entering Overworld later doesn't re-trigger it.
+    show_run_popup: bool,
 }
 
 /// Marker for spawned path-trail dots (despawned when the path changes).

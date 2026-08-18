@@ -96,6 +96,31 @@ pub fn panel(width: Val) -> impl Bundle {
     )
 }
 
+/// `panel`, but width-capped for content that must also survive a narrow (mobile)
+/// viewport: `width` is a `Percent` that shrinks with the window, `max_width` stops
+/// it from stretching absurdly wide on desktop. Every existing `panel` caller uses a
+/// bare fixed `Val::Px` with no viewport clamp — fine on desktop, a real overflow
+/// risk on a ~375px phone canvas — so new content that must be mobile-safe should
+/// reach for this instead.
+pub fn panel_capped(width: Val, max_width: Val) -> impl Bundle {
+    (
+        Node {
+            width,
+            max_width,
+            max_height: Val::Vh(92.0),
+            overflow: Overflow::scroll_y(),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(8.0),
+            padding: UiRect::all(Val::Px(22.0)),
+            border: UiRect::all(Val::Px(BORDER)),
+            ..default()
+        },
+        BackgroundColor(GLASS),
+        BorderColor(EDGE),
+        BorderRadius::all(Val::Px(RADIUS)),
+    )
+}
+
 /// The same panel laid out as a **row**, for a banner with an image beside its
 /// text. Same fill, edge and radius — only the axis differs.
 pub fn panel_row(width: Val) -> impl Bundle {

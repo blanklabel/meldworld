@@ -58,6 +58,13 @@ pub(crate) enum CityAct {
 #[derive(Component)]
 pub(crate) struct CityActionButton(pub(crate) CityAct);
 
+/// The tap-action bar's own container — carries an invisible border by default,
+/// brightened by `highlight_tap_action_bar` while the town tour is pointing at
+/// it (`tutorial::TAP_ACTION_BAR_STEP`), so the highlight always bounds
+/// exactly the real, currently-rendered bar rather than a guessed box.
+#[derive(Component)]
+pub(crate) struct TapActionBar;
+
 /// Root UI node that holds the per-district nameplates (small, always-on labels
 /// floating above each district — distinct from the interactive travel column:
 /// this is passive world signage, not a menu).
@@ -291,6 +298,7 @@ pub(crate) fn city_hud(
             // (Enter), Vault (V), Co-op (C) — so the hub is fully click/tap driven
             // without having to walk to each district first.
             p.spawn((
+                TapActionBar,
                 Node {
                     position_type: PositionType::Absolute,
                     right: Val::Px(16.0),
@@ -298,8 +306,13 @@ pub(crate) fn city_hud(
                     flex_direction: FlexDirection::Column,
                     row_gap: Val::Px(8.0),
                     align_items: AlignItems::FlexEnd,
+                    padding: UiRect::all(Val::Px(6.0)),
+                    border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
+                // Invisible until the tour highlights it (see `TapActionBar`).
+                BorderColor(Color::NONE),
+                BorderRadius::all(Val::Px(10.0)),
             ))
             .with_children(|bar| {
                 for (act, label) in [
@@ -352,6 +365,22 @@ fn city_button(parent: &mut ChildSpawnerCommands, act: CityAct, label: &str) {
                 TextColor(Color::srgb(0.98, 0.9, 0.68)),
             ));
         });
+}
+
+/// Brightens the tap-action bar's own border while the town tour is pointing at
+/// it, and clears it otherwise — mutated in place every frame (like
+/// `battle::style_command_menu`) rather than despawned/respawned, since the bar
+/// itself is spawned once in `city_hud`, not rebuilt per frame.
+pub(crate) fn highlight_tap_action_bar(
+    tutorial: Res<Tutorial>,
+    mut bar: Query<&mut BorderColor, With<TapActionBar>>,
+) {
+    let Ok(mut border) = bar.single_mut() else { return };
+    border.0 = if tutorial.town_step == Some(crate::tutorial::TAP_ACTION_BAR_STEP) {
+        glass::ACTIVE_EDGE
+    } else {
+        Color::NONE
+    };
 }
 
 /// Handle taps on the city action buttons — the same effects as the `city_input`
@@ -673,10 +702,18 @@ pub(crate) fn city_input(
     mut boards: (ResMut<HuntBoardData>, Res<BountyData>),
     mut shop_selling: ResMut<ShopSelling>,
     mut pending: ResMut<PendingPurchase>,
-    unlocks: Res<UnlocksRes>,
+    // Grouped for the same reason as `boards` above: this system is already at
+    // Bevy's 16-param ceiling.
+    (unlocks, tutorial): (Res<UnlocksRes>, Res<Tutorial>),
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
+    // The welcome tour has its own keyboard handler (`tutorial::tour_keyboard`)
+    // reading the same Enter/Space keys to advance its steps — without this
+    // guard, pressing Enter to step the tour would ALSO fire a dive here.
+    if tutorial.town_step.is_some() {
+        return;
+    }
     // The Drill Yard is modal and full of text fields, so town hotkeys are off while
     // it is open: `T` is a tutorial dive and `Enter` is a dive, and both sit in the
     // middle of the alphabet you type a hero's name out of. Autoplay never opens the
@@ -3396,6 +3433,7 @@ pub(crate) fn render_travel_column(
     mut commands: Commands,
     city: Res<CityUi>,
     session: Res<Session>,
+    tutorial: Res<Tutorial>,
     old: Query<Entity, With<TravelColumn>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
@@ -3415,6 +3453,12 @@ pub(crate) fn render_travel_column(
     {
         return;
     }
+    // The town tour highlights this column by brightening/thickening ITS OWN
+    // border rather than drawing an approximated overlay box on top — since
+    // this whole node is rebuilt fresh every frame anyway, the highlight is
+    // guaranteed to bound exactly what's actually rendered, however many
+    // districts the list holds.
+    let highlighted = tutorial.town_step == Some(crate::tutorial::TRAVEL_COLUMN_STEP);
     let Ok(root) = root_q.single() else { return };
     commands.entity(root).with_children(|p| {
         p.spawn((
@@ -3428,11 +3472,11 @@ pub(crate) fn render_travel_column(
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
                 padding: UiRect::all(Val::Px(14.0)),
-                border: UiRect::all(Val::Px(1.0)),
+                border: UiRect::all(Val::Px(if highlighted { 3.0 } else { 1.0 })),
                 ..default()
             },
             BackgroundColor(glass::GLASS),
-            BorderColor(glass::EDGE),
+            BorderColor(if highlighted { glass::ACTIVE_EDGE } else { glass::EDGE }),
             BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|col| {
