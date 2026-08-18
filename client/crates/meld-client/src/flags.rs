@@ -290,6 +290,17 @@ pub(crate) fn feel_flag() -> Option<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn world_feel_flag() -> Option<String> {
+    std::env::var("MELD_WORLD_FEEL").ok().filter(|s| !s.is_empty())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn world_feel_flag() -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("worldfeel").filter(|s| !s.is_empty())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn levelup_mockup_flag() -> bool {
     std::env::var("MELD_LEVELUP").is_ok()
 }

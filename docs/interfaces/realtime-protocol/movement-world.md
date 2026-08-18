@@ -358,14 +358,18 @@ follows immediately and is what actually repaints the ground: the client keys it
 biome ground shader and HUD label off per-section radius rings, so re-sending the
 sections *is* the retile. This message is the words and the damage.
 
-**The region's props are re-scattered, not reskinned**: the incoming biome strews its
-own count at its own density in its own places. Placement rejects the clear-path tube
-exactly as world generation does, so the route out stays feasible by construction —
-but a prop can land on a player standing off-trail, and the server then walks them to
-the region's entry and sends them a `movement.position_correction`. **Terrain
-elevation and the clear path itself are never changed.** Bounty marks, chests and
-player-raised stations survive; the region's other creatures and its resource nodes do
-not, and what grows back belongs to the new biome.
+**The region's props are re-scattered and its mountains re-cut**, not reskinned: the
+incoming biome strews its own count at its own density in its own places, and raises
+or flattens peaks at its own weighting. The retiled sections' `world.terrain_section`
+messages carry the new peaks, and a client keys peaks by section — re-sending a
+section *replaces* its mountains rather than adding to them.
+
+Placement rejects the clear-path tube exactly as world generation does, so the route
+out stays feasible by construction, and **the clear path itself is never changed**.
+But the new land can land on a player standing off-trail, and the server then walks
+them to the region's entry and sends a `movement.position_correction`. Bounty marks,
+chests and player-raised stations survive; the region's other creatures and its
+resource nodes do not, and what grows back belongs to the new biome.
 
 **Payload**
 

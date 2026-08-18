@@ -1083,19 +1083,31 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   is section-granular for a concrete reason: the client already keys its ground shader and
   biome label off per-section radius rings, so re-sending `world.terrain_section` **is**
   the retile and the Shift needed no new rendering path at all.
-  **The props are RE-SCATTERED, not reskinned** (`reroll_props`): the incoming biome
-  strews its own count at its own density in its own places, so a wood becoming desert
-  genuinely thins instead of turning into differently-coloured trees in the same spots.
+  **The props are RE-SCATTERED and the mountains RE-CUT, not reskinned** (`reroll_props`
+  / `reroll_peaks`): the incoming biome strews its own count at its own density in its own
+  places, so a wood becoming desert genuinely thins instead of turning into
+  differently-coloured trees in the same spots. **Elevation is the heightmap plus PEAKS**
+  — discrete terraces are retired (`[worldgen] terraces_per_area = 0`), so a peak is what
+  "the land changed shape" has to mean, and it is biome-weighted through the same
+  `biome_terrace_mult` generation uses: Ashfall raises ranges where Desert flattens them.
+  A peak is a **smooth walkable dome** (`height <= radius * PEAK_MAX_ASPECT`), which is
+  exactly why it is safe to re-roll mid-run where re-rolling the height FIELD would not
+  be: a per-region height offset would tear at the ring's edge into a wall nobody can
+  cross, and the clear path crosses that edge. Peaks are keyed **per section** on the
+  client now — a re-sent section replaces its own mountains rather than growing a second
+  one beside each of the first, which is what re-sending for a retile would otherwise do.
   Placement rejects the clear-path tube exactly as generation does, so the way out stays
   feasible **by construction** — but a prop can still land on a player standing off-trail,
   and the answer is to **move the player, not to constrain the world**: `rescue_stranded`
-  walks anyone a prop landed on back to the region's entry (the clear-path waypoint at its
-  inner edge — open ground, level 0, on the route they were already following) and the
-  server sends them a `movement.position_correction`, because the local avatar chases the
-  snapshot exponentially and a teleport with no correction renders as a second-long slide
-  with the camera along for the ride. **Terrain elevation is the one thing NOT re-rolled**:
-  topography is the ground's bones, and re-cutting terraces under a live player drops them
-  through a cliff face rather than merely boxing them in. Force damage is a **fraction of
+  walks anyone a prop landed on — or anyone the ground rose under — back to the region's
+  entry (the clear-path waypoint at its inner edge, open ground, level 0, on the route they
+  were already following) and the server sends them a `movement.position_correction`,
+  because the local avatar chases the snapshot exponentially and a teleport with no
+  correction renders as a second-long slide with the camera along for the ride.
+  **The trail is safe from the rescue, and that is the rule worth knowing**: the
+  clear-path tube holds no prop and no raised ground by construction, so a player who
+  stayed on the route is never moved and a Shift costs them only HP. Walking off-trail is
+  what puts you somewhere the world can rearrange out from under you. Force damage is a **fraction of
   each hero's own max HP** scaled by the region's size, and a party wiped by one dies
   through `world_death` (the dungeon-trap path, renamed — it is now also how you die to
   the weather). **The `[biome_gate]` is checked SIDEWAYS too**: the gate that holds the

@@ -1889,7 +1889,10 @@ reward_gear_from_rank = 2        # rank at which contracts start paying a rolled
 [shift]
 # Cadence: ticks between one Shift landing and the next being scheduled, jittered
 # ±`cadence_jitter` off the seed. At `tick_ms = 100` these are 3–7 minutes.
-cadence_ticks = 3000             # ~5 min at the shipped 100 ms tick
+cadence_ticks = 12000            # ~20 min at the shipped 100 ms tick. Long enough that a
+                                 # Shift is an event you remember rather than weather you
+                                 # stop reading; short enough that a region you stripped is
+                                 # refreshed within a session.
 cadence_jitter = 0.4             # ± fraction, drawn per generation from the seed
 # The tell. A region announces itself before it goes: the sky turns, and you have
 # this long to walk out of it. Short enough to be a scramble, long enough to be a

@@ -133,6 +133,10 @@ pub struct ShiftOutcome {
     /// server corrects their client with these rather than letting it argue with the
     /// authoritative position for a second.
     pub moved: Vec<(String, crate::Position)>,
+    /// Each retiled section's new mountains, so the retile message carries them. Peaks are
+    /// what elevation IS in this world (discrete terraces are retired), so this is the
+    /// half of "the land changed shape" that renders.
+    pub peaks: Vec<(usize, Vec<[f32; 4]>)>,
 }
 
 #[cfg(test)]

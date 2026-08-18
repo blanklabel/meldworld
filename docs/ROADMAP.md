@@ -1611,20 +1611,31 @@ belongs to the new land.
     ring in the WG-4 fan and the client already keys its ground shader and biome HUD off
     per-section rings, so re-sending `world.terrain_section` *is* the retile: the Shift
     needed no new rendering path at all.
-  - **The props are re-scattered, not reskinned.** The incoming biome strews its own
-    count at its own density in its own places, so a wood becoming desert genuinely thins
-    out instead of turning into differently-coloured trees in the same spots. Placement
-    rejects the clear-path tube exactly as generation does, so the way out stays feasible
-    **by construction** (`the_way_out_survives_every_shift` walks 25 generations and
-    checks every surviving prop against the tube).
-  - **A prop can still land on you, and the answer is to move the player.**
-    `rescue_stranded` walks anyone the new land was strewn on top of back to the region's
-    entry — the clear-path waypoint at its inner edge, which is open ground, level 0, and
-    on the route they were already following — and the server follows with a
-    `movement.position_correction` so the client snaps rather than sliding across the map
-    for a second. **Terrain elevation is the one thing not re-rolled**: topography is the
-    ground's bones, and re-cutting terraces under a live player drops them through a cliff
-    face rather than merely boxing them in.
+  - **The props are re-scattered and the mountains re-cut, not reskinned.** The incoming
+    biome strews its own count at its own density in its own places, so a wood becoming
+    desert genuinely thins out instead of turning into differently-coloured trees in the
+    same spots. Placement rejects the clear-path tube exactly as generation does, so the
+    way out stays feasible **by construction** (`the_way_out_survives_every_shift` walks 25
+    generations and checks every surviving prop against the tube).
+  - **Elevation is the heightmap plus PEAKS, so peaks are what re-cutting the ground
+    means.** Discrete terraces are retired (`[worldgen] terraces_per_area = 0`), and a peak
+    is biome-weighted through the same `biome_terrace_mult` generation uses — so the Shift
+    inherits the contrast for free: Ashfall raises ranges where Desert flattens them. A
+    peak is a **smooth walkable dome**, which is exactly why it is safe to re-roll mid-run
+    where re-rolling the height *field* would not be: a per-region height offset would tear
+    at the ring's edge into a wall nobody can cross, and the clear path crosses that edge.
+    `a_re_cut_mountain_is_still_walkable` holds the aspect ratio after 30 Shifts.
+    - Fixed on the way: the client **appended** a streamed section's peaks, so a re-sent
+      section (which is how a Shift retiles) would have grown a second mountain beside each
+      of the first. Peaks are keyed per section now, and re-sending is idempotent.
+  - **The new land can land on you, and the answer is to move the player.**
+    `rescue_stranded` walks anyone a fresh prop was strewn on top of — or anyone the ground
+    rose under — back to the region's entry, the clear-path waypoint at its inner edge:
+    open ground, level 0, on the route they were already following. The server follows with
+    a `movement.position_correction` so the client snaps rather than sliding across the map
+    for a second. **The trail is safe from this**, which is the emergent rule worth
+    knowing: the tube holds no prop and no raised ground by construction, so staying on the
+    route means a Shift costs you only HP.
   - **The tell is a real window** (`[shift] warning_ticks`, 10 s): `world.shift_warning`
     goes to everyone in the world, naming the ring and what it is about to become, and a
     test holds the window long enough to actually walk out of the widest region it can
@@ -1642,6 +1653,23 @@ belongs to the new land.
     simply "it always lands where you aren't".
   - Bounty marks, chests and player-raised stations survive a Shift. Contesting one is
     what **BD-3**'s anchors are *for*; that is its fight, not this one's.
+- [x] **SL-4 — World pacing: the Shift, the sun and the rain all slowed down.** Three
+  numbers that were all too fast to read as weather.
+  - **A Shift every ~20 minutes** (`[shift] cadence_ticks`), up from ~5. Long enough that
+    one is an event you remember rather than something you stop reading; short enough that
+    a region you stripped is refreshed within a session.
+  - **A day is 10 minutes**, up from 3.5 — the sun used to strobe, and you could watch dawn
+    and dusk inside one fight.
+  - **It rains ~3% of the time instead of ~8%**, and a storm arrives every ~11 minutes
+    instead of every ~4. The dry spell is the only number that moved, because it is the one
+    that governs the rate; the storm itself was never the problem.
+  - These are a *look*, so they follow `BattleFeel`'s precedent rather than going into
+    `balance.toml`: a `WorldFeel` resource with the shipped values as defaults and a runtime
+    override (`MELD_WORLD_FEEL="day_len=900,fair_secs=800"` / `?worldfeel=`). They had
+    drifted into a bare `const` plus four magic literals inside `advance_sky`, which is
+    exactly what made dialing them in a recompile per guess. The Shift's cadence stays in
+    `balance.toml`, because when the world rearranges is a *rule*.
+
 - [x] **SL-3 — The Shift you can see.** The doomed region **burns on the ground itself**,
   brightest at its two edges, so the boundary is a line you can see and run across rather
   than a number in a message. It rides the ground shader's existing `BiomeParams` uniform

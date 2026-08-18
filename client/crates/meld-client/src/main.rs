@@ -162,6 +162,7 @@ fn main() {
         .init_resource::<BattleCam>()
         .init_resource::<PartyView>()
         .insert_resource(BattleFeel::from_flags())
+        .insert_resource(crate::feel::WorldFeel::from_flags())
         .init_resource::<HitFx>()
         .init_resource::<AtbFlash>()
         .init_resource::<AllyPanel>()
