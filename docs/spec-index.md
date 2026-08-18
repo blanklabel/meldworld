@@ -12,13 +12,13 @@ Canonical data types split into persistent vs. ephemeral classes: player/progres
 
 ### interfaces/http-api
 
-Documents the full persistent-state HTTP API (base path `/v1`, opaque Bearer session-token auth per CANON D17, cursor pagination, canonical error envelope) across 6 resource groups: auth & players, vault & gear, crafting & meld skills, economy (stalls & bounty contracts), runs & world, and leaderboards & seasons — 45 endpoints total.
+Documents the full persistent-state HTTP API (base path `/v1`, opaque Bearer session-token auth per CANON D17, cursor pagination, canonical error envelope) across 6 resource groups: auth & players, vault & gear, crafting & meld skills, economy (stalls & bounty contracts), runs & world, and leaderboards & seasons. The index's endpoint table is reconciled against the axum routers: **35 routes are built**; the remainder (stalls, contracts, gems/sockets, build templates, run history, hub rebuild, cosmetics) is specified-but-unbuilt and marked as such.
 
 → [`interfaces/http-api.md`](interfaces/http-api.md) (index + 6 detail files)
 
 ### interfaces/realtime-protocol
 
-Documents the realtime WebSocket protocol (ephemeral state only): connection lifecycle and envelope/sequencing, session auth-handshake/heartbeat/resume, movement and chunk streaming, server-authoritative ATB battle sync, and run/social messages — 40 messages across 6 domains.
+Documents the realtime WebSocket protocol (ephemeral state only): connection lifecycle and envelope/sequencing, session auth-handshake/heartbeat/resume, movement and terrain streaming, server-authoritative ATB battle sync, and run/chat/onboarding/lobby messages. The index's Message Summary is reconciled against `meld-proto`: **64 shipped** messages across 8 domains, plus 16 specified-but-unbuilt.
 
 → [`interfaces/realtime-protocol.md`](interfaces/realtime-protocol.md) (index + 4 detail files: session, movement-world, battle, run-social)
 
@@ -26,7 +26,7 @@ Documents the realtime WebSocket protocol (ephemeral state only): connection lif
 
 ### behaviors/world-generation
 
-Deterministic seeded world generation: radial distance model, tier/mlevel/stat_mult formulas, biome bands, chunk streaming, chokepoints, Gatekeeper arenas, extraction portal placement, loot banding, and infinite scaling past d=5000 — plus the shipped radial infinite layout, web-of-trails overworld, and per-section streaming (WG-4/streaming). The persistent-world + **Shift** target it evolves toward is CANON §W (see the precursor-vs-target banner in the doc).
+Deterministic seeded world generation: radial distance model, tier/mlevel/stat_mult formulas, biome bands, chunk streaming, chokepoints, Gatekeeper arenas, extraction portal placement, loot banding, and infinite scaling (the three-curve creature scaling — attack `^2.0`, defence `^0.7`, HP linear in tier — replaces the old single `^1.25`) — plus the shipped radial infinite layout, web-of-trails overworld, and per-section streaming (WG-4/streaming). The persistent-world + **Shift** target it evolves toward is CANON §W (see the precursor-vs-target banner in the doc).
 
 → [`behaviors/world-generation.md`](behaviors/world-generation.md)
 
@@ -56,7 +56,7 @@ Disconnect grace window, in-battle forced-flee/auto-defend rules, sleeping avata
 
 ### behaviors/meta-progression
 
-Hub unlock flow (gatekeeper → ruined camp → rebuild → active outer hub), `base_run_level(hub)` formula and hub table, class unlocks via ClassEmblem drops, Training Ground build templates, resource stratification, and the three Meld Skills (forging/mercantile/alchemy 1–99) with their XP sources and level effects.
+Hub unlock flow (**as shipped**: a hub is a lookup gated on the account's deepest recorded distance, not a camp to rebuild — the gatekeeper→ruined-camp→rebuild flow is unbuilt design), `base_run_level(hub)` formula and the 7-hub table, class unlocks via ClassEmblem drops, Training Ground build templates, resource stratification, and the three Meld Skills (forging/mercantile/alchemy 1–99) with their XP sources and level effects.
 
 → [`behaviors/meta-progression.md`](behaviors/meta-progression.md)
 
@@ -74,7 +74,7 @@ Overworld backpack drops (visibility, first-come pickup, despawn), consumable in
 
 ### behaviors/endgame-seasons
 
-The Vanguard Board (max distance per instance per season, real-time, earliest-achievement tie-break), the infinite zone past d=5000 (exponential stat_mult, Prestige aura tiers), and the 13-week season lifecycle (archive, titles to top 100 instances, what is never wiped).
+The Vanguard Board (max distance per instance per season, real-time, earliest-achievement tie-break), the infinite zone (the shipped curves continue unbounded; the second `d>5000` exponential branch is unbuilt design), Prestige aura tiers, and the 13-week season lifecycle (archive, titles to top 100 instances, what is never wiped).
 
 → [`behaviors/endgame-seasons.md`](behaviors/endgame-seasons.md)
 

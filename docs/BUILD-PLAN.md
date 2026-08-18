@@ -161,7 +161,7 @@ Every criterion is a binary check runnable by an agent (command or conformance t
 |---|---|
 | M2.1 | Party of 1 enters maze from Center Hub: `Run` created, `run_level == base_run_level(center) == 1`, empty Backpack (assert via `run-social` messages + `/v1/runs/{id}`). |
 | M2.2 | Forest biome (d 0–100) generates with ≥1 monster spawn type; touching a monster opens a `Battle` server-side and emits battle S2C to the client. |
-| M2.3 | Full ATB battle completes server-side: gauge fills at `speed_stat/400` per 100 ms tick, intents resolve, victory awards XP + loot to Backpack (conformance test drives via battle C2S only — no client math). |
+| M2.3 | Full ATB battle completes server-side: gauge fills at `speed_stat x rate_mult / gauge_fill_divisor` (5200) per 100 ms tick, intents resolve, victory awards XP + loot to Backpack (conformance test drives via battle C2S only — no client math). |
 | M2.4 | 15 s action timeout triggers auto-defend (test with a silent bot). |
 | M2.5 | Extraction at a portal banks Backpack into Vault atomically; `GET /v1/vault` reflects items; Run status `extracted`. |
 | M2.6 | Death deletes Backpack + run level; blue-chest gear returns at `max_durability × 0.9` rounded down; red-chest gear in Backpack is gone (asserted via vault-gear endpoints). |

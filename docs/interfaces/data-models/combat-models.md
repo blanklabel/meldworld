@@ -65,7 +65,7 @@ One participant in a battle — a player avatar or a monster — carrying its AT
 | hp | integer (int64, ≥ 0) | Yes | No | — | v0.1 | No | Current hit points. A combatant at 0 HP is defeated. |
 | max_hp | integer (int64, ≥ 1) | Yes | No | — | v0.1 | No | Maximum hit points, fixed at battle entry. Enemy stats do not rescale mid-fight. |
 | speed_stat | integer (int32, ≥ 1) | Yes | No | — | v0.1 | No | The speed stat driving ATB gauge fill. |
-| atb_gauge | number (double, 0.0–1.0) | Yes | No | `0.0` | v0.1 | No | The ATB gauge. Fills by `speed_stat / 400` per 100 ms server tick [TUNABLE]; the combatant may act when it reaches 1.0, and it resets to 0.0 after acting. Combatants joining via battle merge start at 0.0. |
+| atb_gauge | number (double, 0.0–1.0) | Yes | No | `0.0` | v0.1 | No | The ATB gauge. Fills by `speed_stat × rate_mult / gauge_fill_divisor` (5200 **[TUNABLE]**) per 100 ms server tick; the combatant may act when it reaches 1.0, and it resets to 0.0 after acting. Combatants joining via battle merge start at 0.0. |
 | gauge_full_at | integer (int64) | No | Yes | null | v0.1 | No | Unix-millisecond timestamp when the gauge reached full. A player combatant auto-defends after 15 seconds at full gauge without submitting an action [TUNABLE]. `null` while the gauge is filling. |
 | auto_defend | boolean | Yes | No | `false` | v0.1 | No | Whether the combatant is in the auto-defend state, applied to disconnected players in `elite`/`gatekeeper` encounters (and on turn timeout) to prevent wiping a boss attempt. Cleared on reconnect or action. |
 | statuses | array of string | Yes | No | `[]` | v0.1 | No | Active status effects. Effect names are content-defined; all status math is server-computed. |
@@ -102,7 +102,7 @@ A content-defined monster archetype; runtime stats scale with spawn distance.
 
 **Notes**
 
-- Runtime scaling at spawn distance d [TUNABLE unless noted]: level `mlevel(d) = max(1, round(d / 12.5))`; stats multiplied by `stat_mult(d) = (1 + d/500)^1.25` for d ≤ 5000, and `stat_mult(5000) × 1.5^((d − 5000)/500)` beyond (exponential endgame — structural).
+- Runtime scaling at spawn distance d [TUNABLE]: level `mlevel(d) = max(1, round(d / 12.5))`; **attack** × `(1 + d/500)^2.0`; **defence** × `(1 + d/500)^0.7`; **HP** × `max(1, 1 + 5.4 × (d/100 − 0.5))` — three separate curves, each opposed to a different hero stat. A shallow on-ramp scales all three from 0.6 at the hub to 1.0 at d=200. See [world-generation.md](../../behaviors/world-generation.md).
 - Roaming monsters can attack a `sleeping` avatar on contact unless it is warded (GDD §5).
 - Monster definitions are static content, not per-player state; the definition set is content-team extensible.
 

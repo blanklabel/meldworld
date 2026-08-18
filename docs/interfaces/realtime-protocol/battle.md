@@ -2,14 +2,14 @@
 
 > Parent: [interfaces/realtime-protocol](../realtime-protocol.md)
 
-Instanced ATB battle sync. All combat math is server-side (CANON.md D11): the server runs a 100 ms ATB tick, fills each combatant's gauge by `speed_stat / 400` per tick (full at 1.0), resolves actions, and broadcasts results. Clients render the Bevy battle UI (CANON.md D16) and submit action intents only. Battle S2C traffic is event-driven plus a 1 Hz `battle.gauge_update` keepalive (CANON.md §B, networking targets).
+Instanced ATB battle sync. All combat math is server-side (CANON.md D11): the server runs a 100 ms ATB tick, fills each combatant's gauge by `speed_stat × rate_mult / gauge_fill_divisor` (5200 **[TUNABLE]**) per tick (full at 1.0), resolves actions, and broadcasts results. Clients render the Bevy battle UI (CANON.md D16) and submit action intents only. Battle S2C traffic is event-driven plus a 1 Hz `battle.gauge_update` keepalive (CANON.md §B, networking targets).
 
 Key constants (CANON.md §B, ATB combat — all **[TUNABLE]** unless marked structural):
 
 | Constant | Value |
 |----------|-------|
 | ATB server tick | 100 ms |
-| Gauge fill per tick | `speed_stat / 400` (gauge full at 1.0) |
+| Gauge fill per tick | `speed_stat × rate_mult / gauge_fill_divisor` (5200 **[TUNABLE]**), gauge full at 1.0 |
 | Turn timeout | 15 s after gauge full without an action → auto-defend |
 | Flee success | base 60%, −10% per tier the encounter is above the party's level tier, floor 5%; **disabled** vs Gatekeepers |
 | Merge cap | 2 instances (8 combatants) for standard/elite; 4 instances (16) for Gatekeepers (CANON.md D5) |
@@ -140,7 +140,7 @@ A combatant's gauge reached 1.0; if it is a player, their 15 s action window ope
 
 Authoritative gauge (and HP/status drift) sync for all combatants.
 
-**Source:** CANON.md §B (gauge fill `speed_stat / 400` per 100 ms tick; battle updates event-driven + 1 Hz keepalive).
+**Source:** CANON.md §B (gauge fill `speed_stat × rate_mult / gauge_fill_divisor` (5200 **[TUNABLE]**) per 100 ms tick; battle updates event-driven + 1 Hz keepalive).
 **Direction:** S2C — broadcast to all battle participants at least once per second (keepalive), and immediately after any event that changes gauges non-linearly (action resolution, merge, status application). Clients interpolate gauge fill between updates using each combatant's known fill rate; this message corrects drift.
 
 **Payload**
@@ -264,7 +264,7 @@ Terminal resolution of the battle for the recipient's party.
 |-------|------|----------|----------|---------|-------------|
 | battle_id | string (uuid) | Yes | No | — | The battle. |
 | outcome | string (enum: `victory`, `defeat`, `fled`) | Yes | No | — | Terminal result for the recipient's party. |
-| xp_awards | array of object | Yes | No | — | Per-player XP and run-level gains (empty on `defeat`/`fled`). Fields: `player_id` string (uuid); `xp` integer (int64, ≥ 0); `run_level_after` integer (int32, ≥ 1). Run-level XP follows `xp_to_next(L) = 80 × L^1.6` (CANON.md §B); no run-level cap. |
+| xp_awards | array of object | Yes | No | — | Per-player XP and run-level gains (empty on `defeat`/`fled`). Fields: `player_id` string (uuid); `xp` integer (int64, ≥ 0); `run_level_after` integer (int32, ≥ 1). Run-level XP follows the fights-based `xp_to_next(L)` (CANON.md §B, [combat-atb.md](../../behaviors/combat-atb.md)); capped at `[runs] max_hero_level` = 255. |
 | loot | array of ItemStack | Yes | No | — | Items added to the recipient's own backpack (loot rolls are server-side; per-player, not shared). Mirrored by a `run.backpack_update`. Empty on `defeat`/`fled`. |
 | class_emblem_drops | array of object | Yes | No | — | Gatekeeper victories only, else empty. Fields: `player_id` string (uuid); `emblem_kind` string (e.g. `emblem_of_the_dragoon`). The account-level class unlock itself is a **persistent** mutation applied server-side and visible via the HTTP API — this field is a notification. |
 | gatekeeper_cleared | boolean | Yes | No | — | `true` when a Gatekeeper victory sets the per-instance clear flag opening the chokepoint (CANON.md §B); the arena terrain change arrives via re-sent `world.chunk_load`. |

@@ -10,7 +10,9 @@ Related specs: [economy.md](economy.md) (stalls, contracts, tax — the Mercanti
 
 ## Hub Unlock Flow
 
-Outer Hubs are unlocked **per player** (per `Player` account, not per instance or per party). Curated hubs exist at `d = 0, 500, 1000, …, 5000` (11 hubs, structural). The Center Hub (`d = 0`, `hub_kind: center`) is always unlocked. Each Outer Hub (`hub_kind: outer`) starts as a locked ruined camp guarded by the `GatekeeperBoss` at `d = hub.distance − 1` (i.e. `d = 500k − 1`).
+Outer Hubs are unlocked **per player** (per `Player` account, not per instance or per party). The shipped registry is `meld_proto::hubs::HUBS` — **7** hubs, listed below. The Center Hub (`d = 0`) is always unlocked.
+
+**As shipped (PG-2), a hub is a lookup, not an entity.** The gate is the account's own all-time deepest distance, taken from the `vanguard` table (written off *validated movement*, read across **all** seasons — a season rollover must not revoke ground you stood on). A run reads one integer: `hubs_reached(deepest)`. There is no ruined camp to rebuild and no Gatekeeper kill required to open one, and a requested hub is **clamped to the deepest reached, never rejected** (exactly as `party` is clamped to owned classes). The ruined-camp/rebuild flow below the table is the original design and is **not built**; the `Structure` primitive it needs is roadmap epic `BD`.
 
 **Source:** GDD.md §3 (Gatekeeper Bosses, Persistent Milestones), §4; CANON.md §B (Hubs & run levels), §G (Hub, Gatekeeper)
 
@@ -55,23 +57,25 @@ base_run_level(hub) = round(1 + hub.distance × 0.078)
 
 Rounded to nearest integer. **[TUNABLE]**
 
-### Hub table (all 11 curated hubs)
+### Hub table (`meld_proto::hubs::HUBS`)
 
-| Hub distance | base_run_level |
-|-------------:|---------------:|
-| 0 (Center) | 1 |
-| 500 | 40 |
-| 1000 | 79 |
-| 1500 | 118 |
-| 2000 | 157 |
-| 2500 | 196 |
-| 3000 | 235 |
-| 3500 | 274 |
-| 4000 | 313 |
-| 4500 | 352 |
-| 5000 | 391 |
+| Hub | `key` | Distance | base_run_level |
+|---|---|---:|---:|
+| The Center Hub | `center` | 0 | 1 |
+| First Reach | `first_reach` | 500 | 40 |
+| The Span | `the_span` | 1000 | 79 |
+| Cinderwatch | `cinderwatch` | 1500 | 118 |
+| The Lastward | `the_lastward` | 2000 | 157 |
+| Hollow March | `hollow_march` | 2500 | 196 |
+| The Threshold Deep | `the_threshold_deep` | 3250 | **255** |
 
-There is no run-level cap; the level grows during the run with XP per `xp_to_next(L) = 80 × L^1.6` **[TUNABLE]**. On death, accumulated run levels are deleted (see [economy.md](economy.md) for the durability consequence).
+`base_run_level(d) = round(1 + 0.078 × d)` (`meld_proto::hubs::start_level`, held against the
+server's copy by a test so the two cannot drift). `d = 3250` is the deepest hub because the
+formula reaches `max_hero_level` (255) at `d ≈ 3256`: past that a hub buys nothing while
+creatures keep scaling, which makes that distance the **structural end of the game**. The old
+`0…5000` / 11-hub ladder (base_run_level up to 391) predates the 255 level cap and is retired.
+
+Hero level is capped at `[runs] max_hero_level` = 255 **[TUNABLE]**; it grows during the run with XP, and the curve is stated in **fights**, not points — see [CANON §B](../CANON.md) *Hubs & run levels* (`meld_run::xp_to_next`). On death, accumulated run levels are deleted (see [economy.md](economy.md) for the durability consequence).
 
 ---
 

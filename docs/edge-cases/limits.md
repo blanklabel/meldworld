@@ -33,9 +33,9 @@ Related specs: [../behaviors/meta-progression.md](../behaviors/meta-progression.
 | Ward: `warding_tent` | 30 min invisibility to monster pathfinding **[TUNABLE]** | Ward expires server-side | CANON.md §B (Disconnect handling); GDD.md §5 |
 | Ward: `sanctuary_campfire` | 10 min invisibility + slow HP regen aura **[TUNABLE]** | Ward expires server-side | CANON.md §B (Disconnect handling); GDD.md §5 |
 | Disconnect grace window | 10 s silent reconnection | Disconnect rules (forced flee / auto-defend / sleeping) fire only after grace elapses | CANON.md §B (Disconnect handling) |
-| Escape-item extraction channel | 10 s, interruptible **[TUNABLE]** | Taking damage / moving cancels the channel; must restart | CANON.md §D15 |
+| Extraction channel | `[runs] extraction_channel_ms` = **2500** (2.5 s), interruptible **[TUNABLE]** | Moving / a battle / cancelling ends the channel; must restart. The Town Portal item is consumed on **completion**, not on interrupt. Spec default was 10 s; shortened for run pacing | CANON.md §D15; `balance.toml [runs]` |
 | ATB turn timeout | 15 s with a full gauge and no action → auto-defend | Server forces defend action | CANON.md §B (ATB combat) |
-| ATB server tick | 100 ms | Gauge fill per tick: `speed_stat / 400` (full at 1.0) **[TUNABLE]** | CANON.md §B (ATB combat) |
+| ATB server tick | 100 ms (`[battle] tick_ms`) | Gauge fill per tick: `speed_stat × rate_mult / gauge_fill_divisor`, `gauge_fill_divisor` = 5200 **[TUNABLE]**; `rate_mult` carries haste/slow. Clamped full at 1.0 | CANON.md §B (ATB combat) |
 | Flee success | Base 60%, −10% per tier above party tier, min 5%; Gatekeepers: disabled **[TUNABLE]** | Server-rolled | CANON.md §B (ATB combat) |
 | Instance idle close | 60 min with all members disconnected | Instance closes; sleeping avatars auto-abandon (Backpack lost as death, **no** durability loss) | CANON.md §B (Disconnect handling) |
 | Chunk size | 64×64 tiles **[TUNABLE]** | World streamed in chunk units | CANON.md §G (Chunk) |
@@ -44,7 +44,7 @@ Related specs: [../behaviors/meta-progression.md](../behaviors/meta-progression.
 | Snapshot broadcast | 10 Hz (non-binding perf goal) | — | CANON.md §B (Networking targets) |
 | Battle updates | Event-driven + 1 Hz keepalive (non-binding perf goal) | — | CANON.md §B (Networking targets) |
 | Season length | 13 weeks exactly, rolling UTC boundary (structural) | Board archived read-only; titles to top 100 instances; infinite-zone board reset; Vault/hubs/Meld Skills NOT wiped | CANON.md §D8, §B (Sessions & seasons) |
-| Curated hubs | 11, at `d = 0, 500, …, 5000` (structural) | No hubs beyond 5000; infinite scaling | CANON.md §B (Hubs & run levels) |
+| Departure hubs | **7**, at `d = 0, 500, 1000, 1500, 2000, 2500, 3250` — the entries of `meld_proto::hubs::HUBS` | A requested hub is **clamped**, never rejected, to the deepest the account has reached. No hub past `d = 3250`, where `base_run_level` hits the 255 cap; infinite scaling continues | `meld_proto::hubs` (PG-2); CANON.md §B (Hubs & run levels) |
 | Red-chest gear spawn floor | Cannot spawn below `d = 300` **[TUNABLE]** | Loot tables exclude it | CANON.md §B (Distance → difficulty) |
 | Tier-1 material spawn band | Only at `d < 300` **[TUNABLE]** | Loot tables exclude elsewhere (bands mirror biome tiers) | GDD.md §4 (Resource Stratification); band value spec-defined ([../behaviors/meta-progression.md](../behaviors/meta-progression.md)) |
 | Chits value range | Non-negative `int64`; no fractional chits | Operations driving a balance negative: 409 `insufficient_funds` | CANON.md §D10 |
@@ -53,7 +53,9 @@ Related specs: [../behaviors/meta-progression.md](../behaviors/meta-progression.
 
 ## Undocumented Behaviors
 
-- **Run Level has no cap** — it grows without bound during a run via `xp_to_next(L) = 80 × L^1.6` (CANON.md §B). Only the *base* level is hub-derived.
+- **Hero level is capped at `[runs] max_hero_level` = 255** (it was uncapped in the original design). It grows during a run with battle XP; the curve is stated in **fights**, not points — see [CANON §B](../CANON.md) *Hubs & run levels* (`meld_run::xp_to_next`). Only the *base* level is hub-derived.
+- **Encounter XP falls off once a hero out-levels the ground** (`xp_gap_grace` 3 / `xp_gap_zero` 12 / `xp_gap_floor_mult` 0.05) — the shallow ring stops paying full rate, so a party cannot grind the hub to mid-levels.
+- **An encounter's XP is a pool divided among the heroes still standing**, not per-hero: the last survivor of a bad fight banks the whole thing.
 - **Auto-abandon is durability-free**: the 60-min idle close counts as death for the Backpack but explicitly skips the −10% durability loss (CANON.md §B, Disconnect handling) — gentler than an actual death.
 - **Forced flee on standard-encounter disconnect always succeeds** (structural), bypassing the normal flee percentages (CANON.md §B).
 

@@ -99,54 +99,90 @@ Ephemeral concerns are documented in the realtime protocol spec, not here. Hando
 
 ## Endpoints
 
+> **Implementation status.** The `Built` column is reconciled against the axum routers in
+> `server/crates/meld-api` and `meld-server` — **35 routes exist today**. A `**no**` row is
+> design this spec defines that is *not* implemented (stalls, contracts, gems/sockets, build
+> templates, run history, hub rebuild, cosmetics/titles, synthesis). Those stay here as the
+> design of record; do not read them as available. A second table below lists routes that are
+> **shipped but were missing from this summary**, some of which have no prose spec yet.
+>
+> Note the router is **axum 0.7**, whose path-parameter syntax is `:param`. This document writes
+> `{param}` as a documentation convention; the wire path is the same either way.
+
+
+| Method | Path | Built | Summary | Detail |
+|--------|------|-------|---------|--------|
+| POST | `/v1/auth/register` | yes | Create a player account | [auth-players.md](http-api/auth-players.md) |
+| POST | `/v1/auth/login` | yes | Issue session token + realtime session ticket | [auth-players.md](http-api/auth-players.md) |
+| GET | `/v1/players/me` | yes | Get own account | [auth-players.md](http-api/auth-players.md) |
+| GET | `/v1/players/{player_id}` | **no** | Get public player profile | [auth-players.md](http-api/auth-players.md) |
+| GET | `/v1/players/me/class-unlocks` | **no** | List class unlock state | [auth-players.md](http-api/auth-players.md) |
+| GET | `/v1/players/me/cosmetics` | **no** | List owned cosmetics and titles | [auth-players.md](http-api/auth-players.md) |
+| PUT | `/v1/players/me/title` | **no** | Set or clear the active title | [auth-players.md](http-api/auth-players.md) |
+| GET | `/v1/vault` | yes | Vault summary (chits + counts) | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/vault/materials` | **no** | List Vault materials | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/vault/gear` | yes | List Vault gear | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/vault/gear/{gear_id}` | **no** | Gear detail | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/vault/gear/{gear_id}/equip` | yes | Equip blue-chest gear into loadout | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/vault/gear/{gear_id}/unequip` | yes | Unequip gear from loadout | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/vault/gems` | **no** | List Vault gems | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/vault/gear/{gear_id}/sockets` | **no** | Socket a gem into gear | [vault-gear.md](http-api/vault-gear.md) |
+| DELETE | `/v1/vault/gear/{gear_id}/sockets/{socket_index}` | **no** | Unsocket a gem | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/vault/gear/{gear_id}/repair` | yes | Repair max durability via a crafter | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/build-templates` | **no** | List build templates | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/build-templates` | **no** | Create a build template | [vault-gear.md](http-api/vault-gear.md) |
+| PUT | `/v1/build-templates/{template_id}` | **no** | Replace a build template | [vault-gear.md](http-api/vault-gear.md) |
+| DELETE | `/v1/build-templates/{template_id}` | **no** | Delete a build template | [vault-gear.md](http-api/vault-gear.md) |
+| GET | `/v1/meld-skills` | yes | Read meld skill levels/XP | [crafting-meld.md](http-api/crafting-meld.md) |
+| GET | `/v1/recipes` | **no** | List crafting/synthesis recipes | [crafting-meld.md](http-api/crafting-meld.md) |
+| POST | `/v1/crafting/craft` | yes | Craft an item (Forging) | [crafting-meld.md](http-api/crafting-meld.md) |
+| POST | `/v1/crafting/synthesize` | **no** | Synthesize a gem (Alchemy) | [crafting-meld.md](http-api/crafting-meld.md) |
+| POST | `/v1/stalls` | **no** | Deploy a stall | [economy.md](http-api/economy.md) |
+| GET | `/v1/stalls` | **no** | List stalls in a hub | [economy.md](http-api/economy.md) |
+| GET | `/v1/stalls/{stall_id}` | **no** | Get a stall with listings | [economy.md](http-api/economy.md) |
+| POST | `/v1/stalls/{stall_id}/close` | **no** | Close own stall | [economy.md](http-api/economy.md) |
+| POST | `/v1/stalls/{stall_id}/listings/{listing_id}/buy` | **no** | Buy a listing (atomic, taxed) | [economy.md](http-api/economy.md) |
+| POST | `/v1/contracts` | **no** | Post a bounty contract (escrow) | [economy.md](http-api/economy.md) |
+| GET | `/v1/contracts` | **no** | List contracts | [economy.md](http-api/economy.md) |
+| GET | `/v1/contracts/{contract_id}` | **no** | Get a contract | [economy.md](http-api/economy.md) |
+| POST | `/v1/contracts/{contract_id}/accept` | **no** | Accept an open contract | [economy.md](http-api/economy.md) |
+| POST | `/v1/contracts/{contract_id}/fulfill` | **no** | Fulfill an accepted contract | [economy.md](http-api/economy.md) |
+| POST | `/v1/contracts/{contract_id}/cancel` | **no** | Cancel own open contract (refund) | [economy.md](http-api/economy.md) |
+| GET | `/v1/runs` | **no** | Run history | [runs-world.md](http-api/runs-world.md) |
+| GET | `/v1/runs/{run_id}` | **no** | Run detail | [runs-world.md](http-api/runs-world.md) |
+| POST | `/v1/runs/prepare` | **no** | Prepare a run / enqueue matchmaking | [runs-world.md](http-api/runs-world.md) |
+| GET | `/v1/hubs` | **no** | List hubs with unlock state | [runs-world.md](http-api/runs-world.md) |
+| POST | `/v1/hubs/{distance}/rebuild` | **no** | Rebuild an outer hub | [runs-world.md](http-api/runs-world.md) |
+| GET | `/v1/hunts` | yes | The Hunt Board with the caller's progress | [hunts.md](http-api/hunts.md) |
+| GET | `/v1/bounties` | yes | The Den's generated contracts + hunter rank | [hunts.md](http-api/hunts.md) |
+| POST | `/v1/bounties/{bounty_id}/claim` | yes | Take payment for a felled mark | [hunts.md](http-api/hunts.md) |
+| POST | `/v1/hunts/{key}/claim` | yes | Take the reward for a finished hunt | [hunts.md](http-api/hunts.md) |
+| GET | `/v1/leaderboards/vanguard` | yes | Vanguard Board (current or archived season) | [leaderboards.md](http-api/leaderboards.md) |
+| GET | `/v1/leaderboards/vanguard/me` | yes | My best Vanguard ranking | [leaderboards.md](http-api/leaderboards.md) |
+| GET | `/v1/seasons` | **no** | List seasons | [leaderboards.md](http-api/leaderboards.md) |
+| GET | `/v1/seasons/{season_id}` | **no** | Season info | [leaderboards.md](http-api/leaderboards.md) |
+
+### Shipped, absent from the summary above (19 routes)
+
 | Method | Path | Summary | Detail |
 |--------|------|---------|--------|
-| POST | `/v1/auth/register` | Create a player account | [auth-players.md](http-api/auth-players.md) |
-| POST | `/v1/auth/login` | Issue session token + realtime session ticket | [auth-players.md](http-api/auth-players.md) |
-| GET | `/v1/players/me` | Get own account | [auth-players.md](http-api/auth-players.md) |
-| GET | `/v1/players/{player_id}` | Get public player profile | [auth-players.md](http-api/auth-players.md) |
-| GET | `/v1/players/me/class-unlocks` | List class unlock state | [auth-players.md](http-api/auth-players.md) |
-| GET | `/v1/players/me/cosmetics` | List owned cosmetics and titles | [auth-players.md](http-api/auth-players.md) |
-| PUT | `/v1/players/me/title` | Set or clear the active title | [auth-players.md](http-api/auth-players.md) |
-| GET | `/v1/vault` | Vault summary (chits + counts) | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/vault/materials` | List Vault materials | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/vault/gear` | List Vault gear | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/vault/gear/{gear_id}` | Gear detail | [vault-gear.md](http-api/vault-gear.md) |
-| POST | `/v1/vault/gear/{gear_id}/equip` | Equip blue-chest gear into loadout | [vault-gear.md](http-api/vault-gear.md) |
-| POST | `/v1/vault/gear/{gear_id}/unequip` | Unequip gear from loadout | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/vault/gems` | List Vault gems | [vault-gear.md](http-api/vault-gear.md) |
-| POST | `/v1/vault/gear/{gear_id}/sockets` | Socket a gem into gear | [vault-gear.md](http-api/vault-gear.md) |
-| DELETE | `/v1/vault/gear/{gear_id}/sockets/{socket_index}` | Unsocket a gem | [vault-gear.md](http-api/vault-gear.md) |
-| POST | `/v1/vault/gear/{gear_id}/repair` | Repair max durability via a crafter | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/build-templates` | List build templates | [vault-gear.md](http-api/vault-gear.md) |
-| POST | `/v1/build-templates` | Create a build template | [vault-gear.md](http-api/vault-gear.md) |
-| PUT | `/v1/build-templates/{template_id}` | Replace a build template | [vault-gear.md](http-api/vault-gear.md) |
-| DELETE | `/v1/build-templates/{template_id}` | Delete a build template | [vault-gear.md](http-api/vault-gear.md) |
-| GET | `/v1/meld-skills` | Read meld skill levels/XP | [crafting-meld.md](http-api/crafting-meld.md) |
-| GET | `/v1/recipes` | List crafting/synthesis recipes | [crafting-meld.md](http-api/crafting-meld.md) |
-| POST | `/v1/crafting/craft` | Craft an item (Forging) | [crafting-meld.md](http-api/crafting-meld.md) |
-| POST | `/v1/crafting/synthesize` | Synthesize a gem (Alchemy) | [crafting-meld.md](http-api/crafting-meld.md) |
-| POST | `/v1/stalls` | Deploy a stall | [economy.md](http-api/economy.md) |
-| GET | `/v1/stalls` | List stalls in a hub | [economy.md](http-api/economy.md) |
-| GET | `/v1/stalls/{stall_id}` | Get a stall with listings | [economy.md](http-api/economy.md) |
-| POST | `/v1/stalls/{stall_id}/close` | Close own stall | [economy.md](http-api/economy.md) |
-| POST | `/v1/stalls/{stall_id}/listings/{listing_id}/buy` | Buy a listing (atomic, taxed) | [economy.md](http-api/economy.md) |
-| POST | `/v1/contracts` | Post a bounty contract (escrow) | [economy.md](http-api/economy.md) |
-| GET | `/v1/contracts` | List contracts | [economy.md](http-api/economy.md) |
-| GET | `/v1/contracts/{contract_id}` | Get a contract | [economy.md](http-api/economy.md) |
-| POST | `/v1/contracts/{contract_id}/accept` | Accept an open contract | [economy.md](http-api/economy.md) |
-| POST | `/v1/contracts/{contract_id}/fulfill` | Fulfill an accepted contract | [economy.md](http-api/economy.md) |
-| POST | `/v1/contracts/{contract_id}/cancel` | Cancel own open contract (refund) | [economy.md](http-api/economy.md) |
-| GET | `/v1/runs` | Run history | [runs-world.md](http-api/runs-world.md) |
-| GET | `/v1/runs/{run_id}` | Run detail | [runs-world.md](http-api/runs-world.md) |
-| POST | `/v1/runs/prepare` | Prepare a run / enqueue matchmaking | [runs-world.md](http-api/runs-world.md) |
-| GET | `/v1/hubs` | List hubs with unlock state | [runs-world.md](http-api/runs-world.md) |
-| POST | `/v1/hubs/{distance}/rebuild` | Rebuild an outer hub | [runs-world.md](http-api/runs-world.md) |
-| GET | `/v1/hunts` | The Hunt Board with the caller's progress | [hunts.md](http-api/hunts.md) |
-| GET | `/v1/bounties` | The Den's generated contracts + hunter rank | [hunts.md](http-api/hunts.md) |
-| POST | `/v1/bounties/{bounty_id}/claim` | Take payment for a felled mark | [hunts.md](http-api/hunts.md) |
-| POST | `/v1/hunts/{key}/claim` | Take the reward for a finished hunt | [hunts.md](http-api/hunts.md) |
-| GET | `/v1/leaderboards/vanguard` | Vanguard Board (current or archived season) | [leaderboards.md](http-api/leaderboards.md) |
-| GET | `/v1/leaderboards/vanguard/me` | My best Vanguard ranking | [leaderboards.md](http-api/leaderboards.md) |
-| GET | `/v1/seasons` | List seasons | [leaderboards.md](http-api/leaderboards.md) |
-| GET | `/v1/seasons/{season_id}` | Season info | [leaderboards.md](http-api/leaderboards.md) |
+| GET | `/v1/healthz` | Liveness probe | — |
+| GET | `/v1/realtime` | WebSocket upgrade for the realtime protocol | [realtime-protocol.md](realtime-protocol.md) |
+| GET | `/v1/heroes` | List the account's persistent heroes (one row per slot) | — *undocumented* |
+| PUT | `/v1/heroes/{slot}` | Rename a hero (persistent, per-account) | — *undocumented* |
+| GET | `/v1/party/loadouts` | List saved party loadouts | — *undocumented* |
+| POST | `/v1/party/loadouts/{name}/apply` | Apply a saved loadout | — *undocumented* |
+| DELETE | `/v1/party/loadouts/{name}` | Delete a saved loadout | — *undocumented* |
+| POST | `/v1/party/heroes/{slot}/equip-best` | Auto-equip the best owned gear for a hero | — *undocumented* |
+| GET | `/v1/crafting/recipes` | List crafting recipes (the built path; the spec calls this `/v1/recipes`) | [crafting-meld.md](http-api/crafting-meld.md) |
+| POST | `/v1/crafting/forge` | Forge a piece from refined stock + optional trophy catalyst | [crafting-meld.md](http-api/crafting-meld.md) |
+| POST | `/v1/vault/gear/{gear_id}/reroll` | Re-draw a piece's affixes | [vault-gear.md](http-api/vault-gear.md) |
+| POST | `/v1/vault/materials/{item_kind}/withdraw` | Withdraw materials from the Vault | — *undocumented* |
+| GET | `/v1/vendors/apothecary` | The Apothecary's stock | — *undocumented* |
+| POST | `/v1/vendors/apothecary/buy` | Buy a consumable | — *undocumented* |
+| GET | `/v1/vendors/broker` | The Broker's buy prices | [economy.md](http-api/economy.md) |
+| POST | `/v1/vendors/broker/sell` | Sell materials for chits + Mercantile XP | [economy.md](http-api/economy.md) |
+| GET | `/v1/vendors/requisition` | The Vanguard Wall's requisition stock | [economy.md](http-api/economy.md) |
+| POST | `/v1/vendors/requisition/buy` | Requisition a piece of gear | [economy.md](http-api/economy.md) |
+| GET | `/v1/leaderboards/vanguard/{season}` | Vanguard Board for one archived season | [leaderboards.md](http-api/leaderboards.md) |
+
