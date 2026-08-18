@@ -98,6 +98,7 @@ pub(crate) fn pump_net(
             ResMut<HarvestPops>,
             ResMut<HuntBoardData>,
             ResMut<BountyData>,
+            ResMut<crate::ShiftTell>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -105,7 +106,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -562,6 +563,41 @@ pub(crate) fn pump_net(
                     } else {
                         format!("{name}  {progress}/{target}")
                     },
+                    clock.elapsed_secs_f64(),
+                );
+            }
+            ServerMsg::ShiftWarning { inner_radius, outer_radius, biome, lands_in_ms, caught } => {
+                let now = clock.elapsed_secs_f64();
+                let secs = (lands_in_ms as f64 / 1000.0).round().max(1.0) as u64;
+                tell.inner = inner_radius as f32;
+                tell.outer = outer_radius as f32;
+                tell.lands_at = now + lands_in_ms as f64 / 1000.0;
+                tell.biome = crate::world_render::title_case(&biome);
+                tell.caught = caught;
+                tell.armed = true;
+                notice.say(
+                    if caught {
+                        format!("THE LAND IS SHIFTING - {} in {secs}s. MOVE.", tell.biome)
+                    } else {
+                        format!("The land is shifting to {} in {secs}s", tell.biome)
+                    },
+                    now,
+                );
+            }
+            ServerMsg::PositionCorrection { x, y } => {
+                world.snap = Some((x as f32, y as f32));
+            }
+            ServerMsg::Shifted { biome, from_biome, damage } => {
+                tell.armed = false;
+                tell.flash_until = clock.elapsed_secs_f64() + crate::SHIFT_FLASH_SECS;
+                let hurt: i32 = damage.iter().sum();
+                let what = if from_biome.is_empty() {
+                    format!("The land shifted to {}", crate::world_render::title_case(&biome))
+                } else {
+                    format!("{} became {}", crate::world_render::title_case(&from_biome), crate::world_render::title_case(&biome))
+                };
+                notice.say(
+                    if hurt > 0 { format!("{what} - {hurt} Force damage") } else { what },
                     clock.elapsed_secs_f64(),
                 );
             }

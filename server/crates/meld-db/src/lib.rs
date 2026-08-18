@@ -431,6 +431,27 @@ impl Db {
         // The Hunt Board (roadmap AD-4): one row per hunt a player has made progress
         // on. `progress` is capped at the hunt's target by every writer, so "complete"
         // is `progress >= target` read against the registry rather than a second column
+        // CANON §W5 — a world stores only its DELTA from the seed baseline, and the
+        // baseline is regenerated from the seed and never stored. So this table is four
+        // integers and a small JSON document per world, no matter how big the world is:
+        // terrain, biome layout and the natural Shift schedule are all pure functions of
+        // `seed`, and only what players (and the landed Shifts) actually did is written
+        // down. `world_key` is what multi-world (SC-3) will vary; today there is one.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS worlds (
+                world_key        TEXT PRIMARY KEY,
+                seed             BIGINT NOT NULL,
+                tick_count       BIGINT NOT NULL,
+                shift_generation BIGINT NOT NULL,
+                sections         INTEGER NOT NULL,
+                delta            TEXT NOT NULL,
+                updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
         // that could disagree with it. `claimed_at` is what makes a payout once-only.
         sqlx::query(
             r#"
@@ -3801,6 +3822,8 @@ struct Mem {
     class_bests: HashMap<(Uuid, String), i32>,
     /// unlocks: the (player, unlock_key) pairs an account owns.
     unlocks: HashSet<(Uuid, String)>,
+    /// worlds, keyed by world_key (CANON §W5 — seed + delta, never the map).
+    worlds: HashMap<String, WorldSave>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), MemVanguard>,
     /// hunts (progress, claimed), keyed by (player_id, hunt_key).
@@ -5260,4 +5283,78 @@ pub enum BountyClaim {
     AlreadyClaimed,
     /// No such contract, or not this player's.
     Missing,
+}
+
+/// One persisted world (CANON §W5). Everything here is either an integer the schedule
+/// is derived from or a small document of what players changed — the map itself is
+/// regenerated from `seed` and is never stored, which is what makes hibernating a world
+/// cheap enough to do unconditionally.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldSave {
+    pub world_key: String,
+    pub seed: i64,
+    /// The world clock. The Shift schedule is a pure function of `(seed, generation)`
+    /// driven by this, so restoring it resumes the weather mid-window.
+    pub tick_count: i64,
+    pub shift_generation: i64,
+    /// How far the frontier had streamed, in sections. Regenerating that many from the
+    /// seed reproduces the whole baseline map.
+    pub sections: i32,
+    /// The player-caused delta, as JSON. Opaque here on purpose: `meld-db` has no
+    /// business knowing what a resource node is, and the shape belongs to the world.
+    pub delta: String,
+}
+
+impl Db {
+    /// Write a world's delta (upsert). Called off the game loop through the DB-writer
+    /// task — a world save must never make the 100 ms tick wait on Postgres.
+    pub async fn save_world(&self, w: &WorldSave) -> Result<(), DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "INSERT INTO worlds (world_key, seed, tick_count, shift_generation, sections, delta, updated_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, now())
+                     ON CONFLICT (world_key) DO UPDATE SET
+                       seed = $2, tick_count = $3, shift_generation = $4,
+                       sections = $5, delta = $6, updated_at = now()",
+                )
+                .bind(&w.world_key)
+                .bind(w.seed)
+                .bind(w.tick_count)
+                .bind(w.shift_generation)
+                .bind(w.sections)
+                .bind(&w.delta)
+                .execute(pool)
+                .await?;
+            }
+            Backend::Mem(m) => {
+                m.lock().unwrap().worlds.insert(w.world_key.clone(), w.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a hibernated world back, or `None` for a key nobody has ever dived into.
+    pub async fn load_world(&self, world_key: &str) -> Result<Option<WorldSave>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let row = sqlx::query(
+                    "SELECT seed, tick_count, shift_generation, sections, delta
+                     FROM worlds WHERE world_key = $1",
+                )
+                .bind(world_key)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(|r| WorldSave {
+                    world_key: world_key.to_string(),
+                    seed: r.get("seed"),
+                    tick_count: r.get("tick_count"),
+                    shift_generation: r.get("shift_generation"),
+                    sections: r.get("sections"),
+                    delta: r.get("delta"),
+                }))
+            }
+            Backend::Mem(m) => Ok(m.lock().unwrap().worlds.get(world_key).cloned()),
+        }
+    }
 }

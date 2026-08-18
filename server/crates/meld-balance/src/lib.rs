@@ -51,6 +51,8 @@ pub struct Balance {
     pub biome_gate: BiomeGate,
     pub armor_resist: ArmorResist,
     pub affliction: Affliction,
+    pub shift: Shift,
+    pub world_persist: WorldPersist,
 }
 
 /// The distance at which each biome starts appearing in a randomized run, keyed by
@@ -649,6 +651,34 @@ pub struct Affliction {
     pub paralysis_break_base: f64,
     pub paralysis_break_per_wll: f64,
     pub paralysis_break_cap: f64,
+}
+
+/// The Shifting Lands (CANON D20 / §W2). Cadence, region size and Force damage are
+/// the game's translation of the tabletop tables; the *structure* — that the schedule
+/// is a pure function of `(world_seed, shift_generation)` driven by the tick counter —
+/// is code, and lives in [`meld_world::shift`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct Shift {
+    pub cadence_ticks: u64,
+    pub cadence_jitter: f64,
+    pub warning_ticks: u64,
+    pub min_sections: usize,
+    pub max_sections: usize,
+    pub damage_fraction_min: f64,
+    pub damage_fraction_max: f64,
+    pub safe_radius: f64,
+    pub random_pick_share: f64,
+}
+
+/// A world is a place, not a lobby (CANON §W1/§W5): it outlives its divers, and its
+/// delta from the seed baseline is written to Postgres so it outlives the process.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorldPersist {
+    pub enabled: bool,
+    pub save_every_ticks: u64,
+    pub creature_regrow_ticks: u64,
+    pub node_regrow_ticks: u64,
+    pub chest_regrow_ticks: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

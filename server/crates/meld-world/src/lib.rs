@@ -28,6 +28,7 @@
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
 
 pub mod abilities;
+pub mod shift;
 
 use std::collections::HashMap;
 
@@ -1725,6 +1726,9 @@ pub struct ResourceNode {
     /// one-tap flag — which is what lets an interrupted gather cost only the tick in
     /// flight. Stock and pace come from the material's class (`[harvest]`).
     pub remaining: i32,
+    /// World tick the node was emptied, or 0 while it still has stock. A persistent
+    /// world re-stocks it (`[world_persist] node_regrow_ticks`).
+    pub spent_tick: u64,
 }
 
 impl ResourceNode {
@@ -1750,6 +1754,26 @@ pub struct Area {
     /// WG-1: this section is a dungeon (rooms divided by walls with a door on the
     /// clear path, denser creatures, a guaranteed loot chest). Flat (no terraces).
     pub dungeon: bool,
+    /// The Shift generation that last retiled this section, or 0 for ground the
+    /// Shifting Lands have not yet come for (CANON D20/§W2). Half of every Shift
+    /// picks the least-recently-disturbed region, so a section that has never gone
+    /// is the one most likely to go next — otherwise the churn pools in one place
+    /// and the rest of the world is a museum.
+    pub shifted_at: u64,
+}
+
+/// A creature's vacated ground: everything [`Arena::regrow`] needs to stand a fresh
+/// one of the same species back up where the last one died.
+#[derive(Debug, Clone)]
+pub struct Fallen {
+    pub entity_id: Id,
+    pub monster_kind: String,
+    pub home: Position,
+    pub area_min_x: f64,
+    pub area_max_x: f64,
+    /// World tick it fell, stamped by `regrow` on the first pass that sees it (the
+    /// arena is pure and never asks what time it is).
+    pub felled_tick: u64,
 }
 
 /// A hand-placed treasure chest. Walk up and open it once for a loot roll — chits,
@@ -1765,6 +1789,10 @@ pub struct Chest {
     /// Elevation level the chest sits at (0 = ground). A chest atop a terrace can
     /// only be opened from that level — the reward for climbing the detour.
     pub elevation: u8,
+    /// World tick it was opened, or 0 while it is still sealed. Treasure is the one
+    /// thing farming must not print, so its regrowth is by far the slowest of the
+    /// three (`[world_persist] chest_regrow_ticks`).
+    pub opened_tick: u64,
 }
 
 /// A field workstation a player has raised in the maze (MS-1). A smith who carries
@@ -1910,6 +1938,13 @@ pub struct Arena {
     pub chests: Vec<Chest>,
     /// Player-raised field workstations (MS-1). Empty until someone builds one.
     pub stations: Vec<Station>,
+    /// Ground a creature used to hold. `prune_defeated` moves a slain creature here
+    /// instead of deleting it, so `regrow` can put something back where it stood —
+    /// a few fields per kill rather than a corpse the snapshot and the AI both walk
+    /// every tick. This is the half of persistence that keeps a world from being
+    /// strip-minable: without it, "the world remembers" only ever means "the world
+    /// is emptier than you left it".
+    pub fallen: Vec<Fallen>,
     /// Biome-boundary chokepoints (a walled seam with one gap you pass through).
     pub seams: Vec<Seam>,
     /// The guaranteed-clear route from the hub to the portal, as waypoints. A tube
@@ -2221,6 +2256,7 @@ impl Arena {
     ) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
+            fallen: Vec::new(),
             end_fight_placed: false,
             seed,
             areas: Vec::new(),
@@ -2573,6 +2609,7 @@ impl Arena {
             // the first thing a new player can safely do is harvest (no fight).
             let starter_kind = resources_for_biome(biome)[0].to_string();
             self.resources.push(ResourceNode {
+                spent_tick: 0,
                 entity_id: format!("res-{}", self.resources.len()),
                 remaining: node_stock(balance, &starter_kind),
                 kind: starter_kind,
@@ -2583,6 +2620,7 @@ impl Arena {
             // player sees the loot loop (open → chits/materials) in area 0.
             let starter_chest_x = wg.first_monster_x * 0.5;
             self.chests.push(Chest {
+                opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
                 position: Position::new(starter_chest_x, -3.0),
                 tier: Scaling::new(balance).tier(starter_chest_x.floor() as i64) as i32,
@@ -2598,6 +2636,7 @@ impl Arena {
                 // The tutorial section is entirely flat (level 0).
                 terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
                 dungeon: false,
+                shifted_at: 0,
             });
             // The tutorial path routes to y=0, around any cliffs (A*, like the procedural
             // sections) so the very first stretch is walkable too.
@@ -2924,6 +2963,7 @@ impl Arena {
             let ry = wg.resource_lateral_spread * rng.signed();
             let nid = self.resources.len();
             self.resources.push(ResourceNode {
+                spent_tick: 0,
                 entity_id: format!("res-{nid}"),
                 kind: rk.to_string(),
                 position: Position::new(rx, ry),
@@ -3077,6 +3117,7 @@ impl Arena {
                         pick_gatekeeper_boss_kind(summit.x.floor() as i64, gseed ^ 0xB055).to_string();
                 } else {
                     self.chests.push(Chest {
+                        opened_tick: 0,
                         entity_id: format!("chest-{}", self.chests.len()),
                         position: summit,
                         tier: Scaling::new(balance).tier(summit.x.floor() as i64) as i32,
@@ -3212,6 +3253,7 @@ impl Arena {
             if !raised.is_empty() {
                 let (tx, ty, lvl) = raised[rng.below(raised.len())];
                 self.chests.push(Chest {
+                    opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
                     position: Position::new(tx, ty),
                     tier: Scaling::new(balance).tier(tx.floor() as i64) as i32,
@@ -3231,6 +3273,7 @@ impl Arena {
                     && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
                 if (clear_of_path && clear_of_mobs) || attempt == 23 {
                     self.chests.push(Chest {
+                        opened_tick: 0,
                         entity_id: format!("chest-{}", self.chests.len()),
                         position: cpos,
                         tier: Scaling::new(balance).tier(cx.floor() as i64) as i32,
@@ -3430,6 +3473,7 @@ impl Arena {
             let cpos = Position::new(chest_x, cy);
             let elevation = terrain.level_at(&cpos);
             self.chests.push(Chest {
+                opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
                 position: cpos,
                 tier: Scaling::new(balance).tier(chest_x.floor() as i64) as i32,
@@ -3458,6 +3502,7 @@ impl Arena {
             portal,
             terrain,
             dungeon: is_dungeon,
+            shifted_at: 0,
         });
         self.cursor = end_x;
     }
@@ -4368,7 +4413,446 @@ impl Arena {
     /// slot still refers to it by id. Safe because ids, not indices, are the durable
     /// reference; call it only outside battle-assembly (e.g. end of the game tick).
     pub fn prune_defeated(&mut self) {
+        for m in self.monsters.iter().filter(|m| m.defeated && !m.in_battle) {
+            // A bounty mark is one creature that existed for one contract; standing a
+            // second one up would make a contract farmable and a felled mark a lie.
+            if m.bounty.is_empty() && m.owner.is_empty() {
+                self.fallen.push(Fallen {
+                    entity_id: m.entity_id.clone(),
+                    monster_kind: m.monster_kind.clone(),
+                    home: m.home,
+                    area_min_x: m.area_min_x,
+                    area_max_x: m.area_max_x,
+                    felled_tick: 0,
+                });
+            }
+        }
         self.monsters.retain(|m| !m.defeated || m.in_battle);
+    }
+
+    /// Resolve a scheduled [`shift::ShiftRoll`] against the sections that actually
+    /// exist: `[first, last]` inclusive, or `None` if this world has no region far
+    /// enough out to be shiftable yet.
+    ///
+    /// The tell and the land both call this, so the region a player was warned about
+    /// is provably the region that goes. Sections stream in between the two, which is
+    /// why it must be resolved from the roll rather than remembered as an index.
+    pub fn shift_region(&self, balance: &Balance, roll: &shift::ShiftRoll) -> Option<(usize, usize)> {
+        let safe = balance.shift.safe_radius;
+        let candidates: Vec<usize> = self
+            .areas
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.start_x >= safe)
+            .map(|(i, _)| i)
+            .collect();
+        let first = if roll.uniform_pick {
+            *candidates.get((roll.locate * candidates.len() as f64) as usize % candidates.len().max(1))?
+        } else {
+            // Least-recently-disturbed, `locate` breaking ties so two worlds on the
+            // same generation don't march up the map in the same order.
+            let offset = (roll.locate * candidates.len() as f64) as usize;
+            (0..candidates.len())
+                .map(|k| candidates[(k + offset) % candidates.len()])
+                .min_by_key(|i| self.areas[*i].shifted_at)?
+        };
+        let last = (first + roll.sections - 1).min(self.areas.len().saturating_sub(1));
+        Some((first, last))
+    }
+
+    /// The world-space radius band a section span occupies. Corridor x IS radius in the
+    /// WG-4 fan, so a section is a ring and the client can draw the tell from two numbers.
+    pub fn shift_band(&self, first: usize, last: usize) -> (f64, f64) {
+        let inner = self.areas.get(first).map(|a| a.start_x).unwrap_or(0.0);
+        let outer = self.areas.get(last).map(|a| a.end_x).unwrap_or(inner);
+        (inner, outer)
+    }
+
+    /// Land a Shift on `[first, last]` (CANON D20/§W2): the region swaps biome, every
+    /// creature and collectable in it is wiped, and what grows back belongs to the new
+    /// land. Returns what happened, for the wire and the persistence log.
+    ///
+    /// **The props are re-scattered, not reskinned** ([`Self::reroll_props`]): the new
+    /// biome strews its own count at its own density in its own places, so a wood
+    /// becoming desert genuinely thins out instead of turning into differently-coloured
+    /// trees in the same spots. Placement rejects the clear-path tube exactly as
+    /// generation does, so the route out stays feasible by construction — but a prop can
+    /// still land on a player standing off-trail, and [`Self::rescue_stranded`] walks
+    /// them back to the region's entry rather than constraining the world to avoid it.
+    ///
+    /// **Terrain elevation is NOT re-rolled.** CANON §W2 retiles a region's *biome*; the
+    /// topography is the ground's bones, and re-cutting terraces under a live player
+    /// drops them through a cliff face rather than merely boxing them in.
+    ///
+    /// Bounty marks, chests and player-raised stations survive. A contract with your
+    /// name on it must not evaporate because the weather turned, and a structure is
+    /// what CANON §W3's anchors will contest — that is BD-3's fight, not this one's.
+    pub fn apply_shift(
+        &mut self,
+        balance: &Balance,
+        roll: &shift::ShiftRoll,
+        first: usize,
+        last: usize,
+    ) -> shift::ShiftOutcome {
+        let (inner, outer) = self.shift_band(first, last);
+        let from = self.areas.get(first).map(|a| a.biome).unwrap_or("forest");
+        let to = self.incoming_biome(balance, roll, from, inner);
+        let mut rng = Rng(roll.biome_pick ^ (first as u64).wrapping_mul(0x9E37_79B9));
+        let in_band = |arena: &Self, p: &Position| {
+            let r = arena.corridorize(p).x;
+            r >= inner && r < outer
+        };
+
+        let mut wiped = Vec::new();
+        // What lived here dies with the land. A creature already locked in a battle is
+        // left alone: deleting a combatant mid-fight breaks the encounter its party is
+        // standing in, and the fight is over in seconds either way.
+        let doomed: Vec<usize> = (0..self.monsters.len())
+            .filter(|&i| {
+                let m = &self.monsters[i];
+                !m.in_battle && m.bounty.is_empty() && in_band(self, &m.position)
+            })
+            .collect();
+        let kinds = creatures_for_biome(to);
+        for i in doomed {
+            wiped.push(self.monsters[i].entity_id.clone());
+            let (id, pos, amin, amax) = {
+                let m = &self.monsters[i];
+                (m.entity_id.clone(), m.position, m.area_min_x, m.area_max_x)
+            };
+            let kind = kinds[rng.below(kinds.len())];
+            let seed = rng.next_u64();
+            // Re-seeded IN PLACE rather than re-scattered: placement already proved
+            // this spot legal (spacing, obstacles, the clear-path tube), and the Shift
+            // is a change of tenant, not of geometry.
+            let mut fresh = MonsterSpawn::build(balance, id, kind, pos, seed);
+            fresh.area_min_x = amin;
+            fresh.area_max_x = amax;
+            self.monsters[i] = fresh;
+        }
+
+        // Collectables go with it, and come back as the new biome's. A depleted node
+        // restocking is the point: the Shift is how a persistent world recovers from
+        // being farmed, which is the whole reason it can afford to be persistent.
+        let new_nodes = resources_for_biome(to);
+        let old_nodes = resources_for_biome(from);
+        for i in 0..self.resources.len() {
+            if !in_band(self, &self.resources[i].position) {
+                continue;
+            }
+            let slot = old_nodes.iter().position(|k| *k == self.resources[i].kind).unwrap_or(0);
+            let kind = new_nodes[slot.min(new_nodes.len() - 1)].to_string();
+            self.resources[i].remaining = node_stock(balance, &kind);
+            self.resources[i].kind = kind;
+        }
+
+
+        let keep: Vec<bool> =
+            self.ground_loot.iter().map(|g| !in_band(self, &g.position)).collect();
+        let mut it = keep.into_iter();
+        self.ground_loot.retain(|_| it.next().unwrap_or(true));
+
+        let caught: Vec<(String, f64)> = self
+            .avatars
+            .iter()
+            .filter(|a| {
+                let r = self.corridorize(&a.position).x;
+                r >= inner && r < outer
+            })
+            .map(|a| (a.player_id.clone(), roll.damage_fraction))
+            .collect();
+
+        for i in first..=last.min(self.areas.len().saturating_sub(1)) {
+            self.areas[i].biome = to;
+            self.areas[i].shifted_at = roll.generation + 1;
+        }
+
+        // The ground rearranges LAST, so the scatter can see the creatures and nodes the
+        // new land just grew and refuse to bury them.
+        wiped.extend(self.reroll_props(balance, first, last, to, roll.biome_pick));
+        let moved = self.rescue_stranded(first, last);
+
+        shift::ShiftOutcome {
+            sections: (first..=last).collect(),
+            biome: to.to_string(),
+            inner_radius: inner,
+            outer_radius: outer,
+            wiped,
+            caught,
+            moved,
+        }
+    }
+
+    /// What section `first`'s region is about to become — the tell has to name the same
+    /// biome the land will actually be, and it is asked one warning window earlier.
+    pub fn incoming_biome_for(
+        &self,
+        balance: &Balance,
+        roll: &shift::ShiftRoll,
+        first: usize,
+    ) -> &'static str {
+        let (from, radius) = match self.areas.get(first) {
+            Some(a) => (a.biome, a.start_x),
+            None => return "forest",
+        };
+        self.incoming_biome(balance, roll, from, radius)
+    }
+
+    /// Re-scatter a shifted span's impassable props: the old biome's are gone and the
+    /// new land's are strewn where IT would have put them — a different count, different
+    /// radii, different positions. This is what makes a Shift read as the ground
+    /// rearranging rather than as a recolour: a wood becoming desert genuinely thins out,
+    /// because the maze-fill density is per-biome (`biome_obstacle_mult`) and is re-drawn
+    /// from scratch here rather than reskinned in place.
+    ///
+    /// Placement happens in the CORRIDOR frame the generator works in — rejecting the
+    /// clear-path tube and the trail web exactly as `push_section` does, so the route out
+    /// is still feasible by construction — and each accepted prop is bent into the fan on
+    /// the way into `obstacles`, which is the frame a streamed section's props already
+    /// live in.
+    ///
+    /// Terrain elevation is deliberately NOT re-rolled. CANON §W2 retiles a region's
+    /// *biome*; the topography is the ground's bones, and re-cutting terraces mid-run
+    /// would drop a player through a cliff face rather than merely box them in. Props can
+    /// still land on someone — [`Self::rescue_stranded`] is the answer to that.
+    fn reroll_props(
+        &mut self,
+        balance: &Balance,
+        first: usize,
+        last: usize,
+        biome: &'static str,
+        seed: u64,
+    ) -> Vec<Id> {
+        let wg = &balance.worldgen;
+        let (inner, outer) = self.shift_band(first, last);
+        let removed: Vec<Id> = self
+            .obstacles
+            .iter()
+            .filter(|o| {
+                let r = self.corridorize(&o.position).x;
+                r >= inner && r < outer
+            })
+            .map(|o| o.entity_id.clone())
+            .collect();
+        let doomed: std::collections::HashSet<&Id> = removed.iter().collect();
+        self.obstacles.retain(|o| !doomed.contains(&o.entity_id));
+
+        let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let bend = move |p: Position| -> Position {
+            if bend_half <= 0.0 {
+                return p;
+            }
+            let theta = (p.y / bend_lat).clamp(-1.0, 1.0) * bend_half;
+            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+        };
+        let lat = self.corridor_lateral.max(2.0);
+        let mut rng = Rng(seed ^ 0x0B57_AC1E_0000_0001);
+        let scatter = obstacles_for_biome(biome);
+        let fill = fill_kind_for_biome(biome);
+        let mut next_id = self.obstacles.len();
+
+        for i in first..=last.min(self.areas.len().saturating_sub(1)) {
+            let (start_x, end_x) = (self.areas[i].start_x, self.areas[i].end_x);
+            let length = (end_x - start_x).max(1.0);
+            // The same fan compensation `push_section` applies: a fixed corridor width
+            // bends into an arc that grows with radius, so a per-section count placed
+            // without it thins to nothing outward.
+            let r_mid = (start_x + end_x) * 0.5;
+            let arc_stretch = if self.radial_half > 0.0 {
+                (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
+            } else {
+                1.0
+            };
+            let radial_scale = arc_stretch.min(wg.maze_radial_scale_cap.max(1.0));
+            let sparse = wg.obstacles_per_area.max(0.0).round() as usize;
+            let dense = (biome_obstacle_mult(wg, biome) * wg.obstacles_per_area * radial_scale)
+                .round()
+                .max(0.0) as usize;
+
+            let mut near = BlockGrid::new(2.0 * wg.obstacle_max_radius + 1.2, radial_scale, start_x, end_x);
+            near.seed(&self.monsters, &self.resources, &self.chests, &self.obstacles);
+            let want = sparse + dense;
+            let (mut placed, mut tries) = (0usize, 0usize);
+            while placed < want && tries < want * 12 {
+                tries += 1;
+                let ox = start_x + rng.unit() * length;
+                let oy = rng.signed() * (lat - 1.0);
+                let radius = wg.obstacle_min_radius
+                    + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                let pos = Position::new(ox, oy);
+                if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
+                    || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
+                {
+                    continue;
+                }
+                if area_level_at(&self.areas, &pos) != 0 {
+                    continue;
+                }
+                if near.blocked(&pos, radius) {
+                    continue;
+                }
+                near.insert(pos, radius);
+                let world = bend(pos);
+                if self.monsters.iter().any(|m| m.position.distance_to(&world) < radius + 1.5)
+                    || self.resources.iter().any(|r| r.position.distance_to(&world) < radius + 1.5)
+                    || self.stations.iter().any(|s| s.position.distance_to(&world) < radius + 2.0)
+                {
+                    continue;
+                }
+                self.obstacles.push(Obstacle {
+                    entity_id: format!("obs-shift-{}-{next_id}", self.areas[i].shifted_at),
+                    kind: if placed < sparse {
+                        scatter[rng.below(scatter.len())].to_string()
+                    } else {
+                        fill.to_string()
+                    },
+                    position: world,
+                    radius,
+                });
+                next_id += 1;
+                placed += 1;
+            }
+        }
+        removed
+    }
+
+    /// The rescue. The new land was strewn without asking who was standing there, so
+    /// anyone a fresh prop landed on is walked back to **the start of the region** — the
+    /// clear-path waypoint at its inner edge, on level 0, which is by construction open
+    /// ground and by construction connected to the way home.
+    ///
+    /// This is the trade the re-roll buys: props may land wherever the new biome wants
+    /// them, including on your head, and the answer is to move the player rather than to
+    /// constrain the world. Returns everyone moved, so the server can correct their
+    /// client rather than let it fight the server's position for a second.
+    fn rescue_stranded(&mut self, first: usize, last: usize) -> Vec<(Id, Position)> {
+        let (inner, outer) = self.shift_band(first, last);
+        let entry = self.region_entry(first);
+        let blocked: Vec<(Id, Position)> = self
+            .avatars
+            .iter()
+            .filter(|a| {
+                let r = self.corridorize(&a.position).x;
+                if r < inner || r >= outer {
+                    return false;
+                }
+                self.obstacles
+                    .iter()
+                    .any(|o| a.position.distance_to(&o.position) < o.radius + self.player_radius)
+            })
+            .map(|a| (a.player_id.clone(), entry))
+            .collect();
+        for (pid, to) in &blocked {
+            if let Some(a) = self.avatars.iter_mut().find(|a| &a.player_id == pid) {
+                a.position = *to;
+                a.elevation = 0;
+            }
+        }
+        blocked
+    }
+
+    /// Where "the start of the region" is: the clear-path waypoint nearest the span's
+    /// inner edge, in world coords. The tube around the path holds no prop and no raised
+    /// terrace by construction, so this is always open, always level 0, and always on the
+    /// route the player was following anyway.
+    pub fn region_entry(&self, first: usize) -> Position {
+        let inner = self.areas.get(first).map(|a| a.start_x).unwrap_or(0.0);
+        self.path
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                let da = (self.corridorize(a).x - inner).abs();
+                let db = (self.corridorize(b).x - inner).abs();
+                da.total_cmp(&db)
+            })
+            .unwrap_or(Position::new(inner, 0.0))
+    }
+
+    /// Which biome the region becomes: never the one it already is, and never one the
+    /// `[biome_gate]` holds deeper than this ring. A Shift that can drop the tundra's
+    /// armoured bruisers onto the d80 on-ramp is a Shift that kills new players for
+    /// standing still, and the gate exists precisely to stop that on the way out.
+    fn incoming_biome(
+        &self,
+        balance: &Balance,
+        roll: &shift::ShiftRoll,
+        from: &str,
+        radius: f64,
+    ) -> &'static str {
+        let d = radius.floor() as i64;
+        let allowed: Vec<&'static str> = BIOMES
+            .iter()
+            .copied()
+            .filter(|b| *b != from)
+            .filter(|b| balance.biome_gate.get(*b).copied().unwrap_or(0) <= d)
+            .collect();
+        let pool = if allowed.is_empty() {
+            BIOMES.iter().copied().filter(|b| *b != from).collect::<Vec<_>>()
+        } else {
+            allowed
+        };
+        pool[(roll.biome_pick as usize) % pool.len()]
+    }
+
+    /// Regrowth: a persistent world's slow recovery between Shifts (`[world_persist]`).
+    /// Creatures stand back up where they fell, spent nodes re-stock, opened chests
+    /// re-seal — each on its own timer, none of them fast.
+    ///
+    /// The Shift is the headline churn, but it is a *region* on a cadence, and a world
+    /// whose first three sections happen not to shift for an hour is one a player can
+    /// strip permanently. That is the failure mode persistence introduces, so the fix
+    /// ships with it rather than after it.
+    ///
+    /// Also where the world clock is stamped onto whatever was spent since the last
+    /// pass: this crate stays pure and is handed `tick` rather than reading a clock.
+    pub fn regrow(&mut self, balance: &Balance, tick: u64) -> usize {
+        let wp = &balance.world_persist;
+        let now = tick.max(1);
+        let mut back = 0;
+        for f in self.fallen.iter_mut().filter(|f| f.felled_tick == 0) {
+            f.felled_tick = now;
+        }
+        for r in self.resources.iter_mut().filter(|r| r.depleted() && r.spent_tick == 0) {
+            r.spent_tick = now;
+        }
+        for c in self.chests.iter_mut().filter(|c| c.opened && c.opened_tick == 0) {
+            c.opened_tick = now;
+        }
+        let due: Vec<Fallen> = {
+            let (ready, waiting) = self
+                .fallen
+                .drain(..)
+                .partition(|f| now.saturating_sub(f.felled_tick) >= wp.creature_regrow_ticks);
+            self.fallen = waiting;
+            ready
+        };
+        for f in due {
+            // Re-seeded off the world clock so the replacement is a different creature
+            // than the one that died there, not the same wander pattern rerun.
+            let seed = Rng(now).next_u64() ^ (f.home.x.to_bits() ^ f.home.y.to_bits());
+            let mut fresh =
+                MonsterSpawn::build(balance, f.entity_id, &f.monster_kind, f.home, seed);
+            fresh.area_min_x = f.area_min_x;
+            fresh.area_max_x = f.area_max_x;
+            self.monsters.push(fresh);
+            back += 1;
+        }
+        for r in self.resources.iter_mut() {
+            if r.depleted() && now.saturating_sub(r.spent_tick) >= wp.node_regrow_ticks {
+                let kind = r.kind.clone();
+                r.remaining = node_stock(balance, &kind);
+                r.spent_tick = 0;
+                back += 1;
+            }
+        }
+        for c in self.chests.iter_mut() {
+            if c.opened && now.saturating_sub(c.opened_tick) >= wp.chest_regrow_ticks {
+                c.opened = false;
+                c.opened_tick = 0;
+                back += 1;
+            }
+        }
+        back
     }
 
     /// `immune` excludes players a caller has decided (via wall-clock state it holds,
@@ -4555,6 +5039,239 @@ const BOSS_KEYS_FOR_TEST: [&str; 10] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A world that shifts is a world that stays worth walking through — the whole
+    /// reason it can afford to be persistent. Every one of these holds a property of
+    /// the mechanic rather than of today's numbers.
+    mod shifting_lands {
+        use super::*;
+
+        fn world() -> (Balance, Arena) {
+            let b = Balance::load_default().unwrap();
+            let mut a = Arena::generate(&b, 4242, false);
+            for _ in 0..30 {
+                a.ensure_frontier(&b, 900.0);
+            }
+            (b, a)
+        }
+
+        /// A Shift that can drop the tundra's armoured bruisers onto the on-ramp kills
+        /// new players for standing still. The `[biome_gate]` holds the harsh themes
+        /// outward on the way OUT; it has to hold them there on the way SIDEWAYS too.
+        #[test]
+        fn a_shift_never_lands_a_biome_the_gate_holds_deeper() {
+            let (b, mut a) = world();
+            for g in 0..60u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                let radius = a.areas[first].start_x.floor() as i64;
+                let out = a.apply_shift(&b, &roll, first, last);
+                let gate = b.biome_gate.get(&out.biome).copied().unwrap_or(0);
+                assert!(
+                    gate <= radius,
+                    "gen {g} put {} at d{radius}, gated to d{gate}",
+                    out.biome
+                );
+            }
+        }
+
+        #[test]
+        fn a_shift_never_lands_on_the_doorstep() {
+            let (b, a) = world();
+            for g in 0..80u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, _)) = a.shift_region(&b, &roll) else { continue };
+                assert!(
+                    a.areas[first].start_x >= b.shift.safe_radius,
+                    "gen {g} shifted the hub ring at {}",
+                    a.areas[first].start_x
+                );
+            }
+        }
+
+        /// The land REARRANGES — the whole point of re-scattering rather than reskinning.
+        /// Terrain and the clear path stay put (topography is the ground's bones, and the
+        /// route out must remain feasible by construction), but the props are somewhere
+        /// else entirely.
+        #[test]
+        fn a_shift_rearranges_the_ground_it_does_not_recolour_it() {
+            let (b, mut a) = world();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            let in_band = |arena: &Arena, p: &Position| {
+                let r = arena.corridorize(p).x;
+                r >= inner && r < outer
+            };
+            let before: Vec<(Position, f64)> = a
+                .obstacles
+                .iter()
+                .filter(|o| in_band(&a, &o.position))
+                .map(|o| (o.position, o.radius))
+                .collect();
+            let levels: Vec<Vec<u8>> = a.areas.iter().map(|s| s.terrain.level.clone()).collect();
+            let path = a.path.clone();
+
+            a.apply_shift(&b, &roll, first, last);
+
+            let after: Vec<(Position, f64)> = a
+                .obstacles
+                .iter()
+                .filter(|o| in_band(&a, &o.position))
+                .map(|o| (o.position, o.radius))
+                .collect();
+            assert!(!before.is_empty() && !after.is_empty());
+            assert_ne!(before, after, "the props were reskinned, not re-scattered");
+            assert_eq!(levels, a.areas.iter().map(|s| s.terrain.level.clone()).collect::<Vec<_>>());
+            assert_eq!(path, a.path, "the Shift re-routed the clear path");
+        }
+
+        /// Feasibility is the invariant a re-roll could break, and it is kept the same way
+        /// generation keeps it: nothing is ever placed inside the clear-path tube.
+        #[test]
+        fn the_way_out_survives_every_shift() {
+            let (b, mut a) = world();
+            for g in 0..25u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                a.apply_shift(&b, &roll, first, last);
+            }
+            for o in &a.obstacles {
+                let c = a.corridorize(&o.position);
+                assert!(
+                    dist_to_path(&c, &a.corridor_path) >= a.path_clear_radius,
+                    "a shifted prop landed in the clear-path tube at {c:?}"
+                );
+            }
+        }
+
+        /// The trade the re-roll buys: props land where the new biome wants them, and a
+        /// player they land on is walked back to the region's entry rather than the world
+        /// being constrained to avoid them.
+        #[test]
+        fn a_player_the_new_land_lands_on_is_walked_to_the_regions_entry() {
+            let (b, mut a) = world();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            a.add_avatar("p1".into(), 5.0);
+            // Park them well off-trail, mid-region, where the scatter is free to build.
+            let mid = (inner + outer) * 0.5;
+            a.avatar_mut("p1").unwrap().position =
+                Position::new(mid, a.corridor_lateral() * 0.6);
+            let entry = a.region_entry(first);
+
+            let out = a.apply_shift(&b, &roll, first, last);
+            let here = a.avatar("p1").unwrap().position;
+            if out.moved.iter().any(|(p, _)| p == "p1") {
+                assert_eq!(here, entry, "a rescued player did not land at the entry");
+            }
+            // Whatever happened, they are standing somewhere they can stand.
+            assert!(
+                !a.obstacles
+                    .iter()
+                    .any(|o| here.distance_to(&o.position) < o.radius),
+                "a player was left inside a prop"
+            );
+        }
+
+        #[test]
+        fn what_grows_back_belongs_to_the_new_biome() {
+            let (b, mut a) = world();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            let out = a.apply_shift(&b, &roll, first, last);
+            let native = creatures_for_biome(&out.biome);
+            let nodes = resources_for_biome(&out.biome);
+            let in_band = |p: &Position| {
+                let r = a.corridorize(p).x;
+                r >= inner && r < outer
+            };
+            for m in a.monsters.iter().filter(|m| in_band(&m.position) && m.bounty.is_empty()) {
+                assert!(
+                    native.contains(&m.monster_kind.as_str()),
+                    "{} is not a {} creature",
+                    m.monster_kind,
+                    out.biome
+                );
+            }
+            for n in a.resources.iter().filter(|n| in_band(&n.position)) {
+                assert!(nodes.contains(&n.kind.as_str()), "{} is not {} stock", n.kind, out.biome);
+                assert!(!n.depleted(), "the new land grew an already-empty node");
+            }
+            assert!(!out.wiped.is_empty(), "a Shift that wiped nothing is not a Shift");
+        }
+
+        /// A contract with your name on it must not evaporate because the weather turned.
+        #[test]
+        fn a_shift_does_not_take_a_bounty_mark() {
+            let (b, mut a) = world();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, _) = a.shift_band(first, last);
+            let victim = a
+                .monsters
+                .iter_mut()
+                .find(|m| m.position.x.hypot(m.position.y) >= inner)
+                .expect("a creature out there");
+            victim.bounty = "contract-1".into();
+            let kept = victim.entity_id.clone();
+            let out = a.apply_shift(&b, &roll, first, last);
+            assert!(!out.wiped.contains(&kept), "the Shift took a standing contract");
+            assert!(a.monsters.iter().any(|m| m.entity_id == kept && m.bounty == "contract-1"));
+        }
+
+        /// The failure mode persistence introduces: a world nobody ever refreshes is a
+        /// world a player strips permanently. Regrowth is the floor under that.
+        #[test]
+        fn a_persistent_world_grows_back_what_was_taken() {
+            let (b, mut a) = world();
+            let doomed: Vec<String> =
+                a.monsters.iter().take(5).map(|m| m.entity_id.clone()).collect();
+            for m in a.monsters.iter_mut().take(5) {
+                m.defeated = true;
+            }
+            for n in a.resources.iter_mut().take(3) {
+                n.remaining = 0;
+            }
+            a.prune_defeated();
+            assert!(a.monsters.iter().all(|m| !doomed.contains(&m.entity_id)));
+
+            a.regrow(&b, 1);
+            assert!(
+                a.monsters.iter().all(|m| !doomed.contains(&m.entity_id)),
+                "the ground was back on the very next tick"
+            );
+            a.regrow(&b, 1 + b.world_persist.creature_regrow_ticks);
+            for id in &doomed {
+                assert!(a.monsters.iter().any(|m| &m.entity_id == id), "{id} never came back");
+            }
+            a.regrow(&b, 1 + b.world_persist.node_regrow_ticks);
+            assert!(a.resources.iter().all(|n| !n.depleted()), "a node never re-stocked");
+        }
+
+        /// Half the picks are least-recently-disturbed, so the churn cannot pool in one
+        /// ring while the rest of the world becomes a museum.
+        #[test]
+        fn the_churn_spreads_rather_than_pooling() {
+            let (b, mut a) = world();
+            let mut touched = std::collections::HashSet::new();
+            for g in 0..40u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                let out = a.apply_shift(&b, &roll, first, last);
+                touched.extend(out.sections);
+            }
+            let shiftable =
+                a.areas.iter().filter(|s| s.start_x >= b.shift.safe_radius).count();
+            assert!(
+                touched.len() * 2 >= shiftable,
+                "40 Shifts reached {} of {shiftable} shiftable sections",
+                touched.len()
+            );
+        }
+    }
 
     /// The default balance now generates the WG-4 **radial** world (flat, no
     /// terraces/seams/streaming). Tests that specifically exercise those corridor

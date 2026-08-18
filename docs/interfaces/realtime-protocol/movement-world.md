@@ -315,3 +315,72 @@ A ward is now active in the instance.
 ```json
 {"type": "world.ward_deployed", "seq": 3700, "ts": 1783728090040, "payload": {"client_seq": 240, "entity_id": "0197a5ee-7777-7abc-9def-0123456789ab", "ward_kind": "warding_tent", "position": {"x": 415.0, "y": -84.5}, "expires_at": 1783729890040, "deployed_by": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c"}}
 ```
+
+---
+
+### `world.shift_warning` (S2C)
+
+**Source:** CANON.md D20 / §W2 (the Shift); tunables under `[shift]`.
+**Direction:** S2C — broadcast to **every** player in the world, not only to those
+standing in the doomed ring. A Shift is weather: knowing that the desert three rings
+out is about to become tundra is how a party decides where to walk next.
+
+The scheduler is a pure function of `(world_seed, shift_generation)` driven by the
+server tick counter and never by wall-clock (§W2, structural), so a client that
+reconnects mid-window receives the next warning on schedule with no catch-up state.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| generation | integer (int64, u64) | Yes | No | — | Which Shift this is. Monotonic per world; pairs the warning with its `world.shift`. |
+| inner_radius | number (f64) | Yes | No | — | Inner edge of the doomed ring, in world units from the hub. A region is a whole section span, and a section is a radius ring. |
+| outer_radius | number (f64) | Yes | No | — | Outer edge of the ring. |
+| biome | string | Yes | No | — | What the ring is about to become (`forest`/`desert`/`ashfall`/`tundra`/`mire`/`field`). Never the biome it already is, and never one the `[biome_gate]` holds deeper than this radius. |
+| lands_in_ms | integer (int64, u64) | Yes | No | — | Milliseconds until it lands. `[shift] warning_ticks` is held by test to be long enough to actually walk out of the widest region the size table can roll — a Shift you cannot escape is a dice roll, not a hazard. |
+| caught | boolean | No | No | `false` | Whether *this* player is inside the ring right now. The server owns the fact; the client owns how loud to be about it. |
+
+**Example**
+
+```json
+{"type": "world.shift_warning", "seq": 4100, "ts": 1783728100000, "payload": {"generation": 7, "inner_radius": 240.0, "outer_radius": 318.0, "biome": "ashfall", "lands_in_ms": 10000, "caught": true}}
+```
+
+---
+
+### `world.shift` (S2C)
+
+**Source:** CANON.md D20 / §W2.
+**Direction:** S2C — broadcast to every player in the world.
+
+Sent the tick the region swaps. A `world.terrain_section` for each retiled section
+follows immediately and is what actually repaints the ground: the client keys its
+biome ground shader and HUD label off per-section radius rings, so re-sending the
+sections *is* the retile. This message is the words and the damage.
+
+**The region's props are re-scattered, not reskinned**: the incoming biome strews its
+own count at its own density in its own places. Placement rejects the clear-path tube
+exactly as world generation does, so the route out stays feasible by construction —
+but a prop can land on a player standing off-trail, and the server then walks them to
+the region's entry and sends them a `movement.position_correction`. **Terrain
+elevation and the clear path itself are never changed.** Bounty marks, chests and
+player-raised stations survive; the region's other creatures and its resource nodes do
+not, and what grows back belongs to the new biome.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| generation | integer (int64, u64) | Yes | No | — | Matches the `world.shift_warning` that announced it. |
+| inner_radius | number (f64) | Yes | No | — | Inner edge of the swapped ring. |
+| outer_radius | number (f64) | Yes | No | — | Outer edge of the swapped ring. |
+| biome | string | Yes | No | — | What the ring is now. |
+| from_biome | string | No | No | `""` | What it stopped being, for the line the client prints. |
+| wiped | array of string (id) | No | No | `[]` | Entity ids the Shift removed, so a client drops them on the same frame the ground changes rather than one snapshot later. |
+| damage | array of integer (int32) | No | No | `[]` | HP each of **this** player's heroes lost to the Force blast, parallel to the party; empty for anyone who was outside the ring. The magnitude is a fraction of each hero's *own* max HP scaled by the region's size (`[shift] damage_fraction_min`/`max`) — a flat blast would be a death sentence at level 1 and a rounding error at 100. A party wiped by one ends its run `died`, exactly as a sprung trap does. |
+
+**Example**
+
+```json
+{"type": "world.shift", "seq": 4200, "ts": 1783728110000, "payload": {"generation": 7, "inner_radius": 240.0, "outer_radius": 318.0, "biome": "ashfall", "from_biome": "forest", "wiped": ["mob-118", "mob-119"], "damage": [96, 96, 51, 51]}}
+```

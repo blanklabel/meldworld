@@ -73,6 +73,11 @@ mod biome_params {
         pub(crate) _pad_pc0: u32,
         pub(crate) _pad_pc1: u32,
         pub(crate) _pad_pc2: u32,
+        /// The Shift's tell: `(inner_radius, outer_radius, intensity, 0)`. A region is a
+        /// radius ring in the WG-4 fan and this ground is already painted in rings, so
+        /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
+        /// resting state and costs the shader one compare.
+        pub(crate) shift: Vec4,
     }
 
     impl Default for BiomeParams {
@@ -87,6 +92,7 @@ mod biome_params {
                 terrain_amp: 0.0,
                 terrain_off: Vec2::ZERO,
                 _pad_peaks: Vec2::ZERO,
+                shift: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
                 _pad_pc0: 0,
@@ -1330,11 +1336,19 @@ pub(crate) fn update_ground_biome_rings(
     world: Res<Overworld>,
     session: Res<Session>,
     state: Res<State<Screen>>,
+    tell: Res<crate::ShiftTell>,
+    clock: Res<Time>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
     let Some(mat) = mats.get_mut(&handle.0) else { return };
+    // The Shift's tell rides the same uniform as the biome rings because it IS a ring —
+    // see `BiomeParams::shift`. Zero intensity is the resting state, so a world with no
+    // Shift pending pays one compare per fragment.
+    let now = clock.elapsed_secs_f64();
+    let k = tell.intensity(now);
+    mat.extension.params.shift = Vec4::new(tell.inner, tell.outer, k, 0.0);
     // Roll the ground into hills+cliffs ONLY in the Overworld. The City + menus are
     // hand-placed for FLAT ground (a level plaza), so displacing it there tilts every
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
@@ -2012,5 +2026,55 @@ pub(crate) fn boss_band_tint(band: u8) -> Color {
         1 => Color::srgb(1.25, 1.0, 0.85),
         2 => Color::srgb(1.05, 0.82, 1.2),
         _ => Color::srgb(1.35, 0.72, 0.72),
+    }
+}
+
+#[cfg(test)]
+mod ground_uniform_tests {
+    use super::*;
+    use bevy::render::render_resource::ShaderType;
+
+    /// The Rust `BiomeParams` and the WGSL one are two hand-written declarations of the
+    /// same buffer, and nothing checks them against each other at build time — a
+    /// mismatch surfaces as a wgpu validation failure at material-load, i.e. a black
+    /// world in the running game. So hold the size here and read the field list out of
+    /// the shader source: adding a field to one side and not the other fails a test
+    /// instead of a screenshot.
+    #[test]
+    fn the_ground_uniform_matches_the_shader_that_reads_it() {
+        let size = <biome_params::BiomeParams as ShaderType>::min_size().get();
+        assert_eq!(size % 16, 0, "a uniform struct must round to 16 bytes, got {size}");
+
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        let body = wgsl
+            .split_once("struct BiomeParams {")
+            .expect("the shader declares BiomeParams")
+            .1
+            .split_once("\n}")
+            .expect("…and closes it")
+            .0;
+        for field in [
+            "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
+            "_pad_peaks", "peaks", "peak_count", "shift",
+        ] {
+            assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
+        }
+        // Declaration ORDER is the layout, so check the two agree on it rather than only
+        // on membership — a reordered pair keeps every name and still corrupts the buffer.
+        let order: Vec<&str> = body
+            .lines()
+            .filter_map(|l| l.trim().split_once(':').map(|(n, _)| n.trim()))
+            .filter(|n| !n.starts_with("//"))
+            .collect();
+        assert_eq!(
+            order.first().copied(),
+            Some("rings"),
+            "the shader's first field moved: {order:?}"
+        );
+        assert_eq!(
+            order.last().copied(),
+            Some("shift"),
+            "the Shift's tell must stay last — it is what the 16-byte tail rounds to: {order:?}"
+        );
     }
 }
