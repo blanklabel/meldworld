@@ -27,6 +27,13 @@ async fn start_server() -> String {
     // — the assertion is "the XP arrived", not "the XP was exactly 250".
     balance.consumable.world_xp_item_chance = 1.0;
     balance.consumable.insight_mote_xp = 100_000;
+    // The drop is already forced; the WIN that earns it was not. This test waited for the
+    // party to survive a fight inside a fixed budget, which is a coin flip on the difficulty
+    // curve rather than anything it is asserting — so it failed whenever the curve moved. A
+    // hero that cannot lose reaches the mote every run.
+    for p in balance.player.values_mut() {
+        p.base_hp *= 20;
+    }
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),
         database_url: db_url,
