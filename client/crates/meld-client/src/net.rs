@@ -560,6 +560,10 @@ pub enum ServerMsg {
         /// thing an ability is; the numbers are balance `[TUNABLE]`s the client cannot
         /// read, so the server resolves them and sends them along.
         abilities: Vec<(String, String)>,
+        /// `(ability key, Adrenaline cost)` — Hunter skills only. Lets the battle menu
+        /// grey out a skill the active hero can't currently afford instead of letting
+        /// it submit and stall the hero for a turn it can never resolve.
+        ability_costs: Vec<(String, i32)>,
     },
     /// The caller's earned overworld class perks (avatar glow, minimap, intel).
     Perks { perks: PerksLine },
@@ -2313,7 +2317,24 @@ impl Inner {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.out.push_back(ServerMsg::Party { heroes, synergies, combos, abilities });
+                let ability_costs = raw.payload["abilities"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|a| {
+                                let cost = a["adrenaline_cost"].as_i64()?;
+                                Some((a["key"].as_str().unwrap_or_default().to_string(), cost as i32))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::Party {
+                    heroes,
+                    synergies,
+                    combos,
+                    abilities,
+                    ability_costs,
+                });
             }
             "run.perks" => {
                 let p = &raw.payload;

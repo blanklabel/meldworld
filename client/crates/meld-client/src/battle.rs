@@ -630,6 +630,7 @@ pub(crate) fn battle_click_target(
     ui_hit: Query<&Interaction, With<Button>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     backpack: Res<RunBackpack>,
+    roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     mut target: ResMut<BattleTarget>,
@@ -686,7 +687,7 @@ pub(crate) fn battle_click_target(
         if let Some(idx) = menu.rows.iter().position(|(_, v)| *v == eid) {
             let class = battle.active_class();
             let held = held_potions(&backpack, battle.active_slot());
-            select_entry(idx, &mut menu, &mut battle, &class, &held);
+            select_entry(idx, &mut menu, &mut battle, &class, &held, &roster);
         }
         return;
     }
@@ -1048,6 +1049,7 @@ pub(crate) fn select_entry(
     battle: &mut BattleData,
     class: &str,
     held: &[(String, i32)],
+    roster: &crate::PartyRoster,
 ) {
     let active = match battle.active.clone() {
         Some(a) => a,
@@ -1078,10 +1080,18 @@ pub(crate) fn select_entry(
     let spent = spent_tokens(battle, &active);
     // The held Foci are what make an aspect row appear (see `menu_entries`).
     let foci = held_foci(battle, &active);
-    let entries = menu_entries(menu.level, class, hero_level, held, &spent, &foci);
+    let adrenaline =
+        battle.view(&active).map(|v| status_num(&v.statuses, "adrenaline:")).unwrap_or(0);
+    let entries = menu_entries(menu.level, class, hero_level, held, &spent, &foci, roster, adrenaline);
     let Some(entry) = entries.get(index) else {
         return;
     };
+    // Greyed out: picking this would only get the hero refused (out of Adrenaline,
+    // or a once-per-battle call already spent) — and the refusal never resolves the
+    // hero's turn server-side, which is what stalled it for the rest of the fight.
+    if !entry.enabled {
+        return;
+    }
     match entry.action {
         EntryAction::Attack => begin_order(battle, menu, &active, QueuedKind::Attack),
         EntryAction::Defend => begin_order(battle, menu, &active, QueuedKind::Defend),
@@ -1145,7 +1155,10 @@ pub(crate) fn page_len(
 ) -> usize {
     match menu.level {
         MenuLevel::Target | MenuLevel::Revoke => menu.rows.len() + 1,
-        level => menu_entries(level, class, hero_level, held, spent, foci).len(),
+        // Row COUNT doesn't depend on affordability (a disabled row is still
+        // counted, just inert), so an empty roster/zero adrenaline is fine here.
+        level => menu_entries(level, class, hero_level, held, spent, foci, &PartyRoster::default(), 0)
+            .len(),
     }
 }
 
@@ -1186,6 +1199,7 @@ pub(crate) fn menu_keyboard(
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
+    roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
 ) {
@@ -1288,7 +1302,7 @@ pub(crate) fn menu_keyboard(
         };
         if let Some(i) = pick {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class, &held);
+            select_entry(i, &mut menu, &mut battle, &class, &held, &roster);
         }
         return;
     }
@@ -1308,18 +1322,19 @@ pub(crate) fn menu_keyboard(
     for (i, key) in digits.iter().enumerate() {
         if i < n && keys.just_pressed(*key) {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class, &held);
+            select_entry(i, &mut menu, &mut battle, &class, &held, &roster);
             return;
         }
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        select_entry(menu.cursor, &mut menu, &mut battle, &class, &held);
+        select_entry(menu.cursor, &mut menu, &mut battle, &class, &held, &roster);
     }
 }
 
 /// Mouse/touch: pressing a command row queues it for the active hero.
 pub(crate) fn menu_click(
     backpack: Res<RunBackpack>,
+    roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     rows: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
@@ -1334,7 +1349,7 @@ pub(crate) fn menu_click(
         menu.cursor = index;
         let class = battle.active_class();
         let held = held_potions(&backpack, battle.active_slot());
-        select_entry(index, &mut menu, &mut battle, &class, &held);
+        select_entry(index, &mut menu, &mut battle, &class, &held, &roster);
     }
 }
 
@@ -1448,6 +1463,10 @@ pub(crate) fn rebuild_command_menu(
     let foci = held_foci(&battle, &active_id);
     let commanding = battle.hero_label(&active_id);
     let can_switch = next_commandable(&battle).is_some();
+    // Hunter only: current banked Adrenaline, checked against `roster`'s per-skill
+    // costs so a row the hero can't currently afford greys out (see `menu_entries`).
+    let active_adrenaline =
+        battle.view(&active_id).map(|v| status_num(&v.statuses, "adrenaline:")).unwrap_or(0);
 
     // Palette for the d-pad tiles: neutral for Item/Defend/Skill, gold for the
     // primary Attack, red for Flee — so the two "big" choices read at a glance.
@@ -1456,14 +1475,20 @@ pub(crate) fn rebuild_command_menu(
     let gold = Color::srgb(1.0, 0.85, 0.45);
     let red = Color::srgb(1.0, 0.55, 0.5);
 
-    // Row labels for the list renderer: the dynamic Target/Revoke pages draw from
-    // `menu.rows` (+ a Back row); every other page comes from `menu_entries`.
-    let labels: Vec<String> = match level {
+    // Row label + enabled state + Adrenaline cost (if any) for the list renderer:
+    // the dynamic Target/Revoke pages draw from `menu.rows` (+ a Back row, always
+    // enabled, never costed); every other page comes from `menu_entries`, whose
+    // `enabled` says whether picking this row would only get the hero refused (see
+    // `select_entry`'s matching guard) and whose `adrenaline_cost` — when > 0 — is
+    // shown as a right-aligned "N AP" badge so the cost to build toward reads at a
+    // glance instead of only living in the tooltip below.
+    let rows: Vec<(String, bool, Option<i32>)> = match level {
         MenuLevel::Target | MenuLevel::Revoke => menu
             .rows
             .iter()
             .map(|(l, _)| l.clone())
             .chain(std::iter::once("Back".to_string()))
+            .map(|l| (l, true, None))
             .collect(),
         _ => menu_entries(
             level,
@@ -1472,9 +1497,11 @@ pub(crate) fn rebuild_command_menu(
             &held_potions(&backpack, battle.active_slot()),
             &spent,
             &foci,
+            &roster,
+            active_adrenaline,
         )
             .into_iter()
-            .map(|e| e.label.to_string())
+            .map(|e| (e.label, e.enabled, e.adrenaline_cost.filter(|c| *c > 0)))
             .collect(),
     };
     // The selected row's tooltip. An ability nobody can read is an ability nobody
@@ -1491,6 +1518,8 @@ pub(crate) fn rebuild_command_menu(
             &held_potions(&backpack, battle.active_slot()),
             &spent,
             &foci,
+            &roster,
+            active_adrenaline,
         )
             .get(menu.cursor)
             .map(|e| {
@@ -1658,24 +1687,47 @@ pub(crate) fn rebuild_command_menu(
                                     ..default()
                                 },
                             ));
-                            for (i, label) in labels.iter().enumerate() {
-                                list.spawn((
-                                    Button,
+                            for (i, (label, row_enabled, cost)) in rows.iter().enumerate() {
+                                // Greyed out AND non-interactive: a skill the hero can't
+                                // currently afford (or a spent once-per-battle call) has
+                                // no `Button`, so it never receives `Interaction` at
+                                // all — clicking it is structurally impossible, and
+                                // `select_entry` refuses it too (keyboard Enter/digits).
+                                let row_enabled = *row_enabled;
+                                let text_color =
+                                    if row_enabled { Color::srgb(0.9, 0.93, 1.0) } else { glass::DIM };
+                                let mut row = list.spawn((
                                     MenuRow { index: i },
                                     Node {
                                         width: Val::Percent(100.0),
+                                        flex_direction: FlexDirection::Row,
+                                        align_items: AlignItems::Center,
+                                        justify_content: JustifyContent::SpaceBetween,
                                         padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
                                         ..default()
                                     },
                                     BackgroundColor(Color::NONE),
                                     BorderRadius::all(Val::Px(3.0)),
-                                ))
-                                .with_children(|r| {
+                                ));
+                                if row_enabled {
+                                    row.insert(Button);
+                                }
+                                row.with_children(|r| {
                                     r.spawn((
                                         Text::new(label.clone()),
                                         TextFont { font_size: 18.0, ..default() },
-                                        TextColor(Color::srgb(0.9, 0.93, 1.0)),
+                                        TextColor(text_color),
                                     ));
+                                    // The Adrenaline cost, right-aligned by `SpaceBetween`
+                                    // (the row's only other child) — "N AP" so the amount
+                                    // to build toward reads without opening the tooltip.
+                                    if let Some(cost) = cost {
+                                        r.spawn((
+                                            Text::new(format!("{cost} AP")),
+                                            TextFont { font_size: 14.0, ..default() },
+                                            TextColor(if row_enabled { glass::DIM } else { text_color }),
+                                        ));
+                                    }
                                 });
                             }
                             if !tooltip.is_empty() {

@@ -65,6 +65,23 @@ fn adrenaline(cost: i32, balance: &Balance) -> String {
     )
 }
 
+/// The Adrenaline cost of a Hunter skill (`None` for every other key) — the single
+/// source `effect_line` itself reads from, so the tooltip's number and the number a
+/// client-side "can I afford this" check is judged against can never drift apart.
+/// Sent to the client as `AbilityView::adrenaline_cost` (`party_ability_views`) so
+/// the battle menu can grey out a skill the active hero can't currently pay for,
+/// instead of letting it submit and be refused turn-lessly by the server.
+pub fn adrenaline_cost(key: &str, balance: &Balance) -> Option<i32> {
+    let b = &balance.battle;
+    match key {
+        "power_strike" | "crushing_blow" => Some(b.hunter_power_strike_cost),
+        "second_wind" | "iron_lung" => Some(b.hunter_second_wind_cost),
+        "snare" | "pin_the_prey" => Some(b.hunter_snare_cost),
+        "frenzy" | "apex_predator" => Some(b.hunter_frenzy_cost),
+        _ => None,
+    }
+}
+
 /// The one-line magnitude for `key`, empty for anything outside the registry
 /// (Attack, Defend, Item). Keys are [`meld_proto::skills`] keys.
 pub fn effect_line(key: &str, balance: &Balance) -> String {
@@ -118,39 +135,43 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             ),
         ]),
 
-        // ---- Hunter: the cost IS the class, so it leads every row.
-        "power_strike" => {
-            join(&[dmg(b.skill_power_mult), adrenaline(b.hunter_power_strike_cost, balance)])
-        }
+        // ---- Hunter: the cost IS the class, so it leads every row. Every cost here
+        // reads from `adrenaline_cost(key, ...)` rather than the balance field
+        // directly, so it can never drift from the number the client gates on.
+        "power_strike" => join(&[
+            dmg(b.skill_power_mult),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
+        ]),
         "crushing_blow" => join(&[
             dmg(b.hunter_crushing_blow_mult),
-            adrenaline(b.hunter_power_strike_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "second_wind" => join(&[
             format!("heals {} of your max HP", pct(b.skill_heal_fraction)),
-            adrenaline(b.hunter_second_wind_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "snare" => join(&[
             dmg(b.explorer_snare_mult),
             turn(b.explorer_snare_drain),
-            adrenaline(b.hunter_snare_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "pin_the_prey" => join(&[
             dmg(b.pin_the_prey_mult),
             turn(b.pin_the_prey_drain),
-            adrenaline(b.hunter_snare_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
-        "frenzy" => {
-            join(&[dmg(b.explorer_frenzy_mult), adrenaline(b.hunter_frenzy_cost, balance)])
-        }
+        "frenzy" => join(&[
+            dmg(b.explorer_frenzy_mult),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
+        ]),
         "iron_lung" => join(&[
             format!("heals {} of your max HP", pct(b.hunter_iron_lung_heal_fraction)),
             regen(b.hunter_iron_lung_regen_fraction, balance),
-            adrenaline(b.hunter_second_wind_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "apex_predator" => join(&[
             format!("{} to EVERY enemy", dmg(b.hunter_apex_mult)),
-            adrenaline(b.hunter_frenzy_cost, balance),
+            adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
 
         // ---- Psyker: a Focus fires again every Psyker turn it is held, so the
@@ -641,6 +662,36 @@ mod tests {
         }
         assert!(b.battle.hunter_frenzy_cost > b.battle.hunter_power_strike_cost);
         assert!(effect_line("frenzy", &b).contains(&format!("{}", b.battle.hunter_frenzy_cost)));
+    }
+
+    /// `adrenaline_cost` — what the client gates the battle menu's `enabled` on — must
+    /// name the exact number `effect_line` printed, for every Hunter skill, and must be
+    /// `None` for everything else (nothing else spends Adrenaline).
+    #[test]
+    fn adrenaline_cost_agrees_with_the_line_it_feeds() {
+        let b = Balance::load_default().unwrap();
+        let hunter_keys = [
+            "power_strike",
+            "crushing_blow",
+            "second_wind",
+            "snare",
+            "pin_the_prey",
+            "frenzy",
+            "iron_lung",
+            "apex_predator",
+        ];
+        for key in hunter_keys {
+            let cost = adrenaline_cost(key, &b).unwrap_or_else(|| panic!("{key} has no cost"));
+            assert!(
+                effect_line(key, &b).contains(&format!("{cost} of")),
+                "{key}: adrenaline_cost says {cost} but effect_line disagrees: {:?}",
+                effect_line(key, &b)
+            );
+        }
+        // A non-Hunter ability spends no Adrenaline, so it must not be gated on it.
+        assert_eq!(adrenaline_cost("trailblaze", &b), None);
+        assert_eq!(adrenaline_cost("gravity_well", &b), None);
+        assert_eq!(adrenaline_cost("nonsense", &b), None);
     }
 
     /// The prose and the numbers are two descriptions of the same resolver, so they
