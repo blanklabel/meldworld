@@ -5,7 +5,7 @@
 
 use bevy::prelude::*;
 
-use meld_client::net::{CombatantView, ServerMsg};
+use meld_client::net::{ClientCmd, CombatantView, ServerMsg};
 
 use super::*;
 
@@ -134,6 +134,11 @@ pub(crate) fn pump_net(
                 }
             }
             ServerMsg::Perks { perks: p } => perks.0 = p,
+            ServerMsg::OnboardingStatus { town_seen, run_seen } => {
+                announce.tutorial.loaded = true;
+                announce.tutorial.town_seen = town_seen;
+                announce.tutorial.run_seen = run_seen;
+            }
             ServerMsg::Unlocked { newly, owned, party_slots, banner, deepest_ever } => {
                 // `owned` is the server's full set every time, so this is a
                 // replace, never a merge.
@@ -232,6 +237,16 @@ pub(crate) fn pump_net(
                 lobby.in_lobby = false;
                 if matches!(*state.get(), Screen::City | Screen::Lobby) {
                     next.set(Screen::Overworld);
+                }
+                // Arm the first-dive briefing only once the server has actually
+                // confirmed the run — never at the Dive button press, since the
+                // server hasn't ruled yet at that point. Optimistic ack: mark it
+                // seen and send the C2S now rather than waiting on dismiss, so a
+                // disconnect mid-briefing doesn't re-show it every reconnect.
+                if announce.tutorial.loaded && !announce.tutorial.run_seen {
+                    announce.tutorial.run_seen = true;
+                    net.0.send(ClientCmd::OnboardingRunSeen);
+                    announce.tutorial.show_run_popup = true;
                 }
             }
             ServerMsg::LobbyState { code, host, members } => {

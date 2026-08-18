@@ -20,8 +20,8 @@ use meld_db::Db;
 use meld_proto::common::{ItemStack, LootGear, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
-    battle as wb, chat as wc, lobby as wl, movement as wm, run as wr, session as ws, world as ww,
-    Message,
+    battle as wb, chat as wc, lobby as wl, movement as wm, onboarding as wo, run as wr,
+    session as ws, world as ww, Message,
 };
 use meld_proto::RawEnvelope;
 use meld_dungeon_content::{ObjectKind, Tile};
@@ -216,6 +216,10 @@ enum DbWrite {
     HeroClass(String, i16, String),
     /// Mark that a player has begun their first dive (ends the tutorial world).
     Dived(String),
+    /// Mark that a player has dismissed the town welcome tour (finished or skipped).
+    TutorialTownSeen(String),
+    /// Mark that a player has dismissed the first-dive briefing.
+    TutorialRunSeen(String),
     /// Credit progress toward one posted hunt: (player, hunt key, delta, target).
     /// The session already decided this is worth writing, so the DB call is a store
     /// rather than a second ruling.
@@ -306,6 +310,20 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     if let Err(e) = db.set_has_dived(uid).await {
                         tracing::error!("mark-dived persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::TutorialTownSeen(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_tutorial_town_seen(uid).await {
+                        tracing::error!("tutorial-town-seen persist failed for {pid}: {e}");
+                    }
+                }
+            }
+            DbWrite::TutorialRunSeen(pid) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.set_tutorial_run_seen(uid).await {
+                        tracing::error!("tutorial-run-seen persist failed for {pid}: {e}");
                     }
                 }
             }
@@ -572,6 +590,13 @@ struct Session {
     /// roadmap WG-2); every dive after gets a randomized biome order + start.
     /// Defaults `false` until loaded; the load lands before the first `enter_maze`.
     has_dived: bool,
+    /// Whether this account has dismissed the town welcome tour (finished or
+    /// skipped it) and the first-dive briefing. Loaded from the DB alongside
+    /// `has_dived`; sent to the client as `onboarding.status` once loaded (never
+    /// on the immediate `Connected` message — that fires before this load can
+    /// possibly have landed).
+    tutorial_town_seen: bool,
+    tutorial_run_seen: bool,
     /// PG-2: the deepest distance this account has EVER reached, all-time. The bar every
     /// departure hub is gated on — loaded on connect from the `vanguard` record, which is
     /// written off validated movement and cannot be client-submitted.
@@ -3031,6 +3056,8 @@ impl GameState {
                         hero_names: None,
                         hero_rows: None,
                         has_dived: false,
+                        tutorial_town_seen: false,
+                        tutorial_run_seen: false,
                         deepest_ever: 0,
                         unlocks: None,
                         pending_materials: Vec::new(),
@@ -3376,6 +3403,8 @@ impl GameState {
             wl::Ready::TYPE => self.handle_lobby_ready(player_id, raw),
             wl::Leave::TYPE => self.handle_lobby_leave(player_id, raw.seq),
             wl::Start::TYPE => self.handle_lobby_start(player_id, raw.seq),
+            wo::TownSeen::TYPE => self.handle_onboarding_town_seen(player_id, raw.seq),
+            wo::RunSeen::TYPE => self.handle_onboarding_run_seen(player_id, raw.seq),
             wr::BeginExtraction::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_begin_extraction(player_id, raw),
@@ -4431,6 +4460,30 @@ impl GameState {
 
     fn handle_lobby_leave(&mut self, player_id: &str, _seq: u32) -> Vec<Outgoing> {
         self.leave_lobby(player_id)
+    }
+
+    /// The caller dismissed the town welcome tour (finished it or ticked "don't
+    /// show again"). Idempotent — only the first ack for an account is persisted.
+    fn handle_onboarding_town_seen(&mut self, player_id: &str, _seq: u32) -> Vec<Outgoing> {
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            if !s.tutorial_town_seen {
+                s.tutorial_town_seen = true;
+                let _ = self.db_writes.send(DbWrite::TutorialTownSeen(player_id.to_string()));
+            }
+        }
+        Vec::new()
+    }
+
+    /// The caller dismissed the first-dive briefing. Idempotent, same shape as
+    /// `handle_onboarding_town_seen`.
+    fn handle_onboarding_run_seen(&mut self, player_id: &str, _seq: u32) -> Vec<Outgoing> {
+        if let Some(s) = self.sessions.get_mut(player_id) {
+            if !s.tutorial_run_seen {
+                s.tutorial_run_seen = true;
+                let _ = self.db_writes.send(DbWrite::TutorialRunSeen(player_id.to_string()));
+            }
+        }
+        Vec::new()
     }
 
     /// Remove a player from whatever lobby they're in; dissolve it if empty,
@@ -6068,6 +6121,25 @@ impl GameState {
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.has_dived = dived;
                     }
+                }
+                // Onboarding: has this account already dismissed the town welcome
+                // tour / first-dive briefing? Loaded here (never on the immediate
+                // `Connected` message, which fires before this async load could
+                // possibly have landed) and sent back below alongside the unlocks
+                // sync, so the client never has to guess whether the load is done.
+                let mut onboarding_status = None;
+                if let (Ok(town), Ok(run)) = (
+                    self.db.get_tutorial_town_seen(uid).await,
+                    self.db.get_tutorial_run_seen(uid).await,
+                ) {
+                    if let Some(s) = self.sessions.get_mut(&pid) {
+                        s.tutorial_town_seen = town;
+                        s.tutorial_run_seen = run;
+                    }
+                    onboarding_status = Some(wo::Status { town_seen: town, run_seen: run });
+                }
+                if let Some(status) = onboarding_status {
+                    self.dispatch(vec![out_msg(&pid, &status)]);
                 }
                 // PG-2: which departure hubs this account has earned by standing on them.
                 if let Ok(deepest) = self.db.deepest_distance_ever(uid).await {

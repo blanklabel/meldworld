@@ -1373,6 +1373,45 @@ pub mod chat {
     pub const TEXT_MAX: usize = 400;
 }
 
+// --------------------------------------------------------------- onboarding ---
+
+/// The account-permanent "have I seen this yet" popups: the town welcome tour
+/// and the first-dive briefing. Deliberately not named "tutorial" anywhere in
+/// this wire surface — that word already means something else in this protocol
+/// (`run::EnterMaze.tutorial`, a silent world-generation flag).
+pub mod onboarding {
+    use super::*;
+
+    /// C2S — the caller dismissed the town welcome tour (finished it, or ticked
+    /// "don't show again"). Empty payload; the account comes from the socket.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct TownSeen {}
+    impl Message for TownSeen {
+        const TYPE: &'static str = "onboarding.town_seen";
+    }
+
+    /// C2S — the caller dismissed the first-dive briefing.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct RunSeen {}
+    impl Message for RunSeen {
+        const TYPE: &'static str = "onboarding.run_seen";
+    }
+
+    /// S2C — what this account has already dismissed. Sent once, right after the
+    /// account's post-connect DB load lands (never on the immediate `Connected`
+    /// message, which fires before that load could possibly have finished) — so
+    /// a returning player's client never has to guess whether the real flags
+    /// have arrived yet before deciding whether to show either popup.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Status {
+        pub town_seen: bool,
+        pub run_seen: bool,
+    }
+    impl Message for Status {
+        const TYPE: &'static str = "onboarding.status";
+    }
+}
+
 // -------------------------------------------------------------------- lobby ---
 
 /// Pre-maze co-op lobby: create/join a party by code, ready up, and the host
