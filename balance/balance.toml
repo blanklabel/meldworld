@@ -123,6 +123,12 @@ wll_to_def = 0.25       # +defence per Wll above base (Wll -> PHYSICAL resistanc
 # Before this, non-physical ability damage was subtracted by NOTHING at all: `def` only ever
 # reached a basic attack, so armour was close to irrelevant against every boss in the game.
 mnd_to_ward = 0.25      # +ward per Mnd above base (Mnd -> ELEMENTAL/psychic resistance)
+# ⚠️ `base_ward` (per class) is deliberately 0 for martials and 1 for casters, NOT the 2-4 it
+# started at. Ward is subtracted FLAT, and an early creature ability deals about 4 — so a
+# base of 4 floored it to 1 and made a level-1 party nearly immune to the elemental half of
+# the game. (`field_item`'s bot could no longer get wounded at all, which is how this was
+# caught.) Same trap as flat magnitudes on heroes: what reads as small next to a level-100
+# number is total next to a level-1 one. Ward is meant to be EARNED from Mnd.
 dodge_dex_floor = 10    # Dex at/below this gives no dodge (martial/caster classes
                         # start here or below, so their dodge is earned by leveling;
                         # the Shifter is the deliberate exception — its base Dex is
@@ -1634,7 +1640,7 @@ xp = 72
 base_hp = 40
 base_atk = 12
 base_def = 3
-base_ward = 2
+base_ward = 0
 speed_stat = 110
 # Attributes: level-1 baseline + per-level auto-gain. The Explorer is the martial
 # baseline: it hardens (Str for damage, Wll for HP) with a little Dex. [TUNABLE]
@@ -1658,7 +1664,7 @@ wll_per_level = 2
 base_hp = 40
 base_atk = 12
 base_def = 3
-base_ward = 1
+base_ward = 0
 speed_stat = 110
 str = 12
 mnd = 4
@@ -1673,7 +1679,7 @@ wll_per_level = 2
 base_hp = 34
 base_atk = 13
 base_def = 2
-base_ward = 4
+base_ward = 1
 speed_stat = 100
 # The Psyker's whole kit scales with Mnd (manifestation power); it gains Mnd fast
 # with a trickle of Dex/Wll and almost no Str. [TUNABLE]
@@ -1692,7 +1698,7 @@ wll_per_level = 1
 base_hp = 46
 base_atk = 8
 base_def = 3
-base_ward = 3
+base_ward = 1
 speed_stat = 95
 # The Resonant spends HP to heal, so it stacks Wll (HP) and Mnd (heal/skill
 # power) and barely moves Str/Dex. [TUNABLE]
@@ -1713,7 +1719,7 @@ wll_per_level = 3
 base_hp = 32
 base_atk = 14
 base_def = 2
-base_ward = 1
+base_ward = 0
 speed_stat = 125
 # Dex-forward: fast turns + innate dodge, backed by enough Str for its strikes to
 # bite; almost no Mnd, thin Wll (it lives by not getting hit). [TUNABLE]
@@ -1733,7 +1739,7 @@ wll_per_level = 1
 base_hp = 52
 base_atk = 13
 base_def = 6
-base_ward = 3
+base_ward = 1
 speed_stat = 85
 # All Str (isometric strength → blunt damage) and Wll (density → HP + armour); it
 # hardens into an ever-thicker wall and never gets faster or dodgier. [TUNABLE]
@@ -1754,7 +1760,7 @@ wll_per_level = 4
 base_hp = 50
 base_atk = 14
 base_def = 5
-base_ward = 2
+base_ward = 0
 speed_stat = 88
 str = 14
 mnd = 5
@@ -1771,7 +1777,7 @@ wll_per_level = 3
 base_hp = 40
 base_atk = 8
 base_def = 3
-base_ward = 3
+base_ward = 1
 speed_stat = 96
 str = 6
 mnd = 13
