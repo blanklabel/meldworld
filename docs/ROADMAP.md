@@ -1553,6 +1553,116 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 
 ---
 
+## Epic SL — The Shifting Lands (a world that persists, and churns)
+
+The two halves of CANON §W that make everything downstream possible. A **world is a
+place** (§W1): it outlives the divers in it, so the ground you cleared is the ground
+you come back to. That is what `BD`'s towns and anchors are built *on* — and it is
+also what would turn the map into a strip mine, which is why the **Shift** (D20/§W2)
+ships in the same breath: regions periodically swap biome, deal Force damage to
+whatever stands in them, and wipe their creatures and collectables. What grows back
+belongs to the new land.
+
+> The scheduler is a **pure function of `(world_seed, shift_generation)`** driven by
+> the server tick counter, never wall-clock (§W2, structural). That is not a style
+> point: it is what makes §W5 persistence cheap — the baseline comes from the seed,
+> the schedule comes from the seed, and only what *players* did has to be written
+> down.
+
+- [x] **SL-1 — A world outlives its divers.** The `WorldActor` is no longer torn down
+  when the last run ends (`remove_from_instance`); it keeps ticking, keeps its seed,
+  its streamed sections, its felled creatures and its Shift schedule. A **tutorial**
+  world is the one exception and still dies with its diver — the guided first dive is
+  onboarding, not a world, and persisting it would hand the next player a corridor
+  someone had already walked. Gated on `[world_persist] enabled`.
+  - **Regrowth ships with it, not after it** (`Arena::regrow`), because a world nobody
+    ever refreshes is strictly worse than an ephemeral one. `prune_defeated` now banks a
+    slain creature's *ground* (`Arena::fallen` — a few fields, not a corpse the AI and
+    the snapshot walk every tick) and a fresh one of the same species stands back up
+    there after `creature_regrow_ticks`; spent nodes re-stock, opened chests re-seal far
+    more slowly (treasure is the one thing farming must not print). A **bounty mark**
+    never regrows: a contract is one creature, and a second one would make it farmable.
+  - **It outlives the process too (§W5).** A `worlds` row holds four integers and a small
+    JSON delta — **never the map**, because the baseline is a pure function of the seed.
+    Restoring is the *normal* build reading its seed off disk (`restore_world`):
+    regenerate, stream the frontier back out, **replay the Shift log**, then re-apply the
+    dug-out nodes, opened chests, felled ground and raised stations. The save goes down
+    `db_writes` like everything else — the 100 ms tick never waits on Postgres — on a
+    cadence measured in *world* ticks, so a world nobody is standing in (exactly the case
+    persistence exists for) is written at the same rate as a busy one.
+    `a_hibernated_world_comes_back_the_same_place` checks the biomes, the re-scattered
+    props' positions, the spent nodes and the felled ground all round-trip, and
+    `a_saved_world_stores_the_delta_and_not_the_map` holds the write small.
+    - The **Shift log stores each Shift's span, not just its generation**, and that is the
+      one thing about the Shift that is not re-derivable from the seed: `shift_region`
+      picks the least-recently-disturbed section half the time, so which sections a Shift
+      reached depends on how far the world had streamed when it landed. At restore every
+      section exists at once, so re-deriving would pick differently.
+    - `world_key` is a column rather than an assumed singleton, so `SC-3`'s multi-world
+      work adds rows rather than a schema.
+- [x] **SL-2 — The Shift.** [`meld_world::shift`](../server/crates/meld-world/src/shift.rs)
+  is a pure scheduler: `roll(seed, generation)` draws the cadence (jittered), the
+  location, the size, the incoming biome and the Force damage, and `land_tick` folds
+  the cadences so a generation's tick is derivable from nothing but the seed.
+  `Arena::apply_shift` lands it and `WorldActor::advance_shift` drives it off
+  `tick_count`.
+  - **A region is a whole SECTION span**, 1-3 contiguous (`[shift] min/max_sections`) —
+    the game's translation of CANON's 1d6 Tiny…Cataclysmic table. A section is a radius
+    ring in the WG-4 fan and the client already keys its ground shader and biome HUD off
+    per-section rings, so re-sending `world.terrain_section` *is* the retile: the Shift
+    needed no new rendering path at all.
+  - **The props are re-scattered, not reskinned.** The incoming biome strews its own
+    count at its own density in its own places, so a wood becoming desert genuinely thins
+    out instead of turning into differently-coloured trees in the same spots. Placement
+    rejects the clear-path tube exactly as generation does, so the way out stays feasible
+    **by construction** (`the_way_out_survives_every_shift` walks 25 generations and
+    checks every surviving prop against the tube).
+  - **A prop can still land on you, and the answer is to move the player.**
+    `rescue_stranded` walks anyone the new land was strewn on top of back to the region's
+    entry — the clear-path waypoint at its inner edge, which is open ground, level 0, and
+    on the route they were already following — and the server follows with a
+    `movement.position_correction` so the client snaps rather than sliding across the map
+    for a second. **Terrain elevation is the one thing not re-rolled**: topography is the
+    ground's bones, and re-cutting terraces under a live player drops them through a cliff
+    face rather than merely boxing them in.
+  - **The tell is a real window** (`[shift] warning_ticks`, 10 s): `world.shift_warning`
+    goes to everyone in the world, naming the ring and what it is about to become, and a
+    test holds the window long enough to actually walk out of the widest region it can
+    roll. A Shift you cannot escape is a dice roll.
+  - **Force damage is a fraction of each hero's own max HP**, scaled by the region's
+    size — the every-magnitude-that-lands-on-a-hero-is-a-fraction rule. A party wiped by
+    one dies through `world_death` (the trap path, renamed: it is now also how you die to
+    the weather).
+  - **The `[biome_gate]` holds sideways too.** A Shift may not drop the tundra's armoured
+    bruisers onto the d80 on-ramp; the gate that holds harsh themes outward on the way
+    *out* is checked on the way *sideways*, and a test walks 60 generations to prove it.
+    Nor may one land inside `safe_radius` of the hub.
+  - **Half the picks are least-recently-disturbed**, so the churn cannot pool in one ring
+    while the rest of the world becomes a museum — and half are uniform, so it is not
+    simply "it always lands where you aren't".
+  - Bounty marks, chests and player-raised stations survive a Shift. Contesting one is
+    what **BD-3**'s anchors are *for*; that is its fight, not this one's.
+- [x] **SL-3 — The Shift you can see.** The doomed region **burns on the ground itself**,
+  brightest at its two edges, so the boundary is a line you can see and run across rather
+  than a number in a message. It rides the ground shader's existing `BiomeParams` uniform
+  (`shift = (inner, outer, intensity, 0)`) because a Shift region *is* a radius ring and
+  the ground is already painted in rings — no second coordinate system to keep in sync,
+  and a world with nothing pending pays one compare per fragment.
+  - **Urgency rides time-left, not window length**, so a 10 s tell and a 30 s one are both
+    frantic in their last second: the throb quickens as the deadline closes, then the swap
+    flashes and decays. One `ShiftTell` resource drives the ground, the HUD countdown and
+    the flash, so the three cannot disagree about which ring is in danger.
+  - The countdown sits on the line that already answers *where am I*, because what a tell
+    raises is *am I in it* — the burning ring answers *where is it*. It shouts when the
+    server says you are inside and mentions it otherwise; `caught` is the server's fact,
+    never the client's guess.
+  - `the_ground_uniform_matches_the_shader_that_reads_it` holds the Rust and WGSL
+    declarations of that buffer against each other. They are two hand-written copies of
+    one layout and nothing checked them at build time; a mismatch surfaces as a wgpu
+    validation failure at material load — a black world, found by screenshot.
+
+---
+
 ## Epic BD — Building, towns & the anchor-defense loop
 
 Players **harvest** wood + stone, **build** structures, cluster them into **towns**,
@@ -1587,7 +1697,9 @@ same always-running-when-unwatched spatial workload as the ecology).
   upgrade tiers. *Within-run camp (FS-1) is the precursor taste; real towns need SC-3.*
 - [ ] **BD-3 — Anchors & the Shift-pin loop.** Anchor pins its region (`pin_radius`)
   against the Shift (D20) while HP > 0; defend or lose it (§W5 `suppressed_by`). **The
-  headline loop; needs SC-3 + the Shift.**
+  headline loop.** The Shift now exists (`SL-2`) and deliberately leaves stations
+  standing, so this is the piece that makes a structure *mean* something: `apply_shift`
+  is the one place a pin has to be consulted.
 - [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
   structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
   attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).

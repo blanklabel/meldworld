@@ -51,6 +51,11 @@ struct BiomeParams {
     peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
     peak_count: u32,
     _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
+    // A region is a radius ring in the WG-4 fan and this ground is already painted in
+    // rings, so the doomed region draws as an annulus in the same frame as everything
+    // else — no second coordinate system to keep in sync. Intensity 0 = nothing pending.
+    shift: vec4<f32>,
 }
 
 @group(2) @binding(100) var t_forest: texture_2d<f32>;
@@ -176,6 +181,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var c = mix(biome_color(prev, uv), biome_color(here, uv), s_in);
         c = mix(c, biome_color(next, uv), s_out);
         blended = c;
+    }
+
+    // The tell. The ground inside the doomed ring burns, brightest at the two edges so
+    // the boundary is a LINE you can see and run across rather than a vague glow — the
+    // whole point of warning you is that leaving has to be a thing you can aim at.
+    if (params.shift.z > 0.0 && r >= params.shift.x && r < params.shift.y) {
+        let edge = min(r - params.shift.x, params.shift.y - r);
+        let lip = 1.0 - smoothstep(0.0, 7.0, edge);
+        let k = clamp(params.shift.z * (0.30 + 0.70 * lip), 0.0, 0.92);
+        blended = mix(blended, vec4<f32>(1.0, 0.40, 0.10, blended.a), k);
     }
 
     pbr_input.material.base_color = pbr_input.material.base_color * blended;

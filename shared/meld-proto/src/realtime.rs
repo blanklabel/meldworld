@@ -264,6 +264,58 @@ pub mod world {
     impl Message for DungeonScene {
         const TYPE: &'static str = "world.dungeon_scene";
     }
+
+    /// S2C — the tell. A region of the Shifting Lands is about to swap (CANON D20/§W2):
+    /// the sky over the ring `[inner_radius, outer_radius]` turns, and the player has
+    /// `lands_in_ms` to be somewhere else.
+    ///
+    /// Sent to everyone in the world, not only to whoever is standing in it: a Shift is
+    /// weather, and knowing that the desert three rings out is about to become tundra is
+    /// how a party decides where to walk next.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ShiftWarning {
+        pub generation: u64,
+        pub inner_radius: f64,
+        pub outer_radius: f64,
+        /// What it is about to become, so the tell can name it.
+        pub biome: String,
+        pub lands_in_ms: u64,
+        /// Whether the receiving player is standing inside the doomed ring right now.
+        /// The client owns how loud to be about it; the server owns the fact.
+        #[serde(default)]
+        pub caught: bool,
+    }
+    impl Message for ShiftWarning {
+        const TYPE: &'static str = "world.shift_warning";
+    }
+
+    /// S2C — it landed. The ring is now `biome`, everything in `wiped` is gone, and
+    /// `damage` is the Force blast this player's party just took (0 if they got out).
+    ///
+    /// The retiled sections' `world.terrain_section` messages follow immediately, which
+    /// is what actually repaints the ground: the client already keys its biome ground
+    /// and HUD label off per-section radius rings, so a section-granular Shift needs no
+    /// new rendering path at all.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Shifted {
+        pub generation: u64,
+        pub inner_radius: f64,
+        pub outer_radius: f64,
+        pub biome: String,
+        /// The biome it stopped being, for the message the client prints.
+        #[serde(default)]
+        pub from_biome: String,
+        /// Entity ids the Shift removed, so a client drops them on the same frame the
+        /// ground changes instead of one snapshot later.
+        #[serde(default)]
+        pub wiped: Vec<Id>,
+        /// HP this player's heroes each lost to the Force blast, parallel to the party.
+        #[serde(default)]
+        pub damage: Vec<i32>,
+    }
+    impl Message for Shifted {
+        const TYPE: &'static str = "world.shift";
+    }
 }
 
 // ----------------------------------------------------------------- battle ---

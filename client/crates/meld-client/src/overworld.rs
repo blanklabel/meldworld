@@ -1257,7 +1257,7 @@ pub(crate) fn emit_move(
 /// lit primitives for monsters/portals/resources/terrain), and despawn the gone.
 pub(crate) fn sync_overworld_sprites(
     mut commands: Commands,
-    world: Res<Overworld>,
+    mut world: ResMut<Overworld>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
     time: Res<Time>,
@@ -1268,6 +1268,9 @@ pub(crate) fn sync_overworld_sprites(
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
+    // Consumed here rather than held: a correction applies to exactly one frame, and a
+    // sticky one would pin the avatar in place the moment the player walked away.
+    let snap = world.snap.take();
     let now = time.elapsed_secs();
 
     // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz). When a
@@ -1333,9 +1336,20 @@ pub(crate) fn sync_overworld_sprites(
         // the hero looked buried to the thigh until y caught up. (Y is set after xz
         // below, so it can read the rolling-ground height under the updated position.)
         if we.0 == session.player_id {
-            // Responsive: chase the latest snapshot directly.
-            tf.translation.x += (e.x - tf.translation.x) * k;
-            tf.translation.z += (e.y - tf.translation.z) * k;
+            match snap {
+                // An authoritative teleport (a Shift walked us out of the props it just
+                // strewed on our head). Chasing it would render as a second-long slide
+                // through everything in between, with the camera along for the ride.
+                Some((sx, sy)) => {
+                    tf.translation.x = sx;
+                    tf.translation.z = sy;
+                }
+                // Responsive: chase the latest snapshot directly.
+                None => {
+                    tf.translation.x += (e.x - tf.translation.x) * k;
+                    tf.translation.z += (e.y - tf.translation.z) * k;
+                }
+            }
         } else if let Some((prev, cur)) = interp.states.get(&we.0) {
             // Interpolate between the two most recent samples at the delayed clock.
             let denom = cur.t - prev.t;
@@ -2364,6 +2378,8 @@ pub(crate) fn update_minimap(
 pub(crate) fn update_minimap_distance(
     perks: Res<PerksRes>,
     stats: Res<RunStats>,
+    tell: Res<crate::ShiftTell>,
+    clock: Res<Time>,
     mut q: Query<(&mut Text, &mut Node), With<MinimapDistance>>,
 ) {
     let Ok((mut text, mut node)) = q.single_mut() else { return };
@@ -2372,7 +2388,19 @@ pub(crate) fn update_minimap_distance(
         return;
     }
     node.display = Display::Flex;
-    let line = format!("{} m  \u{b7}  T{}  \u{b7}  {}", stats.distance, stats.tier, stats.biome);
+    let mut line = format!("{} m  \u{b7}  T{}  \u{b7}  {}", stats.distance, stats.tier, stats.biome);
+    // The countdown lives on the line that already answers "where am I", because the
+    // question a tell raises is "am I in it" — and the ring's own burning edge on the
+    // ground is what answers "where is it".
+    let left = tell.lands_at - clock.elapsed_secs_f64();
+    if tell.armed && left > 0.0 {
+        let secs = left.ceil() as i64;
+        line.push_str(&if tell.caught {
+            format!("\n! SHIFTING TO {} IN {secs}s - GET OUT", tell.biome.to_uppercase())
+        } else {
+            format!("\n~ {} shifting in {secs}s", tell.biome)
+        });
+    }
     if **text != line {
         **text = line;
     }

@@ -190,6 +190,7 @@ fn main() {
         .init_resource::<Overworld>()
         .init_resource::<RunBackpack>()
         .init_resource::<RunStats>()
+        .init_resource::<ShiftTell>()
         .init_resource::<WorldPath>()
         .init_resource::<WorldWeb>()
         .init_resource::<Terrain>()
@@ -774,6 +775,11 @@ impl OwEntity {
 struct Overworld {
     /// entity id -> its render state
     entities: HashMap<String, OwEntity>,
+    /// An authoritative teleport the local avatar must SNAP to rather than chase. The
+    /// local player is deliberately exempt from interpolation (the camera rides its
+    /// transform), so without this a Shift that walks you back to the region entry
+    /// renders as a one-second slide through everything in between.
+    snap: Option<(f32, f32)>,
     /// Bumped on every snapshot so the render-side interpolation buffer
     /// ([`OwInterp`]) can tell when a fresh snapshot arrived.
     seq: u64,
@@ -845,6 +851,51 @@ struct RunStats {
     tier: i64,
     biome: String,
 }
+
+/// The Shift's tell (CANON D20/§W2), as the client needs it: which radius ring is
+/// doomed, when it goes, and what it is about to become.
+///
+/// One resource drives all three surfaces — the burning annulus on the ground shader,
+/// the HUD countdown, and the flash when it lands — so they cannot disagree about which
+/// ring is in danger. Radii are in world units from the hub, which is the frame the
+/// ground is already painted in.
+#[derive(Resource, Default)]
+struct ShiftTell {
+    inner: f32,
+    outer: f32,
+    /// Client clock (seconds) the region swaps. Past it, the ring is history.
+    lands_at: f64,
+    /// What it becomes, for the countdown line.
+    biome: String,
+    /// Whether the local party is standing in it — the HUD shouts rather than mentions.
+    caught: bool,
+    /// Client clock until which the landing flash is still burning down.
+    flash_until: f64,
+    armed: bool,
+}
+
+impl ShiftTell {
+    /// How hard the ground burns right now: a throb that quickens as the deadline
+    /// closes, then a flash on the swap that decays to nothing. 0 = resting.
+    fn intensity(&self, now: f64) -> f32 {
+        if now < self.flash_until {
+            let left = ((self.flash_until - now) / SHIFT_FLASH_SECS).clamp(0.0, 1.0);
+            return left as f32;
+        }
+        if !self.armed || now >= self.lands_at {
+            return 0.0;
+        }
+        let left = (self.lands_at - now).max(0.0);
+        // Urgency rides how little time is left, not how long the window was: a 10 s tell
+        // and a 30 s one should both be frantic in their last second.
+        let urgency = (1.0 - (left / 10.0).clamp(0.0, 1.0)) as f32;
+        let throb = ((now * (3.0 + 9.0 * urgency as f64)).sin() as f32) * 0.5 + 0.5;
+        0.18 + 0.62 * urgency * (0.45 + 0.55 * throb)
+    }
+}
+
+/// How long the landing flash burns down over.
+const SHIFT_FLASH_SECS: f64 = 1.1;
 
 /// The guaranteed clear path (world-unit waypoints), drawn as a faint trail so the
 /// feasible route through the terrain is legible. `drawn` gates one-time spawning.

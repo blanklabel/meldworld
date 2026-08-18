@@ -1871,3 +1871,66 @@ reward_chits_per_rank = 145
 reward_material_qty = 2
 reward_material_qty_per_rank = 1
 reward_gear_from_rank = 2        # rank at which contracts start paying a rolled piece
+
+# =============================================================================
+# The Shifting Lands (CANON D20 / §W2) and the persistent world (§W1/§W5).
+#
+# A world no longer dies when the last diver leaves — it is a place, and it is
+# still there when you come back. That makes churn structural rather than
+# cosmetic: a world nobody ever refreshed would be a strip mine within an hour.
+# The Shift is that churn. Regions periodically swap biome, taking Force damage
+# to whatever stands in them and wiping their creatures + collectables; what
+# grows back belongs to the NEW biome.
+#
+# The scheduler is a pure function of `(world_seed, shift_generation)` driven by
+# the server TICK COUNTER — never wall-clock (CANON §W2) — so a world's whole
+# Shift history is replayable from two integers and persistence stays cheap.
+# =============================================================================
+[shift]
+# Cadence: ticks between one Shift landing and the next being scheduled, jittered
+# ±`cadence_jitter` off the seed. At `tick_ms = 100` these are 3–7 minutes.
+cadence_ticks = 3000             # ~5 min at the shipped 100 ms tick
+cadence_jitter = 0.4             # ± fraction, drawn per generation from the seed
+# The tell. A region announces itself before it goes: the sky turns, and you have
+# this long to walk out of it. Short enough to be a scramble, long enough to be a
+# decision — a Shift you cannot escape is a dice roll, not a hazard.
+warning_ticks = 100              # 10 s at the shipped tick
+# Size (CANON's 1d6 Tiny…Cataclysmic): how many CONTIGUOUS sections retile at once.
+# A section is a radius ring in the WG-4 fan, so this is the game's translation of
+# the tabletop size table — the client already keys ground + biome off per-section
+# rings, so a section-granular Shift retiles for free.
+min_sections = 1
+max_sections = 3
+# Force damage dealt to every avatar caught inside when it lands, as a fraction of
+# that hero's OWN max HP — a hero runs 40 max HP at level 1 and ~535 at 100, so a
+# flat number is a death sentence early and a rounding error late (the
+# every-magnitude-is-a-fraction rule). Scales with the region's size, so a
+# Cataclysmic swap is the one that kills you.
+damage_fraction_min = 0.18       # a Tiny (1-section) Shift
+damage_fraction_max = 0.45       # the largest one this world rolls
+# Never inside this radius of the hub. The doorstep has to be somewhere a new
+# player can stand and read the game; a Shift on the tutorial ring is a wipe
+# before anyone has learned what the warning means.
+safe_radius = 60.0
+# Weighting: a region nobody has walked through in a while is the more interesting
+# one to churn, but a purely LRU pick makes the Shift predictable ("it always hits
+# where you aren't"). This is the share of picks that are uniform-random instead.
+random_pick_share = 0.5
+
+[world_persist]
+# A world is a place. It is not torn down when the last diver leaves (CANON §W1),
+# it keeps ticking, and its delta from the seed baseline is written to Postgres so
+# it survives a restart (§W5). Only a TUTORIAL world stays ephemeral — the guided
+# first dive is onboarding, not a world.
+enabled = true
+# How often the world's delta is flushed to Postgres, in ticks. The baseline is
+# regenerated from the seed and never stored, so a flush is small.
+save_every_ticks = 600           # once a minute at the shipped tick
+# Regrowth. The Shift is the headline churn, but a region can go a long while
+# without one, and a persistent world whose first three sections are permanently
+# stripped is worse than an ephemeral one. A felled creature's slot refills and a
+# spent node re-stocks after this long — long enough that clearing ground means
+# something, short enough that coming back tomorrow finds a world.
+creature_regrow_ticks = 1800     # 3 min at the shipped tick
+node_regrow_ticks = 3000         # 5 min — ore is slower to come back than a fight
+chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming must not print

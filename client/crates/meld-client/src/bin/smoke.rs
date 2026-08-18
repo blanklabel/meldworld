@@ -58,6 +58,11 @@ fn main() {
                 ServerMsg::HuntBoard { .. }
                 | ServerMsg::HuntProgress { .. }
                 | ServerMsg::Bounties { .. } => {}
+                // The Shifting Lands are weather: the bot walks through them and takes
+                // whatever they do to it, exactly as a player who ignored the tell would.
+                ServerMsg::ShiftWarning { .. } | ServerMsg::Shifted { .. } => {}
+                // A teleport matters to a renderer, not to a bot reading the snapshot.
+                ServerMsg::PositionCorrection { .. } => {}
                 ServerMsg::Loadouts { .. } => {}
                 ServerMsg::Pouches { .. } => {}
                 ServerMsg::Connected { player_id } => {

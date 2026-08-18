@@ -1053,6 +1053,59 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   vs 7.0) separates grassland you can see across from a wood you cannot. That contrast IS the
   content, and a test holds the ratio.
 
+- **A WORLD OUTLIVES ITS DIVERS, AND THE SHIFT IS WHY IT CAN.** The `WorldActor` is no
+  longer torn down when the last run ends (CANON §W1): it keeps its seed, its streamed
+  sections, its cleared ground and its Shift schedule, and it keeps ticking with nobody
+  in it. It outlives the **process** too — `worlds` in Postgres stores four integers and a
+  small JSON delta, never the map, because §W5's whole claim is that the baseline is a
+  pure function of the seed. Restoring is the *normal* build reading its seed off disk:
+  regenerate, stream the frontier back out, **replay the Shift log**, then re-apply what
+  players changed. The log stores each Shift's *span* and not just its generation because
+  `shift_region` picks the least-recently-disturbed section half the time — at restore
+  every section exists at once, so re-deriving the span would pick differently than a
+  world that grew into it did. That is history, and history has to be written down. What used to justify the teardown was that a felled creature never came back, so
+  the second dive found an empty map — that is answered by content now, not by amnesia.
+  **A tutorial world is the one exception** and still dies with its diver, because
+  persisting the guided first dive hands the next player a corridor someone already walked.
+  Two things ship with persistence rather than after it, because a world nobody refreshes
+  is strictly *worse* than an ephemeral one: **regrowth** (`Arena::regrow` — a slain
+  creature's ground is banked by `prune_defeated` into `Arena::fallen`, a few fields
+  rather than a corpse the AI and the snapshot walk every tick, and a fresh one of the
+  species stands back up there; nodes re-stock, chests re-seal far more slowly because
+  treasure is the one thing farming must not print), and **the Shift**.
+
+- **The Shift is scheduled from `(seed, generation)` and driven by the TICK COUNTER,
+  never wall-clock** (CANON §W2, structural — [`meld_world::shift`]). That is not a style
+  point: it is what lets two integers replay a world's entire history, which is what makes
+  §W5 persistence cheap. `WorldActor::tick_count` is the world clock; `meld-world` stays
+  pure and is *handed* the tick rather than reading one. **A region is a whole SECTION
+  span** (1-3 contiguous), the translation of CANON's 1d6 Tiny…Cataclysmic table — and it
+  is section-granular for a concrete reason: the client already keys its ground shader and
+  biome label off per-section radius rings, so re-sending `world.terrain_section` **is**
+  the retile and the Shift needed no new rendering path at all.
+  **The props are RE-SCATTERED, not reskinned** (`reroll_props`): the incoming biome
+  strews its own count at its own density in its own places, so a wood becoming desert
+  genuinely thins instead of turning into differently-coloured trees in the same spots.
+  Placement rejects the clear-path tube exactly as generation does, so the way out stays
+  feasible **by construction** — but a prop can still land on a player standing off-trail,
+  and the answer is to **move the player, not to constrain the world**: `rescue_stranded`
+  walks anyone a prop landed on back to the region's entry (the clear-path waypoint at its
+  inner edge — open ground, level 0, on the route they were already following) and the
+  server sends them a `movement.position_correction`, because the local avatar chases the
+  snapshot exponentially and a teleport with no correction renders as a second-long slide
+  with the camera along for the ride. **Terrain elevation is the one thing NOT re-rolled**:
+  topography is the ground's bones, and re-cutting terraces under a live player drops them
+  through a cliff face rather than merely boxing them in. Force damage is a **fraction of
+  each hero's own max HP** scaled by the region's size, and a party wiped by one dies
+  through `world_death` (the dungeon-trap path, renamed — it is now also how you die to
+  the weather). **The `[biome_gate]` is checked SIDEWAYS too**: the gate that holds the
+  tundra's armoured bruisers outward on the way out would otherwise let a Shift drop them
+  onto the d80 on-ramp. Half of every Shift's picks are least-recently-disturbed so the
+  churn cannot pool in one ring while the rest of the world becomes a museum, and half are
+  uniform so it is not simply "it always lands where you aren't". Bounty marks, chests and
+  raised stations survive: contesting a Shift is what BD-3's **anchors** are for, and
+  `apply_shift` is the one place a pin will have to be consulted.
+
 - **Per-section seeds & streaming.** Each area is a **section** generated from its OWN
   seed `section_seed(run_seed, n)` (`meld-world`), so sections are independent +
   reproducible. `Arena::ensure_frontier` streams new sections on demand as the player

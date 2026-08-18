@@ -239,6 +239,10 @@ enum DbWrite {
     /// Persist earned unlocks: (player, keys). Fire-and-forget — the session's
     /// in-memory set is what gates THIS dive, so a slow write costs nothing.
     Unlocks(String, Vec<String>),
+    /// Hibernate a world's delta (CANON §W5). Goes down this channel like everything
+    /// else: the 100 ms tick must never wait on Postgres, and a save that lands a second
+    /// late costs at most a second of a world nobody is standing in.
+    SaveWorld(Box<meld_db::WorldSave>),
 }
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
@@ -365,6 +369,11 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     if let Err(e) = db.complete_bounty(uid, bid).await {
                         tracing::error!("bounty completion failed for {pid}: {e}");
                     }
+                }
+            }
+            DbWrite::SaveWorld(w) => {
+                if let Err(e) = db.save_world(&w).await {
+                    tracing::error!("world save failed: {e}");
                 }
             }
             DbWrite::Unlocks(pid, keys) => {
@@ -1101,6 +1110,205 @@ struct WorldActor {
     /// Contract ids whose mark has already been stood up in this world, so a mark is
     /// never two creatures and a felled one never comes back.
     marks_placed: std::collections::HashSet<String>,
+    /// The world clock, in ticks since this world was seeded. Everything the Shifting
+    /// Lands do is scheduled against it and NEVER against wall-clock (CANON §W2), which
+    /// is what keeps the world deterministic and what makes `(seed, tick, generation)`
+    /// enough to replay it after a restart.
+    tick_count: u64,
+    /// Which Shift the world is currently counting down to. Retired (incremented) the
+    /// tick it lands, so the schedule is never re-derived from anything but this.
+    shift_generation: u64,
+    /// Whether the current generation's tell has already gone up, so the warning is
+    /// announced once rather than every tick of the window.
+    shift_warned: bool,
+    /// Every landed Shift as `(generation, first, last)` — CANON §W5's event log, and
+    /// the ONLY part of the Shift that is not re-derivable from the seed. `shift_region`
+    /// picks the least-recently-disturbed span half the time, so which sections a Shift
+    /// reached depends on how far the world had streamed when it landed; that is history,
+    /// and history has to be written down.
+    shift_log: Vec<(u64, usize, usize)>,
+}
+
+/// CANON §W5 — everything about a world that is NOT derivable from its seed.
+///
+/// The baseline map (terrain, biome layout, initial placement) is regenerated from the
+/// seed and never stored, and the natural Shift schedule is a pure function of
+/// `(seed, generation)` — so the only things written down are the landed Shifts' chosen
+/// regions (the schedule says *when* and *how big*; which sections it actually reached
+/// depends on how far the world had streamed at the time, which is history rather than
+/// arithmetic) and what players did to the place.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct WorldDelta {
+    /// `(generation, first_section, last_section)` per landed Shift, in order. Replaying
+    /// these against `shift::roll` reproduces every retiled biome and every re-scattered
+    /// prop exactly, because `apply_shift` is deterministic given the roll and the span.
+    shifts: Vec<(u64, usize, usize)>,
+    /// Nodes that are not at full stock: `(entity_id, remaining, spent_tick)`.
+    nodes: Vec<(String, i32, u64)>,
+    /// Chests somebody has opened: `(entity_id, opened_tick)`.
+    chests: Vec<(String, u64)>,
+    /// Ground a creature used to hold and has not yet regrown into.
+    fallen: Vec<FallenDto>,
+    /// Field stations still standing (MS-1).
+    stations: Vec<StationDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FallenDto {
+    id: String,
+    kind: String,
+    x: f64,
+    y: f64,
+    min_x: f64,
+    max_x: f64,
+    felled_tick: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StationDto {
+    id: String,
+    kind: String,
+    x: f64,
+    y: f64,
+    elevation: u8,
+    owner: String,
+    uses_left: i32,
+    stock: String,
+}
+
+/// The one world key today. Multi-world (SC-3) is what varies it; until then a single
+/// constant keeps the schema honest about being keyed rather than pretending there can
+/// only ever be one row.
+const WORLD_KEY: &str = "default";
+
+impl WorldActor {
+    /// Fold the live world down to what §W5 actually stores.
+    fn world_save(&self) -> meld_db::WorldSave {
+        let delta = WorldDelta {
+            shifts: self.shift_log.clone(),
+            nodes: self
+                .arena
+                .resources
+                .iter()
+                .filter(|n| n.spent_tick > 0 || n.depleted())
+                .map(|n| (n.entity_id.clone(), n.remaining, n.spent_tick))
+                .collect(),
+            chests: self
+                .arena
+                .chests
+                .iter()
+                .filter(|c| c.opened)
+                .map(|c| (c.entity_id.clone(), c.opened_tick))
+                .collect(),
+            fallen: self
+                .arena
+                .fallen
+                .iter()
+                .map(|f| FallenDto {
+                    id: f.entity_id.clone(),
+                    kind: f.monster_kind.clone(),
+                    x: f.home.x,
+                    y: f.home.y,
+                    min_x: f.area_min_x,
+                    max_x: f.area_max_x,
+                    felled_tick: f.felled_tick,
+                })
+                .collect(),
+            stations: self
+                .arena
+                .stations
+                .iter()
+                .map(|s| StationDto {
+                    id: s.entity_id.clone(),
+                    kind: s.kind.clone(),
+                    x: s.position.x,
+                    y: s.position.y,
+                    elevation: s.elevation,
+                    owner: s.owner_player_id.clone(),
+                    uses_left: s.uses_left,
+                    stock: s.stock.clone(),
+                })
+                .collect(),
+        };
+        meld_db::WorldSave {
+            world_key: WORLD_KEY.to_string(),
+            seed: self.arena.seed as i64,
+            tick_count: self.tick_count as i64,
+            shift_generation: self.shift_generation as i64,
+            sections: self.arena.areas.len() as i32,
+            delta: serde_json::to_string(&delta).unwrap_or_else(|_| "{}".to_string()),
+        }
+    }
+}
+
+/// Rebuild a hibernated world: regenerate the baseline from the seed, stream the
+/// frontier back out, replay every landed Shift, then re-apply what players changed.
+///
+/// The replay is why the log stores each Shift's *span* and not just its generation:
+/// `shift_region` picks the least-recently-disturbed section half the time, and at
+/// restore every section exists at once, so re-deriving the span would pick differently
+/// than a world that grew into it did. The roll itself still comes from the seed.
+fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
+    let mut arena = Arena::generate_with(balance, save.seed as u64, false, None);
+    let want = save.sections.max(0) as usize;
+    // `ensure_frontier` streams a bounded few per call (a teleport must not explode one
+    // tick's work), so ask repeatedly rather than once with a huge reach.
+    let mut guard = 0;
+    while arena.areas.len() < want && guard < want * 4 + 64 {
+        guard += 1;
+        let reach = arena.areas.last().map(|a| a.end_x).unwrap_or(0.0);
+        arena.ensure_frontier(balance, reach + 1.0);
+    }
+    let delta: WorldDelta = serde_json::from_str(&save.delta).unwrap_or_default();
+    for &(generation, first, last) in &delta.shifts {
+        if first >= arena.areas.len() {
+            continue;
+        }
+        let roll = meld_world::shift::roll(balance, arena.seed, generation);
+        let last = last.min(arena.areas.len() - 1);
+        arena.apply_shift(balance, &roll, first, last);
+    }
+    for (id, remaining, spent) in &delta.nodes {
+        if let Some(n) = arena.resources.iter_mut().find(|n| &n.entity_id == id) {
+            n.remaining = *remaining;
+            n.spent_tick = *spent;
+        }
+    }
+    for (id, opened) in &delta.chests {
+        if let Some(c) = arena.chests.iter_mut().find(|c| &c.entity_id == id) {
+            c.opened = true;
+            c.opened_tick = *opened;
+        }
+    }
+    // A creature the world remembers as dead must not also be standing there.
+    let dead: std::collections::HashSet<&String> = delta.fallen.iter().map(|f| &f.id).collect();
+    arena.monsters.retain(|m| !dead.contains(&m.entity_id));
+    arena.fallen = delta
+        .fallen
+        .iter()
+        .map(|f| meld_world::Fallen {
+            entity_id: f.id.clone(),
+            monster_kind: f.kind.clone(),
+            home: Position::new(f.x, f.y),
+            area_min_x: f.min_x,
+            area_max_x: f.max_x,
+            felled_tick: f.felled_tick,
+        })
+        .collect();
+    arena.stations = delta
+        .stations
+        .iter()
+        .map(|s| meld_world::Station {
+            entity_id: s.id.clone(),
+            kind: s.kind.clone(),
+            position: Position::new(s.x, s.y),
+            elevation: s.elevation,
+            owner_player_id: s.owner.clone(),
+            uses_left: s.uses_left,
+            stock: s.stock.clone(),
+        })
+        .collect();
+    arena
 }
 
 /// One queued request at a field station: everything the DB half needs, decided
@@ -1999,17 +2207,18 @@ impl WorldActor {
             None => return Vec::new(),
         };
         if wiped {
-            self.dungeon_death(pid)
+            self.world_death(pid)
         } else {
             Vec::new()
         }
     }
 
-    /// End `pid`'s run in death from inside a dungeon (no battle): mirror the
+    /// End `pid`'s run in death with no battle to end — a sprung dungeon trap, or the
+    /// Force blast of a Shift that landed on them (CANON §W2): mirror the
     /// battle-defeat arm for one player — drop them from the dungeon + overworld,
     /// clear the run's haul, report `MemberResult { died }`, and queue the death
     /// durability sink. The Router then releases the session (see `handle_move`).
-    fn dungeon_death(&mut self, pid: &str) -> Vec<Outgoing> {
+    fn world_death(&mut self, pid: &str) -> Vec<Outgoing> {
         if let Some((key, _)) = self.dungeon_of(pid) {
             if let Some(d) = self.dungeons.get_mut(&key) {
                 d.remove(pid);
@@ -2965,6 +3174,14 @@ struct GameState {
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
     world: Option<WorldActor>,
+    /// A world read back from Postgres at boot and not yet stood up. `form_run` claims
+    /// it the first time anybody dives: the world is only *built* in one place, and
+    /// restoring is that build reading its seed and its delta from disk instead of from
+    /// a fresh roll.
+    restore: Option<meld_db::WorldSave>,
+    /// The world's tick at the last hibernate, so the save cadence is measured in world
+    /// time rather than in how long the process happens to have been up.
+    last_world_save: u64,
     /// Open co-op lobbies, keyed by join code.
     lobbies: HashMap<String, Lobby>,
     /// player_id -> the lobby code they're in.
@@ -3002,6 +3219,8 @@ impl GameState {
             sessions: HashMap::new(),
             order: Vec::new(),
             world: None,
+            restore: None,
+            last_world_save: 0,
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
@@ -3016,6 +3235,25 @@ impl GameState {
     }
 
     async fn run(mut self, mut rx: mpsc::Receiver<ServerEvent>) {
+        // CANON §W5: a hibernated world reloads on first joiner. Read at boot rather than
+        // lazily, because this is the one moment the loop is allowed to await Postgres —
+        // once the tick is running, every DB touch goes down `db_writes`.
+        if self.balance.world_persist.enabled {
+            match self.db.load_world(WORLD_KEY).await {
+                Ok(Some(save)) => {
+                    tracing::info!(
+                        seed = save.seed,
+                        tick = save.tick_count,
+                        generation = save.shift_generation,
+                        sections = save.sections,
+                        "world.persist: a world was waiting"
+                    );
+                    self.restore = Some(save);
+                }
+                Ok(None) => {}
+                Err(e) => tracing::error!("world.persist: load failed, seeding fresh: {e}"),
+            }
+        }
         let tick_ms = self.balance.battle.tick_ms.max(10);
         let mut ticker = tokio::time::interval(Duration::from_millis(tick_ms));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -3055,7 +3293,25 @@ impl GameState {
                 let built = w.advance_building();
                 self.dispatch(built);
             }
+            self.hibernate_world();
         }
+    }
+
+    /// Write the world's delta out on its own cadence (`[world_persist]
+    /// save_every_ticks`). Measured in WORLD ticks, so a world nobody is standing in —
+    /// which still shifts, still regrows, and is exactly the case persistence exists for
+    /// — is saved at the same rate as a busy one.
+    fn hibernate_world(&mut self) {
+        if !self.balance.world_persist.enabled {
+            return;
+        }
+        let every = self.balance.world_persist.save_every_ticks.max(1);
+        let Some(w) = self.world.as_ref() else { return };
+        if w.tutorial || w.tick_count < self.last_world_save + every {
+            return;
+        }
+        self.last_world_save = w.tick_count;
+        let _ = self.db_writes.send(DbWrite::SaveWorld(Box::new(w.world_save())));
     }
 
     fn dispatch(&mut self, out: Vec<Outgoing>) {
@@ -3179,10 +3435,20 @@ impl GameState {
         }
     }
 
-    /// Drop a player's overworld/run state from the shared instance (on
-    /// disconnect). When nobody is left, tear the instance down entirely so the
-    /// next `enter_maze` rebuilds a clean arena with a live monster — otherwise
-    /// dead avatars pile up and the slain monster never returns.
+    /// Drop a player's overworld/run state from the world (on disconnect, or when
+    /// their run ends).
+    ///
+    /// **The world is NOT torn down when the last diver leaves** (CANON §W1): it is a
+    /// place, and it is still there — same seed, same ground you cleared, same Shift
+    /// schedule ticking — when you or anyone else comes back. What used to justify the
+    /// teardown was that a felled creature never returned and the second dive found an
+    /// empty map; `Arena::regrow` and the Shift are what answer that now, and they
+    /// answer it as content rather than as amnesia.
+    ///
+    /// A TUTORIAL world is the one exception and still dies with its diver. The guided
+    /// first dive is onboarding — a fixed biome order and a centred, obstacle-free area
+    /// 0 — so persisting it would hand the next player a world that had already been
+    /// walked, and hand the returning one a corridor they had already seen.
     fn remove_from_instance(&mut self, player_id: &str) {
         let Some(inst) = self.world.as_mut() else {
             return;
@@ -3202,7 +3468,7 @@ impl GameState {
         inst.hero_names.remove(player_id);
         inst.hero_rows.remove(player_id);
         inst.extraction.remove(player_id);
-        if inst.run.runs.is_empty() {
+        if inst.run.runs.is_empty() && (inst.tutorial || !self.balance.world_persist.enabled) {
             self.world = None;
         }
     }
@@ -3944,10 +4210,22 @@ impl GameState {
                 }
                 _ => self.balance.clone(),
             };
+            // A world read back at boot is stood up here rather than in a second
+            // construction site: restoring IS the normal build, reading its seed and its
+            // delta off disk instead of off a fresh roll. A tutorial dive never claims
+            // one — the guided corridor is onboarding, not a place.
+            let restored = (!tutorial).then(|| self.restore.take()).flatten();
+            if let Some(save) = &restored {
+                tracing::info!(seed = save.seed, "world.persist: standing the saved world back up");
+            }
+            self.last_world_save = restored.as_ref().map(|s| s.tick_count as u64).unwrap_or(0);
             self.world = Some(WorldActor {
                 balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
-                arena: Arena::generate_with(&balance, seed, tutorial, force_biome),
+                arena: match &restored {
+                    Some(save) => restore_world(&balance, save),
+                    None => Arena::generate_with(&balance, seed, tutorial, force_biome),
+                },
                 run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
@@ -3974,6 +4252,17 @@ impl GameState {
                 quarry: HashMap::new(),
                 bounties: HashMap::new(),
                 marks_placed: std::collections::HashSet::new(),
+                tick_count: restored.as_ref().map(|s| s.tick_count as u64).unwrap_or(0),
+                shift_generation: restored
+                    .as_ref()
+                    .map(|s| s.shift_generation as u64)
+                    .unwrap_or(0),
+                shift_warned: false,
+                shift_log: restored
+                    .as_ref()
+                    .and_then(|s| serde_json::from_str::<WorldDelta>(&s.delta).ok())
+                    .map(|d| d.shifts)
+                    .unwrap_or_default(),
                 edges: HashMap::new(),
                 battle_immune_until: HashMap::new(),
             });
@@ -4750,7 +5039,7 @@ impl WorldActor {
             let out = self.dungeon_move(player_id, &intent);
             // A trap wipe inside the dungeon ends the run — the Router releases the
             // session via a WorldEffect (world state was already updated by
-            // `dungeon_death` inside `dungeon_move`).
+            // `world_death` inside `dungeon_move`).
             let eff = if self.run_ended(player_id) {
                 vec![WorldEffect::ReleaseFromRun(player_id.to_string())]
             } else {
@@ -7903,6 +8192,7 @@ impl WorldActor {
 
     fn tick(&mut self) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
+        self.tick_count += 1;
         let mut out = Vec::new();
         let mut effects: Vec<WorldEffect> = std::mem::take(&mut self.pending_effects);
 
@@ -8073,12 +8363,154 @@ impl WorldActor {
         // teammates keep receiving world state while others fight.
         out.extend(self.snapshot_msgs());
 
-        // 4) Reclaim slain creatures so `arena.monsters` stays bounded over a long
+        // 4) The Shifting Lands, and the slow recovery between their Shifts. Both run
+        // last so they see this tick's deaths and harvests, and both are driven off
+        // `tick_count` rather than a clock (CANON §W2).
+        out.extend(self.advance_shift());
+        {
+            let balance = self.balance.clone();
+            self.arena.regrow(&balance, self.tick_count);
+        }
+
+        // 5) Reclaim slain creatures so `arena.monsters` stays bounded over a long
         // dive instead of accumulating a corpse per kill forever. Safe here: this is
         // after all battle-end processing (which refers to creatures by stable id,
         // not index) and after the snapshot (which already omits defeated creatures).
         self.arena.prune_defeated();
         (out, effects)
+    }
+
+    /// Drive the Shifting Lands one tick (CANON D20/§W2): put the tell up when a
+    /// generation's warning window opens, land it when its tick arrives, retire the
+    /// generation either way.
+    ///
+    /// The schedule is read from `(seed, generation)` every tick rather than cached, so
+    /// a world reloaded from Postgres resumes mid-warning exactly where it left off —
+    /// which is the whole point of the scheduler being pure (§W5: two integers replay
+    /// the history).
+    fn advance_shift(&mut self) -> Vec<Outgoing> {
+        let balance = self.balance.clone();
+        let seed = self.arena.seed;
+        let roll = meld_world::shift::roll(&balance, seed, self.shift_generation);
+        let mut out = Vec::new();
+
+        if self.tick_count >= roll.warn_tick && !self.shift_warned {
+            self.shift_warned = true;
+            if let Some((first, last)) = self.arena.shift_region(&balance, &roll) {
+                let (inner, outer) = self.arena.shift_band(first, last);
+                let becoming = self.arena.incoming_biome_for(&balance, &roll, first);
+                let lands_in_ms =
+                    roll.land_tick.saturating_sub(self.tick_count) * balance.battle.tick_ms;
+                for r in &self.run.runs {
+                    let caught = self
+                        .arena
+                        .avatar(&r.player_id)
+                        .map(|a| {
+                            let rad = self.arena.corridorize(&a.position).x;
+                            rad >= inner && rad < outer
+                        })
+                        .unwrap_or(false);
+                    out.push(out_msg(
+                        &r.player_id,
+                        &ww::ShiftWarning {
+                            generation: roll.generation,
+                            inner_radius: inner,
+                            outer_radius: outer,
+                            biome: becoming.to_string(),
+                            lands_in_ms,
+                            caught,
+                        },
+                    ));
+                }
+            }
+        }
+
+        if self.tick_count < roll.land_tick {
+            return out;
+        }
+        self.shift_generation += 1;
+        self.shift_warned = false;
+        let Some((first, last)) = self.arena.shift_region(&balance, &roll) else {
+            return out;
+        };
+        let from = self.arena.areas.get(first).map(|a| a.biome).unwrap_or("").to_string();
+        self.shift_log.push((roll.generation, first, last));
+        let outcome = self.arena.apply_shift(&balance, &roll, first, last);
+
+        // The Force blast, then the retile. Order matters for the client: the damage
+        // numbers belong to the ground the player was standing on, not the ground that
+        // replaced it.
+        let caught: Vec<(String, f64)> = outcome.caught.clone();
+        let mut dead: Vec<String> = Vec::new();
+        let mut hits: HashMap<String, Vec<i32>> = HashMap::new();
+        for (pid, fraction) in caught {
+            let Some(classes) = self.party_classes.get(&pid).cloned() else { continue };
+            let levels: Vec<i32> = self
+                .run
+                .runs
+                .iter()
+                .find(|r| r.player_id == pid)
+                .map(|r| r.hero_levels.clone())
+                .unwrap_or_default();
+            let Some(hp) = self.hero_hp.get_mut(&pid) else { continue };
+            let mut taken = vec![0; hp.len()];
+            for (slot, cur) in hp.iter_mut().enumerate() {
+                if *cur <= 0 {
+                    continue;
+                }
+                let class = classes.get(slot).copied().unwrap_or(CharacterClass::Explorer);
+                let level = levels.get(slot).copied().unwrap_or(1).max(1);
+                let max = meld_run::max_hp_at_level(class, level, &balance);
+                let dmg = ((max as f64) * fraction).round().max(1.0) as i32;
+                taken[slot] = dmg.min(*cur);
+                *cur = (*cur - dmg).max(0);
+            }
+            if hp.iter().all(|h| *h <= 0) {
+                dead.push(pid.clone());
+            }
+            hits.insert(pid, taken);
+        }
+
+        let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        for pid in &members {
+            out.push(out_msg(
+                pid,
+                &ww::Shifted {
+                    generation: roll.generation,
+                    inner_radius: outcome.inner_radius,
+                    outer_radius: outcome.outer_radius,
+                    biome: outcome.biome.clone(),
+                    from_biome: from.clone(),
+                    wiped: outcome.wiped.clone(),
+                    damage: hits.get(pid).cloned().unwrap_or_default(),
+                },
+            ));
+        }
+        // Repaint the ground. The client keys biome ground + HUD label off per-section
+        // radius rings, so re-sending each retiled section IS the retile — no new
+        // rendering path, which is why the Shift is section-granular in the first place.
+        let (rh, cl) = (self.arena.radial_half(), self.arena.corridor_lateral());
+        for &i in &outcome.sections {
+            let Some(area) = self.arena.areas.get(i) else { continue };
+            let msg = terrain_section_msg(area, Vec::new(), rh, cl, Vec::new());
+            for pid in &members {
+                out.push(out_msg(pid, &msg));
+            }
+        }
+        // Anyone the new land was strewn on top of has already been walked to the
+        // region's entry; correct their client so it snaps there instead of sliding
+        // across the map chasing an authoritative position it never agreed to.
+        for (pid, to) in &outcome.moved {
+            let seq = self.arena.avatar(pid).map(|a| a.last_input_seq).unwrap_or(0);
+            out.push(out_msg(
+                pid,
+                &wm::PositionCorrection { position: *to, last_input_seq: seq },
+            ));
+        }
+        for pid in dead {
+            out.extend(self.world_death(&pid));
+        }
+        out
     }
 
     /// Auto-collect ground loot (creature-skirmish drops) for every active player
@@ -9786,5 +10218,196 @@ mod crafter_perk_tests {
         let mut hps = [9, 8];
         pour_regen(&mut hps, &caps, None, 99);
         assert_eq!(hps, [10, 10]);
+    }
+}
+
+#[cfg(test)]
+mod shifting_lands_tests {
+    use super::*;
+
+    /// A world with a Shift due almost immediately, so the driver can be watched
+    /// end-to-end in a test instead of in five wall-clock minutes.
+    fn world(cadence: u64, warning: u64) -> (WorldActor, mpsc::UnboundedReceiver<DbWrite>) {
+        let mut b = Balance::load_default().unwrap();
+        b.shift.cadence_ticks = cadence;
+        b.shift.cadence_jitter = 0.0;
+        b.shift.warning_ticks = warning;
+        let balance = Arc::new(b);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut arena = Arena::generate(&balance, 909, false);
+        for _ in 0..30 {
+            arena.ensure_frontier(&balance, 900.0);
+        }
+        let w = WorldActor {
+            balance: balance.clone(),
+            db_writes: tx,
+            arena,
+            run: InstanceRun::new("w".into(), 0, &balance, 0),
+            battles: Vec::new(),
+            hero_hp: HashMap::new(),
+            hero_afflictions: HashMap::new(),
+            venom_steps: HashMap::new(),
+            party_classes: HashMap::new(),
+            gear_bonuses: HashMap::new(),
+            hero_names: HashMap::new(),
+            hero_rows: HashMap::new(),
+            extraction: HashMap::new(),
+            harvest: HashMap::new(),
+            building: HashMap::new(),
+            regen_accum: HashMap::new(),
+            hold_last_ms: HashMap::new(),
+            entrances: Vec::new(),
+            tutorial: false,
+            location: HashMap::new(),
+            dungeons: HashMap::new(),
+            next_dungeon_key: 0,
+            entrances_scanned: 0,
+            dungeon_scene_sent: HashMap::new(),
+            pending_effects: Vec::new(),
+            edges: HashMap::new(),
+            skill_levels: HashMap::new(),
+            battle_immune_until: HashMap::new(),
+            quarry: HashMap::new(),
+            bounties: HashMap::new(),
+            marks_placed: std::collections::HashSet::new(),
+            tick_count: 0,
+            shift_generation: 0,
+            shift_warned: false,
+            shift_log: Vec::new(),
+        };
+        (w, rx)
+    }
+
+    /// The whole loop through the server driver: the tell goes up once, the land swaps
+    /// on schedule, and the retiled sections are re-sent — which is what repaints the
+    /// ground, since the client keys its biome rings off `world.terrain_section`.
+    #[test]
+    fn the_tell_goes_up_once_then_the_land_swaps() {
+        let (mut w, _rx) = world(20, 5);
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        let mut warnings = 0;
+        let mut shifts = 0;
+        let mut retiles = 0;
+        for _ in 0..25 {
+            for m in w.advance_shift() {
+                match m.msg_type {
+                    ww::ShiftWarning::TYPE => warnings += 1,
+                    ww::Shifted::TYPE => shifts += 1,
+                    ww::TerrainSection::TYPE => retiles += 1,
+                    _ => {}
+                }
+            }
+            w.tick_count += 1;
+        }
+        assert_eq!(warnings, 1, "the tell fired {warnings} times, not once");
+        assert_eq!(shifts, 1, "the land swapped {shifts} times");
+        assert!(retiles >= 1, "nothing was re-sent, so nothing repaints");
+        assert_eq!(w.shift_generation, 1, "the generation was not retired");
+    }
+
+
+    /// §W5's claim, checked: seed + a small delta reconstructs the world exactly. If this
+    /// ever fails, hibernation is silently handing players a different place than the one
+    /// they left — which is worse than not persisting at all.
+    #[test]
+    fn a_hibernated_world_comes_back_the_same_place() {
+        let (mut w, _rx) = world(20, 5);
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        // Live a while: several Shifts land, a node is dug out, a chest is opened, and a
+        // creature is felled and pruned into the ground it used to hold.
+        for _ in 0..200 {
+            w.advance_shift();
+            w.tick_count += 1;
+        }
+        w.arena.resources[0].remaining = 0;
+        w.arena.chests[0].opened = true;
+        w.arena.monsters[0].defeated = true;
+        let felled = w.arena.monsters[0].entity_id.clone();
+        w.arena.prune_defeated();
+        w.arena.regrow(&w.balance.clone(), w.tick_count);
+        assert!(!w.shift_log.is_empty(), "nothing shifted, so nothing is being tested");
+
+        let save = w.world_save();
+        let back = restore_world(&w.balance, &save);
+
+        assert_eq!(back.areas.len(), w.arena.areas.len(), "the frontier did not come back");
+        assert_eq!(
+            back.areas.iter().map(|a| a.biome).collect::<Vec<_>>(),
+            w.arena.areas.iter().map(|a| a.biome).collect::<Vec<_>>(),
+            "the shifted biomes were not replayed"
+        );
+        assert_eq!(
+            back.obstacles.len(),
+            w.arena.obstacles.len(),
+            "the re-scattered props were not reproduced"
+        );
+        assert_eq!(
+            back.obstacles.iter().map(|o| o.position).collect::<Vec<_>>(),
+            w.arena.obstacles.iter().map(|o| o.position).collect::<Vec<_>>(),
+            "the props came back somewhere else"
+        );
+        assert!(back.resources[0].depleted(), "the dug-out node came back full");
+        assert!(back.chests[0].opened, "the opened chest came back sealed");
+        assert!(
+            back.monsters.iter().all(|m| m.entity_id != felled),
+            "a creature the world remembers as dead was standing there again"
+        );
+        assert_eq!(back.fallen.len(), w.arena.fallen.len());
+    }
+
+    /// The delta is a *delta*: a world with hours on it must not cost megabytes to write.
+    #[test]
+    fn a_saved_world_stores_the_delta_and_not_the_map() {
+        let (mut w, _rx) = world(20, 5);
+        for _ in 0..400 {
+            w.advance_shift();
+            w.tick_count += 1;
+        }
+        let save = w.world_save();
+        assert!(
+            save.delta.len() < 64 * 1024,
+            "the delta is {} bytes for {} sections and {} props — it is storing the map",
+            save.delta.len(),
+            w.arena.areas.len(),
+            w.arena.obstacles.len()
+        );
+        assert!(w.arena.obstacles.len() > 200, "not enough world to make the claim");
+    }
+
+    /// Standing in it costs you; the schedule is otherwise identical, so the only
+    /// variable is where the party was.
+    #[test]
+    fn the_force_blast_only_reaches_what_is_standing_in_it() {
+        let (mut w, _rx) = world(20, 5);
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.party_classes.insert("p1".into(), vec![CharacterClass::Explorer; 4]);
+        w.hero_hp.insert("p1".into(), vec![9999; 4]);
+        w.arena.add_avatar("p1".into(), 5.0);
+
+        let roll = meld_world::shift::roll(&w.balance, w.arena.seed, 0);
+        let (first, last) = w.arena.shift_region(&w.balance, &roll).expect("a region");
+        let (inner, outer) = w.arena.shift_band(first, last);
+        let safe = w.hero_hp["p1"].clone();
+        for _ in 0..25 {
+            w.advance_shift();
+            w.tick_count += 1;
+        }
+        assert_eq!(w.hero_hp["p1"], safe, "the hub took Force damage from a distant Shift");
+
+        let (mut w, _rx) = world(20, 5);
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.party_classes.insert("p1".into(), vec![CharacterClass::Explorer; 4]);
+        w.hero_hp.insert("p1".into(), vec![9999; 4]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        let mid = (inner + outer) * 0.5;
+        w.arena.avatar_mut("p1").unwrap().position = Position::new(mid, 0.0);
+        for _ in 0..25 {
+            w.advance_shift();
+            w.tick_count += 1;
+        }
+        assert!(
+            w.hero_hp["p1"].iter().all(|h| *h < 9999),
+            "the party stood in the Shift and took nothing"
+        );
     }
 }

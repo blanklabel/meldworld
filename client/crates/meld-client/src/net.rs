@@ -729,6 +729,23 @@ pub enum ServerMsg {
     Bounties { board: BountyBoard },
     /// A posted hunt moved while diving (`run.hunt_progress`).
     HuntProgress { name: String, progress: i32, target: i32, complete: bool },
+    /// The tell: a ring of the Shifting Lands is about to swap biome (`world.shift_warning`).
+    ShiftWarning {
+        inner_radius: f64,
+        outer_radius: f64,
+        biome: String,
+        lands_in_ms: u64,
+        caught: bool,
+    },
+    /// It landed (`world.shift`). The retiled `world.terrain_section` messages arrive
+    /// with it and are what actually repaint the ground — this is the words and the
+    /// damage, not the render.
+    Shifted { biome: String, from_biome: String, damage: Vec<i32> },
+    /// The server moved this player (`movement.position_correction`) — today, because a
+    /// Shift strewed the new land's props on top of them. The local avatar chases the
+    /// snapshot exponentially for responsiveness, so a teleport has to say so or it
+    /// renders as sliding across the map for a second.
+    PositionCorrection { x: f64, y: f64 },
     VanguardBoard {
         season: i32,
         entries: Vec<VanguardLine>,
@@ -2397,6 +2414,34 @@ impl Inner {
                     progress: p["progress"].as_i64().unwrap_or(0) as i32,
                     target: p["target"].as_i64().unwrap_or(1) as i32,
                     complete: p["complete"].as_bool().unwrap_or(false),
+                });
+            }
+            "movement.position_correction" => {
+                let p = &raw.payload["position"];
+                self.out.push_back(ServerMsg::PositionCorrection {
+                    x: p["x"].as_f64().unwrap_or(0.0),
+                    y: p["y"].as_f64().unwrap_or(0.0),
+                });
+            }
+            "world.shift_warning" => {
+                let p = &raw.payload;
+                self.out.push_back(ServerMsg::ShiftWarning {
+                    inner_radius: p["inner_radius"].as_f64().unwrap_or(0.0),
+                    outer_radius: p["outer_radius"].as_f64().unwrap_or(0.0),
+                    biome: p["biome"].as_str().unwrap_or("").to_string(),
+                    lands_in_ms: p["lands_in_ms"].as_u64().unwrap_or(0),
+                    caught: p["caught"].as_bool().unwrap_or(false),
+                });
+            }
+            "world.shift" => {
+                let p = &raw.payload;
+                self.out.push_back(ServerMsg::Shifted {
+                    biome: p["biome"].as_str().unwrap_or("").to_string(),
+                    from_biome: p["from_biome"].as_str().unwrap_or("").to_string(),
+                    damage: p["damage"]
+                        .as_array()
+                        .map(|a| a.iter().map(|v| v.as_i64().unwrap_or(0) as i32).collect())
+                        .unwrap_or_default(),
                 });
             }
             "run.unlocked" => {
