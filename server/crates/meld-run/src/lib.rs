@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
-use meld_proto::enums::{CharacterClass, CombatantKind, EncounterClass, RunResult, TargetProfile};
+use meld_proto::enums::{
+    CharacterClass, CombatantKind, DamageType, EncounterClass, RunResult, TargetProfile,
+};
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
 
@@ -449,6 +451,16 @@ pub fn max_hp_at_level(class: CharacterClass, level: i32, balance: &Balance) -> 
     let (_, _, _, wll) = stats.attributes_at(level);
     let grow = |attr: i32, base: i32, coef: f64| ((attr - base) as f64 * coef).round() as i32;
     stats.base_hp + grow(wll, stats.wll, balance.attributes.wll_to_hp)
+}
+
+/// The HP each hero in `comp` opens a dive on.
+///
+/// A dive starts at FULL health, and "full" is the max at the level being dived at — so
+/// this is [`max_hp_at_level`] and must stay [`max_hp_at_level`]. Deriving the opening HP
+/// any other way agrees with the ceiling only while every dive starts at level 1: a party
+/// departing at level 100 otherwise opens at 52 of 1042 HP, and nothing says so.
+pub fn starting_hp(comp: &[CharacterClass], level: i32, balance: &Balance) -> Vec<i32> {
+    comp.iter().map(|c| max_hp_at_level(*c, level, balance)).collect()
 }
 
 /// One hero's summed combat bonuses from their own equipped gear (per-hero
@@ -892,6 +904,30 @@ pub fn build_battle(
             // creatures are smarter on average. Seeded off the creature's own combatant id
             // so the same creature in the same fight always thinks the same way, and so
             // promoting one cannot shift any other roll in the battle.
+            // THE END FIGHT's ward and its slow floor. Merged ON TOP of the kind's own
+            // elemental profile, so a boss keeps its identity and gains the set piece's
+            // resistance rather than having one replace the other.
+            if !m.set_piece_ward.is_empty() {
+                let mult = balance.encounters.end_fight_ward_mult;
+                let fams: &[DamageType] = match m.set_piece_ward.as_str() {
+                    "mind" => &[DamageType::Mind, DamageType::Ethereal],
+                    "physical" => {
+                        &[DamageType::Blunt, DamageType::Slash, DamageType::Pierce]
+                    }
+                    _ => &[
+                        DamageType::Fire,
+                        DamageType::Ice,
+                        DamageType::Water,
+                        DamageType::Lightning,
+                        DamageType::Wind,
+                        DamageType::Earth,
+                    ],
+                };
+                for ty in fams {
+                    f.damage_modifiers.insert(*ty, mult);
+                }
+                f.slow_floor = balance.encounters.end_fight_slow_floor;
+            }
             f.target_profile = meld_world::abilities::creature_target_profile(
                 ability_key,
                 &m.encounter_class,
@@ -1084,63 +1120,142 @@ mod tests {
     /// of `base_run_level`'s formula purely so a chooser can say "heroes start at 40". A
     /// copy is a thing that drifts, so it is checked against the real one at every hub —
     /// and against the level cap, which is what makes the deepest hub the end of the ladder.
-    /// THE END FIGHT has to be beatable by the party that can actually REACH it, and the
-    /// only route there today is on foot (hubs are held off), which lands a party around
-    /// level 100. Sized as a multiple of the local creature it was ~14x harder than that —
-    /// at d3200 an ordinary creature already runs ~10k HP and two-shots a hero, because the
-    /// deep curve is tuned for hub-fed parties that do not exist yet.
-    ///
-    /// So it is AUTHORED, and this pins the shape: a long fight (not a formality, not an
-    /// endurance test) against heroes that can take a few hits (not one).
+    /// **No single damage source clears the end fight.** Four Psykers deleted it in 6 rounds
+    /// against the intended 25, taking no hits — because Foci ignore defence outright and
+    /// ride Mnd, which comes from levelling rather than loot, so neither the armour nor the
+    /// gear gate was in their path at all. Each of the three now shrugs off a DIFFERENT
+    /// family, which makes a mixed party the answer without nerfing the class.
     #[test]
-    fn the_end_fight_is_a_fight_and_not_an_execution() {
+    fn no_single_damage_family_clears_the_end_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = meld_world::Arena::generate(&b, 4, false);
+        for _ in 0..80 {
+            arena.ensure_frontier(&b, b.encounters.end_fight_min_distance + 900.0);
+        }
+        let enders: Vec<&meld_world::MonsterSpawn> = arena
+            .monsters
+            .iter()
+            .filter(|m| m.encounter_class == "world_end")
+            .collect();
+        if enders.is_empty() {
+            return; // this seed placed it past the streamed frontier; other seeds cover it
+        }
+        let wards: std::collections::HashSet<&str> =
+            enders.iter().map(|m| m.set_piece_ward.as_str()).collect();
+        assert_eq!(
+            wards.len(),
+            3,
+            "the three bosses share wards ({wards:?}) — one damage type clears the fight"
+        );
+        for want in ["mind", "physical", "elemental"] {
+            assert!(wards.contains(want), "nothing in the encounter wards {want}");
+        }
+
+        // …and the ward has to actually bite: a Psyker's Mind tick on the mind-warded boss
+        // must land for meaningfully less than on the others.
+        let mult = b.encounters.end_fight_ward_mult;
+        assert!(
+            (0.05..0.6).contains(&mult),
+            "a ward multiplier of {mult} either does nothing or is an immunity"
+        );
+    }
+
+    /// A set piece is not a big creature: control cannot remove it from the fight. One
+    /// Gravity Vortex plus an Anchor left each boss acting **0.3 times in the whole fight**,
+    /// so `end_fight_boss_atk` — the entire danger of the encounter — never happened.
+    #[test]
+    fn control_cannot_take_the_end_fight_out_of_the_fight() {
+        let b = Balance::load_default().unwrap();
+        let floor = b.encounters.end_fight_slow_floor;
+        assert!(
+            (0.4..0.9).contains(&floor),
+            "a slow floor of {floor} either ignores control entirely or does not stop it"
+        );
+        // It must sit ABOVE the deepest slow in the game, or the clamp changes nothing.
+        assert!(
+            floor > b.battle.psyker_anchor_slow_mult,
+            "the floor ({floor}) is under Anchor's multiplier ({}), so Anchor still wins",
+            b.battle.psyker_anchor_slow_mult
+        );
+        assert!(
+            floor > b.battle.status_slow_mult,
+            "the floor ({floor}) is under an ordinary web/chill ({}), so nothing is clamped",
+            b.battle.status_slow_mult
+        );
+    }
+
+    /// THE END FIGHT has to be **winnable**, and this pins the division nobody did.
+    ///
+    /// The previous version of this test asserted "clears in 15–35 rounds" and "a geared
+    /// hero survives 3–8 hits" side by side, and never compared them — so it passed while
+    /// describing a party that dies five times over before the bosses are down. Playing it
+    /// through `mcp/` measured exactly that: 14 hero-turns, 11.5% of the bosses' health,
+    /// wipe. The model was right the whole time; the arithmetic stopped one line early.
+    ///
+    /// So the numbers here are **calibrated from played runs**, not re-derived: a level-100
+    /// party in tier-32 gear puts out ~470 damage per hero-turn and takes ~189 per hero-turn
+    /// at `end_fight_boss_atk = 420`. Incoming scales with the attack number; output does
+    /// not. Both constants are floors — the reference policy heals reactively, does not keep
+    /// Barrier up, and spreads damage across three bosses instead of focusing one — so a
+    /// party that plays well beats these figures and a careless one does worse. And they are
+    /// AVERAGES: at these values the reference policy wins or loses run to run at an
+    /// identical seed, because ATB is real-time and action ordering is not reproducible — so
+    /// a margin near 1.0 means "decided by play", not "wins".
+    ///
+    /// ⚠️ **This is deliberately NOT a gear check any more, because the game cannot express
+    /// one here yet.** See the `EW-0` roadmap entry: a creature's ABILITY damage never
+    /// subtracts hero defence (`apply_typed_damage` applies resistances and the minimum,
+    /// then stops), and only its basic `Attack` goes through `atk - def`. These bosses act
+    /// almost entirely through abilities, so armour is close to irrelevant to them —
+    /// measured, an UNGEARED level-100 party lasted 26 hero-turns against a geared party's
+    /// 25. No value of `end_fight_boss_atk` creates a gate through a stat the fight barely
+    /// reads, so asserting one here would only pin a fiction.
+    #[test]
+    fn the_end_fight_is_hard_and_winnable() {
         let b = Balance::load_default().unwrap();
         let e = &b.encounters;
-        let sc = meld_world::Scaling::new(&b);
-        let d = e.end_fight_min_distance as i64;
 
-        // A hero at the level a party really arrives at, on foot.
-        let party = vec![("p".to_string(), "c".to_string(), CharacterClass::Hunter, GearBonus::default())];
-        let runs = InstanceRun::new("i".into(), 0, &b, 0);
-        let mut hero = party_fighters(&party, &runs, &b, &[])[0].clone();
-        hero.level = 100;
-        // Approximate the level-100 hero the attribute curve gives (party_fighters builds
-        // level 1); what matters here is the ORDER of magnitude, not the exact stat.
-        let a = &b.attributes;
-        let ph = &b.player.get("hunter").expect("hunter stats");
-        let str_ = ph.str + ph.str_per_level * 99;
-        let wll = ph.wll + ph.wll_per_level * 99;
-        let hero_atk = ph.base_atk + ((str_ - ph.str) as f64 * a.str_to_atk).round() as i32;
-        let hero_hp = ph.base_hp + ((wll - ph.wll) as f64 * a.wll_to_hp).round() as i32;
-        let hero_def = ph.base_def + ((wll - ph.wll) as f64 * a.wll_to_def).round() as i32;
+        // Measured through the real wire, not derived. See the note above. Both figures are
+        // from runs where the party DRANK — the starting kit is ~1130 HP of healing on a
+        // 2648 HP party, so a measurement without potions is a measurement of a party that
+        // left 42% of its effective health in its pockets.
+        const OUTPUT_PER_HERO_TURN: f64 = 357.0;
+        const TURNS_SURVIVED_AT_REFERENCE_ATK: f64 = 18.5;
+        const REFERENCE_ATK: f64 = 420.0;
 
-        let boss_def = (2.0 * sc.def_mult(d)).round() as i32;
-        let per_hero = (hero_atk - boss_def).max((hero_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
-        let party_hp = e.end_fight_boss_hp as f64
+        // Incoming damage scales with the attack number, so the turns a party lasts scales
+        // inversely with it. This is what makes attack the FIGHT-LENGTH dial and HP the
+        // win-condition dial: cutting HP alone leaves a party dying at the same turn count.
+        let turns_survived =
+            TURNS_SURVIVED_AT_REFERENCE_ATK * (REFERENCE_ATK / e.end_fight_boss_atk as f64);
+        let total_boss_hp = e.end_fight_boss_hp as f64
             * e.end_fight_bosses as f64
             * encounter_party_scale(4, &b);
-        let rounds = party_hp / (4.0 * per_hero as f64);
-        let incoming = (e.end_fight_boss_atk - hero_def)
-            .max((e.end_fight_boss_atk as f64 * b.combat_math.damage_floor_fraction) as i32);
-        let hits = hero_hp as f64 / incoming as f64;
+        let turns_to_kill = total_boss_hp / OUTPUT_PER_HERO_TURN;
+        let margin = turns_to_kill / turns_survived;
 
+        // THE division. Below 1.0 the reference party wins outright; above it, winning takes
+        // playing better than the reference. Past 1.6 no amount of skill closes the gap and
+        // the encounter is the impossible one again.
         assert!(
-            (8.0..40.0).contains(&rounds),
-            "the end fight takes {rounds:.0} rounds for a level-100 party — a formality \
-             under 8, an endurance test over 40"
+            margin <= 1.6,
+            "the end fight needs {turns_to_kill:.0} hero-turns to kill and survives \
+             {turns_survived:.0} — {margin:.1}x more fight than party, i.e. unwinnable"
         );
+        // And it must not be a walkover: the apex should be in doubt.
         assert!(
-            (2.5..8.0).contains(&hits),
-            "a level-100 hero survives {hits:.1} boss hits — under 2.5 is an execution, \
-             over 8 is not a threat"
+            margin >= 0.7,
+            "the end fight dies in {turns_to_kill:.0} hero-turns while the party survives \
+             {turns_survived:.0} — {margin:.1}x, so the apex is a formality"
+        );
+        // Long enough to be a fight rather than a coin flip.
+        assert!(
+            turns_survived >= 16.0,
+            "the party lasts {turns_survived:.0} hero-turns — four rounds is an ambush, \
+             not the end of the game"
         );
         // And it must out-reward a Gatekeeper, or the apex is a worse source than a pass.
-        assert!(
-            e.end_fight_loot_mult > e.gatekeeper_loot_mult,
-            "the end fight rolls a smaller spike ({}) than a Gatekeeper ({})",
-            e.end_fight_loot_mult,
-            e.gatekeeper_loot_mult
-        );
+        assert!(e.end_fight_loot_mult > e.gatekeeper_loot_mult);
     }
 
     #[test]
@@ -1158,6 +1273,38 @@ mod tests {
         assert!(
             base_run_level(deepest.distance, &b) <= b.runs.max_hero_level,
             "the deepest hub starts heroes above the level cap"
+        );
+    }
+
+    /// The HP a dive opens on IS the ceiling it fights under, at every level on the
+    /// ladder — not only at 1, where a level-1 constant and a level-aware derivation
+    /// happen to be the same number. Found by playing a level-100 party and reading its
+    /// own party screen: 52 of 1042.
+    #[test]
+    fn a_hero_starts_a_dive_at_full_health_whatever_level_it_leaves_at() {
+        let b = Balance::load_default().unwrap();
+        let comp = [
+            CharacterClass::PhoenixGuard,
+            CharacterClass::Hunter,
+            CharacterClass::Psyker,
+            CharacterClass::Resonant,
+        ];
+        for level in [1, 10, 40, 100, b.runs.max_hero_level] {
+            let opening = starting_hp(&comp, level, &b);
+            for (i, class) in comp.iter().enumerate() {
+                let ceiling = max_hp_at_level(*class, level, &b);
+                assert_eq!(
+                    opening[i], ceiling,
+                    "a {class:?} departing at level {level} opens at {} of {ceiling}",
+                    opening[i]
+                );
+            }
+        }
+        // And the ladder has to actually climb, or the assertion above is satisfied by a
+        // constant and proves nothing.
+        assert!(
+            starting_hp(&comp, 100, &b)[0] > 4 * starting_hp(&comp, 1, &b)[0],
+            "HP barely grows with level, so this test cannot catch the bug it is for"
         );
     }
 

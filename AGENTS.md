@@ -186,6 +186,34 @@ its power through `phys_atk`; a call site that touches `.atk` directly is a swin
 charged for. **A class missing from `hero_attack_type` deals TRUE damage** (`None` bypasses
 the modifier map entirely) — the Hunter, Smithwright and Keeper all were, for a long time.
 
+**Hero DEFENCE only stops a creature's BASIC ATTACK.** A creature ability's damage is
+`stat x coefficient` through `apply_typed_damage`, which applies the target's
+`damage_modifiers` and `min_damage` and then stops — `atk - def` and
+`damage_floor_fraction` live in `physical_hit`, which only the basic `Attack` action reaches.
+So armour is close to irrelevant against anything that fights with abilities, which is every
+champion and every boss. Measured on the end fight: an **ungeared** level-100 party lasted
+**26 hero-turns to a geared party's 25**. Any "gear check" built on `def` is therefore
+fiction, and any model that computes survivability as `hp / (atk - def)` is describing a
+minority of the damage the player actually takes. Nothing documents this as intentional, and
+the Psyker's Foci are called out *specifically* for ignoring armour — a pointless
+distinction if every ability already did (`EW-0` tracks the three ways out).
+
+**A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
+`item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113
+on a Psyker (282) — the same bottle, 3.7x apart. A hero may pour one into somebody else (the
+engine takes `ally_target`, and the client's Item row opens the ally picker), and the pouch it
+comes from is the ACTING hero's, because the shared bag is out of reach in a fight. So triage
+means "where does the most HP come back", not "who looks worst": healing the
+proportionally-worst hero measurably turned a won end fight into a loss at 67%. Starting
+potions are dealt into pouches round-robin, so the kit is ~1130 HP of healing on a 2648 HP
+party — **any combat measurement that does not drink understates the party by ~42%**.
+
+**Tune against a PLAYED fight, not a spreadsheet** — `mcp/` exists for this and a run costs
+about a minute. The end fight shipped impossible three times from arithmetic, and the last
+time the arithmetic was *correct*: its test asserted "clears in 15-35 rounds" and "survives
+3-8 hits" side by side and never divided them. A balance test that checks two magnitudes
+independently has not checked the fight; assert the RATIO.
+
 **A creature fights to a PROFILE** (`meld_proto::TargetProfile`, CR-9): Weakest, Random,
 Backline, Role, GangUp. **At most ONE creature per encounter may be `Role`**
 (`cap_role_hunters`): profiles roll independently, so a pack of five could all reach "kill
@@ -354,6 +382,47 @@ drives **real headless bot clients over the real wire protocol** — no shortcut
 client-side combat math: `four_players_kill_monster`, `extraction`, `death_durability`,
 `progression`, `raid_merge`, `auth_conformance`.
 
+### Play it yourself: the MCP server (`mcp/`)
+
+A `qa/` test measures a question you already knew to ask. **`meld-mcp` lets you pick up the
+controller** — it boots the whole server in-process on an in-memory DB (no Postgres, no
+port to collide with) and exposes the game as tools: `new_game`, `look`, `walk`, `battle`,
+`abilities`, `act`, `auto_battle`, `interact`, `say`, `chat`, `wait`. Every tool is a
+**player input over the real wire protocol**; nothing reaches into `MazeInstance`, because a
+harness that reads the engine measures the model, and the model is what has been wrong every
+previous time.
+
+```sh
+cargo build -p meld-mcp     # `.mcp.json` points at target/debug/meld-mcp
+```
+
+`new_game` takes the DEV/QA overrides as arguments rather than env vars: `party`, `seed`,
+`tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. **`MELD_START_LEVEL`** is
+new and is the third of the `MELD_END_FIGHT` / `MELD_GEAR_TIER` family — everything past
+roughly level 16 is authored for a party that walked an hour to reach it, and PG-2's hubs
+are deliberately inert, so without it the only level deep content could be observed at was
+1, the one level it was never tuned for.
+
+**The clock does not stop while you think.** A fighter awaiting input stops filling its own
+gauge, but everything else keeps ticking, so wall-clock between two tool calls is play-time:
+33 seconds spent composing the next call is a whole boss fight, resolved by the 15-second
+auto-act. Anything being *measured* must therefore happen inside ONE tool call
+(`auto_battle`), or with the calls queued back-to-back. This is also why `turn_timeout_ms`
+is not a safe knob to widen for an agent: a longer window is strictly more enemy turns.
+
+**A policy that plays badly measures its own incompetence.** `auto_battle`'s stands on three
+rules learned by watching it fail: a spent once-a-fight call (`spent:<key>`) must not be
+re-pressed, a Hunter must ATTACK to bank the Adrenaline its skills spend (opening with its
+capstone contributed literally nothing for six straight turns), and a hurt party wants its
+healer to heal. Fixing those took a geared level-100 party from 4.4% to 11.5% of the end
+fight — a bigger swing than most tuning changes, so read any number from a weaker policy as
+a floor, not a result.
+
+**A Psyker's `skill_kind` is an OP, not an ability key** — `cast:<kind>` / `reinforce:<kind>`
+/ `revoke:<kind>`, and `resolve_psyker` silently falls through to `hold` on anything else.
+Sending the bare key spends the turn doing nothing, successfully, which is exactly what a
+Psyker party looked like from outside for two rounds of measurement.
+
 ### Visual verification (screenshots, not interactive driving)
 
 For anything the browser renders (HD-2D art, HUD/UI, overworld, battle screen),
@@ -393,6 +462,24 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
 - **`MELD_DUNGEON=<name>`** forces which authored dungeon a descent loads (any
   `[[floor]]` def in the content pool, e.g. `guardia_forest`), so you can screenshot
   a *specific* dungeon instead of whichever the entrance rolled.
+
+- **`MELD_END_FIGHT=1`** (+ optional `MELD_END_FIGHT_AT=<distance>`, default 30) drops
+  **the end fight** — EW's three named bosses — next to the hub instead of an hour's walk
+  out at d3200. It only moves WHERE the encounter is placed: the bosses carry authored
+  absolute stats (`set_piece`), so the fight you meet at d30 is numerically the one you
+  would meet at d3200. Keep `MELD_END_FIGHT_AT` above `[ai] hub_safe_radius` (13) or no
+  creature spawns there to promote and nothing is placed at all.
+- **`MELD_GEAR_TIER=<n>`** dresses every hero as though wearing a full six-slot set of
+  tier-`n` insured epics, without a Vault full of them. The end fight is tuned as a **gear
+  check** (tier-32 gear is ~3.5x survivability there), so without this the only observable
+  case is the ungeared one — which is exactly the number that does not need checking.
+  ⚠️ **Neither flag gets you an automatic screenshot OF the fight.** Autoplay walks the
+  clear path and the bosses sit at a scattered creature position, so it does not reliably
+  collide with them; the placement is verified by
+  `lowering_the_floor_brings_the_end_fight_to_the_hub` rather than by a captured frame.
+  Watching the fight itself still wants a `qa/` bot that steers into it — which is what a
+  real tuning pass should use anyway, since it can report rounds and damage rather than a
+  picture.
 
 Combine with `MELD_AUTOPLAY` + the file-channel screenshot request. The wrapper
 `client/scripts/view_biome.sh <biome> [seed] [frames]` boots the embedded binary with

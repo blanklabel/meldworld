@@ -1094,6 +1094,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "meld-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "meld-balance",
+ "meld-db",
+ "meld-proto",
+ "meld-server",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "meld-proto"
 version = "0.1.0"
 dependencies = [
@@ -1114,6 +1132,7 @@ dependencies = [
  "meld-proto",
  "meld-run",
  "meld-server",
+ "meld-world",
  "reqwest",
  "serde_json",
  "sqlx",

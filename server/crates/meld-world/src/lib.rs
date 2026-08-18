@@ -1371,6 +1371,16 @@ pub struct MonsterSpawn {
     pub faction: String,
     /// `passive` | `territorial` | `aggressive`.
     pub aggression: String,
+    /// THE END FIGHT: which damage family this one of the three shrugs off — `"mind"`,
+    /// `"physical"` or `"elemental"`, empty for everything else.
+    ///
+    /// Each of the three carries a DIFFERENT ward on purpose, so **no single damage source
+    /// clears the encounter**. A stack of four Psykers deletes anything that only has
+    /// armour to hide behind (Foci ignore defence entirely and ride Mnd, which comes from
+    /// levelling rather than loot) — measured at 6 rounds against the intended 25, taking
+    /// no hits at all. A ward the Psyker cannot burn through is what makes bringing a mixed
+    /// party the answer, without touching the class that earned its kit.
+    pub set_piece_ward: String,
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1432,6 +1442,7 @@ impl MonsterSpawn {
             boss_kind: String::new(),
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
+            set_piece_ward: String::new(),
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -2758,6 +2769,11 @@ impl Arena {
                         // Three DIFFERENT bosses: the same name three times reads as a bug.
                         let boss = all[(erng.below(all.len().max(1)) + n) % all.len().max(1)];
                         self.monsters[bidx].become_boss(boss);
+                        // …and three DIFFERENT wards, so no single damage source clears the
+                        // encounter. Rotated rather than rolled: the encounter must always
+                        // cover all three families, or a seed could hand out a free run.
+                        self.monsters[bidx].set_piece_ward =
+                            ["mind", "physical", "elemental"][n % 3].to_string();
                     }
                 }
                 if i > 0
@@ -4587,6 +4603,35 @@ mod tests {
             }
         }
         assert!(found.is_some(), "no seed placed the end fight past its floor at all");
+    }
+
+    /// The `MELD_END_FIGHT` harness moves the fight to the hub by lowering its floor, so a
+    /// tuning pass can be WATCHED instead of modelled. This pins that the override actually
+    /// places it — and close enough to spawn to walk to, which is the whole point.
+    #[test]
+    fn lowering_the_floor_brings_the_end_fight_to_the_hub() {
+        let mut b = Balance::load_default().unwrap();
+        b.encounters.end_fight_min_distance = 30.0;
+        let mut placed = 0;
+        for seed in 0..8u64 {
+            let mut arena = Arena::generate(&b, seed, false);
+            arena.ensure_frontier(&b, 200.0);
+            let enders: Vec<&MonsterSpawn> =
+                arena.monsters.iter().filter(|m| m.encounter_class == "world_end").collect();
+            if enders.len() == b.encounters.end_fight_bosses {
+                let deepest = enders
+                    .iter()
+                    .map(|m| m.position.distance_floor())
+                    .max()
+                    .unwrap_or(0);
+                assert!(
+                    (30..250).contains(&deepest),
+                    "seed {seed}: the harness put the end fight at {deepest} — not a walk"
+                );
+                placed += 1;
+            }
+        }
+        assert!(placed > 0, "lowering the floor never placed the end fight at all");
     }
 
     /// The tutorial dive is an on-ramp and must never contain it, however far a first-time

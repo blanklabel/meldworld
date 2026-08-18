@@ -20,7 +20,8 @@ use meld_db::Db;
 use meld_proto::common::{ItemStack, LootGear, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
-    battle as wb, lobby as wl, movement as wm, run as wr, session as ws, world as ww, Message,
+    battle as wb, chat as wc, lobby as wl, movement as wm, run as wr, session as ws, world as ww,
+    Message,
 };
 use meld_proto::RawEnvelope;
 use meld_dungeon_content::{ObjectKind, Tile};
@@ -507,14 +508,11 @@ fn party_composition(chosen: CharacterClass, size: usize) -> Vec<CharacterClass>
     (0..size.max(1)).map(|i| base[i % base.len()]).collect()
 }
 
-/// A class's starting/max HP from balance (falls back to explorer).
-fn class_base_hp(class: CharacterClass, balance: &Balance) -> i32 {
-    balance
-        .player
-        .get(meld_run::class_key(class))
-        .or_else(|| balance.player.get("explorer"))
-        .map(|p| p.base_hp)
-        .unwrap_or(40)
+
+/// `MELD_POTIONS` — DEV/QA: how many of each starting potion a dive is dealt, so the apex
+/// can be measured against a party that stocked up rather than the 3-salve default.
+fn dev_potions() -> Option<i32> {
+    std::env::var("MELD_POTIONS").ok().and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| *n > 0)
 }
 
 /// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
@@ -3280,6 +3278,65 @@ impl GameState {
         }
     }
 
+    /// Say something to the other people on the server.
+    ///
+    /// Router-level, not world-level, and that is the point: chat has to work in town, in
+    /// a lobby and mid-dive alike, and only the Router can see all three. A world-scoped
+    /// handler would have silently swallowed every line said by anyone not currently in a
+    /// maze — which is most people, most of the time.
+    ///
+    /// The sender's name and the timestamp are stamped HERE. A client that supplied either
+    /// is a client that can impersonate, and a chat line is the one message whose whole
+    /// value is that you can trust who it came from.
+    fn handle_say(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let req: wc::Say = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return vec![error(
+                    player_id,
+                    ErrorCode::ValidationError,
+                    "bad chat.say",
+                    Some(raw.seq),
+                )]
+            }
+        };
+        let text: String = req.text.trim().chars().take(wc::TEXT_MAX).collect();
+        if text.is_empty() {
+            return vec![error(
+                player_id,
+                ErrorCode::ValidationError,
+                "nothing to say",
+                Some(raw.seq),
+            )];
+        }
+        let Some(me) = self.sessions.get(player_id) else {
+            return Vec::new();
+        };
+        let (username, mine) = (me.username.clone(), me.in_instance);
+        // `Party` is "the people you are actually among": everyone in the maze if you are
+        // in it, everyone still in town if you are not. There is one world, so this is the
+        // honest scope today — LC-1's ward sharding is what narrows it to proximity later.
+        let room: Vec<&str> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| match req.channel {
+                wc::Channel::World => true,
+                wc::Channel::Party => s.in_instance == mine,
+            })
+            .map(|(pid, _)| pid.as_str())
+            .collect();
+        broadcast(
+            room,
+            &wc::Line {
+                player_id: player_id.to_string(),
+                username,
+                text,
+                channel: req.channel,
+                ts: now_ms(),
+            },
+        )
+    }
+
     fn handle_client(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         // Per-session monotonic seq check (realtime-protocol.md §Sequencing).
         {
@@ -3406,6 +3463,7 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wc::Say::TYPE => self.handle_say(player_id, raw),
             wr::CancelHarvest::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_cancel_harvest(player_id, raw),
@@ -3738,11 +3796,54 @@ impl GameState {
                 .ok()
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or_else(world_seed);
+            // `MELD_END_FIGHT=1` — bring THE END FIGHT to the hub instead of walking an hour
+            // out to it. It only moves where the encounter is placed: the three bosses carry
+            // AUTHORED absolute stats (`set_piece`), so the fight you meet at d30 is
+            // numerically the fight you would meet at d3200. That is the whole reason this
+            // harness can be a one-line override rather than a fake.
+            //
+            // It does NOT make the fight winnable — a starting party dies in about a hit and
+            // a half, which is the tuning working. Pair it with `MELD_GEAR_TIER` below to see
+            // the other side of the gear gate.
+            let balance = match std::env::var("MELD_END_FIGHT") {
+                Ok(v) if v != "0" => {
+                    let mut b = (*self.balance).clone();
+                    b.encounters.end_fight_min_distance =
+                        std::env::var("MELD_END_FIGHT_AT")
+                            .ok()
+                            .and_then(|v| v.trim().parse::<f64>().ok())
+                            .unwrap_or(30.0);
+                    tracing::warn!(
+                        at = b.encounters.end_fight_min_distance,
+                        "MELD_END_FIGHT: the end fight is placed near the hub (DEV/QA)"
+                    );
+                    Arc::new(b)
+                }
+                _ => self.balance.clone(),
+            };
             self.world = Some(WorldActor {
-                balance: self.balance.clone(),
+                balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
-                arena: Arena::generate_with(&self.balance, seed, tutorial, force_biome),
-                run: InstanceRun::new(instance_id, departure_hub_distance, &self.balance, now_ms()),
+                arena: Arena::generate_with(&balance, seed, tutorial, force_biome),
+                run: {
+                    let mut r =
+                        InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms());
+                    // `MELD_START_LEVEL=<n>` — DEV/QA, the third of this family beside
+                    // MELD_END_FIGHT and MELD_GEAR_TIER. Everything past roughly level 16 is
+                    // authored for a party that walked an hour to reach it, and PG-2's hubs
+                    // (the real answer) are deliberately inert — so without this the only
+                    // level anything deep can be observed at is 1, which is the one level it
+                    // was never tuned for.
+                    if let Some(l) = std::env::var("MELD_START_LEVEL")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<i32>().ok())
+                        .filter(|l| *l > 0)
+                    {
+                        r.base_run_level = l.min(balance.runs.max_hero_level);
+                        tracing::warn!(level = r.base_run_level, "MELD_START_LEVEL (DEV/QA)");
+                    }
+                    r
+                },
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 party_classes: HashMap::new(),
@@ -3810,8 +3911,11 @@ impl GameState {
         // items (Salve/Elixir), so the battle Item command is now inventory-backed.
         let starting_stock = [
             (TOWN_PORTAL, starting_tp),
-            ("bloom_salve", self.balance.runs.starting_salves),
-            ("elixir", self.balance.runs.starting_elixirs),
+            // `MELD_POTIONS=<n>` — DEV/QA, the family's fourth flag. A party that walked to
+            // the end-world can shop before it dives, and a salve is 40% of a hero's max HP,
+            // so the 3-salve starting kit measures an UNPREPARED party at the apex.
+            ("bloom_salve", dev_potions().unwrap_or(self.balance.runs.starting_salves)),
+            ("elixir", dev_potions().unwrap_or(self.balance.runs.starting_elixirs)),
         ];
         for (kind, qty) in starting_stock {
             if qty <= 0 {
@@ -3918,7 +4022,7 @@ impl GameState {
             while names.len() < party_size {
                 names.push(generated_hero_name(pid, names.len()));
             }
-            let hp: Vec<i32> = comp.iter().map(|c| class_base_hp(*c, &self.balance)).collect();
+            let hp = meld_run::starting_hp(&comp, inst.run.base_run_level, &self.balance);
             // Saved formation by slot, normalized to party size (missing = false).
             let mut rows = rows.unwrap_or_default();
             rows.truncate(party_size);
@@ -3939,6 +4043,33 @@ impl GameState {
             }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
+            // `MELD_GEAR_TIER=<n>` — DEV/QA: dress every hero as if it were wearing a full
+            // set of tier-`n` insured epics, without a Vault full of them. The end fight is
+            // tuned as a GEAR CHECK, and the difference between a geared and an ungeared
+            // party there is 3.5x survivability — so without this the only observable case
+            // is the ungeared one, and the number that matters cannot be looked at.
+            //
+            // Mirrors what `equipped_gear_bonuses` derives from a real six-slot set: one
+            // weapon's worth of atk, four armour pieces' worth of def, each carrying two
+            // epic stat affixes.
+            let gear = match std::env::var("MELD_GEAR_TIER")
+                .ok()
+                .and_then(|v| v.trim().parse::<i32>().ok())
+            {
+                Some(tier) if tier > 0 => {
+                    let l = &inst.balance.loot;
+                    let af = &inst.balance.affix;
+                    let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
+                    let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
+                    let atk = (piece + affix).round() as i32;
+                    let def = (4.0 * (piece + affix)).round() as i32;
+                    tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
+                    gear.iter()
+                        .map(|_| meld_db::GearBonus { atk, def, ..Default::default() })
+                        .collect()
+                }
+                _ => gear,
+            };
             inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);

@@ -352,6 +352,10 @@ pub struct Encounters {
     /// The reward spike the end fight rolls its drops at — above a Gatekeeper's, so it is
     /// the best unique/set source in the game rather than only a guaranteed floor.
     pub end_fight_loot_mult: f64,
+    /// Damage of a warded family that actually lands on an end-fight boss.
+    pub end_fight_ward_mult: f64,
+    /// Floor on how far a gauge slow may drag an end-fight boss's fill rate.
+    pub end_fight_slow_floor: f64,
     pub end_fight_reward_pieces: i32,
     pub end_fight_reward_tier: i32,
     pub undead_rite_min_tier: i32,
