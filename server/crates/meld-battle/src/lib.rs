@@ -1433,7 +1433,8 @@ impl Battle {
         // action passes, so it covers skills and items and not just a swing.
         //
         // The player still gets to CHOOSE; the condition is that the choice does not hold.
-        let (action, skill_kind, target_ids) = if self.has(i, "confused") {
+        let scrambled = self.has(i, "confused");
+        let (action, skill_kind, target_ids) = if scrambled {
             self.scramble(i, action, skill_kind)
         } else {
             (action, skill_kind, target_ids)
@@ -1495,15 +1496,32 @@ impl Battle {
             self.resolve_psyker(i, skill_kind.as_deref(), target, Some(action_id), false)
         } else {
             match action {
-                BattleActionKind::Attack => {
-                    let target =
-                        target.ok_or(Reject::ValidationError("attack requires target_ids"))?;
-                    self.resolve_attack(i, target, Some(action_id))?
-                }
+                BattleActionKind::Attack => match target {
+                    Some(t) => match self.resolve_attack(i, t, Some(action_id.clone())) {
+                        Ok(r) => r,
+                        Err(_) if scrambled => self.resolve_defend(i, Some(action_id), true),
+                        Err(e) => return Err(e),
+                    },
+                    None if scrambled => self.resolve_defend(i, Some(action_id), true),
+                    None => return Err(Reject::ValidationError("attack requires target_ids")),
+                },
                 BattleActionKind::Defend => self.resolve_defend(i, Some(action_id), false),
                 BattleActionKind::Flee => self.resolve_flee(i, Some(action_id)),
                 BattleActionKind::Skill => {
-                    self.resolve_skill(i, target, skill_kind.as_deref(), Some(action_id))?
+                    match self.resolve_skill(
+                        i,
+                        target,
+                        skill_kind.as_deref(),
+                        Some(action_id.clone()),
+                    ) {
+                        Ok(r) => r,
+                        // A CONFUSED hero did not choose this. Refusing it would hand the
+                        // player an error about an Adrenaline cost for a skill they never
+                        // pressed, leave the turn unspent, and re-roll on the next attempt —
+                        // so the flail becomes a swing that lands nowhere instead.
+                        Err(_) if scrambled => self.resolve_defend(i, Some(action_id), true),
+                        Err(e) => return Err(e),
+                    }
                 }
                 // Inventory-backed: the game loop checks the run backpack before this
                 // and spends one after (see `game.rs`'s Item handling).
@@ -3444,7 +3462,7 @@ impl Battle {
         }
         if self.fighters[i].alive && self.fighters[i].regen > 0 {
             let raw = self.fighters[i].regen;
-            effects.extend(self.apply_heal(i, raw));
+            effects.extend(self.apply_upkeep_heal(i, raw));
             // Regen DECAYS, like the Barrier beside it. It was the one lasting effect in
             // the game with neither decay nor expiry, so turns spent on it bought
             // permanent sustain — and once it is spent the stacks come back, which is
@@ -3679,14 +3697,37 @@ impl Battle {
     }
 
     /// Heal the actor by `raw` (min 1), capped at max HP; report the actual gain.
+    /// Heal from UPKEEP (the Regen drip), which restores HP and nothing else.
+    ///
+    /// Split from [`Self::apply_heal`] because that one ends a frenzy: this fires at the top
+    /// of every single turn, so letting it calm one would make any party carrying Regen immune
+    /// to the condition outright.
+    fn apply_upkeep_heal(&mut self, actor_i: usize, raw: i32) -> Vec<ResolvedEffect> {
+        let before = self.fighters[actor_i].hp;
+        let max_hp = self.fighters[actor_i].max_hp;
+        let after = (before + raw.max(1)).min(max_hp);
+        self.fighters[actor_i].hp = after;
+        vec![ResolvedEffect { modifier_flag: None,
+            target_id: self.fighters[actor_i].combatant_id.clone(),
+            kind: EffectKind::Heal,
+            amount: Some(after - before),
+            status: None,
+            hp_after: after,
+        }]
+    }
+
     fn apply_heal(&mut self, actor_i: usize, raw: i32) -> Vec<ResolvedEffect> {
         let before = self.fighters[actor_i].hp;
         let max_hp = self.fighters[actor_i].max_hp;
         let after = (before + raw.max(1)).min(max_hp);
         self.fighters[actor_i].hp = after;
-        // CARE TAKES THE WHEEL BACK. A frenzy is someone else steering, and being healed at
-        // all ends it — so a mender is the answer to a berserk ally rather than a race to
-        // out-damage them, and it is one place healing matters beyond the HP bar.
+        // CARE TAKES THE WHEEL BACK: a frenzy ends when someone tends to you — so a mender
+        // answers a berserk ally rather than the party racing to out-damage them.
+        //
+        // The passive Regen DRIP is deliberately excluded (see `apply_upkeep_heal`). It fires
+        // at the top of every turn, so letting it count would mean any party holding Regen —
+        // which the Resonant hands out party-wide — is simply immune to frenzy, and a
+        // condition a passive cancels is not a condition.
         let mut out = vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[actor_i].combatant_id.clone(),
             kind: EffectKind::Heal,
@@ -8432,6 +8473,79 @@ mod tests {
             }
         }
         assert!(freed, "a 400-Will hero never broke a paralysis in 4000 ticks");
+    }
+
+    /// A passive Regen DRIP must not cancel a frenzy. It fires at the top of every turn, so
+    /// letting it count would make any party carrying Regen — which the Resonant hands out
+    /// party-wide — flatly immune to the condition, and a condition a passive cancels is not a
+    /// condition. A DELIBERATE heal still ends it.
+    #[test]
+    fn regen_does_not_calm_a_frenzy_but_a_heal_does() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 40), player("c", 40)],
+            vec![monster("m", 5_000, 1)],
+            &b,
+            11,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 1_000;
+        battle.fighters[i].hp = 500;
+        battle.fighters[i].regen = 20;
+        battle.fighters[i].timed_statuses.push(("frenzied".into(), u64::MAX));
+
+        let _ = battle.start_of_turn(i);
+        assert!(
+            battle.has(i, "frenzied"),
+            "the Regen drip cancelled a frenzy — any party with a Resonant would be immune"
+        );
+
+        let _ = battle.apply_heal(i, 50);
+        assert!(!battle.has(i, "frenzied"), "a deliberate heal should end it");
+    }
+
+    /// A CONFUSED hero did not choose the order that gets rolled, so it must never be told no.
+    /// Refusing it would report an Adrenaline cost for a skill the player never pressed, leave
+    /// the turn unspent, and re-roll on the next attempt.
+    #[test]
+    fn a_scrambled_order_never_rejects_the_players_turn() {
+        let b = balance();
+        // A Hunter with NO banked Adrenaline: every skill it owns is refusable, so a scramble
+        // lands on an unaffordable one often.
+        for seed in 0..40u64 {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("a", 40), player("c", 40)],
+                vec![monster("m", 5_000, 1)],
+                &b,
+                seed,
+            );
+            let i = battle.idx("a").unwrap();
+            battle.fighters[i].class_key = "hunter".into();
+            battle.fighters[i].level = 40;
+            battle.fighters[i].adrenaline = 0;
+            battle.fighters[i].gauge = 1.0;
+            battle.fighters[i].awaiting = true;
+            battle.fighters[i].timed_statuses.push(("confused".into(), u64::MAX));
+            let me = battle.fighters[i].combatant_id.clone();
+            let foe = battle.fighters[battle.idx("m").unwrap()].combatant_id.clone();
+
+            let out = battle.submit(
+                &me,
+                format!("a{seed}"),
+                BattleActionKind::Attack,
+                Some(vec![foe]),
+                None,
+                None,
+            );
+            assert!(
+                out.is_ok(),
+                "seed {seed}: a confused hero was refused its own scrambled order: {out:?}"
+            );
+        }
     }
 
     #[test]
