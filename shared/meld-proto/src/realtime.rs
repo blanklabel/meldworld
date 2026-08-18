@@ -630,6 +630,11 @@ pub mod run {
         pub key: String,
         /// The one-line magnitude ("1.75× damage · 40 of 100 Adrenaline (25 per Attack)").
         pub effect: String,
+        /// Hunter only: what this skill costs in banked Adrenaline. `None` for every
+        /// other class/key. Lets the client grey out a row it can't currently afford
+        /// instead of letting the player submit it and be turn-lessly refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub adrenaline_cost: Option<i32>,
     }
 
     /// One active class-pair synergy, described for the party screen.
@@ -1561,6 +1566,7 @@ mod tests {
             abilities: vec![run::AbilityView {
                 key: "power_strike".into(),
                 effect: "1.75× damage · 40 of 100 Adrenaline (25 per Attack)".into(),
+                adrenaline_cost: Some(25),
             }],
         };
         let back: run::Party =

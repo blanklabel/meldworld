@@ -913,12 +913,20 @@ struct PartyRoster {
     /// registry's prose says what KIND of thing an ability is; a `[TUNABLE]` lives on
     /// the server, so without this a row could name Adrenaline and never its cost.
     ability_effects: HashMap<String, String>,
+    /// Ability key → Adrenaline cost, Hunter skills only. What the battle menu gates
+    /// a row's `enabled` on — see `skill_entries`.
+    ability_costs: HashMap<String, i32>,
 }
 
 impl PartyRoster {
     /// The magnitudes for `key`, or empty until the server has sent a roster.
     fn effect(&self, key: &str) -> &str {
         self.ability_effects.get(key).map(String::as_str).unwrap_or("")
+    }
+
+    /// `key`'s Adrenaline cost, if it has one (Hunter skills only).
+    fn adrenaline_cost(&self, key: &str) -> Option<i32> {
+        self.ability_costs.get(key).copied()
     }
 }
 
@@ -1807,12 +1815,27 @@ struct MenuEntry {
     /// the shared registry, so the tooltip cannot drift from what the server
     /// resolves. Empty for rows that need no explanation (Back, Flee).
     tooltip: String,
+    /// False when picking this row would only get the hero refused (out of
+    /// Adrenaline, or a once-per-battle call already spent) — greyed out and
+    /// inert rather than submitted and stalled for the rest of the fight, since
+    /// the server's refusal never resolves the hero's turn (see `select_entry`).
+    enabled: bool,
+    /// Hunter skills only: what this row costs in banked Adrenaline, shown as a
+    /// right-aligned "N AP" badge so the cost to build toward reads at a glance.
+    adrenaline_cost: Option<i32>,
 }
 
 /// The class's kit as menu rows, keeping only what the hero has leveled into. Read
 /// straight from the shared registry: the name, the order, the unlock level and the
-/// tooltip are all one definition (`meld_proto::skills`).
-fn skill_entries(class: &str, hero_level: i32, spent: &[String]) -> Vec<MenuEntry> {
+/// tooltip are all one definition (`meld_proto::skills`). `adrenaline` is the active
+/// hero's current banked amount, checked against `roster`'s per-skill Hunter costs.
+fn skill_entries(
+    class: &str,
+    hero_level: i32,
+    spent: &[String],
+    roster: &PartyRoster,
+    adrenaline: i32,
+) -> Vec<MenuEntry> {
     meld_proto::skills::skills_for_class_at(class, hero_level)
         .into_iter()
         .map(|d| {
@@ -1820,6 +1843,8 @@ fn skill_entries(class: &str, hero_level: i32, spent: &[String]) -> Vec<MenuEntr
             // refuses it either way; this is so the player is not left guessing why.
             let gone = meld_proto::skills::is_once_per_battle(d.key)
                 && spent.iter().any(|s| s == d.key);
+            let cost = roster.adrenaline_cost(d.key);
+            let affordable = cost.map(|c| c <= adrenaline).unwrap_or(true);
             MenuEntry {
                 label: if gone {
                     format!("{} (spent)", d.name)
@@ -1828,6 +1853,8 @@ fn skill_entries(class: &str, hero_level: i32, spent: &[String]) -> Vec<MenuEntr
                 },
                 action: EntryAction::Skill(d.key),
                 tooltip: d.description.to_string(),
+                enabled: !gone && affordable,
+                adrenaline_cost: cost,
             }
         })
         .collect()
@@ -1850,11 +1877,17 @@ fn menu_entries(
     spent: &[String],
     // The Foci that hero is currently holding, which is what makes an ASPECT castable.
     foci: &[String],
+    // Hunter Adrenaline costs + the active hero's current banked amount, so a skill
+    // it can't afford greys out instead of stalling the hero's turn (`skill_entries`).
+    roster: &PartyRoster,
+    adrenaline: i32,
 ) -> Vec<MenuEntry> {
     let e = |label: &str, action| MenuEntry {
         label: label.to_string(),
         action,
         tooltip: String::new(),
+        enabled: true,
+        adrenaline_cost: None,
     };
     match level {
         MenuLevel::Root if class == "psyker" => vec![
@@ -1878,7 +1911,7 @@ fn menu_entries(
         // tooltips — all come from `meld_proto::skills`, so a class's kit is defined
         // in exactly one place instead of once per surface.
         MenuLevel::Skills => {
-            let mut v = skill_entries(class, hero_level, spent);
+            let mut v = skill_entries(class, hero_level, spent, roster, adrenaline);
             v.push(e("Back", EntryAction::Back));
             v
         }
@@ -1898,6 +1931,8 @@ fn menu_entries(
                         label: format!("{} x{qty}", def.name),
                         action: EntryAction::Item(def.key),
                         tooltip: def.description.to_string(),
+                        enabled: true,
+                        adrenaline_cost: None,
                     })
                 })
                 .collect();
@@ -1918,6 +1953,8 @@ fn menu_entries(
                     label: format!("{}{}", "  ".repeat(depth), d.name),
                     action: EntryAction::Manifest(d.key),
                     tooltip: d.description.to_string(),
+                    enabled: true,
+                    adrenaline_cost: None,
                 }
             }
             fn push_aspects(
@@ -2250,7 +2287,8 @@ mod potion_menu_tests {
     fn the_items_page_offers_only_potions_the_party_carries() {
         // Nothing held: one dead row plus Back, so the page cannot offer a potion
         // the server would refuse with "Out of …".
-        let empty = menu_entries(MenuLevel::Items, "explorer", 5, &[], &[], &[]);
+        let empty =
+            menu_entries(MenuLevel::Items, "explorer", 5, &[], &[], &[], &PartyRoster::default(), 0);
         assert_eq!(empty.len(), 2, "{:?}", empty.iter().map(|e| &e.label).collect::<Vec<_>>());
         assert!(empty[0].label.contains("no potions"));
 
@@ -2262,6 +2300,8 @@ mod potion_menu_tests {
             &held(&[("bloom_salve", 3), ("bulwark_tonic", 1)]),
             &[],
             &[],
+            &PartyRoster::default(),
+            0,
         );
         let labels: Vec<&str> = rows.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(labels, vec!["Bloom Salve x3", "Bulwark Tonic x1", "Back"]);
@@ -2276,11 +2316,22 @@ mod potion_menu_tests {
             &held(&[("bloom_herb", 9), ("town_portal", 2)]),
             &[],
             &[],
+            &PartyRoster::default(),
+            0,
         );
         assert!(rows[0].label.contains("no potions"), "{:?}", rows[0].label);
 
         // A zero stack is not an offer.
-        let rows = menu_entries(MenuLevel::Items, "explorer", 5, &held(&[("elixir", 0)]), &[], &[]);
+        let rows = menu_entries(
+            MenuLevel::Items,
+            "explorer",
+            5,
+            &held(&[("elixir", 0)]),
+            &[],
+            &[],
+            &PartyRoster::default(),
+            0,
+        );
         assert!(rows[0].label.contains("no potions"));
     }
 
@@ -2322,17 +2373,37 @@ mod potion_menu_tests {
     #[test]
     fn a_spent_once_per_battle_row_says_so() {
         let lvl = meld_proto::skills::unlock_level("now");
-        let fresh = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &[], &[]);
+        let fresh = menu_entries(
+            MenuLevel::Skills,
+            "explorer",
+            lvl,
+            &[],
+            &[],
+            &[],
+            &PartyRoster::default(),
+            0,
+        );
         let now = fresh.iter().find(|e| matches!(e.action, EntryAction::Skill("now")));
         assert!(now.is_some(), "a Globemaster should be offered Now");
         assert_eq!(now.unwrap().label, "Now");
+        assert!(now.unwrap().enabled, "an unspent, affordable row must stay enabled");
 
-        let after = menu_entries(MenuLevel::Skills, "explorer", lvl, &[], &["now".to_string()], &[]);
+        let after = menu_entries(
+            MenuLevel::Skills,
+            "explorer",
+            lvl,
+            &[],
+            &["now".to_string()],
+            &[],
+            &PartyRoster::default(),
+            0,
+        );
         let now = after
             .iter()
             .find(|e| matches!(e.action, EntryAction::Skill("now")))
             .expect("the row stays visible");
         assert!(now.label.contains("spent"), "a used call should read as used: {}", now.label);
+        assert!(!now.enabled, "a spent once-per-battle row must be inert, not just re-labelled");
 
         // An ability that is not once-per-battle is untouched by the same token.
         let tb = after
@@ -2427,16 +2498,42 @@ mod harvest_pop_tests {
         assert!(pops.items.is_empty(), "an old floater should be gone");
     }
 
+    /// A Hunter skill the active hero can't currently afford greys out (`enabled ==
+    /// false`) instead of staying clickable and stalling the hero's turn when the
+    /// server refuses it without ever resolving that turn.
+    #[test]
+    fn a_hunter_skill_disables_when_adrenaline_is_short() {
+        let mut roster = PartyRoster::default();
+        roster.ability_costs.insert("power_strike".into(), 25);
+        roster.ability_costs.insert("second_wind".into(), 15);
+
+        // Not enough banked: greyed out.
+        let short = skill_entries("hunter", 4, &[], &roster, 10);
+        let ps = short.iter().find(|e| e.action.skill_key() == Some("power_strike")).unwrap();
+        assert!(!ps.enabled, "10 banked must not afford a 25-cost skill");
+
+        // Exactly enough: affordable.
+        let exact = skill_entries("hunter", 4, &[], &roster, 25);
+        let ps = exact.iter().find(|e| e.action.skill_key() == Some("power_strike")).unwrap();
+        assert!(ps.enabled, "banking exactly the cost must afford it");
+
+        // A skill with no registered cost (or a class with none at all) is never
+        // gated by Adrenaline it doesn't spend.
+        let no_cost = skill_entries("hunter", 4, &[], &PartyRoster::default(), 0);
+        let ps = no_cost.iter().find(|e| e.action.skill_key() == Some("power_strike")).unwrap();
+        assert!(ps.enabled, "no cost data yet must not read as unaffordable");
+    }
+
     /// A skill row's tooltip is the registry's prose plus the magnitudes the server
     /// resolved. Only the server has `balance.toml`, so before the roster arrives the
     /// row still reads — it just has no numbers yet.
     #[test]
     fn a_skill_row_carries_its_numbers_once_the_roster_lands() {
-        let rows = skill_entries("hunter", 4, &[]);
+        let mut roster = PartyRoster::default();
+        let rows = skill_entries("hunter", 4, &[], &roster, 0);
         let ps = rows.iter().find(|e| e.action.skill_key() == Some("power_strike")).unwrap();
         assert!(!ps.tooltip.is_empty(), "the prose is always there");
 
-        let mut roster = PartyRoster::default();
         assert_eq!(roster.effect("power_strike"), "", "no numbers before the roster");
         roster.ability_effects.insert(
             "power_strike".into(),
@@ -2444,7 +2541,16 @@ mod harvest_pop_tests {
         );
         assert!(roster.effect("power_strike").contains("Adrenaline"));
         // A Psyker's Manifest rows are abilities too, so they resolve the same way.
-        let foci = menu_entries(MenuLevel::Manifest, "psyker", 16, &[], &[], &[]);
+        let foci = menu_entries(
+            MenuLevel::Manifest,
+            "psyker",
+            16,
+            &[],
+            &[],
+            &[],
+            &PartyRoster::default(),
+            0,
+        );
         assert!(foci.iter().any(|e| e.action.skill_key() == Some("gravity_well")));
         // Rows that are not abilities have no key to look up, and must not panic.
         assert_eq!(EntryAction::Attack.skill_key(), None);
@@ -2459,21 +2565,49 @@ mod harvest_pop_tests {
     fn an_aspect_row_appears_only_under_a_held_focus() {
         let key = |rows: &[MenuEntry], k: &str| rows.iter().any(|e| e.action.skill_key() == Some(k));
 
-        let cold = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &[]);
+        let roster = PartyRoster::default();
+        let cold = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &[], &roster, 0);
         assert!(key(&cold, "gravity_well"), "the manifestation is always offered");
         assert!(!key(&cold, "gravity"), "Gravity offered with nothing to deepen");
         assert!(!key(&cold, "anchor"), "Anchor offered with nothing to deepen");
 
         let held = |ks: &[&str]| ks.iter().map(|k| k.to_string()).collect::<Vec<_>>();
-        let one = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &held(&["gravity_well"]));
+        let one = menu_entries(
+            MenuLevel::Manifest,
+            "psyker",
+            255,
+            &[],
+            &[],
+            &held(&["gravity_well"]),
+            &roster,
+            0,
+        );
         assert!(key(&one, "gravity"), "Gravity hidden while its parent is held");
         assert!(!key(&one, "anchor"), "Anchor skipped Gravity");
 
-        let two = menu_entries(MenuLevel::Manifest, "psyker", 255, &[], &[], &held(&["gravity_well", "gravity"]));
+        let two = menu_entries(
+            MenuLevel::Manifest,
+            "psyker",
+            255,
+            &[],
+            &[],
+            &held(&["gravity_well", "gravity"]),
+            &roster,
+            0,
+        );
         assert!(key(&two, "anchor"), "Anchor hidden with the whole chain held");
 
         // …and a hero too junior for the aspect never sees it, parent or no parent.
-        let junior = menu_entries(MenuLevel::Manifest, "psyker", 1, &[], &[], &held(&["gravity_well"]));
+        let junior = menu_entries(
+            MenuLevel::Manifest,
+            "psyker",
+            1,
+            &[],
+            &[],
+            &held(&["gravity_well"]),
+            &roster,
+            0,
+        );
         assert!(!key(&junior, "gravity"), "a level-1 Psyker was offered a level-5 aspect");
     }
 

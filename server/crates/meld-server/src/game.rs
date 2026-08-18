@@ -2198,7 +2198,9 @@ impl WorldActor {
                 }
                 let effect = meld_run::ability_effects::effect_line(def.key, &self.balance);
                 if !effect.is_empty() {
-                    out.push(wr::AbilityView { key: def.key.to_string(), effect });
+                    let adrenaline_cost =
+                        meld_run::ability_effects::adrenaline_cost(def.key, &self.balance);
+                    out.push(wr::AbilityView { key: def.key.to_string(), effect, adrenaline_cost });
                 }
             }
         }
