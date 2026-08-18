@@ -253,6 +253,7 @@ fn party_lines(roster: &PartyRoster, names: &AccountHeroNames) -> Vec<meld_clien
         .iter()
         .enumerate()
         .map(|(i, n)| meld_client::net::HeroLine {
+            afflictions: Vec::new(),
             name: n.clone(),
             class_key: names.classes.get(i).cloned().unwrap_or_default(),
             // Browsing from town: there is no run, so nothing but the name and class

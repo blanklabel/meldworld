@@ -184,10 +184,26 @@ raises them all — both through `raise_fallen`, which resets the gauge so you c
 END of the queue rather than with a free turn. A party row that can raise is the only kind whose
 targets include the dead; every other one skips them, because healing a corpse does nothing.
 
-⚠️ **Afflictions are still BATTLE-scoped.** `timed_statuses` lives on the `Fighter`, which is
-rebuilt per fight, so nothing survives the encounter that inflicted it — "until cured" currently
-means "until this fight ends". Making a poison follow you onto the road needs run-scoped state on
-`PlayerRun`, and until it exists a cure drunk on the overworld is refused rather than wasted.
+**A blow brings you round; care takes the wheel back.** A physical hit clears `dread` and
+`confused` from whoever takes it — creature or hero — and any healing ends `frenzied`. Both are
+how a party answers a condition without carrying the right bottle, and both cut in the enemy's
+favour too. `dread` forbids acting on ENEMIES and nothing else (defend, drink, mend yourself or
+an ally, even swing at one, all still yours); `confused` swings at the wrong person; `frenzied`
+takes the choice away and attacks on its own; `paralyzed` skips the turn, and **a wholly
+paralysed party is a DEFEAT** — otherwise nobody can act while the creatures work through them,
+which is the unbounded soft-lock a gauge CAP used to cause.
+
+**BLINDNESS IS ENFORCED SERVER-SIDE, because people will hack the client.** A blinded party is
+not SENT the creatures — `snapshot_msgs` drops them into the same `hidden` set that hides
+another player's bounty mark. The client's blackout is presentation on top of that, and a
+patched client that skips the mask still learns nothing. `check_touch` runs off server positions
+regardless, so **you walk into what you cannot see and the fight starts anyway**. Any future
+"you cannot see X" condition belongs in that cull, never in the renderer alone.
+
+⚠️ **Afflictions were BATTLE-scoped and now are not.** `timed_statuses` still lives on the
+`Fighter`, which is rebuilt per fight — so the RUN remembers instead (`hero_afflictions`, beside
+`hero_hp`), harvested when a battle ends and re-applied when the next starts. That is what makes
+"until cured" mean something on the road, where venom bites per step and bindings drag a march.
 
 **A condition repaints the readout.** Statuses are not just icons: a hero's cell and a
 creature's HP bar take the condition's colour, from a palette named after things rather than

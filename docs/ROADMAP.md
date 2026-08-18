@@ -1861,7 +1861,7 @@ CONDITION rather than a checklist, and two menders can raise the fallen at a rea
   - ⚠️ Venom floors at **1 HP** rather than killing: ending a run needs a
     `WorldEffect::ReleaseFromRun` and `handle_move` returns messages, not effects. A poison that
     can finish a party should go through the same teardown a defeat uses.
-- [ ] **CN-4 — The conditions themselves, as designed.** `dread` was applied by six boss
+- [x] **CN-4 — The conditions themselves, as designed.** `dread` was applied by six boss
   abilities and **did nothing at all**; `frenzied` was never applied by anything. Both are now
   specified:
   - **Dread** — the hero may not attack or use abilities on ENEMIES, but may still defend, drink,
@@ -1874,14 +1874,20 @@ CONDITION rather than a checklist, and two menders can raise the fallen at a rea
     paralyzed is an instant death**, which is what stops it being an unbounded soft-lock.
   - **A physical hit clears `dread` and `confused`** — on a creature as much as a hero. Being
     struck brings you round, and it gives a martial party an answer that is not a bottle.
-- [ ] **CN-5 — The overworld conditions the client owns.** `distracted` reverses the movement
-  buttons; `blinded` blacks out most of the screen. Both are presentation over the run-scoped
-  state CN-3 already ships, so they are client work: input mapping and a screen mask.
-- [ ] **CN-6 — Cures out of combat.** A cure drunk on the road is currently REFUSED ("Nothing has
-  hold of you out here") because until CN-3 nothing persisted; now that it does, the overworld
-  `use_item` path should lift the family it names. Same for whether a Barrier may be drunk before
-  a fight — with boons still fading that refusal stays right, and it is the one place the
-  original "why can't I just drink a potion" complaint is still correct.
+- [x] **CN-5 — The overworld conditions.** `distracted` reverses the movement heading (the
+  keyboard/stick one only — reversing a tap-to-move destination reads as the game ignoring your
+  click, not as a condition). `blinded` drops a four-panel mask leaving a small clear circle.
+  - **Blindness is enforced SERVER-SIDE, because people will hack the client.** A blinded party
+    is simply not sent the creatures (`snapshot_msgs` adds them to the same `hidden` set that
+    hides another player's bounty mark) — a client-side blackout is a suggestion a patched
+    client ignores. `check_touch` still runs off server positions, so **you walk into what you
+    cannot see and the fight starts anyway**, which is the whole idea.
+  - Afflictions ride `HeroView.afflictions`, so the client knows them out of combat.
+- [x] **CN-6 — Cures out of combat.** A cure drunk on the road WAS refused ("Nothing has
+  hold of you out here") because until CN-3 nothing persisted. It now lifts the family it names
+  and re-sends the roster so the client sees it, and is still refused when it would lift NOTHING
+  — a bottle that does nothing stays corked. A Barrier before a fight stays refused while boons
+  fade, which is the part of the original "why can't I just drink a potion" that remains right.
 
 ## Epic AD — Adventure depth (gear, affixes, synergy & the chase)
 

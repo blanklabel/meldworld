@@ -25,7 +25,9 @@ pub const AFFLICTIONS: &[&str] = &[
     // Being easier to hit, or worse at hitting.
     "marked", "distracted", "blinded",
     // Fear and rage: someone else is steering you.
-    "dread", "frenzied",
+    "dread", "frenzied", "confused",
+    // Held still. Its own thing, and the most dangerous: a whole party paralyzed is dead.
+    "paralyzed",
 ];
 
 /// Conditions a fighter WANTS, which fade on purpose.
@@ -68,9 +70,11 @@ pub enum Family {
 pub fn family_of(name: &str) -> Option<Family> {
     Some(match name {
         "poison" | "burn" => Family::Venom,
-        "slowed" | "web" | "chill" | "bind" => Family::Bindings,
+        // Paralysis is a binding taken to its end — the same answer frees you.
+        "slowed" | "web" | "chill" | "bind" | "paralyzed" => Family::Bindings,
         "marked" | "distracted" | "blinded" => Family::Senses,
-        "dread" | "frenzied" => Family::Mind,
+        // Someone else is steering: afraid, enraged, or turned around.
+        "dread" | "frenzied" | "confused" => Family::Mind,
         _ => return None,
     })
 }
@@ -83,6 +87,18 @@ pub fn cures(family: Family, name: &str) -> bool {
         Some(f) => f == family,
     }
 }
+
+
+/// Conditions a **physical blow** knocks out of someone — theirs or yours.
+///
+/// Being struck brings you round. It is the answer that is not a bottle: a martial party with
+/// no mender can still slap a frightened ally back into the fight, and the same is true of the
+/// creature you are hitting, so it cuts both ways.
+pub const CLEARED_BY_A_HIT: &[&str] = &["dread", "confused"];
+
+/// Conditions that **healing** ends. A frenzy is someone else steering; care takes the wheel
+/// back, which is what makes a mender the answer to it rather than a damage race.
+pub const CLEARED_BY_HEALING: &[&str] = &["frenzied"];
 
 #[cfg(test)]
 mod tests {

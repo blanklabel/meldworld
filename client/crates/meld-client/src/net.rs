@@ -543,6 +543,10 @@ pub struct HeroLine {
     pub xp_to_next: i64,
     /// Formation rank: `true` = back row (halved damage, targeted less).
     pub back_row: bool,
+    /// What still has hold of this hero, out of combat included — afflictions no longer
+    /// expire, so most of them are felt out here: a distracted hero's controls are reversed
+    /// and a blinded one can barely see.
+    pub afflictions: Vec<String>,
 }
 
 type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>, Vec<(String, i32)>);
@@ -2295,6 +2299,14 @@ impl Inner {
                                 xp: h["xp"].as_i64().unwrap_or(0),
                                 xp_to_next: h["xp_to_next"].as_i64().unwrap_or(0),
                                 back_row: h["back_row"].as_bool().unwrap_or(false),
+                                afflictions: h["afflictions"]
+                                    .as_array()
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|s| s.as_str().map(String::from))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(),
                             })
                             .collect()
                     })

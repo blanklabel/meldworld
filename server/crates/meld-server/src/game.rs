@@ -535,6 +535,30 @@ fn party_composition(chosen: CharacterClass, size: usize) -> Vec<CharacterClass>
 }
 
 
+/// Lift one FAMILY of afflictions from a hero's carried set, returning what went.
+///
+/// A free function so the borrow is just the one map entry: `handle_use_item` is holding
+/// several disjoint pieces of the world by the time it gets here.
+fn cure_carried(
+    carried: Option<&mut Vec<Vec<String>>>,
+    slot: usize,
+    family: meld_proto::statuses::Family,
+) -> Vec<String> {
+    let Some(all) = carried else {
+        return Vec::new();
+    };
+    let Some(mine) = all.get_mut(slot) else {
+        return Vec::new();
+    };
+    let lifted: Vec<String> = mine
+        .iter()
+        .filter(|n| meld_proto::statuses::cures(family, n))
+        .cloned()
+        .collect();
+    mine.retain(|n| !meld_proto::statuses::cures(family, n));
+    lifted
+}
+
 /// `MELD_POTIONS` — DEV/QA: how many of each starting potion a dive is dealt, so the apex
 /// can be measured against a party that stocked up rather than the 3-salve default.
 fn dev_potions() -> Option<i32> {
@@ -1691,6 +1715,22 @@ impl WorldActor {
                     hidden.insert(*idx);
                 }
             }
+            // BLINDED, enforced at the source. A client-side blackout is a suggestion, and a
+            // hacked client would simply not honour it — so a blinded party is not SENT the
+            // creatures. It still walks into them: `check_touch` runs off server positions and
+            // starts the fight regardless, which is the point. You cannot see what is out
+            // there, and it can still find you.
+            if self
+                .hero_afflictions
+                .get(&r.player_id)
+                .is_some_and(|c| c.iter().flatten().any(|n| n == "blinded"))
+            {
+                for (i, e) in entities.iter().enumerate() {
+                    if e.avatar_state.as_deref().is_some_and(|s| s.starts_with("mob:")) {
+                        hidden.insert(i);
+                    }
+                }
+            }
             let culled: Vec<wm::SnapshotEntity> = match me_pos {
                 // Grid-indexed interest cull (SC-1): behaviour-identical to the old
                 // full scan (own avatar + portal always; mobs at `mob_radius`, the
@@ -2291,10 +2331,14 @@ impl WorldActor {
         // point of the split could not be seen from inside the game.
         let run = inst.run.runs.iter().find(|r| r.player_id == pid);
         let hero_xp = run.map(|r| r.hero_xp.clone()).unwrap_or_default();
+        // What still has hold of each hero, so the client can show it on the road as well as
+        // in the arena — afflictions do not expire, so out here is where most of them are felt.
+        let carried = inst.hero_afflictions.get(pid).cloned().unwrap_or_default();
         fighters
             .iter()
             .enumerate()
             .map(|(slot, f)| wr::HeroView {
+                afflictions: carried.get(slot).cloned().unwrap_or_default(),
                 slot: slot as i32,
                 name: names
                     .get(slot)
@@ -7026,6 +7070,7 @@ impl WorldActor {
         // the cruellest possible reading of "you can use items in the field".
         let mut new_hp: Option<i32> = None;
         let mut grant_xp: i64 = 0;
+        let mut cured: Vec<String> = Vec::new();
         match def.effect {
             E::Heal | E::FullHeal => {
                 if hp_now <= 0 {
@@ -7041,13 +7086,25 @@ impl WorldActor {
                 };
                 new_hp = Some((hp_now + raw_heal).min(max_hp));
             }
-            // A cure has nothing to lift out here YET. Afflictions live on the battle
-            // `Fighter`, which is rebuilt per fight, so none of them survive the encounter
-            // that inflicted one — until they are run-scoped, a Clarity Draught or a Panacea
-            // drunk on the road would be a bottle spent on nothing. Refused rather than
-            // consumed, which is this whole function's rule.
+            // A cure works out here now that afflictions are run-scoped — this is where most
+            // of them are actually felt (venom bites per step, bindings drag a march). Still
+            // refused when it would lift NOTHING, which is this function's own rule: a bottle
+            // that does nothing stays corked.
             E::Cleanse | E::Panacea => {
-                return reject("Nothing has hold of you out here.");
+                let family = if def.effect == E::Panacea {
+                    meld_proto::statuses::Family::All
+                } else {
+                    meld_proto::statuses::Family::Mind
+                };
+                let lifted = cure_carried(
+                    self.hero_afflictions.get_mut(player_id),
+                    slot as usize,
+                    family,
+                );
+                if lifted.is_empty() {
+                    return reject("Nothing that would answer to it has hold of them.");
+                }
+                cured = lifted;
             }
             E::Revive => {
                 if hp_now > 0 {
@@ -7068,6 +7125,21 @@ impl WorldActor {
         }
 
         let mut out = Vec::new();
+        // A cure changes what the roster says about a hero, and the roster is how the client
+        // learns it — including out here, where a distracted hero's controls are reversed and a
+        // blinded one cannot see. Re-sent rather than patched so there is one source of truth.
+        if !cured.is_empty() {
+            let (synergies, combos) = self.party_depth(player_id);
+            out.push(out_msg(
+                player_id,
+                &wr::Party {
+                    heroes: self.party_views(player_id),
+                    synergies,
+                    combos,
+                    abilities: self.party_ability_views(player_id),
+                },
+            ));
+        }
         if let Some(hp) = new_hp {
             let hps = self.hero_hp.entry(player_id.to_string()).or_default();
             if hps.len() < heroes.len() {

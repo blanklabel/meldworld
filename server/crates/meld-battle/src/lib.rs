@@ -1274,6 +1274,48 @@ impl Battle {
             if !alive || !full {
                 continue;
             }
+            // PARALYSED: the gauge fills and the turn is spent standing there. Handled before
+            // the turn is offered rather than by refusing the action, because being asked to
+            // choose and then told no is worse than not being asked.
+            if self.has(i, "paralyzed") {
+                let upkeep = self.start_of_turn(i);
+                if !self.fighters[i].alive {
+                    events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                let mut res = self.skipped_turn(i, "paralyzed");
+                prepend_effects(&mut res, upkeep);
+                self.fighters[i].awaiting = false;
+                self.reset_gauge(i);
+                events.push(Event::Resolved(res));
+                self.check_terminal(&mut events);
+                continue;
+            }
+            // FRENZIED: control is taken away. It swings on its own, harder and wilder — the
+            // player is not offered the choice, which IS the condition.
+            if self.has(i, "frenzied") {
+                let upkeep = self.start_of_turn(i);
+                if !self.fighters[i].alive {
+                    events.push(Event::Resolved(self.upkeep_only(i, upkeep)));
+                    self.check_terminal(&mut events);
+                    continue;
+                }
+                let foe = self.choose_target(i).0;
+                let mut res = match foe {
+                    Some(t) => {
+                        let tid = self.fighters[t].combatant_id.clone();
+                        self.resolve_attack(i, &tid, None)
+                            .unwrap_or_else(|_| self.skipped_turn(i, "frenzied"))
+                    }
+                    None => self.skipped_turn(i, "frenzied"),
+                };
+                prepend_effects(&mut res, upkeep);
+                self.fighters[i].awaiting = false;
+                events.push(Event::Resolved(res));
+                self.check_terminal(&mut events);
+                continue;
+            }
             if is_player {
                 if !awaiting {
                     self.fighters[i].awaiting = true;
@@ -1363,6 +1405,29 @@ impl Battle {
         }
         if self.seen_actions.contains(&action_id) {
             return Err(Reject::DuplicateAction);
+        }
+        // DREAD: you cannot bring yourself to go at the thing that frightened you — but you
+        // are not removed from the fight. Defend, drink, mend yourself or an ally, even swing
+        // at one: all still yours. Only what is aimed at an ENEMY is refused.
+        if self.has(i, "dread") {
+            let at_enemy = match action {
+                BattleActionKind::Attack => true,
+                BattleActionKind::Skill => skill_kind
+                    .as_deref()
+                    .map(|k| {
+                        let bare = k.rsplit(':').next().unwrap_or(k);
+                        matches!(
+                            meld_proto::skills::target_of(bare),
+                            meld_proto::skills::Target::Enemy
+                                | meld_proto::skills::Target::AllEnemies
+                        )
+                    })
+                    .unwrap_or(true),
+                _ => false,
+            };
+            if at_enemy {
+                return Err(Reject::InvalidState("Too afraid to face it."));
+            }
         }
         if !self.fighters[i].awaiting || self.fighters[i].gauge < 1.0 {
             return Err(Reject::InvalidState("Actor gauge is not full."));
@@ -1495,6 +1560,30 @@ impl Battle {
                 .iter()
                 .position(|f| f.alive && f.kind != CombatantKind::Player)
                 .ok_or(Reject::NotFound)?,
+        };
+        // CONFUSED: you swing, but not necessarily at what you meant. Resolved HERE rather
+        // than at submit so the player still gets to choose — the condition is that the
+        // choice does not always hold.
+        let target_i = if self.has(actor_i, "confused") {
+            let allies: Vec<usize> = self
+                .fighters
+                .iter()
+                .enumerate()
+                .filter(|(j, f)| {
+                    *j != actor_i && f.alive && f.kind == self.fighters[actor_i].kind
+                })
+                .map(|(j, _)| j)
+                .collect();
+            match allies.is_empty() {
+                true => target_i,
+                false => {
+                    let pick = ((self.next_rand_unit() * allies.len() as f64) as usize)
+                        .min(allies.len() - 1);
+                    allies[pick]
+                }
+            }
+        } else {
+            target_i
         };
         let attack_type = self.fighters[actor_i].basic_attack_type;
         // The back rank's trade, and this path can be exact about it: only a PHYSICAL
@@ -3587,13 +3676,19 @@ impl Battle {
         let max_hp = self.fighters[actor_i].max_hp;
         let after = (before + raw.max(1)).min(max_hp);
         self.fighters[actor_i].hp = after;
-        vec![ResolvedEffect { modifier_flag: None,
+        // CARE TAKES THE WHEEL BACK. A frenzy is someone else steering, and being healed at
+        // all ends it — so a mender is the answer to a berserk ally rather than a race to
+        // out-damage them, and it is one place healing matters beyond the HP bar.
+        let mut out = vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[actor_i].combatant_id.clone(),
             kind: EffectKind::Heal,
             amount: Some(after - before),
             status: None,
             hp_after: after,
-        }]
+        }];
+        let calmed = self.shake_off(actor_i, meld_proto::statuses::CLEARED_BY_HEALING);
+        out.extend(calmed);
+        out
     }
 
     /// Assemble a non-flee, non-auto player [`Resolution`].
@@ -4185,6 +4280,60 @@ impl Battle {
     /// Immunity lands a 0; absorption heals `|Final|` instead; everything else
     /// flows through [`Self::apply_damage`] (barrier, back-row, KO) with the
     /// modifier flag stamped on the Damage effect.
+    /// A turn spent doing nothing, reported so the client can say WHY rather than showing a
+    /// hero that silently did not act.
+    fn skipped_turn(&mut self, i: usize, why: &str) -> Resolution {
+        let effect = ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some(why.to_string()),
+            hp_after: self.fighters[i].hp,
+        };
+        self.reset_gauge(i);
+        Resolution {
+            action_id: None,
+            actor_id: self.fighters[i].combatant_id.clone(),
+            action: BattleActionKind::Defend,
+            auto: true,
+            flee_success: None,
+            callout_text: None,
+            effects: vec![effect],
+        }
+    }
+
+    /// Whether a fighter is carrying `name`.
+    fn has(&self, i: usize, name: &str) -> bool {
+        self.fighters[i].timed_statuses.iter().any(|(n, _)| n == name)
+    }
+
+    /// Knock conditions off a fighter, reporting one effect each. The shared tail of "a blow
+    /// brings you round" and "care takes the wheel back".
+    fn shake_off(&mut self, i: usize, which: &[&str]) -> Vec<ResolvedEffect> {
+        let lifted: Vec<String> = self.fighters[i]
+            .timed_statuses
+            .iter()
+            .filter(|(n, _)| which.contains(&n.as_str()))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if lifted.is_empty() {
+            return Vec::new();
+        }
+        self.fighters[i].timed_statuses.retain(|(n, _)| !which.contains(&n.as_str()));
+        lifted
+            .into_iter()
+            .map(|n| ResolvedEffect {
+                modifier_flag: None,
+                target_id: self.fighters[i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some(format!("cured:{n}")),
+                hp_after: self.fighters[i].hp,
+            })
+            .collect()
+    }
+
     /// Bring a FALLEN fighter back, standing at `fraction` of its max HP.
     ///
     /// Extracted from `second_life` so a revive is one behaviour rather than one per ability:
@@ -4368,6 +4517,14 @@ impl Battle {
         } else {
             dmg
         };
+        // A BLOW BRINGS YOU ROUND. Being struck knocks dread and confusion out of whoever
+        // takes it — theirs or yours — which gives a party with no mender an answer that is
+        // not a bottle, and makes hitting a terrified creature a way to wake it up too.
+        let woken = if physical {
+            self.shake_off(target_i, meld_proto::statuses::CLEARED_BY_A_HIT)
+        } else {
+            Vec::new()
+        };
         // Back-row formation softens an incoming PHYSICAL blow (before Barrier/HP).
         // It used to soften everything, which made the back row a free 2x effective HP
         // for the whole party — nothing reached past it and nothing was given up for it.
@@ -4394,6 +4551,7 @@ impl Battle {
             status: None,
             hp_after: t.hp,
         }];
+        effects.extend(woken);
         if dead {
             effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
@@ -4602,7 +4760,31 @@ impl Battle {
             events.push(Event::Ended {
                 outcome: BattleOutcome::Defeat,
             });
+        } else if self.wholly_paralysed() {
+            // EVERY hero held still is a death, not a stalemate. Paralysis skips the turn, so
+            // a party where nobody can act would otherwise stand there while the creatures
+            // worked through them — an unbounded soft-lock of exactly the kind a gauge CAP
+            // used to cause. Ending it is what keeps the condition bounded.
+            self.ended = true;
+            events.push(Event::Ended {
+                outcome: BattleOutcome::Defeat,
+            });
         }
+    }
+
+    /// Whether every hero still standing is paralysed — nobody left who can act.
+    fn wholly_paralysed(&self) -> bool {
+        let mut any = false;
+        for (i, f) in self.fighters.iter().enumerate() {
+            if f.kind != CombatantKind::Player || !f.alive {
+                continue;
+            }
+            any = true;
+            if !self.has(i, "paralyzed") {
+                return false;
+            }
+        }
+        any
     }
 
     /// Flee chance (combat-atb.md): `base − penalty·max(0, tier_gap)`, floored.
@@ -8012,6 +8194,111 @@ mod tests {
         assert!(battle.fighters[dead].hp > 0);
         // Back at the END of the queue, not with a free turn.
         assert_eq!(battle.fighters[dead].gauge, 0.0);
+    }
+
+    /// DREAD forbids going at the thing that frightened you and NOTHING else. The hero keeps
+    /// every other option — that is what separates a fear from a stun.
+    #[test]
+    fn dread_stops_you_facing_the_enemy_and_leaves_the_rest() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].gauge = 1.0;
+        battle.fighters[i].awaiting = true;
+        battle.fighters[i].timed_statuses.push(("dread".into(), u64::MAX));
+        let foe = battle.fighters[battle.idx("m").unwrap()].combatant_id.clone();
+
+        let hit = battle.submit(
+            &battle.fighters[i].combatant_id.clone(),
+            "x1".into(),
+            BattleActionKind::Attack,
+            Some(vec![foe]),
+            None,
+            None,
+        );
+        assert!(hit.is_err(), "a frightened hero attacked the thing it fears");
+
+        // …but defending is still its own choice.
+        let guard = battle.submit(
+            &battle.fighters[i].combatant_id.clone(),
+            "x2".into(),
+            BattleActionKind::Defend,
+            None,
+            None,
+            None,
+        );
+        assert!(guard.is_ok(), "dread should not stop you defending: {guard:?}");
+    }
+
+    /// A BLOW BRINGS YOU ROUND — and a heal takes the wheel back from a frenzy. Both are how a
+    /// party answers a condition without carrying the right bottle.
+    #[test]
+    fn a_hit_wakes_you_and_a_heal_calms_you() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let i = battle.idx("a").unwrap();
+        battle.fighters[i].max_hp = 10_000;
+        battle.fighters[i].hp = 5_000;
+        for n in ["dread", "confused", "frenzied"] {
+            battle.fighters[i].timed_statuses.push((n.to_string(), u64::MAX));
+        }
+
+        let _ = battle.apply_damage_reaching(i, 10, true);
+        let held = |bt: &Battle| -> Vec<String> {
+            bt.fighters[i].timed_statuses.iter().map(|(n, _)| n.clone()).collect()
+        };
+        assert!(!held(&battle).contains(&"dread".into()), "a blow left the dread");
+        assert!(!held(&battle).contains(&"confused".into()), "a blow left the confusion");
+        assert!(held(&battle).contains(&"frenzied".into()), "a blow should NOT calm a frenzy");
+
+        let _ = battle.apply_heal(i, 50);
+        assert!(!held(&battle).contains(&"frenzied".into()), "healing left the frenzy");
+    }
+
+    /// A party where nobody can act is DEAD, not deadlocked. Paralysis skips the turn, so
+    /// without this the creatures would work through a party standing still — the unbounded
+    /// soft-lock a gauge cap used to cause.
+    #[test]
+    fn a_wholly_paralysed_party_is_a_defeat() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 20), player("c", 20)],
+            vec![monster("m", 500, 1)],
+            &b,
+            42,
+        );
+        let a = battle.idx("a").unwrap();
+        let c = battle.idx("c").unwrap();
+        battle.fighters[a].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        let mut events = Vec::new();
+        battle.check_terminal(&mut events);
+        assert!(events.is_empty(), "one paralysed hero is not a wipe");
+
+        battle.fighters[c].timed_statuses.push(("paralyzed".into(), u64::MAX));
+        battle.check_terminal(&mut events);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::Ended { outcome: BattleOutcome::Defeat }
+            )),
+            "a wholly paralysed party should be a defeat, got {events:?}"
+        );
     }
 
     #[test]

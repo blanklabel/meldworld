@@ -387,6 +387,7 @@ pub(crate) fn mock_overlay_setup(
         // Seed a party roster so the party screen (+ formation toggle) is visible.
         let level = crate::flags::hero_level_flag();
         let hero = |name: &str, class: &str, back_row| meld_client::net::HeroLine {
+            afflictions: Vec::new(),
             name: name.into(),
             class_key: class.into(),
             level,
