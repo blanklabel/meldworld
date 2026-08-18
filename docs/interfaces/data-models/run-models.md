@@ -72,7 +72,7 @@ One player's ephemeral maze excursion. Ends in exactly one of `extracted`, `died
 | state | string (enum: active, extracted, died, abandoned) | Yes | No | `active` | v0.1 | No | The run lifecycle state. `extracted`: backpack banked to the vault. `died`: backpack and run levels deleted; blue gear returned with durability penalty. `abandoned`: sleeping avatar timed out with the instance — backpack deleted as on death, but no durability penalty. |
 | base_run_level | integer (int32, ≥ 1) | Yes | No | — | v0.1 | No | The starting combat level, `round(1 + departure_hub_distance × 0.078)` [TUNABLE] — Center = 1, D500 = 40, D1000 = 79, D5000 = 391. |
 | run_level | integer (int32, ≥ 1) | Yes | No | `base_run_level` | v0.1 | No | The current ephemeral combat level. Uncapped; grows with combat XP during the run and is discarded when the run ends, regardless of outcome. |
-| run_xp | integer (int64, ≥ 0) | Yes | No | `0` | v0.1 | No | Accumulated XP toward the next run level. XP to advance from level L is `80 × L^1.6` [TUNABLE]. |
+| run_xp | integer (int64, ≥ 0) | Yes | No | `0` | v0.1 | No | Accumulated XP toward the next run level. XP to advance from level L is fights-based: `fights_per_level(L) × same_level_encounter_xp(L)` [TUNABLE] (`meld_run::xp_to_next`). |
 | started_at | string (date-time) | Yes | No | — | v0.1 | No | Timestamp of maze entry. Server-assigned. |
 | ended_at | string (date-time) | No | Yes | null | v0.1 | No | Timestamp when the run reached a terminal state. `null` while active. |
 | max_distance_reached | integer (int64, ≥ 0) | Yes | No | `departure_hub_distance` | v0.1 | No | The highest floored distance this player reached during the run. |

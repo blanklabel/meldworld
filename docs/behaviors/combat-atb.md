@@ -28,7 +28,7 @@ Related: [run-lifecycle.md](./run-lifecycle.md) (what victory/defeat/flee do to 
 **Source:** CANON.md §B (ATB combat), §D11, §S
 
 1. The server advances every active `Battle` on a **100 ms tick [TUNABLE]**.
-2. Each tick, every living combatant's ATB gauge increases by `speed_stat / 400` **[TUNABLE]**. The gauge is **full at 1.0**; it does not accumulate past full.
+2. Each tick, every living combatant's ATB gauge increases by `speed_stat × rate_mult / gauge_fill_divisor` (`gauge_fill_divisor` = 5200 **[TUNABLE]**). `rate_mult` is the fighter's haste/slow multiplier — a real haste fills faster, and `web`/`chill`/`bind`/Event Horizon fill slower. Slows are **rates, never caps** (a cap knocks a creature back below the line forever and soft-locks the fight), and the strongest slow wins rather than stacking. The gauge is **full at 1.0**; it does not accumulate past full.
 3. When a combatant's gauge is full:
    - **Monsters/NPC combatants:** the server selects and resolves their action (AI policy is content-defined).
    - **Players:** the combatant becomes eligible to act; the client is prompted. The gauge stays full until an action resolves or the turn timeout fires.
@@ -141,7 +141,8 @@ flee_chance = clamp(0.60 − 0.10 × max(0, encounter_tier − party_tier), 0.05
 **Source:** CANON.md §B (Hubs & run levels: XP); GDD.md §2.2, §4
 
 1. Victory awards combat XP to each surviving participant (per-monster XP values are content-defined **[TUNABLE]**).
-2. XP accumulates against `xp_to_next(L) = 80 × L^1.6` **[TUNABLE]**; on crossing the threshold, `run_level` increments (multiple levels per battle possible). There is **no run level cap**.
+2. XP accumulates against `xp_to_next(L)`; the curve is stated in **fights**, not points: level `L` costs `[runs] fights_per_level_base` same-level encounters plus one more every `fights_per_level_ramp` levels, and `xp_to_next(L)` multiplies that by what a same-level encounter actually pays (`meld_run::xp_to_next`), so retuning creature XP retunes the ladder with it. At shipped values (base 2, ramp 5): L10 costs 22 at-level fights, L20 65, L30 128. On crossing the threshold the hero levels (multiple levels per battle possible), up to `[runs] max_hero_level` = 255 **[TUNABLE]**.
+   The encounter pays a **pool divided among the heroes still standing** (`award_hero_xp` takes the living count separately from party size), so the last survivor of a bad fight banks all of it. Each hero carries its own banked XP and its own next-level bar.
 3. `run_level` gains are ephemeral: they exist only within the current run and are deleted at any terminal transition (even `extracted` — extraction banks the Backpack, never the level).
 4. Combat XP is entirely separate from `MeldSkill` XP (which is credited only in hubs and on extraction).
 

@@ -14,7 +14,7 @@ A persistent safe zone. No combat occurs inside; players trade, craft, organize,
 
 | Field | Type | Required | Nullable | Default | Since | Deprecated | Description |
 |-------|------|----------|----------|---------|-------|------------|-------------|
-| distance | integer (int64, one of 0, 500, 1000, …, 5000) | Yes | No | — | v0.1 | No | The hub's distance from the world origin; also its unique key. Exactly 11 curated hubs exist (structural); no hubs exist beyond 5000. |
+| distance | integer (int64, one of 0, 500, 1000, 1500, 2000, 2500, 3250) | Yes | No | — | v0.1 | No | The hub's distance from the world origin; also its unique key. **7** hubs exist, defined by `meld_proto::hubs::HUBS`; none beyond `d = 3250`, where `base_run_level` reaches the 255 hero cap. |
 | hub_kind | string (enum: center, outer) | Yes | No | — | v0.1 | No | The hub type. `center` is the single hub at distance 0; all others are `outer` hubs unlocked by rebuilding ruined camps after defeating the guarding Gatekeeper. |
 | name | string | Yes | No | — | v0.1 | No | The display name. Content-defined. |
 | base_run_level | integer (int32, ≥ 1) | Yes | No | — | v0.1 | No | The Run Level granted to parties departing from this hub: `round(1 + distance × 0.078)` [TUNABLE] — Center = 1, D500 = 40, D1000 = 79, D5000 = 391. |

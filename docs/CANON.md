@@ -97,14 +97,21 @@ All constants **[TUNABLE]** unless noted structural.
 ### Distance → difficulty
 - `tier(d) = floor(d / 100)` — loot/monster tier band.
 - Monster level: `mlevel(d) = max(1, round(d / 12.5))` (so d=500 → L40, matching hub base levels).
-- Monster stat scale: `stat_mult(d) = (1 + d/500)^1.25` for `d ≤ 5000`; past the final curated hub, `stat_mult(d) = stat_mult(5000) × 1.5^((d − 5000)/500)` (exponential endgame, structural).
+- Monster stat scale is **three curves, not one** (see the *Amended (creature scaling)* note at the end of this document, which is authoritative over this line):
+  - **Attack**: `stat_mult(d) = (1 + d/500)^stat_mult_exp`, `stat_mult_exp = 2.0` **[TUNABLE]**.
+  - **Defence**: `def_mult(d) = (1 + d/500)^def_mult_exp`, `def_mult_exp = 0.7` **[TUNABLE]**.
+  - **HP**: linear in distance on the `tier(d)` basis gear power uses — `max(1, 1 + hp_per_tier × (d/tier_divisor − 0.5))`, `hp_per_tier = 5.4` **[TUNABLE]**. `stat_mult` does **not** drive HP.
+  - A shallow **on-ramp** multiplies all of the above from `onboarding_floor` (0.6) at the hub to 1.0 at `onboarding_distance` (200) **[TUNABLE]**.
+  - Read `[world_scaling]` in `balance/balance.toml` before tuning against depth; a single `^1.25` for all three stats was the long-standing error this replaced.
 - Loot rarity weights shift one band per tier. Red-chest gear reaches its **full** drop rate at `d = 300` and **ramps in** below it: nothing below `d = 40`, then linear from `gear_ramp_start_mult` of the rate up to all of it at 300. `d = 300` is where the gear *game* lives, not a hard cutoff — a cutoff there is unreachable in practice, since the pre-generated area chain's deep portal sits at only `d ≈ 342–384`, so it would leave most of every dive with the chase switched off. `[TUNABLE]` `[loot] gear_ramp_start_distance`, `gear_ramp_start_mult`.
 - A felled encounter may also drop a **potion**, at `[loot] potion_drop_chance`, drawn from the consumables whose own tier is at or below `tier(d)`. Excludes the Revive and Experience consumables, which have their own dedicated world-drop rates (`[consumable] world_revive_item_chance` / `world_xp_item_chance`).
 
 ### Hubs & run levels
-- Hubs at `d = 0, 500, 1000, 1500, …, 5000` (11 curated hubs, structural). Beyond 5000: no hubs, infinite scaling.
-- `base_run_level(hub) = 1 + hub.distance × 0.078` rounded to nearest int → Center = 1, D500 = 40, D1000 = 79, D5000 = 391.
-- Run Level cap: none (grows with XP during run); XP formula `xp_to_next(L) = 80 × L^1.6`.
+- Hubs are the **7** entries of `meld_proto::hubs::HUBS` (PG-2), at `d = 0, 500, 1000, 1500, 2000, 2500, 3250`. The registry is the source of truth; this list mirrors it.
+- `base_run_level(hub) = 1 + hub.distance × 0.078` rounded to nearest int → Center = 1, D500 = 40, D1000 = 79, **D3250 = 255**.
+  `d = 3250` is the deepest hub because `base_run_level` reaches the `max_hero_level` cap (255) at `d ≈ 3256`: past it a hub buys nothing while creatures keep scaling, which is what makes that distance the *structural* end of the game rather than an arbitrary wall. There is no hub at `d = 5000`; the 11-hub `0…5000` ladder was the pre-PG-2 design.
+- A requested hub is **clamped, never rejected**, and is gated on the account's all-time deepest distance (the `vanguard` table, read across all seasons).
+- Run Level cap: `[runs] max_hero_level` = 255 **[TUNABLE]**. The curve is stated in **fights**, not points: level `L` costs `fights_per_level_base` same-level encounters plus one more every `fights_per_level_ramp` levels, and `xp_to_next(L)` multiplies that by what a same-level encounter actually pays (`meld_run::xp_to_next`). At shipped values (base 2, ramp 5) level 10 costs 22 at-level fights, level 20 costs 65, level 30 costs 128. The old closed form `80 × L^1.6` is retired.
 - **Encounter XP falls off once a hero has out-levelled the ground.** An encounter pays
   a hero in full while the hero is within `xp_gap_grace` levels of it, then linearly down
   to `xp_gap_floor_mult` at `xp_gap_zero` levels above; a hero at or *below* the
@@ -122,7 +129,7 @@ All constants **[TUNABLE]** unless noted structural.
 `0–100` Forest, `100–300` Desert, `300–500` Ashfall, `500–1000` Tundra, `1000–1500` Mire, then repeating themed bands defined by content tables per 500. This fixed order is the **tutorial** order (an account's first dive) and the difficulty-band reference. The biome is a **difficulty-neutral skin** (difficulty rides `distance`; creatures scale via `stat_mult`), so on every non-tutorial run the biome *theme* is drawn per section from the run seed with no adjacent repeat — the start and order both vary (roadmap WG-2/WG-3; [`behaviors/world-generation.md`](behaviors/world-generation.md)). The **Shift** (§W2) preserves this: a Shift re-skins a region's biome; its Force damage + entity wipe is a discrete **hazard event**, not the biome carrying steady-state difficulty.
 
 ### ATB combat
-- ATB tick: 100 ms server tick. Gauge fill per tick: `speed_stat / 400` (gauge full at 1.0).
+- ATB tick: 100 ms server tick (`[battle] tick_ms`). Gauge fill per tick: `speed_stat × rate_mult / gauge_fill_divisor`, where `gauge_fill_divisor` = 5200 **[TUNABLE]** and `rate_mult` is the haste/slow multiplier (1.0 unmodified). Gauge is clamped full at 1.0.
 - Turn timeout: an actor with a full gauge auto-defends after 15 s without an action.
 - Flee: base 60% success, −10% per tier the encounter is above party level tier, always ≥ 5%. Gatekeepers: flee disabled.
 - Battle merge: joining party is inserted at gauge 0; enemy stats do not rescale mid-fight, but Gatekeeper HP pools are sized for 8 at spawn.

@@ -38,10 +38,16 @@ Past the final curated Outer Hub at `d = 5000` there are no more hubs, no Gateke
 
 | Range | Stat multiplier |
 |-------|-----------------|
-| `d ≤ 5000` | `stat_mult(d) = (1 + d/500)^1.25` **[TUNABLE]** |
-| `d > 5000` | `stat_mult(d) = stat_mult(5000) × 1.5^((d − 5000)/500)` — exponential, **structural** (the exponential form is canon; the 1.5 base is **[TUNABLE]**) |
+| Attack, all `d` | `stat_mult(d) = (1 + d/500)^2.0` **[TUNABLE]** |
+| Defence, all `d` | `def_mult(d) = (1 + d/500)^0.7` **[TUNABLE]** |
+| HP, all `d` | `max(1, 1 + 5.4 × (d/100 − 0.5))` **[TUNABLE]** |
 
-The two branches meet continuously at `d = 5000` (`stat_mult(5000) = 11^1.25 ≈ 20.0`). Monster level continues as `mlevel(d) = max(1, round(d / 12.5))` **[TUNABLE]** with no cap.
+**As implemented there is no `d = 5000` breakpoint**: the three curves above are unbounded and
+continue unchanged into the infinite zone. The second exponential branch
+(`stat_mult(5000) × 1.5^((d − 5000)/500)`) is original design and is **not built** — see
+[world-generation.md](world-generation.md) for the three-curve split and why one exponent for all
+three stats was wrong. Monster level continues as `mlevel(d) = max(1, round(d / 12.5))`
+**[TUNABLE]** with no cap.
 
 ### Prestige aura drops
 

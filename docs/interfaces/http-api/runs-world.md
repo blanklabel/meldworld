@@ -167,7 +167,7 @@ HTTP/1.1 409 Conflict
 
 ### GET /v1/hubs
 
-Lists all 11 curated hubs (d = 0, 500, …, 5000 — structural, CANON.md §B) with the caller's per-player unlock state. No hubs exist beyond 5000 (infinite scaling zone).
+**Not implemented** — this endpoint does not exist; the client reads `meld_proto::hubs::HUBS` directly and the run clamps a requested hub server-side. As specified it would list the **7** departure hubs (`d = 0, 500, 1000, 1500, 2000, 2500, 3250`) with the caller's unlock state. No hub exists beyond `d = 3250`, where `base_run_level` reaches the 255 cap; infinite scaling continues past it.
 
 **Source:** GDD.md §3 (Persistent Milestones), §4; CANON.md §G (`Hub`), §B (Hubs & run levels)
 **Added:** v0.1

@@ -31,10 +31,10 @@ Related: [run-lifecycle.md](./run-lifecycle.md) (what happens at portals and Gat
 
 | Guarantee | Value | Tunability |
 |-----------|-------|------------|
-| Curated Hubs exist at | `distance = 0, 500, 1000, 1500, …, 5000` (11 hubs) | structural |
-| Gatekeeper arenas exist at | `distance = 500·k − 1` for `k = 1..10` (i.e. 499, 999, …, 4999) | structural |
+| Departure hubs exist at | `distance = 0, 500, 1000, 1500, 2000, 2500, 3250` (**7**, `meld_proto::hubs::HUBS`) | registry-defined |
+| Gatekeeper arenas exist at | one at every **biome border**, on the clear path, every run (`gatekeeper_min_distance` floors how shallow one may stand). The `500·k − 1` arena ladder is the original design and is not what generation does. | structural |
 | Biome band order | see Biome Bands table below | structural (content-extensible) |
-| No hubs beyond `d = 5000` | infinite scaling zone only | structural |
+| No hubs beyond `d = 3250` | infinite scaling zone only; `base_run_level` is capped at `max_hero_level` (255) there | registry-defined |
 | Endgame scaling formula shape | exponential (see Infinite Scaling) | structural |
 
 **Source:** CANON.md §B (Hubs & run levels, Biome bands, Distance → difficulty)
@@ -85,13 +85,25 @@ All formulas operate on integer `distance` (`d`), the floored Euclidean distance
 |----------|---------|----------|------------|
 | Loot/monster tier band | `tier(d) = floor(d / 100)` | d=0→0, d=99→0, d=100→1, d=499→4 | [TUNABLE] |
 | Monster level | `mlevel(d) = max(1, round(d / 12.5))` | d=0→1, d=500→40, d=1000→80, d=5000→400 | [TUNABLE] |
-| Monster stat scale (d ≤ 5000) | `stat_mult(d) = (1 + d/500)^1.25` | d=0→1.0, d=500→2^1.25 ≈ 2.378, d=5000→11^1.25 ≈ 20.11 | [TUNABLE] |
-| Monster stat scale (d > 5000) | `stat_mult(d) = stat_mult(5000) × 1.5^((d − 5000)/500)` | d=5500 → stat_mult(5000)×1.5 | exponential shape structural; constants [TUNABLE] |
+| Monster **attack** scale | `stat_mult(d) = (1 + d/500)^stat_mult_exp`, exp = **2.0** | d=0→1.0, d=500→4.0, d=3200→55.4 | [TUNABLE] |
+| Monster **defence** scale | `def_mult(d) = (1 + d/500)^def_mult_exp`, exp = **0.7** | d=500→1.62, d=3200→4.65 | [TUNABLE] |
+| Monster **HP** scale | `max(1, 1 + hp_per_tier × (d/tier_divisor − 0.5))`, `hp_per_tier` = **5.4** | d=500→22.3, d=3200→171 | [TUNABLE] |
+| Shallow on-ramp (all three) | ramps `onboarding_floor` (0.6) at `d=0` → 1.0 at `onboarding_distance` (200); exactly 1.0 past it | [TUNABLE] |
 
 Notes:
 
 - `mlevel(500) = 40` deliberately matches `base_run_level` of the D500 Hub (see [run-lifecycle.md](./run-lifecycle.md)), so monsters at a hub's distance are level-matched to a fresh run started from that hub.
-- The two `stat_mult` branches are continuous at `d = 5000` (the exponential factor is `1.5^0 = 1` there).
+- **Creature power is three different curves, not one.** Each stat is scaled against the hero
+  stat that opposes it, and those do not share a shape: HP is opposed by party damage (gear,
+  linear in `tier`), attack by hero HP/defence (level), armour by hero attack (gently). A single
+  `^1.25` for all three — the formula this table used to state — is wrong on all three counts,
+  and sizing a set piece against it produced a boss roughly 14x harder than any party can bring.
+  **Read `[world_scaling]` in `balance/balance.toml`, not this table, before tuning against depth.**
+- HP is linear in **`d`**, not in the floored integer `tier(d)`: riding the floored tier made it a
+  staircase with a `hp_per_tier`-sized riser, so one unit of walking across a band boundary turned
+  an 8-second fight into a 40-second one. The `− 0.5` runs the line through each band's centre.
+- The `d > 5000` exponential endgame branch below is **original design and is not implemented**;
+  the curves above continue unbounded past 5000 as written.
 
 ---
 
