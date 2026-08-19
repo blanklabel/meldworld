@@ -611,6 +611,13 @@ previous time.
 cargo build -p meld-mcp     # `.mcp.json` points at target/debug/meld-mcp
 ```
 
+**A LOG YOU CANNOT ATTRIBUTE IS A LOG YOU CANNOT MEASURE FROM.** Two creatures of the same
+kind share a name, so `thornback_boar -251` could be either boar — which, in a pack fight,
+makes the battle log unreadable exactly where packs are the thing being measured. Duplicated
+names carry their position among their own kind (`thornback_boar#1`). Playing one pack fight
+produced what looked like a creature damaging its own ally; a test proved the targeting
+correct (`a_creatures_all_enemy_ability_spares_its_own_faction`) and the LABEL wrong.
+
 **A harness that cannot see the bag measures nothing about the bag.** `run.backpack_update`
 rides the wire as `{changes: [{item, delta, cause}], chits_delta}`, and the harness read it
 as `{added, removed}` with a `count` — both lookups missing silently, so **every `look` in
