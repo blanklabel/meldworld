@@ -630,19 +630,32 @@ fn apply(s: &mut State, v: &Value) -> bool {
             p["hero_slot"].as_i64().unwrap_or(0),
             p["level"].as_i64().unwrap_or(0)
         )),
+        // The wire shape is `{changes: [{item, delta, cause}], chits_delta, gear_added}`
+        // — NOT `{added, removed}` with a `count`, which is what this read for as long as
+        // it has existed. Both lookups missed silently (`unwrap_or(&empty)`), so the
+        // harness reported an empty bag no matter what you gathered, and every
+        // measurement of gathering, loot or spending taken through it was blind.
+        // Mirrors `meld-client`'s parser, which is the known-good reader of this message.
         "run.backpack_update" => {
-            for it in p["added"].as_array().unwrap_or(&empty) {
-                let k = it["item_kind"].as_str().unwrap_or("?").to_string();
-                let n = it["count"].as_i64().unwrap_or(1);
-                *s.backpack.entry(k.clone()).or_insert(0) += n;
-                s.note(format!("+{n} {k}"));
-            }
-            for it in p["removed"].as_array().unwrap_or(&empty) {
-                let k = it["item_kind"].as_str().unwrap_or("?").to_string();
-                let n = it["count"].as_i64().unwrap_or(1);
-                *s.backpack.entry(k).or_insert(0) -= n;
+            for ch in p["changes"].as_array().unwrap_or(&empty) {
+                let k = ch["item"]["item_kind"].as_str().unwrap_or("").to_string();
+                let n = ch["item"]["quantity"].as_i64().unwrap_or(0);
+                if k.is_empty() || n == 0 {
+                    continue;
+                }
+                if ch["delta"].as_str() == Some("removed") {
+                    *s.backpack.entry(k.clone()).or_insert(0) -= n;
+                    s.note(format!("-{n} {k}"));
+                } else {
+                    *s.backpack.entry(k.clone()).or_insert(0) += n;
+                    s.note(format!("+{n} {k}"));
+                }
             }
             s.backpack.retain(|_, n| *n > 0);
+            match p["chits_delta"].as_i64().unwrap_or(0) {
+                0 => {}
+                c => s.note(format!("{c:+} chits")),
+            }
         }
         "run.hunt_progress" => s.note(format!(
             "hunt {}: {}/{}",
