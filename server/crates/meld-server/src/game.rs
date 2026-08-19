@@ -1151,6 +1151,27 @@ struct WorldDelta {
     fallen: Vec<FallenDto>,
     /// Field stations still standing (MS-1).
     stations: Vec<StationDto>,
+    /// Player-built structures (CANON D21/§W3). The most load-bearing entry in the whole
+    /// delta: an anchor IS the ground a player holds, and a world that forgot one on
+    /// restart would hand their region back to the Shift for free.
+    #[serde(default)]
+    structures: Vec<StructureDto>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct StructureDto {
+    id: String,
+    function: String,
+    owner: String,
+    x: f64,
+    y: f64,
+    elevation: u8,
+    hp: i32,
+    max_hp: i32,
+    placed_tick: u64,
+    build_ticks: u64,
+    ore: String,
+    ore_cost: i32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1229,6 +1250,25 @@ impl WorldActor {
                     stock: s.stock.clone(),
                 })
                 .collect(),
+            structures: self
+                .arena
+                .structures
+                .iter()
+                .map(|s| StructureDto {
+                    id: s.entity_id.clone(),
+                    function: s.function.clone(),
+                    owner: s.owner_player_id.clone(),
+                    x: s.position.x,
+                    y: s.position.y,
+                    elevation: s.elevation,
+                    hp: s.hp,
+                    max_hp: s.max_hp,
+                    placed_tick: s.placed_tick,
+                    build_ticks: s.build_ticks,
+                    ore: s.ore.clone(),
+                    ore_cost: s.ore_cost,
+                })
+                .collect(),
         };
         meld_db::WorldSave {
             world_key: WORLD_KEY.to_string(),
@@ -1293,6 +1333,23 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
             area_min_x: f.min_x,
             area_max_x: f.max_x,
             felled_tick: f.felled_tick,
+        })
+        .collect();
+    arena.structures = delta
+        .structures
+        .iter()
+        .map(|s| meld_world::Structure {
+            entity_id: s.id.clone(),
+            function: s.function.clone(),
+            owner_player_id: s.owner.clone(),
+            position: Position::new(s.x, s.y),
+            elevation: s.elevation,
+            hp: s.hp,
+            max_hp: s.max_hp,
+            placed_tick: s.placed_tick,
+            build_ticks: s.build_ticks,
+            ore: s.ore.clone(),
+            ore_cost: s.ore_cost,
         })
         .collect();
     arena.stations = delta
@@ -1762,6 +1819,24 @@ impl WorldActor {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 avatar_state: Some(format!("obstacle:{}:{:.2}", o.kind, o.radius)),
                 level: None,
+                ..Default::default()
+            });
+        }
+        // Player-built structures (CANON D21/§W3), tagged
+        // `structure:<function>:<hp_pct>:<building>` — ONE tag for every function, so a
+        // new function needs no new render path and cannot be forgotten by one.
+        for st in &self.arena.structures {
+            entities.push(wm::SnapshotEntity {
+                entity_id: st.entity_id.clone(),
+                position: st.position,
+                velocity: wm::Velocity { x: 0.0, y: 0.0 },
+                avatar_state: Some(format!(
+                    "structure:{}:{}:{}",
+                    st.function,
+                    st.hp_pct(),
+                    u8::from(st.building(self.tick_count))
+                )),
+                level: Some(st.elevation),
                 ..Default::default()
             });
         }
@@ -3810,6 +3885,18 @@ impl GameState {
                 };
                 out
             }
+            wr::BuildStructure::TYPE => match self.world.as_mut() {
+                Some(w) => w.handle_build_structure(player_id, raw),
+                None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+            },
+            wr::RepairStructure::TYPE => match self.world.as_mut() {
+                Some(w) => w.handle_repair_structure(player_id, raw),
+                None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+            },
+            wr::DemolishStructure::TYPE => match self.world.as_mut() {
+                Some(w) => w.handle_demolish_structure(player_id, raw),
+                None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+            },
             wr::UseItem::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_use_item(player_id, raw),
@@ -6824,6 +6911,200 @@ impl WorldActor {
         (out, Vec::new())
     }
 
+    /// Raise a `Structure` where the player stands (CANON D21/§W3, `BD-2`).
+    ///
+    /// One handler for every function, because there is one primitive: the `function` key
+    /// picks the cost and the HP out of `[building]` and the rules out of the registry,
+    /// and nothing else about the flow branches. That is the discipline D21 mandates — the
+    /// moment this grows a `match` on function for anything but its numbers, it is broken.
+    fn handle_build_structure(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| vec![error(player_id, code, msg, Some(seq))];
+        let req: wr::BuildStructure = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad build_structure"),
+        };
+        let Some(def) = meld_proto::structures::structure(&req.function) else {
+            return reject(ErrorCode::ValidationError, "No such structure.");
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        if self.location.contains_key(player_id) {
+            return reject(ErrorCode::InvalidState, "Not down here.");
+        }
+        let balance = self.balance.clone();
+        let Some((cost, _, _)) = balance.building.spec(&req.function) else {
+            return reject(ErrorCode::ValidationError, "No such structure.");
+        };
+        // Deepest stack first — a builder who hauled good ore out should not have it spent
+        // last. Same rule MS-1's benches follow.
+        let Some(run) = self.run.runs.iter().find(|r| r.player_id == player_id) else {
+            return reject(ErrorCode::InvalidState, "Not in a run.");
+        };
+        let mut ores: Vec<(usize, i32)> = run
+            .backpack
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| {
+                i.quantity >= cost
+                    && meld_proto::materials::is_class(
+                        &i.item_kind,
+                        meld_proto::materials::MaterialClass::Ore,
+                    )
+            })
+            .map(|(idx, i)| {
+                (idx, meld_proto::materials::material(&i.item_kind).map(|m| m.tier).unwrap_or(0))
+            })
+            .collect();
+        ores.sort_by_key(|(_, tier)| std::cmp::Reverse(*tier));
+        let Some(&(idx, _)) = ores.first() else {
+            return reject(ErrorCode::InvalidState, &format!("{} takes {cost} ore.", def.name));
+        };
+        let ore_kind = run.backpack[idx].item_kind.clone();
+        // Validated BEFORE the stock is spent: a refusal that also charged you is the
+        // worst kind, and the arena is the only thing that knows the ground.
+        let tick = self.tick_count;
+        if let Err(why) =
+            self.arena.place_structure(&balance, player_id, &req.function, &ore_kind, tick)
+        {
+            return reject(ErrorCode::InvalidState, why.message());
+        }
+        let run = self
+            .run
+            .runs
+            .iter_mut()
+            .find(|r| r.player_id == player_id)
+            .expect("checked above");
+        run.backpack[idx].quantity -= cost;
+        run.backpack.retain(|i| i.quantity > 0);
+        vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item: ItemStack {
+                        item_id: Uuid::now_v7().to_string(),
+                        item_kind: ore_kind,
+                        quantity: cost,
+                        insurance: None,
+                    },
+                    delta: "removed".to_string(),
+                    cause: "build".to_string(),
+                }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
+    /// Spend one unit of ore mending a structure you are standing at.
+    ///
+    /// **Anyone may repair; only the owner may demolish.** Holding ground is a thing a
+    /// party does together — a teammate hauling ore out to your anchor is the co-op verb
+    /// this whole epic is for — while taking something down is a decision about somebody
+    /// else's work.
+    fn handle_repair_structure(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| vec![error(player_id, code, msg, Some(seq))];
+        let req: wr::RepairStructure = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad repair_structure"),
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let balance = self.balance.clone();
+        let reach = balance.world.interaction_radius_tiles;
+        let Some(target) = self.arena.structure_at(player_id, &req.entity_id, reach) else {
+            return reject(ErrorCode::InvalidState, "Nothing in reach.");
+        };
+        if target.hp >= target.max_hp {
+            let name = target.def().map(|d| d.name).unwrap_or("It");
+            return reject(ErrorCode::InvalidState, &format!("The {name} is sound."));
+        }
+        let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
+            return reject(ErrorCode::InvalidState, "Not in a run.");
+        };
+        let Some(idx) = run.backpack.iter().position(|i| {
+            i.quantity >= 1
+                && meld_proto::materials::is_class(
+                    &i.item_kind,
+                    meld_proto::materials::MaterialClass::Ore,
+                )
+        }) else {
+            return reject(ErrorCode::InvalidState, "No ore to mend it with.");
+        };
+        let ore_kind = run.backpack[idx].item_kind.clone();
+        run.backpack[idx].quantity -= 1;
+        run.backpack.retain(|i| i.quantity > 0);
+        self.arena.repair_structure(&balance, &req.entity_id);
+        vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item: ItemStack {
+                        item_id: Uuid::now_v7().to_string(),
+                        item_kind: ore_kind,
+                        quantity: 1,
+                        insurance: None,
+                    },
+                    delta: "removed".to_string(),
+                    cause: "repair".to_string(),
+                }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
+    /// Pack a structure you own back down, for part of its materials.
+    fn handle_demolish_structure(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
+        let seq = raw.seq;
+        let reject = |code: ErrorCode, msg: &str| vec![error(player_id, code, msg, Some(seq))];
+        let req: wr::DemolishStructure = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => return reject(ErrorCode::ValidationError, "bad demolish_structure"),
+        };
+        if self.battle_of_player(player_id).is_some() {
+            return reject(ErrorCode::InvalidState, "Resolve the battle first.");
+        }
+        let balance = self.balance.clone();
+        let reach = balance.world.interaction_radius_tiles;
+        let Some(target) = self.arena.structure_at(player_id, &req.entity_id, reach) else {
+            return reject(ErrorCode::InvalidState, "Nothing in reach.");
+        };
+        if target.owner_player_id != player_id {
+            return reject(ErrorCode::InvalidState, "That is not yours to take down.");
+        }
+        let Some((ore_kind, back)) = self.arena.demolish_structure(&balance, &req.entity_id) else {
+            return reject(ErrorCode::InvalidState, "Nothing in reach.");
+        };
+        if back <= 0 {
+            return Vec::new();
+        }
+        let item = ItemStack {
+            item_id: Uuid::now_v7().to_string(),
+            item_kind: ore_kind,
+            quantity: back,
+            insurance: None,
+        };
+        if let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) {
+            run.backpack.push(item.clone());
+        }
+        vec![out_msg(
+            player_id,
+            &wr::BackpackUpdate {
+                changes: vec![wr::BackpackChange {
+                    item,
+                    delta: "added".to_string(),
+                    cause: "demolish".to_string(),
+                }],
+                chits_delta: 0,
+                gear_added: Vec::new(),
+            },
+        )]
+    }
+
     /// How many OTHER pairs of the right hands are in the party. A Smithwright helps at a
     /// forge and a Keeper at a still; anyone else is standing around holding a lamp. The
     /// requester's own party is what counts, since that is who is actually there.
@@ -8366,6 +8647,7 @@ impl WorldActor {
         // 4) The Shifting Lands, and the slow recovery between their Shifts. Both run
         // last so they see this tick's deaths and harvests, and both are driven off
         // `tick_count` rather than a clock (CANON §W2).
+        self.arena.advance_builds(self.tick_count);
         out.extend(self.advance_shift());
         {
             let balance = self.balance.clone();
@@ -8433,6 +8715,43 @@ impl WorldActor {
         let Some((first, last)) = self.arena.shift_region(&balance, &roll) else {
             return out;
         };
+        // CANON §W3: an anchor does not alter the natural schedule — that stays a pure
+        // function of the seed (§W5) — it alters the OUTCOME, and the suppression is the
+        // event. So the roll happens either way and the anchors are consulted here, which
+        // is also why a held Shift never reaches `shift_log`: nothing about the world
+        // changed except the anchors' HP, and that rides the delta already.
+        if let Some(held) = self.arena.hold_shift(&balance, first, last) {
+            let anchors: Vec<ww::HeldAnchor> = held
+                .anchors
+                .iter()
+                .map(|(id, dmg, destroyed)| {
+                    let (hp, max_hp) = self
+                        .arena
+                        .structures
+                        .iter()
+                        .find(|s| &s.entity_id == id)
+                        .map(|s| (s.hp, s.max_hp))
+                        .unwrap_or((0, 0));
+                    ww::HeldAnchor {
+                        entity_id: id.clone(),
+                        damage: *dmg,
+                        hp,
+                        max_hp,
+                        destroyed: *destroyed,
+                    }
+                })
+                .collect();
+            let msg = ww::ShiftHeld {
+                generation: roll.generation,
+                inner_radius: held.inner_radius,
+                outer_radius: held.outer_radius,
+                anchors,
+            };
+            for r in &self.run.runs {
+                out.push(out_msg(&r.player_id, &msg));
+            }
+            return out;
+        }
         let from = self.arena.areas.get(first).map(|a| a.biome).unwrap_or("").to_string();
         self.shift_log.push((roll.generation, first, last));
         let outcome = self.arena.apply_shift(&balance, &roll, first, last);
@@ -10362,6 +10681,49 @@ mod shifting_lands_tests {
             "a creature the world remembers as dead was standing there again"
         );
         assert_eq!(back.fallen.len(), w.arena.fallen.len());
+    }
+
+    /// An anchor IS the ground a player holds, so a world that forgot one on restart
+    /// would hand their region back to the Shift for free. The most load-bearing entry in
+    /// the whole delta.
+    #[test]
+    fn a_hibernated_world_still_holds_the_ground_you_anchored() {
+        let (mut w, _rx) = world(20, 5);
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        let balance = w.balance.clone();
+        let lat = w.arena.corridor_lateral();
+        let half = w.arena.radial_half();
+        let mut placed = None;
+        for k in 0..400 {
+            let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+            let (r, y) = (300.0_f64, lat * frac);
+            let theta = (y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
+            let p = if half > 0.0 {
+                Position::new(r * theta.cos(), r * theta.sin())
+            } else {
+                Position::new(r, y)
+            };
+            w.arena.avatar_mut("p1").unwrap().position = p;
+            if let Ok(s) = w.arena.place_structure(&balance, "p1", "anchor", "dune_iron", 7) {
+                placed = Some(s.entity_id.clone());
+                break;
+            }
+        }
+        let id = placed.expect("somewhere legal at d300");
+        w.arena.advance_builds(7 + w.arena.structures[0].build_ticks);
+        w.arena.structures[0].hp -= 40;
+        let (hp, max_hp) = (w.arena.structures[0].hp, w.arena.structures[0].max_hp);
+
+        let back = restore_world(&w.balance, &w.world_save());
+        let s = back
+            .structures
+            .iter()
+            .find(|s| s.entity_id == id)
+            .expect("the anchor did not survive the restart");
+        assert_eq!((s.hp, s.max_hp), (hp, max_hp), "it came back at a different HP");
+        assert_eq!(s.owner_player_id, "p1");
+        assert!(s.pins(), "it came back as something that no longer holds ground");
     }
 
     /// The delta is a *delta*: a world with hours on it must not cost megabytes to write.

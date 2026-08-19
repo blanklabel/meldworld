@@ -1937,3 +1937,49 @@ save_every_ticks = 600           # once a minute at the shipped tick
 creature_regrow_ticks = 1800     # 3 min at the shipped tick
 node_regrow_ticks = 3000         # 5 min — ore is slower to come back than a fight
 chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming must not print
+
+# =============================================================================
+# Player-built structures (CANON D21 / §W3) — one primitive, many functions.
+# The registry of functions is `meld_proto::structures`; these are its magnitudes.
+#
+# The loop these numbers have to serve (BD-3): an anchor HOLDS its region against the
+# Shift, and every Shift it holds off COSTS it. So an anchor is not permanence you buy
+# once — it is permanence you keep paying for, and the payment is repair material hauled
+# out to it. Tune `shift_hold_damage_fraction` against `anchor_max_hp` and you are
+# deciding how many Shifts an unattended anchor survives.
+# =============================================================================
+[building]
+# Everything is built from ORE you are carrying. Wood and stone are BD-1's job; using the
+# material that already exists keeps this playable now rather than gated on a harvest
+# rework, and it makes deep ore a structural sink as well as a crafting one.
+anchor_ore_cost = 6
+wall_ore_cost = 2
+anchor_max_hp = 900
+wall_max_hp = 400
+# Time from placement to full HP. A structure goes up at `build_start_fraction` of its
+# HP and ramps — so planting one in front of an oncoming Shift is a gamble on whether it
+# finishes, which is the decision the build timer exists to create.
+anchor_build_ms = 20000
+wall_build_ms = 6000
+build_start_fraction = 0.15
+# How far an anchor's hold reaches, in world units. Wider than a section is deliberate:
+# the Shift is section-granular, so a pin narrower than a section could never hold a
+# whole one and the loop would never fire.
+anchor_pin_radius = 90.0
+# Repair: one unit of ore buys this much HP back. The counter to attrition, and the
+# reason a held region needs supply rather than just a builder.
+repair_hp_per_ore = 120
+# Packing one up hands back a share of what it cost — anti-grief and anti-clutter, never
+# a full refund, or moving one is free.
+demolish_refund_fraction = 0.5
+# No two structures inside this of each other, so a wall is a wall and not a hedge of
+# three hundred overlapping ones.
+min_spacing = 6.0
+# Per player, per world. A cap rather than a cost curve because the interesting decision
+# is WHERE, and an unbounded builder is a performance question rather than a design one.
+max_per_player = 12
+# What one held-off Shift takes out of every anchor holding it, as a share of that
+# anchor's max HP. This is the whole of `BD-3`'s tension: the land pushes back, and an
+# anchor nobody maintains falls on its own. Sized so an unattended anchor holds roughly
+# four Shifts before it goes.
+shift_hold_damage_fraction = 0.25

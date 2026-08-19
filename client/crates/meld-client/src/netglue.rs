@@ -566,6 +566,19 @@ pub(crate) fn pump_net(
                     clock.elapsed_secs_f64(),
                 );
             }
+            ServerMsg::ShiftHeld { anchors } => {
+                tell.armed = false;
+                let lost = anchors.iter().filter(|(_, _, _, gone)| *gone).count();
+                let hurt: i32 = anchors.iter().map(|(_, d, _, _)| *d).sum();
+                notice.say(
+                    if lost > 0 {
+                        "The anchor held - and fell. The ground is loose again.".to_string()
+                    } else {
+                        format!("Your anchor held the Shift  (-{hurt} to it)")
+                    },
+                    clock.elapsed_secs_f64(),
+                );
+            }
             ServerMsg::ShiftWarning { inner_radius, outer_radius, biome, lands_in_ms, caught } => {
                 let now = clock.elapsed_secs_f64();
                 let secs = (lands_in_ms as f64 / 1000.0).round().max(1.0) as u64;

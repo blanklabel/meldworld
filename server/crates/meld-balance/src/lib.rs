@@ -53,6 +53,7 @@ pub struct Balance {
     pub affliction: Affliction,
     pub shift: Shift,
     pub world_persist: WorldPersist,
+    pub building: Building,
 }
 
 /// The distance at which each biome starts appearing in a randomized run, keyed by
@@ -668,6 +669,37 @@ pub struct Shift {
     pub damage_fraction_max: f64,
     pub safe_radius: f64,
     pub random_pick_share: f64,
+}
+
+/// Magnitudes for the one `Structure` primitive (CANON D21/§W3). The *functions* live in
+/// [`meld_proto::structures`]; only the numbers are here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Building {
+    pub anchor_ore_cost: i32,
+    pub wall_ore_cost: i32,
+    pub anchor_max_hp: i32,
+    pub wall_max_hp: i32,
+    pub anchor_build_ms: u64,
+    pub wall_build_ms: u64,
+    pub build_start_fraction: f64,
+    pub anchor_pin_radius: f64,
+    pub repair_hp_per_ore: i32,
+    pub demolish_refund_fraction: f64,
+    pub min_spacing: f64,
+    pub max_per_player: usize,
+    pub shift_hold_damage_fraction: f64,
+}
+
+impl Building {
+    /// Ore cost, max HP and build time for a function key — one place, so a new function
+    /// cannot be half-priced by being added to only some of the three.
+    pub fn spec(&self, key: &str) -> Option<(i32, i32, u64)> {
+        match key {
+            "anchor" => Some((self.anchor_ore_cost, self.anchor_max_hp, self.anchor_build_ms)),
+            "wall" => Some((self.wall_ore_cost, self.wall_max_hp, self.wall_build_ms)),
+            _ => None,
+        }
+    }
 }
 
 /// A world is a place, not a lobby (CANON §W1/§W5): it outlives its divers, and its

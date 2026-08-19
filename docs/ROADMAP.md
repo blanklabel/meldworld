@@ -1720,14 +1720,49 @@ same always-running-when-unwatched spatial workload as the ecology).
 - [ ] **BD-1 — Harvest wood & stone.** Wood from ecology `Flora` trees (CR); new
   `MineralNode`s (stone/ore/clay) + timed `MS-2` harvest + structural-material tables.
   *Ships as gathering on the precursor.*
-- [ ] **BD-2 — The `Structure` primitive: place → build → HP → repair → demolish.**
-  One entity, `function` tag, server-validated placement, material cost, build progress,
-  upgrade tiers. *Within-run camp (FS-1) is the precursor taste; real towns need SC-3.*
-- [ ] **BD-3 — Anchors & the Shift-pin loop.** Anchor pins its region (`pin_radius`)
-  against the Shift (D20) while HP > 0; defend or lose it (§W5 `suppressed_by`). **The
-  headline loop.** The Shift now exists (`SL-2`) and deliberately leaves stations
-  standing, so this is the piece that makes a structure *mean* something: `apply_shift`
-  is the one place a pin has to be consulted.
+- [x] **BD-2 — The `Structure` primitive: place → build → HP → repair → demolish.**
+  One entity, one `function` tag, one lifecycle — the discipline D21 mandates rather than
+  a convenience. [`meld_proto::structures`](../shared/meld-proto/src/structures.rs) is the
+  registry both sides read; `[building]` holds the magnitudes; the handler branches on the
+  function key for its *numbers* and nothing else. Ships `anchor` and `wall`: two functions
+  so "one primitive, many functions" is tested rather than asserted, and `wall`'s `blocks`
+  flag joins the same collision list as terrain so movement keeps ONE notion of impassable.
+  - **Placement is validated before the stock is spent** — a refusal that also charged you
+    is the worst kind — and every refusal is a sentence you can act on rather than a bare
+    no. **Nothing may be built on the clear path**: the route out is feasible by
+    construction everywhere else, and a player-built wall across it would be the one thing
+    in the world that could seal the exit, on purpose.
+  - **It goes up weak and ramps**, so planting one in front of an oncoming Shift is a
+    gamble on whether it finishes. The ramp never heals damage taken mid-build, or a
+    besieged wall would repair itself for free while the siege was still landing.
+  - **Anyone may repair; only the owner may demolish.** Hauling ore out to a teammate's
+    anchor is the co-op verb this epic exists for; taking something down is a decision
+    about someone else's work. Demolish refunds a share, never all — a full refund makes
+    moving free.
+  - Rides the snapshot as one `structure:<function>:<hp>:<building>` tag, so a new function
+    needs no new render path and cannot be forgotten by one. Persisted in the §W5 delta.
+  - **Not yet:** upgrade tiers (wood → stone → metal), and `stash`/`portal`/`workshop`.
+    MS-1's field benches are still their own lifecycle — folding them in is `BD-6`, which
+    owns field crafting. A paper row nothing honours would be worse than the honest gap.
+- [x] **BD-3 — Anchors & the Shift-pin loop.** An anchor holds every section its
+  `pin_radius` reaches, and the Shift due there **does not land**. The headline loop, and
+  the thing that makes a structure mean something.
+  - **An anchor does not change the SCHEDULE, it changes the OUTCOME.** The natural cadence
+    stays a pure function of the seed (§W2/§W5) and the suppression is the *event* — which
+    is also why a held Shift never reaches the replay log: nothing about the world changed
+    except anchor HP, and that already rides the delta.
+  - **Holding costs, and that is the whole design.** Every Shift an anchor turns aside
+    takes `[building] shift_hold_damage_fraction` of its own max HP out of it. So an anchor
+    is not permanence you buy once — it is permanence you keep paying for, in ore hauled
+    back out to it. An unmaintained one falls on its own and hands the ground back. Without
+    this, BD-3 would be "plant one, never think about this region again", the exact opposite
+    of the loop it is named for; a test walks an anchor to its death to prove it both
+    survives more than one Shift and does not survive forever.
+  - `world.shift_held` names the cost to everyone in the world, so the payoff of the whole
+    building epic is a thing you watch happen rather than a thing you infer.
+  - **Not yet:** creatures do not siege structures — that is `BD-4`, and until it lands the
+    Shift is the only thing that attacks an anchor. Enough for the loop to be a loop, but it
+    means an anchor's only enemy is the weather.
 - [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
   structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
   attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).

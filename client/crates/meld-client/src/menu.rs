@@ -173,6 +173,13 @@ pub(crate) struct BuildStationButton {
     pub kind: &'static str,
 }
 
+/// A "raise a structure" row in the Map column — one component for every function,
+/// because there is one primitive (CANON D21/§W3).
+#[derive(Component, Clone, Copy)]
+pub(crate) struct BuildStructureButton {
+    pub function: &'static str,
+}
+
 /// A potion row in the Items column — clicking it opens the hero picker.
 #[derive(Component)]
 pub(crate) struct UseItemButton {
@@ -681,6 +688,32 @@ pub(crate) fn render_main_menu(
                                         row.spawn(glass::text(label, 19.0, tint));
                                     });
                             }
+                            // The structures, from the registry rather than a list here:
+                            // a new function is a row in `meld_proto::structures`, and a
+                            // hand-written list is a list a function gets left off.
+                            let ore = carried_for(&backpack, "smith");
+                            for (i, def) in meld_proto::structures::STRUCTURES.iter().enumerate() {
+                                let focused = depth == 1 && menu.cursor == 3 + i;
+                                col.spawn((
+                                    glass::inset(focused),
+                                    BuildStructureButton { function: def.key },
+                                ))
+                                .with_children(|row| {
+                                    let (label, tint) = match &ore {
+                                        Some((k, qty)) => (
+                                            format!("Raise a {}   ({qty} {k})", def.name),
+                                            glass::TEXT,
+                                        ),
+                                        None => (
+                                            format!("Raise a {}   (no ore carried)", def.name),
+                                            glass::DIM,
+                                        ),
+                                    };
+                                    row.spawn(glass::text(label, 19.0, tint));
+                                });
+                                col.spawn(glass::text(def.description, 14.0, glass::DIM));
+                            }
+                            col.spawn(glass::divider());
                             for line in [
                                 format!("Distance   {}", stats.distance),
                                 format!("Tier       {}", stats.tier),
@@ -1439,6 +1472,22 @@ pub(crate) fn build_station_click(
     for (interaction, btn) in &rows {
         if *interaction == Interaction::Pressed && carried_for(&backpack, btn.kind).is_some() {
             net.0.send(ClientCmd::BuildStation { kind: btn.kind.into() });
+            overlay.kind = None;
+        }
+    }
+}
+
+/// Tapping a "Raise a …" row builds it where you stand — the touch twin of pressing
+/// Enter on it. One handler for every function; the registry decides what the rows are.
+pub(crate) fn build_structure_click(
+    rows: Query<(&Interaction, &BuildStructureButton), Changed<Interaction>>,
+    mut overlay: ResMut<Overlay>,
+    backpack: Res<RunBackpack>,
+    net: NonSend<NetRes>,
+) {
+    for (interaction, btn) in &rows {
+        if *interaction == Interaction::Pressed && carried_for(&backpack, "smith").is_some() {
+            net.0.send(ClientCmd::BuildStructure { function: btn.function.into() });
             overlay.kind = None;
         }
     }
