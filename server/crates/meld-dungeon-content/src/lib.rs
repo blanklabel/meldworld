@@ -78,6 +78,46 @@ mod tests {
         assert_eq!(by_name("guardia_forest").unwrap().bodies_required(), 1);
     }
 
+    /// `qa/tests/dungeon_trap_death.rs` marches a bot EAST from the entry and expects to
+    /// die, and it pins `verdant_barrow` to get a trap on that line. That is a dependency on
+    /// this floor's SHAPE, and nothing here was holding it: the test used to pin a seed
+    /// instead, the roll drifted to `guardia_forest` — whose entry row is deliberately clear,
+    /// because it is the tutorial's dungeon — and the bot marched into the far wall and sat
+    /// there until a 90-second deadline. A content edit could do the same again.
+    ///
+    /// Asserted here so the break is a one-line failure in a unit test rather than a timeout
+    /// in a Postgres-backed bot run.
+    #[test]
+    fn the_barrow_still_opens_onto_a_trap_the_trap_test_can_walk_into() {
+        let d = by_name("verdant_barrow").expect("verdant_barrow is shipped content");
+        let entry = d
+            .entrances
+            .iter()
+            .find(|p| p.floor == 0)
+            .expect("floor 0 has the overworld entry");
+        // A trap on the same row, east of the entry, with clear floor the whole way to it —
+        // which is exactly what "march east and die" needs.
+        let trap = d
+            .placements
+            .iter()
+            .filter(|p| matches!(d.objects.get(&p.id), Some(crate::ObjectKind::Trap { .. })))
+            .filter(|p| p.floor == 0 && p.y == entry.y && p.x > entry.x)
+            .min_by_key(|p| p.x)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no trap east of the entry on floor 0 — `dungeon_trap_death` marches east \
+                     and would time out rather than fail"
+                )
+            });
+        for x in (entry.x + 1)..trap.x {
+            assert_eq!(
+                d.grids[0].at(x, entry.y).tile,
+                meld_dungeon::Tile::Floor,
+                "something blocks the walk east at x={x}; the bot would stop short of the trap"
+            );
+        }
+    }
+
     #[test]
     fn every_embedded_dungeon_revalidates_at_runtime() {
         // Belt-and-suspenders: the build already validated these, but prove the

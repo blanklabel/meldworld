@@ -130,8 +130,12 @@ server:
 smoke:
 	$(SERVE) cargo run -p meld-client --bin smoke
 
+# `--no-fail-fast`: each qa test is its own binary, and cargo stops at the FIRST one that
+# fails — so a single red test silently skips every binary after it and the run still reads
+# as "one failure". A stale `dungeon_trap_death` hid real breakage in the potion, portal and
+# harvest tests that way for a whole session. Run them all, always.
 test:
-	bash qa/scripts/local_pg.sh cargo test -p meld-qa
+	bash qa/scripts/local_pg.sh cargo test -p meld-qa --no-fail-fast
 
 stop:
 	@lsof -ti tcp:$(PORT) 2>/dev/null | xargs -r kill 2>/dev/null || true
