@@ -576,6 +576,11 @@ mod tests {
             ("boon regen", r.resonant_boon_regen_fraction),
             ("iron lung regen", r.hunter_iron_lung_regen_fraction),
             ("barrier decay", r.barrier_decay_fraction),
+            // The two that were missed. This list is HAND-WRITTEN, which is the failure
+            // mode this repo names elsewhere — a list is a list something gets left off —
+            // and these two sat flat (`3` regen, `10` barrier) through every run of it.
+            ("synergy party regen", b.adventure.synergy_party_regen_fraction),
+            ("synergy party barrier", b.adventure.synergy_party_barrier_fraction),
         ];
         for (what, v) in fractions {
             assert!(
@@ -583,6 +588,36 @@ mod tests {
                 "{what} is {v} — that reads like flat points, not a fraction"
             );
         }
+    }
+
+    /// A PASSIVE must not beat what a spent TURN buys, and a party-wide passive must not
+    /// out-heal the class whose whole identity is healing.
+    ///
+    /// Both were false: `synergy_party_regen` was flat 3, which is 7.5% of a level-1 hero
+    /// — nearly 4x the Resonant's own innate regen, granted to every hero, for free. Played
+    /// through `mcp/`, a standard on-ramp encounter cost a four-hero party 12 HP of 176
+    /// across 32 hero-turns, because the party healed 96 HP against 25 points of incoming
+    /// damage. The fight was not dangerous; it was arithmetic.
+    #[test]
+    fn a_free_synergy_is_worth_less_than_a_spent_turn() {
+        let b = Balance::load_default().unwrap();
+        let free = b.adventure.synergy_party_regen_fraction;
+        assert!(
+            free < b.battle.resonant_regen_fraction,
+            "a passive synergy regens {free} a turn where the RESONANT's innate is {} — the \
+             best healer in the game is beaten by something nobody spent a turn on",
+            b.battle.resonant_regen_fraction
+        );
+        assert!(
+            free < b.keeper.bloomfield_regen_fraction,
+            "a passive synergy regens {free} where Bloomfield — a whole TURN of a Keeper's \
+             level-10 ability, party-wide — buys {}",
+            b.keeper.bloomfield_regen_fraction
+        );
+        assert!(
+            b.adventure.synergy_party_barrier_fraction < b.keeper.gift_barrier_fraction,
+            "a free opening Barrier beats the cheapest one a Keeper spends a turn on"
+        );
     }
 
     /// The mirror of `the_healer_is_the_best_healer`, for the other support axis. Nothing

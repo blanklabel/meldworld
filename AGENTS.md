@@ -955,6 +955,15 @@ all-enemy Purging Light both asked the player to aim at a single creature. Both 
 registry (`skill_owner`, `target_of`). **Never reintroduce a list of ability keys** — a
 list is a list a new ability gets left off, silently.
 
+**A PASSIVE must not beat a spent TURN, and nothing party-wide may out-heal the healer.**
+`synergy_party_regen` was flat 3 — 7.5% of a level-1 hero, granted to EVERY hero for free,
+nearly **4x the Resonant's own innate regen** (`resonant_regen_fraction`, 2%) and 5x what a
+whole turn of the Keeper's party-wide Bloomfield buys. Played through `mcp/`, it made a
+standard on-ramp encounter arithmetic rather than a fight: 24 HP of party healing against 25
+points of incoming damage, so a four-hero party lost 12 HP of 176 across 32 hero-turns.
+Both synergy grants are fractions now, and
+`a_free_synergy_is_worth_less_than_a_spent_turn` holds the ordering.
+
 **Every magnitude that lands on a hero is a FRACTION, never flat points.** A hero runs 40
 max HP and 12 atk at level 1 to ~535 and ~309 at level 100, so a flat grant is a third of a
 hero early and a rounding error late. That is not hypothetical: the Keeper's heals were flat,

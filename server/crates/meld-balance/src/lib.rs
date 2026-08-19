@@ -766,8 +766,8 @@ impl Consumable {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Adventure {
     pub combo_window_ticks: u64,
-    pub synergy_party_barrier: i32,
-    pub synergy_party_regen: i32,
+    pub synergy_party_barrier_fraction: f64,
+    pub synergy_party_regen_fraction: f64,
     pub synergy_back_row_evasion: i32,
 }
 

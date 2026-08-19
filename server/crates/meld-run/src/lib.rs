@@ -555,6 +555,14 @@ pub fn fold_damage_modifiers(
 /// that hero's own equipped-gear bonus).
 pub type PartyMember = (Id, Id, CharacterClass, GearBonus);
 
+/// A magnitude that lands on a hero, as a share of that hero's OWN max HP — the rule
+/// every grant in this game follows, because a hero runs 40 max HP at level 1 and ~535 at
+/// 100, so a flat number is a third of a hero early and a rounding error late. Floors at 1:
+/// a grant that rounds to nothing is a grant the player was told they had.
+fn frac_of(max_hp: i32, fraction: f64) -> i32 {
+    (((max_hp as f64) * fraction).round() as i32).max(1)
+}
+
 /// Build the ally `Fighter`s for a party (shared by battle start and raid merge).
 /// `row_overrides` (aligned with `party`) lets the player's saved formation win over
 /// the class-default front/back row: `Some(true)` = back, `Some(false)` = front,
@@ -768,8 +776,14 @@ pub fn party_fighters(
         use meld_proto::synergies::SynergyEffect as E;
         for f in fighters.iter_mut() {
             match syn.effect {
-                E::PartyBarrier => f.barrier += adv.synergy_party_barrier,
-                E::PartyRegen => f.regen += adv.synergy_party_regen,
+                // A FRACTION of this hero's own max HP. Flat points made a passive
+                // synergy worth 7.5% of a level-1 hero and 0.6% of a level-100 one — and
+                // out-healed the Resonant's innate regen party-wide, so the best healer in
+                // the game was beaten by something nobody spent a turn on.
+                E::PartyBarrier => {
+                    f.barrier += frac_of(f.max_hp, adv.synergy_party_barrier_fraction)
+                }
+                E::PartyRegen => f.regen += frac_of(f.max_hp, adv.synergy_party_regen_fraction),
                 E::BackRowEvasion => {
                     if f.back_row {
                         f.evasion += adv.synergy_back_row_evasion as f64 / 100.0;
@@ -2049,9 +2063,17 @@ mod tests {
             member(CharacterClass::Shifter),
         ];
         let armed = party_fighters(&paired, &runs, &b, &[]);
-        let want = b.adventure.synergy_party_barrier;
+        // Each hero's OWN share: the grant is a fraction of the hero it lands on, so a
+        // Shifter's opening Barrier is smaller than a Phoenix Guard's and should be.
         for f in &armed {
-            assert!(f.barrier >= want, "{} opened with {}", f.combatant_id, f.barrier);
+            let want = frac_of(f.max_hp, b.adventure.synergy_party_barrier_fraction);
+            assert!(
+                f.barrier >= want,
+                "{} opened with {} of its own {} HP",
+                f.combatant_id,
+                f.barrier,
+                f.max_hp
+            );
         }
 
         // Blood and Balm (Resonant + Hunter) gives the party Regen — a kit that pays
@@ -2059,7 +2081,8 @@ mod tests {
         // innate Regen is on top, not replaced.
         let sustained = vec![member(CharacterClass::Hunter), member(CharacterClass::Resonant)];
         let f = party_fighters(&sustained, &runs, &b, &[]);
-        assert!(f[0].regen >= b.adventure.synergy_party_regen, "hunter regen {}", f[0].regen);
+        let want_regen = frac_of(f[0].max_hp, b.adventure.synergy_party_regen_fraction);
+        assert!(f[0].regen >= want_regen, "hunter regen {}", f[0].regen);
     }
 
 
