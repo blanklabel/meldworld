@@ -466,6 +466,15 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // Additive: a hunt is now something you ACCEPT before it tracks. Added after the
+        // table shipped, so existing rows get the stamp — anything already in progress was
+        // taken under the old rules and must not be un-taken by a deploy.
+        sqlx::query("ALTER TABLE hunts ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ")
+            .execute(pool)
+            .await?;
+        sqlx::query("UPDATE hunts SET accepted_at = now() WHERE accepted_at IS NULL")
+            .execute(pool)
+            .await?;
         // Bounties (roadmap AD-4): the Den's generated contracts, one row per rolled
         // mark. The rolled numbers live in `spec` as JSON rather than as columns — they
         // are drawn once against `[bounty]` and then owned by the contract, so a retune
@@ -725,7 +734,8 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT hunt_key, progress, claimed_at FROM hunts WHERE player_id = $1",
+                    "SELECT hunt_key, progress, claimed_at, accepted_at FROM hunts
+                      WHERE player_id = $1",
                 )
                 .bind(player_id)
                 .fetch_all(pool)
@@ -736,6 +746,7 @@ impl Db {
                         hunt_key: r.get("hunt_key"),
                         progress: r.get("progress"),
                         claimed: r.get::<Option<DateTime<Utc>>, _>("claimed_at").is_some(),
+                        accepted: r.get::<Option<DateTime<Utc>>, _>("accepted_at").is_some(),
                     })
                     .collect())
             }
@@ -744,10 +755,11 @@ impl Db {
                 Ok(m.hunts
                     .iter()
                     .filter(|((pid, _), _)| *pid == player_id)
-                    .map(|((_, key), (progress, claimed))| HuntRow {
+                    .map(|((_, key), (progress, claimed, accepted))| HuntRow {
                         hunt_key: key.clone(),
                         progress: *progress,
                         claimed: *claimed,
+                        accepted: *accepted,
                     })
                     .collect())
             }
@@ -772,24 +784,33 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let mut tx = pool.begin().await?;
-                let before: Option<(i32, Option<DateTime<Utc>>)> = sqlx::query(
-                    "SELECT progress, claimed_at FROM hunts
-                      WHERE player_id = $1 AND hunt_key = $2 FOR UPDATE",
-                )
-                .bind(player_id)
-                .bind(hunt_key)
-                .fetch_optional(&mut *tx)
-                .await?
-                .map(|r| (r.get("progress"), r.get("claimed_at")));
-                let (was, claimed) = before.unwrap_or((0, None));
-                if claimed.is_some() || was >= target {
+                /// `(progress, claimed_at, accepted_at)` as the row reads.
+                type HuntState = (i32, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+                let before: Option<HuntState> =
+                    sqlx::query(
+                        "SELECT progress, claimed_at, accepted_at FROM hunts
+                          WHERE player_id = $1 AND hunt_key = $2 FOR UPDATE",
+                    )
+                    .bind(player_id)
+                    .bind(hunt_key)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .map(|r| (r.get("progress"), r.get("claimed_at"), r.get("accepted_at")));
+                // NO ROW MEANS NOT ACCEPTED, and an unaccepted hunt does not track. This used
+                // to INSERT on first credit, which is what made every posted hunt count itself
+                // whether the player had ever stood at the board or not — eight jobs nobody
+                // took. `accept_hunt` is the only thing that creates a row now.
+                let Some((was, claimed, accepted)) = before else {
+                    tx.rollback().await?;
+                    return Ok(HuntCredit { progress: 0, completed: false });
+                };
+                if accepted.is_none() || claimed.is_some() || was >= target {
                     tx.rollback().await?;
                     return Ok(HuntCredit { progress: was.min(target), completed: false });
                 }
                 let now = (was + delta).min(target);
                 sqlx::query(
-                    "INSERT INTO hunts (player_id, hunt_key, progress) VALUES ($1, $2, $3)
-                     ON CONFLICT (player_id, hunt_key) DO UPDATE SET progress = $3",
+                    "UPDATE hunts SET progress = $3 WHERE player_id = $1 AND hunt_key = $2",
                 )
                 .bind(player_id)
                 .bind(hunt_key)
@@ -801,12 +822,45 @@ impl Db {
             }
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
-                let e = m.hunts.entry((player_id, hunt_key.to_string())).or_insert((0, false));
-                if e.1 || e.0 >= target {
+                // Same rule as Pg: no row is "not accepted", so nothing is credited and
+                // nothing is created.
+                let Some(e) = m.hunts.get_mut(&(player_id, hunt_key.to_string())) else {
+                    return Ok(HuntCredit { progress: 0, completed: false });
+                };
+                if !e.2 || e.1 || e.0 >= target {
                     return Ok(HuntCredit { progress: e.0.min(target), completed: false });
                 }
                 e.0 = (e.0 + delta).min(target);
                 Ok(HuntCredit { progress: e.0, completed: e.0 >= target })
+            }
+        }
+    }
+
+    /// TAKE a hunt: stamp it accepted so its progress starts counting.
+    ///
+    /// Creating the row is the whole point — [`credit_hunt`] no longer inserts one, so a hunt
+    /// nobody accepted is a hunt that never moves. Idempotent: accepting one twice is not an
+    /// error and must not reset the progress already on it.
+    pub async fn accept_hunt(&self, player_id: Uuid, hunt_key: &str) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "INSERT INTO hunts (player_id, hunt_key, progress, accepted_at)
+                     VALUES ($1, $2, 0, now())
+                     ON CONFLICT (player_id, hunt_key) DO UPDATE
+                       SET accepted_at = COALESCE(hunts.accepted_at, now())",
+                )
+                .bind(player_id)
+                .bind(hunt_key)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let e = m.hunts.entry((player_id, hunt_key.to_string())).or_insert((0, false, false));
+                e.2 = true;
+                Ok(true)
             }
         }
     }
@@ -885,18 +939,18 @@ impl Db {
             }
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
-                let (progress, claimed) = m
+                let (progress, claimed, accepted) = m
                     .hunts
                     .get(&(player_id, hunt_key.to_string()))
                     .copied()
-                    .unwrap_or((0, false));
+                    .unwrap_or((0, false, false));
                 if claimed {
                     return Ok(HuntClaim::AlreadyClaimed);
                 }
-                if progress < target {
+                if !accepted || progress < target {
                     return Ok(HuntClaim::NotEarned { progress });
                 }
-                m.hunts.insert((player_id, hunt_key.to_string()), (progress, true));
+                m.hunts.insert((player_id, hunt_key.to_string()), (progress, true, accepted));
                 let after = {
                     let c = m.chits.entry(player_id).or_insert(0);
                     *c += chits;
@@ -3808,7 +3862,9 @@ struct Mem {
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), MemVanguard>,
     /// hunts (progress, claimed), keyed by (player_id, hunt_key).
-    hunts: HashMap<(Uuid, String), (i32, bool)>,
+    /// `(progress, claimed, accepted)`. Accepted last because it arrived last — a hunt is
+    /// something you TAKE now, and only a taken hunt tracks.
+    hunts: HashMap<(Uuid, String), (i32, bool, bool)>,
     /// bounties, keyed by bounty_id.
     bounties: HashMap<Uuid, MemBounty>,
     /// party_loadouts.classes, keyed by (player_id, name).
@@ -4286,6 +4342,63 @@ mod tests {
         assert!(!db.get_hero_rows(p).await.unwrap()[2]);
     }
 
+    /// The board posts eight hunts to every account. Before this, the first kill of the
+    /// right kind INSERTED a row and started counting — so every hunt tracked itself whether
+    /// the player had ever stood at the board or not, and "accept" was a word with nothing
+    /// behind it.
+    #[tokio::test]
+    async fn a_hunt_nobody_took_does_not_count_anything() {
+        let db = mem().await;
+        let p = db
+            .register("untaken", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+
+        assert_eq!(
+            db.credit_hunt(p, "cull_the_bloom", 3, 3).await.unwrap(),
+            HuntCredit { progress: 0, completed: false },
+            "an unaccepted hunt must not move"
+        );
+        assert!(
+            db.get_hunts(p).await.unwrap().is_empty(),
+            "crediting an unaccepted hunt must not even create a row"
+        );
+        // And it cannot be claimed off the back of work done before it was taken.
+        assert_eq!(
+            db.claim_hunt(p, "cull_the_bloom", 3, 250, None, None).await.unwrap(),
+            HuntClaim::NotEarned { progress: 0 }
+        );
+
+        // Taken, it counts from there — NOT retroactively.
+        db.accept_hunt(p, "cull_the_bloom").await.unwrap();
+        let row = db.get_hunts(p).await.unwrap();
+        assert_eq!(row.len(), 1);
+        assert!(row[0].accepted && row[0].progress == 0, "taking a hunt starts it at zero");
+        assert_eq!(
+            db.credit_hunt(p, "cull_the_bloom", 2, 3).await.unwrap(),
+            HuntCredit { progress: 2, completed: false }
+        );
+    }
+
+    /// Pressing Accept twice is a double-press at the board, not a reset.
+    #[tokio::test]
+    async fn taking_a_hunt_twice_keeps_the_progress_it_already_has() {
+        let db = mem().await;
+        let p = db
+            .register("twice", &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .player_id;
+
+        db.accept_hunt(p, "cull_the_bloom").await.unwrap();
+        db.credit_hunt(p, "cull_the_bloom", 2, 3).await.unwrap();
+        db.accept_hunt(p, "cull_the_bloom").await.unwrap();
+        let row = db.get_hunts(p).await.unwrap();
+        assert_eq!(row[0].progress, 2, "re-accepting threw the work away");
+        assert!(row[0].accepted);
+    }
+
     #[tokio::test]
     async fn a_hunt_completes_once_and_pays_once() {
         let db = mem().await;
@@ -4296,6 +4409,8 @@ mod tests {
             .player_id;
 
         assert!(db.get_hunts(p).await.unwrap().is_empty());
+        // A hunt has to be TAKEN before it counts.
+        db.accept_hunt(p, "cull_the_bloom").await.unwrap();
         // Progress accumulates and is capped at the target: an overshoot on the last
         // kill cannot bank credit toward a hunt nobody has posted yet.
         assert_eq!(
@@ -4438,6 +4553,7 @@ mod tests {
             set_key: String::new(),
         };
 
+        db.accept_hunt(p, "unseat_the_keeper").await.unwrap();
         db.credit_hunt(p, "unseat_the_keeper", 1, 1).await.unwrap();
         assert_eq!(
             db.claim_hunt(p, "unseat_the_keeper", 1, 500, None, Some(&piece)).await.unwrap(),
@@ -4467,6 +4583,7 @@ mod tests {
             .unwrap()
             .player_id;
 
+        db.accept_hunt(p, "unseat_the_keeper").await.unwrap();
         db.credit_hunt(p, "unseat_the_keeper", 1, 3).await.unwrap();
         assert_eq!(
             db.claim_hunt(p, "unseat_the_keeper", 3, 500, None, None).await.unwrap(),
@@ -5226,6 +5343,10 @@ pub struct HuntRow {
     pub hunt_key: String,
     pub progress: i32,
     pub claimed: bool,
+    /// Whether the player has TAKEN this hunt. Progress is only credited to an accepted
+    /// hunt — every posted hunt used to track itself whether you had looked at the board or
+    /// not, so the board read as eight jobs you had been signed up for.
+    pub accepted: bool,
 }
 
 /// What crediting an event did to one hunt.

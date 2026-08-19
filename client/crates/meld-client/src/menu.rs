@@ -419,7 +419,11 @@ pub(crate) fn column_len(
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
         (Some(MenuSection::Items), None) => inventory_potions(backpack).len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
-        (Some(MenuSection::Map), None) => 3,
+        // Return to town, the two field stations, then ONE PER STRUCTURE from the registry.
+        // This was a literal `3`, so the keyboard could never reach a "Raise a ..." row —
+        // every buildable in `meld_proto::structures` was mouse-only, silently. A count
+        // written by hand is a count a new row gets left out of.
+        (Some(MenuSection::Map), None) => 3 + meld_proto::structures::STRUCTURES.len(),
         // Reading only — the cursor has nothing to land on.
         (Some(MenuSection::Guide), None) => 0,
         // Reading only, both columns: the board is a log, and the reward is taken at the
@@ -627,93 +631,12 @@ pub(crate) fn render_main_menu(
                             ));
                         }
                         MenuSection::Map => {
-                            // Going home on a Town Portal is an ITEM use, so it lives
-                            // here as an explicit choice rather than on a hotkey — the
-                            // primary way out of a dive should be somewhere a player
-                            // can FIND it, not a key they have to be told about.
-                            let portals = backpack.count("town_portal");
-                            let focused = depth == 1 && menu.cursor == 0;
-                            col.spawn((glass::inset(focused), ReturnToTownButton))
-                                .with_children(|row| {
-                                    let (label, tint) = if portals > 0 {
-                                        (format!("Return to town   ({portals})"), glass::TEXT)
-                                    } else {
-                                        ("Return to town   (none held)".to_string(), glass::DIM)
-                                    };
-                                    row.spawn(glass::text(label, 19.0, tint));
-                                });
-                            // Raising a field forge is an ITEM-shaped choice like the
-                            // Town Portal above it: it spends ore you gathered, so it
-                            // belongs on a row a player can find and read, not a key.
-                            for (i, kind) in ["smith", "alembic"].into_iter().enumerate() {
-                                let stock = carried_for(&backpack, kind);
-                                let focused = depth == 1 && menu.cursor == 1 + i;
-                                // A forge is a Smithwright's bench and a still is a
-                                // Keeper's, so the row says who is missing rather than
-                                // offering work nobody in this party can do.
-                                let builder =
-                                    if kind == "smith" { "smithwright" } else { "keeper" };
-                                let have_builder =
-                                    roster.heroes.iter().any(|h| h.class_key == builder);
-                                col.spawn((glass::inset(focused), BuildStationButton { kind }))
-                                    .with_children(|row| {
-                                        let what = if kind == "smith" {
-                                            ("smith station", "ore", "Smithwright")
-                                        } else {
-                                            ("Keeper's still", "reagents", "Keeper")
-                                        };
-                                        let (label, tint) = if !have_builder {
-                                            (
-                                                format!(
-                                                    "Set up a {}   (needs a {} in the party)",
-                                                    what.0, what.2
-                                                ),
-                                                glass::DIM,
-                                            )
-                                        } else {
-                                            match stock {
-                                                Some((k, qty)) => (
-                                                    format!("Set up a {}   ({qty} {k})", what.0),
-                                                    glass::TEXT,
-                                                ),
-                                                None => (
-                                                    format!(
-                                                        "Set up a {}   (no {} carried)",
-                                                        what.0, what.1
-                                                    ),
-                                                    glass::DIM,
-                                                ),
-                                            }
-                                        };
-                                        row.spawn(glass::text(label, 19.0, tint));
-                                    });
-                            }
-                            // The structures, from the registry rather than a list here:
-                            // a new function is a row in `meld_proto::structures`, and a
-                            // hand-written list is a list a function gets left off.
-                            let ore = carried_for(&backpack, "smith");
-                            for (i, def) in meld_proto::structures::STRUCTURES.iter().enumerate() {
-                                let focused = depth == 1 && menu.cursor == 3 + i;
-                                col.spawn((
-                                    glass::inset(focused),
-                                    BuildStructureButton { function: def.key },
-                                ))
-                                .with_children(|row| {
-                                    let (label, tint) = match &ore {
-                                        Some((k, qty)) => (
-                                            format!("Raise a {}   ({qty} {k})", def.name),
-                                            glass::TEXT,
-                                        ),
-                                        None => (
-                                            format!("Raise a {}   (no ore carried)", def.name),
-                                            glass::DIM,
-                                        ),
-                                    };
-                                    row.spawn(glass::text(label, 19.0, tint));
-                                });
-                                col.spawn(glass::text(def.description, 14.0, glass::DIM));
-                            }
-                            col.spawn(glass::divider());
+                            // The centre column is the MAP. It used to sit under a stack of
+                            // action rows — a portal, two benches and one row per buildable —
+                            // and got whatever vertical space was left, which was not enough
+                            // to read a route off. The rows it shared with are choices ABOUT
+                            // the place, so they belong in the detail column beside it, the
+                            // way a hero's equipment sits beside the hero.
                             for line in [
                                 format!("Distance   {}", stats.distance),
                                 format!("Tier       {}", stats.tier),
@@ -821,10 +744,28 @@ pub(crate) fn render_main_menu(
                                             ..default()
                                         })
                                         .with_children(|txt| {
+                                            // Being DOWN, or carrying something that will
+                                            // not wear off, belongs on the same line as the
+                                            // name — a hero at 0 HP read as an ordinary
+                                            // row, and an affliction (which never expires
+                                            // out of combat) was invisible everywhere
+                                            // outside the battle screen.
+                                            let state = h.condition_label();
                                             txt.spawn(glass::text(
-                                                format!("{}   Lv {}", h.name, h.level),
+                                                if state.is_empty() {
+                                                    format!("{}   Lv {}", h.name, h.level)
+                                                } else {
+                                                    format!(
+                                                        "{}   Lv {}   {}",
+                                                        h.name, h.level, state
+                                                    )
+                                                },
                                                 21.0,
-                                                glass::TEXT,
+                                                if state.is_empty() {
+                                                    glass::TEXT
+                                                } else {
+                                                    glass::WARN
+                                                },
                                             ));
                                             txt.spawn(glass::text(
                                                 class_and_rank(&h.class_key, h.level),
@@ -914,6 +855,14 @@ pub(crate) fn render_main_menu(
                     }
                 });
 
+                // ---- column three. The Map's own choices live here, beside the map they
+                // act on; everything else uses it for a hero's gear or abilities.
+                if menu.section == Some(MenuSection::Map) {
+                    cols.spawn(glass::column(glass::COL_DETAIL)).with_children(|col| {
+                        map_actions(col, &menu, &backpack, &roster, depth, wa.as_deref());
+                    });
+                    return;
+                }
                 // ---- column three: a hero's gear, or a hero's abilities. Also always a
                 // slot, for the same reason.
                 let (Some(pane), Some(hero)) = (menu.pane, heroes.get(menu.member)) else {
@@ -1070,6 +1019,94 @@ fn hero_resource(class_key: &str) -> Option<String> {
         "psyker" => Some("Focus slots".to_string()),
         "resonant" => Some("Pays in its own HP".to_string()),
         _ => None,
+    }
+}
+
+/// The Map column's CHOICES: go home, raise a bench, raise a structure — one per row, in
+/// the detail column beside the map.
+///
+/// Split out of the centre column when the map moved into it. Every row here spends
+/// something you are carrying, which is why none of them is a hotkey: the primary way out of
+/// a dive belongs somewhere a player can find it.
+fn map_actions(
+    col: &mut ChildSpawnerCommands,
+    menu: &MainMenu,
+    backpack: &RunBackpack,
+    roster: &PartyRoster,
+    depth: u8,
+    wa: Option<&WorldAssets>,
+) {
+    let _ = wa;
+    col.spawn(glass::text("HERE".to_string(), 26.0, glass::TITLE));
+    col.spawn(glass::text(
+        "what you can do where you stand".to_string(),
+        13.0,
+        glass::DIM,
+    ));
+    col.spawn(glass::divider());
+    // Going home on a Town Portal is an ITEM use, so it is an explicit choice rather than a
+    // hotkey — the primary way out of a dive should be somewhere a player can FIND it.
+    let portals = backpack.count("town_portal");
+    let focused = depth == 1 && menu.cursor == 0;
+    col.spawn((Button, glass::inset(focused), ReturnToTownButton)).with_children(|row| {
+        let (label, tint) = if portals > 0 {
+            (format!("Return to town   ({portals})"), glass::TEXT)
+        } else {
+            ("Return to town   (none held)".to_string(), glass::DIM)
+        };
+        row.spawn(glass::text(label, 19.0, tint));
+    });
+    // Raising a field forge is an ITEM-shaped choice like the Town Portal above it: it
+    // spends ore you gathered, so it belongs on a row a player can read.
+    for (i, kind) in ["smith", "alembic"].into_iter().enumerate() {
+        let stock = carried_for(backpack, kind);
+        let focused = depth == 1 && menu.cursor == 1 + i;
+        // A forge is a Smithwright's bench and a still is a Keeper's, so the row says who is
+        // missing rather than offering work nobody in this party can do.
+        let builder = if kind == "smith" { "smithwright" } else { "keeper" };
+        let have_builder = roster.heroes.iter().any(|h| h.class_key == builder);
+        col.spawn((Button, glass::inset(focused), BuildStationButton { kind })).with_children(
+            |row| {
+                let what = if kind == "smith" {
+                    ("smith station", "ore", "Smithwright")
+                } else {
+                    ("Keeper's still", "reagents", "Keeper")
+                };
+                let (label, tint) = if !have_builder {
+                    (
+                        format!("Set up a {}   (needs a {} in the party)", what.0, what.2),
+                        glass::DIM,
+                    )
+                } else {
+                    match stock {
+                        Some((k, qty)) => {
+                            (format!("Set up a {}   ({qty} {k})", what.0), glass::TEXT)
+                        }
+                        None => {
+                            (format!("Set up a {}   (no {} carried)", what.0, what.1), glass::DIM)
+                        }
+                    }
+                };
+                row.spawn(glass::text(label, 19.0, tint));
+            },
+        );
+    }
+    // The structures, from the registry rather than a list here: a new function is a row in
+    // `meld_proto::structures`, and a hand-written list is a list a function gets left off.
+    let ore = carried_for(backpack, "smith");
+    for (i, def) in meld_proto::structures::STRUCTURES.iter().enumerate() {
+        let focused = depth == 1 && menu.cursor == 3 + i;
+        col.spawn((Button, glass::inset(focused), BuildStructureButton { function: def.key }))
+            .with_children(|row| {
+                let (label, tint) = match &ore {
+                    Some((k, qty)) => {
+                        (format!("Raise a {}   ({qty} {k})", def.name), glass::TEXT)
+                    }
+                    None => (format!("Raise a {}   (no ore carried)", def.name), glass::DIM),
+                };
+                row.spawn(glass::text(label, 19.0, tint));
+            });
+        col.spawn(glass::text(def.description, 14.0, glass::DIM));
     }
 }
 

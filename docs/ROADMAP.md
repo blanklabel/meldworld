@@ -2187,6 +2187,13 @@ the current build.
     (`run.hunt_progress`), because a goal you cannot watch fill is a goal you forget you
     have. Progress survives death: what a dive costs you is your Backpack, not your
     standing with a board.
+  - *A hunt has to be **taken*** — `POST /v1/hunts/:key/accept`, and only an accepted hunt
+    is credited. Every posted hunt used to track itself from the moment the account
+    existed (the first credit INSERTed the row), so the board read as eight jobs somebody
+    had signed you up for and the word "accept" had nothing behind it. Crediting an
+    unaccepted hunt now creates nothing at all; accepting starts it at 0 and is never
+    retroactive, and a second press is a no-op rather than a reset. The board's Accept /
+    Claim / Paid state is the row's own commit button.
   - *The reward is taken at the board, not granted on completion*, so finishing a hunt
     is a reason to come **home** — `POST /v1/hunts/:key/claim` pays chits + a material
     stack into the Vault, once per account, with the claim stamp and the payout in one

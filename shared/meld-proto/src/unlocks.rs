@@ -271,7 +271,29 @@ pub fn unlock_for_class(class: CharacterClass) -> Option<&'static UnlockDef> {
 }
 
 /// The wire view of an unlock, for the banner and the locked party-builder row.
-pub fn view(def: &UnlockDef) -> crate::realtime::run::UnlockView {
+/// The display name of the unlock `def` has to be held FIRST, if it has one.
+pub fn requires_name(def: &UnlockDef) -> Option<&'static str> {
+    def.requires.and_then(unlock).map(|u| u.name)
+}
+
+/// The WHOLE condition, as one sentence for a locked row: what to go and do, plus the
+/// seat that has to exist before doing it counts.
+///
+/// [`granted_by`] refuses an unlock whose prerequisite is not owned, and the row used to
+/// show `trigger_text` alone. So the Keeper advertised "Work a resource node dry" to a
+/// player who could not hold a third hero yet: they did it, repeatedly, and nothing
+/// happened, with nothing anywhere naming what was actually missing. Both halves travel
+/// together now, from the registry both sides read.
+pub fn how_to_earn(def: &UnlockDef, owned: &[String]) -> String {
+    match requires_name(def) {
+        Some(req) if !owned.iter().any(|o| Some(o.as_str()) == def.requires) => {
+            format!("{} (first: {req})", def.trigger_text)
+        }
+        _ => def.trigger_text.to_string(),
+    }
+}
+
+pub fn view(def: &UnlockDef, owned: &[String]) -> crate::realtime::run::UnlockView {
     let (kind, class_key, slot) = match def.kind {
         UnlockKind::PartySlot(n) => ("party_slot", None, Some(n)),
         UnlockKind::Class(c) => (
@@ -291,6 +313,8 @@ pub fn view(def: &UnlockDef) -> crate::realtime::run::UnlockView {
         slot,
         trigger_text: def.trigger_text.to_string(),
         banner: def.banner.to_string(),
+        requires_name: requires_name(def).map(str::to_string),
+        requires_met: def.requires.is_none_or(|r| owned.iter().any(|o| o == r)),
     }
 }
 
@@ -364,9 +388,55 @@ mod tests {
         // And it is a TITLE: no slot, no class, no power.
         let def = UNLOCKS.iter().find(|u| u.key == "title_pacifist").unwrap();
         assert!(matches!(def.kind, UnlockKind::Title));
-        let v = view(def);
+        let v = view(def, &[]);
         assert_eq!(v.kind, "title");
         assert!(v.class_key.is_none() && v.slot.is_none());
+    }
+
+    /// A locked row has to name EVERY condition, not just the fun one. The Keeper and the
+    /// Smithwright both sit behind `party_slot_3`, and `granted_by` silently refuses them
+    /// until it is held — so a player who worked a node dry (the Keeper's stated trigger)
+    /// got nothing and had no way to find out why.
+    #[test]
+    fn a_locked_unlock_names_the_prerequisite_it_is_waiting_on() {
+        for def in UNLOCKS {
+            let Some(req) = def.requires else { continue };
+            let req_name = requires_name(def)
+                .unwrap_or_else(|| panic!("{}'s prerequisite {req} is not in the registry", def.key));
+            // Nothing held: the sentence must carry both halves.
+            let cold = how_to_earn(def, &[]);
+            assert!(
+                cold.contains(def.trigger_text),
+                "{}: {cold:?} dropped what to go and do",
+                def.key
+            );
+            assert!(
+                cold.contains(req_name),
+                "{}: {cold:?} never names the {req_name} it is really waiting on",
+                def.key
+            );
+            // Prerequisite held: it is the only condition left, so saying it again is noise.
+            let warm = how_to_earn(def, &[req.to_string()]);
+            assert_eq!(
+                warm, def.trigger_text,
+                "{}: a met prerequisite should stop being mentioned",
+                def.key
+            );
+        }
+    }
+
+    /// The two profession classes are the reason this exists — hold them by name, since a
+    /// registry-wide rule passes trivially if nothing in it has a prerequisite.
+    #[test]
+    fn the_profession_classes_say_they_need_the_third_seat() {
+        for key in ["class_keeper", "class_smithwright"] {
+            let def = unlock(key).unwrap();
+            let line = how_to_earn(def, &[]);
+            assert!(
+                line.contains("Third party slot"),
+                "{key} advertises {line:?} with no mention of the seat it needs"
+            );
+        }
     }
 
     fn keys(v: Vec<&'static UnlockDef>) -> Vec<&'static str> {

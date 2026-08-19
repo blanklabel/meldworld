@@ -19,6 +19,9 @@ async fn start_server() -> String {
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1; // pin one hero so test timing stays stable
     balance.runs.town_portal_drop_chance = 0.0; // deterministic: no bonus Town Portal in the banked haul
+    // Kit is BOUGHT now (`[runs] starting_town_portals` is 0), and this test extracts to
+    // measure the skills extraction grows — it is not measuring the shop.
+    balance.runs.starting_town_portals = 1;
     let balance = Arc::new(balance);
     let config = meld_server::Config {
         bind_addr: "127.0.0.1:0".to_string(),

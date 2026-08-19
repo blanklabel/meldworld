@@ -592,6 +592,14 @@ pub(crate) fn pump_net(
                 bounties.loaded = true;
             }
             ServerMsg::HuntBoard { hunts: rows } => {
+                let mut rows = rows;
+                // Finished work first, then what is still in hand, then what has been paid.
+                // Sorted HERE and not in `hunts_view`, because the board's row order IS the
+                // claim order: the digit keys and `CounterRowButton` both index straight into
+                // this list, so a view that sorted its own rows would claim a different hunt
+                // than the one under the number. Stable, so the server's ordering survives
+                // inside each group.
+                rows.sort_by_key(|h| h.board_order());
                 hunts.cursor = hunts.cursor.min(rows.len().saturating_sub(1));
                 hunts.hunts = rows;
                 hunts.loaded = true;

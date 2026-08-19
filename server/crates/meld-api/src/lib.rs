@@ -73,6 +73,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/vendors/broker", get(broker_prices))
         .route("/v1/vendors/broker/sell", post(broker_sell))
         .route("/v1/hunts", get(hunt_board))
+        .route("/v1/hunts/:key/accept", post(accept_hunt))
         .route("/v1/hunts/:key/claim", post(claim_hunt))
         .route("/v1/bounties", get(bounty_board))
         .route("/v1/bounties/:bounty_id/claim", post(claim_bounty))
@@ -274,6 +275,7 @@ async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
             let row = rows.iter().find(|r| r.hunt_key == def.key);
             let progress = row.map_or(0, |r| r.progress);
             let claimed = row.is_some_and(|r| r.claimed);
+            let accepted = row.is_some_and(|r| r.accepted);
             let target = def.goal.target();
             HuntView {
                 key: def.key.to_string(),
@@ -292,6 +294,7 @@ async fn hunt_board(State(st): State<ApiState>, headers: HeaderMap) -> Result<Re
                     .map_or(0, |_| st.balance.hunt.reward_qty(def.tier)),
                 reward_gear: def.reward_gear,
                 where_to_look: where_to_look(&st.balance, def),
+                accepted,
             }
         })
         .collect();
@@ -515,6 +518,27 @@ async fn claim_bounty(
             Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such contract."))
         }
     }
+}
+
+/// `POST /v1/hunts/:key/accept` — TAKE a posted hunt, so its progress starts counting.
+///
+/// Idempotent: accepting one you already hold is a success and changes nothing, so a
+/// double-press at the board is not an error and cannot reset your progress.
+async fn accept_hunt(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    let Some(def) = meld_proto::hunts::hunt(&key) else {
+        return Err(ApiReject::new(StatusCode::NOT_FOUND, "not_found", "No such hunt."));
+    };
+    st.db.accept_hunt(player_id, def.key).await.map_err(ApiReject::internal)?;
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "key": def.key, "accepted": true })),
+    )
+        .into_response())
 }
 
 /// `POST /v1/hunts/:key/claim` — take the reward for a hunt you have finished.

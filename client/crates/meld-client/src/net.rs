@@ -385,16 +385,29 @@ pub struct DepthLine {
 }
 
 /// One row of the Vanguard Board as the city panel renders it.
-#[derive(Clone, Debug)]
+///
+/// The board records HOW a run got deep, not only how far, and the endpoint has always sent
+/// all of it — the client kept three fields, so the Wall was a list of names and numbers with
+/// nothing to look at when you clicked one.
+#[derive(Clone, Debug, Default)]
 pub struct VanguardLine {
     pub rank: i32,
     pub username: String,
     pub max_distance: i32,
+    /// The run level that posting was standing at when it set the mark.
+    pub at_level: i32,
+    /// Fights taken and fights fled on the way out. Going quietly is a real way to travel
+    /// (the Pacifist unlock), so both halves matter.
+    pub fights: i32,
+    pub flees: i32,
+    /// The END FIGHT's mark, if this posting felled it, and how long it took.
+    pub star: Option<String>,
+    pub clear_ms: Option<i64>,
 }
 
 /// One row of the Hunt Board as the Bounty Board panel renders it (AD-4). Every
 /// number is the server's answer, including the reward.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct HuntLine {
     pub key: String,
     pub name: String,
@@ -411,6 +424,24 @@ pub struct HuntLine {
     pub reward_gear: bool,
     /// Where to go to work it — the server's own answer, from the placement tables.
     pub where_to_look: String,
+    /// Whether this hunt has been TAKEN. Only an accepted hunt is credited.
+    pub accepted: bool,
+}
+
+impl HuntLine {
+    /// Where this hunt belongs on the board: finished work first, then what is still in
+    /// hand, then what has already been paid.
+    ///
+    /// A sort key rather than a comparison written at the call site, because the board's row
+    /// order IS its claim order — the digit keys and the row chips both index straight into
+    /// the list — so exactly one place may decide it.
+    pub fn board_order(&self) -> u8 {
+        match (self.claimed, self.claimable) {
+            (false, true) => 0,
+            (false, false) => 1,
+            _ => 2,
+        }
+    }
 }
 
 /// One bounty contract as the Quests column renders it (AD-4). Every number is the
@@ -556,6 +587,37 @@ pub struct HeroLine {
     /// expire, so most of them are felt out here: a distracted hero's controls are reversed
     /// and a blinded one can barely see.
     pub afflictions: Vec<String>,
+}
+
+impl HeroLine {
+    /// Down, and needing a raise rather than a bandage.
+    pub fn fallen(&self) -> bool {
+        self.hp <= 0
+    }
+
+    /// What is WRONG with this hero, in one short player-facing phrase — `"Fallen"`, or
+    /// the conditions holding them (`"Poisoned, Web"`) — and empty when they are fine.
+    ///
+    /// One helper because every surface that shows a hero has to agree: the party cell,
+    /// the plate over their head in the field, and anything added later. An affliction does
+    /// not expire (`meld_proto::statuses`), so out here it is a standing fact about the
+    /// hero, not a combat detail — and it went unsaid everywhere outside the battle screen.
+    pub fn condition_label(&self) -> String {
+        if self.fallen() {
+            return "Fallen".to_string();
+        }
+        self.afflictions
+            .iter()
+            .map(|a| {
+                let mut c = a.replace('_', " ");
+                if let Some(f) = c.get_mut(0..1) {
+                    f.make_ascii_uppercase();
+                }
+                c
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 type InvPayload = (i64, Vec<(String, i32)>, Vec<GearLine>, Vec<(String, i32)>);
@@ -1035,6 +1097,10 @@ impl Net {
     }
 
     /// Take the reward for a finished hunt, then refresh the board and the Vault.
+    pub fn accept_hunt(&self, key: String) {
+        self.0.borrow_mut().accept_hunt(key);
+    }
+
     pub fn claim_hunt(&self, key: String) {
         self.0.borrow_mut().claim_hunt(key);
     }
@@ -1746,6 +1812,24 @@ impl Inner {
         spawn_hunts_fetch(self.base.clone(), self.session_token.clone(), tx);
     }
 
+    /// POST `/v1/hunts/:key/accept`, then re-read the board so the row's new state is the
+    /// server's answer. No Vault re-read: taking a hunt pays nothing.
+    fn accept_hunt(&mut self, key: String) {
+        if self.session_token.is_empty() || key.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(format!("{base}/v1/hunts/{key}/accept"), Vec::new());
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        req.headers.insert("Content-Type", "application/json");
+        let (htx, hrx) = mpsc::channel();
+        self.hunts_rx = Some(hrx);
+        ehttp::fetch(req, move |_res| {
+            spawn_hunts_fetch(base, token, htx);
+        });
+    }
+
     /// POST `/v1/hunts/:key/claim`, then re-read the board and the Vault so what the
     /// panel shows is the server's answer rather than an optimistic guess.
     fn claim_hunt(&mut self, key: String) {
@@ -1800,6 +1884,11 @@ impl Inner {
                             rank,
                             username: e["username"].as_str().unwrap_or("?").to_string(),
                             max_distance: e["max_distance"].as_i64().unwrap_or(0) as i32,
+                            at_level: e["at_level"].as_i64().unwrap_or(0) as i32,
+                            fights: e["fights"].as_i64().unwrap_or(0) as i32,
+                            flees: e["flees"].as_i64().unwrap_or(0) as i32,
+                            star: e["star"].as_str().map(str::to_string),
+                            clear_ms: e["clear_ms"].as_i64(),
                         });
                     }
                 }
@@ -3006,6 +3095,7 @@ fn hunt_lines(res: &Result<ehttp::Response, String>) -> Vec<HuntLine> {
             reward_material_qty: h["reward_material_qty"].as_i64().unwrap_or(0) as i32,
             reward_gear: h["reward_gear"].as_bool().unwrap_or(false),
             where_to_look: h["where_to_look"].as_str().unwrap_or("").to_string(),
+            accepted: h["accepted"].as_bool().unwrap_or(false),
         })
         .collect()
 }
@@ -3391,6 +3481,51 @@ mod mob_state_tests {
             parse_mob_state("mob:dune_wyrm:wyrm:something"),
             ("dune_wyrm", "wyrm", false, false)
         );
+    }
+}
+
+#[cfg(test)]
+mod hero_condition_tests {
+    use super::*;
+
+    fn hero(hp: i32, afflictions: &[&str]) -> HeroLine {
+        HeroLine {
+            name: "Ash".into(),
+            class_key: "explorer".into(),
+            level: 5,
+            str_: 1,
+            mnd: 1,
+            dex: 1,
+            wll: 1,
+            max_hp: 50,
+            hp,
+            xp: 0,
+            xp_to_next: 1,
+            back_row: false,
+            afflictions: afflictions.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_healthy_hero_has_nothing_to_report() {
+        assert_eq!(hero(50, &[]).condition_label(), "");
+        assert!(!hero(50, &[]).fallen());
+    }
+
+    /// Being down outranks whatever else is on you: you need a raise, not a cure.
+    #[test]
+    fn fallen_wins_over_every_affliction() {
+        let h = hero(0, &["poison", "web"]);
+        assert!(h.fallen());
+        assert_eq!(h.condition_label(), "Fallen");
+    }
+
+    #[test]
+    fn conditions_read_as_words_not_wire_keys() {
+        assert_eq!(hero(30, &["poison"]).condition_label(), "Poison");
+        assert_eq!(hero(30, &["poison", "web"]).condition_label(), "Poison, Web");
+        // Multi-word keys ride the wire with an underscore in them.
+        assert_eq!(hero(30, &["gang_up"]).condition_label(), "Gang up");
     }
 }
 

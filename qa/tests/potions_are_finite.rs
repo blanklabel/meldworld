@@ -18,6 +18,9 @@ async fn start_server() -> (String, i32) {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1;
+    // Kit is BOUGHT now (`[runs] starting_salves` is 0). This test is about a pouch RUNNING
+    // OUT, so it has to be handed a countable one to run out of.
+    balance.runs.starting_salves = 3;
     let salves = balance.runs.starting_salves;
     let balance = Arc::new(balance);
     let config = meld_server::Config {

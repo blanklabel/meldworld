@@ -119,6 +119,21 @@ pub(crate) fn wall_preview_flag() -> bool {
     query_has("wall")
 }
 
+/// PICK a counter row on arrival, so the detail column's description + amount + commit
+/// buttons are on screen for a screenshot. The buy flow is two steps by design (a row picks,
+/// the third column commits), and the second step is exactly the half a capture cannot reach
+/// without a click. `MELD_PICK=<row>` / `?pick=<row>`, 0-based.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pick_preview_flag() -> Option<usize> {
+    std::env::var("MELD_PICK").ok().and_then(|v| v.parse().ok())
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn pick_preview_flag() -> Option<usize> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
+    params.get("pick").and_then(|v| v.parse().ok())
+}
+
 /// Open the Bounty Board's hunts on arrival in Last City (AD-4) — a stable frame for
 /// screenshots. Native: `MELD_HUNTS=1`. Browser: `?hunts`.
 #[cfg(not(target_arch = "wasm32"))]

@@ -88,6 +88,94 @@ pub(crate) fn spawn_heat_bar(p: &mut ChildSpawnerCommands) {
 }
 
 
+/// The red wash that says SOMETHING JUST HURT YOU.
+///
+/// Damage taken on the road — venom biting every few steps, the Force of a Shift — came off
+/// the party's HP with nothing on screen: the number only appeared if you happened to open
+/// the party panel, so bleeding out on a march was invisible right up to the fight you
+/// arrived nearly dead at. This is the tell.
+#[derive(Component)]
+pub(crate) struct HurtFlash;
+
+/// How much party HP we last saw, and how long the wash has left to run.
+///
+/// Driven off the ROSTER rather than a new message: `run.party` already carries every hero's
+/// current HP, and the server re-sends it when a bite lands, so a drop in the total is the
+/// signal. That also means anything else that quietly costs HP gets the same tell for free.
+#[derive(Resource, Default)]
+pub(crate) struct HurtWash {
+    /// Total party HP at the last roster we saw. `None` until the first one arrives — a
+    /// fresh roster must not read as damage.
+    pub(crate) last_total: Option<i32>,
+    /// Seconds of wash left.
+    pub(crate) left: f32,
+}
+
+/// The wash is a QUICK one — long enough to catch the eye, short enough not to sit over the
+/// world while you walk. A reminder, not a state.
+const HURT_FLASH_SECS: f32 = 0.28;
+/// How red it gets at its peak. Well under half, because it covers the whole screen and you
+/// are still steering through it.
+const HURT_FLASH_ALPHA: f32 = 0.34;
+
+/// Spawn the wash once, transparent.
+///
+/// Idempotent, because this runs on every `OnEnter(Overworld)` and the overworld is entered
+/// again after every battle. A second panel would not be a second wash — the two alphas
+/// multiply, so the flash would read darker each dive until it blacked the screen out.
+pub(crate) fn spawn_hurt_flash(mut commands: Commands, existing: Query<Entity, With<HurtFlash>>) {
+    if !existing.is_empty() {
+        return;
+    }
+    commands.spawn((
+        HurtFlash,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(0.0),
+            right: Val::Percent(0.0),
+            top: Val::Percent(0.0),
+            bottom: Val::Percent(0.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.7, 0.05, 0.06, 0.0)),
+        // Under the blind mask, over the world.
+        GlobalZIndex(38),
+    ));
+}
+
+/// Watch the party's total HP; wash the screen red when it drops, then fade it out.
+pub(crate) fn update_hurt_flash(
+    time: Res<Time>,
+    roster: Res<crate::PartyRoster>,
+    mut wash: ResMut<HurtWash>,
+    mut q: Query<&mut BackgroundColor, With<HurtFlash>>,
+) {
+    if !roster.heroes.is_empty() {
+        let total: i32 = roster.heroes.iter().map(|h| h.hp.max(0)).sum();
+        match wash.last_total {
+            // Only a DROP. Healing, levelling and a hero joining all move this number, and
+            // none of them should flash.
+            Some(was) if total < was => wash.left = HURT_FLASH_SECS,
+            _ => {}
+        }
+        wash.last_total = Some(total);
+    }
+    if wash.left <= 0.0 {
+        for mut c in &mut q {
+            if c.0.alpha() != 0.0 {
+                c.0.set_alpha(0.0);
+            }
+        }
+        return;
+    }
+    wash.left = (wash.left - time.delta_secs()).max(0.0);
+    // Fade out over the window, so the brightest instant is the moment it landed.
+    let a = HURT_FLASH_ALPHA * (wash.left / HURT_FLASH_SECS);
+    for mut c in &mut q {
+        c.0.set_alpha(a);
+    }
+}
+
 /// The blackout a BLINDED party sees: a full-screen mask with a small clear circle around
 /// the middle, so you can see your own feet and nothing else.
 #[derive(Component)]
@@ -2072,12 +2160,23 @@ pub(crate) fn sync_party_followers(
     look: Res<hd2d::Look>,
     pv: Res<PartyView>,
     session: Res<Session>,
+    roster: Res<PartyRoster>,
     lead_q: Query<(&WorldEntity, &Transform, &CharSprite), Without<PartyFollower>>,
     mut followers: Query<(Entity, &PartyFollower, &mut Transform), With<PartyFollower>>,
 ) {
+    // WHO is actually on this dive comes from the server's roster, not from
+    // `session.party` — that is the composition the client *asked* for, it defaults to a
+    // four-class spread for a newcomer, and the server clamps it to the slots the account
+    // has earned. Reading the request meant a player with two heroes walked the overworld
+    // trailed by four, two of whom were nobody.
+    let classes: Vec<&str> = if roster.heroes.is_empty() {
+        session.party.iter().map(String::as_str).collect()
+    } else {
+        roster.heroes.iter().map(|h| h.class_key.as_str()).collect()
+    };
     // How many followers we want: every party member after the lead (cap 3).
     let want = if pv.show {
-        session.party.len().min(4).saturating_sub(1)
+        classes.len().min(4).saturating_sub(1)
     } else {
         0
     };
@@ -2115,7 +2214,7 @@ pub(crate) fn sync_party_followers(
     let mut present: Vec<usize> = followers.iter().map(|(_, f, _)| f.slot).collect();
     for slot in 1..=want {
         if !present.contains(&slot) {
-            let class = session.party.get(slot).map(String::as_str).unwrap_or("explorer");
+            let class = classes.get(slot).copied().unwrap_or("explorer");
             spawn_follower(&mut commands, &mut mats, &wa, &look, class, slot, lead_pos + slot_offset(slot));
             present.push(slot);
         }
@@ -2193,7 +2292,14 @@ pub(crate) fn update_explorer_lamp(
 pub(crate) fn illuminate_players(
     sky: Res<Sky>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    sprites: Query<&MeshMaterial3d<StandardMaterial>, With<PlayerGlowSprite>>,
+    // NOT a battle sprite: `animate_battle_actors` owns the emissive on those, folding
+    // this same night glow in beside its flash and rage. Two unordered writers to one
+    // field is a coin flip per frame, and it read as the party's lights flickering
+    // through a whole fight.
+    sprites: Query<
+        &MeshMaterial3d<StandardMaterial>,
+        (With<PlayerGlowSprite>, Without<crate::battle::SpriteQuad>),
+    >,
     mut lamps: Query<(&mut PointLight, &BattlePartyLamp)>,
 ) {
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
@@ -4355,6 +4461,7 @@ pub(crate) fn update_action_hud(
     old: Query<Entity, With<ActionHud>>,
     wa: Option<Res<WorldAssets>>,
     tutorial_run: Res<TutorialRun>,
+    roster: Res<PartyRoster>,
 ) {
     for e in &old {
         commands.entity(e).despawn();
@@ -4388,7 +4495,25 @@ pub(crate) fn update_action_hud(
         _ => false,
     };
     let boon = boon_offer(&world, &session);
-    if target.is_none() && boon.is_none() && !session.channeling && pops.items.is_empty() {
+    // Who is hurt, and how. An affliction does NOT wear off (`meld_proto::statuses`), so a
+    // hero who caught one in a fight carries it down the road — and out here nothing said
+    // so: the venom biting per step and the bindings dragging the march were both invisible
+    // until the next battle screen. Named per hero, because the party travels as one avatar
+    // and "someone is poisoned" is not actionable.
+    let conditions: Vec<String> = roster
+        .heroes
+        .iter()
+        .filter_map(|h| {
+            let state = h.condition_label();
+            (!state.is_empty()).then(|| format!("{}: {state}", h.name))
+        })
+        .collect();
+    if target.is_none()
+        && boon.is_none()
+        && !session.channeling
+        && pops.items.is_empty()
+        && conditions.is_empty()
+    {
         return; // nothing to say, so nothing on screen (the [E]-only rule)
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
@@ -4443,7 +4568,8 @@ pub(crate) fn update_action_hud(
                 target.as_ref().map(|t| t.prompt())
             };
             let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
-            if line.is_none() && boon_line.is_none() && !session.channeling {
+            if line.is_none() && boon_line.is_none() && !session.channeling && conditions.is_empty()
+            {
                 return;
             }
             // One frosted plate holding the prompt and the bar, mostly see-through so it
@@ -4462,6 +4588,12 @@ pub(crate) fn update_action_hud(
                 BorderRadius::all(Val::Px(7.0)),
             ))
             .with_children(|plate| {
+                // Conditions first — above the prompts, because what is wrong with the party
+                // outranks what there is to press. NOT a chip: there is nothing to tap, and a
+                // chip is this UI's promise that something happens if you do.
+                for text in &conditions {
+                    plate.spawn(glass::text(text.clone(), 15.0, glass::WARN));
+                }
                 // Each prompt is its own chip, so touch has a target per action instead of
                 // one button in the corner that had to guess which you meant.
                 if let Some(text) = line {

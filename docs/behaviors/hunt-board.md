@@ -46,6 +46,8 @@ Progress is a single integer per (account, hunt), capped at the goal's target.
 
 | Rule | Behavior |
 |------|----------|
+| A hunt must be **taken** | Only an **accepted** hunt is credited. A posted hunt nobody took stays at 0 however many of its quarry you fell, and crediting one does not even create a row for it — `POST /v1/hunts/:key/accept` is the only thing that does. Before this every posted hunt tracked itself from the moment the account existed, so the board read as eight jobs somebody had signed you up for. |
+| Taking is not retroactive | Accepting starts a hunt at **0**, and re-accepting one you already hold changes nothing — a double-press at the board must not throw away the work already on it. |
 | Authority | Every credit is read off **server-owned state** — the felled creature's own kind and encounter class, the server-validated avatar position, the run's own distance record. There is no client-submitted progress path (CANON §S). |
 | Kill credit | On a won battle, **every participating player** is credited for **every creature in the encounter** — a co-op joiner earns the hunt too, on the same terms as the XP split. |
 | Depth credit | Posted off the same new-deepest-tile high-water mark as the Vanguard Board, so it is asked once per new record rather than on every step. |
@@ -149,7 +151,7 @@ how long is left) and everything already settled.
 ## Deliberately not in this cut
 
 The full `AD-4` design ([`../proposals/adventure-depth.md`](../proposals/adventure-depth.md) §E)
-also carries: an explicit *accept* step, bestiary ties (`CR-5`), co-op and guild hunts
+also carries: bestiary ties (`CR-5`), co-op and guild hunts
 (`SOC`), reputation, and hunt leaderboard points (`AD-6`). Named-creature contracts,
 rotation and expiry ship with bounties above; the fixed hunts are still posted for
 everyone, forever.
