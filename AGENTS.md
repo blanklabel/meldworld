@@ -692,7 +692,17 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
   absolute stats (`set_piece`), so the fight you meet at d30 is numerically the one you
   would meet at d3200. Keep `MELD_END_FIGHT_AT` above `[ai] hub_safe_radius` (13) or no
   creature spawns there to promote and nothing is placed at all.
-- **`MELD_GEAR_TIER=<n>`** dresses every hero as though wearing a full six-slot set of
+- ⚠️ **`MELD_GEAR_TIER` WAS INERT, and the measurements taken through it are suspect.**
+`form_run` dressed the party, then `flush_gear_loads` mirrored the real (usually empty) Vault
+into the world a tick later and overwrote it — so the flag held only until the first gear load
+landed. Measured today at tier 3: a level-28 party's skills did **-103 and -127 dressed, and
+-103 and -127 undressed**, identical to the digit, over an 80-turn fight against an 83-turn
+one. The dressing is now applied wherever `gear_bonuses` is written (`dress_for_dev`), not
+once at form_run. **Anything concluded from a "geared vs ungeared" comparison should be
+re-measured** — including the end-fight note that an ungeared level-100 party lasted 26
+hero-turns to a geared party's 25, which is exactly the reading an inert flag produces.
+
+**`MELD_GEAR_TIER=<n>`** dresses every hero as though wearing a full six-slot set of
   tier-`n` insured epics, without a Vault full of them. The end fight is tuned as a **gear
   check** (tier-32 gear is ~3.5x survivability there), so without this the only observable
   case is the ungeared one — which is exactly the number that does not need checking.
