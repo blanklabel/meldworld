@@ -39,6 +39,18 @@ pub struct Fighter {
     pub kind: CombatantKind,
     pub player_id: Option<Id>,
     pub monster_kind: Option<String>,
+    /// Which GROUP this combatant belongs to — enemies of the same type and their minions.
+    /// A PACK is how the encounter got assembled (what `group_around` pulled in) and is
+    /// only provenance; the group is the addressable unit: what a group-target ability
+    /// hits, and what gets flanked. Derived at battle assembly rather than carried through
+    /// the world, because a group is a property of the ENCOUNTER — the same creature is in
+    /// a different group depending on who it ended up standing with. `None` for heroes.
+    pub group_id: Option<u32>,
+    /// This combatant's group is being worked by more than one party, so its rear is no
+    /// longer covered — you cannot hide behind your front rank when two parties are on you
+    /// from different sides. Set by the battle, read by `to_wire`, so the client and the
+    /// damage rule can never disagree about it.
+    pub flanked: bool,
     pub level: i32,
     pub hp: i32,
     pub max_hp: i32,
@@ -256,6 +268,8 @@ impl Fighter {
             flees: false,
             boss_band: 0,
             pack_role: PackRole::None,
+            group_id: None,
+            flanked: false,
             back_row: false,
             focus_max: 0,
             free_casts: 0,
@@ -323,6 +337,15 @@ impl Fighter {
         }
         if self.back_row {
             v.push("row:back".to_string());
+        }
+        if let Some(g) = self.group_id {
+            v.push(format!("group:{g}"));
+        }
+        // A rank that stopped protecting has to SAY so, or the player watches their damage
+        // change and cannot tell why — the same "the rule exists but the screen never says
+        // it" shape as a status nothing draws.
+        if self.flanked {
+            v.push("flanked".to_string());
         }
         // Once-per-battle abilities that are already gone. Without this the row stays
         // enabled and the only feedback is a refusal — the same "the rule exists but the
@@ -612,6 +635,12 @@ pub struct Battle {
     /// Which fighter is acting right now (set alongside `active_skill`). `roll_dodge` reads
     /// it to find out whether the attacker is distracted.
     active_actor: Option<usize>,
+    /// Which PLAYERS have laid into each enemy group. Two or more distinct parties and the
+    /// group is flanked for the rest of the fight — the co-op answer to "a rank is relative":
+    /// one group's back row is another party's front, and once both are on it there is no
+    /// back row left to hide in. Earned rather than granted, so a co-op fight is not
+    /// automatically a flank on everything the moment it starts.
+    group_strikers: HashMap<u32, std::collections::HashSet<Id>>,
     back_row_target_weight: f64,
     skill_power_mult: f64,
     skill_heal_fraction: f64,
@@ -921,6 +950,7 @@ impl Battle {
             revive_hp_fraction: balance.consumable.revive_hp_fraction,
             active_skill: None,
             active_actor: None,
+            group_strikers: HashMap::new(),
             back_row_target_weight: balance.battle.back_row_target_weight,
             skill_power_mult: balance.battle.skill_power_mult,
             skill_heal_fraction: balance.battle.skill_heal_fraction,
@@ -4588,6 +4618,37 @@ impl Battle {
         self.apply_damage_reaching(target_i, dmg, true)
     }
 
+    /// Does the target's RANK soften this blow? The single reach rule.
+    ///
+    /// A back rank is protected from a physical blow — and from nothing else. A spell, an
+    /// elemental brand or a psychic Focus already reached it at full force, which is why
+    /// the back rank is a caster's problem to solve and a swordsman's wall. A **flanked**
+    /// group has no protection at all: two parties are on it from different sides and
+    /// there is no behind left.
+    fn softened_by_rank(&self, target_i: usize, physical: bool) -> bool {
+        let t = &self.fighters[target_i];
+        physical && t.back_row && !t.flanked
+    }
+
+    /// Record that the acting party has struck `target_i`'s group, and flank the group once
+    /// a second party has. Monotonic for the fight: having been surrounded is not something
+    /// a pack recovers from by the attackers looking away.
+    fn note_striker(&mut self, target_i: usize) {
+        let Some(group) = self.fighters[target_i].group_id else { return };
+        let Some(actor_i) = self.active_actor else { return };
+        let Some(who) = self.fighters.get(actor_i).and_then(|f| f.player_id.clone()) else {
+            return;
+        };
+        let seen = self.group_strikers.entry(group).or_default();
+        seen.insert(who);
+        if seen.len() < 2 {
+            return;
+        }
+        for f in self.fighters.iter_mut().filter(|f| f.group_id == Some(group)) {
+            f.flanked = true;
+        }
+    }
+
     /// `physical` decides whether the target's RANK protects it. A spell, a Focus or an
     /// elemental breath reaches the back rank at full force; only a physical blow has to
     /// cross the front line to land.
@@ -4622,10 +4683,20 @@ impl Battle {
         } else {
             Vec::new()
         };
+        // FLANKING. Record who is working this group before the rank is consulted: once a
+        // second party lays into it, its rear stops being covered for everyone. This is the
+        // co-op half of "a rank is relative" — one group's back row is another party's
+        // front — and it is derived from engagement rather than from coordinates, so the
+        // fight stays an ATB fight rather than becoming a tactics grid.
+        self.note_striker(target_i);
         // Back-row formation softens an incoming PHYSICAL blow (before Barrier/HP).
         // It used to soften everything, which made the back row a free 2x effective HP
         // for the whole party — nothing reached past it and nothing was given up for it.
-        let dmg = if physical && self.fighters[target_i].back_row {
+        //
+        // THE ONE PLACE reach is resolved. Rank, damage type and flank state all decide it
+        // together, and every hit in the game passes through here — a second copy of this
+        // rule at some other call site is the exact drift that has bitten this repo twice.
+        let dmg = if self.softened_by_rank(target_i, physical) {
             (dmg as f64 * self.back_row_damage_mult).round() as i32
         } else {
             dmg
@@ -9459,3 +9530,138 @@ mod deep_ladder_tests {
 
 }
 
+#[cfg(test)]
+mod grouping_and_flanking {
+    use super::*;
+
+    fn balance() -> Balance {
+        Balance::load_default().unwrap()
+    }
+
+    fn hero(id: &str, player: &str) -> Fighter {
+        let mut f = Fighter::new(
+            id.into(),
+            CombatantKind::Player,
+            Some(player.into()),
+            Some(id.into()),
+            1,
+            200,
+            40,
+            0,
+            50,
+        );
+        f.basic_attack_type = DamageType::Slash;
+        f
+    }
+
+    fn foe(id: &str, group: u32, back: bool) -> Fighter {
+        let mut f = Fighter::new(
+            id.into(),
+            CombatantKind::Monster,
+            None,
+            Some(id.into()),
+            1,
+            10_000,
+            10,
+            0,
+            1,
+        );
+        f.group_id = Some(group);
+        f.back_row = back;
+        f
+    }
+
+    fn arena(allies: Vec<Fighter>, enemies: Vec<Fighter>) -> Battle {
+        let b = balance();
+        Battle::new("b".into(), EncounterClass::Standard, allies, enemies, &b, 7)
+    }
+
+    fn hp_of(b: &Battle, id: &str) -> i32 {
+        b.fighters.iter().find(|f| f.combatant_id == id).map(|f| f.hp).unwrap()
+    }
+
+    fn strike(b: &mut Battle, attacker: &str, target: &str, dmg: i32) {
+        let ai = b.fighters.iter().position(|f| f.combatant_id == attacker).unwrap();
+        let ti = b.fighters.iter().position(|f| f.combatant_id == target).unwrap();
+        b.active_actor = Some(ai);
+        b.apply_damage_reaching(ti, dmg, true);
+        b.active_actor = None;
+    }
+
+    /// The rank's whole point: a sword lands soft on the rear while the front takes it all.
+    #[test]
+    fn a_back_rank_softens_a_physical_blow_and_a_front_rank_does_not() {
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("front", 0, false), foe("rear", 0, true)]);
+        strike(&mut b, "h", "front", 100);
+        strike(&mut b, "h", "rear", 100);
+        let (front_lost, rear_lost) = (10_000 - hp_of(&b, "front"), 10_000 - hp_of(&b, "rear"));
+        assert_eq!(front_lost, 100, "the front rank took a softened blow");
+        assert!(rear_lost < front_lost, "the rear took {rear_lost} of a 100 blow");
+    }
+
+    /// The co-op rule. One party alone cannot flank; a second party laying into the same
+    /// group strips its rear cover, for everyone, for the rest of the fight.
+    #[test]
+    fn a_second_party_on_the_same_group_flanks_it() {
+        let mut b = arena(
+            vec![hero("a", "p1"), hero("c", "p2")],
+            vec![foe("rear", 0, true)],
+        );
+        strike(&mut b, "a", "rear", 100);
+        let alone = 10_000 - hp_of(&b, "rear");
+        assert!(!b.fighters.iter().any(|f| f.flanked), "one party flanked a group by itself");
+
+        strike(&mut b, "c", "rear", 100);
+        let flanked = (10_000 - hp_of(&b, "rear")) - alone;
+        assert!(b.fighters.iter().any(|f| f.flanked), "two parties did not flank the group");
+        assert!(
+            flanked > alone,
+            "a flanked rear took {flanked} where the covered one took {alone}"
+        );
+    }
+
+    /// A flank is a property of the GROUP, not of the creature that got hit — surrounding a
+    /// knot of enemies exposes the whole knot.
+    #[test]
+    fn flanking_covers_every_member_of_the_group_and_no_other() {
+        let mut b = arena(
+            vec![hero("a", "p1"), hero("c", "p2")],
+            vec![foe("x", 0, true), foe("y", 0, true), foe("other", 1, true)],
+        );
+        strike(&mut b, "a", "x", 10);
+        strike(&mut b, "c", "x", 10);
+        let flanked = |id: &str| {
+            b.fighters.iter().find(|f| f.combatant_id == id).map(|f| f.flanked).unwrap()
+        };
+        assert!(flanked("x") && flanked("y"), "the group's other member was not flanked");
+        assert!(!flanked("other"), "an untouched group was flanked");
+    }
+
+    /// The same party hitting a group repeatedly is not a flank. Without this, any solo
+    /// player would flank everything by attacking twice.
+    #[test]
+    fn one_party_never_flanks_however_hard_it_swings() {
+        let mut b = arena(
+            vec![hero("a", "p1"), hero("b", "p1")],
+            vec![foe("rear", 0, true)],
+        );
+        for _ in 0..6 {
+            strike(&mut b, "a", "rear", 10);
+            strike(&mut b, "b", "rear", 10);
+        }
+        assert!(
+            !b.fighters.iter().any(|f| f.flanked),
+            "two heroes of ONE party flanked a group — flanking is per party, not per hero"
+        );
+    }
+
+    /// A spell reached the back rank at full force before any of this, and must still.
+    #[test]
+    fn the_rear_never_softened_anything_but_a_physical_blow() {
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("rear", 0, true)]);
+        let ti = b.fighters.iter().position(|f| f.combatant_id == "rear").unwrap();
+        b.active_actor = Some(0);
+        b.apply_damage_reaching(ti, 100, false);
+        assert_eq!(10_000 - hp_of(&b, "rear"), 100, "a spell was softened by a back rank");
+    }
+}

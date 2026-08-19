@@ -901,6 +901,16 @@ pub fn build_battle(
         }
     }
 
+    // Stable group ids for this encounter, one per creature TYPE present. A boss fighting
+    // under its own name is still its species for grouping — what a player sees is a knot
+    // of the same thing, and that is what a group-target ability should hit.
+    let mut groups: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for (m, _) in enemies.iter() {
+        let next = groups.len() as u32;
+        groups.entry(m.monster_kind.clone()).or_insert(next);
+    }
+    let group_of = |kind: &str| groups.get(kind).copied().unwrap_or(0);
+
     // One enemy Fighter per grouped creature, carrying its faction + flee flag so
     // the battle can pit factions against each other.
     let mut enemy_fighters: Vec<Fighter> = enemies
@@ -945,6 +955,12 @@ pub fn build_battle(
             // through at full force — so a pack's rear is answered by a caster and shrugs
             // off a sword, without a line of new combat code.
             f.back_row = m.back_row;
+            // GROUP: enemies of the same type and their minions. Derived here rather than
+            // carried through the world, because a group is a property of the ENCOUNTER —
+            // the same creature belongs to a different group depending on who it ended up
+            // standing with, and there are sixteen places a spawn is created but exactly
+            // one place a battle is assembled.
+            f.group_id = Some(group_of(&m.monster_kind));
             // CR-6: carry the creature's pack role into the fight, so the engine can
             // shield a leader with its minions and rout them when it falls.
             f.pack_role = meld_proto::enums::PackRole::from_encounter_class(&m.encounter_class);

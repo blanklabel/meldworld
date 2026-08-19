@@ -225,6 +225,28 @@ from a slow one. The **fighter itself** wears the colour too, as a rim around it
 (`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
 in a fight the eye is on the arena.
 
+**AN ENCOUNTER IS PACKS OF GROUPS, AND A RANK IS RELATIVE.** A **pack** is how the fight got
+assembled (what `group_around` pulled in) and is only provenance; a **group** — enemies of
+the same type and their minions — is the addressable unit, and it is derived at BATTLE
+ASSEMBLY rather than carried through the world. That is deliberate: a group is a property of
+the encounter (the same creature belongs to a different one depending on who it ended up
+standing with), and there are sixteen places a spawn is created against exactly one place a
+battle is built.
+
+**Reach is resolved in ONE function** (`softened_by_rank`), inside the one funnel every hit
+already passes through (`apply_damage_reaching`). Rank, damage type and flank state decide
+it together. A second copy of that rule at any other call site is the exact drift that has
+bitten this repo twice — the wall-collision line that went into one mover and not the other,
+and the two copies of "what blocks".
+
+**FLANKING is the co-op answer to "a rank is relative".** One group's back row is another
+party's front, and once **two distinct parties** have laid into the same group its rear stops
+being covered — for everyone, for the rest of the fight (`group_strikers`). It is derived
+from ENGAGEMENT rather than from coordinates, so the fight stays an ATB fight instead of
+becoming a tactics grid, and it is EARNED: two heroes of one party never flank however hard
+they swing, or a solo player would flank everything by attacking twice. It rides the wire as
+`flanked`, because a rank that stopped protecting has to say so.
+
 **CREATURES STAND IN RANKS TOO.** A pack of three or more forms two: the leader and the
 front half hold the line, the rest stand behind (`MonsterSpawn::back_row`, carried into the
 fight as `Fighter::back_row`). It is the SAME trade a hero's back row makes, in the same
