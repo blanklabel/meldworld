@@ -635,6 +635,7 @@ pub(crate) fn battle_click_target(
     mut battle: ResMut<BattleData>,
     mut target: ResMut<BattleTarget>,
     mut press: Local<Option<Vec2>>,
+    mut tutorial_run: ResMut<TutorialRun>,
 ) {
     // Gather a click point: a no-drag mouse click (drags orbit the camera) or a tap.
     let mut point = None;
@@ -687,7 +688,7 @@ pub(crate) fn battle_click_target(
         if let Some(idx) = menu.rows.iter().position(|(_, v)| *v == eid) {
             let class = battle.active_class();
             let held = held_potions(&backpack, battle.active_slot());
-            select_entry(idx, &mut menu, &mut battle, &class, &held, &roster);
+            select_entry(idx, &mut menu, &mut battle, &class, &held, &roster, &mut tutorial_run);
         }
         return;
     }
@@ -695,7 +696,7 @@ pub(crate) fn battle_click_target(
     target.selected = Some(eid.clone());
     if battle.active_class() != "psyker" {
         if let Some(active) = battle.active.clone() {
-            queue_order(&mut battle, &active, QueuedKind::Attack, Some(eid), &mut menu);
+            queue_order(&mut battle, &active, QueuedKind::Attack, Some(eid), &mut menu, &mut tutorial_run);
         }
     }
 }
@@ -815,22 +816,34 @@ pub(crate) fn queue_order(
     kind: QueuedKind,
     target: Option<String>,
     menu: &mut BattleMenu,
+    tutorial_run: &mut TutorialRun,
 ) {
     battle.queued.insert(hero.to_string(), Order { kind, target });
     battle.active = pick_active(battle).or_else(|| Some(hero.to_string()));
     reset_menu(menu);
+    // The guided [T]-dive walkthrough's "what to click" step: the first order
+    // submitted, of any kind, is proof the player found the command menu.
+    if tutorial_run.step == Some(TutorialStep::Fight) {
+        tutorial_run.step = Some(TutorialStep::Dungeon);
+    }
 }
 
 /// Begin an order for `hero`: self-cast orders queue immediately; aimed orders open the
 /// Target picker (auto-picking when only one valid target exists).
-pub(crate) fn begin_order(battle: &mut BattleData, menu: &mut BattleMenu, hero: &str, kind: QueuedKind) {
+pub(crate) fn begin_order(
+    battle: &mut BattleData,
+    menu: &mut BattleMenu,
+    hero: &str,
+    kind: QueuedKind,
+    tutorial_run: &mut TutorialRun,
+) {
     match order_side(kind) {
-        None => queue_order(battle, hero, kind, None, menu),
+        None => queue_order(battle, hero, kind, None, menu, tutorial_run),
         Some(side) => {
             let targets = valid_targets(battle, side);
             match targets.len() {
                 0 => reset_menu(menu), // nothing valid to hit — abandon the choice
-                1 => queue_order(battle, hero, kind, Some(targets[0].1.clone()), menu),
+                1 => queue_order(battle, hero, kind, Some(targets[0].1.clone()), menu, tutorial_run),
                 _ => {
                     menu.pending = Some((hero.to_string(), kind));
                     menu.rows = targets;
@@ -1050,6 +1063,7 @@ pub(crate) fn select_entry(
     class: &str,
     held: &[(String, i32)],
     roster: &crate::PartyRoster,
+    tutorial_run: &mut TutorialRun,
 ) {
     let active = match battle.active.clone() {
         Some(a) => a,
@@ -1064,11 +1078,13 @@ pub(crate) fn select_entry(
         };
         match menu.level {
             MenuLevel::Target => match menu.pending.clone() {
-                Some((actor, kind)) => queue_order(battle, &actor, kind, Some(value), menu),
+                Some((actor, kind)) => queue_order(battle, &actor, kind, Some(value), menu, tutorial_run),
                 None => reset_menu(menu),
             },
             MenuLevel::Revoke => match manifest_static(&value) {
-                Some(kind) => queue_order(battle, &active, QueuedKind::Focus("revoke", kind), None, menu),
+                Some(kind) => {
+                    queue_order(battle, &active, QueuedKind::Focus("revoke", kind), None, menu, tutorial_run)
+                }
                 None => reset_menu(menu),
             },
             _ => unreachable!(),
@@ -1093,22 +1109,24 @@ pub(crate) fn select_entry(
         return;
     }
     match entry.action {
-        EntryAction::Attack => begin_order(battle, menu, &active, QueuedKind::Attack),
-        EntryAction::Defend => begin_order(battle, menu, &active, QueuedKind::Defend),
+        EntryAction::Attack => begin_order(battle, menu, &active, QueuedKind::Attack, tutorial_run),
+        EntryAction::Defend => begin_order(battle, menu, &active, QueuedKind::Defend, tutorial_run),
         EntryAction::OpenSkills => open_page(menu, MenuLevel::Skills),
         EntryAction::OpenItems => open_page(menu, MenuLevel::Items),
-        EntryAction::Skill(kind) => begin_order(battle, menu, &active, QueuedKind::Skill(kind)),
-        EntryAction::Item(id) => begin_order(battle, menu, &active, QueuedKind::Item(id)),
+        EntryAction::Skill(kind) => {
+            begin_order(battle, menu, &active, QueuedKind::Skill(kind), tutorial_run)
+        }
+        EntryAction::Item(id) => begin_order(battle, menu, &active, QueuedKind::Item(id), tutorial_run),
         // Psyker: Focus opens the manifestation list; Revoke lists the live Foci.
         EntryAction::OpenManifest => open_page(menu, MenuLevel::Manifest),
         EntryAction::OpenRevoke => open_revoke_page(menu, battle, &active),
         // Cast, or reinforce if already active; begin_order aims offensive ones.
         EntryAction::Manifest(kind) => {
             let verb = manifest_verb(battle, &active, kind);
-            begin_order(battle, menu, &active, QueuedKind::Focus(verb, kind));
+            begin_order(battle, menu, &active, QueuedKind::Focus(verb, kind), tutorial_run);
         }
-        EntryAction::Hold => begin_order(battle, menu, &active, QueuedKind::Hold),
-        EntryAction::Flee => begin_order(battle, menu, &active, QueuedKind::Flee),
+        EntryAction::Hold => begin_order(battle, menu, &active, QueuedKind::Hold, tutorial_run),
+        EntryAction::Flee => begin_order(battle, menu, &active, QueuedKind::Flee, tutorial_run),
         EntryAction::Back => reset_menu(menu),
     }
 }
@@ -1202,6 +1220,7 @@ pub(crate) fn menu_keyboard(
     roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
+    mut tutorial_run: ResMut<TutorialRun>,
 ) {
     // The fight is already won/lost/fled — the victory/loot tally is up, so no
     // keyboard shortcut should be able to queue another action behind it (see
@@ -1302,7 +1321,7 @@ pub(crate) fn menu_keyboard(
         };
         if let Some(i) = pick {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class, &held, &roster);
+            select_entry(i, &mut menu, &mut battle, &class, &held, &roster, &mut tutorial_run);
         }
         return;
     }
@@ -1322,12 +1341,12 @@ pub(crate) fn menu_keyboard(
     for (i, key) in digits.iter().enumerate() {
         if i < n && keys.just_pressed(*key) {
             menu.cursor = i;
-            select_entry(i, &mut menu, &mut battle, &class, &held, &roster);
+            select_entry(i, &mut menu, &mut battle, &class, &held, &roster, &mut tutorial_run);
             return;
         }
     }
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        select_entry(menu.cursor, &mut menu, &mut battle, &class, &held, &roster);
+        select_entry(menu.cursor, &mut menu, &mut battle, &class, &held, &roster, &mut tutorial_run);
     }
 }
 
@@ -1338,6 +1357,7 @@ pub(crate) fn menu_click(
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     rows: Query<(&Interaction, &MenuRow), Changed<Interaction>>,
+    mut tutorial_run: ResMut<TutorialRun>,
 ) {
     let mut pressed = None;
     for (interaction, row) in &rows {
@@ -1349,7 +1369,7 @@ pub(crate) fn menu_click(
         menu.cursor = index;
         let class = battle.active_class();
         let held = held_potions(&backpack, battle.active_slot());
-        select_entry(index, &mut menu, &mut battle, &class, &held, &roster);
+        select_entry(index, &mut menu, &mut battle, &class, &held, &roster, &mut tutorial_run);
     }
 }
 
@@ -1433,6 +1453,7 @@ pub(crate) fn rebuild_command_menu(
     mut menu: ResMut<BattleMenu>,
     roster: Res<crate::PartyRoster>,
     existing: Query<Entity, With<CommandWindow>>,
+    tutorial_run: Res<TutorialRun>,
 ) {
     // The fight is over the moment the loot report is up (victory/chest tally) —
     // hidden here rather than left to decay naturally, since `battle.active` isn't
@@ -1443,7 +1464,12 @@ pub(crate) fn rebuild_command_menu(
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
     // and the Tactics state so the tap toggle's label refreshes when it flips.
-    let sig = format!("{show}|{active_id}|{level:?}|{}|{}", menu.rows.len(), tactics.0);
+    let sig = format!(
+        "{show}|{active_id}|{level:?}|{}|{}|{:?}",
+        menu.rows.len(),
+        tactics.0,
+        tutorial_run.step
+    );
     if !menu.dirty && sig == menu.sig {
         return;
     }
@@ -1474,6 +1500,11 @@ pub(crate) fn rebuild_command_menu(
     let neutral_text = Color::srgb(0.92, 0.94, 1.0);
     let gold = Color::srgb(1.0, 0.85, 0.45);
     let red = Color::srgb(1.0, 0.55, 0.5);
+    // The guided [T]-dive walkthrough's "what to click" step: brighten Attack's
+    // own border in place rather than an overlay box, same idiom as everywhere
+    // else in this feature.
+    let attack_highlight = tutorial_run.step == Some(TutorialStep::Fight);
+    let attack_edge = if attack_highlight { glass::ACTIVE_EDGE } else { gold };
 
     // Row label + enabled state + Adrenaline cost (if any) for the list renderer:
     // the dynamic Target/Revoke pages draw from `menu.rows` (+ a Back row, always
@@ -1651,7 +1682,7 @@ pub(crate) fn rebuild_command_menu(
                                     // mdi glyphs (see UiFont): flask=Item, sword=Attack,
                                     // shield=Defend, run-fast=Flee, auto-fix=Skill.
                                     cmd_tile(r, 2, "\u{f0093} Item", 92.0, neutral_edge, neutral_text);
-                                    cmd_tile(r, 0, "\u{f04e5} Attack", 92.0, gold, gold);
+                                    cmd_tile(r, 0, "\u{f04e5} Attack", 92.0, attack_edge, gold);
                                     cmd_tile(r, 1, "\u{f132} Defend", 92.0, neutral_edge, neutral_text);
                                 });
                             cross

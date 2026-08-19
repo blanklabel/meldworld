@@ -704,7 +704,7 @@ pub(crate) fn city_input(
     mut pending: ResMut<PendingPurchase>,
     // Grouped for the same reason as `boards` above: this system is already at
     // Bevy's 16-param ceiling.
-    (unlocks, tutorial): (Res<UnlocksRes>, Res<Tutorial>),
+    (unlocks, tutorial, mut tutorial_run): (Res<UnlocksRes>, Res<Tutorial>, ResMut<TutorialRun>),
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
@@ -743,6 +743,9 @@ pub(crate) fn city_input(
         } else {
             "stepping through The Threshold...".to_string()
         };
+        if tutorial_dive {
+            tutorial_run.pending_arm = true;
+        }
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
             tutorial: tutorial_dive,

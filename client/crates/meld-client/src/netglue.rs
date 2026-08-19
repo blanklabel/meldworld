@@ -249,6 +249,16 @@ pub(crate) fn pump_net(
                     net.0.send(ClientCmd::OnboardingRunSeen);
                     announce.tutorial.show_run_popup = true;
                 }
+                // Arm the guided [T]-dive step-by-step walkthrough the moment the
+                // server confirms the dive actually began (mirrors the briefing's
+                // own arm point above, for the same reason: not confirmed at the
+                // Dive/T keypress itself).
+                if announce.tutorial_run.pending_arm {
+                    announce.tutorial_run.pending_arm = false;
+                    announce.tutorial_run.step = Some(TutorialStep::Harvest);
+                    announce.tutorial_run.harvested = false;
+                    announce.tutorial_run.chest_opened = false;
+                }
             }
             ServerMsg::LobbyState { code, host, members } => {
                 lobby.in_lobby = true;
@@ -450,6 +460,19 @@ pub(crate) fn pump_net(
                 report.items = items;
                 report.gear = gear;
                 report.elapsed = 0.0;
+                // Order-independent: a curious player can open the chest before
+                // harvesting (nothing blocks it, and a chest can't be reopened to
+                // fix a missed advance later), so this must not require
+                // `harvested` first — only gate on it to decide whether BOTH are
+                // now done.
+                if announce.tutorial_run.step == Some(TutorialStep::Harvest)
+                    && !announce.tutorial_run.chest_opened
+                {
+                    announce.tutorial_run.chest_opened = true;
+                    if announce.tutorial_run.harvested {
+                        announce.tutorial_run.step = Some(TutorialStep::Fight);
+                    }
+                }
             }
             ServerMsg::ChannelStarted { fill_ms, method, .. } => {
                 session.channeling = true;
@@ -474,6 +497,10 @@ pub(crate) fn pump_net(
                 end.chits = chits;
                 end.gear = gear;
                 next.set(Screen::Ended);
+                // Dying, fleeing, or extracting some other way than the tutorial's
+                // own "Go back to town" button must not leave stale walkthrough
+                // state armed for the player's next, non-tutorial dive.
+                announce.tutorial_run.step = None;
             }
             ServerMsg::InventoryData {
                 chits,
@@ -529,7 +556,20 @@ pub(crate) fn pump_net(
                     }
                 }
             }
-            ServerMsg::Harvested { kind, qty } => pops.banked(&kind, qty),
+            ServerMsg::Harvested { kind, qty } => {
+                pops.banked(&kind, qty);
+                // Order-independent (see the matching comment on ChestOpened): a
+                // player may open the chest before harvesting, so this only
+                // requires this half to advance the shared step.
+                if announce.tutorial_run.step == Some(TutorialStep::Harvest)
+                    && !announce.tutorial_run.harvested
+                {
+                    announce.tutorial_run.harvested = true;
+                    if announce.tutorial_run.chest_opened {
+                        announce.tutorial_run.step = Some(TutorialStep::Fight);
+                    }
+                }
+            }
             ServerMsg::VaultNotice { text } => notice.say(text, clock.elapsed_secs_f64()),
             ServerMsg::CraftResult { text } => {
                 craft.last = text;

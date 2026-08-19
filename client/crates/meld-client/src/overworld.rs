@@ -4329,6 +4329,7 @@ pub(crate) fn update_action_hud(
     players: Query<(&WorldEntity, &GlobalTransform)>,
     old: Query<Entity, With<ActionHud>>,
     wa: Option<Res<WorldAssets>>,
+    tutorial_run: Res<TutorialRun>,
 ) {
     for e in &old {
         commands.entity(e).despawn();
@@ -4351,6 +4352,16 @@ pub(crate) fn update_action_hud(
 
 
     let target = interact_target(&world, &session);
+    // The guided [T]-dive walkthrough coaches by brightening this exact prompt
+    // chip in place (no overlay box) when it matches the step still owed.
+    let highlight = match (tutorial_run.step, &target) {
+        (Some(TutorialStep::Harvest), Some(Interact::Harvest { .. })) => !tutorial_run.harvested,
+        (Some(TutorialStep::Harvest), Some(Interact::OpenChest { .. })) => {
+            tutorial_run.harvested && !tutorial_run.chest_opened
+        }
+        (Some(TutorialStep::Dungeon), Some(Interact::EnterDungeon { .. })) => true,
+        _ => false,
+    };
     let boon = boon_offer(&world, &session);
     if target.is_none() && boon.is_none() && !session.channeling && pops.items.is_empty() {
         return; // nothing to say, so nothing on screen (the [E]-only rule)
@@ -4430,7 +4441,7 @@ pub(crate) fn update_action_hud(
                 // one button in the corner that had to guess which you meant.
                 if let Some(text) = line {
                     plate
-                        .spawn((Button, ActionHudTap, glass::chip(false)))
+                        .spawn((Button, ActionHudTap, glass::chip(highlight)))
                         .with_children(|b| {
                             b.spawn(glass::text(text, 15.0, glass::TEXT));
                         });

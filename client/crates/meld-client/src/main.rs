@@ -200,6 +200,7 @@ fn main() {
         .init_resource::<LevelUpQueue>()
         .init_resource::<UnlocksRes>()
         .init_resource::<Tutorial>()
+        .init_resource::<TutorialRun>()
         .init_resource::<LoadoutData>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
@@ -381,6 +382,13 @@ fn main() {
                 despawn::<world_render::DungeonDecor>,
                 despawn::<ChestEntity>,
                 despawn::<LootReportRoot>,
+                // The guided-dive walkthrough's own UI is only ever managed by
+                // systems gated to Overworld — despawn explicitly on the way out
+                // (to Battle, or back to the City/Ended screens) rather than
+                // leaving an orphaned card no longer-running system will clear.
+                despawn::<tutorial::TutorialCaptionRoot>,
+                despawn::<tutorial::TutorialExplainRoot>,
+                despawn::<tutorial::TutorialCompleteRoot>,
             ),
         )
         .add_systems(
@@ -416,6 +424,23 @@ fn main() {
         .add_systems(
             Update,
             tutorial::first_run_popup.run_if(in_state(Screen::Overworld)),
+        )
+        // Onboarding: the [T]-dive step-by-step walkthrough. The caption card is
+        // Overworld-only — once a fight actually starts, the highlighted Attack
+        // tile in the command menu is the coaching, and the caption would only
+        // be noise sitting over the battle UI.
+        .add_systems(
+            Update,
+            tutorial::render_tutorial_caption.run_if(in_state(Screen::Overworld)),
+        )
+        .add_systems(
+            Update,
+            (
+                tutorial::dungeon_explain_card,
+                tutorial::tutorial_complete_popup,
+                tutorial::tutorial_complete_buttons,
+            )
+                .run_if(in_state(Screen::Overworld)),
         )
         .add_systems(
             Update,
@@ -1077,6 +1102,7 @@ struct Announce<'w> {
     levelup: ResMut<'w, LevelUpQueue>,
     unlocks: ResMut<'w, UnlocksRes>,
     tutorial: ResMut<'w, Tutorial>,
+    tutorial_run: ResMut<'w, TutorialRun>,
 }
 
 /// Per-account onboarding popups: the town welcome tour and the first-dive
@@ -1100,6 +1126,34 @@ struct Tutorial {
     /// handler the moment a fresh run is confirmed, cleared once the briefing
     /// has been shown/dismissed so re-entering Overworld later doesn't re-trigger it.
     show_run_popup: bool,
+}
+
+/// The `[T]` guided practice dive's step-by-step walkthrough. Unlike `Tutorial`
+/// above, this is never persisted — a `[T]` dive is a deliberately repeatable
+/// practice action, so the walkthrough re-arms fresh every time one begins and
+/// lives purely in client memory.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TutorialStep {
+    /// Covers both harvesting the starter node and opening the starter chest —
+    /// see `TutorialRun::harvested`/`chest_opened` for which of the two is owed.
+    Harvest,
+    Fight,
+    Dungeon,
+    /// The "What is a Dungeon?" card is up, waiting to be dismissed.
+    Explain,
+    /// The "you have completed the tutorial" popup is up.
+    Done,
+}
+
+#[derive(Resource, Default)]
+struct TutorialRun {
+    /// Set the instant a `[T]` dive is sent; consumed by the next `RunStarted`
+    /// to arm `step` (the server hasn't confirmed the dive yet at send-time).
+    pending_arm: bool,
+    /// `None` = no guided walkthrough active (a normal dive, or not yet armed).
+    step: Option<TutorialStep>,
+    harvested: bool,
+    chest_opened: bool,
 }
 
 /// Marker for spawned path-trail dots (despawned when the path changes).
