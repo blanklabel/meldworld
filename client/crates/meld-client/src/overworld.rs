@@ -95,7 +95,14 @@ pub(crate) struct BlindMask;
 
 /// Spawn the mask once, hidden. It is four opaque panels leaving a gap in the centre rather
 /// than a texture, because the gap has to scale with the window and a bitmap would not.
-pub(crate) fn spawn_blind_mask(mut commands: Commands) {
+///
+/// Idempotent: this runs on every `OnEnter(Screen::Overworld)`, so a return from battle would
+/// otherwise stack another four opaque panels on the first four, and `update_blind_mask` shows
+/// ALL of them — a blinded party would get strictly darker with every fight it walked out of.
+pub(crate) fn spawn_blind_mask(mut commands: Commands, existing: Query<Entity, With<BlindMask>>) {
+    if !existing.is_empty() {
+        return;
+    }
     for (left, right, top, bottom) in [
         (0.0, 0.0, 0.0, 62.0),   // above the gap
         (0.0, 0.0, 62.0, 0.0),   // below it
@@ -3391,6 +3398,24 @@ mod tests {
             *app.world().get::<Visibility>(prop).unwrap(),
             Visibility::Hidden,
             "ground props must not draw over the combatants"
+        );
+    }
+
+    // The mask spawns on every entry to the overworld, and the panels are opaque. Walking
+    // out of four battles used to leave twenty panels stacked, all of which
+    // `update_blind_mask` shows — so a blinded party got strictly darker the longer the
+    // session ran, and the entity count never came back down.
+    #[test]
+    fn returning_to_the_overworld_does_not_stack_a_second_blackout() {
+        let mut app = App::new();
+        app.add_systems(Update, spawn_blind_mask);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(
+            app.world_mut().query::<&BlindMask>().iter(app.world()).count(),
+            4,
+            "one blackout, four panels - re-entering the overworld must not add more"
         );
     }
 
