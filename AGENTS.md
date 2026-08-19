@@ -225,6 +225,22 @@ from a slow one. The **fighter itself** wears the colour too, as a rim around it
 (`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
 in a fight the eye is on the arena.
 
+**A CLASS DOES NOT HAVE A DAMAGE TYPE — ITS WEAPON DOES** (`ItemFamily::damage_type`). That
+is the only way `ArmorWeight` becomes a *loadout* decision instead of a table: plate turns an
+edge and fears a hammer, mail defeats a cut and lets a spike through, so the **sling is the
+answer to plate and the bow the answer to mail**. Typed by class, every Hunter arrow cut like
+a sword and the two ranged families were mechanically identical.
+`UNARMED_ATTACK_TYPE` (Blunt) is the fallback for a hand with no physical answer of its own —
+a caster's focus, a shield, nothing at all — and it is Blunt rather than `None` **on purpose**:
+`DamageType::None` bypasses the modifier map entirely (every resistance and immunity ignored)
+and now the rank trade too, so it is not a neutral default, it is TRUE damage. Three classes
+dealt it for a whole release because the type came from a hand-written table of classes.
+There is no path to it for a hero any more.
+
+⚠️ **The Keeper's abilities call `apply_damage`, the PHYSICAL path**, while their comments say
+they ride Mnd ("the staff is a pestle, not a sword"). So they already answer to the back rank
+despite claiming not to. Pre-existing, unfixed, and its own change.
+
 **REACH AND SWEEP ARE TWO AXES, NOT ONE "RANGED" FAMILY.** Reach is *can it get there*
 (`ItemFamily::reaches_past_the_front` — bow, sling, thrown spear), sweep is *how many does
 it hit*. Bundling them would make every ranged weapon a crowd-clearer and every

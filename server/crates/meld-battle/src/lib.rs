@@ -487,28 +487,21 @@ enum Stack {
 /// The timed status a hastened fighter carries: its gauge fills faster while it holds.
 pub const HASTE_STATUS: &str = "hasted";
 
-/// The [`DamageType`] a hero class's basic attack carries (weapon flavour —
-/// structural content). Class skills stay pure/untyped (their identity is the
-/// class kit, not the element system).
-pub fn hero_attack_type(class_key: &str) -> DamageType {
-    match class_key {
-        "explorer" | "ranger" | "dragoon" => DamageType::Pierce,
-        "shifter" | "alchemist_knight" | "bard" => DamageType::Slash,
-        "phoenix_guard" | "sage" | "resonant" => DamageType::Blunt,
-        // The Hunter's blade, and the Smithwright's tool — both were missing, so the two
-        // fell to `None` below and had been swinging TRUE damage: every creature
-        // resistance and immunity ignored, and (once the row trade landed) the front line
-        // held for free. The Hunter is the martial baseline; a class list is a list a
-        // class gets left off, which is how the rename in #206 lost it.
-        "hunter" => DamageType::Slash,
-        "smithwright" => DamageType::Blunt,
-        // The Keeper's damage rides Mnd, not Str, so its swing is not a physical blow —
-        // which is also why it keeps its full output from the back rank.
-        "keeper" => DamageType::Mind,
-        "psyker" => DamageType::Mind,
-        _ => DamageType::None,
-    }
-}
+/// What a hero swings with when its WEAPON does not say.
+///
+/// A class does not have a damage type — its weapon does
+/// (`ItemFamily::damage_type`), because that is the only way `ArmorWeight` becomes a
+/// loadout decision rather than a table: plate turns an edge and fears a hammer, so the
+/// sling is the answer to plate and the bow to mail. A class-level type made every Hunter
+/// arrow cut like a sword and the two ranged families mechanically identical.
+///
+/// This is the fallback for a hand that has no physical answer of its own — a caster's
+/// focus, a shield, or nothing at all — and it is BLUNT rather than `None` on purpose.
+/// `DamageType::None` bypasses the modifier map entirely (every resistance and immunity
+/// ignored) and now the rank trade too, so it is not a neutral default, it is true damage.
+/// Three classes silently dealt it for a whole release. There is no path to it for a hero
+/// any more: unarmed, you hit them with what you have.
+pub const UNARMED_ATTACK_TYPE: DamageType = DamageType::Blunt;
 
 /// Prepend `pre` effects to a resolution so start-of-turn upkeep (Regen/Barrier)
 /// is reported before the action's own effects.
@@ -927,7 +920,7 @@ impl Battle {
             // Heroes' basic attacks are typed by class (unless the builder
             // already set one); monsters get theirs from creature content.
             if f.kind == CombatantKind::Player && f.basic_attack_type == DamageType::None {
-                f.basic_attack_type = hero_attack_type(&f.class_key);
+                f.basic_attack_type = UNARMED_ATTACK_TYPE;
             }
         }
         Battle {
@@ -1098,7 +1091,7 @@ impl Battle {
             f.awaiting = false;
             f.alive = f.hp > 0;
             if f.kind == CombatantKind::Player && f.basic_attack_type == DamageType::None {
-                f.basic_attack_type = hero_attack_type(&f.class_key);
+                f.basic_attack_type = UNARMED_ATTACK_TYPE;
             }
         }
         let views = new.iter().map(Fighter::to_wire).collect();
@@ -5554,19 +5547,46 @@ mod tests {
         assert_eq!(back, 6, "back-row hero takes half (round(5.5) = 6)");
     }
 
-    /// Every class a player can field swings a REAL type. `DamageType::None` bypasses the
-    /// modifier map entirely — every resistance and immunity ignored — and now the row
-    /// trade too, so a class missing from `hero_attack_type` is a class quietly dealing
-    /// true damage. The Hunter, Smithwright and Keeper were all missing.
+    /// No hero can swing untyped. `DamageType::None` bypasses the modifier map entirely —
+    /// every resistance and immunity ignored — and now the rank trade too, so an untyped
+    /// swing is TRUE damage rather than a neutral default. Three classes dealt it for a
+    /// whole release because the type came from a hand-written table of classes.
+    ///
+    /// It cannot happen now: the weapon decides, and a hand with no answer of its own falls
+    /// to `UNARMED_ATTACK_TYPE`. This holds the two halves — the default is real, and every
+    /// weapon family that IS a weapon names a type.
     #[test]
-    fn no_fielded_class_swings_untyped() {
-        for key in meld_proto::skills::all_classes() {
-            assert_ne!(
-                hero_attack_type(&key),
-                DamageType::None,
-                "{key} has no basic attack type, so it deals TRUE damage"
-            );
+    fn nothing_a_hero_holds_swings_untyped() {
+        assert_ne!(UNARMED_ATTACK_TYPE, DamageType::None, "the unarmed default is true damage");
+        for f in [
+            meld_proto::equipment::ItemFamily::Sword,
+            meld_proto::equipment::ItemFamily::Dagger,
+            meld_proto::equipment::ItemFamily::Spear,
+            meld_proto::equipment::ItemFamily::Staff,
+            meld_proto::equipment::ItemFamily::Gauntlet,
+            meld_proto::equipment::ItemFamily::ParryBlade,
+            meld_proto::equipment::ItemFamily::Bow,
+            meld_proto::equipment::ItemFamily::Sling,
+            meld_proto::equipment::ItemFamily::ThrownSpear,
+        ] {
+            let dt = f.damage_type();
+            assert!(dt.is_some(), "{f:?} is a weapon with no damage type");
+            assert_ne!(dt, Some(DamageType::None), "{f:?} swings untyped");
         }
+    }
+
+    /// The point of typing weapons rather than classes: armour weight becomes a loadout
+    /// decision. Plate turns an edge and fears a hammer, so the two ranged families must
+    /// not be the same blow with different art.
+    #[test]
+    fn the_bow_and_the_sling_answer_different_armour() {
+        assert_eq!(meld_proto::equipment::ItemFamily::Bow.damage_type(), Some(DamageType::Pierce));
+        assert_eq!(meld_proto::equipment::ItemFamily::Sling.damage_type(), Some(DamageType::Blunt));
+        assert_ne!(
+            meld_proto::equipment::ItemFamily::Bow.damage_type(),
+            meld_proto::equipment::ItemFamily::Sling.damage_type(),
+            "a bow and a sling are the same blow, so choosing between them is decoration"
+        );
     }
 
     /// CR-9: a creature fights to its own profile, and the profiles are actually
