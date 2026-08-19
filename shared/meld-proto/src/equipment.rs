@@ -31,6 +31,9 @@ pub enum ItemFamily {
     ParryBlade,
     /// Two-handed bow. RANGED: its shot ignores the target's rank.
     Bow,
+    /// Whip, scourge, kusarigama, urumi — anything long and flexible. SWEEPS: one blow
+    /// takes a whole rank of one group.
+    Whip,
     /// One-handed sling. Ranged, and light enough to leave a hand free.
     Sling,
     /// A spear built to be thrown rather than held. Ranged, one-handed.
@@ -83,6 +86,7 @@ impl ItemFamily {
             ItemFamily::Dagger => "dagger",
             ItemFamily::ParryBlade => "parry_blade",
             ItemFamily::Bow => "bow",
+            ItemFamily::Whip => "whip",
             ItemFamily::Sling => "sling",
             ItemFamily::ThrownSpear => "thrown_spear",
         }
@@ -106,6 +110,9 @@ impl ItemFamily {
             ItemFamily::Gauntlet => DamageType::Blunt,
             ItemFamily::Staff => DamageType::Blunt,
             ItemFamily::Bow => DamageType::Pierce,
+            // A lash cuts. It is the only sweeping blow, so it is also the only way to put
+            // an edge across a whole rank at once.
+            ItemFamily::Whip => DamageType::Slash,
             // A stone has no edge and no point. It is the answer to plate, which turns both.
             ItemFamily::Sling => DamageType::Blunt,
             // A caster's focus and a shield are not how their holder does damage; the class
@@ -133,6 +140,22 @@ impl ItemFamily {
         matches!(self, ItemFamily::Bow | ItemFamily::Sling | ItemFamily::ThrownSpear)
     }
 
+    /// **Does one blow take a whole rank?**
+    ///
+    /// The second axis. Reach is *can it get there*; sweep is *how many does it hit*, and a
+    /// sweep takes **one rank of one group** — not the whole group, and not the whole field.
+    /// That is the intersection of the two structures an encounter already has rather than a
+    /// third one bolted beside them: a group is the addressable unit, a rank is how it
+    /// stands, and a lash goes across one of them.
+    ///
+    /// It is deliberately NOT paired with reach. A whip is long, not airborne — so sweeping
+    /// a back rank runs into the rank's own protection and lands soft, while sweeping the
+    /// front lands full. Front for damage, back for the ones you actually want dead, and
+    /// somebody else's flank turns the second into the first: the decision is the weapon.
+    pub fn sweeps_a_rank(self) -> bool {
+        matches!(self, ItemFamily::Whip)
+    }
+
     pub fn from_wire(s: &str) -> Option<Self> {
         Some(match s {
             "sword" => ItemFamily::Sword,
@@ -144,6 +167,7 @@ impl ItemFamily {
             "dagger" => ItemFamily::Dagger,
             "parry_blade" => ItemFamily::ParryBlade,
             "bow" => ItemFamily::Bow,
+            "whip" => ItemFamily::Whip,
             "sling" => ItemFamily::Sling,
             "thrown_spear" => ItemFamily::ThrownSpear,
             _ => return None,
@@ -179,7 +203,15 @@ impl ArmorWeight {
 /// a second dagger (aggressive) or a parrying blade (defensive).
 pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
     match class {
-        CharacterClass::Explorer => &[ItemFamily::Sword, ItemFamily::Shield, ItemFamily::Spear],
+        // The order whose kit is about affecting a whole line — a mark every ally hits
+        // harder, and a capstone that marks the field — carries the one weapon that swings
+        // across a rank.
+        CharacterClass::Explorer => &[
+            ItemFamily::Sword,
+            ItemFamily::Shield,
+            ItemFamily::Spear,
+            ItemFamily::Whip,
+        ],
         CharacterClass::Resonant => &[ItemFamily::Staff],
         CharacterClass::Psyker => &[ItemFamily::Globe],
         CharacterClass::PhoenixGuard => &[ItemFamily::Gauntlet, ItemFamily::Shield],
@@ -762,10 +794,11 @@ mod tests {
             families_for_slot(CharacterClass::Shifter, "off_hand"),
             vec![ItemFamily::Dagger, ItemFamily::ParryBlade]
         );
-        // The Explorer's main hand is a choice between reach and sword+shield.
+        // The Explorer's main hand is a choice between a sword-and-board, a two-handed
+        // spear, and a lash that takes a whole rank.
         assert_eq!(
             families_for_slot(CharacterClass::Explorer, "main_hand"),
-            vec![ItemFamily::Sword, ItemFamily::Spear]
+            vec![ItemFamily::Sword, ItemFamily::Spear, ItemFamily::Whip]
         );
     }
 

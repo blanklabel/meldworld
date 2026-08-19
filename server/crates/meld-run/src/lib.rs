@@ -663,6 +663,7 @@ pub fn party_fighters(
                 .and_then(meld_proto::equipment::ItemFamily::from_wire)
             {
                 f.reach |= fam.reaches_past_the_front();
+                f.sweeps |= fam.sweeps_a_rank();
                 if let Some(dt) = fam.damage_type() {
                     f.basic_attack_type = dt;
                 }
