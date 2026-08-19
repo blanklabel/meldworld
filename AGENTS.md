@@ -504,6 +504,15 @@ previous time.
 cargo build -p meld-mcp     # `.mcp.json` points at target/debug/meld-mcp
 ```
 
+**A harness that cannot see the bag measures nothing about the bag.** `run.backpack_update`
+rides the wire as `{changes: [{item, delta, cause}], chits_delta}`, and the harness read it
+as `{added, removed}` with a `count` — both lookups missing silently, so **every `look` in
+this harness reported an empty backpack no matter what you had gathered, spent or looted**,
+for as long as it has existed. Any measurement taken through it that involved materials,
+chits or loot was blind. The same applies to VERBS: building shipped as three player
+intents (`BD-2`) with no harness verb, so the loop could not be driven at all from the tool
+that exists to drive it. A player verb without a harness verb is a verb nobody measures.
+
 `new_game` takes the DEV/QA overrides as arguments rather than env vars: `party`, `seed`,
 `tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. `MELD_START_LEVEL` sets a DISTANCE and lets the level follow from it (`base_run_level` and creature level both read 40 at d500), because level and depth are the same fact and a party holding one without the other cannot exist. It streams the frontier out and spawns you on the ring; extraction still assumes d0, which is why it is a TEST flag and not a departure hub — everything past
 roughly level 16 is authored for a party that walked an hour to reach it, and PG-2's hubs

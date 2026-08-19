@@ -188,14 +188,15 @@ fn tool_schemas() -> Value {
         },
         {
             "name": "interact",
-            "description": "The world verbs [E] covers, named explicitly: harvest a node, open a chest, descend an entrance, extract, pin a creature (Psyker), join a teammate's fight, drink a potion.",
+            "description": "The world verbs [E] and the build menu cover, named explicitly: harvest a node, open a chest, descend an entrance, extract, pin a creature (Psyker), join a teammate's fight, drink a potion, raise/mend/pack down a structure.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "verb": { "type": "string",
-                              "enum": ["harvest", "chest", "descend", "extract", "town_portal", "hold", "join", "use_item", "cancel"] },
+                              "enum": ["harvest", "chest", "descend", "extract", "town_portal", "hold", "join", "use_item", "cancel", "build", "repair", "demolish"] },
                     "entity_id": { "type": "string", "description": "The thing being acted on, for the verbs that take one." },
                     "item": { "type": "string", "description": "Consumable key, for use_item." },
+                    "function": { "type": "string", "description": "What to raise, for build: anchor (holds its region against the Shift) or wall (blocks movement). Costs ore you are carrying." },
                     "hero": { "type": "integer", "description": "Party slot that drinks it, for use_item." }
                 },
                 "required": ["verb"]
@@ -950,6 +951,12 @@ async fn interact(s: &Session, args: &Value) -> Result<String, String> {
             "payload":{"method":"portal","portal_entity_id": ent, "item_id": Value::Null}}),
         "town_portal" => json!({"type":"run.begin_extraction",
             "payload":{"method":"town_portal","portal_entity_id": Value::Null, "item_id": Value::Null}}),
+        // BD-2/BD-3: building is a player verb, so the harness has to have it — a loop
+        // you cannot drive is a loop nobody measures.
+        "build" => json!({"type":"run.build_structure","payload":{
+            "function": args["function"].as_str().ok_or("build needs a function (anchor|wall)")?}}),
+        "repair" => json!({"type":"run.repair_structure","payload":{"entity_id": need_ent()?}}),
+        "demolish" => json!({"type":"run.demolish_structure","payload":{"entity_id": need_ent()?}}),
         "use_item" => json!({"type":"run.use_item","payload":{
             "item_kind": args["item"].as_str().ok_or("use_item needs an item")?,
             "hero_slot": args["hero"].as_i64().unwrap_or(0)}}),
