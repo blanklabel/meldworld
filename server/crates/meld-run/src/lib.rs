@@ -463,50 +463,9 @@ pub fn starting_hp(comp: &[CharacterClass], level: i32, balance: &Balance) -> Ve
     comp.iter().map(|c| max_hp_at_level(*c, level, balance)).collect()
 }
 
-/// One hero's summed combat bonuses from their own equipped gear (per-hero
-/// equip slots — each hero in a party can wear different gear).
-#[derive(Debug, Clone, Default)]
-pub struct GearBonus {
-    pub atk: i32,
-    pub def: i32,
-    pub spd: i32,
-    /// AD-1 ward affixes — what the hero starts each battle holding.
-    pub barrier: i32,
-    pub regen: i32,
-    /// Evasion in percentage points.
-    pub evasion: i32,
-    /// AD-1 keyword affixes, already filtered to this hero's class.
-    pub adrenaline: i32,
-    pub focus_slots: i32,
-    /// The equipped MAIN HAND weapon family, as a wire key. Reach and damage type are both
-    /// read off it rather than carried as their own fields.
-    pub main_hand: Option<String>,
-    /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
-    /// where the party composition is known.
-    pub synergies: Vec<(String, i32, i32)>,
-    /// AD-3 brand: the element this hero's attacks deal.
-    pub brand: Option<String>,
-    /// AD-1 unique drawbacks — what this loadout costs.
-    pub penalty_atk: i32,
-    pub penalty_def: i32,
-    pub penalty_spd: i32,
-    pub penalty_max_hp: i32,
-    /// AD-1 set pieces worn: (set key, count).
-    pub set_pieces: Vec<(String, usize)>,
-    /// Raw per-item elemental entries (DamageType wire key → multiplier) from
-    /// every equipped piece; folded and clamped by [`fold_damage_modifiers`]
-    /// at battle assembly (spec §5).
-    pub modifiers: Vec<(String, f64)>,
-    /// Flat `ward` from "of the Aegis" affixes.
-    pub ward: i32,
-    /// "of the Furnace": extra damage DEALT of one element, as a percentage.
-    pub element_power: Vec<(String, i32)>,
-    /// The `armor_weight` of each piece of ARMOUR worn (`heavy`/`medium`/`light`/`robe`).
-    /// Carried as the wire string rather than a resolved profile because what a weight is
-    /// good and bad against is a rule (`meld_proto::equipment::weight_profile`) and how big
-    /// a step is is balance — neither belongs in the DB layer that reads the rows.
-    pub armor_weights: Vec<String>,
-}
+/// One hero's summed combat bonuses from their own equipped gear — the same type
+/// `meld-db` sums out of the gear rows, so the two cannot drift.
+pub use meld_proto::equipment::GearBonus;
 
 /// Fold a hero's raw per-item elemental entries into one profile (spec §5
 /// stat aggregation): per damage type, `1 + Σ(mᵢ − 1)` — so two quarter-

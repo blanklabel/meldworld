@@ -447,6 +447,72 @@ pub fn can_wear(
     true
 }
 
+/// One hero's summed combat bonuses from their own equipped gear (per-hero equip slots —
+/// each hero in a party can wear different gear).
+///
+/// **This lives here, once, on purpose.** It used to be declared twice — in `meld-db`, which
+/// sums it out of the gear rows, and again in `meld-run`, which spends it at battle assembly
+/// — bridged by a hand-written field-by-field copy in `meld-server`. Nothing made the two
+/// agree: a field added to the DB side and not the run side still COMPILED, and the copy
+/// simply dropped it, so an affix that rolled in the Vault reached nothing in the fight. That
+/// is the same failure as the wall that stopped creatures but not players, and the two copies
+/// of "what blocks" — one rule, two declarations, and the drift is invisible until a player
+/// is standing in the difference. Both crates already depend on `meld-proto`, so there is
+/// exactly one place this can be, and this is it.
+///
+/// The fields are deliberately RAW rather than resolved: what a weight resists is a rule
+/// (`weight_profile`) and how big a step is is balance, and neither belongs in the layer that
+/// reads database rows. Battle assembly folds them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GearBonus {
+    pub atk: i32,
+    pub def: i32,
+    pub spd: i32,
+    /// AD-1 ward affixes — what the hero *starts each battle* holding.
+    pub barrier: i32,
+    pub regen: i32,
+    /// Evasion in percentage points.
+    pub evasion: i32,
+    /// AD-1 keyword affixes (class-mechanic twists), already filtered to this hero's class:
+    /// banked Adrenaline at battle start, extra Focus slots.
+    pub adrenaline: i32,
+    pub focus_slots: i32,
+    /// This hero's MAIN HAND weapon family, as a wire key (`bow`, `sword`, …).
+    ///
+    /// The family itself rather than a bag of booleans derived from it: reach came first,
+    /// damage type came second, and sweep is next. Each one added as its own field is a
+    /// field some code path reads and another forgets — which in this codebase is not a
+    /// hypothetical. One source, and everything asks it.
+    pub main_hand: Option<String>,
+    /// AD-3 brand: the element this hero's attacks deal. The first branded weapon wins — two
+    /// brands would mean an attack with two types, which the engine's one-type-per-effect
+    /// model has no answer for.
+    pub brand: Option<String>,
+    /// AD-1 unique drawbacks, already summed: what this loadout *costs*.
+    pub penalty_atk: i32,
+    pub penalty_def: i32,
+    pub penalty_spd: i32,
+    pub penalty_max_hp: i32,
+    /// AD-1 set pieces worn by this hero: (set key, count). Battle assembly turns the
+    /// completed ones into a PARTY-wide bonus.
+    pub set_pieces: Vec<(String, usize)>,
+    /// Flat `ward` from "of the Aegis" affixes — elemental/psychic resistance as a stat, so
+    /// GEAR can answer a boss that fights with fire rather than leaving that to Mnd alone.
+    pub ward: i32,
+    /// "of the Furnace": extra damage DEALT of one element, as a percentage.
+    /// (DamageType wire key, percent).
+    pub element_power: Vec<(String, i32)>,
+    /// The `armor_weight` of every piece of ARMOUR this hero wears.
+    pub armor_weights: Vec<String>,
+    /// Synergy affixes that have not been resolved yet: (ally class key, atk, def). Battle
+    /// assembly knows the party composition, so it decides which of these actually pay out —
+    /// a drop that asks for an ally is a *party* build decision.
+    pub synergies: Vec<(String, i32, i32)>,
+    /// Raw per-item elemental entries (DamageType wire key → multiplier) from every equipped
+    /// piece — folded (`1 + Σ(mᵢ−1)`) and clamped to 0.0–2.0 at battle assembly (spec §5).
+    pub modifiers: Vec<(String, f64)>,
+}
+
 #[cfg(test)]
 mod tests {
     /// A weight that is only ever better is a weight everybody wears. Every one of them has

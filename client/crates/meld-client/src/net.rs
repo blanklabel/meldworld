@@ -740,7 +740,10 @@ pub enum ServerMsg {
     HuntProgress { name: String, progress: i32, target: i32, complete: bool },
     /// An anchor stopped a Shift (`world.shift_held`) — the region did not retile, and the
     /// land took it out of whatever was holding it (CANON §W3).
-    ShiftHeld { anchors: Vec<(String, i32, i32, bool)> },
+    /// Carries the WIRE type rather than a tuple of its fields. As a 4-tuple it silently
+    /// dropped `max_hp` — the server populated a field the only client that reads it never
+    /// decoded — and the two it did decode were positional enough that nothing used them.
+    ShiftHeld { anchors: Vec<ww::HeldAnchor> },
     /// The tell: a ring of the Shifting Lands is about to swap biome (`world.shift_warning`).
     ShiftWarning {
         inner_radius: f64,
@@ -2445,21 +2448,8 @@ impl Inner {
                 });
             }
             "world.shift_held" => {
-                let anchors = raw.payload["anchors"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .map(|v| {
-                                (
-                                    v["entity_id"].as_str().unwrap_or("").to_string(),
-                                    v["damage"].as_i64().unwrap_or(0) as i32,
-                                    v["hp"].as_i64().unwrap_or(0) as i32,
-                                    v["destroyed"].as_bool().unwrap_or(false),
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let anchors: Vec<ww::HeldAnchor> =
+                    serde_json::from_value(raw.payload["anchors"].clone()).unwrap_or_default();
                 self.out.push_back(ServerMsg::ShiftHeld { anchors });
             }
             "world.shift_warning" => {

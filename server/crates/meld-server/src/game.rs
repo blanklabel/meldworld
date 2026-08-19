@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use meld_balance::Balance;
 use meld_battle::{Battle, Event as BattleEvent, Reject};
 use meld_db::Db;
+use meld_proto::equipment::GearBonus;
 use meld_proto::common::{ItemStack, LootGear, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
@@ -464,33 +465,16 @@ struct Edge {
 }
 
 fn effective_gear_bonus(
-    vault: meld_db::GearBonus,
+    vault: GearBonus,
     looted: &[LootGear],
     hero_slot: i32,
     edge: Option<&Edge>,
-) -> meld_run::GearBonus {
-    let mut bonus = meld_run::GearBonus {
-        atk: vault.atk,
-        def: vault.def,
-        spd: vault.spd,
-        modifiers: vault.modifiers,
-        armor_weights: vault.armor_weights,
-        ward: vault.ward,
-        element_power: vault.element_power,
-        barrier: vault.barrier,
-        regen: vault.regen,
-        evasion: vault.evasion,
-        adrenaline: vault.adrenaline,
-        focus_slots: vault.focus_slots,
-        synergies: vault.synergies,
-        penalty_atk: vault.penalty_atk,
-        penalty_def: vault.penalty_def,
-        penalty_spd: vault.penalty_spd,
-        penalty_max_hp: vault.penalty_max_hp,
-        set_pieces: vault.set_pieces,
-        brand: vault.brand,
-        main_hand: vault.main_hand,
-    };
+) -> GearBonus {
+    // One type, so this is a move and not a field-by-field copy. It WAS a copy, across two
+    // identical declarations, and a field added to one side compiled fine on the other while
+    // the copy silently dropped it — gear that rolled in the Vault reaching nothing in the
+    // fight. Anything that needs adding now has one place to be added.
+    let mut bonus = vault;
     for g in looted {
         if g.equipped_hero_slot != Some(hero_slot) {
             continue;
@@ -605,7 +589,7 @@ struct Session {
     in_instance: bool,
     /// Per-hero-slot combat bonuses from equipped gear, loaded from the DB
     /// after connect (each hero can wear different gear).
-    gear_bonuses: Vec<meld_db::GearBonus>,
+    gear_bonuses: Vec<GearBonus>,
     /// The caller's persistent Forging level, loaded with their gear. The city anvil's
     /// heat is laid out against it, so a master's bar in town is as wide as in the field.
     forging_level: Option<i32>,
@@ -1042,7 +1026,7 @@ struct WorldActor {
     /// and kept in sync wherever `Session.gear_bonuses` is written (`flush_gear_loads`).
     /// Gear only changes at connect/form_run/flush and `flush_gear_loads` runs after
     /// `tick`, so within any tick this equals a live session read (behaviour-identical).
-    gear_bonuses: HashMap<String, Vec<meld_db::GearBonus>>,
+    gear_bonuses: HashMap<String, Vec<GearBonus>>,
     /// player_id -> per-hero display name (parallel to `party_classes`).
     hero_names: HashMap<String, Vec<String>>,
     /// player_id -> per-hero formation flag (`true` = back row), parallel to
@@ -4655,7 +4639,7 @@ impl GameState {
                             let ward_stat = (af.magnitude_per_tier * tier as f64
                                 * af.count_epic as f64)
                                 .round() as i32;
-                            meld_db::GearBonus {
+                            GearBonus {
                                 atk,
                                 def,
                                 ward: ward_stat,
@@ -5676,7 +5660,7 @@ impl WorldActor {
             meld_proto::limits::PARTY_MAX * self.balance.battle.merge_cap_normal_instances.max(1) as usize;
         // Read gear from the world's own synced mirror (same data a live session
         // read returned; see `WorldActor::gear_bonuses`).
-        let bonuses: HashMap<String, Vec<meld_db::GearBonus>> = self.gear_bonuses.clone();
+        let bonuses: HashMap<String, Vec<GearBonus>> = self.gear_bonuses.clone();
         let edges = self.edges.clone();
         if self.battle_by_id(battle_id).is_none() {
             return Vec::new();
@@ -8813,22 +8797,22 @@ impl WorldActor {
         // is also why a held Shift never reaches `shift_log`: nothing about the world
         // changed except the anchors' HP, and that rides the delta already.
         if let Some(held) = self.arena.hold_shift(&balance, first, last) {
+            // The engine stays pure (no wire types), so this one conversion has to exist —
+            // but it is written to FAIL rather than drift. Destructuring the engine's record
+            // means a field added to it stops compiling here; reading `a.field` into a struct
+            // literal would have silently left the new field off the wire, which is exactly
+            // how `max_hp` came to be sent and never read. If you must hand-write a bridge,
+            // hand-write one the compiler checks.
             let anchors: Vec<ww::HeldAnchor> = held
                 .anchors
                 .iter()
-                .map(|(id, dmg, destroyed)| {
-                    let (hp, max_hp) = self
-                        .arena
-                        .structures
-                        .iter()
-                        .find(|s| &s.entity_id == id)
-                        .map(|s| (s.hp, s.max_hp))
-                        .unwrap_or((0, 0));
+                .map(|a| {
+                    let meld_world::HeldAnchor { entity_id, damage, hp, max_hp, destroyed } = a;
                     ww::HeldAnchor {
-                        entity_id: id.clone(),
-                        damage: *dmg,
-                        hp,
-                        max_hp,
+                        entity_id: entity_id.clone(),
+                        damage: *damage,
+                        hp: *hp,
+                        max_hp: *max_hp,
                         destroyed: *destroyed,
                     }
                 })

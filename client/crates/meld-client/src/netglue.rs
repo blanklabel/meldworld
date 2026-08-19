@@ -608,13 +608,18 @@ pub(crate) fn pump_net(
             }
             ServerMsg::ShiftHeld { anchors } => {
                 tell.armed = false;
-                let lost = anchors.iter().filter(|(_, _, _, gone)| *gone).count();
-                let hurt: i32 = anchors.iter().map(|(_, d, _, _)| *d).sum();
+                let lost = anchors.iter().filter(|a| a.destroyed).count();
+                let hurt: i32 = anchors.iter().map(|a| a.damage).sum();
+                // What it has LEFT is the whole point of BD-3: an anchor is permanence you
+                // keep paying for, so the cost has to be legible while it is still standing.
+                // The server has always sent this; the decoder used to drop it.
+                let left: i32 = anchors.iter().filter(|a| !a.destroyed).map(|a| a.hp).sum();
+                let cap: i32 = anchors.iter().filter(|a| !a.destroyed).map(|a| a.max_hp).sum();
                 notice.say(
                     if lost > 0 {
                         "The anchor held - and fell. The ground is loose again.".to_string()
                     } else {
-                        format!("Your anchor held the Shift  (-{hurt} to it)")
+                        format!("Your anchor held the Shift  (-{hurt} to it, {left}/{cap} left)")
                     },
                     clock.elapsed_secs_f64(),
                 );
