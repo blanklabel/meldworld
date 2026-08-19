@@ -764,8 +764,19 @@ set_min_tier = 4
 # and synergies exist is content (meld_proto::synergies); these are the numbers.
 [adventure]
 combo_window_ticks = 60          # ~6s at the 100ms tick: a primer must be cashed in fast [TUNABLE]
-synergy_party_barrier = 10       # Fortress Front: Barrier every hero opens with [TUNABLE]
-synergy_party_regen = 3          # Blood and Balm: Regen for every hero [TUNABLE]
+# FRACTIONS of each hero's own max HP, not flat points — the same rule every other
+# magnitude that lands on a hero follows. Flat 3 regen was 7.5% of a level-1 hero and
+# 0.6% of a level-100 one; worse, it was granted to EVERY hero and out-healed the
+# Resonant's own innate regen (`resonant_regen_fraction`, 2%) by nearly 4x, so the best
+# healer in the game was beaten by a passive nobody spent a turn on. Measured in play, it
+# turned a standard on-ramp fight into a formality: 96 HP of party healing against 25
+# points of incoming damage.
+#
+# Calibrated against what a SPENT TURN buys: the Keeper's Bloomfield is party-wide regen
+# for a whole turn at 1.5%, and its cheapest party Barrier is 9%. A free passive should
+# sit well under both.
+synergy_party_barrier_fraction = 0.05  # Fortress Front: Barrier every hero opens with [TUNABLE]
+synergy_party_regen_fraction = 0.008   # Blood and Balm: Regen for every hero [TUNABLE]
 synergy_back_row_evasion = 8     # Covering Blink: Evasion % for back-row heroes [TUNABLE]
 
 # THE FORGE (MS-1): crafting gear, rerolling its affixes, and repairing what a

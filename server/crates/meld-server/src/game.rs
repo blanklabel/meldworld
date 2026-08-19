@@ -2565,12 +2565,13 @@ impl WorldActor {
                 description: s.description.to_string(),
                 effect: match s.effect {
                     E::PartyBarrier => format!(
-                        "every hero opens each fight with {} Barrier",
-                        adv.synergy_party_barrier
+                        "every hero opens each fight with Barrier worth {:.0}% of its own HP",
+                        adv.synergy_party_barrier_fraction * 100.0
                     ),
-                    E::PartyRegen => {
-                        format!("every hero gains {} Regen", adv.synergy_party_regen)
-                    }
+                    E::PartyRegen => format!(
+                        "every hero regenerates {:.1}% of its own HP a turn",
+                        adv.synergy_party_regen_fraction * 100.0
+                    ),
                     E::BackRowEvasion => format!(
                         "back-row heroes gain {}% Evasion",
                         adv.synergy_back_row_evasion
