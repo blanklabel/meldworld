@@ -797,27 +797,17 @@ pub(crate) fn city_input(
     // key that gets you out without having to find the district's own toggle again.
     // A pick is the newest thing on screen, so it's dropped first rather than falling
     // through to close the counter underneath it.
+    //
+    // Then ONE call, not a chain of `else if`s over each flag. The chain is how the claims
+    // board ended up with no way out at all: it was the one panel nobody added to it, and
+    // travel lands you inside a district so there was nothing to walk out of either. The
+    // Leave chip already routed through `close_counters`; this is the other exit joining it,
+    // so a new panel cannot be closable by mouse and stuck by key.
     if keys.just_pressed(KeyCode::Escape) {
         if pick.row.is_some() {
-            // The pick is the newest thing on screen, so it backs out first rather than
-            // taking the whole counter with it.
             pick.clear();
-        } else if city.shop_open {
-            city.shop_open = false;
-        } else if city.craft_open {
-            city.craft_open = false;
-        } else if city.board_open {
-            city.board_open = false;
-            city.notice.clear();
-        } else if city.hunts_open {
-            // The board was the one counter with no way out. Walking away closes the
-            // others, but you TRAVEL into a district now and land inside its radius, so
-            // there was nothing to walk out of — the claims screen simply kept the
-            // keyboard until the game was restarted. Every panel flag belongs in this
-            // chain; `every_town_panel_can_be_closed` holds the rest to it.
-            city.hunts_open = false;
-            city.bounty_tab = false;
-            city.notice.clear();
+        } else {
+            city.close_counters();
         }
         return;
     }
@@ -1320,6 +1310,43 @@ mod tests {
             assert!(line.contains(d.purpose), "{line} does not say what it is for");
             assert!(line.contains("[E]"), "{line} offers no key");
         }
+    }
+
+    /// Every town panel has to be closable, by BOTH exits.
+    ///
+    /// The claims board shipped with no way out at all: `Escape` ran a hand-written chain of
+    /// `else if`s over the panel flags and `hunts_open` was simply not in it, while travel
+    /// lands you inside a district so walking away could not close it either. Both exits go
+    /// through `close_counters` now, and this holds that helper against `any_counter_open`
+    /// so the two cannot disagree about what "a counter is open" means.
+    ///
+    /// The flag list below is still written by hand — Rust cannot enumerate struct fields —
+    /// so this does not automatically catch a NEW panel. What it does catch is the thing that
+    /// actually went wrong: one of the two helpers knowing about a flag the other does not.
+    #[test]
+    fn every_town_panel_can_be_closed() {
+        let panels: [(&str, fn(&mut CityUi)); 4] = [
+            ("shop", |c| c.shop_open = true),
+            ("craft", |c| c.craft_open = true),
+            ("board", |c| c.board_open = true),
+            ("hunts", |c| c.hunts_open = true),
+        ];
+        for (name, open) in panels {
+            let mut city = CityUi::default();
+            open(&mut city);
+            assert!(city.any_counter_open(), "{name} is open but nothing reports it");
+            city.close_counters();
+            assert!(!city.any_counter_open(), "{name} survived close_counters");
+        }
+        // …and all at once, since nothing stops two being open together.
+        let mut city = CityUi::default();
+        for (_, open) in panels {
+            open(&mut city);
+        }
+        city.bounty_tab = true;
+        city.close_counters();
+        assert!(!city.any_counter_open(), "a counter survived a blanket close");
+        assert!(!city.bounty_tab, "the board's side should reset with it");
     }
 
     /// The board's row order is also its CLAIM order — the digits and the row chips index
