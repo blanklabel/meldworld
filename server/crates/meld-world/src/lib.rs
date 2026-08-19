@@ -9138,11 +9138,30 @@ impl PlaceRefusal {
     }
 }
 
+/// One anchor that took a Shift, and what holding it cost.
+///
+/// A NAMED record rather than a tuple because the caller has to send `hp`/`max_hp` on the
+/// wire, and it used to re-derive them by searching `Arena::structures` *after*
+/// [`Arena::hold_shift`] had already retained the dead ones out — so every destroyed anchor
+/// reported `hp: 0, max_hp: 0`, a max that no structure in the game has. The values are
+/// correct exactly once, at the moment the damage lands, so that is where they are recorded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldAnchor {
+    pub entity_id: String,
+    /// HP the hold cost it.
+    pub damage: i32,
+    /// What it has left, after taking the blow.
+    pub hp: i32,
+    pub max_hp: i32,
+    /// It did not survive holding. The ground is shiftable again from here.
+    pub destroyed: bool,
+}
+
 /// A Shift that was HELD (CANON §W3): what the land did to the anchors that stopped it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ShiftHeld {
-    /// Anchors that took the blow: `(entity_id, damage, destroyed)`.
-    pub anchors: Vec<(String, i32, bool)>,
+    /// Anchors that took the blow.
+    pub anchors: Vec<HeldAnchor>,
     pub inner_radius: f64,
     pub outer_radius: f64,
 }
@@ -9387,7 +9406,13 @@ impl Arena {
             let dmg = (((s.max_hp as f64) * share).round() as i32).max(1);
             let took = dmg.min(s.hp);
             s.hp -= took;
-            anchors.push((s.entity_id.clone(), took, s.hp <= 0));
+            anchors.push(HeldAnchor {
+                entity_id: s.entity_id.clone(),
+                damage: took,
+                hp: s.hp,
+                max_hp: s.max_hp,
+                destroyed: s.hp <= 0,
+            });
         }
         self.structures.retain(|s| s.hp > 0);
         Some(ShiftHeld { anchors, inner_radius, outer_radius })
