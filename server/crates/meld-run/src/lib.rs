@@ -925,6 +925,12 @@ pub fn build_battle(
             );
             f.faction = m.faction.clone();
             f.flees = m.flees;
+            // The rank it stood in out in the world is the rank it fights in. The engine
+            // already halves physical damage both ways for a back row (`back_row_damage_mult`
+            // / `back_row_attack_mult`) and lets spells, elemental brands and psychic damage
+            // through at full force — so a pack's rear is answered by a caster and shrugs
+            // off a sword, without a line of new combat code.
+            f.back_row = m.back_row;
             // CR-6: carry the creature's pack role into the fight, so the engine can
             // shield a leader with its minions and rout them when it falls.
             f.pack_role = meld_proto::enums::PackRole::from_encounter_class(&m.encounter_class);
