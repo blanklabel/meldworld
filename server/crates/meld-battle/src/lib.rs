@@ -46,6 +46,10 @@ pub struct Fighter {
     /// the world, because a group is a property of the ENCOUNTER — the same creature is in
     /// a different group depending on who it ended up standing with. `None` for heroes.
     pub group_id: Option<u32>,
+    /// This combatant's weapon reaches past a front rank (bow, sling, thrown spear), so its
+    /// physical blows land on a back rank at full force. The MARTIAL answer to a rear: until
+    /// now the rank was a caster's problem and a swordsman's wall.
+    pub reach: bool,
     /// This combatant's group is being worked by more than one party, so its rear is no
     /// longer covered — you cannot hide behind your front rank when two parties are on you
     /// from different sides. Set by the battle, read by `to_wire`, so the client and the
@@ -269,6 +273,7 @@ impl Fighter {
             boss_band: 0,
             pack_role: PackRole::None,
             group_id: None,
+            reach: false,
             flanked: false,
             back_row: false,
             focus_max: 0,
@@ -346,6 +351,9 @@ impl Fighter {
         // it" shape as a status nothing draws.
         if self.flanked {
             v.push("flanked".to_string());
+        }
+        if self.reach {
+            v.push("reach".to_string());
         }
         // Once-per-battle abilities that are already gone. Without this the row stays
         // enabled and the only feedback is a refusal — the same "the rule exists but the
@@ -1589,6 +1597,26 @@ impl Battle {
     /// attacker's scaled attack. Defence grows about +1 per hero level while creature
     /// attack grows only with distance, so without that floor a levelled hero simply
     /// stops taking damage and the game never gets harder than its tutorial.
+    /// How much its OWN rank weakens a fighter's physical blow.
+    ///
+    /// The back row's trade: stand back, take half, deal half. But a REACHING weapon loses
+    /// nothing by standing back — that is what "ranged" means, and an archer who gave up
+    /// half its damage for standing where archers stand would be a class with no reason to
+    /// use its own weapon. So reach cancels the rank in BOTH directions: the target's rank
+    /// does not protect them from it (`softened_by_rank`), and the shooter's own rank does
+    /// not weaken it.
+    ///
+    /// One function for both call sites — `phys_atk` and the basic-attack path — because
+    /// two copies of a rule is how this codebase has produced a wall that stopped creatures
+    /// and not players, and a bow that reached in one crate and not the other.
+    fn rank_attack_mult(&self, actor_i: usize, physical: bool) -> f64 {
+        let f = &self.fighters[actor_i];
+        if !physical || !f.back_row || f.reach {
+            return 1.0;
+        }
+        self.back_row_attack_mult
+    }
+
     /// The physical attack `actor_i` actually swings with, at `mult` of its own `atk`.
     ///
     /// **The back row's trade lives here.** Standing back halves what physical blows do to
@@ -1602,7 +1630,7 @@ impl Battle {
     /// site, because a call site that reads it directly is a swing nobody charged for.
     fn phys_atk(&self, actor_i: usize, mult: f64) -> i32 {
         let atk = self.fighters[actor_i].atk as f64;
-        let row = if self.fighters[actor_i].back_row { self.back_row_attack_mult } else { 1.0 };
+        let row = self.rank_attack_mult(actor_i, true);
         (atk * mult * row).round() as i32
     }
 
@@ -1645,12 +1673,9 @@ impl Battle {
         // The back rank's trade, and this path can be exact about it: only a PHYSICAL
         // swing is weakened by standing back, so a hero whose weapon carries an elemental
         // `brand` (AD-3) keeps its full damage from the back row — which is a real reason
-        // to want one.
-        let row = if attack_type.is_physical() && self.fighters[actor_i].back_row {
-            self.back_row_attack_mult
-        } else {
-            1.0
-        };
+        // to want one. A RANGED weapon keeps its full damage there too, which is a better
+        // one: see `rank_attack_mult`.
+        let row = self.rank_attack_mult(actor_i, attack_type.is_physical());
         // CR-6: a minion fights above its weight while its leader lives, and below it
         // once the pack has routed.
         let atk = ((self.fighters[actor_i].atk as f64)
@@ -4627,7 +4652,13 @@ impl Battle {
     /// there is no behind left.
     fn softened_by_rank(&self, target_i: usize, physical: bool) -> bool {
         let t = &self.fighters[target_i];
-        physical && t.back_row && !t.flanked
+        if !(physical && t.back_row && !t.flanked) {
+            return false;
+        }
+        // …unless whoever is swinging can reach past the front line. A bow, a sling or a
+        // thrown spear goes over the front rank and lands on the rear at full force — the
+        // martial answer to a formation, where before it there was only a spell.
+        !self.active_actor.is_some_and(|a| self.fighters[a].reach)
     }
 
     /// Record that the acting party has struck `target_i`'s group, and flank the group once
@@ -9663,5 +9694,77 @@ mod grouping_and_flanking {
         b.active_actor = Some(0);
         b.apply_damage_reaching(ti, 100, false);
         assert_eq!(10_000 - hp_of(&b, "rear"), 100, "a spell was softened by a back rank");
+    }
+
+    /// The martial answer to a formation. Before ranged weapons the back rank was a
+    /// caster's problem and a swordsman's wall; a bow shoots over the front line.
+    #[test]
+    fn a_reaching_weapon_lands_on_the_rear_at_full_force() {
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("rear", 0, true)]);
+        strike(&mut b, "h", "rear", 100);
+        let softened = 10_000 - hp_of(&b, "rear");
+        assert!(softened < 100, "the rank did not soften a melee blow at all");
+
+        let mut b = arena(vec![hero("archer", "p1")], vec![foe("rear", 0, true)]);
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "rear", 100);
+        assert_eq!(10_000 - hp_of(&b, "rear"), 100, "a bow was stopped by a front rank");
+    }
+
+    /// Reach is the ATTACKER's property, not the target's — it must not leak into what the
+    /// rear does to everyone else's blows.
+    #[test]
+    fn one_archer_does_not_expose_the_rear_to_the_whole_party() {
+        let mut b = arena(
+            vec![hero("archer", "p1"), hero("swordsman", "p1")],
+            vec![foe("rear", 0, true)],
+        );
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "rear", 100);
+        let shot = 10_000 - hp_of(&b, "rear");
+        strike(&mut b, "swordsman", "rear", 100);
+        let swung = (10_000 - hp_of(&b, "rear")) - shot;
+        assert_eq!(shot, 100, "the bow did not reach");
+        assert!(swung < shot, "the swordsman inherited the archer's reach");
+    }
+
+    /// Reach answers a RANK. It is not a damage bonus, and must do nothing to a front rank.
+    #[test]
+    fn reach_is_worth_nothing_against_a_front_rank() {
+        let mut b = arena(vec![hero("archer", "p1")], vec![foe("front", 0, false)]);
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "front", 100);
+        assert_eq!(10_000 - hp_of(&b, "front"), 100, "reach changed a front-rank blow");
+    }
+
+    /// The other half of reach, and the reason an archer stands at the back at all: a bow
+    /// fired from the rear loses nothing. Without this a Hunter pays the back row's damage
+    /// penalty for standing exactly where its weapon is meant to be used.
+    #[test]
+    fn a_ranged_weapon_loses_nothing_by_being_fired_from_the_back() {
+        let b = arena(vec![hero("h", "p1")], vec![foe("x", 0, false)]);
+        let front = b.rank_attack_mult(0, true);
+
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("x", 0, false)]);
+        b.fighters[0].back_row = true;
+        let swung_from_back = b.rank_attack_mult(0, true);
+
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("x", 0, false)]);
+        b.fighters[0].back_row = true;
+        b.fighters[0].reach = true;
+        let shot_from_back = b.rank_attack_mult(0, true);
+
+        assert!(swung_from_back < front, "the back row cost a melee swing nothing");
+        assert_eq!(shot_from_back, front, "a bow was weakened by being fired from the back");
+    }
+
+    /// Reach cancels the RANK, not the rules. A non-physical hit was never weakened by the
+    /// back row in the first place, and reach must not become a general damage bonus.
+    #[test]
+    fn reach_changes_nothing_a_rank_was_not_already_deciding() {
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("x", 0, false)]);
+        b.fighters[0].reach = true;
+        assert_eq!(b.rank_attack_mult(0, false), 1.0);
+        assert_eq!(b.rank_attack_mult(0, true), 1.0, "a front-rank archer got a bonus");
     }
 }

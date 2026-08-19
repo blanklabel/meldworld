@@ -29,6 +29,12 @@ pub enum ItemFamily {
     Dagger,
     /// Defensive off-hand blade (Shifter).
     ParryBlade,
+    /// Two-handed bow. RANGED: its shot ignores the target's rank.
+    Bow,
+    /// One-handed sling. Ranged, and light enough to leave a hand free.
+    Sling,
+    /// A spear built to be thrown rather than held. Ranged, one-handed.
+    ThrownSpear,
 }
 
 /// Armor weight band. A class allows a *set* of these, so most drops fit more
@@ -47,7 +53,7 @@ impl ItemFamily {
     /// `off_hand` (see [`reserves_off_hand`](ItemFamily::reserves_off_hand)).
     pub fn hands(self) -> u8 {
         match self {
-            ItemFamily::Spear | ItemFamily::Staff | ItemFamily::Globe => 2,
+            ItemFamily::Spear | ItemFamily::Staff | ItemFamily::Globe | ItemFamily::Bow => 2,
             _ => 1,
         }
     }
@@ -76,7 +82,29 @@ impl ItemFamily {
             ItemFamily::Gauntlet => "gauntlet",
             ItemFamily::Dagger => "dagger",
             ItemFamily::ParryBlade => "parry_blade",
+            ItemFamily::Bow => "bow",
+            ItemFamily::Sling => "sling",
+            ItemFamily::ThrownSpear => "thrown_spear",
         }
+    }
+
+    /// **Does this weapon reach past a front rank?**
+    ///
+    /// A back rank halves an incoming PHYSICAL blow, and until now nothing physical could
+    /// answer it — the rear was a caster's problem and a swordsman's wall. A ranged weapon
+    /// is the martial answer: it shoots over the front line and lands on the rear at full
+    /// force.
+    ///
+    /// Reach is one of TWO independent axes. This one is "can it get there"; how MANY it
+    /// hits is sweep, and bundling them would make every ranged weapon a crowd-clearer and
+    /// every crowd-clearer ranged.
+    ///
+    /// `Spear` is deliberately NOT reaching, despite being the two-handed reach weapon:
+    /// giving it reach here would silently buff every Explorer holding one, which is a
+    /// balance change wearing a refactor's clothes. If a spear should reach, that is its own
+    /// decision.
+    pub fn reaches_past_the_front(self) -> bool {
+        matches!(self, ItemFamily::Bow | ItemFamily::Sling | ItemFamily::ThrownSpear)
     }
 
     pub fn from_wire(s: &str) -> Option<Self> {
@@ -89,6 +117,9 @@ impl ItemFamily {
             "gauntlet" => ItemFamily::Gauntlet,
             "dagger" => ItemFamily::Dagger,
             "parry_blade" => ItemFamily::ParryBlade,
+            "bow" => ItemFamily::Bow,
+            "sling" => ItemFamily::Sling,
+            "thrown_spear" => ItemFamily::ThrownSpear,
             _ => return None,
         })
     }
@@ -133,6 +164,16 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
         // the order that carries the medicine carries nothing else.
         CharacterClass::Keeper => &[ItemFamily::Staff],
         CharacterClass::Shifter => &[ItemFamily::Dagger, ItemFamily::ParryBlade],
+        // The disposal-of-dangerous-creatures guild shoots things it would rather not be
+        // standing next to. It is also the only class that had no hand of its own — it fell
+        // through to the martial default — so the ranged families land here without taking
+        // an option away from anybody.
+        CharacterClass::Hunter => &[
+            ItemFamily::Bow,
+            ItemFamily::Sling,
+            ItemFamily::ThrownSpear,
+            ItemFamily::Sword,
+        ],
         // The unbuilt roster classes inherit the martial baseline until each gets
         // its own kit — never an empty set, which would lock a hero out of gear.
         _ => &[ItemFamily::Sword, ItemFamily::Shield, ItemFamily::Spear],

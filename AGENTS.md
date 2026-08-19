@@ -225,6 +225,27 @@ from a slow one. The **fighter itself** wears the colour too, as a rim around it
 (`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
 in a fight the eye is on the arena.
 
+**REACH AND SWEEP ARE TWO AXES, NOT ONE "RANGED" FAMILY.** Reach is *can it get there*
+(`ItemFamily::reaches_past_the_front` — bow, sling, thrown spear), sweep is *how many does
+it hit*. Bundling them would make every ranged weapon a crowd-clearer and every
+crowd-clearer ranged. Reach is the MARTIAL answer to a back rank, which until now was a
+caster's problem and a swordsman's wall — and it is the ATTACKER's property, resolved inside
+the one reach rule, so one archer never exposes the rear to the rest of the party.
+**Reach cancels the rank in BOTH directions**: the target's rank does not protect against it
+(`softened_by_rank`) and the shooter's own rank does not weaken it (`rank_attack_mult`) — an
+archer that gave up half its damage for standing where archers stand would be a class with
+no reason to use its own weapon.
+`Spear` deliberately does NOT reach despite being the two-handed reach weapon: granting it
+would silently buff every Explorer holding one, which is a balance change wearing a
+refactor's clothes. **All-enemy is not a weapon property** — a basic attack that hits
+everything scales with pack size, beats a single-target weapon at about four enemies, and
+makes the back rank, the group tier and the entire level-20-and-up AoE ability ladder
+pointless. It belongs on limited thrown consumables.
+
+⚠️ **`GearBonus` is defined TWICE** — `meld_db::GearBonus` and `meld_run::GearBonus`, bridged
+by `effective_gear_bonus`. A property added to one and not the other is a bow that reaches in
+the Vault and not in the fight.
+
 **AN ENCOUNTER IS PACKS OF GROUPS, AND A RANK IS RELATIVE.** A **pack** is how the fight got
 assembled (what `group_around` pulled in) and is only provenance; a **group** — enemies of
 the same type and their minions — is the addressable unit, and it is derived at BATTLE

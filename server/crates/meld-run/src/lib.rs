@@ -478,6 +478,8 @@ pub struct GearBonus {
     /// AD-1 keyword affixes, already filtered to this hero's class.
     pub adrenaline: i32,
     pub focus_slots: i32,
+    /// The equipped MAIN HAND reaches past a front rank (bow, sling, thrown spear).
+    pub reach: bool,
     /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
     /// where the party composition is known.
     pub synergies: Vec<(String, i32, i32)>,
@@ -690,6 +692,9 @@ pub fn party_fighters(
             // these, which is what makes a ward roll a build rather than a stat.
             f.barrier += bonus.barrier;
             f.regen += bonus.regen;
+            // What the weapon IS, carried from the equipped main hand: a bow reaches past
+            // a front rank where a sword does not.
+            f.reach |= bonus.reach;
             if bonus.evasion > 0 {
                 f.evasion += bonus.evasion as f64 / 100.0;
             }

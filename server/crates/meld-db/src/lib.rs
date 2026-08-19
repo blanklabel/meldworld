@@ -3081,6 +3081,11 @@ impl Db {
                             if !weight.is_empty() {
                                 b.armor_weights.push(weight);
                             }
+                            note_weapon(
+                                b,
+                                &row.get::<String, _>("slot"),
+                                &row.get::<String, _>("family"),
+                            );
                             apply_affixes(
                                 b,
                                 &row.get::<String, _>("affixes"),
@@ -3115,6 +3120,7 @@ impl Db {
                                 if !g.armor_weight.is_empty() {
                                     b.armor_weights.push(g.armor_weight.clone());
                                 }
+                                note_weapon(b, &g.slot, &g.family);
                             }
                         }
                     }
@@ -3565,6 +3571,10 @@ pub struct GearBonus {
     /// hero's class: banked Adrenaline at battle start, extra Focus slots.
     pub adrenaline: i32,
     pub focus_slots: i32,
+    /// This hero's MAIN HAND reaches past a front rank (bow, sling, thrown spear), so its
+    /// physical blows land on a back rank at full force. From the weapon's family rather
+    /// than an affix — it is what the weapon IS, not something rolled onto it.
+    pub reach: bool,
     /// AD-3 brand: the element this hero's attacks deal. The first branded weapon
     /// wins — two brands would mean an attack with two types, which the engine's
     /// one-type-per-effect model has no answer for.
@@ -3595,6 +3605,22 @@ pub struct GearBonus {
     /// every equipped piece — folded (`1 + Σ(mᵢ−1)`) and clamped to 0.0–2.0 at
     /// battle assembly (spec §5 stat aggregation).
     pub modifiers: Vec<(String, f64)>,
+}
+
+/// Note what a hero's MAIN HAND is, for the properties that come from the weapon itself
+/// rather than from an affix rolled onto it.
+///
+/// One function, called from both the Postgres and in-memory paths, because a property
+/// read in one backend and not the other is a hero whose bow reaches in production and not
+/// in a test — the same drift that shipped a wall creatures could not walk through and
+/// players could.
+fn note_weapon(b: &mut GearBonus, slot: &str, family: &str) {
+    if slot != "main_hand" {
+        return;
+    }
+    if let Some(f) = meld_proto::equipment::ItemFamily::from_wire(family) {
+        b.reach |= f.reaches_past_the_front();
+    }
 }
 
 /// Fold one item's AD-1 affixes into a hero's running bonus.
