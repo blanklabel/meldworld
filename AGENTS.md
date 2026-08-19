@@ -259,7 +259,15 @@ slings); what the Hunter has is the **bow**.
 
 **REACH AND SWEEP ARE TWO AXES, NOT ONE "RANGED" FAMILY.** Reach is *can it get there*
 (`ItemFamily::reaches_past_the_front` — bow, sling, thrown spear), sweep is *how many does
-it hit*. Bundling them would make every ranged weapon a crowd-clearer and every
+it hit* (`sweeps_a_rank` — the whip and its kin). **A sweep takes ONE RANK OF ONE GROUP** —
+not the whole group and not the field: the intersection of the two structures an encounter
+already has rather than a third one beside them. It is deliberately NOT paired with reach, and
+that is where the decision lives: a lash is long but not airborne, so sweeping the front rank
+lands full while sweeping the back runs into the rank's own protection — and somebody else's
+flank turns the second into the first. The extras take `[battle] sweep_share` and never crit,
+because a sweep is a wide blow rather than several good ones. **`sweep_share` is UNTUNED** —
+sweep output is `share x rank size` and rank size is itself untuned, so the tests hold the
+RELATIONSHIP (lose to one body, beat a full rank) rather than the value. Bundling them would make every ranged weapon a crowd-clearer and every
 crowd-clearer ranged. Reach is the MARTIAL answer to a back rank, which until now was a
 caster's problem and a swordsman's wall — and it is the ATTACKER's property, resolved inside
 the one reach rule, so one archer never exposes the rear to the rest of the party.

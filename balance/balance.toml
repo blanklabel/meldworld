@@ -175,6 +175,13 @@ back_row_damage_mult = 0.5
 # which is exactly why the back row is a caster's home and the front line is a martial's.
 back_row_attack_mult = 0.5
 back_row_target_weight = 0.5
+# SWEEP: what each ADDITIONAL body in the swept rank takes, as a share of the attacker's
+# attack. A whip is a wide blow rather than several good ones, so the extras land softer and
+# never crit. UNTUNED — a placeholder pending an MCP measurement, because sweep output is
+# `share x rank size` and rank size is itself still an untuned number. What the tests hold is
+# the RELATIONSHIP, not this value: a sweep must lose to a single-target weapon against one
+# body and beat it against a full rank.
+sweep_share = 0.45
 party_size_per_player = 4        # each player controls up to this many heroes (GDD: per-player party) [TUNABLE]
 skill_power_mult = 1.75          # "Power Strike" skill: damage = atk*mult - def [TUNABLE]
 skill_heal_fraction = 0.3        # "Second Wind" skill: heals this fraction of max HP [TUNABLE]

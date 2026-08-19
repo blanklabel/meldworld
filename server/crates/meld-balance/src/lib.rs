@@ -154,6 +154,7 @@ pub struct Battle {
     pub back_row_damage_mult: f64,
     /// Share of its own PHYSICAL damage a back-row hero deals — the other half of the trade.
     pub back_row_attack_mult: f64,
+    pub sweep_share: f64,
     pub back_row_target_weight: f64,
     pub party_size_per_player: usize,
     pub skill_power_mult: f64,

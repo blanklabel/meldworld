@@ -46,6 +46,10 @@ pub struct Fighter {
     /// the world, because a group is a property of the ENCOUNTER — the same creature is in
     /// a different group depending on who it ended up standing with. `None` for heroes.
     pub group_id: Option<u32>,
+    /// This combatant's weapon takes a whole RANK of one group in a blow (a whip and its
+    /// kin). Deliberately not paired with reach: a lash is long, not airborne, so sweeping a
+    /// back rank runs into that rank's own protection.
+    pub sweeps: bool,
     /// This combatant's weapon reaches past a front rank (bow, sling, thrown spear), so its
     /// physical blows land on a back rank at full force. The MARTIAL answer to a rear: until
     /// now the rank was a caster's problem and a swordsman's wall.
@@ -274,6 +278,7 @@ impl Fighter {
             pack_role: PackRole::None,
             group_id: None,
             reach: false,
+            sweeps: false,
             flanked: false,
             back_row: false,
             focus_max: 0,
@@ -354,6 +359,9 @@ impl Fighter {
         }
         if self.reach {
             v.push("reach".to_string());
+        }
+        if self.sweeps {
+            v.push("sweep".to_string());
         }
         // Once-per-battle abilities that are already gone. Without this the row stays
         // enabled and the only feedback is a refusal — the same "the rule exists but the
@@ -613,6 +621,7 @@ pub struct Battle {
     back_row_damage_mult: f64,
     back_row_attack_mult: f64,
     thrown_atk_mult: f64,
+    sweep_share: f64,
     gang_switch_chance: f64,
     /// The mark a ganging pack is converging on (CR-9). Shared across the whole side, so
     /// "gang up" means the pack commits together rather than each creature deciding alone.
@@ -937,6 +946,7 @@ impl Battle {
             back_row_damage_mult: balance.battle.back_row_damage_mult,
             back_row_attack_mult: balance.battle.back_row_attack_mult,
             thrown_atk_mult: balance.consumable.thrown_atk_mult,
+            sweep_share: balance.battle.sweep_share,
             gang_switch_chance: balance.ai.gang_switch_chance,
             gang_target: None,
             combo_window_ticks: balance.adventure.combo_window_ticks,
@@ -1706,6 +1716,30 @@ impl Battle {
                 fx
             }
         };
+        // SWEEP: a lash takes the rest of the target's RANK, in the target's own GROUP.
+        // One rank of one group — the intersection of the two structures an encounter
+        // already has, rather than a third one beside them. The primary target is resolved
+        // above like any other blow (it dodges, it crits); the rest of the rank takes a
+        // reduced share and no crit, because a sweep is a wide blow rather than several
+        // good ones.
+        if self.fighters[actor_i].sweeps {
+            let (group, rank) =
+                (self.fighters[target_i].group_id, self.fighters[target_i].back_row);
+            let rest: Vec<usize> = (0..self.fighters.len())
+                .filter(|&i| {
+                    i != target_i
+                        && self.fighters[i].alive
+                        && self.fighters[i].kind != CombatantKind::Player
+                        && self.fighters[i].group_id == group
+                        && self.fighters[i].back_row == rank
+                })
+                .collect();
+            let share = ((atk as f64) * self.sweep_share).round().max(1.0) as i32;
+            for t in rest {
+                let d = self.damage(share, self.fighters[t].def, self.fighters[t].defending);
+                effects.extend(self.apply_typed_damage(t, d, attack_type));
+            }
+        }
         // The Hunter banks Adrenaline on every basic attack (see `gain_adrenaline`).
         effects.extend(self.gain_adrenaline(actor_i));
         self.fighters[actor_i].defending = false;
@@ -9980,5 +10014,126 @@ mod thrown_tests {
             let f = bt.fighters.iter().find(|f| f.combatant_id == id).unwrap();
             assert!(f.hp < f.max_hp, "{id} was not hit by a thrown axe");
         }
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::grouping_and_flanking::{balance, foe, hero};
+    use super::*;
+
+    fn arena_with(allies: Vec<Fighter>, enemies: Vec<Fighter>) -> Battle {
+        Battle::new("b".into(), EncounterClass::Standard, allies, enemies, &balance(), 7)
+    }
+
+    fn took(b: &Battle, id: &str) -> i32 {
+        let f = b.fighters.iter().find(|f| f.combatant_id == id).unwrap();
+        f.max_hp - f.hp
+    }
+
+    /// One rank of one group — the intersection of the two structures an encounter already
+    /// has. Not the whole group, and not the whole field.
+    #[test]
+    fn a_sweep_takes_one_rank_of_one_group_and_nothing_else() {
+        let mut lasher = hero("h", "p1");
+        lasher.sweeps = true;
+        lasher.atk = 400;
+        let mut b = arena_with(
+            vec![lasher],
+            vec![
+                foe("front_a", 0, false),
+                foe("front_b", 0, false),
+                foe("rear_a", 0, true),
+                foe("other_group", 1, false),
+            ],
+        );
+        let id = b.fighters[0].combatant_id.clone();
+        let target = b.fighters.iter().find(|f| f.combatant_id == "front_a").unwrap();
+        let tid = target.combatant_id.clone();
+        b.fighters[0].gauge = 1.0;
+        b.fighters[0].awaiting = true;
+        let _ = b.submit(
+            &id,
+            "a1".into(),
+            BattleActionKind::Attack,
+            Some(vec![tid]),
+            None,
+            None,
+        );
+
+        assert!(took(&b, "front_a") > 0, "the target was not hit");
+        assert!(took(&b, "front_b") > 0, "the rest of the rank was not swept");
+        assert_eq!(took(&b, "rear_a"), 0, "the sweep crossed into the other rank");
+        assert_eq!(took(&b, "other_group"), 0, "the sweep crossed into another group");
+    }
+
+    /// A sweep is a WIDE blow, not several good ones: the bodies beyond the target take a
+    /// share. If they took full damage the whip would simply be a better sword.
+    #[test]
+    fn the_rest_of_the_rank_takes_less_than_the_target() {
+        let mut lasher = hero("h", "p1");
+        lasher.sweeps = true;
+        lasher.atk = 400;
+        let mut b = arena_with(
+            vec![lasher],
+            vec![foe("a", 0, false), foe("c", 0, false)],
+        );
+        let id = b.fighters[0].combatant_id.clone();
+        b.fighters[0].gauge = 1.0;
+        b.fighters[0].awaiting = true;
+        let _ = b.submit(
+            &id,
+            "a1".into(),
+            BattleActionKind::Attack,
+            Some(vec!["a".to_string()]),
+            None,
+            None,
+        );
+        assert!(
+            took(&b, "c") < took(&b, "a"),
+            "a swept body took as much as the target: {} vs {}",
+            took(&b, "c"),
+            took(&b, "a")
+        );
+        assert!(took(&b, "c") > 0, "the sweep did nothing to the rest of the rank");
+    }
+
+    /// A weapon that does not sweep must not, however many bodies share the rank. Without
+    /// this the sweep would be a property of the ENCOUNTER rather than of the weapon.
+    #[test]
+    fn a_weapon_that_does_not_sweep_hits_one_body() {
+        let mut b = arena_with(
+            vec![hero("h", "p1")],
+            vec![foe("a", 0, false), foe("c", 0, false)],
+        );
+        let id = b.fighters[0].combatant_id.clone();
+        b.fighters[0].gauge = 1.0;
+        b.fighters[0].awaiting = true;
+        let _ = b.submit(
+            &id,
+            "a1".into(),
+            BattleActionKind::Attack,
+            Some(vec!["a".to_string()]),
+            None,
+            None,
+        );
+        assert_eq!(took(&b, "c"), 0, "a sword swept a rank");
+    }
+
+    /// The trade the whole axis exists for: a sweep should LOSE against one body and WIN
+    /// against a full rank. This holds the relationship rather than `sweep_share`, which is
+    /// an untuned placeholder pending an MCP measurement.
+    #[test]
+    fn a_sweep_loses_to_one_body_and_beats_a_full_rank() {
+        let b = balance();
+        let share = b.battle.sweep_share;
+        assert!(share < 1.0, "a swept body takes a full blow, so the whip is a better sword");
+        assert!(share > 0.0, "the sweep does nothing, so the axis is decoration");
+        // Against a rank of four, the extras alone must be worth more than the single blow
+        // the whip gave up — otherwise there is never a reason to carry one.
+        assert!(
+            share * 3.0 > 1.0,
+            "even a full rank of four is worth less than one clean hit ({share} x 3)"
+        );
     }
 }
