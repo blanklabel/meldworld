@@ -1003,6 +1003,11 @@ creature_ward_fraction = 0.6
 # golem's crust are the same mechanic asked the same question.
 
 [consumable]
+# THROWN (the all-enemy tier). A share of the thrower's own attack, landed on every enemy at
+# once. Well under 1.0 because it hits the whole encounter: total output is `mult x targets`,
+# so at a pack of eight even a third of a swing is more than a swing. The COUNT in the pouch
+# is what prices it, not the number per target.
+thrown_atk_mult = 0.35
 barrier_amount = 18             # Bulwark Tonic: Barrier granted [TUNABLE]
 regen_amount = 6                # Mending Draught: Regen per turn [TUNABLE]
 evasion_pct = 20                # Ghostdust: Evasion percentage points [TUNABLE]

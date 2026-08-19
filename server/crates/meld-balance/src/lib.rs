@@ -723,6 +723,7 @@ pub struct ArmorResist {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Consumable {
+    pub thrown_atk_mult: f64,
     pub barrier_amount: i32,
     pub regen_amount: i32,
     pub evasion_pct: i32,

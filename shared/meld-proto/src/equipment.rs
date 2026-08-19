@@ -189,7 +189,15 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
         // A Keeper's staff is a walking stick, a pestle and a splint — two-handed, so
         // the order that carries the medicine carries nothing else.
         CharacterClass::Keeper => &[ItemFamily::Staff],
-        CharacterClass::Shifter => &[ItemFamily::Dagger, ItemFamily::ParryBlade],
+        // A Runner throws and slings as readily as it stabs — the light ranged hand,
+        // where the Hunter gets the heavy one. Reach is not the Hunter's private property;
+        // what the Hunter has is the BOW.
+        CharacterClass::Shifter => &[
+            ItemFamily::Dagger,
+            ItemFamily::ParryBlade,
+            ItemFamily::Sling,
+            ItemFamily::ThrownSpear,
+        ],
         // The disposal-of-dangerous-creatures guild shoots things it would rather not be
         // standing next to. It is also the only class that had no hand of its own — it fell
         // through to the martial default — so the ranged families land here without taking
