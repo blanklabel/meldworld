@@ -1124,9 +1124,16 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   magnitudes, and the handler branches on the function for its NUMBERS and nothing else.
   CANON is explicit that this is a discipline, not a convenience: *do not build towns,
   anchors, portals and camps as separate systems*. A new buildable is a row in that table.
-  A `wall`'s `blocks` flag joins the same collision list terrain uses, so movement keeps
-  ONE notion of impassable rather than a second check some call site forgets; it rides the
+  A `wall`'s `blocks` flag joins terrain in **`Arena::blocking_field`** — ONE list built in
+  ONE place, because the alternative was tried and failed inside a single release: the
+  collision line went into `step_creatures_with_aggro` and not into `apply_move`, so walls
+  stopped creatures while players strolled through them. A comment saying "some call site
+  will forget" does not stop a call site forgetting; a shared function does. It rides the
   snapshot as one `structure:<function>:<hp>:<building>` tag for the same reason.
+  **You cannot wall someone in**, and the only thing preventing it is
+  `min_spacing > 2 x (structure_footprint + player_radius)` — true today by 0.6 units, by
+  accident. It is a rule now: a test rings a player with the tightest legal cage and walks
+  them out of it, and a second test closes the gap to prove the first one can fail.
   Placement is validated BEFORE the stock is spent, and **nothing may be built on the
   clear path** — the route out is feasible by construction everywhere else, and a
   player-built wall across it is the one thing in the world that could seal the exit.
