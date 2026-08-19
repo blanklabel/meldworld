@@ -57,11 +57,15 @@ Every posted hunt with the caller's progress against it. Requires a session.
       "reward_material": "forest_bloom_petal",
       "reward_material_qty": 2,
       "reward_gear": false,
-      "where_to_look": "Found in the field or forest, from the first ring out."
+      "where_to_look": "Found in the field or forest, from the first ring out.",
+      "accepted": false
     }
   ]
 }
 ```
+
+`accepted` is whether the caller has **taken** this hunt. An unaccepted hunt is posted and
+readable but does not track — see `POST /v1/hunts/:key/accept` below.
 
 | Status | When |
 |--------|------|
@@ -70,6 +74,30 @@ Every posted hunt with the caller's progress against it. Requires a session.
 
 Reading it in-game: the **Bounty Board** district in Last City ([E] at the board).
 `MELD_HUNTS` / `?hunts` opens it on arrival for screenshot frames.
+
+---
+
+## POST /v1/hunts/:key/accept
+
+**Take** a posted hunt, so its progress starts counting. No request body. Requires a session.
+
+Only an accepted hunt is credited: a posted hunt nobody took stays at 0 however many of its
+quarry you fell, and crediting an unaccepted hunt does not even create a row for it. This
+endpoint is the only thing that does.
+
+Idempotent — accepting one you already hold succeeds and changes nothing, so a double-press
+at the board is not an error and cannot reset the progress already on it. Taking a hunt
+starts it at **0**; it is never retroactive.
+
+```json
+{ "key": "cull_the_bloom", "accepted": true }
+```
+
+| Status | When |
+|--------|------|
+| 200 | Taken, or already held. |
+| 401 | Missing or invalid session token. |
+| 404 | No hunt by that key in the registry. |
 
 ---
 

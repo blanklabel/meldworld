@@ -205,9 +205,11 @@ pub(crate) fn city_hud(
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
     mut heat: ResMut<crate::overworld::HeatUi>,
+    mut pick: ResMut<CounterPick>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
+    pick.clear();
     city.notice.clear();
     city.near = None;
     // `MELD_WALL`/`?wall` lights the board on arrival for screenshot frames; a
@@ -221,6 +223,11 @@ pub(crate) fn city_hud(
         net.0.fetch_recipes();
     }
     city.hunts_open = crate::flags::hunts_preview_flag();
+    // Screenshot-only: land with a row already picked, so the detail column's description,
+    // amount and commit buttons are on screen without a click to make them appear.
+    if let Some(row) = crate::flags::pick_preview_flag() {
+        pick.pick(row);
+    }
     if city.hunts_open {
         net.0.fetch_hunts();
     }
@@ -701,10 +708,12 @@ pub(crate) fn city_input(
     // the Bounty Board's own two sides are the natural pair to group.
     mut boards: (ResMut<HuntBoardData>, Res<BountyData>),
     mut shop_selling: ResMut<ShopSelling>,
-    mut pending: ResMut<PendingPurchase>,
     // Grouped for the same reason as `boards` above: this system is already at
     // Bevy's 16-param ceiling.
-    (unlocks, tutorial, mut tutorial_run): (Res<UnlocksRes>, Res<Tutorial>, ResMut<TutorialRun>),
+    // No `UnlocksRes` here any more: its only reader was the unreachable Drill-Yard branch
+    // this system returns above (see the note further down). `pick` rides this tuple because
+    // the system is at Bevy's 16-param ceiling.
+    (tutorial, mut tutorial_run, mut pick): (Res<Tutorial>, ResMut<TutorialRun>, ResMut<CounterPick>),
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
@@ -779,54 +788,35 @@ pub(crate) fn city_input(
         }
         return;
     }
-    // While the Drill Yard is open, [1]-[4] pick a slot and the arrows change its
-    // class — only ever among the classes the account actually owns.
-    if city.party_open {
-        let pool = fieldable_classes(&unlocks);
-        let slots = (unlocks.party_slots.max(1) as usize).min(4);
-        if session.party.len() < slots {
-            session.party.resize(slots, "explorer".to_string());
-        }
-        session.party.truncate(slots.max(1));
-        for (i, key) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4]
-            .iter()
-            .enumerate()
-        {
-            if keys.just_pressed(*key) && i < slots {
-                session.party_cursor = i;
-            }
-        }
-        let dir = i32::from(keys.just_pressed(KeyCode::ArrowRight))
-            - i32::from(keys.just_pressed(KeyCode::ArrowLeft));
-        if dir != 0 && !pool.is_empty() {
-            let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
-            let cur = session.party.get(slot).cloned().unwrap_or_default();
-            let n = pool.len() as i32;
-            let at = pool.iter().position(|c| *c == cur).unwrap_or(0) as i32;
-            session.party[slot] = pool[(((at + dir) % n + n) % n) as usize].to_string();
-            session.party_chosen = true;
-        }
-        if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::Escape) {
-            city.party_open = false;
-            session.party_chosen = true;
-            city.notice = "Party set.".to_string();
-        }
-        return;
-    }
+    // NOTE: no Drill-Yard branch here. `city_input` returns above the moment the yard is
+    // open, so the slot/class/[E] handling that used to sit at this point was unreachable
+    // for as long as that early-out has existed. The yard's own systems
+    // (`party_panel_buttons`, `yard_rename_input`, `loadout_name_input`) drive it.
     // Esc closes whatever town screen is open — the counter, the bench or the board —
     // the same way walking away already does (`city_interact`), so there's always a
     // key that gets you out without having to find the district's own toggle again.
-    // A pending buy confirmation is the newest thing on screen, so it's cancelled
-    // first rather than falling through to close the shop underneath it.
+    // A pick is the newest thing on screen, so it's dropped first rather than falling
+    // through to close the counter underneath it.
     if keys.just_pressed(KeyCode::Escape) {
-        if pending.kind.is_some() {
-            pending.kind = None;
+        if pick.row.is_some() {
+            // The pick is the newest thing on screen, so it backs out first rather than
+            // taking the whole counter with it.
+            pick.clear();
         } else if city.shop_open {
             city.shop_open = false;
         } else if city.craft_open {
             city.craft_open = false;
         } else if city.board_open {
             city.board_open = false;
+            city.notice.clear();
+        } else if city.hunts_open {
+            // The board was the one counter with no way out. Walking away closes the
+            // others, but you TRAVEL into a district now and land inside its radius, so
+            // there was nothing to walk out of — the claims screen simply kept the
+            // keyboard until the game was restarted. Every panel flag belongs in this
+            // chain; `every_town_panel_can_be_closed` holds the rest to it.
+            city.hunts_open = false;
+            city.bounty_tab = false;
             city.notice.clear();
         }
         return;
@@ -851,32 +841,37 @@ pub(crate) fn city_input(
             shop_selling.0 = !shop_selling.0;
             return;
         }
+        // A number PICKS its row, exactly as a tap does — the amount and the commit live in
+        // the detail column for both. Left/right nudge the amount, ENTER commits, ESC drops
+        // the pick (handled with the other Escapes above).
         for (i, key) in KEYS.iter().enumerate() {
             if !keys.just_pressed(*key) {
                 continue;
             }
-            if shop_selling.0 {
-                if let Some((kind, price)) = sellable(&shop, &inv).get(i) {
-                    net.0.sell_material(kind.clone(), 1);
-                    city.notice = format!("sold 1 {kind} for {price}c");
-                }
-            } else if i < ITEM_ROWS {
-                if let Some(line) = shop.items.get(i) {
-                    pending.kind = Some(PurchaseKind::Item {
-                        item_kind: line.item_kind.clone(),
-                        name: line.name.clone(),
-                        price: line.price_chits,
-                    });
-                }
-            } else if let Some(g) = shop.gear.get(i - ITEM_ROWS) {
-                pending.kind = Some(PurchaseKind::Gear {
-                    slot: g.slot.clone(),
-                    class_key: g.class_key.clone(),
-                    name: g.name.clone(),
-                    price: g.price_chits,
-                });
-            }
+            pick.pick(i);
             return;
+        }
+        if pick.row.is_some() {
+            let dir = i32::from(keys.just_pressed(KeyCode::ArrowRight))
+                - i32::from(keys.just_pressed(KeyCode::ArrowLeft));
+            if dir != 0 {
+                let max = counter_pick_max(&city, &shop, &inv, &craft, &shop_selling, &pick);
+                pick.nudge(dir, max);
+                return;
+            }
+            if keys.just_pressed(KeyCode::Enter) {
+                commit_counter_pick(
+                    &net,
+                    &mut city,
+                    &shop,
+                    &inv,
+                    &mut craft,
+                    hunts,
+                    &shop_selling,
+                    &mut pick,
+                );
+                return;
+            }
         }
     }
     // The Bounty Board: ↑/↓ walk the hunts, [1]-[8] (or ENTER on the row) claim one, and
@@ -1046,50 +1041,7 @@ pub(crate) fn city_input(
     // E interacts with whichever other district the avatar is standing in.
     if keys.just_pressed(KeyCode::KeyE) {
         if let Some(i) = city.near {
-            match CITY_DISTRICTS[i].action {
-                CityAction::Dive | CityAction::Vault => {} // handled above
-                CityAction::Party => {
-                    city.party_open = true;
-                    city.notice.clear();
-                    net.0.fetch_hero_names();
-                    net.0.fetch_loadouts();
-                }
-                CityAction::Shop => {
-                    city.shop_open = !city.shop_open;
-                    if city.shop_open {
-                        city.notice.clear();
-                        net.0.fetch_shop();
-                        // Every half of the counter: the Apothecary's basics, the
-                        // Requisition's plain gear, and what the Broker pays for what
-                        // you carried home.
-                        net.0.fetch_gear_shop();
-                        net.0.fetch_broker();
-                    }
-                }
-                CityAction::Craft => {
-                    city.craft_open = !city.craft_open;
-                    if city.craft_open {
-                        city.notice.clear();
-                        craft.last.clear();
-                        net.0.fetch_recipes();
-                    }
-                }
-                CityAction::Vanguard => {
-                    city.board_open = !city.board_open;
-                    if city.board_open {
-                        city.notice.clear();
-                        net.0.fetch_vanguard();
-                    }
-                }
-                CityAction::Hunts => {
-                    city.hunts_open = !city.hunts_open;
-                    if city.hunts_open {
-                        city.notice.clear();
-                        net.0.fetch_hunts();
-                        net.0.fetch_bounties();
-                    }
-                }
-            }
+            toggle_district(i, &mut city, &net, &mut craft, &mut pick);
         }
     }
 }
@@ -1370,6 +1322,34 @@ mod tests {
         }
     }
 
+    /// The board's row order is also its CLAIM order — the digits and the row chips index
+    /// straight into the list — so the sort has to happen where the list is built, and
+    /// finished work has to come first or a player scrolls past eight rows to find the one
+    /// they came home for.
+    #[test]
+    fn finished_hunts_sit_at_the_top_of_the_board() {
+        let hunt = |name: &str, claimable: bool, claimed: bool| crate::net::HuntLine {
+            name: name.into(),
+            claimable,
+            claimed,
+            ..Default::default()
+        };
+        let mut rows = [
+            hunt("paid", false, true),
+            hunt("working", false, false),
+            hunt("done", true, false),
+            hunt("working two", false, false),
+            hunt("done two", true, false),
+        ];
+        rows.sort_by_key(|h| h.board_order());
+        let order: Vec<&str> = rows.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["done", "done two", "working", "working two", "paid"],
+            "claimable first, then in hand, then paid - stable inside each group"
+        );
+    }
+
     /// Every district needs a number a player can press. This caught the first version
     /// advertising [1]-[6] against seven districts — the Vanguard Wall had no key.
     #[test]
@@ -1478,7 +1458,7 @@ mod tests {
     use meld_client::net::VanguardLine;
 
     fn line(rank: i32, name: &str, d: i32) -> VanguardLine {
-        VanguardLine { rank, username: name.to_string(), max_distance: d }
+        VanguardLine { rank, username: name.to_string(), max_distance: d, ..Default::default() }
     }
 
     #[test]
@@ -1523,11 +1503,38 @@ pub(crate) struct CounterRow {
     /// words — its own sprite where we drew one, else a glyph for its type. `None` for a
     /// row that is a switch rather than a thing (the anvil's quench, a leaderboard entry).
     pub(crate) icon: Option<String>,
+    /// What this row IS, for the detail column once it is picked: what the thing does, what
+    /// a recipe needs, what the Broker is paying for.
+    ///
+    /// Every counter used to act on the press — a tap bought, sold or forged immediately —
+    /// so the only way to find out what something did was to own it. A price with no
+    /// description is not a decision.
+    pub(crate) describe: Vec<String>,
+    /// Chits per one of it. `0` for a row that is not priced (a recipe, a switch).
+    pub(crate) unit_price: i64,
+    /// Whether more than one can be had at once, and so whether the detail column offers
+    /// an amount. A recipe makes one batch; a potion is bought by the handful.
+    pub(crate) countable: bool,
+    /// The most of it that can be had right now — chits for a buy, stock for a sell.
+    pub(crate) max_qty: i32,
+    /// The word on the button that commits it: `"Buy"`, `"Sell"`, `"Forge"`.
+    pub(crate) verb: String,
 }
 
 impl CounterRow {
     fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into(), enabled: true, current: false, icon: None }
+        Self {
+            key: key.into(),
+            label: label.into(),
+            enabled: true,
+            current: false,
+            icon: None,
+            describe: Vec::new(),
+            unit_price: 0,
+            countable: false,
+            max_qty: 1,
+            verb: "Confirm".into(),
+        }
     }
     fn of(mut self, kind: impl Into<String>) -> Self {
         self.icon = Some(kind.into());
@@ -1540,6 +1547,54 @@ impl CounterRow {
     fn cursor(mut self, on: bool) -> Self {
         self.current = on;
         self
+    }
+    /// What it does, in the player's words. One line per sentence.
+    fn saying(mut self, lines: Vec<String>) -> Self {
+        self.describe = lines;
+        self
+    }
+    /// Priced, and how many of it are within reach.
+    fn priced(mut self, unit: i64, max_qty: i32) -> Self {
+        self.unit_price = unit;
+        self.countable = max_qty > 1;
+        self.max_qty = max_qty.max(1);
+        self
+    }
+    /// The verb on its commit button.
+    fn committed_by(mut self, verb: &str) -> Self {
+        self.verb = verb.into();
+        self
+    }
+}
+
+/// The row the player has PICKED at the open counter, and how many of it they want.
+///
+/// A counter used to act on the press: a tap or a number key bought, sold or forged on the
+/// spot. So nothing could describe what a thing did before you owned it, an amount was
+/// always exactly one, and selling had no confirmation at all. Picking and committing are
+/// two steps now, and the detail column is where the second one lives.
+#[derive(Resource, Default)]
+pub(crate) struct CounterPick {
+    /// Index into the open [`CounterView`]'s rows.
+    pub(crate) row: Option<usize>,
+    pub(crate) qty: i32,
+}
+
+impl CounterPick {
+    pub(crate) fn clear(&mut self) {
+        self.row = None;
+        self.qty = 1;
+    }
+
+    /// Pick a row, starting at one of it.
+    pub(crate) fn pick(&mut self, row: usize) {
+        self.row = Some(row);
+        self.qty = 1;
+    }
+
+    /// Nudge the amount, held inside `1..=max`.
+    pub(crate) fn nudge(&mut self, by: i32, max: i32) {
+        self.qty = (self.qty + by).clamp(1, max.max(1));
     }
 }
 
@@ -1631,15 +1686,23 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
             .take(ITEM_ROWS + GEAR_ROWS)
             .enumerate()
             .map(|(i, (kind, price))| {
+                let have = held(kind);
                 CounterRow::new(
                     (i + 1).to_string(),
                     format!(
-                        "{} x{} @{price}c",
-                        crate::icons::display_name(kind),
-                        held(kind)
+                        "{} x{have} @{price}c",
+                        crate::icons::display_name(kind)
                     ),
                 )
                 .of(kind)
+                .saying(vec![
+                    material_blurb(kind),
+                    format!("You hold {have}. The Broker pays {price}c each."),
+                ])
+                // Selling used to fire on the press, one unit, with no confirmation: a
+                // mis-tap sold something and the only tell was the notice line.
+                .priced(*price, have.min(SELL_QTY_CAP))
+                .committed_by("Sell")
             })
             .collect();
         return v;
@@ -1652,11 +1715,21 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
     // rejection they discover by pressing a key.
     let afford = |price: i64| if inv.chits >= price { "" } else { " (short)" };
     for (i, s) in shop.items.iter().take(ITEM_ROWS).enumerate() {
+        // The server has always SENT the description; the counter simply never showed it, so
+        // every shelf read as a price list of names.
+        let affordable = if s.price_chits > 0 {
+            ((inv.chits / s.price_chits) as i32).min(BUY_QTY_CAP)
+        } else {
+            1
+        };
         let row = CounterRow::new(
             (i + 1).to_string(),
             format!("{} {}c{}", s.name, s.price_chits, afford(s.price_chits)),
         )
-        .of(s.item_kind.clone());
+        .of(s.item_kind.clone())
+        .saying(vec![s.description.clone()])
+        .priced(s.price_chits, affordable)
+        .committed_by("Buy");
         v.rows.push(if inv.chits >= s.price_chits { row } else { row.dim() });
     }
     // The Requisition's plain gear shares the counter, on the keys after the items:
@@ -1667,11 +1740,28 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
             .find(|(_, v)| *v > 0)
             .map(|(n, v)| format!(" +{v} {n}"))
             .unwrap_or_default();
+        let stats = [("atk", g.atk), ("def", g.def), ("spd", g.spd)]
+            .into_iter()
+            .filter(|(_, v)| *v > 0)
+            .map(|(n, v)| format!("+{v} {n}"))
+            .collect::<Vec<_>>()
+            .join("  ");
         let row = CounterRow::new(
             (ITEM_ROWS + i + 1).to_string(),
             format!("{}{} {}c{}", g.name, stat, g.price_chits, afford(g.price_chits)),
         )
-        .of(g.slot.clone());
+        .of(g.slot.clone())
+        .saying(vec![
+            format!(
+                "Plain {} for a {}. No affixes.",
+                g.slot.replace('_', " "),
+                g.class_key.replace('_', " ")
+            ),
+            if stats.is_empty() { "No bonuses.".into() } else { stats },
+        ])
+        // One piece at a time: a second copy of the same plain item is not a decision.
+        .priced(g.price_chits, 1)
+        .committed_by("Buy");
         v.rows.push(if inv.chits >= g.price_chits { row } else { row.dim() });
     }
     if !shop.gear.is_empty() {
@@ -1687,6 +1777,16 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
 
 /// The Vanguard Wall as a counter with nothing to press: the season's deepest dives, best
 /// first, with the reader's own placement called out (P1-1 — behaviors/endgame-seasons.md).
+/// A clear time as minutes and seconds. The board stores milliseconds; nobody reads a fight
+/// length in milliseconds.
+fn clear_time(ms: i64) -> String {
+    let secs = (ms / 1000).max(0);
+    match (secs / 60, secs % 60) {
+        (0, s) => format!("{s}s"),
+        (m, s) => format!("{m}m {s:02}s"),
+    }
+}
+
 pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
     let mut v = CounterView {
         title: "The Vanguard Wall".into(),
@@ -1709,12 +1809,40 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
         .entries
         .iter()
         .take(10)
-        .map(|e| CounterRow::new(e.rank.to_string(), format!("{} — d{}", e.username, e.max_distance)))
+        .map(|e| {
+            // Click a name and the detail column reads out the RUN, not just the distance.
+            // The endpoint has always sent every one of these; the Wall showed a name and a
+            // number, so there was nothing to look at and no reason to press a row.
+            let mut describe = vec![
+                format!("Reached d{} at run level {}", e.max_distance, e.at_level.max(1)),
+                format!("{} fights taken, {} fled", e.fights, e.flees),
+            ];
+            // Going quietly is a real way to travel (the Pacifist unlock), so a run that
+            // touched nothing is worth saying out loud rather than reading as a blank.
+            if e.fights == 0 {
+                describe.push("Walked it without a single fight.".into());
+            }
+            if let Some(star) = &e.star {
+                describe.push(match e.clear_ms {
+                    Some(ms) if ms > 0 => {
+                        format!("Felled the end fight ({star}) in {}", clear_time(ms))
+                    }
+                    _ => format!("Felled the end fight ({star})"),
+                });
+            }
+            CounterRow::new(e.rank.to_string(), format!("{} — d{}", e.username, e.max_distance))
+                .saying(describe)
+                // Reading only: there is nothing to do to somebody else's posting.
+                .committed_by("Close")
+        })
         .collect();
-    v.detail = vec![match board.you {
-        Some(rank) => format!("You are #{rank}."),
-        None => "You are uncarved.".into(),
-    }];
+    v.detail = vec![
+        match board.you {
+            Some(rank) => format!("You are #{rank}."),
+            None => "You are uncarved.".into(),
+        },
+        "Press a name to read how that run went.".into(),
+    ];
     v
 }
 
@@ -1762,12 +1890,49 @@ pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
                 " - paid".to_string()
             } else if h.claimable {
                 " - CLAIM".to_string()
+            } else if !h.accepted {
+                " - not taken".to_string()
             } else {
                 format!(" {}/{}", h.progress, h.target)
             };
             let mark = if h.reward_gear { " *" } else { "" };
+            let mut describe = vec![h.objective.clone()];
+            if !h.where_to_look.is_empty() {
+                describe.push(h.where_to_look.clone());
+            }
+            let mut reward = format!("Pays {}c", h.reward_chits);
+            if h.reward_material_qty > 0 && !h.reward_material.is_empty() {
+                reward.push_str(&format!(
+                    ", {} {}",
+                    h.reward_material_qty,
+                    crate::icons::display_name(&h.reward_material)
+                ));
+            }
+            if h.reward_gear {
+                reward.push_str(" and a piece of gear");
+            }
+            describe.push(reward);
+            describe.push(if h.claimed {
+                "Already paid.".to_string()
+            } else if !h.accepted {
+                "You have not taken this one - nothing you do counts toward it yet."
+                    .to_string()
+            } else {
+                format!("Taken. {}/{}", h.progress, h.target)
+            });
+            describe.push(h.blurb.clone());
             let row = CounterRow::new((i + 1).to_string(), format!("{}{mark}{state}", h.name))
-                .cursor(i == board.cursor);
+                .cursor(i == board.cursor)
+                .saying(describe)
+                .committed_by(if h.claimed {
+                    "Paid"
+                } else if h.claimable {
+                    "Claim"
+                } else if !h.accepted {
+                    "Accept"
+                } else {
+                    "Close"
+                });
             if h.claimed {
                 row.dim()
             } else {
@@ -1883,6 +2048,14 @@ fn claim_hunt_row(net: &NetRes, city: &mut CityUi, board: &HuntBoardData, row: u
         city.notice = format!("{} is already paid.", h.name);
         return;
     }
+    // A hunt you have not TAKEN is taken by this press. Every posted hunt used to credit
+    // itself from the moment the account existed, so the board was eight jobs somebody had
+    // signed you up for and "accept" meant nothing.
+    if !h.accepted {
+        net.0.accept_hunt(h.key.clone());
+        city.notice = format!("took {}.", h.name);
+        return;
+    }
     if !h.claimable {
         city.notice = format!("{} - {}/{}. {}.", h.name, h.progress, h.target, h.objective);
         return;
@@ -1968,15 +2141,37 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
         } else {
             String::new()
         };
+        let output = meld_proto::consumables::recipe(&r.recipe)
+            .map_or_else(|| r.recipe.clone(), |d| d.output.to_string());
+        // What the thing you are about to MAKE does. A recipe row named its inputs and its
+        // skill and never once said what came out of it, so the book read as a list of costs.
+        let mut describe = vec![format!("Makes {} x{}.", crate::icons::display_name(&output), r.output_quantity)];
+        if let Some(def) = meld_proto::consumables::consumable(&output) {
+            describe.push(def.description.to_string());
+        }
+        describe.push(format!("{} line.", r.skill));
+        for (kind, need) in &r.inputs {
+            describe.push(format!(
+                "  {}/{need} {}",
+                held(kind),
+                crate::icons::display_name(kind)
+            ));
+        }
+        if !r.craftable {
+            describe.push(format!("Locked until {} {}.", r.skill, r.required_level));
+        } else if short {
+            describe.push("You are short of a material.".into());
+        }
         let row = CounterRow::new(
             String::new(),
             format!("{} x{}{gate}", r.name, r.output_quantity),
         )
         .cursor(i == craft.cursor)
-        .of(meld_proto::consumables::recipe(&r.recipe).map_or_else(
-            || r.recipe.clone(),
-            |d| d.output.to_string(),
-        ));
+        .of(output)
+        .saying(describe)
+        // One batch at a time, and a confirm in front of it: forging used to fire on the
+        // press and spend the materials before the player had read the row.
+        .committed_by(if r.skill == "forging" { "Forge" } else { "Brew" });
         v.rows.push(if r.craftable && !short { row } else { row.dim() });
     }
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
@@ -2059,6 +2254,30 @@ pub(crate) fn bench_gear<'a>(craft: &CraftData, inv: &'a InventoryData) -> Optio
 pub(crate) const ITEM_ROWS: usize = 4;
 pub(crate) const GEAR_ROWS: usize = 4;
 
+/// The most the amount stepper will offer, per side. These mirror the server's own limits
+/// (`/v1/vendors/apothecary/buy` refuses past 99, `/v1/vendors/broker/sell` past 999), so the
+/// counter cannot offer an amount the endpoint would reject.
+pub(crate) const BUY_QTY_CAP: i32 = 99;
+pub(crate) const SELL_QTY_CAP: i32 = 999;
+
+/// What a material IS, for the detail column on the sell side. The Broker deals only in
+/// materials, and the registry knows their class and tier — enough to say whether the thing
+/// in your hand is ore, a reagent, refined stock or a trophy, which is what decides whether
+/// you will ever want it back.
+pub(crate) fn material_blurb(kind: &str) -> String {
+    use meld_proto::materials::MaterialClass;
+    match meld_proto::materials::material(kind).map(|m| m.class) {
+        Some(MaterialClass::Ore) => "Raw ore. Smelts into refined stock for the Forge.".into(),
+        Some(MaterialClass::Reagent) => "A reagent. Brews into potions at the alembic.".into(),
+        Some(MaterialClass::Refined) => "Refined stock. What the Forge builds gear out of.".into(),
+        Some(MaterialClass::Trophy) => {
+            "A trophy off something you felled. Catalyses a forge, or brews a stronger dose."
+                .into()
+        }
+        None => "The Broker will take it.".into(),
+    }
+}
+
 #[cfg(test)]
 mod shop_tests {
     use super::*;
@@ -2070,6 +2289,128 @@ mod shop_tests {
             description: "…".into(),
             price_chits: price,
         }
+    }
+
+    /// The Wall showed a name and a distance and nothing else, though the endpoint has always
+    /// sent how the run got there. Pressing a name has to be worth doing.
+    #[test]
+    fn a_wall_row_reads_out_how_that_run_went() {
+        let board = VanguardBoardData {
+            loaded: true,
+            season: 1,
+            you: Some(4),
+            entries: vec![meld_client::net::VanguardLine {
+                rank: 1,
+                username: "Ash".into(),
+                max_distance: 1200,
+                at_level: 94,
+                fights: 0,
+                flees: 2,
+                star: Some("Unburied".into()),
+                clear_ms: Some(185_000),
+            }],
+        };
+        let v = wall_view(&board);
+        let d = v.rows[0].describe.join("\n");
+        assert!(d.contains("d1200"), "no distance: {d}");
+        assert!(d.contains("run level 94"), "no level: {d}");
+        assert!(d.contains("0 fights taken, 2 fled"), "no route: {d}");
+        assert!(d.contains("without a single fight"), "a pacifist run should say so: {d}");
+        assert!(d.contains("Unburied"), "no end-fight mark: {d}");
+        assert!(d.contains("3m 05s"), "a clear time should read as minutes: {d}");
+    }
+
+    #[test]
+    fn a_clear_time_reads_in_minutes_and_seconds() {
+        assert_eq!(clear_time(0), "0s");
+        assert_eq!(clear_time(45_000), "45s");
+        assert_eq!(clear_time(185_000), "3m 05s");
+        assert_eq!(clear_time(-5), "0s");
+    }
+
+    /// The server has always sent a description for every shelf line. The counter dropped
+    /// it, so a shop was a list of names and prices and the only way to learn what something
+    /// did was to buy it.
+    #[test]
+    fn a_shelf_row_carries_what_the_thing_does() {
+        let mut shop = ShopData { loaded: true, ..Default::default() };
+        shop.items.push(meld_client::net::ShopLine {
+            item_kind: "bloom_salve".into(),
+            name: "Bloom Salve".into(),
+            description: "Restores a chunk of a hero's health.".into(),
+            price_chits: 12,
+        });
+        let inv = InventoryData { chits: 100, loaded: true, ..Default::default() };
+        let v = shop_view(&shop, &inv, false);
+        let row = &v.rows[0];
+        assert!(
+            row.describe.iter().any(|l| l.contains("Restores a chunk")),
+            "the row does not say what it does: {:?}",
+            row.describe
+        );
+        assert_eq!(row.unit_price, 12);
+        assert_eq!(row.verb, "Buy");
+    }
+
+    /// An amount is offered up to what the player can actually afford, and never past the
+    /// endpoint's own ceiling — the counter must not offer a purchase the server refuses.
+    #[test]
+    fn the_amount_offered_is_what_you_can_afford() {
+        let mut shop = ShopData { loaded: true, ..Default::default() };
+        shop.items.push(line("bloom_salve", "Bloom Salve", 10));
+        let v = shop_view(&shop, &InventoryData { chits: 35, loaded: true, ..Default::default() }, false);
+        assert_eq!(v.rows[0].max_qty, 3, "35 chits buys three at 10c");
+        assert!(v.rows[0].countable);
+
+        // Rich enough to hit the server's cap.
+        let v = shop_view(
+            &shop,
+            &InventoryData { chits: 100_000, loaded: true, ..Default::default() },
+            false,
+        );
+        assert_eq!(v.rows[0].max_qty, BUY_QTY_CAP, "must not offer past what buy accepts");
+    }
+
+    /// Selling used to fire on the press, one unit, with no confirmation at all.
+    #[test]
+    fn a_sell_row_is_countable_up_to_what_you_hold_and_says_sell() {
+        let mut shop = ShopData { loaded: true, ..Default::default() };
+        shop.quotes.push(meld_client::net::BrokerQuote {
+            item_kind: "bog_myrrh".into(),
+            name: "Bog Myrrh".into(),
+            price_chits: 4,
+        });
+        let inv = InventoryData {
+            loaded: true,
+            materials: vec![("bog_myrrh".to_string(), 7)],
+            ..Default::default()
+        };
+        let v = shop_view(&shop, &inv, true);
+        let row = &v.rows[0];
+        assert_eq!(row.verb, "Sell");
+        assert_eq!(row.max_qty, 7, "you can sell what you hold");
+        assert_eq!(row.unit_price, 4);
+        assert!(
+            row.describe.iter().any(|l| l.contains("You hold 7")),
+            "a sell row should say what you have: {:?}",
+            row.describe
+        );
+    }
+
+    /// The amount is held inside 1..=max however hard the stepper is pressed — a zero or a
+    /// negative would be a request the server rejects, and past the max is chits you do not
+    /// have.
+    #[test]
+    fn the_amount_stays_inside_one_and_the_maximum() {
+        let mut pick = CounterPick::default();
+        pick.pick(2);
+        assert_eq!((pick.row, pick.qty), (Some(2), 1), "a fresh pick starts at one");
+        pick.nudge(-5, 9);
+        assert_eq!(pick.qty, 1, "never below one");
+        pick.nudge(100, 9);
+        assert_eq!(pick.qty, 9, "never past the maximum");
+        pick.clear();
+        assert!(pick.row.is_none());
     }
 
     /// The three-column convention only reads as three columns if all three have something
@@ -2443,6 +2784,16 @@ pub(crate) fn seed_party_from_account(
     if !saved.is_empty() && saved.iter().any(|c| !c.is_empty()) {
         session.party = saved;
         session.party_chosen = true;
+    }
+    // Whatever the saved composition turned out to be, the party may never be WIDER than
+    // the slots this account has earned. The newcomer default is four classes (a spread,
+    // so the builder shows what the game has in it), and nothing trimmed it when no saved
+    // composition came back — so a player holding one slot was shown four heroes
+    // everywhere the client draws `session.party`: the Vault-Deep's party strip and the
+    // overworld entourage both listed people who do not exist. The server clamps the same
+    // way on `enter_maze`, so this is the client agreeing with it rather than a new rule.
+    if session.party.len() > slots {
+        session.party.truncate(slots);
     }
 }
 
@@ -3448,10 +3799,7 @@ pub(crate) fn render_travel_column(
     // `travel_keys` already stands down for all three, so the column has to as well or it
     // advertises numbers that do nothing.
     if city.party_open
-        || city.shop_open
-        || city.craft_open
-        || city.board_open
-        || city.hunts_open
+        || city.any_counter_open()
         || session.entered
     {
         return;
@@ -3576,6 +3924,70 @@ pub(crate) fn render_district_nameplates(
 
 /// Walk the avatar to a district and open it. Clicking the chip and pressing its number are
 /// the same path, so they can never disagree.
+/// Open (or close) whatever the district at `i` offers — the shelf, the recipe book, the
+/// Wall, the board, the yard.
+///
+/// ONE place, because there are now two ways in: pressing [E] while standing in a district,
+/// and clicking its travel chip a second time. A player who arrived by clicking a chip has
+/// no reason to know about [E] at all, and the district they are standing in is the one the
+/// chip already put them in.
+pub(crate) fn toggle_district(
+    i: usize,
+    city: &mut CityUi,
+    net: &NetRes,
+    craft: &mut CraftData,
+    pick: &mut CounterPick,
+) {
+    // Opening or closing ANY counter drops whatever was picked at the last one: the pick is a
+    // row INDEX, and row 3 of the shelf is not row 3 of the recipe book.
+    pick.clear();
+    match CITY_DISTRICTS[i].action {
+        // Diving and the Vault are handled by their own callers (a dive changes screen; the
+        // Vault opens the shared inventory overlay).
+        CityAction::Dive | CityAction::Vault => {}
+        CityAction::Party => {
+            city.party_open = true;
+            city.notice.clear();
+            net.0.fetch_hero_names();
+            net.0.fetch_loadouts();
+        }
+        CityAction::Shop => {
+            city.shop_open = !city.shop_open;
+            if city.shop_open {
+                city.notice.clear();
+                net.0.fetch_shop();
+                // Every half of the counter: the Apothecary's basics, the Requisition's
+                // plain gear, and what the Broker pays for what you carried home.
+                net.0.fetch_gear_shop();
+                net.0.fetch_broker();
+            }
+        }
+        CityAction::Craft => {
+            city.craft_open = !city.craft_open;
+            if city.craft_open {
+                city.notice.clear();
+                craft.last.clear();
+                net.0.fetch_recipes();
+            }
+        }
+        CityAction::Vanguard => {
+            city.board_open = !city.board_open;
+            if city.board_open {
+                city.notice.clear();
+                net.0.fetch_vanguard();
+            }
+        }
+        CityAction::Hunts => {
+            city.hunts_open = !city.hunts_open;
+            if city.hunts_open {
+                city.notice.clear();
+                net.0.fetch_hunts();
+                net.0.fetch_bounties();
+            }
+        }
+    }
+}
+
 pub(crate) fn travel_to(
     i: usize,
     city: &mut CityUi,
@@ -3592,14 +4004,27 @@ pub(crate) fn travel_to(
 /// Clicks on the travel column.
 pub(crate) fn travel_click(
     q: Query<(&Interaction, &TravelButton), Changed<Interaction>>,
+    net: NonSend<NetRes>,
     mut city: ResMut<CityUi>,
+    mut craft: ResMut<CraftData>,
+    mut pick: ResMut<CounterPick>,
     mut player: Query<&mut Transform, With<CityPlayer>>,
 ) {
     let Ok(mut tf) = player.single_mut() else { return };
     for (interaction, btn) in &q {
-        if *interaction == Interaction::Pressed {
-            travel_to(btn.0, &mut city, &mut tf);
+        if *interaction != Interaction::Pressed {
+            continue;
         }
+        // Click a district you are ALREADY standing in and it opens — so a second click on
+        // the same chip is what a double-click means, with no timer to guess at. Travel used
+        // to land you inside the radius and then wait for an [E] the player had never been
+        // told about; a chip that takes you to a shop and does not open it is a door you
+        // have to knock on twice for no reason.
+        if city.near == Some(btn.0) {
+            toggle_district(btn.0, &mut city, &net, &mut craft, &mut pick);
+            continue;
+        }
+        travel_to(btn.0, &mut city, &mut tf);
     }
 }
 
@@ -3612,10 +4037,7 @@ pub(crate) fn travel_keys(
 ) {
     // While a counter is open the number keys buy things, and the yard types names.
     if city.party_open
-        || city.shop_open
-        || city.craft_open
-        || city.board_open
-        || city.hunts_open
+        || city.any_counter_open()
         || session.entered
     {
         return;
@@ -3642,6 +4064,28 @@ pub(crate) struct CounterRowButton(pub usize);
 #[derive(Component, Clone, Copy)]
 pub(crate) struct CounterNavButton;
 
+/// Nudge the amount on the picked row: `-1` or `+1`.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterQtyButton(pub i32);
+
+/// Commit the picked row — buy, sell or forge it, for the amount chosen.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterCommitButton;
+
+/// Drop the pick without doing anything.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterCancelButton;
+
+/// The counter's way OUT, at the foot of its nav column.
+///
+/// Spawned by [`render_counter_panel`] for every counter rather than by each `*_view`
+/// builder, because a per-builder list is a list the next counter gets left off — which is
+/// exactly how the claims screen shipped with no exit at all. A player who arrived by
+/// clicking a travel chip has no reason to know that [Esc] is the way back, and travel
+/// lands you INSIDE the district radius, so walking away does not close it either.
+#[derive(Component, Clone, Copy)]
+pub(crate) struct CounterCloseButton;
+
 /// Draw whichever counter is open as **nav | main | detail**, centred.
 ///
 /// A shop is a menu, so it gets the menu treatment: the same three columns at the same
@@ -3659,6 +4103,7 @@ pub(crate) fn render_counter_panel(
     board: Res<VanguardBoardData>,
     hunts: Res<HuntBoardData>,
     bounties: Res<BountyData>,
+    pick: Res<CounterPick>,
     wa: Option<Res<WorldAssets>>,
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
@@ -3715,6 +4160,11 @@ pub(crate) fn render_counter_panel(
                             },
                         );
                     }
+                    nav.spawn(glass::divider());
+                    nav.spawn((Button, CounterCloseButton, glass::row_chip(false)))
+                        .with_children(|b| {
+                            b.spawn(glass::text("Leave  [Esc]".to_string(), 15.0, glass::TEXT));
+                        });
                 });
                 cols.spawn(glass::column(glass::COL_MAIN)).with_children(|main| {
                     for (i, r) in view.rows.iter().enumerate() {
@@ -3751,6 +4201,95 @@ pub(crate) fn render_counter_panel(
                     cols.spawn(glass::column_empty(glass::COL_DETAIL));
                 } else {
                     cols.spawn(glass::column(glass::COL_DETAIL)).with_children(|d| {
+                        // A PICKED row owns the detail column: what it is, how many, and the
+                        // two buttons that commit or back out. Nothing at a counter acts on
+                        // the press any more, so this column is the whole second step.
+                        // A row you cannot afford is still a row you are allowed to READ.
+                        // Filtering the pick by `enabled` meant a broke player could not find
+                        // out what anything did — which is the whole complaint this column
+                        // exists to answer. Only the COMMIT stands down.
+                        let picked = pick.row.and_then(|i| view.rows.get(i));
+                        if let Some(row) = picked {
+                            d.spawn(glass::text(row.label.clone(), 17.0, glass::TITLE));
+                            for line in &row.describe {
+                                d.spawn(glass::text(line.clone(), 14.0, glass::TEXT));
+                            }
+                            d.spawn(glass::divider());
+                            if row.countable && row.enabled {
+                                d.spawn(Node {
+                                    flex_direction: FlexDirection::Row,
+                                    align_items: AlignItems::Center,
+                                    column_gap: Val::Px(8.0),
+                                    ..default()
+                                })
+                                .with_children(|qty| {
+                                    qty.spawn((Button, CounterQtyButton(-1), glass::chip(false)))
+                                        .with_children(|b| {
+                                            b.spawn(glass::text("-".to_string(), 17.0, glass::TEXT));
+                                        });
+                                    qty.spawn(glass::text(
+                                        format!("{}", pick.qty),
+                                        17.0,
+                                        glass::TITLE,
+                                    ));
+                                    qty.spawn((Button, CounterQtyButton(1), glass::chip(false)))
+                                        .with_children(|b| {
+                                            b.spawn(glass::text("+".to_string(), 17.0, glass::TEXT));
+                                        });
+                                    qty.spawn(glass::text(
+                                        format!("of {}", row.max_qty),
+                                        13.0,
+                                        glass::DIM,
+                                    ));
+                                });
+                            }
+                            if row.unit_price > 0 {
+                                d.spawn(glass::text(
+                                    format!(
+                                        "{}c each - {}c for {}",
+                                        row.unit_price,
+                                        row.unit_price * pick.qty as i64,
+                                        pick.qty
+                                    ),
+                                    14.0,
+                                    glass::TEXT,
+                                ));
+                            }
+                            d.spawn(Node {
+                                flex_direction: FlexDirection::Row,
+                                column_gap: Val::Px(8.0),
+                                ..default()
+                            })
+                            .with_children(|act| {
+                                if row.enabled {
+                                    act.spawn((Button, CounterCommitButton, glass::chip(true)))
+                                        .with_children(|b| {
+                                            b.spawn(glass::text(
+                                                row.verb.clone(),
+                                                16.0,
+                                                glass::TITLE,
+                                            ));
+                                        });
+                                } else {
+                                    // No button at all rather than a dead one: a chip in this
+                                    // UI is a promise that pressing it does something.
+                                    act.spawn(glass::text(
+                                        "Out of reach for now.".to_string(),
+                                        14.0,
+                                        glass::DIM,
+                                    ));
+                                }
+                                act.spawn((Button, CounterCancelButton, glass::chip(false)))
+                                    .with_children(|b| {
+                                        b.spawn(glass::text(
+                                            if row.enabled { "Cancel" } else { "Back" }.to_string(),
+                                            16.0,
+                                            glass::TEXT,
+                                        ));
+                                    });
+                            });
+                            return;
+                        }
                         for (i, line) in view.detail.iter().enumerate() {
                             let (size, colour) =
                                 if i == 0 { (17.0, glass::TITLE) } else { (14.0, glass::TEXT) };
@@ -3776,14 +4315,56 @@ pub(crate) fn counter_click(
     shop: Res<ShopData>,
     mut shop_selling: ResMut<ShopSelling>,
     mut craft: ResMut<CraftData>,
-    mut pending: ResMut<PendingPurchase>,
     mut hunts: ResMut<HuntBoardData>,
     rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
+    closes: Query<(&Interaction, &CounterCloseButton), Changed<Interaction>>,
+    qtys: Query<(&Interaction, &CounterQtyButton), Changed<Interaction>>,
+    commits: Query<(&Interaction, &CounterCommitButton), Changed<Interaction>>,
+    cancels: Query<(&Interaction, &CounterCancelButton), Changed<Interaction>>,
+    mut pick: ResMut<CounterPick>,
 ) {
+    for (interaction, _) in &closes {
+        if *interaction == Interaction::Pressed {
+            pick.clear();
+            city.close_counters();
+            return;
+        }
+    }
     for (interaction, _) in &navs {
         if *interaction == Interaction::Pressed && city.shop_open {
             shop_selling.0 = !shop_selling.0;
+            // The two sides hold different things on the same row numbers, so a pick made on
+            // one side must not survive the flip.
+            pick.clear();
+            return;
+        }
+    }
+    for (interaction, _) in &cancels {
+        if *interaction == Interaction::Pressed {
+            pick.clear();
+            return;
+        }
+    }
+    for (interaction, btn) in &qtys {
+        if *interaction == Interaction::Pressed {
+            let max = counter_pick_max(&city, &shop, &inv, &craft, &shop_selling, &pick);
+            pick.nudge(btn.0, max);
+            return;
+        }
+    }
+    for (interaction, _) in &commits {
+        if *interaction == Interaction::Pressed {
+            commit_counter_pick(
+                &net,
+                &mut city,
+                &shop,
+                &inv,
+                &mut craft,
+                &hunts,
+                &shop_selling,
+                &mut pick,
+            );
             return;
         }
     }
@@ -3791,143 +4372,92 @@ pub(crate) fn counter_click(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        if city.craft_open {
-            // The recipe rows come first and the two tool rows are pinned after them, so a
-            // tap past the book is the anvil or the bench — both of which have their own
-            // keys and their own confirmations, so a tap there does nothing but land.
-            if btn.0 < craft.recipes.len() {
-                craft.cursor = btn.0;
-                if let Some(r) = craft.recipes.get(btn.0) {
-                    net.0.craft(r.recipe.clone());
-                    craft.last = format!("working {}...", r.name);
-                }
-            }
-            return;
+        // A row PICKS. Every counter used to act on the press — buying, selling and forging
+        // all fired on the tap — so nothing could tell you what a thing did before you owned
+        // it, and a mis-tap spent chits or materials with no way back. The detail column
+        // holds the second step.
+        pick.pick(btn.0);
+        // Keep each counter's own cursor on the picked row, since the detail those panels
+        // build for themselves (a hunt's objective, a recipe's inputs) reads from it.
+        if city.craft_open && btn.0 < craft.recipes.len() {
+            craft.cursor = btn.0;
         }
-        if city.hunts_open {
-            // A tap moves the detail column to the row; only a FINISHED hunt is a
-            // press that does anything, and the server rules on it either way.
-            if btn.0 < hunts.hunts.len() {
-                hunts.cursor = btn.0;
-                claim_hunt_row(&net, &mut city, &hunts, btn.0);
-            }
-            return;
-        }
-        if city.shop_open {
-            if shop_selling.0 {
-                if let Some((kind, price)) = sellable(&shop, &inv).get(btn.0) {
-                    net.0.sell_material(kind.clone(), 1);
-                    city.notice = format!("sold 1 {kind} for {price}c");
-                }
-            } else if btn.0 < ITEM_ROWS {
-                if let Some(line) = shop.items.get(btn.0) {
-                    pending.kind = Some(PurchaseKind::Item {
-                        item_kind: line.item_kind.clone(),
-                        name: line.name.clone(),
-                        price: line.price_chits,
-                    });
-                }
-            } else if let Some(g) = shop.gear.get(btn.0 - ITEM_ROWS) {
-                pending.kind = Some(PurchaseKind::Gear {
-                    slot: g.slot.clone(),
-                    class_key: g.class_key.clone(),
-                    name: g.name.clone(),
-                    price: g.price_chits,
-                });
-            }
-            return;
-        }
-    }
-}
-
-/// The Yes/No answer to the [`PendingPurchase`] prompt from [`render_purchase_confirm`].
-#[derive(Component)]
-pub(crate) struct ConfirmBuyButton(pub bool);
-
-/// Resolves the buy-confirm dialog: Yes dispatches the staged purchase, No just drops it.
-/// Both branches clear `pending.kind`, which is also what makes the dialog disappear.
-pub(crate) fn purchase_confirm_click(
-    net: NonSend<NetRes>,
-    mut city: ResMut<CityUi>,
-    mut pending: ResMut<PendingPurchase>,
-    buttons: Query<(&Interaction, &ConfirmBuyButton), Changed<Interaction>>,
-) {
-    for (interaction, btn) in &buttons {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        if btn.0 {
-            match pending.kind.take() {
-                Some(PurchaseKind::Item { item_kind, name, .. }) => {
-                    net.0.buy_item(item_kind, 1);
-                    city.notice = format!("bought {name}");
-                }
-                Some(PurchaseKind::Gear { slot, class_key, name, .. }) => {
-                    net.0.buy_gear(slot, class_key);
-                    city.notice = format!("requisitioned {name}");
-                }
-                None => {}
-            }
-        } else {
-            pending.kind = None;
+        if city.hunts_open && btn.0 < hunts.hunts.len() {
+            hunts.cursor = btn.0;
         }
         return;
     }
 }
 
-/// Marks the rebuilt-each-frame root of the buy-confirm dialog.
-#[derive(Component)]
-pub(crate) struct PurchaseConfirmPanel;
-
-/// "Are you sure you want to buy X?" — a scrim + panel sitting in front of the
-/// Market Tiers counter whenever [`PendingPurchase`] holds something. Same
-/// despawn-and-rebuild convention as [`render_counter_panel`], and the same
-/// `CityRoot` parent so it layers above the counter it's confirming a buy from.
-/// Sibling stacking order between two same-frame rebuilds isn't guaranteed (the
-/// systems aren't chained), so this carries its own [`GlobalZIndex`] — the same
-/// escape hatch the gear tooltip uses — rather than leaning on spawn order.
-pub(crate) fn render_purchase_confirm(
-    mut commands: Commands,
-    pending: Res<PendingPurchase>,
-    old: Query<Entity, With<PurchaseConfirmPanel>>,
-    root_q: Query<Entity, With<CityRoot>>,
-) {
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    let Some(kind) = &pending.kind else { return };
-    let (name, price) = match kind {
-        PurchaseKind::Item { name, price, .. } => (name.clone(), *price),
-        PurchaseKind::Gear { name, price, .. } => (name.clone(), *price),
+/// The most of the picked row that can be had right now — asked of the view, so the stepper
+/// and the rows can never disagree about the ceiling.
+fn counter_pick_max(
+    city: &CityUi,
+    shop: &ShopData,
+    inv: &InventoryData,
+    craft: &CraftData,
+    selling: &ShopSelling,
+    pick: &CounterPick,
+) -> i32 {
+    let view = if city.craft_open {
+        craft_view(craft, inv)
+    } else if city.shop_open {
+        shop_view(shop, inv, selling.0)
+    } else {
+        return 1;
     };
-    let Ok(root) = root_q.single() else { return };
-    commands.entity(root).with_children(|p| {
-        p.spawn((PurchaseConfirmPanel, GlobalZIndex(1000), glass::scrim())).with_children(|scrim| {
-            scrim.spawn(glass::panel(Val::Px(360.0))).with_children(|panel| {
-                panel.spawn(glass::text(
-                    format!("Are you sure you want to buy \"{name}\"?"),
-                    17.0,
-                    glass::TITLE,
-                ));
-                panel.spawn(glass::text(format!("{price} chits"), 14.0, glass::DIM));
-                panel
-                    .spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(12.0),
-                        margin: UiRect::top(Val::Px(8.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn((Button, ConfirmBuyButton(true), glass::chip(false)))
-                            .with_children(|b| {
-                                b.spawn(glass::text("Yes", 15.0, glass::TEXT));
-                            });
-                        row.spawn((Button, ConfirmBuyButton(false), glass::chip(false)))
-                            .with_children(|b| {
-                                b.spawn(glass::text("No", 15.0, glass::TEXT));
-                            });
-                    });
-            });
-        });
-    });
+    pick.row.and_then(|i| view.rows.get(i)).map_or(1, |r| r.max_qty)
 }
+
+/// Do the thing the picked row says, for the amount chosen, then drop the pick.
+///
+/// ONE place, so the mouse and the keyboard commit identically — a row that buys something
+/// different by thumb than by key is the sort of thing nobody notices until a player buys the
+/// wrong gear.
+#[allow(clippy::too_many_arguments)]
+fn commit_counter_pick(
+    net: &NetRes,
+    city: &mut CityUi,
+    shop: &ShopData,
+    inv: &InventoryData,
+    craft: &mut CraftData,
+    hunts: &HuntBoardData,
+    selling: &ShopSelling,
+    pick: &mut CounterPick,
+) {
+    let Some(idx) = pick.row else { return };
+    let qty = pick.qty.max(1);
+    if city.craft_open {
+        if let Some(r) = craft.recipes.get(idx) {
+            if r.craftable {
+                net.0.craft(r.recipe.clone());
+                craft.last = format!("working {}...", r.name);
+            }
+        }
+        pick.clear();
+        return;
+    }
+    if city.hunts_open {
+        claim_hunt_row(net, city, hunts, idx);
+        pick.clear();
+        return;
+    }
+    if city.shop_open {
+        if selling.0 {
+            if let Some((kind, price)) = sellable(shop, inv).get(idx) {
+                net.0.sell_material(kind.clone(), qty);
+                city.notice = format!("sold {qty} {kind} for {}c", price * qty as i64);
+            }
+        } else if idx < ITEM_ROWS {
+            if let Some(line) = shop.items.get(idx) {
+                net.0.buy_item(line.item_kind.clone(), qty);
+                city.notice = format!("bought {qty} x {}", line.name);
+            }
+        } else if let Some(g) = shop.gear.get(idx - ITEM_ROWS) {
+            net.0.buy_gear(g.slot.clone(), g.class_key.clone());
+            city.notice = format!("bought {}", g.name);
+        }
+    }
+    pick.clear();
+}
+

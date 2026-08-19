@@ -555,9 +555,18 @@ pub(crate) fn animate_battle_actors(
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
     feel: Res<BattleFeel>,
+    sky: Res<Sky>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(&mut Transform, &SpriteQuad)>,
 ) {
+    // The night glow is folded in HERE rather than left to `illuminate_players`, which
+    // owns it everywhere else. Both systems wrote `emissive` on the same battle-hero
+    // material with no ordering between them, so whichever the scheduler ran second that
+    // frame decided whether the hero was lit — and the party flickered for the whole
+    // fight. One field, one owner: `illuminate_players` now skips a `SpriteQuad`.
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    let ef = night * 1.15;
+    let glow = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
     for (mut tf, s) in &mut q {
         // KO: gray the sprite, drop any hit motion — reads as "downed".
         if battle.view(&s.id).map(|c| c.hp <= 0).unwrap_or(false) {
@@ -565,7 +574,9 @@ pub(crate) fn animate_battle_actors(
                 let c = s.base.to_srgba();
                 let lum = 0.3 * c.red + 0.5 * c.green + 0.2 * c.blue;
                 m.base_color = Color::srgb(lum * 0.45, lum * 0.45, lum * 0.5);
-                m.emissive = LinearRgba::BLACK;
+                // Half the glow: a downed hero still has to be FINDABLE at night, and
+                // reading dimmer than the ones still standing is the point.
+                m.emissive = LinearRgba::rgb(glow.red * 0.5, glow.green * 0.5, glow.blue * 0.5);
             }
             tf.translation.x = 0.0;
             tf.translation.z = 0.0;
@@ -624,10 +635,14 @@ pub(crate) fn animate_battle_actors(
             if hit_age < feel.white_ttl {
                 m.base_color =
                     lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / feel.white_ttl);
-                m.emissive = LinearRgba::BLACK;
+                m.emissive = glow;
             } else {
                 m.base_color = lerp_color(s.base, Color::srgb(1.9, 0.5, 0.35), rage * 0.55);
-                m.emissive = LinearRgba::rgb(0.5 * rage, 0.04 * rage, 0.0);
+                m.emissive = LinearRgba::rgb(
+                    glow.red + 0.5 * rage,
+                    glow.green + 0.04 * rage,
+                    glow.blue,
+                );
             }
         }
     }

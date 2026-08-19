@@ -156,6 +156,7 @@ Ephemeral concerns are documented in the realtime protocol spec, not here. Hando
 | GET | `/v1/hunts` | yes | The Hunt Board with the caller's progress | [hunts.md](http-api/hunts.md) |
 | GET | `/v1/bounties` | yes | The Den's generated contracts + hunter rank | [hunts.md](http-api/hunts.md) |
 | POST | `/v1/bounties/{bounty_id}/claim` | yes | Take payment for a felled mark | [hunts.md](http-api/hunts.md) |
+| POST | `/v1/hunts/{key}/accept` | yes | Take a posted hunt, so it starts tracking | [hunts.md](http-api/hunts.md) |
 | POST | `/v1/hunts/{key}/claim` | yes | Take the reward for a finished hunt | [hunts.md](http-api/hunts.md) |
 | GET | `/v1/leaderboards/vanguard` | yes | Vanguard Board (current or archived season) | [leaderboards.md](http-api/leaderboards.md) |
 | GET | `/v1/leaderboards/vanguard/me` | yes | My best Vanguard ranking | [leaderboards.md](http-api/leaderboards.md) |

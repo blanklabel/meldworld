@@ -962,6 +962,20 @@ pub mod run {
         pub slot: Option<i32>,
         pub trigger_text: String,
         pub banner: String,
+        /// The unlock that has to be held FIRST, as a display name (`"Third party slot"`),
+        /// or `None` when this one stands on its own.
+        ///
+        /// `granted_by` refuses an unlock whose prerequisite is not owned, and this view
+        /// used to carry only `trigger_text` — so the locked row told a player to work a
+        /// node dry for the Keeper, they did, and nothing happened, with nothing on screen
+        /// naming the seat they were actually missing. A condition that is necessary but
+        /// not sufficient has to say so.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub requires_name: Option<String>,
+        /// Whether the caller already holds that prerequisite. The row is the only place
+        /// that knows enough to say "next" rather than "later".
+        #[serde(default)]
+        pub requires_met: bool,
     }
     impl Message for Unlocked {
         const TYPE: &'static str = "run.unlocked";

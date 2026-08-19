@@ -137,6 +137,33 @@ async fn the_board_posts_refuses_what_nobody_earned_and_counts_a_real_kill() {
     let res = http.get(format!("{base}/v1/hunts")).send().await.unwrap();
     assert_eq!(res.status(), 401);
 
+    // TAKE the hunt. Progress is only credited to an accepted hunt — a posted hunt used to
+    // count itself from the moment the account existed, which made the board eight jobs
+    // nobody had agreed to.
+    let res = http
+        .post(format!("{base}/v1/hunts/cull_the_bloom/accept"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "taking a posted hunt should be allowed");
+    // Idempotent: a second press is not an error.
+    let res = http
+        .post(format!("{base}/v1/hunts/cull_the_bloom/accept"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    // A hunt that does not exist cannot be taken.
+    let res = http
+        .post(format!("{base}/v1/hunts/no_such_hunt/accept"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+
     // The TUTORIAL dive is the deterministic one: area 0 holds exactly one creature,
     // `forest_bloom_stalker`, on the centre line — the quarry `cull_the_bloom` counts.
     // In any other world, which species dies is a roll.

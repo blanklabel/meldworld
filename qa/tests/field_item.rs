@@ -27,6 +27,11 @@ async fn start_server() -> String {
         .expect("set MELD_DATABASE_URL (see qa/scripts/local_pg.sh)");
     let mut balance = meld_balance::Balance::load_default().unwrap();
     balance.battle.party_size_per_player = 1;
+    // Kit is BOUGHT now (`[runs] starting_*` are 0), so a test that drinks or portals home has
+    // to say so: this harness is not measuring the shop, and a dive that starts empty would
+    // only be measuring that.
+    balance.runs.starting_salves = 3;
+    balance.runs.starting_elixirs = 1;
     // FORCE the precondition instead of waiting for the world to supply it. This test is
     // about the overworld Item path — that a wounded hero may drink and a battle-only bottle
     // may not — and it was reaching that state by wandering until something happened to hurt

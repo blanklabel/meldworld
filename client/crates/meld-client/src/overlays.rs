@@ -57,12 +57,18 @@ pub(crate) fn overlay_input(
             rename.buffer.pop();
             return;
         }
-        if keys.just_pressed(KeyCode::Space) && rename.buffer.len() < 24 {
+        if keys.just_pressed(KeyCode::Space) && rename.buffer.chars().count() < 24 {
             rename.buffer.push(' ');
         }
+        // The SAME shift-aware mapping the Drill Yard's field uses, over the same buffer.
+        // This read `key_to_code_char`, which is the *code* mapping (`KeyA` -> `'A'`) built
+        // for match-a-keystroke work and is uppercase-only: a hero renamed from the menu
+        // could only ever be ALL CAPS, and no Shift did anything. One buffer, two fields,
+        // two different alphabets.
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         for key in keys.get_just_pressed() {
-            if let Some(c) = key_to_code_char(*key) {
-                if rename.buffer.len() < 24 {
+            if let Some(c) = crate::screens::typed_char(*key, shift) {
+                if rename.buffer.chars().count() < 24 {
                     rename.buffer.push(c);
                 }
             }
@@ -1056,6 +1062,9 @@ pub(crate) fn locked_roster_lines(owned: &[String]) -> Vec<(String, String)> {
     meld_proto::unlocks::UNLOCKS
         .iter()
         .filter(|u| !owned.iter().any(|o| o == u.key))
-        .map(|u| (u.name.to_string(), u.trigger_text.to_string()))
+        // `how_to_earn`, NOT `trigger_text`: an unlock behind a prerequisite the account
+        // does not hold yet has to name it, or the row describes a condition you can meet
+        // over and over with nothing to show for it.
+        .map(|u| (u.name.to_string(), meld_proto::unlocks::how_to_earn(u, owned)))
         .collect()
 }

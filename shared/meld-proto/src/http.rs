@@ -208,6 +208,11 @@ pub struct HuntView {
     /// tables. Empty when the objective already says it (a depth).
     #[serde(default)]
     pub where_to_look: String,
+    /// Whether the player has TAKEN this hunt. Only an accepted hunt is credited, so an
+    /// unaccepted one sits on the board at 0 however many of its quarry you fell — the board
+    /// used to sign you up for all eight the moment you had an account.
+    #[serde(default)]
+    pub accepted: bool,
 }
 
 /// `GET /v1/hunts` response.

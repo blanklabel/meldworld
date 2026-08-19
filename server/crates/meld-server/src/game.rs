@@ -570,9 +570,20 @@ fn cure_carried(
 }
 
 /// `MELD_POTIONS` — DEV/QA: how many of each starting potion a dive is dealt, so the apex
-/// can be measured against a party that stocked up rather than the 3-salve default.
+/// can be measured against a party that stocked up rather than an empty pouch.
 fn dev_potions() -> Option<i32> {
     std::env::var("MELD_POTIONS").ok().and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| *n > 0)
+}
+
+/// `MELD_TOWN_PORTALS` — DEV/QA, the same idea for the way home. Kit is BOUGHT now
+/// (`[runs] starting_town_portals` is 0), so a harness that wants to exercise the portal
+/// path has to be handed one rather than walking the shop first — the same reason
+/// `MELD_POTIONS` exists.
+fn dev_town_portals() -> Option<i32> {
+    std::env::var("MELD_TOWN_PORTALS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|n| *n > 0)
 }
 
 /// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
@@ -718,7 +729,7 @@ fn unlock_inventory(
     deepest_ever: i32,
 ) -> wr::Unlocked {
     wr::Unlocked {
-        unlocks: newly.iter().map(|d| meld_proto::unlocks::view(d)).collect(),
+        unlocks: newly.iter().map(|d| meld_proto::unlocks::view(d, owned)).collect(),
         owned: owned.to_vec(),
         party_slots: meld_proto::unlocks::party_slots(owned),
         banner,
@@ -4443,7 +4454,7 @@ impl GameState {
         }
         // Each dive starts with a stock of Town Portal items — the primary way
         // home now that there's a single, deep fixed portal.
-        let starting_tp = self.balance.runs.starting_town_portals;
+        let starting_tp = dev_town_portals().unwrap_or(self.balance.runs.starting_town_portals);
         // Seed the starting consumables: Town Portals (extraction) + finite battle heal
         // items (Salve/Elixir), so the battle Item command is now inventory-backed.
         let starting_stock = [
@@ -5083,6 +5094,21 @@ impl GameState {
 }
 
 impl WorldActor {
+    /// A LEVEL-UP CURES. Every affliction gripping the hero that just advanced is lifted —
+    /// but not death: a fallen hero still needs a raise, and coming back up is the one thing
+    /// levelling does not do for you.
+    ///
+    /// Afflictions stopped expiring on purpose (outlasting a debuff by standing still is not
+    /// a decision), which left the road with only two answers to one: carry the right bottle,
+    /// or find a mender. Levelling is the third, and it is the one the player earns by
+    /// fighting through it — so a condition caught early in a dive is not a tax on the whole
+    /// rest of the dive.
+    fn cure_on_level_up(&mut self, player_id: &str, slot: usize) {
+        if let Some(hero) = self.hero_afflictions.get_mut(player_id).and_then(|c| c.get_mut(slot)) {
+            hero.clear();
+        }
+    }
+
     /// What the party's afflictions cost it on the road: how much of its speed it keeps, and
     /// whether venom bites on this step.
     ///
@@ -5123,7 +5149,10 @@ impl WorldActor {
     }
 
     /// Venom takes its bite out of every hero carrying it, and can kill the run.
-    fn venom_bites(&mut self, pid: &str) {
+    /// Returns whether it actually bit, so the caller can tell the player. A bite used to be
+    /// entirely silent: HP came off the roster server-side and nothing was sent, so the party
+    /// arrived at the next fight nearly dead with no explanation on the way there.
+    fn venom_bites(&mut self, pid: &str) -> bool {
         use meld_proto::statuses::{family_of, Family};
         let dmg = self.balance.affliction.venom_hp_per_step.max(1);
         let poisoned: Vec<usize> = match self.hero_afflictions.get(pid) {
@@ -5135,23 +5164,29 @@ impl WorldActor {
                 })
                 .map(|(i, _)| i)
                 .collect(),
-            None => return,
+            None => return false,
         };
+        if poisoned.is_empty() {
+            return false;
+        }
         // Ground to a knee, never finished. Ending a run needs a
         // `WorldEffect::ReleaseFromRun`, which this call site cannot emit — `handle_move`
         // returns messages, not effects — so rather than half-wire a death path, venom floors
         // at 1 HP. It still bites: you arrive at the next fight nearly dead, which is a real
         // cost and the reason to carry a cure. Making a poison able to finish a party is a
         // follow-up, and it should go through the same teardown a defeat uses.
+        let mut bit = false;
         if let Some(hps) = self.hero_hp.get_mut(pid) {
             for i in poisoned {
                 if let Some(h) = hps.get_mut(i) {
                     if *h > 1 {
                         *h = (*h - dmg).max(1);
+                        bit = true;
                     }
                 }
             }
         }
+        bit
     }
 
     fn handle_move(
@@ -5236,9 +5271,11 @@ impl WorldActor {
             intent.move_dir.y * drag,
             intent.input_seq,
         );
-        if bleed {
-            self.venom_bites(player_id);
-        }
+        // A bite re-sends the roster. That message already carries every hero's CURRENT HP
+        // and afflictions, so the party strip, the over-head condition line and the client's
+        // own "somebody just took damage" flash all come off one thing the client already
+        // knows how to read — no new wire type for a number that has always existed.
+        let bitten = bleed && self.venom_bites(player_id);
 
         let deeper = self.post_vanguard(player_id);
 
@@ -5253,7 +5290,20 @@ impl WorldActor {
         // player's own move, and again every tick (see `tick`) so a creature that
         // walks into a *stationary* player also triggers the fight — otherwise
         // standing still made you immune to an aggressive creature closing on you.
-        (self.resolve_touches(), deeper)
+        let mut out = self.resolve_touches();
+        if bitten {
+            let (synergies, combos) = self.party_depth(player_id);
+            out.push(out_msg(
+                player_id,
+                &wr::Party {
+                    heroes: self.party_views(player_id),
+                    synergies,
+                    combos,
+                    abilities: self.party_ability_views(player_id),
+                },
+            ));
+        }
+        (out, deeper)
     }
 
     /// Post the player's current distance to the Vanguard Board when it beats
@@ -7815,6 +7865,10 @@ impl WorldActor {
                     leveled = Some((old, r.run_level));
                 }
             }
+            // Advancing lifts what is gripping that hero (never their death).
+            if leveled.is_some() {
+                self.cure_on_level_up(player_id, slot);
+            }
             if let Some((old, new)) = leveled {
                 let hero_ups = self.hero_level_ups(player_id, old, new);
                 out.push(out_msg(
@@ -9203,6 +9257,7 @@ impl WorldActor {
         }
         let balance = self.balance.clone();
         let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
+        let mut cured: Vec<(String, usize)> = Vec::new();
         for (pid, hero_slot, size) in owed {
             if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
                 let old = r.run_level;
@@ -9210,8 +9265,13 @@ impl WorldActor {
                 // WHOLE: one share, whatever the party size.
                 if r.award_hero_xp(hero_slot, 1, size, xp, &balance) > 0 {
                     level_ups.push((pid.clone(), old, r.run_level));
+                    cured.push((pid.clone(), hero_slot));
                 }
             }
+        }
+        // Collected rather than cleared in the loop above: that loop holds `self.run`.
+        for (pid, hero_slot) in cured {
+            self.cure_on_level_up(&pid, hero_slot);
         }
         let mut out = Vec::new();
         for (pid, old, new) in level_ups {
@@ -9439,6 +9499,8 @@ impl WorldActor {
                 // hero that fell earns nothing from the fight it did not finish, and
                 // the hero doing the killing is the one that gets stronger.
                 let mut class_bests: Vec<(String, String, i32)> = Vec::new();
+                // Who advanced, so their conditions can be lifted once the run borrow ends.
+                let mut cured: Vec<(String, usize)> = Vec::new();
                 let run_level_before: Vec<(String, i32)> = inst
                     .run
                     .runs
@@ -9473,6 +9535,7 @@ impl WorldActor {
                             &balance,
                         );
                         if r.award_hero_xp(slot, standing, size, paid, &balance) > 0 {
+                            cured.push((r.player_id.clone(), slot));
                             if let Some(class) = comp.get(slot) {
                                 class_bests.push((
                                     r.player_id.clone(),
@@ -9485,6 +9548,12 @@ impl WorldActor {
                 }
                 for (pid, class, level) in class_bests {
                     let _ = inst.db_writes.send(DbWrite::ClassBest(pid, class, level));
+                }
+                // Going up a level CURES: the afflictions harvested off this battle a moment
+                // ago are lifted from whichever heroes advanced on it, so a poison caught in
+                // the fight you levelled on does not follow you down the road.
+                for (pid, slot) in cured {
+                    inst.cure_on_level_up(&pid, slot);
                 }
                 // CL-1 milestones from a won fight. Read off the creatures BEFORE
                 // they leave the arena: what was in the encounter is what earns the
@@ -10709,12 +10778,62 @@ mod spending_tests {
 }
 
 #[cfg(test)]
+mod level_up_cure_tests {
+
+    /// Going up a level lifts what is gripping THAT hero, and nothing else's.
+    #[test]
+    fn advancing_lifts_the_conditions_off_the_hero_that_advanced() {
+        let (mut w, _rx) = super::shifting_lands_tests::world(50, 10);
+        w.hero_afflictions.insert(
+            "p1".into(),
+            vec![
+                vec!["poison".to_string(), "web".to_string()],
+                vec!["blinded".to_string()],
+            ],
+        );
+        w.cure_on_level_up("p1", 0);
+        let carried = &w.hero_afflictions["p1"];
+        assert!(carried[0].is_empty(), "the hero that levelled is still poisoned");
+        assert_eq!(
+            carried[1],
+            vec!["blinded".to_string()],
+            "a hero who did not level should keep what it caught"
+        );
+    }
+
+    /// Death is the exception: levelling cures conditions, it does not raise anybody.
+    /// HP lives in `hero_hp` and this must not go near it.
+    #[test]
+    fn a_cure_does_not_raise_the_fallen() {
+        let (mut w, _rx) = super::shifting_lands_tests::world(50, 10);
+        w.hero_hp.insert("p1".into(), vec![0, 12]);
+        w.hero_afflictions.insert("p1".into(), vec![vec!["dread".to_string()], vec![]]);
+        w.cure_on_level_up("p1", 0);
+        assert_eq!(w.hero_hp["p1"][0], 0, "levelling must not stand a fallen hero back up");
+    }
+
+    /// Nothing recorded for that player, or a slot past the end of the party: a cure is a
+    /// no-op rather than a panic, because the XP paths call it before they know either.
+    #[test]
+    fn curing_an_unknown_hero_is_harmless() {
+        let (mut w, _rx) = super::shifting_lands_tests::world(50, 10);
+        w.cure_on_level_up("nobody", 0);
+        w.hero_afflictions.insert("p1".into(), vec![vec!["poison".to_string()]]);
+        w.cure_on_level_up("p1", 7);
+        assert_eq!(w.hero_afflictions["p1"][0], vec!["poison".to_string()]);
+    }
+}
+
+#[cfg(test)]
 mod shifting_lands_tests {
     use super::*;
 
     /// A world with a Shift due almost immediately, so the driver can be watched
     /// end-to-end in a test instead of in five wall-clock minutes.
-    fn world(cadence: u64, warning: u64) -> (WorldActor, mpsc::UnboundedReceiver<DbWrite>) {
+    pub(super) fn world(
+        cadence: u64,
+        warning: u64,
+    ) -> (WorldActor, mpsc::UnboundedReceiver<DbWrite>) {
         let mut b = Balance::load_default().unwrap();
         b.shift.cadence_ticks = cadence;
         b.shift.cadence_jitter = 0.0;

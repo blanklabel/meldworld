@@ -184,7 +184,8 @@ fn main() {
         .init_resource::<Notice>()
         .init_resource::<CraftData>()
         .init_resource::<ShopSelling>()
-        .init_resource::<PendingPurchase>()
+        .init_resource::<CounterPick>()
+        .init_resource::<overworld::HurtWash>()
         .init_resource::<ExploredMap>()
         .init_resource::<StationUi>()
         .init_resource::<HeatUi>()
@@ -306,8 +307,6 @@ fn main() {
                     city::render_counter_panel,
                     city::counter_click,
                     city::render_district_nameplates,
-                    city::render_purchase_confirm,
-                    city::purchase_confirm_click,
                 ),
                 city_input,
                 // The anvil's heat is struck in town as well as in the field.
@@ -359,6 +358,7 @@ fn main() {
             (
                 overworld_ui,
                 overworld::spawn_blind_mask,
+                overworld::spawn_hurt_flash,
                 despawn::<BattleActor>,
                 despawn::<CityScene>,
                 despawn::<WorldEntity>,
@@ -473,6 +473,7 @@ fn main() {
                 update_minimap_distance,
                 (remember_explored, station_input, heat_input, update_heat_bar),
                 overworld::update_blind_mask,
+                overworld::update_hurt_flash,
             )
                 .run_if(in_state(Screen::Overworld)),
         )
@@ -1733,24 +1734,30 @@ struct CityUi {
     yard_focus: String,
 }
 
+impl CityUi {
+    /// Shut every counter. ONE place, because "close whatever is open" was written out
+    /// longhand at each exit and the claims board was missing from one of them — which
+    /// left it with no way out at all once travel stopped you having to walk away.
+    /// A new panel adds its flag here and every exit learns about it at once.
+    pub(crate) fn close_counters(&mut self) {
+        self.shop_open = false;
+        self.craft_open = false;
+        self.board_open = false;
+        self.hunts_open = false;
+        self.bounty_tab = false;
+        self.notice.clear();
+    }
+
+    /// Whether any counter currently owns the screen.
+    pub(crate) fn any_counter_open(&self) -> bool {
+        self.shop_open || self.craft_open || self.board_open || self.hunts_open
+    }
+}
+
 /// Which way the counter is facing: `false` = what it sells, `true` = what it buys.
 /// UI state, so it lives apart from [`ShopData`], which holds only the server's answer.
 #[derive(Resource, Default)]
 pub(crate) struct ShopSelling(pub bool);
-
-/// A buy the player just clicked/pressed but hasn't confirmed yet — the Market
-/// Tiers' item and gear purchases stage here instead of firing immediately, so a
-/// "Are you sure...?" prompt can sit in front of them. Selling and the Forge stay
-/// immediate (unchanged): only the two ways to spend chits at the Market are gated.
-#[derive(Resource, Default)]
-pub(crate) struct PendingPurchase {
-    pub kind: Option<PurchaseKind>,
-}
-
-pub(crate) enum PurchaseKind {
-    Item { item_kind: String, name: String, price: i64 },
-    Gear { slot: String, class_key: String, name: String, price: i64 },
-}
 
 /// The recipe book and the Forge's own selection, for the Forge & Alembic (MS-1).
 #[derive(Resource, Default)]
@@ -2284,9 +2291,18 @@ struct WorldEntity(String);
 /// Toggle for showing the whole party (the lead + its heroes) trailing you in the
 /// overworld, instead of just the lead avatar. Flipped from the party/inventory
 /// screen or with `P` (see [`toggle_party_view`] / [`sync_party_followers`]).
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct PartyView {
     show: bool,
+}
+
+impl Default for PartyView {
+    fn default() -> Self {
+        // ON by default. You command a party, and a lone avatar walking a maze that four
+        // heroes are fighting in is the wrong read of what the game is; [P] is there to
+        // turn the entourage OFF when it is in the way, not to opt into it.
+        PartyView { show: true }
+    }
 }
 
 /// One of the lead's heroes, drawn trailing them in the overworld when [`PartyView`]

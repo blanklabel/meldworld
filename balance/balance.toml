@@ -95,16 +95,19 @@ max_hero_level = 255             # the ceiling a party is expected to reach befo
 xp_gap_grace = 3                 # levels above the encounter that still pay in full
 xp_gap_zero = 12                 # levels above it at which the payout hits the floor
 xp_gap_floor_mult = 0.05         # a kill is still a kill — never zero
-# Extraction is mostly the Town Portal item: each dive starts with this many, and
-# felled creatures sometimes drop one. There is only ONE fixed portal (deep in),
-# so the item is the primary way home. [TUNABLE]
-starting_town_portals = 1
+# Extraction is mostly the Town Portal item, and it is BOUGHT — a dive no longer hands
+# you one. Kit is what you chose to bring: buy at the Apothecary, withdraw it at the
+# Vault-Deep, and it rides into the next Backpack. A free resupply every dive made the
+# shop decorative and "do I have a way home" a question with no wrong answer. Felled
+# creatures still sometimes drop one, and walking west into the city wedge is still a
+# free return, so nobody is stranded. [TUNABLE]
+starting_town_portals = 0
 town_portal_drop_chance = 0.2
-# Battle heal items are FINITE now — each dive starts with this many and using one in
-# battle (Item → Salve / Elixir) consumes one; when you're out, the action is rejected.
+# Battle heal items are FINITE, and bought for the same reason. A salve is 40% of a
+# hero's max HP, so a free three-salve kit was ~1130 HP of healing nobody paid for.
 # [TUNABLE]
-starting_salves = 3
-starting_elixirs = 1
+starting_salves = 0
+starting_elixirs = 0
 
 # How the four attributes (Str/Mnd/Dex/Wll) turn into combat stats. A hero's
 # attribute = its class base + per-level gain * (level-1); the derived stat is the
