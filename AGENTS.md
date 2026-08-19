@@ -225,6 +225,16 @@ from a slow one. The **fighter itself** wears the colour too, as a rim around it
 (`update_condition_rims`) — the tint on the party strip alone went unnoticed in play, because
 in a fight the eye is on the arena.
 
+**CREATURES STAND IN RANKS TOO.** A pack of three or more forms two: the leader and the
+front half hold the line, the rest stand behind (`MonsterSpawn::back_row`, carried into the
+fight as `Fighter::back_row`). It is the SAME trade a hero's back row makes, in the same
+engine code — half the physical damage taken, half the physical damage dealt — so a pack's
+rear shrugs off a sword and is answered by a spell, an elemental brand or reach, with no new
+combat code at all. A creature fighting **alone is always in front**, or a lone spawn would
+be half-immune to every sword in the game for free. A formation is also what makes a big
+pack legible: five abreast already spans the battle screen, so the client draws the rear as
+its own inset rank rather than one long line.
+
 **The back row is a TRADE.** Standing in the back rank halves the **physical** damage you
 take and halves the **physical** damage you deal (`back_row_damage_mult` /
 `back_row_attack_mult`). It used to only do the first, so the optimal formation was the

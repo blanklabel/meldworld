@@ -426,12 +426,30 @@ pub(crate) fn sync_battle_actors(
     } else {
         (2.5, 3.0, -4.5)
     };
+    // TWO RANKS, from the server's own `row:back` — the same flag the party strip reads
+    // for heroes. Laid out as ranks rather than one line for the reason every game that
+    // fields packs this size does it: five abreast already spans the screen, and ten in a
+    // row would put half the encounter off both edges at a size the world now spawns.
+    let rear: Vec<bool> =
+        enemies.iter().map(|c| c.statuses.iter().any(|s| s == "row:back")).collect();
+    let (front_n, back_n) =
+        (rear.iter().filter(|b| !**b).count(), rear.iter().filter(|b| **b).count());
+    let (mut fi, mut bi) = (0usize, 0usize);
     for (i, c) in enemies.iter().enumerate() {
         if seen.contains(&c.id) {
             continue;
         }
-        let x = (i as f32 - (enemies.len().max(1) as f32 - 1.0) * 0.5) * gap;
-        spawn_enemy_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, cz), h);
+        // The back rank sits deeper and is inset half a gap, so it reads as *behind* the
+        // front rather than as a second unrelated line.
+        let (n, idx, z_off, inset) = if rear[i] {
+            bi += 1;
+            (back_n, bi - 1, -gap * 0.9, 0.5)
+        } else {
+            fi += 1;
+            (front_n, fi - 1, 0.0, 0.0)
+        };
+        let x = (idx as f32 - (n.max(1) as f32 - 1.0) * 0.5 + inset) * gap;
+        spawn_enemy_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, cz + z_off), h);
     }
 }
 

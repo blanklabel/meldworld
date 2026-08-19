@@ -1398,6 +1398,16 @@ pub struct MonsterSpawn {
     /// no hits at all. A ward the Psyker cannot burn through is what makes bringing a mixed
     /// party the answer, without touching the class that earned its kit.
     pub set_piece_ward: String,
+    /// Which RANK this creature stands in. The back rank halves the physical damage it
+    /// takes AND the physical damage it deals (`back_row_damage_mult` /
+    /// `back_row_attack_mult`) — the same trade a hero's back row makes, in the same
+    /// engine code. So a pack in formation is not just more creatures: its rear is
+    /// protected from a sword and answered by a spell, an elemental brand, or reach.
+    ///
+    /// A formation is also what makes a BIG pack readable — ten in a line runs off the
+    /// screen, two ranks of five do not, which is why every game that fields packs this
+    /// size stacks them.
+    pub back_row: bool,
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1460,6 +1470,7 @@ impl MonsterSpawn {
             faction: stats.faction.clone(),
             aggression: stats.aggression.clone(),
             set_piece_ward: String::new(),
+            back_row: false,
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -2918,7 +2929,15 @@ impl Arena {
                             enc.leader_xp_mult,
                             "leader",
                         );
-                        for _ in 0..band.size - 1 {
+                        // FORMATION. A pack of three or more forms two ranks: the leader
+                        // and roughly the front half hold the line, the rest stand behind
+                        // it. Below three there is no formation to speak of — two
+                        // creatures abreast is not a front and a back — and a solo spawn
+                        // is always front, or a single creature would be half-immune to
+                        // every sword in the game for free.
+                        let ranked = band.size >= 3;
+                        let front = band.size.div_ceil(2);
+                        for k in 0..band.size - 1 {
                             // Mixed groups: past the duo band, some of the littles are a
                             // different species than what they follow.
                             let mkind = if erng.unit() < band.mixed_chance {
@@ -2953,6 +2972,9 @@ impl Arena {
                                 enc.minion_xp_mult,
                                 "minion",
                             );
+                            // Minion `k` is the (k+1)th body in the pack — the leader is
+                            // the first and always holds the front.
+                            self.monsters[midx].back_row = ranked && k + 1 >= front;
                         }
                         // Clear the grouping radius before the next spawn, or two packs
                         // placed a normal gap apart merge into one oversized fight — the
@@ -5669,6 +5691,90 @@ mod tests {
             a.advance_builds(a.structures[0].build_ticks);
             assert!(!a.section_pinned(&b, first), "a wall held ground");
             assert!(a.hold_shift(&b, first, last).is_none(), "a wall stopped the Shift");
+        }
+    }
+
+    /// A pack in FORMATION (CR/encounter composition). The back rank is the same trade a
+    /// hero's back row is — half the physical damage taken, half the physical damage dealt
+    /// — so a pack's rear shrugs off a sword and is answered by a spell, a brand or reach.
+    mod formations {
+        use super::*;
+
+        fn packs(seed: u64) -> (Balance, Arena) {
+            let b = Balance::load_default().unwrap();
+            let mut a = Arena::generate(&b, seed, false);
+            for _ in 0..40 {
+                a.ensure_frontier(&b, 1400.0);
+            }
+            (b, a)
+        }
+
+        /// Every pack that is big enough to HAVE a formation has one, and the leader is
+        /// never hiding behind its own minions.
+        #[test]
+        fn a_pack_forms_two_ranks_and_its_leader_holds_the_front() {
+            let (b, a) = packs(4242);
+            let mut ranked = 0;
+            for lead in a.monsters.iter().filter(|m| m.encounter_class == "leader") {
+                let pack: Vec<&MonsterSpawn> = a
+                    .monsters
+                    .iter()
+                    .filter(|m| {
+                        m.position.distance_to(&lead.position) <= b.ai.group_radius
+                            && m.encounter_class != "leader"
+                    })
+                    .collect();
+                assert!(!lead.back_row, "a leader was hiding in its own back rank");
+                if pack.len() + 1 >= 3 {
+                    ranked += 1;
+                    assert!(
+                        pack.iter().any(|m| m.back_row),
+                        "a pack of {} has no back rank",
+                        pack.len() + 1
+                    );
+                    assert!(
+                        pack.iter().any(|m| !m.back_row) || pack.len() == 1,
+                        "a pack of {} has no front rank but its leader",
+                        pack.len() + 1
+                    );
+                }
+            }
+            assert!(ranked > 0, "no pack in this world was big enough to test");
+        }
+
+        /// A lone creature must never stand in a back rank: it would be half-immune to
+        /// every sword in the game, for free, with no formation to justify it.
+        #[test]
+        fn a_creature_fighting_alone_is_always_in_front() {
+            let (b, a) = packs(909);
+            for m in a.monsters.iter() {
+                let company = a
+                    .monsters
+                    .iter()
+                    .filter(|o| {
+                        o.entity_id != m.entity_id
+                            && o.position.distance_to(&m.position) <= b.ai.group_radius
+                    })
+                    .count();
+                if company == 0 {
+                    assert!(!m.back_row, "{} stands alone in a back rank", m.entity_id);
+                }
+            }
+        }
+
+        /// The rank has to be worth something: the engine's own trade is what gives the
+        /// rear its meaning, and a build where either half is 1.0 has no formation at all.
+        #[test]
+        fn the_back_rank_is_a_trade_in_both_directions() {
+            let b = Balance::load_default().unwrap();
+            assert!(
+                b.battle.back_row_damage_mult < 1.0,
+                "a back rank that takes full physical damage is not a back rank"
+            );
+            assert!(
+                b.battle.back_row_attack_mult < 1.0,
+                "a back rank that deals full physical damage is a free hiding place"
+            );
         }
     }
 
