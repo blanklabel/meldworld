@@ -3571,10 +3571,13 @@ pub struct GearBonus {
     /// hero's class: banked Adrenaline at battle start, extra Focus slots.
     pub adrenaline: i32,
     pub focus_slots: i32,
-    /// This hero's MAIN HAND reaches past a front rank (bow, sling, thrown spear), so its
-    /// physical blows land on a back rank at full force. From the weapon's family rather
-    /// than an affix — it is what the weapon IS, not something rolled onto it.
-    pub reach: bool,
+    /// This hero's MAIN HAND weapon family, as a wire key (`bow`, `sword`, …).
+    ///
+    /// The family itself rather than a bag of booleans derived from it: reach came first,
+    /// damage type came second, and sweep is next. Each one added as its own field is a
+    /// field some code path reads and another forgets — which in this codebase is not a
+    /// hypothetical. One source, and everything asks it.
+    pub main_hand: Option<String>,
     /// AD-3 brand: the element this hero's attacks deal. The first branded weapon
     /// wins — two brands would mean an attack with two types, which the engine's
     /// one-type-per-effect model has no answer for.
@@ -3615,11 +3618,11 @@ pub struct GearBonus {
 /// in a test — the same drift that shipped a wall creatures could not walk through and
 /// players could.
 fn note_weapon(b: &mut GearBonus, slot: &str, family: &str) {
-    if slot != "main_hand" {
+    if slot != "main_hand" || family.is_empty() {
         return;
     }
-    if let Some(f) = meld_proto::equipment::ItemFamily::from_wire(family) {
-        b.reach |= f.reaches_past_the_front();
+    if meld_proto::equipment::ItemFamily::from_wire(family).is_some() {
+        b.main_hand = Some(family.to_string());
     }
 }
 

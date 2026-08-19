@@ -88,6 +88,32 @@ impl ItemFamily {
         }
     }
 
+    /// **What kind of blow is this?** The weapon decides, and the class is only the
+    /// fallback for a hand that has no physical answer of its own (a Globe, a Staff a caster
+    /// swings for want of anything better) or for a hero holding nothing at all.
+    ///
+    /// This is what makes `ArmorWeight` mean something in a loadout rather than in a table.
+    /// Plate turns an edge and fears a hammer; mail defeats a cut and lets a spike through
+    /// — so a **sling is the answer to plate and a bow is the answer to mail**, and picking
+    /// between them is a decision about what you are walking into. Before this the type came
+    /// from the CLASS, so every Hunter arrow cut like a sword and the two ranged families
+    /// were mechanically identical.
+    pub fn damage_type(self) -> Option<DamageType> {
+        Some(match self {
+            ItemFamily::Sword => DamageType::Slash,
+            ItemFamily::Dagger | ItemFamily::ParryBlade => DamageType::Pierce,
+            ItemFamily::Spear | ItemFamily::ThrownSpear => DamageType::Pierce,
+            ItemFamily::Gauntlet => DamageType::Blunt,
+            ItemFamily::Staff => DamageType::Blunt,
+            ItemFamily::Bow => DamageType::Pierce,
+            // A stone has no edge and no point. It is the answer to plate, which turns both.
+            ItemFamily::Sling => DamageType::Blunt,
+            // A caster's focus and a shield are not how their holder does damage; the class
+            // answers for those.
+            ItemFamily::Globe | ItemFamily::Shield => return None,
+        })
+    }
+
     /// **Does this weapon reach past a front rank?**
     ///
     /// A back rank halves an incoming PHYSICAL blow, and until now nothing physical could

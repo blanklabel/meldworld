@@ -478,8 +478,9 @@ pub struct GearBonus {
     /// AD-1 keyword affixes, already filtered to this hero's class.
     pub adrenaline: i32,
     pub focus_slots: i32,
-    /// The equipped MAIN HAND reaches past a front rank (bow, sling, thrown spear).
-    pub reach: bool,
+    /// The equipped MAIN HAND weapon family, as a wire key. Reach and damage type are both
+    /// read off it rather than carried as their own fields.
+    pub main_hand: Option<String>,
     /// Unresolved synergy affixes: (ally class key, atk, def). Paid out here,
     /// where the party composition is known.
     pub synergies: Vec<(String, i32, i32)>,
@@ -692,9 +693,21 @@ pub fn party_fighters(
             // these, which is what makes a ward roll a build rather than a stat.
             f.barrier += bonus.barrier;
             f.regen += bonus.regen;
-            // What the weapon IS, carried from the equipped main hand: a bow reaches past
-            // a front rank where a sword does not.
-            f.reach |= bonus.reach;
+            // What the weapon IS, read off the equipped main hand: a bow reaches past a
+            // front rank where a sword does not, and an arrow PIERCES where a sword cuts —
+            // which is what makes armour weight a loadout decision instead of a table.
+            // The class stays the fallback for a hand with no physical answer of its own
+            // (a caster's Globe) and for a hero holding nothing.
+            if let Some(fam) = bonus
+                .main_hand
+                .as_deref()
+                .and_then(meld_proto::equipment::ItemFamily::from_wire)
+            {
+                f.reach |= fam.reaches_past_the_front();
+                if let Some(dt) = fam.damage_type() {
+                    f.basic_attack_type = dt;
+                }
+            }
             if bonus.evasion > 0 {
                 f.evasion += bonus.evasion as f64 / 100.0;
             }
