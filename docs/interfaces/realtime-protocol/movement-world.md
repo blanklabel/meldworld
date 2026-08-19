@@ -403,7 +403,7 @@ message.
 
 | Message | Payload | Notes |
 |---|---|---|
-| `run.build_structure` | `function` (string) | Raises it where the avatar stands. Debits the function's ore cost from the run backpack, deepest stack first. Refused — **before** the stock is spent — if the spot is on the clear-path tube, too close to another structure or bench, inside an obstacle, or past the per-player cap. It goes up at `build_start_fraction` of its HP and ramps to full over the function's build time. |
+| `run.build_structure` | `function` (string) | Raises it where the avatar stands. Debits the function's ore cost from the run backpack, deepest stack first. Refused — **before** the stock is spent — if the spot is on the clear-path tube, too close to another structure or bench, inside an obstacle, past the per-player cap, or (for a **blocking** function only) within `no_build_near_player` of another player: you may not pen somebody in one block at a time. An `anchor` is exempt, since it does not block. It goes up at `build_start_fraction` of its HP and ramps to full over the function's build time. |
 | `run.repair_structure` | `entity_id` (id) | Spends one unit of ore for `repair_hp_per_ore`. **Anyone** in reach may repair — hauling ore out to a teammate's anchor is the point. Refused if it is already sound. |
 | `run.demolish_structure` | `entity_id` (id) | **Owner only.** Returns `demolish_refund_fraction` of what it cost, in the material it was built from. Never a full refund, or moving one is free. |
 
@@ -440,3 +440,23 @@ which rides the persistence delta already.
 ```json
 {"type": "world.shift_held", "seq": 4300, "ts": 1783728120000, "payload": {"generation": 9, "inner_radius": 240.0, "outer_radius": 318.0, "anchors": [{"entity_id": "struct-anchor-0", "damage": 225, "hp": 450, "max_hp": 900, "destroyed": false}]}}
 ```
+
+---
+
+### `movement.position_correction` and being stuck
+
+A player who ends up standing inside something impassable is **walked to the nearest
+point on the guaranteed clear path** and sent a `movement.position_correction`. The
+client's local avatar chases the snapshot exponentially for responsiveness, so an
+uncorrected teleport renders as a second-long slide across the map with the camera
+following; the correction makes it a snap.
+
+Two things trigger it, and they share one predicate:
+
+- **A Shift** re-scattered props or raised ground where a player was standing — they are
+  walked to the *region's entry* (see `world.shift`), because the Shift knows which region
+  moved.
+- **The general sweep** (`[building] stuck_check_ticks`) catches every other way a player
+  can end up inside geometry, with no event behind it, and walks them to the nearest open
+  ground. Active avatars only — nobody is pulled out of a battle or a channel by a safety
+  net.

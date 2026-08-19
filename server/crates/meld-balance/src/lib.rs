@@ -686,7 +686,9 @@ pub struct Building {
     pub repair_hp_per_ore: i32,
     pub demolish_refund_fraction: f64,
     pub min_spacing: f64,
+    pub no_build_near_player: f64,
     pub max_per_player: usize,
+    pub stuck_check_ticks: u64,
     pub shift_hold_damage_fraction: f64,
 }
 
