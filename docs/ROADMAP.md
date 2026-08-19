@@ -2073,6 +2073,10 @@ CONDITION rather than a checklist, and two menders can raise the fallen at a rea
     hides another player's bounty mark) — a client-side blackout is a suggestion a patched
     client ignores. `check_touch` still runs off server positions, so **you walk into what you
     cannot see and the fight starts anyway**, which is the whole idea.
+  - **The mask is spawned IDEMPOTENTLY**, because it is spawned on every entry to the
+    overworld and the panels are opaque. Returning from a battle used to stack another four on
+    the first four — `update_blind_mask` shows all of them — so a blinded party got strictly
+    darker with every fight it walked out of, and the entity count grew for the whole session.
   - Afflictions ride `HeroView.afflictions`, so the client knows them out of combat.
 - [x] **CN-6 — Cures out of combat.** A cure drunk on the road WAS refused ("Nothing has
   hold of you out here") because until CN-3 nothing persisted. It now lifts the family it names
