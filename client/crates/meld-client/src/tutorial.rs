@@ -339,3 +339,215 @@ pub(crate) fn first_run_popup(
             });
     }
 }
+
+// ------------------------------------------------------ guided practice dive --
+//
+// The `[T]` dive's step-by-step walkthrough (`TutorialRun`), layered on top of
+// real gameplay rather than static city UI. Unlike the town tour/briefing
+// above, this is never persisted — see `TutorialRun`'s own doc comment.
+
+/// The always-present, non-blocking coaching line for the walkthrough — ONE
+/// fixed spot on screen (top-centre) across every step, including the Battle
+/// screen, so the player never has to re-locate it. No scrim: this must never
+/// block clicks on the world/HUD beneath it.
+#[derive(Component)]
+pub(crate) struct TutorialCaptionRoot;
+
+pub(crate) fn render_tutorial_caption(
+    mut commands: Commands,
+    tutorial_run: Res<TutorialRun>,
+    card_q: Query<Entity, With<TutorialCaptionRoot>>,
+) {
+    let caption = match tutorial_run.step {
+        Some(TutorialStep::Harvest) if !tutorial_run.harvested => {
+            Some("Walk up to the glowing node and press [E] to gather it.")
+        }
+        Some(TutorialStep::Harvest) => {
+            Some("Now open the chest the same way — walk up and press [E].")
+        }
+        Some(TutorialStep::Fight) => Some(
+            "A creature is near — when the fight starts, press Attack (or click it) to strike.",
+        ),
+        Some(TutorialStep::Dungeon) => {
+            Some("Look for the dungeon entrance ahead and press [E] to descend.")
+        }
+        _ => None,
+    };
+    let Some(caption) = caption else {
+        for e in &card_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    for e in &card_q {
+        commands.entity(e).despawn();
+    }
+    commands
+        .spawn((
+            TutorialCaptionRoot,
+            GlobalZIndex(900),
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(12.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn(glass::panel_capped(Val::Percent(70.0), Val::Px(420.0)))
+                .with_children(|p| {
+                    p.spawn(glass::text("Guided Dive", 12.0, glass::DIM));
+                    p.spawn(glass::text(caption, 15.0, glass::TEXT));
+                });
+        });
+}
+
+/// Marks the "What is a Dungeon?" card.
+#[derive(Component)]
+pub(crate) struct TutorialExplainRoot;
+/// Its single dismiss button.
+#[derive(Component)]
+pub(crate) struct TutorialExplainDismissBtn;
+
+/// Fires the dungeon-entry explanation the instant the client's dungeon
+/// re-skin flips on (`DungeonSceneRes.active` false→true) while the
+/// walkthrough is waiting on the Dungeon step. Tracked via a local edge
+/// rather than `DungeonSceneRes.dirty`, which `world_render::manage_dungeon_scene`
+/// consumes — reading it here would race against that system's own ordering.
+pub(crate) fn dungeon_explain_card(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut tutorial_run: ResMut<TutorialRun>,
+    scene: Res<crate::world_render::DungeonSceneRes>,
+    mut was_active: Local<bool>,
+    dismiss_q: Query<&Interaction, (With<TutorialExplainDismissBtn>, Changed<Interaction>)>,
+    root_q: Query<Entity, With<TutorialExplainRoot>>,
+) {
+    let just_entered = scene.active && !*was_active;
+    *was_active = scene.active;
+    if just_entered && tutorial_run.step == Some(TutorialStep::Dungeon) {
+        tutorial_run.step = Some(TutorialStep::Explain);
+    }
+    if tutorial_run.step != Some(TutorialStep::Explain) {
+        for e in &root_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    let dismiss = keys.just_pressed(KeyCode::Space)
+        || keys.just_pressed(KeyCode::Enter)
+        || keys.just_pressed(KeyCode::Escape)
+        || dismiss_q.iter().any(|i| *i == Interaction::Pressed);
+    if dismiss {
+        tutorial_run.step = Some(TutorialStep::Done);
+        for e in &root_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    if root_q.is_empty() {
+        commands
+            .spawn((TutorialExplainRoot, GlobalZIndex(1000), glass::scrim()))
+            .with_children(|root| {
+                root.spawn(glass::panel_capped(Val::Percent(90.0), Val::Px(440.0)))
+                    .with_children(|p| {
+                        p.spawn(glass::text("What is a Dungeon?", 20.0, glass::TITLE));
+                        p.spawn(glass::divider());
+                        for line in [
+                            "A dungeon is a hand-built space reached only through entrances like the one you just walked through.",
+                            "No Town Portal works inside — it's a committed trip. Floors are fixed layouts, not the open, procedural overworld.",
+                            "You leave through the dungeon's own exit, deeper in.",
+                        ] {
+                            p.spawn(glass::text(line, 14.0, glass::TEXT));
+                        }
+                        p.spawn(Node {
+                            justify_content: JustifyContent::FlexEnd,
+                            margin: UiRect::top(Val::Px(8.0)),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((Button, TutorialExplainDismissBtn, glass::chip(true)))
+                                .with_children(|b| {
+                                    b.spawn(glass::text("Got it", 15.0, glass::TITLE));
+                                });
+                        });
+                    });
+            });
+    }
+}
+
+/// Marks the completion popup's card.
+#[derive(Component)]
+pub(crate) struct TutorialCompleteRoot;
+/// Dismiss-and-continue: the dive carries on with no further walkthrough UI.
+#[derive(Component)]
+pub(crate) struct TutorialKeepGoingBtn;
+/// Dismiss and channel a Town Portal back to Last City.
+#[derive(Component)]
+pub(crate) struct TutorialGoTownBtn;
+
+/// The walkthrough's finish line: shown once step 4's explanation card is
+/// dismissed. `Keep going` just clears the walkthrough state; `Go back to
+/// town` sends the same `ClientCmd::TownPortal` the Map column's own
+/// "Return to town" row sends, then clears it too — the existing extraction
+/// channel → `RunEnded` → `Screen::Ended` flow does the rest, unchanged.
+pub(crate) fn tutorial_complete_popup(
+    mut commands: Commands,
+    tutorial_run: Res<TutorialRun>,
+    root_q: Query<Entity, With<TutorialCompleteRoot>>,
+) {
+    if tutorial_run.step != Some(TutorialStep::Done) {
+        for e in &root_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    }
+    if root_q.is_empty() {
+        commands
+            .spawn((TutorialCompleteRoot, GlobalZIndex(1000), glass::scrim()))
+            .with_children(|root| {
+                root.spawn(glass::panel_capped(Val::Percent(90.0), Val::Px(440.0)))
+                    .with_children(|p| {
+                        p.spawn(glass::text("you have completed the tutorial", 20.0, glass::TITLE));
+                        p.spawn(glass::divider());
+                        p.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(12.0),
+                            justify_content: JustifyContent::FlexEnd,
+                            margin: UiRect::top(Val::Px(8.0)),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((Button, TutorialKeepGoingBtn, glass::chip(false)))
+                                .with_children(|b| {
+                                    b.spawn(glass::text("Keep going", 15.0, glass::TEXT));
+                                });
+                            row.spawn((Button, TutorialGoTownBtn, glass::chip(true)))
+                                .with_children(|b| {
+                                    b.spawn(glass::text("Go back to town", 15.0, glass::TITLE));
+                                });
+                        });
+                    });
+            });
+    }
+}
+
+/// "Keep going"/"Go back to town" clicks.
+pub(crate) fn tutorial_complete_buttons(
+    mut tutorial_run: ResMut<TutorialRun>,
+    net: NonSend<NetRes>,
+    keep_q: Query<&Interaction, (With<TutorialKeepGoingBtn>, Changed<Interaction>)>,
+    town_q: Query<&Interaction, (With<TutorialGoTownBtn>, Changed<Interaction>)>,
+) {
+    if keep_q.iter().any(|i| *i == Interaction::Pressed) {
+        tutorial_run.step = None;
+        return;
+    }
+    if town_q.iter().any(|i| *i == Interaction::Pressed) {
+        net.0.send(ClientCmd::TownPortal);
+        tutorial_run.step = None;
+    }
+}

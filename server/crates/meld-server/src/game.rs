@@ -1063,9 +1063,15 @@ struct WorldActor {
     /// per-section draw from the biome's authored pool). Rendered in the overworld
     /// snapshot as `entrance:<dungeon>`; touch one to descend (`enter_dungeon`).
     entrances: Vec<DungeonEntrance>,
-    /// Whether this world is the gentle first-dive tutorial — entrances are
-    /// suppressed there to keep onboarding clean.
+    /// Whether this world is the gentle first-dive tutorial — chanced entrances
+    /// are suppressed there to keep onboarding clean, except for the one
+    /// hand-placed entrance below (see `tutorial_entrance_placed`).
     tutorial: bool,
+    /// DG-3-tutorial: place-once guard for the single forced, hand-placed
+    /// dungeon entrance a tutorial run gets beyond area 0, so the guided
+    /// walkthrough's "how to enter a dungeon" step has something to point at.
+    /// Never set on a normal run.
+    tutorial_entrance_placed: bool,
     /// DG-3b: each player's current space. Absent ⇒ overworld; `InDungeon` scopes
     /// their movement + snapshot to a live [`DungeonInstance`].
     location: HashMap<String, Location>,
@@ -4242,6 +4248,7 @@ impl GameState {
                 hold_last_ms: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
+                tutorial_entrance_placed: false,
                 location: HashMap::new(),
                 dungeons: HashMap::new(),
                 next_dungeon_key: 0,
@@ -5850,7 +5857,11 @@ impl WorldActor {
             );
         }
         // DG-3b: a dungeon is a committed space (design §4) — no Town Portal inside.
-        if self.dungeon_of(player_id).is_some() {
+        // Exception: the guided [T]-dive walkthrough's completion screen offers
+        // "Go back to town" from inside its one forced tutorial dungeon (DG-3-
+        // tutorial) — a normal dive never reaches this branch, since it's gated
+        // on the whole world being tutorial-flagged, not on which dungeon.
+        if !self.tutorial && self.dungeon_of(player_id).is_some() {
             return (
                 vec![error(
                     player_id,
@@ -8324,6 +8335,31 @@ impl WorldActor {
                     });
                 }
             }
+        } else if !self.tutorial_entrance_placed {
+            // DG-3-tutorial: the guided [T]-dive walkthrough's "how to enter a
+            // dungeon" step needs one to find. A deliberate, scoped exception to
+            // `dungeon_min_distance` (the doorstep-dungeon protection above) —
+            // this ONE hand-placed entrance is meant to be found early and on
+            // foot, by design; it never affects normal-run placement.
+            // `guardia_forest` is hand-picked rather than drawn from
+            // `place_entrance`'s random biome pool: it's the one authored forest
+            // dungeon that needs just a single body on its gate
+            // (`bodies_required() == 1`), so a solo tutorial player is never
+            // handed a co-op-only door at the one entrance the tutorial just
+            // told them to walk through.
+            if let Some(area0) = self.arena.areas.first() {
+                self.tutorial_entrance_placed = true;
+                self.entrances.push(DungeonEntrance {
+                    entity_id: "dungeon-entrance-tutorial".to_string(),
+                    dungeon: "guardia_forest",
+                    // Just a few tiles past area 0's own portal — right after
+                    // the tutorial's guaranteed fight, not a long walk further
+                    // out, so "close to the start" the way the harvest node
+                    // and chest already are. Off the clear path, mirroring the
+                    // ±3.0 lateral convention those two already use.
+                    position: Position::new(area0.portal.x + 3.0, 4.0),
+                });
+            }
         }
         // Resonant "Overworld Regen": top up carried hero HP while walking (feeds
         // the next fight's starting HP). Server-authoritative; emits no messages.
@@ -10267,6 +10303,7 @@ mod shifting_lands_tests {
             hold_last_ms: HashMap::new(),
             entrances: Vec::new(),
             tutorial: false,
+            tutorial_entrance_placed: false,
             location: HashMap::new(),
             dungeons: HashMap::new(),
             next_dungeon_key: 0,
