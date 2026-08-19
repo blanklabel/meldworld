@@ -3813,18 +3813,7 @@ impl Arena {
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
-        // A wall is impassable the same way a cliff is — one list, so movement has one
-        // notion of "you cannot walk there" rather than a second check that some call
-        // site will forget. A structure still going up already blocks: a half-built wall
-        // you can stroll through is a wall nobody would bother finishing.
-        let mut obstacles: Vec<(Position, f64)> =
-            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
-        obstacles.extend(
-            self.structures
-                .iter()
-                .filter(|s| s.blocks())
-                .map(|s| (s.position, self.structure_radius)),
-        );
+        let obstacles = self.blocking_field();
         // Combat state of every creature, snapshotted so a creature can target
         // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
         let cs: Vec<(Position, String, bool, i32)> = self
@@ -4351,8 +4340,7 @@ impl Arena {
         let dt = self.sim_dt;
         let (x_min, x_max, lateral) = (self.x_min, self.x_max, self.lateral);
         let pr = self.player_radius;
-        let obstacles: Vec<(Position, f64)> =
-            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        let obstacles = self.blocking_field();
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let (nx, ny) = if mag > 1.0 {
@@ -5155,6 +5143,149 @@ const BOSS_KEYS_FOR_TEST: [&str; 10] = [
 mod tests {
     use super::*;
 
+
+
+    /// **You cannot wall someone in.** A `wall` blocks movement, only its owner may take
+    /// it down, and one builder may raise twelve — so "ring a player and leave them there"
+    /// is the obvious grief, and the thing standing between the game and it is one
+    /// inequality: `min_spacing > 2 * (structure_radius + player_radius)`.
+    ///
+    /// That inequality currently holds by 0.6 world units, entirely by accident. These
+    /// tests make it a rule: the first proves the gap is real by *walking a player out
+    /// through it* (arithmetic does not answer whether the slide actually funnels you
+    /// through a 0.6-unit slot), and the second states the inequality directly so tuning
+    /// `min_spacing` down — or a prop's footprint up — fails here rather than in someone's
+    /// session.
+    mod walling_in {
+        use super::*;
+
+        /// Ring a player with `n` walls whose adjacent centres sit exactly `chord` apart
+        /// — the tightest packing placement will ever allow — and report whether they can
+        /// walk out of it.
+        fn can_escape(b: &Balance, chord: f64, n: usize) -> bool {
+            let mut a = Arena::generate(b, 909, false);
+            for _ in 0..20 {
+                a.ensure_frontier(b, 700.0);
+            }
+            a.add_avatar("victim".into(), 5.0);
+            // Open ground well away from props, so the only thing penning them in is the
+            // cage — a tree closing the last gap would make this test lie.
+            let centre = Position::new(420.0, 0.0);
+            a.obstacles.retain(|o| o.position.distance_to(&centre) > 40.0);
+            let r = chord / (2.0 * (std::f64::consts::PI / n as f64).sin());
+            for k in 0..n {
+                let th = std::f64::consts::TAU * (k as f64) / (n as f64);
+                a.structures.push(Structure {
+                    entity_id: format!("cage-{k}"),
+                    function: "wall".into(),
+                    owner_player_id: "griefer".into(),
+                    position: Position::new(centre.x + r * th.cos(), centre.y + r * th.sin()),
+                    elevation: 0,
+                    hp: 100,
+                    max_hp: 100,
+                    placed_tick: 0,
+                    build_ticks: 1,
+                    ore: "dune_iron".into(),
+                    ore_cost: 1,
+                });
+            }
+            // Push out along every bearing; a cage is only a cage if EVERY one fails.
+            for k in 0..180 {
+                a.avatar_mut("victim").unwrap().position = centre;
+                let th = std::f64::consts::TAU * (k as f64) / 180.0;
+                let (dx, dy) = (th.cos(), th.sin());
+                for _ in 0..400 {
+                    a.apply_move("victim", dx, dy, 1);
+                }
+                if a.avatar("victim").unwrap().position.distance_to(&centre) > r + 8.0 {
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// The regression, named. A `wall` is defined by `blocks: true` and shipped
+        /// stopping CREATURES only — the collision line went into `step_creatures_with_aggro`
+        /// and never into `apply_move`, so players walked through walls for a release.
+        #[test]
+        fn a_wall_stops_a_player_walking_into_it() {
+            let b = Balance::load_default().unwrap();
+            let mut a = Arena::generate(&b, 909, false);
+            for _ in 0..20 {
+                a.ensure_frontier(&b, 700.0);
+            }
+            a.add_avatar("p1".into(), 5.0);
+            let here = Position::new(420.0, 0.0);
+            a.obstacles.retain(|o| o.position.distance_to(&here) > 40.0);
+            a.avatar_mut("p1").unwrap().position = here;
+            a.structures.push(Structure {
+                entity_id: "wall-0".into(),
+                function: "wall".into(),
+                owner_player_id: "someone".into(),
+                position: Position::new(here.x + 10.0, here.y),
+                elevation: 0,
+                hp: 100,
+                max_hp: 100,
+                placed_tick: 0,
+                build_ticks: 1,
+                ore: "dune_iron".into(),
+                ore_cost: 1,
+            });
+            for _ in 0..200 {
+                a.apply_move("p1", 1.0, 0.0, 1);
+            }
+            let stopped = a.avatar("p1").unwrap().position;
+            assert!(
+                stopped.distance_to(&Position::new(here.x + 10.0, here.y))
+                    >= a.structure_footprint(),
+                "the player walked through a wall and ended up at {stopped:?}"
+            );
+            assert!(stopped.x > here.x, "the player never set off");
+        }
+
+        #[test]
+        fn a_ring_of_walls_always_leaves_a_way_out() {
+            let b = Balance::load_default().unwrap();
+            assert!(
+                can_escape(&b, b.building.min_spacing, b.building.max_per_player),
+                "a player was sealed in by {} walls at the shipped spacing — and nobody can \
+                 take them down but the griefer who put them there",
+                b.building.max_per_player
+            );
+        }
+
+        /// The test above is only worth anything if it can fail. Close the gap and the
+        /// cage becomes real — which is exactly what a tuning pass that lowered
+        /// `min_spacing` would ship.
+        #[test]
+        fn the_cage_is_real_once_the_gap_closes() {
+            let b = Balance::load_default().unwrap();
+            let a = Arena::generate(&b, 1, false);
+            let too_tight = 2.0 * (a.structure_footprint() + b.worldgen.player_radius) - 0.2;
+            assert!(
+                !can_escape(&b, too_tight, 12),
+                "walls {too_tight} apart still let a player out, so the escape test proves \
+                 nothing about the spacing"
+            );
+        }
+
+        /// The inequality itself, so a tuning pass cannot quietly close the gap. Stated
+        /// rather than measured: the walking test above proves the slide gets you through
+        /// today's slot, but this is the reason a slot exists at all.
+        #[test]
+        fn wall_spacing_leaves_a_gap_wider_than_a_player() {
+            let b = Balance::load_default().unwrap();
+            let a = Arena::generate(&b, 1, false);
+            let blocked_at = a.structure_footprint() + b.worldgen.player_radius;
+            assert!(
+                b.building.min_spacing > 2.0 * blocked_at,
+                "two walls at min_spacing {} leave no gap for a {}-radius player: they are \
+                 impassable from {blocked_at} out, so a ring of them is a cage",
+                b.building.min_spacing,
+                b.worldgen.player_radius,
+            );
+        }
+    }
 
     /// One primitive, many functions (CANON D21/§W3): the lifecycle is shared, and only
     /// the numbers and the two flags differ. These hold the *loop* — plant, hold, pay,
@@ -8860,6 +8991,35 @@ impl Arena {
             let floor = ((s.max_hp as f64) * t).round() as i32;
             s.hp = s.hp.max(floor.min(s.max_hp));
         }
+    }
+
+    /// How much room a blocking structure takes up. Exposed so the anti-grief invariant
+    /// can be asserted against the real number rather than a copy of it.
+    pub fn structure_footprint(&self) -> f64 {
+        self.structure_radius
+    }
+
+    /// Everything nothing may walk through: terrain props, plus every `Structure` whose
+    /// function `blocks` (CANON D21/§W3).
+    ///
+    /// ONE list, built in ONE place, because the alternative was tried and failed inside a
+    /// single release: the wall-collision line was added to `step_creatures_with_aggro`
+    /// and not to `apply_move`, so walls stopped creatures and players strolled through
+    /// them — a `wall` that did not wall. A comment saying "some call site will forget"
+    /// does not stop a call site forgetting; a shared function does.
+    ///
+    /// A structure still going up already blocks: a half-built wall you can walk through
+    /// is a wall nobody would bother finishing.
+    fn blocking_field(&self) -> Vec<(Position, f64)> {
+        let mut out: Vec<(Position, f64)> =
+            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        out.extend(
+            self.structures
+                .iter()
+                .filter(|s| s.blocks())
+                .map(|s| (s.position, self.structure_radius)),
+        );
+        out
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.

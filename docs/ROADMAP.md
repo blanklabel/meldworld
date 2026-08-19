@@ -1726,7 +1726,13 @@ same always-running-when-unwatched spatial workload as the ecology).
   registry both sides read; `[building]` holds the magnitudes; the handler branches on the
   function key for its *numbers* and nothing else. Ships `anchor` and `wall`: two functions
   so "one primitive, many functions" is tested rather than asserted, and `wall`'s `blocks`
-  flag joins the same collision list as terrain so movement keeps ONE notion of impassable.
+  flag joins terrain in `Arena::blocking_field` — one list, one place.
+  - **You cannot wall a player in.** A wall blocks, only its owner may demolish it, and one
+    builder may raise twelve, so "ring someone and leave them there" is the obvious grief.
+    The only thing preventing it is `min_spacing > 2 x (structure_footprint +
+    player_radius)`, which holds by 0.6 world units — by accident. It is a rule now: a test
+    rings a player with the tightest cage placement allows and walks them out through the
+    gap, and a second test closes the gap to prove the first can actually fail.
   - **Placement is validated before the stock is spent** — a refusal that also charged you
     is the worst kind — and every refusal is a sentence you can act on rather than a bare
     no. **Nothing may be built on the clear path**: the route out is feasible by
