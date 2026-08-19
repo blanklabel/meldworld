@@ -2256,8 +2256,16 @@ impl Battle {
                     .collect();
                 for t in enemies {
                     let scaled = (power as f64 * self.keeper.thorn_grove_mult).round() as i32;
-                    let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
-                    effects.extend(self.apply_damage(t, dmg));
+                    // MIND, like the Psyker's Foci, because the comment above is the design:
+                    // it rides Mnd and the staff is a pestle. Routed physically it answered
+                    // `def` instead of `ward` and — once creatures had ranks — was halved
+                    // against an enemy back rank, which is the one thing a caster is
+                    // supposed to be immune to.
+                    effects.extend(self.apply_ability_damage(
+                        t,
+                        scaled.max(self.min_damage),
+                        DamageType::Mind,
+                    ));
                     if self.fighters[t].alive {
                         self.fighters[t].gauge = (self.fighters[t].gauge
                             - self.keeper.thorn_grove_gauge_drain)
@@ -2292,11 +2300,13 @@ impl Battle {
                 // medicine: the staff is a pestle, not a sword.
                 let power = self.fighters[actor_i].spell_power.max(1);
                 let scaled = (power as f64 * mult).round() as i32;
-                let def = self.fighters[target_i].def;
-                let defending = self.fighters[target_i].defending;
                 effects = match self.roll_dodge(target_i) {
                     Some(dodge) => dodge,
-                    None => self.apply_damage(target_i, self.damage(scaled, def, defending)),
+                    None => self.apply_ability_damage(
+                        target_i,
+                        scaled.max(self.min_damage),
+                        DamageType::Mind,
+                    ),
                 };
                 if drain > 0.0 && self.fighters[target_i].alive {
                     self.fighters[target_i].gauge =
@@ -9786,5 +9796,64 @@ mod grouping_and_flanking {
         b.fighters[0].reach = true;
         assert_eq!(b.rank_attack_mult(0, false), 1.0);
         assert_eq!(b.rank_attack_mult(0, true), 1.0, "a front-rank archer got a bonus");
+    }
+
+    /// The Keeper's kit rides Mnd — its own comments say so twice, "the staff is a pestle,
+    /// not a sword" — and a caster gives up nothing against a back rank. Routed through the
+    /// PHYSICAL path it did both wrong: answered `def` instead of `ward`, and once creatures
+    /// had ranks it was halved against an enemy rear, which is the one thing a caster is
+    /// meant to be immune to.
+    #[test]
+    fn a_keepers_damage_reaches_a_back_rank_like_every_other_caster() {
+        let b = balance();
+        let mut keeper = hero("k", "p1");
+        keeper.class_key = "keeper".into();
+        keeper.spell_power = 200;
+        let front = foe("front", 0, false);
+        let mut rear = foe("rear", 0, true);
+        rear.max_hp = 10_000;
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![keeper],
+            vec![front, rear],
+            &b,
+            7,
+        );
+        let fi = bt.fighters.iter().position(|f| f.combatant_id == "front").unwrap();
+        let ri = bt.fighters.iter().position(|f| f.combatant_id == "rear").unwrap();
+        bt.active_actor = Some(0);
+        bt.apply_ability_damage(fi, 300, DamageType::Mind);
+        bt.apply_ability_damage(ri, 300, DamageType::Mind);
+        let took = |i: usize| 10_000 - bt.fighters[i].hp;
+        assert_eq!(
+            took(fi),
+            took(ri),
+            "a Mind attack was softened by a rank: front {} vs rear {}",
+            took(fi),
+            took(ri)
+        );
+    }
+
+    /// And the rank still means something to the things it is FOR. If this ever passes
+    /// trivially, the rank has stopped working rather than the caster starting to.
+    #[test]
+    fn a_physical_blow_is_still_softened_by_the_same_rank() {
+        let b = balance();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hero("h", "p1")],
+            vec![foe("front", 0, false), foe("rear", 0, true)],
+            &b,
+            7,
+        );
+        let fi = bt.fighters.iter().position(|f| f.combatant_id == "front").unwrap();
+        let ri = bt.fighters.iter().position(|f| f.combatant_id == "rear").unwrap();
+        bt.active_actor = Some(0);
+        bt.apply_ability_damage(fi, 300, DamageType::Slash);
+        bt.apply_ability_damage(ri, 300, DamageType::Slash);
+        let took = |i: usize| 10_000 - bt.fighters[i].hp;
+        assert!(took(ri) < took(fi), "the rank stopped softening physical blows");
     }
 }
