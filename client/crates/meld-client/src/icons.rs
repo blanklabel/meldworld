@@ -69,12 +69,16 @@ mod nf {
     pub const RING: (&str, &str) = ("\u{f07eb}", "md-ring");
     pub const SACK: (&str, &str) = ("\u{f0d2e}", "md-sack");
     pub const KIT: (&str, &str) = ("\u{f18be}", "md-shield_sword");
+    /// A THROWABLE — the francisca and the fire pot. Codepoint read out of the bundled face
+    /// (by glyph name) rather than copied from an upstream table, which is the whole reason
+    /// the identity test below exists.
+    pub const BOMB: (&str, &str) = ("\u{f0691}", "md-bomb");
 
     /// Everything the icon table can draw, for the identity test.
     #[cfg(test)]
-    pub const ALL: [(&str, &str); 19] = [
+    pub const ALL: [(&str, &str); 20] = [
         CASH, SCRIPT, FLASK, SHIELD, LEAF, RUN_FAST, LIGHTNING, HEART_PLUS, BOOK, GOLD_BARS,
-        BONE, PICKAXE, SWORD, HARD_HAT, TSHIRT, BOOT, RING, SACK, KIT,
+        BONE, PICKAXE, SWORD, HARD_HAT, TSHIRT, BOOT, RING, SACK, KIT, BOMB,
     ];
 }
 
@@ -107,6 +111,8 @@ pub(crate) fn glyph(kind: &str) -> (&'static str, Color) {
             // A cure reads as a cure: one family, or the lot.
             E::Cleanse => (nf::LEAF.0, arcane),
             E::Panacea => (nf::HEART_PLUS.0, arcane),
+            // Thrown at the whole encounter — not a bottle you drink, so not a flask.
+            E::ThrownAll => (nf::BOMB.0, Color::srgb(0.95, 0.55, 0.3)),
         };
     }
     if let Some(m) = meld_proto::materials::material(kind) {
