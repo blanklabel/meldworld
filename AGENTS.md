@@ -237,9 +237,12 @@ and now the rank trade too, so it is not a neutral default, it is TRUE damage. T
 dealt it for a whole release because the type came from a hand-written table of classes.
 There is no path to it for a hero any more.
 
-⚠️ **The Keeper's abilities call `apply_damage`, the PHYSICAL path**, while their comments say
-they ride Mnd ("the staff is a pestle, not a sword"). So they already answer to the back rank
-despite claiming not to. Pre-existing, unfixed, and its own change.
+**The Keeper's damage is MIND**, like the Psyker's Foci — both are Mnd casters and both go
+through `apply_ability_damage` with `DamageType::Mind`. It used to take the PHYSICAL path
+while its own comments said it rode Mnd, which answered `def` instead of `ward` and, once
+creatures had ranks, halved it against an enemy rear — the one thing a caster is supposed to
+be immune to. A caster gives up nothing against a back rank; that is the rule, and the Keeper
+is a caster.
 
 **REACH AND SWEEP ARE TWO AXES, NOT ONE "RANGED" FAMILY.** Reach is *can it get there*
 (`ItemFamily::reaches_past_the_front` — bow, sling, thrown spear), sweep is *how many does
