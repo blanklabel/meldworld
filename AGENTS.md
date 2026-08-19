@@ -231,6 +231,10 @@ it hit*. Bundling them would make every ranged weapon a crowd-clearer and every
 crowd-clearer ranged. Reach is the MARTIAL answer to a back rank, which until now was a
 caster's problem and a swordsman's wall — and it is the ATTACKER's property, resolved inside
 the one reach rule, so one archer never exposes the rear to the rest of the party.
+**Reach cancels the rank in BOTH directions**: the target's rank does not protect against it
+(`softened_by_rank`) and the shooter's own rank does not weaken it (`rank_attack_mult`) — an
+archer that gave up half its damage for standing where archers stand would be a class with
+no reason to use its own weapon.
 `Spear` deliberately does NOT reach despite being the two-handed reach weapon: granting it
 would silently buff every Explorer holding one, which is a balance change wearing a
 refactor's clothes. **All-enemy is not a weapon property** — a basic attack that hits
