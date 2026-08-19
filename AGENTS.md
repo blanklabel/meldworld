@@ -144,6 +144,14 @@ channel payout (per unit while gathering, once while extracting — `fill_ms` on
 `run.channel_started`). Touch gets the same thing as one contextual **Interact** button
 that hides when nothing is in reach.
 
+**A HARVEST BANKS ONE UNIT PER TICK AS ITS OWN STACK.** `advance_harvests` pushes rather
+than merging, so ore you just dug up is six stacks of one and never one stack of six.
+Anything that spends materials must therefore sum **across stacks** (`spend_material`) —
+looking for a single stack holding the whole cost is what made a 6-ore structure and a
+3-ore field forge both unbuildable from freshly-gathered ore, while refusing a player who
+was carrying exactly enough. One KIND though, never a mix: a structure records what it was
+built from so packing it down hands back the same stock.
+
 **Field stations (MS-1).** Raising one **takes time**: it is a channel like harvesting
 (`[forge] station_setup_ms`), the stock is spent up front, and stepping away loses the
 work — so where and when you build is a real decision. Packing one up is its own channel
