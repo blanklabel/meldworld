@@ -4830,18 +4830,13 @@ impl Arena {
     fn rescue_stranded(&mut self, first: usize, last: usize) -> Vec<(Id, Position)> {
         let (inner, outer) = self.shift_band(first, last);
         let entry = self.region_entry(first);
+        let field = self.blocking_field();
         let blocked: Vec<(Id, Position)> = self
             .avatars
             .iter()
             .filter(|a| {
                 let c = self.corridorize(&a.position);
-                if c.x < inner || c.x >= outer {
-                    return false;
-                }
-                area_level_at(&self.areas, &c) != 0
-                    || self.obstacles.iter().any(|o| {
-                        a.position.distance_to(&o.position) < o.radius + self.player_radius
-                    })
+                c.x >= inner && c.x < outer && self.trapped_at(&field, &a.position)
             })
             .map(|a| (a.player_id.clone(), entry))
             .collect();
@@ -4852,6 +4847,60 @@ impl Arena {
             }
         }
         blocked
+    }
+
+    /// Is this a spot nobody can stand in — inside something impassable, or on ground
+    /// that has risen since they got there?
+    ///
+    /// The one predicate behind both rescues, and it reads `blocking_field` so it can
+    /// never disagree with what movement itself considers solid. That is the same lesson
+    /// the wall bug taught: two copies of "what blocks" drift, and the drift is invisible
+    /// until a player is standing in the difference.
+    fn trapped_at(&self, field: &[(Position, f64)], p: &Position) -> bool {
+        if area_level_at(&self.areas, &self.corridorize(p)) != 0 {
+            return true;
+        }
+        field.iter().any(|(c, r)| p.distance_to(c) < r + self.player_radius)
+    }
+
+    /// The nearest place a player can definitely stand: the closest waypoint on the
+    /// guaranteed clear path. Its tube holds no prop and no raised ground by
+    /// construction, so this is open, level 0, and on the route home — which is what
+    /// makes it a safe answer without having to search for one.
+    pub fn nearest_open_ground(&self, p: &Position) -> Position {
+        self.path
+            .iter()
+            .copied()
+            .min_by(|a, b| p.distance_to(a).total_cmp(&p.distance_to(b)))
+            .unwrap_or(Position::new(0.0, 0.0))
+    }
+
+    /// The general safety net: anyone standing somewhere they cannot be is walked to the
+    /// nearest open ground.
+    ///
+    /// The Shift's own rescue is the special case — it knows which region moved and sends
+    /// you to *its* entry. This is the same mechanism with no event behind it, for every
+    /// other way a player can end up inside geometry: a spawn, a correction, a future
+    /// buildable, or a bug nobody has found yet. Cheap enough to run on a cadence, and
+    /// the alternative to running it is a player who has to close the game.
+    ///
+    /// Only ACTIVE avatars: someone in a battle or mid-channel is not walking anywhere,
+    /// and teleporting them out of a fight would be a worse bug than the one being fixed.
+    pub fn rescue_trapped(&mut self) -> Vec<(Id, Position)> {
+        let field = self.blocking_field();
+        let moves: Vec<(Id, Position)> = self
+            .avatars
+            .iter()
+            .filter(|a| a.state == "active" && self.trapped_at(&field, &a.position))
+            .map(|a| (a.player_id.clone(), self.nearest_open_ground(&a.position)))
+            .collect();
+        for (pid, to) in &moves {
+            if let Some(a) = self.avatars.iter_mut().find(|a| &a.player_id == pid) {
+                a.position = *to;
+                a.elevation = 0;
+            }
+        }
+        moves
     }
 
     /// Where "the start of the region" is: the clear-path waypoint nearest the span's
@@ -5457,6 +5506,95 @@ mod tests {
             assert!(a.repair_structure(&b, &id).unwrap() > 0);
             a.structures[0].hp = a.structures[0].max_hp;
             assert_eq!(a.repair_structure(&b, &id), None, "a sound structure charged for a mend");
+        }
+
+
+        /// The spacing invariant is a promise about GEOMETRY — a ring of walls has a gap.
+        /// It says nothing about penning somebody in one block at a time while they stand
+        /// still, and a player cannot demolish what someone else built around them.
+        #[test]
+        fn you_cannot_drop_a_wall_on_another_player() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let spot = a.avatar("p1").unwrap().position;
+            a.add_avatar("victim".into(), 5.0);
+            a.avatar_mut("victim").unwrap().position = spot;
+            assert_eq!(
+                a.place_structure(&b, "p1", "wall", "dune_iron", 100).err(),
+                Some(PlaceRefusal::SomeoneStanding)
+            );
+        }
+
+        /// An anchor does not block, so it cannot pen anyone — gating it would only stop
+        /// a party holding ground together, which is the verb the epic is for.
+        #[test]
+        fn an_anchor_may_go_up_beside_a_teammate() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let spot = a.avatar("p1").unwrap().position;
+            a.add_avatar("mate".into(), 5.0);
+            a.avatar_mut("mate").unwrap().position = spot;
+            assert!(
+                a.place_structure(&b, "p1", "anchor", "dune_iron", 100).is_ok(),
+                "a teammate standing there stopped an anchor, which cannot trap anyone"
+            );
+        }
+
+        /// The net under everything else. However a player ends up inside geometry — a
+        /// spawn, a correction, a buildable nobody has written yet — the world walks them
+        /// out instead of leaving them to close the game.
+        #[test]
+        fn anyone_standing_inside_something_is_walked_to_open_ground() {
+            let (b, mut a) = built();
+            let stuck = a
+                .obstacles
+                .iter()
+                .find(|o| o.position.x.hypot(o.position.y) > 120.0)
+                .map(|o| o.position)
+                .expect("a prop out there");
+            a.avatar_mut("p1").unwrap().position = stuck;
+
+            let moved = a.rescue_trapped();
+            assert_eq!(moved.len(), 1, "the player inside a tree was left there");
+            let now = a.avatar("p1").unwrap().position;
+            assert_ne!(now, stuck);
+            assert_eq!(a.avatar("p1").unwrap().elevation, 0);
+            // And where they landed is somewhere they can actually stand.
+            let field = a.blocking_field_for_test();
+            assert!(
+                !field.iter().any(|(c, r)| now.distance_to(c) < r + b.worldgen.player_radius),
+                "the rescue put them inside something else"
+            );
+        }
+
+        /// A rescue that fires on someone standing in the open would teleport players at
+        /// random, which is a worse bug than the one it is for.
+        #[test]
+        fn nobody_standing_in_the_open_is_moved() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let spot = a.avatar("p1").unwrap().position;
+            assert!(a.rescue_trapped().is_empty(), "a player in the open was teleported");
+            assert_eq!(a.avatar("p1").unwrap().position, spot);
+        }
+
+        /// Nobody gets yanked out of a fight by the safety net.
+        #[test]
+        fn a_player_in_a_battle_is_left_alone() {
+            let (_b, mut a) = built();
+            let stuck = a
+                .obstacles
+                .iter()
+                .find(|o| o.position.x.hypot(o.position.y) > 120.0)
+                .map(|o| o.position)
+                .expect("a prop out there");
+            {
+                let av = a.avatar_mut("p1").unwrap();
+                av.position = stuck;
+                av.state = "in_battle".into();
+            }
+            assert!(a.rescue_trapped().is_empty(), "the net pulled someone out of a battle");
+            assert_eq!(a.avatar("p1").unwrap().position, stuck);
         }
 
         // ---- BD-3: the anchor holds, and holding costs ----
@@ -8877,6 +9015,7 @@ pub enum PlaceRefusal {
     OnTheTrail,
     Blocked,
     AtYourLimit,
+    SomeoneStanding,
 }
 
 impl PlaceRefusal {
@@ -8888,6 +9027,7 @@ impl PlaceRefusal {
             PlaceRefusal::OnTheTrail => "Not on the trail — the way out has to stay open.",
             PlaceRefusal::Blocked => "There is no room here.",
             PlaceRefusal::AtYourLimit => "You are holding as much ground as you can.",
+            PlaceRefusal::SomeoneStanding => "Someone is standing there.",
         }
     }
 }
@@ -8953,6 +9093,22 @@ impl Arena {
         {
             return Err(PlaceRefusal::Blocked);
         }
+        // You may not drop something impassable on another player. The spacing invariant
+        // already guarantees a ring of walls has a gap, but that is a promise about
+        // GEOMETRY — it says nothing about walling somebody in one block at a time while
+        // they stand still, and a player who cannot demolish what is around them has no
+        // answer to it. Only blockers: an anchor is not a cage.
+        let def = meld_proto::structures::structure(function);
+        if def.is_some_and(|d| d.blocks) {
+            let keep_clear = b.no_build_near_player;
+            if self
+                .avatars
+                .iter()
+                .any(|a| a.player_id != player_id && a.position.distance_to(&position) < keep_clear)
+            {
+                return Err(PlaceRefusal::SomeoneStanding);
+            }
+        }
         let tick_ms = balance.battle.tick_ms.max(1);
         let hp = ((max_hp as f64) * b.build_start_fraction).round().max(1.0) as i32;
         self.structures.push(Structure {
@@ -8997,6 +9153,11 @@ impl Arena {
     /// can be asserted against the real number rather than a copy of it.
     pub fn structure_footprint(&self) -> f64 {
         self.structure_radius
+    }
+
+    #[cfg(test)]
+    pub(crate) fn blocking_field_for_test(&self) -> Vec<(Position, f64)> {
+        self.blocking_field()
     }
 
     /// Everything nothing may walk through: terrain props, plus every `Structure` whose

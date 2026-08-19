@@ -1130,10 +1130,17 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   stopped creatures while players strolled through them. A comment saying "some call site
   will forget" does not stop a call site forgetting; a shared function does. It rides the
   snapshot as one `structure:<function>:<hp>:<building>` tag for the same reason.
-  **You cannot wall someone in**, and the only thing preventing it is
-  `min_spacing > 2 x (structure_footprint + player_radius)` — true today by 0.6 units, by
-  accident. It is a rule now: a test rings a player with the tightest legal cage and walks
-  them out of it, and a second test closes the gap to prove the first one can fail.
+  **You cannot wall someone in**, answered twice over: a blocking structure is REFUSED
+  within `no_build_near_player` of anyone else (an anchor is exempt — it does not block, so
+  it cannot pen anyone), and the spacing rule keeps a ring escapable
+  (`min_spacing > 2 x (structure_footprint + player_radius)`, true by 0.6 units and by
+  accident until a test made it a rule — one rings a player with the tightest legal cage
+  and walks them out, another closes the gap to prove the first can fail).
+  **And when something puts a player inside geometry anyway, the world walks them out**:
+  `Arena::rescue_trapped` is the Shift's rescue with no event behind it, swept on
+  `stuck_check_ticks`. Both rescues share one `trapped_at`, which reads `blocking_field` —
+  two copies of "what blocks" drift, and the drift is invisible until a player is standing
+  in the difference.
   Placement is validated BEFORE the stock is spent, and **nothing may be built on the
   clear path** — the route out is feasible by construction everywhere else, and a
   player-built wall across it is the one thing in the world that could seal the exit.

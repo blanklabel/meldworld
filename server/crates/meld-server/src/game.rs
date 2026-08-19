@@ -8648,6 +8648,20 @@ impl WorldActor {
         // last so they see this tick's deaths and harvests, and both are driven off
         // `tick_count` rather than a clock (CANON §W2).
         self.arena.advance_builds(self.tick_count);
+        // The general safety net (BD-2): anyone standing inside something impassable is
+        // walked to open ground. The Shift has its own rescue because it knows which
+        // region moved; this is the same mechanism with no event behind it, for every
+        // other way a player can end up inside geometry. On a cadence — being stuck for a
+        // tenth of a second is nothing, being stuck forever means closing the game.
+        if self.tick_count.is_multiple_of(self.balance.building.stuck_check_ticks.max(1)) {
+            for (pid, to) in self.arena.rescue_trapped() {
+                let seq = self.arena.avatar(&pid).map(|a| a.last_input_seq).unwrap_or(0);
+                out.push(out_msg(
+                    &pid,
+                    &wm::PositionCorrection { position: to, last_input_seq: seq },
+                ));
+            }
+        }
         out.extend(self.advance_shift());
         {
             let balance = self.balance.clone();

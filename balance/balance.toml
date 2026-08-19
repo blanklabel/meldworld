@@ -1975,9 +1975,19 @@ demolish_refund_fraction = 0.5
 # No two structures inside this of each other, so a wall is a wall and not a hedge of
 # three hundred overlapping ones.
 min_spacing = 6.0
+# No blocking structure may go up this close to ANOTHER player. The spacing rule above
+# already guarantees a ring of walls has a gap you can walk through, but that is a promise
+# about geometry — it says nothing about penning somebody in one block at a time while
+# they stand still, and a player cannot demolish what somebody else built around them.
+# Only blockers are gated: an anchor is not a cage.
+no_build_near_player = 8.0
 # Per player, per world. A cap rather than a cost curve because the interesting decision
 # is WHERE, and an unbounded builder is a performance question rather than a design one.
 max_per_player = 12
+# How often the world checks whether anyone is standing inside something impassable and
+# walks them out (`Arena::rescue_trapped`). A cadence rather than every tick: being stuck
+# for a tenth of a second is nothing, and being stuck forever means closing the game.
+stuck_check_ticks = 10
 # What one held-off Shift takes out of every anchor holding it, as a share of that
 # anchor's max HP. This is the whole of `BD-3`'s tension: the land pushes back, and an
 # anchor nobody maintains falls on its own. Sized so an unattended anchor holds roughly

@@ -1727,12 +1727,22 @@ same always-running-when-unwatched spatial workload as the ecology).
   function key for its *numbers* and nothing else. Ships `anchor` and `wall`: two functions
   so "one primitive, many functions" is tested rather than asserted, and `wall`'s `blocks`
   flag joins terrain in `Arena::blocking_field` — one list, one place.
-  - **You cannot wall a player in.** A wall blocks, only its owner may demolish it, and one
-    builder may raise twelve, so "ring someone and leave them there" is the obvious grief.
-    The only thing preventing it is `min_spacing > 2 x (structure_footprint +
-    player_radius)`, which holds by 0.6 world units — by accident. It is a rule now: a test
-    rings a player with the tightest cage placement allows and walks them out through the
-    gap, and a second test closes the gap to prove the first can actually fail.
+  - **You cannot wall a player in**, and it is answered twice. A blocking structure is
+    **refused** within `[building] no_build_near_player` of another player — the spacing
+    rule is a promise about geometry and says nothing about penning somebody in one block
+    at a time while they stand still. An `anchor` is exempt: it does not block, so it
+    cannot cage anyone, and gating it would only stop a party holding ground together.
+    Underneath that, spacing keeps a ring escapable (`min_spacing > 2 x
+    (structure_footprint + player_radius)`, true by 0.6 world units and by accident until
+    a test made it a rule — one rings a player with the tightest legal cage and walks them
+    out, another closes the gap to prove the first can fail).
+  - **And if something puts a player inside geometry anyway, the world walks them out.**
+    `Arena::rescue_trapped` is the Shift's own rescue with no event behind it, swept every
+    `stuck_check_ticks`: whatever the cause — a spawn, a correction, a buildable nobody has
+    written yet — being stuck is not something a player should have to close the game over.
+    Both rescues share one `trapped_at` predicate, which reads `blocking_field`, because
+    two copies of "what blocks" drift and the drift is invisible until somebody is standing
+    in it. Active avatars only: nobody gets yanked out of a fight by a safety net.
   - **Placement is validated before the stock is spent** — a refusal that also charged you
     is the worst kind — and every refusal is a sentence you can act on rather than a bare
     no. **Nothing may be built on the clear path**: the route out is feasible by
