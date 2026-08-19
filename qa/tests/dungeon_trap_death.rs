@@ -66,12 +66,31 @@ async fn send(ws: &mut Ws, t: &str, p: Value, seq: &mut u32) {
 #[tokio::test]
 async fn stepping_on_a_dungeon_trap_kills_the_run() {
     std::env::set_var("MELD_BIOME", "forest");
-    // Pin the world too, not just the biome. This bot walks into the dungeon and
-    // marches east hoping to cross a trap, and whether that line of travel meets one
-    // is decided by the rolled layout: measured across seeds 1-6 it passed on 1 and 4
-    // and missed on the rest. The subject here is that a sprung trap kills the run,
-    // not that a blind march finds a trap, so the layout is held still.
+    // Pin the world so the walk to a door is reproducible.
     std::env::set_var("MELD_SEED", "1");
+    // …and pin the DUNGEON, which is what actually decides whether marching east meets a
+    // trap. Seed-pinning alone was never enough: the forest pool holds two authored floors
+    // and the entrance rolls between them, so this passed only on the seeds that happened to
+    // draw the barrow, and a content change quietly flipped seed 1 to the other one.
+    //
+    // The two floors open in deliberately opposite ways, which is the whole trap here:
+    //
+    //   guardia_forest  `#>......................#`   clear run east to the far wall
+    //   verdant_barrow  `#>.t.a.X.k..........s#`      thorns two cells in, dead ahead
+    //
+    // `guardia_forest` is the TUTORIAL's dungeon (hand-placed in `place_entrance`, picked
+    // because it is the one forest floor whose gate needs a single body), so its entry row
+    // is clear on purpose — a guided first descent must not kill you two steps in. Drawing
+    // it here meant the bot marched into the east wall and sat there until the 90s deadline.
+    //
+    // The barrow's own gate wants three bodies, which is why the tutorial cannot use it and
+    // why that does not matter here: this run dies on FLOOR 0, long before the co-op plates
+    // on floor 1.
+    //
+    // The subject is that a SPRUNG trap kills the run, not that a blind march finds one, so
+    // the floor is content rather than a roll. Re-pinning the seed would only have held
+    // until the next dungeon joined the pool.
+    std::env::set_var("MELD_DUNGEON", "verdant_barrow");
     let addr = start_server().await;
     let (ticket, pid) =
         http_login(&addr, &format!("tbot_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])).await;

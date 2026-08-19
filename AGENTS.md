@@ -581,9 +581,15 @@ loop for demos/screenshots.
 
 ```sh
 cargo test --workspace                    # unit tests — no DB, no cloud, fully deterministic
-bash qa/scripts/local_pg.sh cargo test -p meld-qa   # DB-backed conformance suite (boots throwaway PG)
+bash qa/scripts/local_pg.sh cargo test -p meld-qa --no-fail-fast   # DB-backed suite (boots throwaway PG)
 cargo clippy --workspace --all-targets    # keep clean
 ```
+
+**`--no-fail-fast` is not optional on the `qa/` suite.** Every test there is its own
+binary, and cargo stops at the FIRST binary that fails — so one red test silently
+skips every binary after it while the run still reads as a single failure. A stale
+`dungeon_trap_death` masked real breakage in the potion, portal and harvest tests
+that way for a whole session. `make test` passes the flag for you.
 
 The engine (`meld-battle`) and world (`meld-world`) are pure state machines with no
 wall-clock/RNG-globals/I/O, so they are exhaustively unit-tested. The `qa/` suite
