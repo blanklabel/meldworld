@@ -46,6 +46,10 @@ pub struct Fighter {
     /// the world, because a group is a property of the ENCOUNTER — the same creature is in
     /// a different group depending on who it ended up standing with. `None` for heroes.
     pub group_id: Option<u32>,
+    /// This combatant's weapon reaches past a front rank (bow, sling, thrown spear), so its
+    /// physical blows land on a back rank at full force. The MARTIAL answer to a rear: until
+    /// now the rank was a caster's problem and a swordsman's wall.
+    pub reach: bool,
     /// This combatant's group is being worked by more than one party, so its rear is no
     /// longer covered — you cannot hide behind your front rank when two parties are on you
     /// from different sides. Set by the battle, read by `to_wire`, so the client and the
@@ -269,6 +273,7 @@ impl Fighter {
             boss_band: 0,
             pack_role: PackRole::None,
             group_id: None,
+            reach: false,
             flanked: false,
             back_row: false,
             focus_max: 0,
@@ -346,6 +351,9 @@ impl Fighter {
         // it" shape as a status nothing draws.
         if self.flanked {
             v.push("flanked".to_string());
+        }
+        if self.reach {
+            v.push("reach".to_string());
         }
         // Once-per-battle abilities that are already gone. Without this the row stays
         // enabled and the only feedback is a refusal — the same "the rule exists but the
@@ -4627,7 +4635,13 @@ impl Battle {
     /// there is no behind left.
     fn softened_by_rank(&self, target_i: usize, physical: bool) -> bool {
         let t = &self.fighters[target_i];
-        physical && t.back_row && !t.flanked
+        if !(physical && t.back_row && !t.flanked) {
+            return false;
+        }
+        // …unless whoever is swinging can reach past the front line. A bow, a sling or a
+        // thrown spear goes over the front rank and lands on the rear at full force — the
+        // martial answer to a formation, where before it there was only a spell.
+        !self.active_actor.is_some_and(|a| self.fighters[a].reach)
     }
 
     /// Record that the acting party has struck `target_i`'s group, and flank the group once
@@ -9663,5 +9677,46 @@ mod grouping_and_flanking {
         b.active_actor = Some(0);
         b.apply_damage_reaching(ti, 100, false);
         assert_eq!(10_000 - hp_of(&b, "rear"), 100, "a spell was softened by a back rank");
+    }
+
+    /// The martial answer to a formation. Before ranged weapons the back rank was a
+    /// caster's problem and a swordsman's wall; a bow shoots over the front line.
+    #[test]
+    fn a_reaching_weapon_lands_on_the_rear_at_full_force() {
+        let mut b = arena(vec![hero("h", "p1")], vec![foe("rear", 0, true)]);
+        strike(&mut b, "h", "rear", 100);
+        let softened = 10_000 - hp_of(&b, "rear");
+        assert!(softened < 100, "the rank did not soften a melee blow at all");
+
+        let mut b = arena(vec![hero("archer", "p1")], vec![foe("rear", 0, true)]);
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "rear", 100);
+        assert_eq!(10_000 - hp_of(&b, "rear"), 100, "a bow was stopped by a front rank");
+    }
+
+    /// Reach is the ATTACKER's property, not the target's — it must not leak into what the
+    /// rear does to everyone else's blows.
+    #[test]
+    fn one_archer_does_not_expose_the_rear_to_the_whole_party() {
+        let mut b = arena(
+            vec![hero("archer", "p1"), hero("swordsman", "p1")],
+            vec![foe("rear", 0, true)],
+        );
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "rear", 100);
+        let shot = 10_000 - hp_of(&b, "rear");
+        strike(&mut b, "swordsman", "rear", 100);
+        let swung = (10_000 - hp_of(&b, "rear")) - shot;
+        assert_eq!(shot, 100, "the bow did not reach");
+        assert!(swung < shot, "the swordsman inherited the archer's reach");
+    }
+
+    /// Reach answers a RANK. It is not a damage bonus, and must do nothing to a front rank.
+    #[test]
+    fn reach_is_worth_nothing_against_a_front_rank() {
+        let mut b = arena(vec![hero("archer", "p1")], vec![foe("front", 0, false)]);
+        b.fighters[0].reach = true;
+        strike(&mut b, "archer", "front", 100);
+        assert_eq!(10_000 - hp_of(&b, "front"), 100, "reach changed a front-rank blow");
     }
 }
