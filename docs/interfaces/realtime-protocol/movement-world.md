@@ -388,3 +388,55 @@ resource nodes do not, and what grows back belongs to the new biome.
 ```json
 {"type": "world.shift", "seq": 4200, "ts": 1783728110000, "payload": {"generation": 7, "inner_radius": 240.0, "outer_radius": 318.0, "biome": "ashfall", "from_biome": "forest", "wiped": ["mob-118", "mob-119"], "damage": [96, 96, 51, 51]}}
 ```
+
+---
+
+### `run.build_structure` / `run.repair_structure` / `run.demolish_structure` (C2S)
+
+**Source:** CANON.md D21 / §W3; tunables under `[building]`; functions in
+[`meld_proto::structures`](../../../shared/meld-proto/src/structures.rs).
+**Direction:** C2S — intents. All placement, cost and permission checks are server-side.
+
+**One intent per verb, not per function.** There is one `Structure` primitive; the
+`function` key varies its role. A new buildable is a row in the registry, never a new
+message.
+
+| Message | Payload | Notes |
+|---|---|---|
+| `run.build_structure` | `function` (string) | Raises it where the avatar stands. Debits the function's ore cost from the run backpack, deepest stack first. Refused — **before** the stock is spent — if the spot is on the clear-path tube, too close to another structure or bench, inside an obstacle, or past the per-player cap. It goes up at `build_start_fraction` of its HP and ramps to full over the function's build time. |
+| `run.repair_structure` | `entity_id` (id) | Spends one unit of ore for `repair_hp_per_ore`. **Anyone** in reach may repair — hauling ore out to a teammate's anchor is the point. Refused if it is already sound. |
+| `run.demolish_structure` | `entity_id` (id) | **Owner only.** Returns `demolish_refund_fraction` of what it cost, in the material it was built from. Never a full refund, or moving one is free. |
+
+Each replies with a `run.backpack_update` carrying the material movement; the structure
+itself appears in `world.snapshot` as `structure:<function>:<hp_pct>:<building>`.
+
+---
+
+### `world.shift_held` (S2C)
+
+**Source:** CANON.md §W3 (anchors); `BD-3`.
+**Direction:** S2C — broadcast to every player in the world.
+
+The Shift arrived at its scheduled tick and **an anchor stopped it**. The region did not
+retile, took no Force damage and lost nothing; the land took it out of whatever was
+holding it instead.
+
+An anchor does **not** alter the natural schedule — that stays a pure function of the seed
+(§W2/§W5) — it alters the outcome, and the suppression is the event. A held Shift is
+therefore absent from the replay log: nothing changed about the world except anchor HP,
+which rides the persistence delta already.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| generation | integer (int64, u64) | Yes | No | — | Which Shift was held. Matches the `world.shift_warning` that announced it. |
+| inner_radius | number (f64) | Yes | No | — | Inner edge of the ring that would have gone. |
+| outer_radius | number (f64) | Yes | No | — | Outer edge. |
+| anchors | array of object | Yes | No | — | Every anchor that held, and what holding cost it: `entity_id`, `damage`, `hp`, `max_hp`, `destroyed`. `damage` is `[building] shift_hold_damage_fraction` of that anchor's own max HP — an anchor is permanence you keep *paying for*, and one nobody maintains falls on its own and hands the ground back to the Shift. |
+
+**Example**
+
+```json
+{"type": "world.shift_held", "seq": 4300, "ts": 1783728120000, "payload": {"generation": 9, "inner_radius": 240.0, "outer_radius": 318.0, "anchors": [{"entity_id": "struct-anchor-0", "damage": 225, "hp": 450, "max_hp": 900, "destroyed": false}]}}
+```

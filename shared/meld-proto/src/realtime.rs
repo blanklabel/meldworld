@@ -316,6 +316,33 @@ pub mod world {
     impl Message for Shifted {
         const TYPE: &'static str = "world.shift";
     }
+
+    /// S2C — the Shift arrived and **an anchor stopped it** (CANON §W3, `BD-3`). The
+    /// region did not retile; the land took it out of whatever was holding it instead.
+    ///
+    /// This is the payoff message of the whole building epic, so it names the cost: an
+    /// anchor is not permanence you buy once, it is permanence you keep paying for.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ShiftHeld {
+        pub generation: u64,
+        pub inner_radius: f64,
+        pub outer_radius: f64,
+        /// Each anchor that held, and what holding cost it.
+        pub anchors: Vec<HeldAnchor>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct HeldAnchor {
+        pub entity_id: Id,
+        pub damage: i32,
+        pub hp: i32,
+        pub max_hp: i32,
+        /// It did not survive holding. The ground is shiftable again from here.
+        pub destroyed: bool,
+    }
+    impl Message for ShiftHeld {
+        const TYPE: &'static str = "world.shift_held";
+    }
 }
 
 // ----------------------------------------------------------------- battle ---
@@ -1036,6 +1063,36 @@ pub mod run {
     }
     impl Message for BuildStation {
         const TYPE: &'static str = "run.build_station";
+    }
+
+    /// C2S — raise a `Structure` where the avatar stands (CANON D21/§W3, `BD-2`). One
+    /// intent for every function, because there is one primitive: what varies is the
+    /// `function` key, from `meld_proto::structures`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct BuildStructure {
+        pub function: String,
+    }
+    impl Message for BuildStructure {
+        const TYPE: &'static str = "run.build_structure";
+    }
+
+    /// C2S — spend one unit of ore repairing a structure you are standing at. The counter
+    /// to attrition, and the reason held ground needs supply rather than just a builder.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct RepairStructure {
+        pub entity_id: Id,
+    }
+    impl Message for RepairStructure {
+        const TYPE: &'static str = "run.repair_structure";
+    }
+
+    /// C2S — pack a structure you own back down, for part of its materials.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DemolishStructure {
+        pub entity_id: Id,
+    }
+    impl Message for DemolishStructure {
+        const TYPE: &'static str = "run.demolish_structure";
     }
 
     /// C2S — pack up a bench you raised. Its own channel (`[forge] station_teardown_ms`),

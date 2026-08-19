@@ -60,7 +60,9 @@ fn main() {
                 | ServerMsg::Bounties { .. } => {}
                 // The Shifting Lands are weather: the bot walks through them and takes
                 // whatever they do to it, exactly as a player who ignored the tell would.
-                ServerMsg::ShiftWarning { .. } | ServerMsg::Shifted { .. } => {}
+                ServerMsg::ShiftWarning { .. }
+                | ServerMsg::Shifted { .. }
+                | ServerMsg::ShiftHeld { .. } => {}
                 // A teleport matters to a renderer, not to a bot reading the snapshot.
                 ServerMsg::PositionCorrection { .. } => {}
                 ServerMsg::Loadouts { .. } => {}

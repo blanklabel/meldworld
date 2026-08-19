@@ -1118,6 +1118,34 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   raised stations survive: contesting a Shift is what BD-3's **anchors** are for, and
   `apply_shift` is the one place a pin will have to be consulted.
 
+- **WHAT PLAYERS BUILD IS ONE PRIMITIVE** (CANON D21/§W3, BD-2). A `Structure` is
+  HP-bearing and destructible and a `function` tag varies its role —
+  [`meld_proto::structures`] is the registry both sides read, `[building]` holds the
+  magnitudes, and the handler branches on the function for its NUMBERS and nothing else.
+  CANON is explicit that this is a discipline, not a convenience: *do not build towns,
+  anchors, portals and camps as separate systems*. A new buildable is a row in that table.
+  A `wall`'s `blocks` flag joins the same collision list terrain uses, so movement keeps
+  ONE notion of impassable rather than a second check some call site forgets; it rides the
+  snapshot as one `structure:<function>:<hp>:<building>` tag for the same reason.
+  Placement is validated BEFORE the stock is spent, and **nothing may be built on the
+  clear path** — the route out is feasible by construction everywhere else, and a
+  player-built wall across it is the one thing in the world that could seal the exit.
+  A structure goes up weak and ramps to full, and the ramp never heals damage taken
+  mid-build, or a besieged wall repairs itself for free. **Anyone may repair; only the
+  owner may demolish** — hauling ore to a teammate's anchor is the co-op verb, while taking
+  something down is a decision about someone else's work. MS-1's field benches are the one
+  pre-primitive holdout; folding them in is `BD-6`.
+
+- **AN ANCHOR IS PERMANENCE YOU KEEP PAYING FOR** (BD-3). It holds every section its
+  `pin_radius` reaches and the Shift due there does not land — but it does **not change
+  the schedule**, only the outcome: the cadence stays a pure function of the seed
+  (§W2/§W5) and the suppression is the *event*, which is why a held Shift never reaches
+  the replay log. Every Shift it turns aside takes `shift_hold_damage_fraction` of its own
+  max HP, so an anchor nobody hauls ore out to falls on its own and hands the ground back.
+  Without that, BD-3 would be "plant one, forget the region" — the opposite of the loop it
+  is named for. Creatures do not siege structures yet (`BD-4`), so the weather is currently
+  an anchor's only enemy.
+
 - **Per-section seeds & streaming.** Each area is a **section** generated from its OWN
   seed `section_seed(run_seed, n)` (`meld-world`), so sections are independent +
   reproducible. `Arena::ensure_frontier` streams new sections on demand as the player

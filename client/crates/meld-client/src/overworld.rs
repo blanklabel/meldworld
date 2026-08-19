@@ -720,6 +720,9 @@ pub(crate) fn overworld_input(
         Interact::Harvest { entity_id, .. } => net.0.send(ClientCmd::Harvest { entity_id }),
         Interact::OpenChest { entity_id } => net.0.send(ClientCmd::OpenChest { entity_id }),
         Interact::EnterDungeon { entity_id } => net.0.send(ClientCmd::EnterDungeon { entity_id }),
+        Interact::MendStructure { entity_id, .. } => {
+            net.0.send(ClientCmd::RepairStructure { entity_id })
+        }
         // A station is a bench, not a one-shot: [E] opens it and the keys work from
         // there, the same way the city anvil does.
         Interact::UseStation { entity_id, kind, jobs } => {
@@ -751,6 +754,9 @@ pub(crate) enum Interact {
     /// Work at a field station someone raised. `jobs` is what it has left, so the
     /// prompt can say whether it is worth walking over to.
     UseStation { entity_id: String, kind: String, jobs: u8 },
+    /// Spend a unit of ore mending a player-built structure. `hp_pct` is what it has
+    /// left, so the prompt says whether it is worth the ore before you spend it.
+    MendStructure { entity_id: String, name: String, hp_pct: u8 },
     Extract,
 }
 
@@ -767,6 +773,12 @@ impl Interact {
                 let bench = if kind == "alembic" { "still" } else { "forge" };
                 format!("Use the {bench} ({jobs} left)")
             }
+            Interact::MendStructure { name, hp_pct, .. } => {
+                let what = meld_proto::structures::structure(name)
+                    .map(|d| d.name)
+                    .unwrap_or("structure");
+                format!("Mend the {what} ({hp_pct}%)")
+            }
             Interact::Extract => "Extract".into(),
         }
     }
@@ -780,7 +792,8 @@ impl Interact {
             Interact::Harvest { entity_id, .. }
             | Interact::OpenChest { entity_id }
             | Interact::EnterDungeon { entity_id }
-            | Interact::UseStation { entity_id, .. } => Some(entity_id),
+            | Interact::UseStation { entity_id, .. }
+            | Interact::MendStructure { entity_id, .. } => Some(entity_id),
             Interact::JoinFight | Interact::Extract => None,
         }
     }
@@ -861,6 +874,13 @@ pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<In
                 jobs: e.bodies_required,
             }),
             EntityKind::Portal => Some(Interact::Extract),
+            // Mending is what holding ground actually costs, so it is on the one
+            // interact key beside every other thing you do by standing near it.
+            EntityKind::Structure => Some(Interact::MendStructure {
+                entity_id: id.clone(),
+                name: e.name.clone().unwrap_or_default(),
+                hp_pct: e.bodies_required,
+            }),
             _ => None,
         };
         if let Some(w) = what {
@@ -1545,6 +1565,30 @@ pub(crate) fn sync_overworld_sprites(
                     1.8,
                     Color::srgb(1.5, 1.0, 0.55),
                     0.25,
+                );
+                add_ground_ring(&mut commands, &wa, root);
+            }
+            EntityKind::Structure => {
+                // A player-built structure. Cool steel against the warm field bench, so
+                // "somebody built this to LAST" reads differently at a glance from
+                // "somebody set this up for a minute" — and dim while it is still going
+                // up, because a half-built wall is not yet a wall.
+                let going_up = e.opened;
+                let tint = if going_up {
+                    Color::srgb(0.55, 0.62, 0.72)
+                } else {
+                    Color::srgb(0.85, 1.05, 1.45)
+                };
+                let root = spawn_billboard_entity(
+                    &mut commands,
+                    &mut mats,
+                    &wa,
+                    id,
+                    e,
+                    wa.portal_sprite.clone(),
+                    2.4,
+                    tint,
+                    if going_up { 0.10 } else { 0.28 },
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -4217,6 +4261,9 @@ pub(crate) fn do_interact(
             station.open = Some(entity_id);
             station.kind = kind;
             station.jobs = jobs;
+        }
+        Some(Interact::MendStructure { entity_id, .. }) => {
+            net.send(ClientCmd::RepairStructure { entity_id })
         }
         Some(Interact::Extract) => net.send(ClientCmd::Extract),
         None => {}

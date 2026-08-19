@@ -1936,8 +1936,16 @@ pub struct Arena {
     pub obstacles: Vec<Obstacle>,
     /// Hand-placed treasure chests scattered through the sections.
     pub chests: Vec<Chest>,
-    /// Player-raised field workstations (MS-1). Empty until someone builds one.
+    /// Player-raised field workstations (MS-1). Empty until someone builds one. Predates
+    /// the `Structure` primitive below and still runs its own lifecycle; folding it in is
+    /// `BD-6`, the roadmap item that owns field crafting.
     pub stations: Vec<Station>,
+    /// Player-built structures — the ONE primitive (CANON D21/§W3), whatever their
+    /// `function`. Anchors in here are what hold ground against the Shift.
+    pub structures: Vec<Structure>,
+    /// Monotonic source of structure ids, so an id is never reused after a demolish (a
+    /// reused id is a client rendering the new thing with the old one's HP bar).
+    next_structure: u64,
     /// Ground a creature used to hold. `prune_defeated` moves a slain creature here
     /// instead of deleting it, so `regrow` can put something back where it stood —
     /// a few fields per kill rather than a corpse the snapshot and the AI both walk
@@ -1986,6 +1994,9 @@ pub struct Arena {
     corridor_web: Vec<(Position, Position)>,
     /// The avatar's collision radius against obstacles.
     player_radius: f64,
+    /// How much room a blocking structure takes up. Structure rather than balance: it is
+    /// the footprint the client draws, not a knob anyone tunes for feel.
+    structure_radius: f64,
     touch_radius: f64,
     interaction_radius: f64,
     sim_dt: f64,
@@ -2257,6 +2268,8 @@ impl Arena {
         let wg = &balance.worldgen;
         let mut arena = Arena {
             fallen: Vec::new(),
+            structures: Vec::new(),
+            next_structure: 0,
             end_fight_placed: false,
             seed,
             areas: Vec::new(),
@@ -2284,6 +2297,7 @@ impl Arena {
             corridor_lateral: wg.lateral_half_extent,
             corridor_path: vec![Position::new(0.0, 0.0)],
             player_radius: wg.player_radius,
+            structure_radius: 2.2,
             touch_radius: balance.world.touch_radius_tiles,
             interaction_radius: balance.world.interaction_radius_tiles,
             sim_dt: 1.0 / balance.world.overworld_sim_hz as f64,
@@ -3799,8 +3813,18 @@ impl Arena {
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
-        let obstacles: Vec<(Position, f64)> =
+        // A wall is impassable the same way a cliff is — one list, so movement has one
+        // notion of "you cannot walk there" rather than a second check that some call
+        // site will forget. A structure still going up already blocks: a half-built wall
+        // you can stroll through is a wall nobody would bother finishing.
+        let mut obstacles: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        obstacles.extend(
+            self.structures
+                .iter()
+                .filter(|s| s.blocks())
+                .map(|s| (s.position, self.structure_radius)),
+        );
         // Combat state of every creature, snapshotted so a creature can target
         // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
         let cs: Vec<(Position, String, bool, i32)> = self
@@ -5130,6 +5154,254 @@ const BOSS_KEYS_FOR_TEST: [&str; 10] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// One primitive, many functions (CANON D21/§W3): the lifecycle is shared, and only
+    /// the numbers and the two flags differ. These hold the *loop* — plant, hold, pay,
+    /// lose — rather than today's magnitudes.
+    mod structures {
+        use super::*;
+
+        fn built() -> (Balance, Arena) {
+            let b = Balance::load_default().unwrap();
+            let mut a = Arena::generate(&b, 4242, false);
+            for _ in 0..30 {
+                a.ensure_frontier(&b, 900.0);
+            }
+            a.add_avatar("p1".into(), 5.0);
+            (b, a)
+        }
+
+        /// Stand somewhere a structure can legally go, at roughly `radius` out. The world
+        /// is a maze — most spots are on the trail, in a tree or inside another build — so
+        /// a test that guesses one is a test that fails for the wrong reason.
+        fn stand_somewhere_legal(b: &Balance, a: &mut Arena, radius: f64) -> bool {
+            let lat = a.corridor_lateral();
+            for k in 0..400 {
+                let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+                let p = Position::new(radius, lat * frac);
+                a.avatar_mut("p1").unwrap().position = bend_for_test(a, p);
+                if a.place_structure(b, "p1", "wall", "probe", 0).is_ok() {
+                    let id = a.structures.last().unwrap().entity_id.clone();
+                    a.demolish_structure(b, &id);
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// Corridor → world, so a corridor-space probe lands where the arena expects it.
+        fn bend_for_test(a: &Arena, p: Position) -> Position {
+            let half = a.radial_half();
+            if half <= 0.0 {
+                return p;
+            }
+            let theta = (p.y / a.corridor_lateral().max(1.0)).clamp(-1.0, 1.0) * half;
+            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+        }
+
+        #[test]
+        fn a_structure_goes_up_weak_and_ramps_to_full() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let id = a
+                .place_structure(&b, "p1", "anchor", "dune_iron", 100)
+                .map(|s| s.entity_id.clone())
+                .expect("placeable off the trail");
+            let (hp0, max_hp, build) = {
+                let s = a.structures.iter().find(|s| s.entity_id == id).unwrap();
+                (s.hp, s.max_hp, s.build_ticks)
+            };
+            assert!(hp0 < max_hp, "it went up already finished");
+            assert!(a.structures[0].building(100), "not under construction on the tick it was placed");
+
+            a.advance_builds(100 + build / 2);
+            let mid = a.structures.iter().find(|s| s.entity_id == id).unwrap().hp;
+            assert!(mid > hp0 && mid < max_hp, "the ramp did not ramp: {hp0} -> {mid}");
+
+            a.advance_builds(100 + build);
+            let done = a.structures.iter().find(|s| s.entity_id == id).unwrap();
+            assert_eq!(done.hp, max_hp);
+            assert!(!done.building(100 + build), "still building past its own build time");
+        }
+
+        /// A besieged wall must not mend itself just because it is still going up.
+        #[test]
+        fn construction_never_heals_damage_it_took_mid_build() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            a.place_structure(&b, "p1", "wall", "dune_iron", 100).unwrap();
+            let build = a.structures[0].build_ticks;
+            a.advance_builds(100 + build);
+            a.structures[0].hp = 5;
+            a.advance_builds(100 + build + 1);
+            assert_eq!(a.structures[0].hp, 5, "the build ramp healed a damaged structure");
+        }
+
+        /// The route out is feasible by construction everywhere else in this world; a
+        /// player-built wall across it would be the one thing that could seal the exit,
+        /// and it would do it on purpose.
+        #[test]
+        fn nothing_may_be_built_on_the_clear_path() {
+            let (b, mut a) = built();
+            let on_trail = *a.path.get(4).expect("a waypoint out there");
+            a.avatar_mut("p1").unwrap().position = on_trail;
+            assert_eq!(
+                a.place_structure(&b, "p1", "wall", "dune_iron", 100).err(),
+                Some(PlaceRefusal::OnTheTrail)
+            );
+        }
+
+        #[test]
+        fn a_builder_is_capped_and_cannot_stack_structures() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            a.place_structure(&b, "p1", "wall", "dune_iron", 100).unwrap();
+            assert_eq!(
+                a.place_structure(&b, "p1", "wall", "dune_iron", 100).err(),
+                Some(PlaceRefusal::TooClose),
+                "two structures went up on the same spot"
+            );
+            let lat = a.corridor_lateral();
+            for k in 0..b.building.max_per_player + 4 {
+                a.avatar_mut("p1").unwrap().position =
+                    Position::new(200.0 + (k as f64) * b.building.min_spacing * 2.0, lat * 0.5);
+                let _ = a.place_structure(&b, "p1", "wall", "dune_iron", 100);
+            }
+            let held = a.structures.iter().filter(|s| s.owner_player_id == "p1").count();
+            assert!(
+                held <= b.building.max_per_player,
+                "{held} structures past a cap of {}",
+                b.building.max_per_player
+            );
+            // And the cap is what stops it, not the terrain running out of room.
+            while a.structures.iter().filter(|s| s.owner_player_id == "p1").count()
+                < b.building.max_per_player
+            {
+                let n = a.structures.len();
+                a.structures.push(Structure {
+                    entity_id: format!("filler-{n}"),
+                    function: "wall".into(),
+                    owner_player_id: "p1".into(),
+                    position: Position::new(-9000.0 - n as f64 * 50.0, 0.0),
+                    elevation: 0,
+                    hp: 1,
+                    max_hp: 1,
+                    placed_tick: 0,
+                    build_ticks: 1,
+                    ore: "dune_iron".into(),
+                    ore_cost: 1,
+                });
+            }
+            let lat2 = a.corridor_lateral();
+            a.avatar_mut("p1").unwrap().position =
+                bend_for_test(&a, Position::new(640.0, lat2 * 0.4));
+            assert_eq!(
+                a.place_structure(&b, "p1", "wall", "dune_iron", 100).err(),
+                Some(PlaceRefusal::AtYourLimit)
+            );
+        }
+
+        #[test]
+        fn packing_one_down_hands_back_part_of_what_it_cost() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let id = a
+                .place_structure(&b, "p1", "anchor", "dune_iron", 100)
+                .map(|s| s.entity_id.clone())
+                .unwrap();
+            let (ore, back) = a.demolish_structure(&b, &id).expect("it was standing");
+            assert_eq!(ore, "dune_iron", "it handed back something it was not built from");
+            assert!(back > 0 && back < b.building.anchor_ore_cost, "a full refund makes moving free");
+            assert!(a.structures.is_empty());
+        }
+
+        #[test]
+        fn repair_stops_at_full_and_costs_nothing_extra() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            a.place_structure(&b, "p1", "wall", "dune_iron", 100).unwrap();
+            let id = a.structures[0].entity_id.clone();
+            a.structures[0].hp = 1;
+            assert!(a.repair_structure(&b, &id).unwrap() > 0);
+            a.structures[0].hp = a.structures[0].max_hp;
+            assert_eq!(a.repair_structure(&b, &id), None, "a sound structure charged for a mend");
+        }
+
+        // ---- BD-3: the anchor holds, and holding costs ----
+
+        /// The headline loop. An anchor stops the Shift its region was due, and the land
+        /// takes the difference out of the anchor.
+        #[test]
+        fn an_anchor_holds_its_region_and_pays_for_it() {
+            let (b, mut a) = built();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            assert!(
+                stand_somewhere_legal(&b, &mut a, (inner + outer) * 0.5),
+                "no legal ground inside the doomed ring"
+            );
+            a.place_structure(&b, "p1", "anchor", "dune_iron", 0).unwrap();
+            a.advance_builds(a.structures[0].build_ticks);
+            let full = a.structures[0].hp;
+            assert!(a.section_pinned(&b, first), "the anchor does not hold its own section");
+
+            let biomes: Vec<&str> = a.areas.iter().map(|s| s.biome).collect();
+            let held = a.hold_shift(&b, first, last).expect("the anchor should have held it");
+            assert_eq!(held.anchors.len(), 1);
+            assert_eq!(
+                biomes,
+                a.areas.iter().map(|s| s.biome).collect::<Vec<_>>(),
+                "a held Shift retiled anyway"
+            );
+            assert!(a.structures[0].hp < full, "holding cost the anchor nothing");
+        }
+
+        /// An anchor nobody maintains falls on its own, and the ground goes back to the
+        /// Shift. Without this, `BD-3` would be "plant one, never think about this region
+        /// again" — the opposite of the loop it is named for.
+        #[test]
+        fn an_unmaintained_anchor_eventually_falls_and_gives_the_ground_back() {
+            let (b, mut a) = built();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            assert!(
+                stand_somewhere_legal(&b, &mut a, (inner + outer) * 0.5),
+                "no legal ground inside the doomed ring"
+            );
+            a.place_structure(&b, "p1", "anchor", "dune_iron", 0).unwrap();
+            a.advance_builds(a.structures[0].build_ticks);
+
+            let mut holds = 0;
+            while a.hold_shift(&b, first, last).is_some() {
+                holds += 1;
+                assert!(holds < 100, "the anchor is holding forever");
+            }
+            assert!(holds >= 2, "an anchor that folds on the first Shift is not worth planting");
+            assert!(a.structures.is_empty(), "a 0-HP anchor is still standing");
+            assert!(!a.section_pinned(&b, first), "the ground is still held by a dead anchor");
+        }
+
+        /// A wall is a wall. If `pins` did not distinguish the functions, the registry's
+        /// one claim would be untested.
+        #[test]
+        fn a_wall_does_not_hold_ground() {
+            let (b, mut a) = built();
+            let roll = shift::roll(&b, a.seed, 0);
+            let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
+            let (inner, outer) = a.shift_band(first, last);
+            assert!(
+                stand_somewhere_legal(&b, &mut a, (inner + outer) * 0.5),
+                "no legal ground inside the doomed ring"
+            );
+            a.place_structure(&b, "p1", "wall", "dune_iron", 0).unwrap();
+            a.advance_builds(a.structures[0].build_ticks);
+            assert!(!a.section_pinned(&b, first), "a wall held ground");
+            assert!(a.hold_shift(&b, first, last).is_none(), "a wall stopped the Shift");
+        }
+    }
 
     /// A world that shifts is a world that stays worth walking through — the whole
     /// reason it can afford to be persistent. Every one of these holds a property of
@@ -8411,5 +8683,286 @@ mod tempo_tests {
         spam.extend(std::iter::repeat_n(perfect[0], 40));
         assert_eq!(grade(&h, &spam), 1.0);
         assert_eq!(grade(&h, &[]), 0.0, "a smith who never struck earned nothing");
+    }
+}
+
+/// A player-built world object — the ONE primitive (CANON D21/§W3). Its `function` tag
+/// (from [`meld_proto::structures`]) is the only thing that varies its role; the
+/// lifecycle, the persistence and — when `BD-4` lands — the siege are shared by every
+/// function, which is the discipline CANON mandates rather than a convenience.
+#[derive(Debug, Clone)]
+pub struct Structure {
+    pub entity_id: Id,
+    /// A `meld_proto::structures` key (`anchor`, `wall`).
+    pub function: String,
+    pub owner_player_id: Id,
+    pub position: Position,
+    pub elevation: u8,
+    pub hp: i32,
+    pub max_hp: i32,
+    /// World tick it was placed, with [`Structure::build_ticks`] — together they are the
+    /// build ramp. A structure goes up weak and strengthens, so planting one in front of
+    /// an oncoming Shift is a gamble on whether it finishes.
+    pub placed_tick: u64,
+    pub build_ticks: u64,
+    /// The material it was built from, so packing it up hands back the same stock rather
+    /// than something the world had to guess at — the same rule MS-1's benches follow.
+    pub ore: String,
+    /// What it cost, so the refund is a share of the real price and not of a list price
+    /// that a perk or a discount may have moved.
+    pub ore_cost: i32,
+}
+
+impl Structure {
+    /// Is it still going up? A structure under construction is weaker, not inert.
+    pub fn building(&self, tick: u64) -> bool {
+        tick.saturating_sub(self.placed_tick) < self.build_ticks
+    }
+    /// Whole-percent HP, for the wire and the bar over its head.
+    pub fn hp_pct(&self) -> i32 {
+        if self.max_hp <= 0 {
+            return 0;
+        }
+        ((self.hp as f64 / self.max_hp as f64) * 100.0).round().clamp(0.0, 100.0) as i32
+    }
+    pub fn def(&self) -> Option<&'static meld_proto::structures::StructureDef> {
+        meld_proto::structures::structure(&self.function)
+    }
+    pub fn pins(&self) -> bool {
+        self.def().is_some_and(|d| d.pins)
+    }
+    pub fn blocks(&self) -> bool {
+        self.def().is_some_and(|d| d.blocks)
+    }
+}
+
+/// Why a placement was refused. Each is a sentence the player can act on — "no" with no
+/// reason is the thing that makes building feel arbitrary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaceRefusal {
+    UnknownFunction,
+    NotInWorld,
+    TooClose,
+    OnTheTrail,
+    Blocked,
+    AtYourLimit,
+}
+
+impl PlaceRefusal {
+    pub fn message(&self) -> &'static str {
+        match self {
+            PlaceRefusal::UnknownFunction => "No such structure.",
+            PlaceRefusal::NotInWorld => "You are not out in the world.",
+            PlaceRefusal::TooClose => "Too close to something already standing.",
+            PlaceRefusal::OnTheTrail => "Not on the trail — the way out has to stay open.",
+            PlaceRefusal::Blocked => "There is no room here.",
+            PlaceRefusal::AtYourLimit => "You are holding as much ground as you can.",
+        }
+    }
+}
+
+/// A Shift that was HELD (CANON §W3): what the land did to the anchors that stopped it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShiftHeld {
+    /// Anchors that took the blow: `(entity_id, damage, destroyed)`.
+    pub anchors: Vec<(String, i32, bool)>,
+    pub inner_radius: f64,
+    pub outer_radius: f64,
+}
+
+impl Arena {
+    /// Place a structure where `player_id` stands (CANON §W3, `BD-2`).
+    ///
+    /// **Never on the clear-path tube.** Generation keeps the route out feasible by
+    /// construction and the Shift's re-scatter honours the same tube; a player-built wall
+    /// across the trail would be the one thing in the world that could seal the exit, and
+    /// it would do it on purpose.
+    pub fn place_structure(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        function: &str,
+        ore: &str,
+        tick: u64,
+    ) -> Result<&Structure, PlaceRefusal> {
+        let b = &balance.building;
+        let Some((cost, max_hp, build_ms)) = b.spec(function) else {
+            return Err(PlaceRefusal::UnknownFunction);
+        };
+        if meld_proto::structures::structure(function).is_none() {
+            return Err(PlaceRefusal::UnknownFunction);
+        }
+        let Some(av) = self.avatar(player_id) else {
+            return Err(PlaceRefusal::NotInWorld);
+        };
+        let (position, elevation) = (av.position, av.elevation);
+        if self.structures.iter().filter(|s| s.owner_player_id == player_id).count()
+            >= b.max_per_player
+        {
+            return Err(PlaceRefusal::AtYourLimit);
+        }
+        let corridor = self.corridorize(&position);
+        if dist_to_path(&corridor, &self.corridor_path) < self.path_clear_radius
+            || dist_to_web(&corridor, &self.corridor_web) < self.web_clear()
+        {
+            return Err(PlaceRefusal::OnTheTrail);
+        }
+        if self
+            .structures
+            .iter()
+            .any(|s| s.position.distance_to(&position) < b.min_spacing)
+            || self.stations.iter().any(|s| s.position.distance_to(&position) < b.min_spacing)
+        {
+            return Err(PlaceRefusal::TooClose);
+        }
+        if self
+            .obstacles
+            .iter()
+            .any(|o| o.position.distance_to(&position) < o.radius + self.player_radius)
+        {
+            return Err(PlaceRefusal::Blocked);
+        }
+        let tick_ms = balance.battle.tick_ms.max(1);
+        let hp = ((max_hp as f64) * b.build_start_fraction).round().max(1.0) as i32;
+        self.structures.push(Structure {
+            entity_id: format!("struct-{}-{}", function, self.next_structure),
+            function: function.to_string(),
+            owner_player_id: player_id.to_string(),
+            position,
+            elevation,
+            hp: hp.min(max_hp),
+            max_hp,
+            placed_tick: tick,
+            build_ticks: (build_ms / tick_ms).max(1),
+            ore: ore.to_string(),
+            ore_cost: cost,
+        });
+        self.next_structure += 1;
+        Ok(self.structures.last().expect("just pushed"))
+    }
+
+    /// Ramp every structure still going up toward its full HP. Linear in build time, so
+    /// the bar over its head and the HP it can actually soak are the same fact.
+    ///
+    /// Only ever raises HP toward the ramp's floor: a structure that has been damaged
+    /// mid-build must not be healed by its own construction, or a besieged wall would
+    /// repair itself for free while the siege was still landing.
+    pub fn advance_builds(&mut self, tick: u64) {
+        for s in self.structures.iter_mut() {
+            // `<=`, not `building()`: that predicate is false ON the completion tick (it
+            // answers "still going up"), so gating the ramp on it left every structure
+            // frozen at the second-to-last step and permanently short of its own max HP.
+            if tick.saturating_sub(s.placed_tick) > s.build_ticks {
+                continue;
+            }
+            let elapsed = tick.saturating_sub(s.placed_tick) as f64;
+            let t = (elapsed / s.build_ticks.max(1) as f64).clamp(0.0, 1.0);
+            let floor = ((s.max_hp as f64) * t).round() as i32;
+            s.hp = s.hp.max(floor.min(s.max_hp));
+        }
+    }
+
+    /// The structure `player_id` is standing at, within `radius` and on their level.
+    pub fn structure_at(&self, player_id: &str, entity_id: &str, radius: f64) -> Option<&Structure> {
+        let av = self.avatar(player_id)?;
+        self.structures.iter().find(|s| {
+            s.entity_id == entity_id
+                && s.elevation == av.elevation
+                && s.position.distance_to(&av.position) <= radius
+        })
+    }
+
+    /// Spend one unit of ore on a structure. Returns the HP actually restored, so a
+    /// nearly-full structure charges for what it took rather than for the whole unit.
+    pub fn repair_structure(&mut self, balance: &Balance, entity_id: &str) -> Option<i32> {
+        let per = balance.building.repair_hp_per_ore.max(1);
+        let s = self.structures.iter_mut().find(|s| s.entity_id == entity_id)?;
+        if s.hp >= s.max_hp {
+            return None;
+        }
+        let before = s.hp;
+        s.hp = (s.hp + per).min(s.max_hp);
+        Some(s.hp - before)
+    }
+
+    /// Pack a structure down. Returns `(ore_kind, refunded)` — a share of what it cost,
+    /// never all of it, or moving one is free.
+    pub fn demolish_structure(
+        &mut self,
+        balance: &Balance,
+        entity_id: &str,
+    ) -> Option<(String, i32)> {
+        let idx = self.structures.iter().position(|s| s.entity_id == entity_id)?;
+        let s = self.structures.remove(idx);
+        let back = (((s.ore_cost as f64) * balance.building.demolish_refund_fraction).floor()
+            as i32)
+            .max(0);
+        Some((s.ore, back))
+    }
+
+    /// Is section `i` held against the Shift by a standing anchor (CANON §W3)?
+    ///
+    /// A pin is measured in the BENT world frame, because `pin_radius` is a distance a
+    /// player paces out — asking it in corridor coordinates would make an anchor's reach
+    /// grow with depth, since corridor y is an angle.
+    pub fn section_pinned(&self, balance: &Balance, i: usize) -> bool {
+        let Some(area) = self.areas.get(i) else { return false };
+        let r = balance.building.anchor_pin_radius;
+        self.structures.iter().filter(|s| s.pins() && s.hp > 0).any(|s| {
+            let c = self.corridorize(&s.position).x;
+            c + r >= area.start_x && c - r < area.end_x
+        })
+    }
+
+    /// Every anchor holding any part of `[first, last]`, for the blow the land lands on
+    /// them when they stop a Shift.
+    fn anchors_holding(&self, balance: &Balance, first: usize, last: usize) -> Vec<usize> {
+        let (inner, outer) = self.shift_band(first, last);
+        let r = balance.building.anchor_pin_radius;
+        self.structures
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.pins() && s.hp > 0)
+            .filter(|(_, s)| {
+                let c = self.corridorize(&s.position).x;
+                c + r >= inner && c - r < outer
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The Shift arrives and the anchors stop it (CANON §W3, `BD-3`).
+    ///
+    /// **Holding costs.** The land pushes back on whatever is pinning it, so every anchor
+    /// that held this one takes a share of its own max HP. That is what keeps an anchor
+    /// from being permanence you buy once: it is permanence you keep paying for, and an
+    /// anchor nobody hauls ore out to eventually falls on its own and hands the ground
+    /// back to the Shift. Without this, `BD-3` would be "plant one, never think about this
+    /// region again", which is the opposite of the loop it is named for.
+    ///
+    /// Returns `None` when nothing is holding, which is the caller's signal to land the
+    /// Shift normally.
+    pub fn hold_shift(
+        &mut self,
+        balance: &Balance,
+        first: usize,
+        last: usize,
+    ) -> Option<ShiftHeld> {
+        let holding = self.anchors_holding(balance, first, last);
+        if holding.is_empty() {
+            return None;
+        }
+        let (inner_radius, outer_radius) = self.shift_band(first, last);
+        let share = balance.building.shift_hold_damage_fraction;
+        let mut anchors = Vec::new();
+        for idx in holding {
+            let s = &mut self.structures[idx];
+            let dmg = (((s.max_hp as f64) * share).round() as i32).max(1);
+            let took = dmg.min(s.hp);
+            s.hp -= took;
+            anchors.push((s.entity_id.clone(), took, s.hp <= 0));
+        }
+        self.structures.retain(|s| s.hp > 0);
+        Some(ShiftHeld { anchors, inner_radius, outer_radius })
     }
 }

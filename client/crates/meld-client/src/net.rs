@@ -65,6 +65,11 @@ pub enum ClientCmd {
     EnterDungeon { entity_id: String },
     /// Raise a field workstation where the avatar stands (spends ore you carry).
     BuildStation { kind: String },
+    /// Raise a `Structure` (CANON D21/§W3). One command for every function, because there
+    /// is one primitive — the key comes from `meld_proto::structures`.
+    BuildStructure { function: String },
+    RepairStructure { entity_id: String },
+    DemolishStructure { entity_id: String },
     /// Ask whoever raised this station to do a piece of work for you: the smith's
     /// services on YOUR OWN gear, or a brew at a Keeper's alembic.
     SmithRequest {
@@ -160,6 +165,10 @@ pub enum EntityKind {
     Obstacle,
     /// A treasure chest (`opened` tells the client to draw it opened vs closed).
     Chest,
+    /// A player-built `Structure` (CANON D21/§W3). `monster_kind` carries its `function`
+    /// key, `bodies_required` its whole-percent HP — ONE kind for every function, so a new
+    /// one needs no new render path and cannot be forgotten by one.
+    Structure,
     /// A hand-designed dungeon entrance (`monster_kind` carries the dungeon name).
     /// Walk up and press F to descend (`run.enter_dungeon`).
     Entrance,
@@ -729,6 +738,9 @@ pub enum ServerMsg {
     Bounties { board: BountyBoard },
     /// A posted hunt moved while diving (`run.hunt_progress`).
     HuntProgress { name: String, progress: i32, target: i32, complete: bool },
+    /// An anchor stopped a Shift (`world.shift_held`) — the region did not retile, and the
+    /// land took it out of whatever was holding it (CANON §W3).
+    ShiftHeld { anchors: Vec<(String, i32, i32, bool)> },
     /// The tell: a ring of the Shifting Lands is about to swap biome (`world.shift_warning`).
     ShiftWarning {
         inner_radius: f64,
@@ -2005,6 +2017,15 @@ impl Inner {
             ClientCmd::BuildStation { kind } => {
                 self.send_env(wr::BuildStation::TYPE, json!({ "kind": kind }))
             }
+            ClientCmd::BuildStructure { function } => {
+                self.send_env(wr::BuildStructure::TYPE, json!({ "function": function }))
+            }
+            ClientCmd::RepairStructure { entity_id } => {
+                self.send_env(wr::RepairStructure::TYPE, json!({ "entity_id": entity_id }))
+            }
+            ClientCmd::DemolishStructure { entity_id } => {
+                self.send_env(wr::DemolishStructure::TYPE, json!({ "entity_id": entity_id }))
+            }
             ClientCmd::SmithRequest { entity_id, gear_id, service, material, recipe } => self
                 .send_env(
                     wr::SmithRequest::TYPE,
@@ -2423,6 +2444,24 @@ impl Inner {
                     y: p["y"].as_f64().unwrap_or(0.0),
                 });
             }
+            "world.shift_held" => {
+                let anchors = raw.payload["anchors"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|v| {
+                                (
+                                    v["entity_id"].as_str().unwrap_or("").to_string(),
+                                    v["damage"].as_i64().unwrap_or(0) as i32,
+                                    v["hp"].as_i64().unwrap_or(0) as i32,
+                                    v["destroyed"].as_bool().unwrap_or(false),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out.push_back(ServerMsg::ShiftHeld { anchors });
+            }
             "world.shift_warning" => {
                 let p = &raw.payload;
                 self.out.push_back(ServerMsg::ShiftWarning {
@@ -2590,6 +2629,17 @@ impl Inner {
                                     let (k, u) = rest.rsplit_once(':').unwrap_or((rest, "0"));
                                     bodies_required = u.parse().unwrap_or(0);
                                     (EntityKind::Station, Some(k.to_string()), None)
+                                }
+                                Some(s) if s.starts_with("structure:") => {
+                                    // structure:<function>:<hp_pct>:<building>
+                                    let mut it = s["structure:".len()..].split(':');
+                                    let f = it.next().unwrap_or("").to_string();
+                                    bodies_required = it.next().and_then(|v| v.parse().ok()).unwrap_or(100);
+                                    // Still going up rides `opened`, the existing
+                                    // "is it in its other state" flag, rather than
+                                    // growing the wire a bool one tag uses.
+                                    opened = it.next() == Some("1");
+                                    (EntityKind::Structure, Some(f), None)
                                 }
                                 Some(s) if s.starts_with("entrance:") => {
                                     // entrance:<dungeon>:<bodies>
