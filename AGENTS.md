@@ -244,6 +244,19 @@ creatures had ranks, halved it against an enemy rear — the one thing a caster 
 be immune to. A caster gives up nothing against a back rank; that is the rule, and the Keeper
 is a caster.
 
+**A WEAPON IS A HAND; A THROWABLE IS A POUCH.** Reach is permanent because it is what the
+weapon IS. **All-enemy is a limited consumable and never a weapon property** — a basic attack
+that hit everything would scale with pack size, beat a single-target weapon at about four
+enemies, and make the back rank, the group tier and the whole level-20-and-up AoE ability
+ladder pointless. So `ConsumableEffect::ThrownAll` carries it: francisca, plumbatae, caltrops
+(forged) and fire pots (brewed), each landing its OWN damage type so they answer armour
+differently from one another. They are **class-gated to the two professions**, which is the
+first thing a Smithwright or a Keeper does in a fight that is theirs alone — and a hero who
+cannot use one is REFUSED rather than fizzling, since a spent item that did nothing is the
+cruellest reading of "you can use items". Outside a fight they are refused too: there is
+nothing to throw them at. Reach is not the Hunter's private property (the Shifter throws and
+slings); what the Hunter has is the **bow**.
+
 **REACH AND SWEEP ARE TWO AXES, NOT ONE "RANGED" FAMILY.** Reach is *can it get there*
 (`ItemFamily::reaches_past_the_front` — bow, sling, thrown spear), sweep is *how many does
 it hit*. Bundling them would make every ranged weapon a crowd-clearer and every

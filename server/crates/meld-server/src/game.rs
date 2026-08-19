@@ -7722,6 +7722,11 @@ impl WorldActor {
         let mut grant_xp: i64 = 0;
         let mut cured: Vec<String> = Vec::new();
         match def.effect {
+            // You throw these AT something, and out here there is nothing to throw them at.
+            // Refused rather than spent: this function's own rule is that a bottle which
+            // would do nothing stays corked, and a francisca lobbed across an empty field
+            // is a francisca gone.
+            E::ThrownAll => return reject("Save that for a fight."),
             E::Heal | E::FullHeal => {
                 if hp_now <= 0 {
                     return reject("They're down — that needs a revive.");

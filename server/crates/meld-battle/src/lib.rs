@@ -612,6 +612,7 @@ pub struct Battle {
     defend_reduction: f64,
     back_row_damage_mult: f64,
     back_row_attack_mult: f64,
+    thrown_atk_mult: f64,
     gang_switch_chance: f64,
     /// The mark a ganging pack is converging on (CR-9). Shared across the whole side, so
     /// "gang up" means the pack commits together rather than each creature deciding alone.
@@ -935,6 +936,7 @@ impl Battle {
             defend_reduction: balance.battle.defend_damage_reduction,
             back_row_damage_mult: balance.battle.back_row_damage_mult,
             back_row_attack_mult: balance.battle.back_row_attack_mult,
+            thrown_atk_mult: balance.consumable.thrown_atk_mult,
             gang_switch_chance: balance.ai.gang_switch_chance,
             gang_target: None,
             combo_window_ticks: balance.adventure.combo_window_ticks,
@@ -3684,7 +3686,39 @@ impl Battle {
         let dose = self
             .consumable_potency_per_step
             .powi(def.map(|c| c.potency).unwrap_or(0).max(0));
+        // Class-gated items refuse rather than fizzle: the Smithwright forges what it
+        // throws and the Keeper brews it, and a hero who cannot use one has not spent it.
+        if let Some(only) = def.and_then(|c| c.only_class) {
+            let holder = meld_proto::equipment::class_from_key(&self.fighters[actor_i].class_key);
+            if holder != Some(only) {
+                self.reset_gauge(actor_i);
+                return self.resolution(actor_i, BattleActionKind::Item, action_id, Vec::new());
+            }
+        }
         let effects = match effect {
+            // THROWN at the whole encounter. A share of the thrower's own attack, landed on
+            // every living enemy — the all-enemy tier, priced by the COUNT in the pouch
+            // rather than by the number per target.
+            E::ThrownAll => {
+                let ty = def
+                    .and_then(|c| c.damage_type)
+                    .unwrap_or(crate::UNARMED_ATTACK_TYPE);
+                let raw = (((self.fighters[actor_i].atk as f64) * self.thrown_atk_mult * dose)
+                    .round() as i32)
+                    .max(self.min_damage);
+                let enemies: Vec<usize> = self
+                    .fighters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut out = Vec::new();
+                for t in enemies {
+                    out.extend(self.apply_ability_damage(t, raw, ty));
+                }
+                out
+            }
             E::Revive => {
                 let fraction = (self.revive_hp_fraction * dose).min(1.0);
                 let back = ((max_hp as f64) * fraction).round().max(1.0) as i32;
@@ -9595,11 +9629,11 @@ mod deep_ladder_tests {
 mod grouping_and_flanking {
     use super::*;
 
-    fn balance() -> Balance {
+    pub(super) fn balance() -> Balance {
         Balance::load_default().unwrap()
     }
 
-    fn hero(id: &str, player: &str) -> Fighter {
+    pub(super) fn hero(id: &str, player: &str) -> Fighter {
         let mut f = Fighter::new(
             id.into(),
             CombatantKind::Player,
@@ -9615,7 +9649,7 @@ mod grouping_and_flanking {
         f
     }
 
-    fn foe(id: &str, group: u32, back: bool) -> Fighter {
+    pub(super) fn foe(id: &str, group: u32, back: bool) -> Fighter {
         let mut f = Fighter::new(
             id.into(),
             CombatantKind::Monster,
@@ -9855,5 +9889,96 @@ mod grouping_and_flanking {
         bt.apply_ability_damage(ri, 300, DamageType::Slash);
         let took = |i: usize| 10_000 - bt.fighters[i].hp;
         assert!(took(ri) < took(fi), "the rank stopped softening physical blows");
+    }
+}
+
+#[cfg(test)]
+mod thrown_tests {
+    use super::*;
+    use super::grouping_and_flanking::{balance, foe, hero};
+    use meld_proto::consumables::{self as con, ConsumableEffect as E};
+
+    /// The all-enemy tier lives on a limited consumable, never on a weapon. A basic attack
+    /// that hit everything would scale with pack size, beat a single-target weapon at about
+    /// four enemies, and make the back rank, the group tier and every level-20-and-up AoE
+    /// ability pointless.
+    #[test]
+    fn nothing_a_hero_equips_hits_the_whole_encounter() {
+        for f in [
+            meld_proto::equipment::ItemFamily::Bow,
+            meld_proto::equipment::ItemFamily::Sling,
+            meld_proto::equipment::ItemFamily::ThrownSpear,
+            meld_proto::equipment::ItemFamily::Sword,
+            meld_proto::equipment::ItemFamily::Spear,
+        ] {
+            assert!(f.damage_type().is_some(), "{f:?} has no blow");
+        }
+        let all_enemy: Vec<&str> = con::CONSUMABLES
+            .iter()
+            .filter(|c| c.effect == E::ThrownAll)
+            .map(|c| c.key)
+            .collect();
+        assert!(!all_enemy.is_empty(), "the all-enemy tier has nowhere to live");
+    }
+
+    /// Every throwable belongs to a profession, and answers armour its own way. Four items
+    /// that all cut would be one item with four names.
+    #[test]
+    fn every_throwable_is_a_professions_work_and_lands_its_own_blow() {
+        let thrown: Vec<_> =
+            con::CONSUMABLES.iter().filter(|c| c.effect == E::ThrownAll).collect();
+        let mut types = std::collections::HashSet::new();
+        for t in &thrown {
+            assert!(t.only_class.is_some(), "{} is a throwable anyone can use", t.key);
+            let dt = t.damage_type.unwrap_or(DamageType::None);
+            assert_ne!(dt, DamageType::None, "{} lands untyped — true damage", t.key);
+            types.insert(dt);
+        }
+        assert!(types.len() > 1, "every throwable lands the same blow, so the set is one item");
+    }
+
+    /// A class gate that fizzles is a wasted item and a confused player: refuse instead.
+    #[test]
+    fn a_hero_who_cannot_use_a_throwable_does_not_spend_it() {
+        let b = balance();
+        let mut wrong = hero("h", "p1");
+        wrong.class_key = "explorer".into();
+        wrong.atk = 100;
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![wrong],
+            vec![foe("a", 0, false), foe("c", 0, false)],
+            &b,
+            7,
+        );
+        let before: Vec<i32> = bt.fighters.iter().map(|f| f.hp).collect();
+        bt.active_actor = Some(0);
+        let _ = bt.resolve_item(0, Some("francisca"), None, None);
+        let after: Vec<i32> = bt.fighters.iter().map(|f| f.hp).collect();
+        assert_eq!(before, after, "an Explorer threw a Smithwright's axe");
+    }
+
+    /// And in the right hands it lands on everything standing.
+    #[test]
+    fn a_smithwright_throwing_one_hits_the_whole_encounter() {
+        let b = balance();
+        let mut smith = hero("s", "p1");
+        smith.class_key = "smithwright".into();
+        smith.atk = 200;
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![smith],
+            vec![foe("a", 0, false), foe("c", 0, true)],
+            &b,
+            7,
+        );
+        bt.active_actor = Some(0);
+        let _ = bt.resolve_item(0, Some("francisca"), None, None);
+        for id in ["a", "c"] {
+            let f = bt.fighters.iter().find(|f| f.combatant_id == id).unwrap();
+            assert!(f.hp < f.max_hp, "{id} was not hit by a thrown axe");
+        }
     }
 }

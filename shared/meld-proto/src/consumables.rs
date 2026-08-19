@@ -16,6 +16,7 @@
 //! [`crate::materials::MaterialClass::Trophy`]) is the same eight effects at a
 //! bigger dose rather than eight new mechanics.
 
+use crate::enums::{CharacterClass, DamageType};
 use serde::{Deserialize, Serialize};
 
 /// What drinking a potion does. Deliberately drawn from states the engine already
@@ -45,6 +46,12 @@ pub enum ConsumableEffect {
     /// Bring a FALLEN hero back. The only way back up — a level-up no longer
     /// revives anyone, so a wipe has to be answered with an item.
     Revive,
+    /// **Thrown at the whole encounter.** The all-enemy tier, and it lives on a
+    /// consumable rather than on a weapon on purpose: a basic attack that hits everything
+    /// scales with pack size, beats a single-target weapon at about four enemies, and
+    /// makes the back rank, the group tier and the entire level-20-and-up AoE ability
+    /// ladder pointless. Bought with a limited stack, it is a tactical resource instead.
+    ThrownAll,
     /// Grant XP to the hero who drinks it. The world's XP is mostly earned; this is
     /// the part of it you can carry home and choose who to spend on.
     Experience,
@@ -65,6 +72,15 @@ pub struct ConsumableDef {
     /// trophy line be *stronger* without being *different*.
     pub potency: i32,
     pub description: &'static str,
+    /// Who may use it. `None` is anyone. The throwables are the two PROFESSION classes'
+    /// work — a francisca is forged, a fire pot is brewed — which is what finally gives
+    /// the Smithwright and the Keeper something their trade does *in* a fight rather than
+    /// only between them.
+    pub only_class: Option<CharacterClass>,
+    /// What kind of blow it lands, for `ThrownAll`. A thrown axe cuts, a lead dart
+    /// punches through, a pot burns — so the throwables answer armour differently from one
+    /// another, the same way a bow and a sling do.
+    pub damage_type: Option<DamageType>,
 }
 
 pub const CONSUMABLES: &[ConsumableDef] = &[
@@ -75,6 +91,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 0,
         description: "Held under the nose of the fallen. Not pleasant. Effective.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "insight_mote",
@@ -83,6 +101,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 0,
         description: "Someone else's hard-won lesson, bottled. Drink and know it.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "bloom_salve",
@@ -91,6 +111,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 0,
         potency: 0,
         description: "Field medicine. Closes what is open.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "clarity_draught",
@@ -99,6 +121,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 0,
         potency: 0,
         description: "Whatever has hold of you, it lets go.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "panacea",
@@ -107,6 +131,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 3,
         potency: 0,
         description: "Everything that has hold of you lets go at once. Rare, and dear.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "elixir",
@@ -115,6 +141,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 2,
         potency: 0,
         description: "Whole again, once.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "bulwark_tonic",
@@ -123,6 +151,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 0,
         potency: 0,
         description: "Drink before the blow, not after.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "mending_draught",
@@ -131,6 +161,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 0,
         potency: 0,
         description: "Slow, steady, and cheaper than a Resonant's blood.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "ghostdust",
@@ -139,6 +171,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 0,
         description: "Be somewhere else for a while.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "fury_philtre",
@@ -147,6 +181,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 0,
         description: "Rage on credit. Explorers only.",
+        only_class: None,
+        damage_type: None,
     },
     // --- The trophy line: the same effects, rendered out of monster parts. Each
     // is one step stronger than its reagent-line counterpart and gated behind a
@@ -158,6 +194,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 1,
         description: "The lure a stalker grew, boiled down. It keeps growing in you.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "scarab_ward",
@@ -166,6 +204,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 1,
         potency: 1,
         description: "Ground husk, drunk thick. For a while you are wearing the desert's answer.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "cinderblood_philtre",
@@ -174,6 +214,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 2,
         potency: 1,
         description: "An imp's coal, still burning, in your blood instead of its own.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "rimeglass_vial",
@@ -182,6 +224,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 2,
         potency: 1,
         description: "Whatever a revenant does instead of standing still, bottled.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "ichor_salve",
@@ -190,6 +234,8 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 3,
         potency: 2,
         description: "It closes wounds the way the mire closes over things. Do not watch.",
+        only_class: None,
+        damage_type: None,
     },
     ConsumableDef {
         key: "quintessence",
@@ -198,6 +244,57 @@ pub const CONSUMABLES: &[ConsumableDef] = &[
         tier: 4,
         potency: 2,
         description: "One part of every biome that tried to kill you. The fallen stand up nearly whole.",
+        only_class: None,
+        damage_type: None,
+    },
+    // ---- THROWN: the all-enemy tier (BD/GR) ----
+    //
+    // A weapon that hit the whole encounter would be a free repeatable that scales with
+    // pack size and makes the back rank, the group tier and every AoE ability redundant.
+    // These are the same reach with a COUNT on it, so using one is a decision about when.
+    //
+    // Class-gated to the two professions, because these are the things their trades make:
+    // the Smithwright forges iron you throw, the Keeper brews what breaks on impact. It is
+    // the first thing either class does in a fight that is theirs alone.
+    ConsumableDef {
+        key: "francisca",
+        name: "Francisca",
+        effect: ConsumableEffect::ThrownAll,
+        tier: 1,
+        potency: 0,
+        description: "A throwing axe. Turns end over end and lands edge-first, mostly.",
+        only_class: Some(CharacterClass::Smithwright),
+        damage_type: Some(DamageType::Slash),
+    },
+    ConsumableDef {
+        key: "plumbata",
+        name: "Plumbatae",
+        effect: ConsumableEffect::ThrownAll,
+        tier: 1,
+        potency: 0,
+        description: "Lead-weighted darts, carried behind the shield. They punch through.",
+        only_class: Some(CharacterClass::Smithwright),
+        damage_type: Some(DamageType::Pierce),
+    },
+    ConsumableDef {
+        key: "caltrops",
+        name: "Caltrops",
+        effect: ConsumableEffect::ThrownAll,
+        tier: 1,
+        potency: 0,
+        description: "Scattered, not thrown. Whichever way they land, one point is up.",
+        only_class: Some(CharacterClass::Smithwright),
+        damage_type: Some(DamageType::Pierce),
+    },
+    ConsumableDef {
+        key: "fire_pot",
+        name: "Fire Pot",
+        effect: ConsumableEffect::ThrownAll,
+        tier: 1,
+        potency: 0,
+        description: "Sealed clay, and something inside it that does not want to be.",
+        only_class: Some(CharacterClass::Keeper),
+        damage_type: Some(DamageType::Fire),
     },
 ];
 
