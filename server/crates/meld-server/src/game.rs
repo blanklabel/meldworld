@@ -1374,6 +1374,51 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
     arena
 }
 
+
+/// Spend `need` units of one material `class` out of a run's backpack, deepest tier first,
+/// **across stacks**. Returns the material kind actually spent.
+///
+/// Across stacks is the whole point. A harvest channel banks one unit per tick as its OWN
+/// `ItemStack` (`advance_harvests` pushes rather than merging), so ore you gathered in the
+/// field is six stacks of one — never one stack of six. Both build paths used to look for a
+/// SINGLE stack holding the whole cost, which meant a structure costing 6 and a field forge
+/// costing 3 were **both unbuildable from ore you had just dug up**, while reporting only
+/// "takes 6 ore" to a player who was carrying exactly six.
+///
+/// One KIND, though, not a mix: a structure records what it was built from so packing it
+/// down hands back the same stock, and a refund cannot be split across materials the player
+/// no longer has a record of. So the deepest-tier kind whose TOTAL covers the cost wins.
+fn spend_material(
+    run: &mut meld_run::PlayerRun,
+    class: meld_proto::materials::MaterialClass,
+    need: i32,
+) -> Option<String> {
+    let mut totals: HashMap<String, (i32, i32)> = HashMap::new();
+    for item in run.backpack.iter().filter(|i| {
+        i.quantity > 0 && meld_proto::materials::is_class(&i.item_kind, class)
+    }) {
+        let tier = meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
+        let e = totals.entry(item.item_kind.clone()).or_insert((0, tier));
+        e.0 += item.quantity;
+    }
+    let kind = totals
+        .into_iter()
+        .filter(|(_, (have, _))| *have >= need)
+        .max_by_key(|(_, (_, tier))| *tier)
+        .map(|(k, _)| k)?;
+    let mut left = need;
+    for item in run.backpack.iter_mut().filter(|i| i.item_kind == kind) {
+        let take = left.min(item.quantity);
+        item.quantity -= take;
+        left -= take;
+        if left == 0 {
+            break;
+        }
+    }
+    run.backpack.retain(|i| i.quantity > 0);
+    Some(kind)
+}
+
 /// One queued request at a field station: everything the DB half needs, decided
 /// already by the world half. `owner`/`smith_level` are the STATION's smith — the
 /// skill the job is done at — while `requester` is whose gear it is. They are separate
@@ -6838,29 +6883,32 @@ impl WorldActor {
         let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let mut ores: Vec<(usize, i32)> = run
+        // Summed ACROSS stacks, deepest tier first: a harvest banks one unit per tick as
+        // its own stack, so a smith who gathered ore in the field never has one stack
+        // holding the whole cost — this refused every bench built from freshly-dug ore and
+        // said "takes 3 ore" to somebody carrying five.
+        let mut have: HashMap<String, (i32, i32)> = HashMap::new();
+        for item in run
             .backpack
             .iter()
-            .enumerate()
-            .filter(|(_, i)| meld_proto::materials::is_class(&i.item_kind, class))
-            .map(|(idx, i)| {
-                (
-                    idx,
-                    meld_proto::materials::material(&i.item_kind).map(|m| m.tier).unwrap_or(0),
-                )
-            })
-            .collect();
-        ores.sort_by_key(|(_, tier)| std::cmp::Reverse(*tier));
-        let Some((idx, _)) = ores
+            .filter(|i| i.quantity > 0 && meld_proto::materials::is_class(&i.item_kind, class))
+        {
+            let tier =
+                meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
+            have.entry(item.item_kind.clone()).or_insert((0, tier)).0 += item.quantity;
+        }
+        let Some(picked) = have
             .into_iter()
-            .find(|(idx, _)| run.backpack[*idx].quantity >= need)
+            .filter(|(_, (n, _))| *n >= need)
+            .max_by_key(|(_, (_, tier))| *tier)
+            .map(|(k, _)| k)
         else {
             return reject(
                 ErrorCode::InvalidState,
                 &format!("{label} takes {need} of one {stock_word} you are carrying."),
             );
         };
-        let ore_kind = run.backpack[idx].item_kind.clone();
+        let ore_kind = picked;
         let radius = forge.station_radius;
         // Refuse before charging anyone: a spot that is already taken, or a channel
         // already running, must not cost stock.
@@ -6879,8 +6927,7 @@ impl WorldActor {
             .iter_mut()
             .find(|r| r.player_id == player_id)
             .expect("checked above");
-        run.backpack[idx].quantity -= need;
-        run.backpack.retain(|i| i.quantity > 0);
+        spend_material(run, class, need);
         // The stock goes in NOW and the bench arrives when the channel completes — an
         // interrupted setup costs you the materials, which is what makes choosing the
         // moment (and the ground) a real decision.
@@ -6948,31 +6995,33 @@ impl WorldActor {
         let Some((cost, _, _)) = balance.building.spec(&req.function) else {
             return reject(ErrorCode::ValidationError, "No such structure.");
         };
-        // Deepest stack first — a builder who hauled good ore out should not have it spent
-        // last. Same rule MS-1's benches follow.
+        // What ore we WOULD spend, deepest tier first and summed ACROSS stacks — a harvest
+        // banks one unit per tick as its own stack, so ore you just dug up is never one
+        // stack big enough to pay for anything. Chosen here but not spent until placement
+        // has been validated.
         let Some(run) = self.run.runs.iter().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let mut ores: Vec<(usize, i32)> = run
-            .backpack
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| {
-                i.quantity >= cost
-                    && meld_proto::materials::is_class(
-                        &i.item_kind,
-                        meld_proto::materials::MaterialClass::Ore,
-                    )
-            })
-            .map(|(idx, i)| {
-                (idx, meld_proto::materials::material(&i.item_kind).map(|m| m.tier).unwrap_or(0))
-            })
-            .collect();
-        ores.sort_by_key(|(_, tier)| std::cmp::Reverse(*tier));
-        let Some(&(idx, _)) = ores.first() else {
+        let mut have: HashMap<String, (i32, i32)> = HashMap::new();
+        for item in run.backpack.iter().filter(|i| {
+            i.quantity > 0
+                && meld_proto::materials::is_class(
+                    &i.item_kind,
+                    meld_proto::materials::MaterialClass::Ore,
+                )
+        }) {
+            let tier =
+                meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
+            have.entry(item.item_kind.clone()).or_insert((0, tier)).0 += item.quantity;
+        }
+        let Some(ore_kind) = have
+            .into_iter()
+            .filter(|(_, (n, _))| *n >= cost)
+            .max_by_key(|(_, (_, tier))| *tier)
+            .map(|(k, _)| k)
+        else {
             return reject(ErrorCode::InvalidState, &format!("{} takes {cost} ore.", def.name));
         };
-        let ore_kind = run.backpack[idx].item_kind.clone();
         // Validated BEFORE the stock is spent: a refusal that also charged you is the
         // worst kind, and the arena is the only thing that knows the ground.
         let tick = self.tick_count;
@@ -6987,8 +7036,7 @@ impl WorldActor {
             .iter_mut()
             .find(|r| r.player_id == player_id)
             .expect("checked above");
-        run.backpack[idx].quantity -= cost;
-        run.backpack.retain(|i| i.quantity > 0);
+        spend_material(run, meld_proto::materials::MaterialClass::Ore, cost);
         vec![out_msg(
             player_id,
             &wr::BackpackUpdate {
@@ -7036,18 +7084,10 @@ impl WorldActor {
         let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let Some(idx) = run.backpack.iter().position(|i| {
-            i.quantity >= 1
-                && meld_proto::materials::is_class(
-                    &i.item_kind,
-                    meld_proto::materials::MaterialClass::Ore,
-                )
-        }) else {
+        let Some(ore_kind) = spend_material(run, meld_proto::materials::MaterialClass::Ore, 1)
+        else {
             return reject(ErrorCode::InvalidState, "No ore to mend it with.");
         };
-        let ore_kind = run.backpack[idx].item_kind.clone();
-        run.backpack[idx].quantity -= 1;
-        run.backpack.retain(|i| i.quantity > 0);
         self.arena.repair_structure(&balance, &req.entity_id);
         vec![out_msg(
             player_id,
@@ -10212,7 +10252,7 @@ mod unlock_gate_tests {
 
     /// A run whose heroes sit at the given levels — the only thing the slot bars
     /// read.
-    fn run_at(levels: &[i32]) -> meld_run::PlayerRun {
+    pub(super) fn run_at(levels: &[i32]) -> meld_run::PlayerRun {
         meld_run::PlayerRun {
             run_id: "r".into(),
             player_id: "p".into(),
@@ -10596,6 +10636,73 @@ mod crafter_perk_tests {
         let mut hps = [9, 8];
         pour_regen(&mut hps, &caps, None, 99);
         assert_eq!(hps, [10, 10]);
+    }
+}
+
+#[cfg(test)]
+mod spending_tests {
+    use super::*;
+
+    fn stacks(kinds: &[(&str, i32)]) -> meld_run::PlayerRun {
+        let mut r = super::unlock_gate_tests::run_at(&[1]);
+        for (kind, qty) in kinds {
+            r.backpack.push(ItemStack {
+                item_id: Uuid::now_v7().to_string(),
+                item_kind: (*kind).to_string(),
+                quantity: *qty,
+                insurance: None,
+            });
+        }
+        r
+    }
+
+    /// The bug this exists for. A harvest channel banks one unit per tick as its OWN
+    /// stack, so ore you just dug up is six stacks of one — never one stack of six. Both
+    /// build paths looked for a single stack holding the whole cost, so a structure
+    /// costing 6 and a field forge costing 3 were unbuildable from freshly-gathered ore,
+    /// and the refusal said "takes 6 ore" to a player carrying exactly six.
+    #[test]
+    fn ore_gathered_one_unit_at_a_time_still_pays_for_things() {
+        let mut run = stacks(&[("heartoak_bark", 1); 6]);
+        assert_eq!(
+            spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6).as_deref(),
+            Some("heartoak_bark"),
+            "six stacks of one could not pay a cost of six"
+        );
+        assert!(run.backpack.is_empty(), "spent stacks were left behind at zero");
+    }
+
+    #[test]
+    fn a_run_that_cannot_cover_the_cost_is_refused_and_charged_nothing() {
+        let mut run = stacks(&[("heartoak_bark", 1); 5]);
+        assert_eq!(spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6), None);
+        assert_eq!(
+            run.backpack.iter().map(|i| i.quantity).sum::<i32>(),
+            5,
+            "a refused spend still took the ore"
+        );
+    }
+
+    /// One KIND, not a mix: a structure records what it was built from so packing it down
+    /// hands back the same stock, and a refund cannot be split across materials.
+    #[test]
+    fn a_spend_never_mixes_two_materials_to_reach_the_cost() {
+        let mut run = stacks(&[("heartoak_bark", 3), ("peat_iron", 3)]);
+        assert_eq!(spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6), None);
+        assert_eq!(run.backpack.len(), 2, "it mixed two ores and spent both");
+    }
+
+    /// A builder who hauled good ore out should not have it spent last.
+    #[test]
+    fn the_deepest_ore_that_can_cover_it_is_the_one_spent() {
+        let deep = meld_proto::materials::material("peat_iron").map(|m| m.tier).unwrap_or(0);
+        let shallow = meld_proto::materials::material("heartoak_bark").map(|m| m.tier).unwrap_or(0);
+        assert!(deep > shallow, "the fixture no longer has two different tiers");
+        let mut run = stacks(&[("heartoak_bark", 6), ("peat_iron", 6)]);
+        assert_eq!(
+            spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6).as_deref(),
+            Some("peat_iron")
+        );
     }
 }
 
