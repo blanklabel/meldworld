@@ -2256,6 +2256,34 @@ the current build.
     Bounty Board, so a finished contract says so instead of handing you power mid-run.
   - **Remains (the full system):** an explicit *accept* step, bestiary ties (`CR-5`),
     co-op and guild hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
+- [x] **AD-7 — Punching up pays, and it does not decay.** The reward half of "distance is
+  the difficulty axis": an encounter ABOVE a hero's level pays a bonus on the same
+  `xp_after_level_gap` funnel that already taxes one below it — +5 levels 1.05x, +10 1.10x,
+  +20 1.25x, capped at `xp_up_max`. This is the lever for a party that cannot get the gear:
+  out-level the ground instead of out-gearing it.
+  - **Why it had to be explicit.** A deeper encounter always paid more, but the *ratio* is
+    what "fighting up pays" means, and `base_xp`'s `(1 + d/500)^1.5` flattens — per creature
+    a +20-level fight paid **1.82x at hero level 1 and 1.11x at 235**. The lure to punch up
+    was strongest in the shallows, where the gap is most likely to simply kill you, and
+    weakest in the deep game, where out-levelling is the only route left. Backwards on both
+    counts. The new term is flat across levels, which is the property the test holds.
+  - ⚠️ **The route it opens is still closed past d2300, and not by XP.** Creature attack
+    rides `(1 + d/500)^2.0` while a hero's HP is LINEAR in level, so difficulty (hero-hits
+    to kill it ÷ its hits to kill you) runs 1.22 at the hub, sags to **0.68 at d400** — the
+    easiest ground in the game — then climbs to **4.37 at d3250**. Parity at d2300 needs
+    level 270 against a cap of 255, so past there no amount of grinding reaches it and gear
+    is the only answer. Reopening it is a change to the master difficulty curve, not a
+    knob: the exponent sets only the ramp's steepness, and every value that reopens the deep
+    end also flattens the mid-game to a walk (`exp=1.6` puts d1600 at 0.34). Wants a played
+    measurement before anything ships — see `AD-8`.
+- [ ] **AD-8 — The difficulty curve as a designed shape, not an emergent one.** Today the
+  ratio above is an accident of two curves that were never fitted to each other (creature
+  attack quadratic in depth, hero HP linear in level, hero attack tracking creature HP so
+  exactly that **every creature takes ~17.8 hero-hits at every depth from d100 out** — which
+  is also why a single standard creature at d346 is an 80-turn fight). Give the ramp a stated
+  target instead: hard at the hub, very hard at the end, parity always reachable inside the
+  level cap, with gear the accelerator rather than the toll. Tune against played fights
+  (`mcp/`), never a spreadsheet — the end fight shipped impossible three times that way.
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

@@ -95,6 +95,24 @@ max_hero_level = 255             # the ceiling a party is expected to reach befo
 xp_gap_grace = 3                 # levels above the encounter that still pay in full
 xp_gap_zero = 12                 # levels above it at which the payout hits the floor
 xp_gap_floor_mult = 0.05         # a kill is still a kill — never zero
+# THE OTHER END OF THE SAME AXIS: an encounter ABOVE a hero pays a bonus, so punching
+# above your weight is the lever for a party that cannot get the gear. Each level up is
+# worth `xp_up_per_level`, and past `xp_up_knee` levels up it steepens to
+# `xp_up_per_level_steep` — so +5 pays 1.05x, +10 pays 1.10x and +20 pays 1.25x.
+#
+# This is deliberately FLAT ACROSS LEVELS, because the bonus the depth curve already
+# pays implicitly is not: `base_xp` rides `(1 + d/500)^1.5`, whose *ratio* flattens as d
+# grows, so per creature a +20 fight paid 1.82x at level 1 and only 1.11x at level 235.
+# The incentive to punch up was therefore largest where the gap is most lethal and
+# smallest where it is the only way past a wall — backwards on both counts. This term is
+# the part that does not decay, and it is why the deep grind has an exit. [TUNABLE]
+xp_up_per_level = 0.01           # +1% a level for the first `knee` levels up
+xp_up_knee = 10
+xp_up_per_level_steep = 0.015    # +1.5% a level past the knee — fighting way up accelerates
+# The cap. Extrapolating the steep slope this is ~+37 levels, past which you are not
+# fighting the encounter so much as being carried through it by a teammate or by gear —
+# and the depth term is already paying several multiples there on its own.
+xp_up_max = 1.5
 # Extraction is mostly the Town Portal item, and it is BOUGHT — a dive no longer hands
 # you one. Kit is what you chose to bring: buy at the Apothecary, withdraw it at the
 # Vault-Deep, and it rides into the next Backpack. A free resupply every dive made the

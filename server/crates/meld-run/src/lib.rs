@@ -65,10 +65,24 @@ pub fn xp_total_to_level(level: i32, balance: &Balance) -> i64 {
     (1..level.max(1)).map(|l| xp_to_next(l, balance)).sum()
 }
 
-/// What an encounter of `encounter_level` is worth to a hero of `hero_level`: full pay
-/// while the hero is within `xp_gap_grace` levels of it, then falling linearly to
-/// `xp_gap_floor_mult` once it is `xp_gap_zero` levels above. A hero at or below the
-/// encounter's level is never penalised.
+/// What an encounter of `encounter_level` is worth to a hero of `hero_level`. ONE
+/// function for the whole level axis, because a reward that depends on the gap has
+/// exactly one gap to read:
+///
+/// - hero **above** the encounter: full pay inside `xp_gap_grace` levels, then falling
+///   linearly to `xp_gap_floor_mult` once it is `xp_gap_zero` levels above.
+/// - hero **below** it: a bonus for punching up — `xp_up_per_level` a level to
+///   `xp_up_knee`, steepening to `xp_up_per_level_steep` past it, capped at `xp_up_max`.
+///   So +5 pays 1.05x, +10 pays 1.10x, +20 pays 1.25x.
+///
+/// **The bonus exists because the implicit one is inverted.** `base_xp` already rises
+/// with depth, so a deeper encounter always paid more — but the *ratio* is what
+/// "fighting up pays" means, and `(1 + d/500)^1.5` flattens: per creature, a +20-level
+/// fight paid **1.82x at hero level 1 and 1.11x at 235**. The lure to punch up was
+/// therefore strongest in the shallows, where the level gap is most likely to simply
+/// kill you, and weakest in the deep game, where out-levelling the ground is the only
+/// route left to a party that cannot get the gear. This term does not decay with level,
+/// so that route stays open at 200 as much as at 20.
 ///
 /// This is what makes "distance is the difficulty axis" true of REWARD and not only of
 /// danger. Creature power rides distance, but the level curve is priced at the level's
@@ -86,6 +100,17 @@ pub fn xp_after_level_gap(
     let r = &balance.runs;
     let gap = (hero_level - encounter_level.max(1)) as f64;
     let grace = r.xp_gap_grace.max(0) as f64;
+    if gap < 0.0 {
+        // Punching up. Two slopes: gentle to the knee, steeper past it, because a fight
+        // twenty levels over your head is a different act from one five levels over it.
+        let up = -gap;
+        let knee = r.xp_up_knee.max(0) as f64;
+        let mult = (1.0
+            + r.xp_up_per_level.max(0.0) * up.min(knee)
+            + r.xp_up_per_level_steep.max(0.0) * (up - knee).max(0.0))
+        .min(r.xp_up_max.max(1.0));
+        return ((xp as f64) * mult).round().max(xp as f64) as i64;
+    }
     if gap <= grace {
         return xp;
     }
@@ -1569,6 +1594,68 @@ mod tests {
         assert!(xp_to_next(20, &b) < xp_to_next(255, &b));
     }
 
+    /// The design statement, as arithmetic: +5 levels up pays 1.05x, +10 pays 1.10x,
+    /// +20 pays 1.25x. These three numbers ARE the spec — they were chosen first and the
+    /// two slopes fitted to them, so a retune that breaks them is a retune of the design
+    /// and has to say so here.
+    #[test]
+    fn punching_up_pays_the_stated_curve() {
+        let b = Balance::load_default().unwrap();
+        // 10_000 rather than a round 100 so the assertion is on the curve and not on
+        // where the rounding happens to land.
+        let full = 10_000;
+        for (up, want) in [(5, 1.05), (10, 1.10), (20, 1.25)] {
+            let paid = xp_after_level_gap(full, 40 + up, 40, &b);
+            assert_eq!(
+                paid,
+                (full as f64 * want).round() as i64,
+                "{up} levels up paid {}x, not {want}x",
+                paid as f64 / full as f64
+            );
+        }
+    }
+
+    /// **The reason this term exists.** The bonus the depth curve pays implicitly is a
+    /// RATIO of `(1 + d/500)^1.5`, which flattens as d grows: per creature a +20 fight
+    /// was worth 1.82x at hero level 1 and 1.11x at 235. So the lure to punch up was
+    /// strongest in the shallows, where the gap is most likely to just kill you, and
+    /// weakest in the deep game, where out-levelling the ground is the last route open
+    /// to a party that cannot get the gear. This half must not decay.
+    #[test]
+    fn the_reward_for_punching_up_does_not_decay_with_level() {
+        let b = Balance::load_default().unwrap();
+        let full = 10_000;
+        for up in [5, 10, 20] {
+            let shallow = xp_after_level_gap(full, 5 + up, 5, &b);
+            for hero in [20, 60, 120, 200, 250] {
+                assert_eq!(
+                    xp_after_level_gap(full, hero + up, hero, &b),
+                    shallow,
+                    "{up} levels up pays differently at hero {hero} than at 5"
+                );
+            }
+        }
+    }
+
+    /// Monotonic, never a pay CUT for a harder fight, and bounded — past the cap you are
+    /// being carried rather than fighting, and the depth term is already paying multiples.
+    #[test]
+    fn punching_up_is_monotonic_and_capped() {
+        let b = Balance::load_default().unwrap();
+        let full = 10_000;
+        let mut prev = full;
+        for up in 0..250 {
+            let paid = xp_after_level_gap(full, 1 + up, 1, &b);
+            assert!(paid >= prev, "{up} levels up paid less than {}", up - 1);
+            assert!(
+                paid <= (full as f64 * b.runs.xp_up_max).round() as i64,
+                "{up} levels up broke the cap"
+            );
+            prev = paid;
+        }
+        assert_eq!(prev, (full as f64 * b.runs.xp_up_max).round() as i64, "the cap is reachable");
+    }
+
     /// The reported bug, as arithmetic: a party that levels without travelling was paid
     /// hub rates against a curve priced at its own level's depth, so it climbed to the
     /// teens on creatures that could not scratch it and then died the moment it walked
@@ -1577,10 +1664,15 @@ mod tests {
     fn ground_you_have_outgrown_stops_paying_for_itself() {
         let b = Balance::load_default().unwrap();
         let full = 1000i64;
-        // At level, and every level BELOW it, the encounter pays in full — a hero who
-        // is behind must never be taxed for being behind.
-        for hero in [1, 5, 12] {
-            assert_eq!(xp_after_level_gap(full, 12, hero, &b), full, "hero {hero} was taxed");
+        // At level the encounter pays in full, and every level BELOW it pays MORE — a
+        // hero who is behind must never be taxed for being behind, and is now actively
+        // rewarded for it (`punching_up_pays_the_stated_curve`).
+        assert_eq!(xp_after_level_gap(full, 12, 12, &b), full);
+        for hero in [1, 5, 11] {
+            assert!(
+                xp_after_level_gap(full, 12, hero, &b) > full,
+                "hero {hero} was not paid for punching up"
+            );
         }
         // …and so does a hero inside the grace band.
         let grace = b.runs.xp_gap_grace;
