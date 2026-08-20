@@ -687,11 +687,16 @@ end_fight_bosses = 3
 # runs. POTIONS ARE PART OF THE REFERENCE: the starting kit is ~1130 HP of healing on a
 # 2648 HP party, so a measurement without them understates the party by 42%.
 #
-# ⚠️ Attack here is NOT a gear dial. A creature's ability damage never subtracts hero
-# defence (only its basic attack does), and these bosses act almost entirely through
-# abilities — measured, an UNGEARED party lasted 26 hero-turns to a geared party's 25. Until
-# that is resolved (see EW-0), raising or lowering this changes the fight for everyone
-# equally and gates nothing.
+# ⚠️ **THIS NOTE USED TO CLAIM ABILITY DAMAGE IGNORES ARMOUR. IT DOES NOT.** Everything but
+# a basic attack and a burn/poison DoT goes through `apply_ability_damage`, which subtracts
+# `def` for physical types and `ward` for everything elemental or psychic, then applies the
+# target's resistances. So attack here IS a gear dial, and these bosses' abilities answer to
+# def, ward and resistance like anything else.
+#
+# The claim was evidenced by "an UNGEARED party lasted 26 hero-turns to a geared party's 25"
+# — measured through `MELD_GEAR_TIER` while it was INERT (`flush_gear_loads` mirrored the
+# empty Vault back over the dressing a tick later), so both sides of that comparison were
+# undressed. Re-measure before repeating any conclusion about what gear is worth here.
 end_fight_boss_hp = 1000
 end_fight_boss_atk = 210
 end_fight_boss_xp = 40000

@@ -395,17 +395,22 @@ Gear now gates *physical* ability damage through `def`; for gear to gate the ele
 needs a **ward affix**, which does not exist yet. That is the remaining piece of `EW-0`'s
 gear-check story.
 
- A creature ability's damage is
-`stat x coefficient` through `apply_typed_damage`, which applies the target's
-`damage_modifiers` and `min_damage` and then stops — `atk - def` and
-`damage_floor_fraction` live in `physical_hit`, which only the basic `Attack` action reaches.
-So armour is close to irrelevant against anything that fights with abilities, which is every
-champion and every boss. Measured on the end fight: an **ungeared** level-100 party lasted
-**26 hero-turns to a geared party's 25**. Any "gear check" built on `def` is therefore
-fiction, and any model that computes survivability as `hp / (atk - def)` is describing a
-minority of the damage the player actually takes. Nothing documents this as intentional, and
-the Psyker's Foci are called out *specifically* for ignoring armour — a pointless
-distinction if every ability already did (`EW-0` tracks the three ways out).
+⚠️ **THIS PARAGRAPH USED TO SAY ABILITIES BYPASS ARMOUR. THEY DO NOT — verify against
+the code, not against this file.** Every damage path except two goes through
+`apply_ability_damage`, which subtracts `def` for physical types and **`ward`** for
+everything elemental or psychic, then applies the target's `damage_modifiers`. The two
+exceptions are deliberate and narrow: a **basic attack** subtracts `def` itself inside
+`physical_hit`, and a **burn/poison DoT** is a fraction of the victim's OWN max HP, already
+scaled to the target. Creature abilities are not an exception — they route through
+`apply_ability_damage` like everything else.
+
+**How the false claim survived is the lesson.** It was evidenced by "an ungeared level-100
+party lasted 26 hero-turns to a geared party's 25" — a measurement taken through
+`MELD_GEAR_TIER`, which was **inert**: `flush_gear_loads` mirrored the empty Vault over the
+dressing a tick later, so *both* sides of that comparison were undressed. A broken instrument
+produced a number, the number became a documented rule, and the rule then justified not
+looking again. Two errors holding each other up. **Any claim in this file about what gear is
+or is not worth should be re-measured before it is repeated** — the flag works now.
 
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113
