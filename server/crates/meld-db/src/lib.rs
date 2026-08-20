@@ -4310,7 +4310,10 @@ mod tests {
     #[tokio::test]
     async fn a_hero_falling_taxes_that_heros_gear_and_nobody_elses() {
         let db = mem().await;
-        let p = db.register("faller", "correct-horse-battery").await.unwrap().player_id;
+        // A generated secret rather than a literal: a hard-coded one is a credential to
+        // every scanner that reads this file, even in a test against an in-memory DB.
+        let secret = Uuid::now_v7().to_string();
+        let p = db.register("faller", &secret).await.unwrap().player_id;
         let piece = |name: &str| LootedGear {
             insurance: meld_proto::Insurance::Insured,
             gear_id: Uuid::now_v7(),
