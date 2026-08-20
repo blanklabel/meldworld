@@ -404,13 +404,33 @@ exceptions are deliberate and narrow: a **basic attack** subtracts `def` itself 
 scaled to the target. Creature abilities are not an exception — they route through
 `apply_ability_damage` like everything else.
 
-**How the false claim survived is the lesson.** It was evidenced by "an ungeared level-100
-party lasted 26 hero-turns to a geared party's 25" — a measurement taken through
-`MELD_GEAR_TIER`, which was **inert**: `flush_gear_loads` mirrored the empty Vault over the
-dressing a tick later, so *both* sides of that comparison were undressed. A broken instrument
-produced a number, the number became a documented rule, and the rule then justified not
-looking again. Two errors holding each other up. **Any claim in this file about what gear is
-or is not worth should be re-measured before it is repeated** — the flag works now.
+**MEASURED, with the flag working** (`mcp/`, seed 424242, level-25 party, same two
+`forest_bloom_stalker` at d308, `kit` policy):
+
+| | ungeared | tier-32 |
+|---|---|---|
+| hero-turns | 85 | **47** |
+| HP lost | 376 | **172** |
+| heroes down | 1 | 0 |
+| outcome | losing, boss at 72% | **victory** |
+
+The decisive line is the same all-enemy ability landing on the same four heroes: **`-25, -26,
+-7, -13` ungeared against `-0, -0, -7, -0` geared.** Gear does not merely blunt ability
+damage, it can null it — and the per-hero spread tracks each one's own `def`/`ward`, which is
+the mitigation visibly working target by target.
+
+**How the false claim survived is the lesson.** Its evidence was "an ungeared level-100 party
+lasted 26 hero-turns to a geared party's 25" — taken through `MELD_GEAR_TIER` while that flag
+was **inert**: `flush_gear_loads` mirrored the empty Vault over the dressing a tick later, so
+*both* sides of that comparison were undressed. A broken instrument produced a number, the
+number became a documented rule, and the rule justified not looking again. Two errors holding
+each other up, and the pair survived several releases.
+
+⚠️ **The harness cannot yet reach the level it is most needed at.** `new_game
+{start_level: 100}` never boots — streaming the frontier out to d1269 exceeds the 15s
+`run.started` deadline (25 works, 50 does not). So the deep content `mcp/` exists to measure
+is out of its reach, and the numbers above are from d308. Raising that ceiling is worth more
+than any single measurement taken below it.
 
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113

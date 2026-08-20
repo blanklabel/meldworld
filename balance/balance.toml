@@ -696,7 +696,12 @@ end_fight_bosses = 3
 # The claim was evidenced by "an UNGEARED party lasted 26 hero-turns to a geared party's 25"
 # — measured through `MELD_GEAR_TIER` while it was INERT (`flush_gear_loads` mirrored the
 # empty Vault back over the dressing a tick later), so both sides of that comparison were
-# undressed. Re-measure before repeating any conclusion about what gear is worth here.
+# undressed.
+#
+# RE-MEASURED with the flag working (mcp/, seed 424242, level 25, same fight at d308): the
+# ungeared party lost 376 HP over 85 turns and was LOSING with a hero down; the tier-32 party
+# won in 47 turns having lost 172. The same all-enemy ability landed -25/-26/-7/-13 ungeared
+# and -0/-0/-7/-0 geared. Gear gates ability damage, and at that tier it can null it.
 end_fight_boss_hp = 1000
 end_fight_boss_atk = 210
 end_fight_boss_xp = 40000

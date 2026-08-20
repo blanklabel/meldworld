@@ -1954,7 +1954,16 @@ spike that makes the whole economy cohere.
     gear gets a ~25-round fight surviving ~5 hits; the same party wearing nothing dies in 1.5
     hits and would need 43 rounds. **Gear buys 3.5x survivability**, and
     `the_end_fight_is_a_gear_check` pins that MULTIPLE rather than the raw numbers, so a
-    retune has to preserve the shape.
+    retune has to preserve the shape. *(The `3900 HP / 420 atk` above is stale — balance.toml
+    is the source of truth and now reads 1000/210. Read the tunable, not this line.)*
+    ✅ **The gear check is REAL, and this section was right while AGENTS.md and balance.toml
+    were wrong.** Both of those claimed ability damage bypasses armour, citing "ungeared 26
+    hero-turns to a geared 25" — a number taken through `MELD_GEAR_TIER` while it was inert,
+    so both sides were undressed. Re-measured with the flag working (`mcp/`, seed 424242,
+    level 25, the same fight at d308): **ungeared lost 376 HP over 85 turns and was losing
+    with a hero down; tier-32 won in 47 turns having lost 172**, and the same all-enemy
+    ability landed `-25/-26/-7/-13` ungeared against `-0/-0/-7/-0` geared. Gear gates ability
+    damage and at that tier can null it. Both stale claims are corrected in place.
     ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
     blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
     tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
@@ -2561,6 +2570,15 @@ keeps agent participation low-risk. Sequenced so the cheap QA layer lands over
 today's protocol; the living-world layer follows **SC-3**. Focus **adventure first**,
 then the rest.
 
+- [ ] **AX-6 — The harness cannot boot the levels it exists to measure.** `new_game
+  {start_level: 100}` never starts: setting a level sets a DISTANCE, and streaming the
+  frontier out to d1269 exceeds the 15s `run.started` deadline. Measured, 25 boots (d308) and
+  50 does not — so the ceiling sits an order of magnitude below the content that most needs
+  checking. Everything authored for a level-100 party (the end fight, the deep rungs, every
+  gear-check claim) is therefore unmeasurable through the one tool built for measuring it, and
+  the numbers we do have are all from the shallow end. Either raise the deadline, stream
+  lazily around the spawn rather than out from d0, or let `start_level` place the party without
+  generating the corridor behind it. This bounds the value of every other `AX` item.
 - [x] **AX-1 — MCP over the wire protocol.** Shipped as [`mcp/`](../mcp/) (`meld-mcp`),
   a stdio MCP server that boots the whole game in-process on a `memory://` DB — no
   Postgres, no port to collide with, a fresh world per `new_game`. Tools: `new_game`,
