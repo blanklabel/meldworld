@@ -1354,6 +1354,19 @@ leash_radius = 9.0           # how far a creature wanders from its spawn (home)
 group_radius = 6.5           # creatures within this of the one you touch join the fight
 flee_hp_fraction = 0.3       # `flees` creatures bolt from battle below this HP fraction
 join_radius = 9.0            # a teammate this close to an ongoing fight may opt in to join it
+# SOC-3: you can SEE further than you can reach. Watching is free and commits nothing,
+# so the radius that offers it is wider than the one that lets you step in — and wide
+# enough that reading a fight does not mean standing in the middle of it.
+watch_radius = 16.0          # a player this close to a fight (or a creature clash) may watch it
+# CR-2: a wound has to CLOSE — otherwise the world is strip-minable by attrition (walk a
+# ring, chip everything, come home) — but slowly, or a creature you found halfway dead is
+# back to full before you reach it. At 0.01 a half-dead creature is whole again in ~50s,
+# which is a window you can actually run across. Suspended while it is clashing or in a
+# battle: nothing mends while it is still being hit.
+creature_regen_fraction_per_sec = 0.01
+# CR-2: a clash is a cadence of blows, not a continuous state. Without a grace period the
+# ⚔ marker would strobe between swings and a watcher would be dropped every 0.85s.
+clash_linger_seconds = 3.0   # a clash stays live this long after its last landed blow
 skirmish_aggro_radius = 6.5  # hostile-faction creatures hunt each other within this range
 skirmish_attack_range = 1.7  # ... and trade blows once this close (overworld skirmish)
 skirmish_attack_interval = 0.85 # seconds between a creature's overworld blows

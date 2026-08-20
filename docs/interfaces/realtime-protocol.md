@@ -172,6 +172,7 @@ Shared object shapes referenced by the detail files.
 | S2C | `battle.action_resolved` | Authoritative outcome of one resolved action | [battle.md](realtime-protocol/battle.md) |
 | S2C | `battle.participant_left` | One party's combatants left an ongoing battle | [battle.md](realtime-protocol/battle.md) |
 | S2C | `battle.ended` | Battle resolution: victory / defeat / fled | [battle.md](realtime-protocol/battle.md) |
+| S2C | `battle.watch_ended` | A WATCHED feed closed (finished / out of range / stopped) | [battle.md](realtime-protocol/battle.md) |
 | C2S | `run.enter_maze` | Start the party's run; create the MazeInstance | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.started` | Authoritative run/instance state at entry | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.party` | The caller's hero roster (name/class/level/attributes/HP) | [run-social.md](realtime-protocol/run-social.md) |
@@ -192,6 +193,8 @@ Shared object shapes referenced by the detail files.
 | S2C | `run.smith_result` | What the smith did, or why they would not | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `run.enter_dungeon` | Descend into an authored dungeon | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `run.join_battle` | Opt into a fight already in progress nearby | — *undocumented* |
+| C2S | `run.watch_battle` | WATCH the nearest fight in reach without joining (`SOC-3`) | [run-social.md](realtime-protocol/run-social.md) |
+| C2S | `run.stop_watching` | Stop watching (idempotent) | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `run.rename_hero` | Rename one of the caller's heroes (persistent) | — *undocumented* |
 | C2S | `run.set_formation` | Put a hero in the front or back row | — *undocumented* |
 | C2S | `run.begin_extraction` | Start a `portal` or `town_portal` extraction channel | [run-social.md](realtime-protocol/run-social.md) |

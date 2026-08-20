@@ -306,6 +306,73 @@ to `active`. Units already handed over are **not** clawed back.
 
 ---
 
+### `run.watch_battle` (C2S)
+
+WATCH the nearest fight in reach without entering it (roadmap `SOC-3`).
+
+Joining is a commitment — `run.join_battle` puts the caller's whole party in the ATB queue,
+splits the encounter XP, and can get their heroes killed. So the only way to learn whether
+the party over there was winning used to be walking into it. Watching costs nothing, which
+is why its radius is the wider of the two.
+
+**Source:** roadmap `SOC-3`; `[ai] watch_radius`.
+**Direction:** C2S — legal only while the sender is on the overworld and not in a fight.
+
+**Payload** — empty object `{}`.
+
+**Target selection** — the **nearest** of two kinds, compared in one pass so a player brawl
+standing beside a creature brawl does not resolve by which check ran first:
+
+- another player's battle within `watch_radius` (excluding one the caller's own party is in,
+  and excluding dungeon battles), or
+- a creature-vs-creature **clash** (`CR-2`) within `watch_radius`.
+
+**Server validation**
+
+| Condition | Result |
+|-----------|--------|
+| Sender is inside a dungeon | `INVALID_STATE` — a dungeon is a committed space with its own screen. |
+| Sender has no active run | `NOT_FOUND` |
+| Sender's party is already in a battle | `INVALID_STATE` — you cannot watch and swing. |
+| Nothing within `watch_radius` | `OUT_OF_RANGE` |
+| Already watching this same feed | No-op (no message), so the client may fire it off a key without rebuilding its battle screen every press. |
+
+**Results in** — `battle.started` with `spectating: true`, an empty `your_combatant_ids`,
+and (for a clash) a `clash:<creature_id>` battle id. From that point the watcher is on the
+battle's own audience funnel and receives every message a participant does — turn-ready,
+gauge updates, telegraphs, resolutions — but **not** `battle.ended`, which carries somebody
+else's XP and haul. The feed closes with `battle.watch_ended`.
+
+**Example**
+
+```json
+{"type": "run.watch_battle", "seq": 622, "ts": 1783729400000, "payload": {}}
+```
+
+---
+
+### `run.stop_watching` (C2S)
+
+Stop watching whatever fight this session was watching.
+
+**Source:** roadmap `SOC-3`.
+**Direction:** C2S.
+
+**Payload** — empty object `{}`.
+
+**Server validation** — a caller watching nothing is a **no-op, not an error**: the client
+toggles this off the same key that opened the feed.
+
+**Results in** — `battle.watch_ended` (`reason: "stopped"`).
+
+**Example**
+
+```json
+{"type": "run.stop_watching", "seq": 640, "ts": 1783729480000, "payload": {}}
+```
+
+---
+
 ### `run.build_station` (C2S)
 
 Raises a **field workstation** where the avatar stands (roadmap `MS-1`) — a smith's forge

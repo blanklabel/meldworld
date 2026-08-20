@@ -94,6 +94,8 @@ const GUIDE: [(&str, &[(&str, &str)]); 3] = [
         &[
             ("[E] / Interact", "gather, open, descend, extract, join a fight"),
             ("[E] again", "stop channelling"),
+            ("[V]", "WATCH a fight nearby without joining it"),
+            ("[N]", "ask the bench in reach for its boon"),
             ("[C] / [I] / tap yourself", "this menu"),
             ("[P]", "show the party behind you"),
         ],

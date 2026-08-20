@@ -18,7 +18,7 @@ use meld_balance::Balance;
 use meld_battle::{Battle, Event as BattleEvent, Reject};
 use meld_db::Db;
 use meld_proto::equipment::GearBonus;
-use meld_proto::common::{ItemStack, LootGear, Position};
+use meld_proto::common::{Combatant, ItemStack, LootGear, Position};
 use meld_proto::enums::*;
 use meld_proto::realtime::{
     battle as wb, chat as wc, lobby as wl, movement as wm, onboarding as wo, run as wr,
@@ -958,12 +958,25 @@ struct BattleSlot {
     /// awards their combined XP. Ids, not vec indices, so `Arena::prune_defeated`
     /// can compact `arena.monsters` between ticks without corrupting this battle.
     monster_ids: Vec<String>,
+    /// Overworld creature `entity_id` -> its combatant id in THIS battle (`CR-2`). The
+    /// bridge the wound write-back needs: `monster_ids` says which creatures are in the
+    /// fight and the engine reports HP by combatant, and without a mapping between them a
+    /// creature that survived (a flee) walked away with every point of damage forgotten.
+    /// Empty for a dungeon boss, which is built in the battle rather than standing in the
+    /// arena, so there is nothing to write back to.
+    monster_combatants: HashMap<String, String>,
     /// combatant_id -> player_id, for the players in THIS battle only.
     combatant_player: HashMap<String, String>,
     /// player_id -> the combatant ids they control in THIS battle.
     player_combatants: HashMap<String, Vec<String>>,
     /// Party ids merged into this battle (raid merge).
     parties: std::collections::HashSet<u32>,
+    /// Players WATCHING this fight without being in it (`SOC-3`). They receive every
+    /// message a participant does — that is the whole feature — but they own no
+    /// combatant, so `handle_submit` refuses them and the engine never asks them for
+    /// a turn. Kept on the slot rather than beside it so a battle that ends takes its
+    /// watchers with it and cannot leak a feed into the next fight.
+    spectators: std::collections::HashSet<String>,
     /// Overworld position of this fight (the touched creature's spot), so a nearby
     /// teammate can opt in via `run.join_battle`.
     pos: Position,
@@ -998,6 +1011,41 @@ struct DungeonBattle {
     bounty: String,
     /// Which named boss the mark fights as, for the telling.
     mark_boss: String,
+}
+
+/// What a watching session is pointed at (`SOC-3`). Two sources, one client feed:
+/// both arrive as a `battle.started` the viewer controls nothing in.
+#[derive(Clone, PartialEq)]
+enum WatchFeed {
+    /// Another player's battle, by id. Its `BattleSlot` holds the watcher too, so every
+    /// message the fight already broadcasts reaches them through the one audience funnel
+    /// — no per-message plumbing, and nothing to forget when a new event type lands.
+    Battle(String),
+    /// A creature-vs-creature clash (`CR-2`), anchored on ONE creature rather than on a
+    /// clash identity. A clash gains and loses bodies as blows land, so an id for it
+    /// would go stale under the watcher every few seconds; a body is either still
+    /// swinging or the fight it was in is over, which is exactly the question the feed
+    /// needs answered each tick.
+    Clash {
+        anchor: String,
+        /// Who was in the feed when it was last sent, so the roster is only re-sent when
+        /// it actually changed (a `battle.started` every tick would reset the client's
+        /// battle screen 10 times a second).
+        roster: Vec<String>,
+    },
+}
+
+impl WatchFeed {
+    /// The `battle_id` this feed rides on. A clash borrows its anchor's id under a
+    /// `clash:` prefix so it can never collide with a real battle id — and so
+    /// `handle_submit` refuses an action against it with "Unknown battle" rather than
+    /// finding something to aim at.
+    fn battle_id(&self) -> String {
+        match self {
+            WatchFeed::Battle(id) => id.clone(),
+            WatchFeed::Clash { anchor, .. } => format!("clash:{anchor}"),
+        }
+    }
 }
 
 /// One world's authoritative state — the nucleus that SC-3 will own on its own
@@ -1055,6 +1103,10 @@ struct WorldActor {
     regen_accum: HashMap<String, RegenAccum>,
     /// When each player's Psyker last pinned a creature (ms), for the cooldown.
     hold_last_ms: HashMap<String, u64>,
+    /// player_id -> the fight they are WATCHING (`SOC-3`). One entry per player: you
+    /// cannot watch two fights at once, and a second `run.watch_battle` re-aims the
+    /// same feed rather than opening another.
+    watching: HashMap<String, WatchFeed>,
     /// DG-3: hand-designed dungeon entrances placed as the world streams (a chanced
     /// per-section draw from the biome's authored pool). Rendered in the overworld
     /// snapshot as `entrance:<dungeon>`; touch one to descend (`enter_dungeon`).
@@ -1596,13 +1648,36 @@ impl WorldActor {
         self.battles.iter().flat_map(|b| b.parties.iter().copied()).collect()
     }
     /// The players (across every merged party) in a given battle.
-    fn members_of(&self, slot: &BattleSlot) -> Vec<String> {
+    /// The players FIGHTING this battle — the ones whose heroes are in it, who earn its
+    /// XP, take its loot, and answer for its outcome. Never the audience: a watcher did
+    /// not flee, did not clear the dungeon, and is owed nothing.
+    fn fighters_of(&self, slot: &BattleSlot) -> Vec<String> {
         self.run
             .runs
             .iter()
             .filter(|r| slot.parties.contains(&r.party_id))
             .map(|r| r.player_id.clone())
             .collect()
+    }
+
+    /// Everyone this battle's messages go to: its fighters PLUS anyone watching it
+    /// (`SOC-3`). This is the ONE audience funnel — every battle broadcast asks it, so a
+    /// watcher gains a new message type the day it is added rather than the day someone
+    /// remembers to add them to its call site. (The repo has been bitten twice by the
+    /// same rule living in two places; a spectator feed missing one message reads as the
+    /// fight freezing.)
+    fn audience_of(&self, slot: &BattleSlot) -> Vec<String> {
+        let mut who = self.fighters_of(slot);
+        // A watcher who has since started their own fight is no longer audience for this
+        // one — they are looking at their own screen, and the sweep will drop them this
+        // tick. Filter here too so the two can never disagree mid-tick.
+        who.extend(
+            slot.spectators
+                .iter()
+                .filter(|pid| self.party_id_of(pid).is_none_or(|p| !slot.parties.contains(&p)))
+                .cloned(),
+        );
+        who
     }
 
     /// A player's earned overworld class perks (Overworld Class Perks / "party
@@ -1845,6 +1920,11 @@ impl WorldActor {
         // every other player's cull drops it. A contract with your name on it must not be
         // scenery in a stranger's world — or worse, a fight they can watch you lose.
         let mut mark_index: Vec<(usize, String)> = Vec::new();
+        // CR-2: which creatures are actually trading blows right now. A clash is an
+        // EVENT, not intel, so its marker rides the shared tag rather than a perk gate
+        // — you can see a brawl in front of you without a Hunter in the party.
+        let clashing: std::collections::HashSet<String> =
+            self.arena.clashing().into_iter().map(String::from).collect();
         for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
             mob_index.push((
                 entities.len(),
@@ -1861,10 +1941,19 @@ impl WorldActor {
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
                 // A pinned creature says so, so the party can SEE the opening it paid a
                 // cooldown for — an affordance you cannot read is one you will not use.
-                avatar_state: Some(if m.held_for > 0.0 {
-                    format!("mob:{}:{}:held", m.monster_kind, m.faction)
-                } else {
-                    format!("mob:{}:{}", m.monster_kind, m.faction)
+                avatar_state: Some({
+                    // Markers are a SET, appended in order and read as a set by the
+                    // client: a pinned creature can also be a quarry (which the
+                    // per-viewer cull appends below), and a marker that only survives
+                    // when it happens to sort first is a marker that vanishes at random.
+                    let mut tag = format!("mob:{}:{}", m.monster_kind, m.faction);
+                    if m.held_for > 0.0 {
+                        tag.push_str(":held");
+                    }
+                    if clashing.contains(&m.entity_id) {
+                        tag.push_str(":clash");
+                    }
+                    tag
                 }),
                 level: Some(m.elevation),
                 // Overworld mob intel (client shows each field only when the
@@ -3103,9 +3192,15 @@ impl WorldActor {
             battle,
             battle_id: battle_id.clone(),
             monster_ids,
+            // Built from the SAME list the enemy fighters were, so the two cannot drift.
+            monster_combatants: enemy_members
+                .iter()
+                .map(|(m, cid)| (m.entity_id.clone(), cid.clone()))
+                .collect(),
             combatant_player,
             player_combatants,
             parties: std::iter::once(party_id).collect(),
+            spectators: std::collections::HashSet::new(),
             pos: inst
                 .arena
                 .monsters
@@ -3153,6 +3248,7 @@ impl WorldActor {
                     your_combatant_id: yours.first().cloned().unwrap_or_default(),
                     your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
+                    spectating: false,
                 },
             ));
         }
@@ -3280,9 +3376,13 @@ impl WorldActor {
             battle,
             battle_id: battle_id.clone(),
             monster_ids: vec![],
+            // A dungeon boss is built in the battle rather than standing in the arena, so
+            // there is no overworld creature to carry its wound back to.
+            monster_combatants: HashMap::new(),
             combatant_player,
             player_combatants,
             parties: std::iter::once(party_id).collect(),
+            spectators: std::collections::HashSet::new(),
             pos: Position::new(0.0, 0.0),
             dungeon: Some(DungeonBattle {
                 key,
@@ -3313,6 +3413,7 @@ impl WorldActor {
                     your_combatant_id: yours.first().cloned().unwrap_or_default(),
                     your_combatant_ids: yours,
                     triggered_by: Some(pid.to_string()),
+                    spectating: false,
                 },
             ));
         }
@@ -4079,6 +4180,27 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wr::WatchBattle::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    Some(w) => w.handle_watch_battle(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
+            wr::StopWatching::TYPE => {
+                let (out, eff) = match self.world.as_mut() {
+                    // Nothing to stop without a world, and asking is not an error: the
+                    // client fires this off the same key that opened the feed.
+                    Some(w) => w.handle_stop_watching(player_id, raw),
+                    None => (Vec::new(), Vec::new()),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::JoinBattle::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_join_battle(player_id, raw),
@@ -4463,6 +4585,7 @@ impl GameState {
                 building: HashMap::new(),
                 regen_accum: HashMap::new(),
                 hold_last_ms: HashMap::new(),
+                watching: HashMap::new(),
                 entrances: Vec::new(),
                 tutorial,
                 tutorial_entrance_placed: false,
@@ -5529,8 +5652,303 @@ impl WorldActor {
         // Opting into a fight breaks whatever you were channeling, same as being
         // dragged into one does.
         let mut out = self.end_harvest(player_id, "battle_started");
+        // Stepping in ends watching: you are in it now, and the feed you were reading
+        // is the fight you are standing in.
+        out.extend(self.stop_watching(player_id, "own_battle"));
         out.extend(self.join_battle(player_id, party_id, &battle_id));
         (out, Vec::new())
+    }
+
+    /// WATCH the nearest fight in reach (`run.watch_battle`, `SOC-3`). Two things can be
+    /// watched and both arrive as the same feed: another player's battle, or a
+    /// creature-vs-creature clash (`CR-2`).
+    ///
+    /// Watching costs nothing and commits nothing — which is the whole point, and why
+    /// its radius is wider than `join_radius`. Refused only when the caller is in a
+    /// fight of their own (you cannot watch and swing) or is inside a dungeon, which is
+    /// a committed space with its own screen.
+    fn handle_watch_battle(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        if self.location.contains_key(player_id) {
+            return (
+                vec![error(player_id, ErrorCode::InvalidState, "Not out here.", Some(raw.seq))],
+                Vec::new(),
+            );
+        }
+        let Some(my_party) = self.party_id_of(player_id) else {
+            return (
+                vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))],
+                Vec::new(),
+            );
+        };
+        if self.battle_of_party(my_party).is_some() {
+            return (
+                vec![error(player_id, ErrorCode::InvalidState, "You're in a fight of your own.", Some(raw.seq))],
+                Vec::new(),
+            );
+        }
+        let Some(pos) = self.arena.avatar(player_id).map(|a| a.position) else {
+            return (
+                vec![error(player_id, ErrorCode::NotFound, "No run for you.", Some(raw.seq))],
+                Vec::new(),
+            );
+        };
+        let reach = self.balance.ai.watch_radius;
+        // Nearest of BOTH kinds, compared in one pass: whichever fight is closest is the
+        // one you meant, and a player brawl standing beside a creature brawl should not
+        // resolve by which arm of an `if` came first.
+        let nearest_battle = self
+            .battles
+            .iter()
+            .filter(|b| b.dungeon.is_none() && !b.parties.contains(&my_party))
+            .map(|b| (pos.distance_to(&b.pos), WatchFeed::Battle(b.battle_id.clone())))
+            .filter(|(d, _)| *d <= reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let nearest_clash = self
+            .arena
+            .clashes
+            .iter()
+            .filter_map(|c| {
+                let anchor = c.anchor()?.clone();
+                Some((pos.distance_to(&c.position), WatchFeed::Clash { anchor, roster: Vec::new() }))
+            })
+            .filter(|(d, _)| *d <= reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let feed = match (nearest_battle, nearest_clash) {
+            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a.1 } else { b.1 }),
+            (Some(a), None) => Some(a.1),
+            (None, Some(b)) => Some(b.1),
+            (None, None) => None,
+        };
+        let Some(feed) = feed else {
+            return (
+                vec![error(player_id, ErrorCode::OutOfRange, "No fight close enough to watch.", Some(raw.seq))],
+                Vec::new(),
+            );
+        };
+        // Re-aiming at what you are already watching is a no-op, not a re-send: the
+        // client would otherwise rebuild its battle screen on every keypress.
+        if self.watching.get(player_id).is_some_and(|f| f.battle_id() == feed.battle_id()) {
+            return (Vec::new(), Vec::new());
+        }
+        let mut out = self.stop_watching(player_id, "stopped");
+        out.extend(self.open_watch(player_id, feed));
+        (out, Vec::new())
+    }
+
+    /// `run.stop_watching`. Idempotent by design — the client fires it off the same key
+    /// that opened the feed, so "watching nothing" is an answer, not an error.
+    fn handle_stop_watching(
+        &mut self,
+        player_id: &str,
+        _raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        (self.stop_watching(player_id, "stopped"), Vec::new())
+    }
+
+    /// Point `player_id` at `feed` and send them its opening roster. For a player battle
+    /// this also enrolls them in that slot's `spectators`, which is what puts them on the
+    /// audience funnel — from here on they receive the fight's own messages and this side
+    /// has nothing per-message to remember.
+    fn open_watch(&mut self, player_id: &str, feed: WatchFeed) -> Vec<Outgoing> {
+        let battle_id = feed.battle_id();
+        let (allies, enemies) = match &feed {
+            WatchFeed::Battle(id) => {
+                let Some(slot) = self.battles.iter().find(|b| &b.battle_id == id) else {
+                    return Vec::new();
+                };
+                let (mut allies, enemies) = slot.battle.wire_combatants();
+                inject_hero_names(&slot.player_combatants, &self.hero_names, &mut allies);
+                (allies, enemies)
+            }
+            // A clash has no "our side": both mobs are somebody else's problem, so every
+            // body lands on the enemy side and the arena draws them as the knot they are.
+            WatchFeed::Clash { anchor, .. } => (Vec::new(), self.clash_combatants(anchor)),
+        };
+        if enemies.is_empty() && allies.is_empty() {
+            return Vec::new();
+        }
+        let feed = match feed {
+            WatchFeed::Clash { anchor, .. } => WatchFeed::Clash {
+                roster: enemies.iter().map(|c| c.combatant_id.clone()).collect(),
+                anchor,
+            },
+            other => other,
+        };
+        if let WatchFeed::Battle(id) = &feed {
+            if let Some(slot) = self.battles.iter_mut().find(|b| &b.battle_id == id) {
+                slot.spectators.insert(player_id.to_string());
+            }
+        }
+        self.watching.insert(player_id.to_string(), feed);
+        vec![out_msg(
+            player_id,
+            &wb::Started {
+                battle_id,
+                encounter_class: EncounterClass::Standard,
+                allies,
+                enemies,
+                your_combatant_id: String::new(),
+                your_combatant_ids: Vec::new(),
+                triggered_by: None,
+                spectating: true,
+            },
+        )]
+    }
+
+    /// Close `player_id`'s feed, if they have one, and say why. Also un-enrolls them from
+    /// the battle slot's `spectators` so a stale entry can never keep broadcasting to
+    /// somebody who has walked away.
+    fn stop_watching(&mut self, player_id: &str, reason: &str) -> Vec<Outgoing> {
+        let Some(feed) = self.watching.remove(player_id) else {
+            return Vec::new();
+        };
+        if let WatchFeed::Battle(id) = &feed {
+            if let Some(slot) = self.battles.iter_mut().find(|b| &b.battle_id == id) {
+                slot.spectators.remove(player_id);
+            }
+        }
+        vec![out_msg(
+            player_id,
+            &wb::WatchEnded { battle_id: feed.battle_id(), reason: reason.to_string() },
+        )]
+    }
+
+    /// Every creature swinging in the clash anchored on `anchor`, as combatants. Their
+    /// gauge is the wind-up to their next blow (`skirmish_cd` against its interval), so a
+    /// watched clash reads as a fight with timing rather than HP bars twitching at random.
+    fn clash_combatants(&self, anchor: &str) -> Vec<Combatant> {
+        let interval = self.balance.ai.skirmish_attack_interval.max(0.001);
+        let Some(clash) = self.arena.clash_of(anchor) else {
+            return Vec::new();
+        };
+        clash
+            .members
+            .iter()
+            .filter_map(|id| self.arena.monsters.iter().find(|m| &m.entity_id == id))
+            .map(|m| Combatant {
+                combatant_id: m.entity_id.clone(),
+                kind: CombatantKind::Monster,
+                player_id: None,
+                monster_kind: Some(m.monster_kind.clone()),
+                level: m.level,
+                hp: m.hp,
+                max_hp: m.max_hp,
+                gauge: (1.0 - (m.skirmish_cd / interval)).clamp(0.0, 1.0),
+                // The faction rides the wire so the two sides of a brawl are legible as
+                // sides. Same `key:value` convention every other per-combatant extra uses.
+                statuses: vec![format!("faction:{}", m.faction)],
+            })
+            .collect()
+    }
+
+    /// Per-tick upkeep for every watcher (`SOC-3`): drop the feeds that are no longer
+    /// watchable, and drive the ones this side has to drive itself.
+    ///
+    /// A player battle needs nothing here — the watcher is on its audience funnel, so it
+    /// streams itself. A CLASH has no engine behind it, so its gauges and HP are sent
+    /// from here; its roster is re-sent only when it actually changes, because a
+    /// `battle.started` every tick would rebuild the client's battle screen ten times a
+    /// second.
+    fn sweep_watchers(&mut self) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let reach = self.balance.ai.watch_radius;
+        let watchers: Vec<(String, WatchFeed)> =
+            self.watching.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (pid, feed) in watchers {
+            // Gone from the overworld entirely — the run ended, or they descended into a
+            // dungeon. Nothing to watch from in there, and the reason is not "your own
+            // fight": they simply stopped standing where the feed made sense.
+            let Some(mine) = self.party_id_of(&pid) else {
+                out.extend(self.stop_watching(&pid, "stopped"));
+                continue;
+            };
+            if self.location.contains_key(&pid) {
+                out.extend(self.stop_watching(&pid, "stopped"));
+                continue;
+            }
+            // Pulled into (or opted into) a fight of their own. The client must be told
+            // WHY, because it has just been sent its own `battle.started` and must not act
+            // on this one — see the note on `battle.watch_ended`.
+            if self.battle_of_party(mine).is_some() {
+                out.extend(self.stop_watching(&pid, "own_battle"));
+                continue;
+            }
+            let Some(me) = self.arena.avatar(&pid).map(|a| a.position) else {
+                out.extend(self.stop_watching(&pid, "stopped"));
+                continue;
+            };
+            match feed {
+                WatchFeed::Battle(id) => {
+                    let Some(at) = self.battles.iter().find(|b| b.battle_id == id).map(|b| b.pos)
+                    else {
+                        // The slot is gone, so the fight is over. `battle.ended` never
+                        // reaches a watcher (it carries somebody else's XP and haul), so
+                        // this is the message that closes their screen.
+                        out.extend(self.stop_watching(&pid, "finished"));
+                        continue;
+                    };
+                    if me.distance_to(&at) > reach {
+                        out.extend(self.stop_watching(&pid, "out_of_range"));
+                    }
+                }
+                WatchFeed::Clash { anchor, roster } => {
+                    let Some(at) = self.arena.clash_of(&anchor).map(|c| c.position) else {
+                        out.extend(self.stop_watching(&pid, "finished"));
+                        continue;
+                    };
+                    if me.distance_to(&at) > reach {
+                        out.extend(self.stop_watching(&pid, "out_of_range"));
+                        continue;
+                    }
+                    let now = self.clash_combatants(&anchor);
+                    let ids: Vec<String> = now.iter().map(|c| c.combatant_id.clone()).collect();
+                    if ids != roster {
+                        // Somebody joined the brawl or fell out of it: re-send the roster
+                        // so the arena matches the fight, and remember it so the next tick
+                        // is quiet again.
+                        self.watching.insert(
+                            pid.clone(),
+                            WatchFeed::Clash { anchor: anchor.clone(), roster: ids },
+                        );
+                        out.push(out_msg(
+                            &pid,
+                            &wb::Started {
+                                battle_id: format!("clash:{anchor}"),
+                                encounter_class: EncounterClass::Standard,
+                                allies: Vec::new(),
+                                enemies: now,
+                                your_combatant_id: String::new(),
+                                your_combatant_ids: Vec::new(),
+                                triggered_by: None,
+                                spectating: true,
+                            },
+                        ));
+                        continue;
+                    }
+                    out.push(out_msg(
+                        &pid,
+                        &wb::GaugeUpdate {
+                            battle_id: format!("clash:{anchor}"),
+                            server_tick: self.tick_count as i64,
+                            combatants: now
+                                .into_iter()
+                                .map(|c| wb::GaugeEntry {
+                                    combatant_id: c.combatant_id,
+                                    gauge: c.gauge,
+                                    hp: c.hp,
+                                    statuses: c.statuses,
+                                })
+                                .collect(),
+                        },
+                    ));
+                }
+            }
+        }
+        out
     }
 
 }
@@ -5849,13 +6267,14 @@ impl WorldActor {
                     your_combatant_id: yours.first().cloned().unwrap_or_default(),
                     your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
+                    spectating: false,
                 },
             ));
         }
         // battle.party_joined (delta) to everyone already in the battle.
         let members = self
             .battle_by_id(&battle_id)
-            .map(|s| self.members_of(s))
+            .map(|s| self.audience_of(s))
             .unwrap_or_default();
         let existing: Vec<String> = members
             .into_iter()
@@ -5910,7 +6329,10 @@ impl WorldActor {
             }
         };
         // The actor must be one of the sender's own combatants; default to their
-        // first hero when the client doesn't name one (back-compat).
+        // first hero when the client doesn't name one (back-compat). This is also what
+        // refuses a WATCHER (`SOC-3`): a spectator is on the battle's audience funnel but
+        // owns nothing in it, so `owned` is empty and every action they could send lands
+        // on "Not a combatant." — no separate spectator guard to keep in sync.
         let actor_cid = match &submit.actor_combatant_id {
             Some(cid) if owned.contains(cid) => cid.clone(),
             Some(_) => {
@@ -8790,6 +9212,11 @@ impl WorldActor {
             }
         }
 
+        // 2b) Every WATCHED feed (`SOC-3`): drop the ones no longer watchable, and drive
+        // the creature clashes, which have no engine behind them. A watched player battle
+        // needs nothing here — the watcher rides its audience funnel above.
+        out.extend(self.sweep_watchers());
+
         // 3) Snapshot the overworld to everyone NOT currently in a battle. This
         // runs every tick regardless of whether any battle is active, so roaming
         // teammates keep receiving world state while others fight.
@@ -9075,15 +9502,12 @@ impl WorldActor {
             server_tick: slot.battle.tick_count() as i64,
             combatants,
         };
-        broadcast_ser(
-            self.run
-                .runs
-                .iter()
-                .filter(|r| slot.parties.contains(&r.party_id))
-                .map(|r| r.player_id.as_str()),
-            wb::GaugeUpdate::TYPE,
-            &msg,
-        )
+        // The audience funnel, not a second copy of the party filter: this used to
+        // re-derive "who is in this battle" inline, which is exactly how a watcher ends
+        // up receiving every message EXCEPT the one that moves the gauges — a feed that
+        // reads as the fight having frozen.
+        let who = self.audience_of(slot);
+        broadcast_ser(who.iter().map(String::as_str), wb::GaugeUpdate::TYPE, &msg)
     }
 
     /// Translate one battle's engine events into wire messages, handling its
@@ -9108,7 +9532,7 @@ impl WorldActor {
                     } else {
                         None
                     };
-                    let members = self.members_of_battle(battle_id);
+                    let members = self.audience_of_battle(battle_id);
                     out.extend(broadcast(
                         members.iter().map(String::as_str),
                         &wb::TurnReady {
@@ -9123,7 +9547,7 @@ impl WorldActor {
                     callout_text,
                     executes_at_tick,
                 } => {
-                    let members = self.members_of_battle(battle_id);
+                    let members = self.audience_of_battle(battle_id);
                     out.extend(broadcast(
                         members.iter().map(String::as_str),
                         &wb::TelegraphStarted {
@@ -9158,14 +9582,16 @@ impl WorldActor {
                     // A successful flee is the other way past a creature, so the board
                     // counts it rather than hiding it — running is a tactic, not a failure.
                     if res.flee_success == Some(true) {
-                        let who: Vec<String> = self.members_of_battle(battle_id);
+                        // Fighters, not the audience: watching someone else run away is
+                        // not a flee of your own, and the board records what YOU did.
+                        let who: Vec<String> = self.fighters_of_battle(battle_id);
                         for r in self.run.runs.iter_mut() {
                             if who.contains(&r.player_id) {
                                 r.flees += 1;
                             }
                         }
                     }
-                    let members = self.members_of_battle(battle_id);
+                    let members = self.audience_of_battle(battle_id);
                     let msg = wb::ActionResolved {
                         battle_id: battle_id.to_string(),
                         action_id: res.action_id.clone(),
@@ -9194,8 +9620,10 @@ impl WorldActor {
                     // torn down, so we can fix up dungeon state after (guarded — a
                     // `None` dungeon tag leaves overworld battles byte-identical).
                     let dctx = self.battle_by_id(battle_id).and_then(|s| s.dungeon.clone());
+                    // Fighters only: clearing a dungeon is credited to the party that
+                    // put the boss down, never to whoever stood at the door watching.
                     let members = if dctx.is_some() {
-                        self.members_of_battle(battle_id)
+                        self.fighters_of_battle(battle_id)
                     } else {
                         Vec::new()
                     };
@@ -9403,9 +9831,18 @@ impl WorldActor {
     }
 
     /// The players (across every merged party) currently in a given battle.
-    fn members_of_battle(&self, battle_id: &str) -> Vec<String> {
+    /// [`Self::audience_of`] by battle id — the fan-out list for every battle message.
+    fn audience_of_battle(&self, battle_id: &str) -> Vec<String> {
         match self.battle_by_id(battle_id) {
-            Some(slot) => self.members_of(slot),
+            Some(slot) => self.audience_of(slot),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`Self::fighters_of`] by battle id — for the things only a fighter earns.
+    fn fighters_of_battle(&self, battle_id: &str) -> Vec<String> {
+        match self.battle_by_id(battle_id) {
+            Some(slot) => self.fighters_of(slot),
             None => Vec::new(),
         }
     }
@@ -10117,6 +10554,37 @@ impl WorldActor {
         // Battle over: any surviving grouped creatures (e.g. after a flee) resume
         // roaming, then drop the battle slot entirely (its combatant bookkeeping
         // goes with it). Other concurrent battles are untouched.
+        //
+        // CR-2: they resume roaming WOUNDED. Every point the party landed used to be
+        // forgotten the moment the slot dropped, so fleeing a fight you had nearly won
+        // reset the creature to full and the whole encounter had to be paid for again —
+        // and a party could never soften something up and come back.
+        //
+        // Written back as a FRACTION, never as the raw battle number: the fight scaled the
+        // creature's pool by `party_scale`, so a four-hero party chewed through ~4.4x the
+        // health this spawn actually has. Writing 3000-of-13200 onto a 3000 HP creature
+        // would leave it untouched; writing the raw remainder onto it would kill it.
+        let wounds: Vec<(String, f64)> = {
+            let slot = inst.battles.get(bidx);
+            monster_ids
+                .iter()
+                .filter_map(|id| {
+                    let slot = slot?;
+                    let cid = slot.monster_combatants.get(id)?;
+                    let (hp, max) = slot.battle.combatant_health(cid)?;
+                    (max > 0).then(|| (id.clone(), (hp.max(0) as f64) / (max as f64)))
+                })
+                .collect()
+        };
+        for (id, left) in wounds {
+            if let Some(m) = inst.arena.monster_by_id_mut(&id) {
+                if !m.defeated {
+                    // At least 1: a creature the engine says is alive must not be written
+                    // back dead by rounding, or it would be a corpse nothing killed.
+                    m.hp = (((m.max_hp as f64) * left).round() as i32).clamp(1, m.max_hp);
+                }
+            }
+        }
         for id in &monster_ids {
             if let Some(m) = inst.arena.monster_by_id_mut(id) {
                 if !m.defeated {
@@ -10881,6 +11349,7 @@ mod shifting_lands_tests {
             building: HashMap::new(),
             regen_accum: HashMap::new(),
             hold_last_ms: HashMap::new(),
+            watching: HashMap::new(),
             entrances: Vec::new(),
             tutorial: false,
             tutorial_entrance_placed: false,
@@ -11077,6 +11546,388 @@ mod shifting_lands_tests {
         assert!(
             w.hero_hp["p1"].iter().all(|h| *h < 9999),
             "the party stood in the Shift and took nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod watching_tests {
+    use super::*;
+
+    fn env(msg_type: &str) -> RawEnvelope {
+        RawEnvelope {
+            msg_type: msg_type.to_string(),
+            seq: 1,
+            ts: 0,
+            payload: serde_json::json!({}),
+        }
+    }
+
+    /// Did `player_id` get told `msg_type`, and what did it say?
+    fn sent(out: &[Outgoing], pid: &str, msg_type: &str) -> Option<serde_json::Value> {
+        out.iter()
+            .find(|o| o.player_id == pid && o.msg_type == msg_type)
+            .map(|o| serde_json::from_str(o.payload.get()).expect("payload is json"))
+    }
+
+    /// A world with a fight already going: p1's party is locked in with the nearest
+    /// creature, p2 is standing right beside them doing nothing at all.
+    fn a_fight_and_a_bystander() -> WorldActor {
+        let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        // The DB sink must outlive the world or every enqueue is a send error.
+        std::mem::forget(rx);
+        let p1 = w
+            .run
+            .add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.run
+            .add_party(vec![("p2".into(), "p2".into(), CharacterClass::Explorer, "r2".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        w.arena.add_avatar("p2".into(), 5.0);
+        let at = w.arena.monsters[0].position;
+        for pid in ["p1", "p2"] {
+            if let Some(a) = w.arena.avatar_mut(pid) {
+                a.position = at;
+            }
+        }
+        w.start_battle("p1", p1, 0);
+        assert_eq!(w.battles.len(), 1, "the fixture did not start a fight");
+        w
+    }
+
+    /// The feature, in one test: a bystander gets the whole fight and none of the
+    /// commitment. `spectating` is on the wire and `your_combatant_ids` is empty, which
+    /// together are what the client reads as "look, do not touch".
+    #[test]
+    fn a_bystander_can_watch_the_fight_without_being_in_it() {
+        let mut w = a_fight_and_a_bystander();
+        let (out, _) = w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let started = sent(&out, "p2", wb::Started::TYPE).expect("no battle.started for the watcher");
+        assert_eq!(started["spectating"], serde_json::json!(true));
+        assert_eq!(
+            started["your_combatant_ids"].as_array().map(Vec::len),
+            Some(0),
+            "a watcher was handed combatants to command"
+        );
+        assert!(
+            started["enemies"].as_array().is_some_and(|e| !e.is_empty()),
+            "the watcher was sent an empty fight"
+        );
+        // p1's party is still the only party IN it: watching must not merge you.
+        assert_eq!(w.battles[0].parties.len(), 1, "watching joined the fight");
+    }
+
+    /// The whole point of the audience funnel. Every battle broadcast asks ONE question
+    /// ("who is watching this fight"), so a watcher receives each new event type the day
+    /// it is added — rather than the day somebody remembers to add them to its call site.
+    #[test]
+    fn every_battle_broadcast_reaches_the_watcher_including_the_gauges() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let audience = w.audience_of(&w.battles[0]);
+        assert!(audience.contains(&"p1".to_string()), "the fighter fell off its own fight");
+        assert!(audience.contains(&"p2".to_string()), "the watcher is not on the funnel");
+        // The gauges used to re-derive the party filter inline, which is exactly how a
+        // watcher ends up receiving everything EXCEPT the thing that moves — a feed that
+        // reads as the fight having frozen.
+        let gauges = w.gauge_update_msgs(&w.battles[0]);
+        assert!(
+            gauges.iter().any(|o| o.player_id == "p2"),
+            "the watcher was left out of the gauge stream"
+        );
+    }
+
+    /// A watcher earns nothing and answers for nothing, so they are not a FIGHTER — the
+    /// two lists are deliberately different, and the things a fight pays out read the
+    /// narrower one.
+    #[test]
+    fn a_watcher_is_audience_and_never_a_fighter() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        assert_eq!(w.fighters_of(&w.battles[0]), vec!["p1".to_string()]);
+    }
+
+    /// A watcher owns no combatant, so every action they could send lands on the same
+    /// refusal an impostor's would. No separate spectator guard to keep in sync.
+    #[test]
+    fn a_watcher_cannot_act_in_the_fight_they_are_watching() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let bid = w.battles[0].battle_id.clone();
+        let mut raw = env(wb::SubmitAction::TYPE);
+        raw.payload = serde_json::json!({ "battle_id": bid, "action": "attack" });
+        let (out, _) = w.handle_submit("p2", raw);
+        assert!(
+            sent(&out, "p2", ws::Error::TYPE).is_some(),
+            "a watcher was allowed to act in somebody else's fight"
+        );
+    }
+
+    /// You cannot watch and swing. Otherwise a player already fighting could open a
+    /// second battle screen over the top of their own.
+    #[test]
+    fn you_cannot_watch_while_you_are_fighting() {
+        let mut w = a_fight_and_a_bystander();
+        let (out, _) = w.handle_watch_battle("p1", env(wr::WatchBattle::TYPE));
+        assert!(sent(&out, "p1", ws::Error::TYPE).is_some(), "a fighter opened a spectator feed");
+        assert!(w.watching.is_empty());
+    }
+
+    /// Stepping in ends looking on. Without this the watcher would hold a feed on the
+    /// fight they are now standing in, and the sweep would close it a tick later —
+    /// yanking them out of their own battle screen.
+    #[test]
+    fn joining_the_fight_you_were_watching_ends_the_watch() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        assert!(w.watching.contains_key("p2"));
+        let (out, _) = w.handle_join_battle("p2", env(wr::JoinBattle::TYPE));
+        assert!(!w.watching.contains_key("p2"), "the feed survived joining");
+        assert!(sent(&out, "p2", wb::WatchEnded::TYPE).is_some(), "nothing closed the feed");
+        assert!(!w.battles[0].spectators.contains("p2"), "a fighter is still on the watch list");
+    }
+
+    /// Walk out of range and the feed closes on its own — the same tick sweep that keeps
+    /// it honest when the fight ends.
+    #[test]
+    fn walking_out_of_range_closes_the_feed() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let far = w.balance.ai.watch_radius * 4.0;
+        if let Some(a) = w.arena.avatar_mut("p2") {
+            a.position = Position::new(a.position.x + far, a.position.y);
+        }
+        let out = w.sweep_watchers();
+        let closed = sent(&out, "p2", wb::WatchEnded::TYPE).expect("the feed stayed open");
+        assert_eq!(closed["reason"], serde_json::json!("out_of_range"));
+        assert!(w.watching.is_empty());
+    }
+
+    /// `battle.ended` never reaches a watcher — it carries somebody else's XP and haul —
+    /// so this is the ONLY thing that takes their screen down when the fight resolves.
+    #[test]
+    fn the_feed_closes_when_the_fight_it_was_watching_does() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        w.battles.clear(); // the fight resolved; its slot is gone
+        let out = w.sweep_watchers();
+        let closed = sent(&out, "p2", wb::WatchEnded::TYPE).expect("the feed outlived the fight");
+        assert_eq!(closed["reason"], serde_json::json!("finished"));
+    }
+
+    /// Asking twice for the same feed is a no-op, not a re-send: the client fires this off
+    /// a key, and a fresh `battle.started` per press would rebuild its battle screen.
+    #[test]
+    fn re_asking_for_the_feed_you_already_have_says_nothing() {
+        let mut w = a_fight_and_a_bystander();
+        w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let (again, _) = w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        assert!(again.is_empty(), "the same feed was re-sent and would reset the screen");
+    }
+
+    /// Stopping is idempotent, because the client toggles it off one key.
+    #[test]
+    fn stopping_something_you_were_not_watching_is_not_an_error() {
+        let mut w = a_fight_and_a_bystander();
+        let (out, _) = w.handle_stop_watching("p2", env(wr::StopWatching::TYPE));
+        assert!(out.is_empty());
+    }
+
+    /// CR-2: two mobs tearing at each other is a fight too, and it arrives as the same
+    /// feed — one client path for both sources. Its `battle_id` is namespaced so an action
+    /// aimed at it can never resolve against a real battle.
+    ///
+    /// The clash is not staged: the world is stepped and one of the brawls it starts on
+    /// its own is walked over to. Hostile factions are seeded into every biome roster
+    /// precisely so this happens everywhere, and a test that hand-placed two creatures
+    /// would prove nothing about whether the player ever meets one.
+    #[test]
+    fn a_creature_clash_is_watched_through_the_same_feed() {
+        let mut w = a_fight_and_a_bystander();
+        w.arena.step_creatures(0.2);
+        let (at, members) = w
+            .arena
+            .clashes
+            .iter()
+            .map(|c| (c.position, c.members.clone()))
+            .next()
+            .expect("the world started no clashes of its own");
+        if let Some(a) = w.arena.avatar_mut("p2") {
+            a.position = at;
+        }
+
+        let (out, _) = w.handle_watch_battle("p2", env(wr::WatchBattle::TYPE));
+        let started = sent(&out, "p2", wb::Started::TYPE).expect("no feed for the clash");
+        assert_eq!(started["spectating"], serde_json::json!(true));
+        assert!(
+            started["battle_id"].as_str().is_some_and(|id| id.starts_with("clash:")),
+            "a clash borrowed a real battle id"
+        );
+        assert_eq!(
+            started["enemies"].as_array().map(Vec::len),
+            Some(members.len()),
+            "the feed does not hold every body in the brawl"
+        );
+        // And an action aimed at it is refused, because there is no battle behind it.
+        let mut raw = env(wb::SubmitAction::TYPE);
+        raw.payload = serde_json::json!({
+            "battle_id": started["battle_id"].as_str().unwrap_or_default(),
+            "action": "attack",
+        });
+        let (refused, _) = w.handle_submit("p2", raw);
+        assert!(sent(&refused, "p2", ws::Error::TYPE).is_some(), "a clash accepted a player action");
+    }
+
+    /// A clash that stops being a clash closes its feed. Not a nicety: the creatures are
+    /// gone from the arena the moment they are pruned, so a feed left open would stream
+    /// an empty roster forever.
+    #[test]
+    fn a_clash_that_ends_closes_its_feed() {
+        let mut w = a_fight_and_a_bystander();
+        w.watching.insert(
+            "p2".to_string(),
+            WatchFeed::Clash { anchor: "nothing-is-fighting".to_string(), roster: Vec::new() },
+        );
+        let out = w.sweep_watchers();
+        let closed = sent(&out, "p2", wb::WatchEnded::TYPE).expect("the feed outlived the clash");
+        assert_eq!(closed["reason"], serde_json::json!("finished"));
+    }
+
+    /// The wire path end to end: a clashing creature rides the snapshot with its marker,
+    /// so the client can draw the ⚔ and the HP bar without asking anything else.
+    ///
+    /// Worth pinning at this level because the tag is the ONLY thing the client has to go
+    /// on — the clash itself lives entirely server-side, and a marker that never left the
+    /// server would make the whole of `CR-2`'s visibility invisible while every
+    /// world-level test still passed.
+    #[test]
+    fn a_clashing_creature_says_so_in_the_snapshot() {
+        let mut w = a_fight_and_a_bystander();
+        w.arena.step_creatures(0.2);
+        let at = w
+            .arena
+            .clashes
+            .first()
+            .map(|c| c.position)
+            .expect("the world started no clashes of its own");
+        if let Some(a) = w.arena.avatar_mut("p2") {
+            a.position = at;
+        }
+        let out = w.snapshot_msgs();
+        let snap = sent(&out, "p2", wm::Snapshot::TYPE).expect("no snapshot for the bystander");
+        let tagged: Vec<String> = snap["entities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["avatar_state"].as_str())
+            .filter(|s| s.starts_with("mob:") && s.ends_with(":clash"))
+            .map(String::from)
+            .collect();
+        assert!(
+            !tagged.is_empty(),
+            "the brawl the player is standing in the middle of is unmarked: {:?}",
+            snap["entities"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e["avatar_state"].as_str())
+                .filter(|s| s.starts_with("mob:"))
+                .collect::<Vec<_>>()
+        );
+        // The faction still reads cleanly with a marker appended — reading it with a
+        // `split_once` is what swallowed `hostile:quarry` whole once already.
+        for tag in &tagged {
+            let mut parts = tag.split(':');
+            assert_eq!(parts.next(), Some("mob"));
+            assert!(parts.next().is_some_and(|k| !k.is_empty()), "{tag}");
+            assert!(parts.next().is_some_and(|f| !f.is_empty()), "{tag}");
+        }
+    }
+
+    /// CR-2: a creature that survives a fight resumes roaming WOUNDED.
+    ///
+    /// The bug this pins: every point the party landed was forgotten the moment the battle
+    /// slot dropped, so fleeing a fight you had nearly won reset the creature to full and
+    /// the whole encounter had to be paid for again — and softening something up to come
+    /// back for it later was impossible.
+    ///
+    /// The wound rides back as a FRACTION, never as the raw battle number: the fight scaled
+    /// the creature's pool by `encounter_party_scale`, so a four-hero party chews through
+    /// several times the health the spawn actually has. Writing the raw remainder onto it
+    /// would kill it outright.
+    #[test]
+    fn a_creature_that_survives_a_fight_stays_wounded() {
+        let mut w = a_fight_and_a_bystander();
+        let bid = w.battles[0].battle_id.clone();
+        let (creature, cid) = w.battles[0]
+            .monster_combatants
+            .iter()
+            .map(|(e, c)| (e.clone(), c.clone()))
+            .next()
+            .expect("the fight knows no creature to carry a wound back to");
+        let full = w.arena.monster_by_id(&creature).map(|m| m.max_hp).expect("no such creature");
+        assert_eq!(
+            w.arena.monster_by_id(&creature).map(|m| m.hp),
+            Some(full),
+            "the fixture's creature was already hurt"
+        );
+
+        // Actually fight it. The engine's own timeout auto-DEFENDS rather than attacking,
+        // so a party that never submits never lands anything — swing for real instead.
+        let heroes: Vec<String> =
+            w.battles[0].player_combatants.get("p1").cloned().unwrap_or_default();
+        let mut left = 1.0;
+        let mut swing = 0u64;
+        for _ in 0..600 {
+            if w.battles.is_empty() {
+                break;
+            }
+            let _ = w.battles[0].battle.tick();
+            for h in &heroes {
+                swing += 1;
+                let _ = w.battles[0].battle.submit(
+                    h,
+                    format!("a{swing}"),
+                    BattleActionKind::Attack,
+                    Some(vec![cid.clone()]),
+                    None,
+                    None,
+                );
+            }
+            if let Some((hp, max)) = w.battles[0].battle.combatant_health(&cid) {
+                left = (hp.max(0) as f64) / (max as f64);
+                if left < 0.9 {
+                    break;
+                }
+            }
+        }
+        assert!(left < 0.9, "the party never landed a blow in 60s of fight");
+
+        // Flee: the party bolts, the creature lives — and keeps the damage.
+        w.handle_battle_end(&bid, BattleOutcome::Fled);
+        let m = w.arena.monster_by_id(&creature).expect("the creature vanished");
+        assert!(!m.in_battle, "a fled-from creature never resumed roaming");
+        assert!(m.hp < full, "the wound was forgotten: {} of {full}", m.hp);
+        assert!(m.hp >= 1, "a creature the engine says is alive was written back dead");
+        assert_eq!(m.max_hp, full, "the wound shrank the creature instead of hurting it");
+        // The fraction, not the raw number — the battle pool is `party_scale` times this.
+        let carried = (m.hp as f64) / (full as f64);
+        assert!(
+            (carried - left).abs() < 0.02,
+            "the fight left it at {left:.3} but the world says {carried:.3}"
+        );
+    }
+
+    /// You can SEE further than you can reach, and watching commits nothing — so the
+    /// radius that offers a look must be the wider of the two. Reversed, the only fight
+    /// you could watch would be one you were already close enough to walk into.
+    #[test]
+    fn you_can_watch_from_further_than_you_can_join() {
+        let b = Balance::load_default().unwrap();
+        assert!(
+            b.ai.watch_radius > b.ai.join_radius,
+            "watch_radius {} is not wider than join_radius {}",
+            b.ai.watch_radius,
+            b.ai.join_radius
         );
     }
 }

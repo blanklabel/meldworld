@@ -607,6 +607,11 @@ pub(crate) fn cull_stray_avatars(
 /// accepts J within this of a fighting teammate; the server does the real check.
 pub(crate) const JOIN_PROMPT_RADIUS: f32 = 9.0;
 
+/// Roughly the server's `[ai] watch_radius` — wider than join range, because you can
+/// SEE further than you can reach and watching commits nothing. The server does the
+/// real check; this only decides whether to offer the prompt.
+pub(crate) const WATCH_PROMPT_RADIUS: f32 = 16.0;
+
 /// Is the player within join range of a teammate's ongoing fight?
 pub(crate) fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
     let Some((mx, my)) = me else { return false };
@@ -614,6 +619,38 @@ pub(crate) fn near_fight(world: &Overworld, me: Option<(f32, f32)>) -> bool {
         .entities
         .values()
         .any(|e| e.battling && ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt() <= JOIN_PROMPT_RADIUS)
+}
+
+/// What is in WATCHING range, as the word for it (`SOC-3`) — `None` when nothing is.
+///
+/// Two things can be watched and the nearest wins, exactly as the server resolves it:
+/// another player's battle, or two creatures tearing at each other (`CR-2`). Reported as
+/// a label rather than a bool because the two read completely differently to a player —
+/// "watch the fight" is a decision about a teammate, "watch the clash" is a decision
+/// about whether to wait and take what falls.
+pub(crate) fn watchable(world: &Overworld, me: Option<(f32, f32)>) -> Option<&'static str> {
+    let (mx, my) = me?;
+    let near = |e: &OwEntity| ((e.x - mx).powi(2) + (e.y - my).powi(2)).sqrt();
+    let fight = world
+        .entities
+        .values()
+        .filter(|e| e.battling)
+        .map(near)
+        .filter(|d| *d <= WATCH_PROMPT_RADIUS)
+        .min_by(f32::total_cmp);
+    let clash = world
+        .entities
+        .values()
+        .filter(|e| e.clashing)
+        .map(near)
+        .filter(|d| *d <= WATCH_PROMPT_RADIUS)
+        .min_by(f32::total_cmp);
+    match (fight, clash) {
+        (Some(f), Some(c)) => Some(if f <= c { "Watch the fight" } else { "Watch the clash" }),
+        (Some(_), None) => Some("Watch the fight"),
+        (None, Some(_)) => Some("Watch the clash"),
+        (None, None) => None,
+    }
 }
 
 /// The bodies a dungeon door within reach wants held on plates at once, when that is
@@ -783,6 +820,15 @@ pub(crate) fn overworld_input(
     // its own key and its own prompt rather than a row inside a screen.
     if keys.just_pressed(KeyCode::KeyN) {
         ask_for_boon(&net.0, &world, &session, &inv);
+        return;
+    }
+
+    // [V] WATCHES the fight in reach (`SOC-3`). Its own key rather than a rung on [E],
+    // because [E] already JOINS and the two are opposite decisions: joining puts your
+    // heroes in the queue and can kill them, watching costs nothing. Collapsing them onto
+    // one key would mean a player who wanted to look walked into a fight instead.
+    if keys.just_pressed(KeyCode::KeyV) {
+        net.0.send(ClientCmd::WatchBattle);
         return;
     }
 
@@ -2341,14 +2387,7 @@ pub(crate) fn update_mob_nameplates(
     }
     let intel = perks.0.hunter_intel;
     let threat = perks.0.hunter_threat;
-    // A QUARRY plate is not a perk — it is the hunt you are holding — so the intel/threat
-    // early-out must not swallow it.
-    let any_quarry = world.entities.values().any(|e| e.quarry);
-    // Neither a QUARRY nor a HELD plate is a perk readout — they are the hunt you are
-    // holding and the pin you just spent — so the intel/threat early-out must not
-    // swallow either.
-    let any_held = world.entities.values().any(|e| e.held);
-    if intel == 0 && threat == 0 && !any_quarry && !any_held {
+    if !nameplates_wanted(intel, threat, &world) {
         return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else {
@@ -2413,6 +2452,16 @@ pub(crate) fn update_mob_nameplates(
                         TextColor(Color::srgb(0.62, 0.72, 1.0)),
                     ));
                 }
+                // The same crossed-swords a fighting player wears, because it is the same
+                // fact: this thing is in a fight. Whether to wait it out and take what
+                // falls is the decision, and it cannot be made from an unmarked creature.
+                if ent.clashing {
+                    c.spawn((
+                        Text::new("\u{f0817}"),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.55, 0.4)),
+                    ));
+                }
                 if !marker.is_empty() {
                     c.spawn((
                         Text::new(marker),
@@ -2428,7 +2477,12 @@ pub(crate) fn update_mob_nameplates(
                         TextColor(Color::srgb(0.95, 0.95, 1.0)),
                     ));
                 }
-                if intel >= 2 {
+                // A clash's whole tension is who is losing it, and a WOUND is the reason
+                // to hurry — so neither bar is perk-gated. The clash resolves in seconds
+                // and a watcher deciding whether to step in has no other way to read it;
+                // the wound closes in under a minute and is the difference between a fight
+                // worth taking and one that isn't.
+                if intel >= 2 || ent.clashing || wounded(ent) {
                     if let (Some(hp), Some(max)) = (ent.hp, ent.max_hp) {
                         let frac = if max > 0 { (hp as f32 / max as f32).clamp(0.0, 1.0) } else { 0.0 };
                         // Green → red as HP falls.
@@ -2458,6 +2512,34 @@ pub(crate) fn update_mob_nameplates(
             });
         }
     });
+}
+
+/// Is there anything over a creature's head to draw right now?
+///
+/// Two of these are PERK readouts (level and the HP bar are the Hunter's intel; the `!!!`
+/// threat marker is his eye at range) and three are EVENTS the world is reporting: the
+/// hunt you are holding (`quarry`), the pin you just spent (`held`), and a fight actually
+/// happening in front of you (`clash`, `CR-2`). Only the first pair may be gated on a
+/// perk. Getting that wrong is silent: an ungeared party would see a brawl go on beside
+/// them with nothing on screen to say so, and never learn that waiting it out leaves loot.
+pub(crate) fn nameplates_wanted(intel: u8, threat: u8, world: &Overworld) -> bool {
+    intel > 0
+        || threat > 0
+        || world.entities.values().any(|e| e.quarry || e.held || e.clashing || wounded(e))
+}
+
+/// Is this creature carrying a wound (`CR-2`)?
+///
+/// Creature HP persists — a skirmish it survived, a fight a party fled — and it mends
+/// only slowly, so a hurt creature is a **time-bound opportunity**. Which is worth exactly
+/// nothing if you cannot see it: an unmarked creature at 20% looks like an unmarked
+/// creature at 100%, and the whole mechanic becomes something the server knows and the
+/// player does not. So the bar shows for anyone, like the ⚔ and the QUARRY plate — a wound
+/// is an event the world is reporting, not intel a perk buys. The Hunter's `intel >= 2`
+/// still reads the bar on UNTOUCHED creatures, which is the 95% case and where sizing one
+/// up actually matters.
+pub(crate) fn wounded(e: &OwEntity) -> bool {
+    matches!((e.hp, e.max_hp), (Some(hp), Some(max)) if max > 0 && hp < max)
 }
 
 /// Rebuild the corner minimap. It is the EXPLORER's — `compute_perks` grants
@@ -3386,6 +3468,7 @@ mod tests {
             faction: None,
             radius: 0.0,
             battling: false,
+            clashing: false,
             level: 0,
             opened: false,
             mob_level: None,
@@ -3397,6 +3480,95 @@ mod tests {
             held: false,
             bodies_required: 1,
         }
+    }
+
+    /// A CLASH, a QUARRY and a PIN are events the world is reporting, not intel a perk
+    /// buys — so an ungeared party still sees them. Gate any of the three on a perk and
+    /// the failure is silent: a brawl goes on beside you with nothing on screen to say so,
+    /// and you never learn that waiting it out leaves loot on the ground.
+    #[test]
+    fn an_event_over_a_creatures_head_is_never_gated_on_a_perk() {
+        let mut world = Overworld::default();
+        let plain = ent(EntityKind::Monster, 1.0, 0.0);
+        world.entities.insert("boar".into(), plain);
+        assert!(!nameplates_wanted(0, 0, &world), "an ordinary creature drew a plate");
+        // The Hunter's own readouts still turn it on, as before.
+        assert!(nameplates_wanted(1, 0, &world));
+        assert!(nameplates_wanted(0, 1, &world));
+
+        for mark in ["clash", "quarry", "held", "wound"] {
+            let mut world = Overworld::default();
+            let mut e = ent(EntityKind::Monster, 1.0, 0.0);
+            match mark {
+                "clash" => e.clashing = true,
+                "quarry" => e.quarry = true,
+                "wound" => {
+                    e.hp = Some(30);
+                    e.max_hp = Some(100);
+                }
+                _ => e.held = true,
+            }
+            world.entities.insert("boar".into(), e);
+            assert!(
+                nameplates_wanted(0, 0, &world),
+                "`{mark}` was swallowed by the perk early-out"
+            );
+        }
+    }
+
+    /// CR-2: a creature's HP persists and mends only slowly, so a hurt one is a
+    /// time-bound opportunity — worth nothing if it looks identical to a healthy one.
+    /// A full-health creature is NOT wounded, which is what keeps the Hunter's
+    /// `intel >= 2` bar worth having on the 95% case.
+    #[test]
+    fn a_wound_is_read_from_the_health_the_snapshot_carries() {
+        let mut e = ent(EntityKind::Monster, 1.0, 0.0);
+        assert!(!wounded(&e), "a creature with no health on the wire read as hurt");
+        e.hp = Some(100);
+        e.max_hp = Some(100);
+        assert!(!wounded(&e), "an untouched creature read as hurt");
+        e.hp = Some(99);
+        assert!(wounded(&e), "a single point of damage is still a wound");
+        // Degenerate wire values must not invent a wound out of a division by zero.
+        e.hp = Some(0);
+        e.max_hp = Some(0);
+        assert!(!wounded(&e));
+    }
+
+    /// SOC-3/CR-2: watching is offered for BOTH kinds of fight, from further away than
+    /// joining, and the nearest one wins — which matters because the two read completely
+    /// differently to a player. Nothing nearby offers nothing at all, so the plate stays
+    /// clean (the [E]-only rule).
+    #[test]
+    fn watching_is_offered_for_either_kind_of_fight_nearest_first() {
+        let mut world = Overworld::default();
+        let me = Some((0.0, 0.0));
+        world.entities.insert("me".into(), ent(EntityKind::Player, 0.0, 0.0));
+        assert_eq!(watchable(&world, me), None, "an empty field offered a fight to watch");
+
+        // A teammate's battle, well past join range but inside watching range.
+        let mut fighter = ent(EntityKind::Player, JOIN_PROMPT_RADIUS + 3.0, 0.0);
+        fighter.battling = true;
+        world.entities.insert("ally".into(), fighter);
+        assert_eq!(
+            watchable(&world, me),
+            Some("Watch the fight"),
+            "you cannot watch a fight you can already see"
+        );
+
+        // A creature clash nearer than the battle takes the prompt — the same resolution
+        // the server does, so the prompt never names a thing the server would not pick.
+        let mut brawler = ent(EntityKind::Monster, 2.0, 0.0);
+        brawler.clashing = true;
+        world.entities.insert("boar".into(), brawler);
+        assert_eq!(watchable(&world, me), Some("Watch the clash"));
+
+        // Beyond watching range, neither is on offer.
+        world.entities.clear();
+        let mut far = ent(EntityKind::Monster, WATCH_PROMPT_RADIUS + 5.0, 0.0);
+        far.clashing = true;
+        world.entities.insert("boar".into(), far);
+        assert_eq!(watchable(&world, me), None, "a clash across the map was offered");
     }
 
     // [E] is the one interact key, so what it does has to be unambiguous at any spot:
@@ -3700,6 +3872,7 @@ mod explored_map_tests {
             faction: None,
             radius: 0.0,
             battling: false,
+            clashing: false,
             level: 0,
             opened: false,
             mob_level: None,
@@ -4103,6 +4276,7 @@ mod station_tests {
             faction: None,
             radius: 0.0,
             battling: false,
+            clashing: false,
             level: 0,
             opened: false,
             mob_level: None,
@@ -4409,6 +4583,22 @@ pub(crate) struct ActionHudTap;
 #[derive(Component)]
 pub(crate) struct ActionHudBoonTap;
 
+/// The [V] chip: watch the fight in reach without joining it (`SOC-3`).
+#[derive(Component)]
+pub(crate) struct ActionHudWatchTap;
+
+/// Tapping the [V] chip watches the nearest fight — the touch twin of the key.
+pub(crate) fn action_hud_watch_tap(
+    q: Query<&Interaction, (Changed<Interaction>, With<ActionHudWatchTap>)>,
+    net: NonSend<NetRes>,
+) {
+    for interaction in &q {
+        if *interaction == Interaction::Pressed {
+            net.0.send(ClientCmd::WatchBattle);
+        }
+    }
+}
+
 /// Tapping the [N] chip asks for the bench's temporary boon — the same thing the key does.
 pub(crate) fn action_hud_boon_tap(
     q: Query<&Interaction, (Changed<Interaction>, With<ActionHudBoonTap>)>,
@@ -4495,6 +4685,8 @@ pub(crate) fn update_action_hud(
         _ => false,
     };
     let boon = boon_offer(&world, &session);
+    let me_pos = world.entities.get(&session.player_id).map(|e| (e.x, e.y));
+    let watch = watchable(&world, me_pos);
     // Who is hurt, and how. An affliction does NOT wear off (`meld_proto::statuses`), so a
     // hero who caught one in a fight carries it down the road — and out here nothing said
     // so: the venom biting per step and the bindings dragging the march were both invisible
@@ -4510,6 +4702,7 @@ pub(crate) fn update_action_hud(
         .collect();
     if target.is_none()
         && boon.is_none()
+        && watch.is_none()
         && !session.channeling
         && pops.items.is_empty()
         && conditions.is_empty()
@@ -4568,7 +4761,14 @@ pub(crate) fn update_action_hud(
                 target.as_ref().map(|t| t.prompt())
             };
             let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
-            if line.is_none() && boon_line.is_none() && !session.channeling && conditions.is_empty()
+            // Watching stays on offer even mid-channel: reading the fight over there is
+            // exactly what you might want to do while you finish gathering.
+            let watch_line = watch.map(|what| format!("\u{f0817} [V] {what}"));
+            if line.is_none()
+                && boon_line.is_none()
+                && watch_line.is_none()
+                && !session.channeling
+                && conditions.is_empty()
             {
                 return;
             }
@@ -4608,6 +4808,13 @@ pub(crate) fn update_action_hud(
                         .spawn((Button, ActionHudBoonTap, glass::chip(false)))
                         .with_children(|b| {
                             b.spawn(glass::text(text, 15.0, glass::WARN));
+                        });
+                }
+                if let Some(text) = watch_line {
+                    plate
+                        .spawn((Button, ActionHudWatchTap, glass::chip(false)))
+                        .with_children(|b| {
+                            b.spawn(glass::text(text, 15.0, glass::DIM));
                         });
                 }
                 if session.channeling {

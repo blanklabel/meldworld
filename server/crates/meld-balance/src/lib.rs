@@ -1152,6 +1152,26 @@ pub struct Ai {
     pub group_radius: f64,
     pub flee_hp_fraction: f64,
     pub join_radius: f64,
+    /// `SOC-3`: how close a fight has to be to WATCH it. Deliberately wider than
+    /// `join_radius` — you can see further than you can reach, and a watcher who is
+    /// shoved out of the feed the instant they stop pressing forward would never get
+    /// to read the fight they walked over for.
+    pub watch_radius: f64,
+    /// `CR-2`: how much of its own max HP a roaming creature mends per second. A wound
+    /// has to CLOSE, or the world becomes strip-minable by attrition — walk a ring,
+    /// chip everything, come back. But it has to close SLOWLY, or a creature you found
+    /// halfway dead is worth nothing by the time you reach it. This is the width of that
+    /// window, and it is a fraction because a creature's max HP spans two orders of
+    /// magnitude between the on-ramp and d3200.
+    ///
+    /// It does NOT run while the creature is in a clash or a battle: nothing mends while
+    /// it is still being hit, and the clash's own linger is what covers the gap between
+    /// one blow and the next.
+    pub creature_regen_fraction_per_sec: f64,
+    /// `CR-2`: seconds a clash stays "live" after the last blow lands in it. Creatures
+    /// trade blows on a cadence, so a clash with no grace period would blink out
+    /// between swings and take the ⚔ marker — and any watcher — with it.
+    pub clash_linger_seconds: f64,
     /// Overworld creature-vs-creature skirmish: hostile-faction creatures hunt
     /// each other within this range, trade blows once `skirmish_attack_range`
     /// close, on a `skirmish_attack_interval`-second cadence.

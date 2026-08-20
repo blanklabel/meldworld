@@ -292,6 +292,7 @@ pub(crate) fn pump_net(
                             faction: e.faction,
                             radius: e.radius as f32,
                             battling: e.battling,
+                            clashing: e.clashing,
                             level: e.level,
                             opened: e.opened,
                             mob_level: e.mob_level,
@@ -314,6 +315,7 @@ pub(crate) fn pump_net(
                 your_combatant_ids,
                 combatants,
                 monster_combatant,
+                spectating,
             } => {
                 battle.battle_id = battle_id;
                 battle.your_ids = your_combatant_ids;
@@ -321,11 +323,41 @@ pub(crate) fn pump_net(
                 battle.combatants = combatants;
                 battle.ready.clear();
                 battle.queued.clear();
+                battle.spectating = spectating;
                 battle.active = battle.your_ids.first().cloned();
                 reset_menu(&mut menu);
                 if *state.get() != Screen::Battle {
                     next.set(Screen::Battle);
                 }
+            }
+            ServerMsg::WatchEnded { battle_id, .. } => {
+                // Only ever leaves a WATCHED screen. A fight of our own can start while a
+                // feed is still closing (the server sends our `battle.started` first, the
+                // sweep drops the watch a tick later) — acting on this unconditionally
+                // would walk us straight back out of the fight we were just pulled into.
+                if battle.spectating && battle.battle_id == battle_id {
+                    battle.spectating = false;
+                    battle.combatants.clear();
+                    battle.ready.clear();
+                    battle.queued.clear();
+                    battle.active = None;
+                    if *state.get() == Screen::Battle {
+                        next.set(Screen::Overworld);
+                    }
+                }
+            }
+            ServerMsg::LootPickedUp { items } => {
+                // The same banner a chest raises, because it answers the same question.
+                // Auto-pickup used to be silent, so a creature that died fighting another
+                // creature and left something behind was indistinguishable from one that
+                // left nothing.
+                report.active = true;
+                report.title = "SPOILS".to_string();
+                report.xp = None;
+                report.chits = 0;
+                report.items = items;
+                report.gear = Vec::new();
+                report.elapsed = 0.0;
             }
             ServerMsg::TurnReady { combatant_id } => {
                 // A hero's gauge filled; it can now act (its queued order fires).

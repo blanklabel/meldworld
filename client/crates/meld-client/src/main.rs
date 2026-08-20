@@ -402,7 +402,7 @@ fn main() {
                 emit_move,
                 joystick_visual,
                 touch_action_buttons,
-                (action_hud_tap, action_hud_boon_tap),
+                (action_hud_tap, action_hud_boon_tap, action_hud_watch_tap),
                 sync_overworld_sprites,
                 // Dotted trail overlays retired — the terrain itself will convey routes
                 // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
@@ -583,6 +583,8 @@ fn main() {
                     // The fight's own results screen — drawn here, over the battle
                     // it belongs to, and it is what returns you to the overworld.
                     render_loot_report,
+                    render_watch_banner,
+                    watch_keyboard,
                     mocks::mock_tally_setup,
                 ),
             )
@@ -753,6 +755,10 @@ struct OwEntity {
     radius: f32,
     /// True for a player currently in a fight (drives the ⚔ marker + Join prompt).
     battling: bool,
+    /// True for a creature trading blows with another right now (`CR-2`). Drives the
+    /// same ⚔ marker a fighting player wears — a fight is a fight — plus an HP bar
+    /// that is NOT perk-gated: you can watch a brawl in front of you without a Hunter.
+    clashing: bool,
     /// Elevation level (terraced verticality); render height rises by `level*STEP_HEIGHT`.
     level: u8,
     /// For chests: whether it's been opened.
@@ -775,7 +781,7 @@ struct OwEntity {
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -786,6 +792,7 @@ impl OwEntity {
             faction: Some(faction.to_string()),
             radius: 0.0,
             battling: false,
+            clashing: false,
             level: 0,
             opened: false,
             mob_level: None,
@@ -799,7 +806,7 @@ impl OwEntity {
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, bodies_required: 1 }
     }
 }
 
@@ -1180,6 +1187,10 @@ struct BattleData {
     /// carries the coarse Attack/Skill kind, so this lets the sprite layer pick the
     /// exact special-ability clip (backstab vs frenzy, …) to play.
     last_skill: HashMap<String, String>,
+    /// This fight is being WATCHED, not fought (`SOC-3`). No command menu, no target
+    /// picker, no loot report: every one of those is an answer to "what do I do", and a
+    /// watcher's answer is "nothing, that is the point".
+    spectating: bool,
 }
 
 /// A queued order: what the hero will do and (for aimed actions) which combatant it

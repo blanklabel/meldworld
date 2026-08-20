@@ -143,6 +143,10 @@ prompt *only* when something is in reach, plus a **progress bar** that fills onc
 channel payout (per unit while gathering, once while extracting — `fill_ms` on
 `run.channel_started`). Touch gets the same thing as one contextual **Interact** button
 that hides when nothing is in reach.
+**[V] WATCHES** a fight in reach instead of entering it (`SOC-3`) — its own key rather than
+a rung on `[E]`, because `[E]` already *joins* and the two are opposite decisions: joining
+puts your heroes in the queue and can kill them, watching costs nothing. Collapsing them
+onto one key would mean a player who wanted to look walked into a fight instead.
 
 **A HARVEST BANKS ONE UNIT PER TICK AS ITS OWN STACK.** `advance_harvests` pushes rather
 than merging, so ore you just dug up is six stacks of one and never one stack of six.
@@ -1436,6 +1440,88 @@ with `run.join_battle` (server checks they're within `[ai] join_radius` of
 `ActiveInstance::battle_pos`) — touching a creature while a fight is in progress does
 nothing. Fighting players show a ⚔ marker + a "Press [J]" prompt on the overworld;
 joiners render as an "allies" strip on the battle screen.
+
+**A FIGHT IN REACH CAN BE WATCHED, NOT ONLY JOINED** (`SOC-3`). Joining is a commitment —
+it puts your heroes in the queue, splits the XP and can kill them — so the only way to
+learn whether the party over there was winning used to be walking into it.
+`run.watch_battle` / `run.stop_watching` open a read-only feed on the nearest fight within
+`[ai] watch_radius`, which is deliberately WIDER than `join_radius`: you can see further
+than you can reach, and looking costs nothing. **Two sources, one feed** — another
+player's battle, or a creature-vs-creature **clash** (below) — both arriving as a
+`battle.started` carrying `spectating: true` and no combatants.
+
+**Every battle broadcast asks ONE audience funnel** (`audience_of` = fighters +
+`BattleSlot::spectators`). That is the whole design: a watcher gains each new event type
+the day it is added rather than the day somebody remembers to add them to its call site.
+`gauge_update_msgs` had re-derived the party filter inline, and a watcher receiving
+everything *except* the thing that moves reads as the fight having frozen. **`fighters_of`
+is the separate, narrower list** — a watcher did not flee, did not clear the dungeon, and
+earns no XP or loot, so `battle.ended` never reaches them (it carries somebody else's
+haul); `battle.watch_ended` closes their screen instead, with a reason. They own no
+combatant, so `handle_submit` refuses them on the same "Not a combatant." path an
+impostor's action takes — there is no second spectator guard to keep in sync.
+
+**A CLASH IS DERIVED FROM BLOWS, NEVER FROM PROXIMITY** (`CR-2`, `meld_world::Clash`).
+Plenty of hostiles stand inside each other's reach without ever swinging, and a ⚔ over
+each of those is noise a player learns to ignore in one dive — so `record_clashes` folds
+in the hits a `step_creatures` pass actually landed. It lingers `[ai]
+clash_linger_seconds` past its last blow, because creatures trade on a *cadence* and a
+marker that blinked out between swings would drop the ⚔ (and any watcher) every
+`skirmish_attack_interval`. Membership is by ENTITY ID so `prune_defeated` may compact
+`monsters` underneath a live clash, and a clash of one is not a fight. It rides the
+snapshot as `mob:<kind>:<faction>:clash` and gets an **HP bar that is NOT perk-gated** — a
+clash resolves in seconds and "wait it out or step in" is undecidable from an unmarked
+creature. A watched clash is anchored on a **body**, not a clash id (`clash:<anchor>`):
+membership changes every few seconds, so an id would go stale under the watcher, while a
+body is either still swinging or its fight is over.
+
+**A CREATURE'S WOUND PERSISTS, AND IT CLOSES** (`CR-2`). A skirmish it survived and a fight
+a party fled from both leave it hurt, so softening something up and coming back for it is a
+real play — and so is walking away from a fight you were losing knowing what it cost. Three
+places used to leak the damage and every one of them was silent:
+
+- A creature that survived a player's battle resumed roaming at FULL. The wound now rides
+  back as a **fraction** (`Battle::combatant_health` keyed through
+  `BattleSlot::monster_combatants`), never the raw battle number — the fight scaled its pool
+  by `encounter_party_scale`, so writing 3000-of-13200 onto a 3000 HP creature leaves it
+  untouched and writing the raw remainder kills it.
+- `build_battle` built the enemy's **max** HP from its **current** hp, and `Fighter::new`
+  sets `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
+  The damage was real (it died to less) and completely invisible: the bar read 100%, and an
+  execute scaling with missing HP found none missing.
+- On the overworld the HP bar was gated behind the Hunter's `intel >= 2`, so an ungeared
+  party could not tell a creature at 20% from one at 100%.
+
+**A wound is an EVENT the world is reporting, not intel a perk buys** — same argument as the
+⚔ and the QUARRY plate, and `nameplates_wanted` holds all four to it. The perk still reads
+the bar on untouched creatures, which is the 95% case where sizing one up matters.
+
+`Arena::mend_creatures` closes it at `[ai] creature_regen_fraction_per_sec` of max per
+second, making the opportunity **time-bound**: without it the world is strip-minable by
+attrition (walk a ring, chip everything, come home to a map of half-dead things), which is
+the opposite of a living world. It is **suspended while the creature is clashing or in a
+battle** — nothing mends while it is still being hit, and the clash's own
+`clash_linger_seconds` is exactly what covers the gap between one blow and the next.
+Sub-1 HP is banked per creature (`regen_accum`), or the mechanic rounds to nothing on any
+creature under a few hundred max HP — which is every creature in the on-ramp; and a creature
+at full carries no debt forward, so a healthy stretch cannot bank a burst for the moment
+something finally hits it.
+
+**A mob tag's markers are a SET.** `held`, `clash` and the per-viewer `quarry` all append
+to the same tail, so `parse_mob_state` reads every trailing part. Reading only the first
+meant a pinned creature that was also your quarry silently lost its QUARRY plate —
+depending on which marker happened to be appended earlier, which looks like a rendering
+glitch on the one creature you most care about seeing.
+
+**A payout the player is never shown is a payout that did not happen.** Ground loot
+(`cause: pickup:<kind>`) was auto-collected in silence, so a creature felled by another
+creature that left something behind was indistinguishable from one that left nothing —
+the only trace was a counter ticking off-screen. `net::payout_of` is the ONE place a
+backpack-change `cause` is classified (`Chest` / `Harvest` / `Pickup`), because the three
+inline `starts_with` checks it replaced were already subtly different from each other,
+which is how a fourth payout gets added and greeted by none of the surfaces meant to greet
+it. Bookkeeping (a spend, a craft, a death) is deliberately NOT a payout: a banner over
+something the player just watched themselves do trains them to dismiss banners.
 
 ## Heroes: persistent names, stats on the party screen
 

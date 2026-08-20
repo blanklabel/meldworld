@@ -33,14 +33,39 @@ A battle subscreen opened. There is **no C2S battle-start message**: battles are
 | encounter_class | string (enum: `standard`, `elite`, `gatekeeper`) | Yes | No | — | Drives flee availability (`gatekeeper`: flee disabled) and disconnect rules (see [Disconnect handling](#disconnect-handling-in-battle)). |
 | allies | array of Combatant (1–16 items) | Yes | No | — | Player-side combatants, in turn-display order. Player gauges start at 0.0. |
 | enemies | array of Combatant (min 1 item) | Yes | No | — | Monster-side combatants. Gatekeeper HP pools are sized for 8 combatants at spawn and never rescale mid-fight (CANON.md §B). |
-| your_combatant_id | string (uuid) | Yes | No | — | The recipient's own combatant, for input routing. |
+| your_combatant_id | string (uuid) | Yes | No | — | The recipient's own combatant, for input routing. Empty for a spectator. |
 | triggered_by | string (uuid) | Yes | Yes | — | Player whose touch started the battle; `null` when a monster touched a sleeping avatar. |
+| spectating | boolean | No | No | `false` | This feed is being WATCHED, not fought (`SOC-3`). The recipient controls nothing: `your_combatant_ids` is empty and every `battle.submit_action` they could send is refused. A flag rather than an inference from the empty roster, because empty is also what a malformed roster looks like. |
 
 **Example**
 
 ```json
 {"type": "battle.started", "seq": 4001, "ts": 1783728100000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "encounter_class": "standard", "allies": [{"combatant_id": "0197a600-00aa-7abc-9def-0123456789ab", "kind": "player", "player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "monster_kind": null, "level": 12, "hp": 340, "max_hp": 340, "gauge": 0.0, "statuses": []}], "enemies": [{"combatant_id": "0197a600-00bb-7abc-9def-0123456789ab", "kind": "monster", "player_id": null, "monster_kind": "dune_stalker", "level": 14, "hp": 410, "max_hp": 410, "gauge": 0.35, "statuses": []}], "your_combatant_id": "0197a600-00aa-7abc-9def-0123456789ab", "triggered_by": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c"}}
 ```
+
+---
+
+### `battle.watch_ended` (S2C)
+
+The fight the recipient was WATCHING (`SOC-3`) is no longer theirs to watch. Its own message rather than a `battle.ended`: a watcher earned no XP and took no loot, so handing them an `Ended` would pop somebody else's haul over their screen as though it were theirs. This is therefore the **only** thing that closes a spectator's battle screen.
+
+**Source:** ROADMAP `SOC-3`; opened by `run.watch_battle`.
+**Direction:** S2C — sent to the one watcher whose feed closed.
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| battle_id | string | Yes | No | — | The feed that closed. A watched creature clash (`CR-2`) carries a namespaced `clash:<creature_id>` rather than a battle uuid, so it can never be mistaken for a real battle. |
+| reason | string (enum: `finished`, `out_of_range`, `own_battle`, `stopped`) | Yes | No | — | `finished`: the fight (or clash) resolved. `out_of_range`: the watcher walked past `[ai] watch_radius`. `own_battle`: they were pulled into, or joined, a fight of their own. `stopped`: they asked. |
+
+**Example**
+
+```json
+{"type": "battle.watch_ended", "seq": 4210, "ts": 1783728140000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "reason": "finished"}}
+```
+
+A client must act on this **only while it is actually spectating**: a fight of the watcher's own can start while a feed is still closing (the server sends their `battle.started` first and the watch sweep drops the feed a tick later), and acting unconditionally would walk them straight back out of the battle they were just pulled into.
 
 ---
 

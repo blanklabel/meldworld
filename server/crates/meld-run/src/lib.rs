@@ -939,7 +939,13 @@ pub fn build_battle(
                 None,
                 Some(name),
                 m.level,
-                ((m.hp as f64) * party_scale).round() as i32,
+                // Its FULL health, scaled. `Fighter::new` sets `hp = max_hp`, so passing
+                // the creature's CURRENT hp here made a wounded creature enter the fight
+                // at "full" with a smaller pool: the damage a skirmish had already done
+                // was real (it died to less) but completely invisible — the HP bar read
+                // 100%, and an execute that scales with missing HP found none missing.
+                // A wound the player cannot see is not an opportunity.
+                ((m.max_hp.max(1) as f64) * party_scale).round() as i32,
                 // NOT scaled by party size. A party of four brings four times the
                 // damage, so the creature needs more HEALTH to last — but it does not
                 // swing four times harder at each individual hero, and scaling attack
@@ -952,6 +958,14 @@ pub fn build_battle(
             );
             f.faction = m.faction.clone();
             f.flees = m.flees;
+            // And the wound it walked in with (`CR-2`). Creature HP persists in the
+            // overworld — a skirmish it survived, a fight a party fled from — so a
+            // creature you find already bleeding fights at the health it actually has.
+            // Scaled by the same `party_scale` as its max, so the FRACTION is preserved:
+            // a creature at half stays at half whether one hero or four are facing it.
+            if m.hp < m.max_hp {
+                f.hp = ((m.hp.max(1) as f64) * party_scale).round().clamp(1.0, f.max_hp as f64) as i32;
+            }
             // The rank it stood in out in the world is the rank it fights in. The engine
             // already halves physical damage both ways for a back row (`back_row_damage_mult`
             // / `back_row_attack_mult`) and lets spells, elemental brands and psychic damage
@@ -1856,6 +1870,46 @@ mod tests {
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
         assert!(allies[0].max_hp > 17, "max HP stays at the class base");
+    }
+
+    /// CR-2: a creature's wound comes INTO the fight, and reads as a wound.
+    ///
+    /// The bug this pins: the enemy's max HP was built from its CURRENT hp, and
+    /// `Fighter::new` sets `hp = max_hp` — so a creature at half entered the fight at
+    /// "full" with half the pool. The damage was real (it died to less) and completely
+    /// invisible: the HP bar read 100%, and an execute that scales with missing HP found
+    /// nothing missing. A wound the player cannot see is not an opportunity.
+    #[test]
+    fn a_wounded_creature_walks_into_the_fight_wounded() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
+        runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
+        let party: Vec<PartyMember> =
+            vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
+        let mut arena = meld_world::Arena::generate(&b, 5, true);
+
+        // Untouched: full, exactly as before this rule existed.
+        let whole = {
+            let enemies = vec![(&arena.monsters[0], "mc".to_string())];
+            let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+            let (_, foes) = battle.wire_combatants();
+            assert_eq!(foes[0].hp, foes[0].max_hp, "an untouched creature is not at full");
+            foes[0].max_hp
+        };
+
+        // Halved out in the world: the pool is unchanged and the BAR shows the wound.
+        arena.monsters[0].hp = arena.monsters[0].max_hp / 2;
+        let enemies = vec![(&arena.monsters[0], "mc".to_string())];
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+        let (_, foes) = battle.wire_combatants();
+        assert_eq!(foes[0].max_hp, whole, "the wound shrank the creature instead of hurting it");
+        assert!(foes[0].hp < foes[0].max_hp, "the wound is invisible in the fight");
+        // The FRACTION is what carried, not a raw number — that is what keeps it honest
+        // once `encounter_party_scale` has multiplied the pool for a bigger party.
+        let left = foes[0].hp as f64 / foes[0].max_hp as f64;
+        assert!((left - 0.5).abs() < 0.02, "half a creature came in at {left:.3}");
+        // Alive, whatever the rounding: a creature written in dead is a corpse nobody killed.
+        assert!(foes[0].hp >= 1);
     }
 
     /// FS-4 unique boss mechanics: a Gatekeeper's `boss_kind` (assigned in

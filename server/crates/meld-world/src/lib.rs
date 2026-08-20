@@ -1437,8 +1437,16 @@ pub struct MonsterSpawn {
     pub defeated: bool,
     /// True while this creature is locked in a battle (so it stops roaming).
     pub in_battle: bool,
-    /// Seconds until this creature can land its next overworld skirmish blow.
-    skirmish_cd: f64,
+    /// Seconds until this creature can land its next overworld skirmish blow. Public
+    /// because a clash feed (`CR-2`) shows it as the creature's gauge — watching a brawl
+    /// means watching the wind-up to each blow, not just the HP falling afterwards.
+    pub skirmish_cd: f64,
+    /// Sub-1 HP banked from the slow roaming regen (`CR-2`). `hp` is an integer and the
+    /// regen is a small fraction of `max_hp` per second, so without a remainder the whole
+    /// mechanic rounds to nothing on any creature whose max HP is under a few hundred —
+    /// which is every creature in the on-ramp. Same reason the Resonant's overworld regen
+    /// banks its own remainder.
+    regen_accum: f64,
     /// Per-creature PRNG state for deterministic wander.
     rng: u64,
 }
@@ -1489,6 +1497,7 @@ impl MonsterSpawn {
             defeated: false,
             in_battle: false,
             skirmish_cd: 0.0,
+            regen_accum: 0.0,
             rng: seed | 1,
         }
     }
@@ -1721,6 +1730,38 @@ pub struct GroundLoot {
     pub position: Position,
 }
 
+/// A live creature-vs-creature **clash** (`CR-2`): the creatures currently tearing
+/// at each other in one place. Derived from the blows that actually landed rather
+/// than from proximity — two hostiles standing near each other are not fighting, and
+/// a marker that said otherwise would cry wolf on every crowded ring.
+///
+/// It is a fact about the ENCOUNTER, not about a creature, which is why it lives here
+/// and not on `MonsterSpawn`: the same creature belongs to a different clash depending
+/// on who it ended up swinging at, and it belongs to none the moment the blows stop.
+/// (The same reasoning that derives a battle GROUP at assembly rather than carrying it
+/// through the world.)
+#[derive(Debug, Clone)]
+pub struct Clash {
+    /// Every creature swinging in it, both sides. Entity ids, not indices, so
+    /// `prune_defeated` can compact `monsters` without corrupting a clash.
+    pub members: Vec<Id>,
+    /// Where it is happening (the mean of its members' positions), for the range
+    /// checks a watcher's feed does.
+    pub position: Position,
+    /// Seconds since the last blow landed in it. A clash is a CADENCE of blows, so
+    /// this is what keeps it alive between swings instead of strobing once a second.
+    pub quiet: f64,
+}
+
+impl Clash {
+    /// The creature whose id sorts first — a stable anchor for a watcher's
+    /// subscription, so a clash that gains or loses a member does not silently
+    /// become a different clash and drop the feed.
+    pub fn anchor(&self) -> Option<&Id> {
+        self.members.iter().min()
+    }
+}
+
 /// A harvestable resource node in the overworld. Walk up and harvest it once for
 /// its material (into the backpack) + Meld-skill XP; then it's spent.
 #[derive(Debug, Clone)]
@@ -1943,6 +1984,10 @@ pub struct Arena {
     pub resources: Vec<ResourceNode>,
     /// Loot dropped by creatures felled in overworld skirmishes, awaiting pickup.
     pub ground_loot: Vec<GroundLoot>,
+    /// Creature-vs-creature fights happening right now (`CR-2`). Rebuilt from the
+    /// blows each `step_creatures` pass actually lands, so it is a report of what
+    /// happened rather than a guess from positions.
+    pub clashes: Vec<Clash>,
     /// Impassable biome terrain (trees/cliffs/water/…). Never intrudes on `path`.
     pub obstacles: Vec<Obstacle>,
     /// Hand-placed treasure chests scattered through the sections.
@@ -2053,6 +2098,8 @@ pub struct Arena {
     skirmish_aggro: f64,
     skirmish_range: f64,
     skirmish_interval: f64,
+    clash_linger: f64,
+    creature_regen: f64,
     loot_pickup_radius: f64,
     /// Every placed creature's position **in the bent (world) frame**, bucketed into a
     /// coarse grid so placement can refuse to drop a standard spawn inside another
@@ -2287,6 +2334,7 @@ impl Arena {
             monsters: Vec::new(),
             resources: Vec::new(),
             ground_loot: Vec::new(),
+            clashes: Vec::new(),
             obstacles: Vec::new(),
             chests: Vec::new(),
             stations: Vec::new(),
@@ -2334,6 +2382,8 @@ impl Arena {
             skirmish_aggro: balance.ai.skirmish_aggro_radius,
             skirmish_range: balance.ai.skirmish_attack_range,
             skirmish_interval: balance.ai.skirmish_attack_interval,
+            clash_linger: balance.ai.clash_linger_seconds,
+            creature_regen: balance.ai.creature_regen_fraction_per_sec,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
             creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
@@ -4027,7 +4077,9 @@ impl Arena {
                 dgrid.entry(dcell_of(pos)).or_default().push(j);
             }
         }
-        let mut hits: Vec<(usize, i32)> = Vec::new();
+        // (attacker, victim, damage) — the attacker is carried so the pass can report
+        // WHO is fighting whom (`CR-2`), not only who lost HP.
+        let mut hits: Vec<(usize, usize, i32)> = Vec::new();
         for (i, m) in self.monsters.iter_mut().enumerate() {
             if m.defeated || m.in_battle {
                 m.skirmish_cd = 0.0;
@@ -4064,13 +4116,16 @@ impl Arena {
             }
             if let Some((_, j, victim_def)) = best {
                 let dmg = (m.atk - victim_def).max(1);
-                hits.push((j, dmg));
+                hits.push((i, j, dmg));
                 m.skirmish_cd = interval;
             }
         }
-        for (j, dmg) in hits {
+        for &(_, j, dmg) in &hits {
             self.monsters[j].hp -= dmg;
         }
+        self.record_clashes(&hits, dt);
+        // A wound closes, slowly, and only once nobody is hitting it any more.
+        self.mend_creatures(dt);
 
         // --- Deaths → ground loot ---------------------------------------------
         let mut drops: Vec<(Id, String, Position)> = Vec::new();
@@ -4088,6 +4143,130 @@ impl Arena {
                 position,
             });
         }
+    }
+
+    /// Fold this tick's landed skirmish blows into [`Arena::clashes`] (`CR-2`).
+    ///
+    /// A clash is derived from BLOWS, never from proximity: on a crowded ring plenty
+    /// of hostiles stand within reach of each other without ever swinging, and a
+    /// marker over every one of those would be noise the player learns to ignore.
+    /// It lingers `[ai] clash_linger_seconds` past its last blow because creatures
+    /// trade on a cadence — without the grace period the marker would strobe between
+    /// swings and a watcher would be dropped every `skirmish_attack_interval`.
+    ///
+    /// Membership is by ENTITY ID so `prune_defeated` may compact `monsters` freely,
+    /// and a member that has died, been pulled into a player's battle, or streamed
+    /// away is dropped here — a clash of one is not a fight.
+    fn record_clashes(&mut self, hits: &[(usize, usize, i32)], dt: f64) {
+        for c in self.clashes.iter_mut() {
+            c.quiet += dt;
+        }
+        for &(i, j, _) in hits {
+            let (Some(a), Some(b)) = (
+                self.monsters.get(i).map(|m| m.entity_id.clone()),
+                self.monsters.get(j).map(|m| m.entity_id.clone()),
+            ) else {
+                continue;
+            };
+            // Both fighters join ONE clash. Two blows that share a creature are one
+            // fight, so an existing clash holding either end absorbs the pair rather
+            // than a second clash growing beside the first over the same bodies.
+            match self
+                .clashes
+                .iter_mut()
+                .position(|c| c.members.contains(&a) || c.members.contains(&b))
+            {
+                Some(k) => {
+                    let c = &mut self.clashes[k];
+                    for id in [a, b] {
+                        if !c.members.contains(&id) {
+                            c.members.push(id);
+                        }
+                    }
+                    c.quiet = 0.0;
+                }
+                None => self.clashes.push(Clash {
+                    members: vec![a, b],
+                    position: Position::new(0.0, 0.0),
+                    quiet: 0.0,
+                }),
+            }
+        }
+        let linger = self.clash_linger;
+        // ONE index pass over the monsters, not a `find` per member: this runs every tick,
+        // the world streams outward without bound, and a scan per clash member is
+        // quadratic in dive depth — the same trap the placement grid exists for.
+        let live: std::collections::HashMap<&str, Position> = self
+            .monsters
+            .iter()
+            .filter(|m| !m.defeated && !m.in_battle && m.hp > 0)
+            .map(|m| (m.entity_id.as_str(), m.position))
+            .collect();
+        self.clashes.retain_mut(|c| {
+            c.members.retain(|id| live.contains_key(id.as_str()));
+            if c.members.len() < 2 || c.quiet > linger {
+                return false;
+            }
+            // Re-centre on its own bodies, so a watcher's range check follows the fight as
+            // it drifts rather than the spot it started at.
+            let (mut sx, mut sy) = (0.0, 0.0);
+            for id in &c.members {
+                let p = live[id.as_str()];
+                sx += p.x;
+                sy += p.y;
+            }
+            let n = c.members.len() as f64;
+            c.position = Position::new(sx / n, sy / n);
+            true
+        });
+    }
+
+    /// Mend every roaming creature a little (`CR-2`).
+    ///
+    /// A creature's HP persists — a skirmish it survived, and a fight a party fled from,
+    /// both leave it wounded — and that is the whole point: a hurt creature is an
+    /// opportunity. But a wound that never closed would make the world strip-minable by
+    /// attrition (walk a ring, chip everything, come home to a map of half-dead things),
+    /// which is the opposite of a living world. So it heals, at
+    /// `[ai] creature_regen_fraction_per_sec` of its own max, making the opportunity
+    /// **time-bound** rather than permanent.
+    ///
+    /// Suspended while it is clashing or locked in a battle: nothing mends while it is
+    /// still being hit, and the clash's own `clash_linger_seconds` is exactly what covers
+    /// the gap between one blow and the next — without it a creature would tick health
+    /// back between every pair of swings and a skirmish could never resolve.
+    fn mend_creatures(&mut self, dt: f64) {
+        let rate = self.creature_regen;
+        if rate <= 0.0 {
+            return;
+        }
+        let busy = self.clashing().into_iter().map(String::from).collect::<std::collections::HashSet<_>>();
+        for m in self.monsters.iter_mut() {
+            if m.defeated || m.in_battle || m.hp >= m.max_hp || busy.contains(&m.entity_id) {
+                // A creature at full carries no debt forward, so a long healthy stretch
+                // cannot bank a burst of healing for the moment it finally gets hit.
+                m.regen_accum = 0.0;
+                continue;
+            }
+            m.regen_accum += (m.max_hp as f64) * rate * dt;
+            let whole = m.regen_accum.floor();
+            if whole >= 1.0 {
+                m.regen_accum -= whole;
+                m.hp = (m.hp + whole as i32).min(m.max_hp);
+            }
+        }
+    }
+
+    /// The live clash a given creature is swinging in, if any (`CR-2`). One lookup for
+    /// the snapshot's ⚔ marker and for a watcher's feed, so the two can never disagree
+    /// about whether that creature is in a fight.
+    pub fn clash_of(&self, entity_id: &str) -> Option<&Clash> {
+        self.clashes.iter().find(|c| c.members.iter().any(|m| m == entity_id))
+    }
+
+    /// Every creature currently swinging in a clash, by entity id.
+    pub fn clashing(&self) -> std::collections::HashSet<&str> {
+        self.clashes.iter().flat_map(|c| c.members.iter().map(String::as_str)).collect()
     }
 
     /// Collect (remove and return) every ground-loot drop within pickup range of
@@ -6733,6 +6912,172 @@ mod tests {
         );
         assert_eq!(arena.ground_loot.len(), 1, "a felled creature drops loot");
         assert_eq!(arena.ground_loot[0].kind, arena.monsters[1].loot_kind);
+    }
+
+    /// The fixture the clash tests share: exactly one hostile pair, nose to nose, with
+    /// nothing else in the world to brawl and nobody to chase.
+    fn a_lone_hostile_pair(b: &Balance) -> Arena {
+        let mut arena = Arena::generate(b, 5, true);
+        assert!(arena.monsters.len() >= 2);
+        arena.monsters.truncate(2);
+        for k in 0..2 {
+            arena.monsters[k].area_min_x = f64::NEG_INFINITY;
+            arena.monsters[k].area_max_x = f64::INFINITY;
+        }
+        arena.monsters[0].faction = "beast".to_string();
+        arena.monsters[0].aggression = "passive".to_string();
+        arena.monsters[0].atk = 1;
+        arena.monsters[0].hp = 5000;
+        arena.monsters[0].def = 0;
+        let pos = arena.monsters[0].position;
+        arena.monsters[1].faction = "fiend".to_string(); // beast vs fiend = hostile
+        arena.monsters[1].aggression = "passive".to_string();
+        arena.monsters[1].atk = 1;
+        arena.monsters[1].hp = 5000;
+        arena.monsters[1].def = 0;
+        arena.monsters[1].home = Position::new(pos.x + 1.0, pos.y);
+        arena.monsters[1].position = Position::new(pos.x + 1.0, pos.y);
+        arena.monsters[1].elevation = arena.monsters[0].elevation;
+        arena
+    }
+
+    /// CR-2: a clash is derived from BLOWS, never from proximity. On a crowded ring
+    /// plenty of hostiles stand inside each other's reach without ever swinging, and a
+    /// ⚔ over every one of those is noise the player learns to ignore in one dive.
+    #[test]
+    fn a_clash_is_the_blows_that_landed_not_the_creatures_standing_near_each_other() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        // Out of reach of each other: hostile, but not fighting.
+        let pos = arena.monsters[0].position;
+        arena.monsters[1].home = Position::new(pos.x + 400.0, pos.y);
+        arena.monsters[1].position = Position::new(pos.x + 400.0, pos.y);
+        arena.step_creatures(0.1);
+        assert!(arena.clashes.is_empty(), "two creatures merely existing counted as a fight");
+
+        // Nose to nose: now blows land, and both ends of each blow are in the clash.
+        let mut arena = a_lone_hostile_pair(&b);
+        arena.step_creatures(0.1);
+        assert_eq!(arena.clashes.len(), 1, "adjacent hostiles did not start a clash");
+        assert_eq!(arena.clashes[0].members.len(), 2, "only one side of the brawl is in it");
+        for m in &arena.monsters {
+            assert!(
+                arena.clash_of(&m.entity_id).is_some(),
+                "{} is swinging but is not marked as clashing",
+                m.entity_id
+            );
+        }
+    }
+
+    /// A clash is a CADENCE of blows, so it has to outlive the gap between them —
+    /// otherwise the ⚔ marker strobes once per `skirmish_attack_interval` and a watcher
+    /// is dropped every time a creature reloads its swing. It does eventually end, or a
+    /// brawl that finished would stay marked forever.
+    #[test]
+    fn a_clash_outlives_the_gap_between_blows_but_not_the_quiet_after_it() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        arena.step_creatures(0.1);
+        assert_eq!(arena.clashes.len(), 1);
+
+        // Pull them apart so no further blow can land, then let a little time pass —
+        // less than the linger. Still a clash: the last blow is recent.
+        let pos = arena.monsters[0].position;
+        arena.monsters[1].home = Position::new(pos.x + 400.0, pos.y);
+        arena.monsters[1].position = Position::new(pos.x + 400.0, pos.y);
+        arena.step_creatures(b.ai.clash_linger_seconds * 0.5);
+        assert_eq!(arena.clashes.len(), 1, "the clash blinked out between swings");
+
+        arena.step_creatures(b.ai.clash_linger_seconds);
+        assert!(arena.clashes.is_empty(), "a brawl that stopped is still marked as one");
+    }
+
+    /// A clash of one is not a fight. A body that dies, is pulled into a player's battle,
+    /// or is streamed away leaves the clash — and the last one standing leaves nothing.
+    #[test]
+    fn a_creature_that_stops_swinging_leaves_the_clash() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        arena.step_creatures(0.1);
+        assert_eq!(arena.clashes.len(), 1);
+        // Membership is by ENTITY ID exactly so `prune_defeated` may compact `monsters`
+        // underneath a live clash without corrupting it.
+        arena.monsters[1].in_battle = true;
+        arena.step_creatures(0.1);
+        assert!(
+            arena.clashes.is_empty(),
+            "one creature was left clashing with a partner that had walked into a battle"
+        );
+        assert!(arena.clashing().is_empty());
+    }
+
+    /// CR-2: a wound CLOSES, slowly. Without it the world is strip-minable by attrition
+    /// — walk a ring, chip everything, come home to a map of half-dead things — and with
+    /// it a hurt creature is a time-bound opportunity instead of a permanent discount.
+    #[test]
+    fn a_wounded_creature_mends_as_it_roams() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        // One creature, alone and hurt, nothing to fight.
+        arena.monsters.truncate(1);
+        let max = arena.monsters[0].max_hp;
+        arena.monsters[0].hp = max / 2;
+        let before = arena.monsters[0].hp;
+
+        // Long enough for the fraction to clear a whole HP at this creature's size.
+        for _ in 0..40 {
+            arena.step_creatures(0.25);
+        }
+        let after = arena.monsters[0].hp;
+        assert!(after > before, "a wound never closed: {before} -> {after} of {max}");
+        assert!(after <= max, "it healed past full: {after} of {max}");
+
+        // And it stops at full rather than running away with it.
+        for _ in 0..4000 {
+            arena.step_creatures(0.25);
+        }
+        assert_eq!(arena.monsters[0].hp, max, "it did not reach full, or overshot it");
+    }
+
+    /// Nothing mends while it is still being hit. The clash's own linger is what covers
+    /// the gap between one blow and the next — without that gate a creature would tick
+    /// health back between every pair of swings and a skirmish could never resolve.
+    #[test]
+    fn a_creature_in_a_clash_does_not_mend() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        // Big pools and 1-damage blows, so the only thing that could move the HP up is
+        // the regen and the only thing that could move it down is the skirmish.
+        for k in 0..2 {
+            arena.monsters[k].hp = arena.monsters[k].max_hp / 2;
+        }
+        let before: i32 = arena.monsters.iter().map(|m| m.hp).sum();
+        for _ in 0..40 {
+            arena.step_creatures(0.25);
+        }
+        assert!(!arena.clashes.is_empty(), "the fixture stopped clashing");
+        let after: i32 = arena.monsters.iter().map(|m| m.hp).sum();
+        assert!(after < before, "creatures healed mid-brawl: {before} -> {after}");
+    }
+
+    /// A creature at full carries no healing DEBT forward, so a long healthy stretch
+    /// cannot bank a burst that lands the instant something finally hits it.
+    #[test]
+    fn a_healthy_creature_banks_no_healing_for_later() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = a_lone_hostile_pair(&b);
+        arena.monsters.truncate(1);
+        let max = arena.monsters[0].max_hp;
+        for _ in 0..200 {
+            arena.step_creatures(0.25);
+        }
+        arena.monsters[0].hp = max - 1;
+        arena.step_creatures(0.001);
+        assert_eq!(
+            arena.monsters[0].hp,
+            max - 1,
+            "a healthy creature had banked healing and spent it the moment it was hurt"
+        );
     }
 
     #[test]

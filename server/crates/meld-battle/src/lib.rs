@@ -1194,6 +1194,17 @@ impl Battle {
         }
     }
 
+    /// A combatant's `(hp, max_hp)`. Both halves, because the only meaningful thing to
+    /// carry out of a battle is the FRACTION: an enemy's pool was scaled to the party
+    /// facing it (`encounter_party_scale`), so its raw remaining HP means nothing outside
+    /// the fight it was built for.
+    pub fn combatant_health(&self, combatant_id: &str) -> Option<(i32, i32)> {
+        self.fighters
+            .iter()
+            .find(|f| f.combatant_id == combatant_id)
+            .map(|f| (f.hp, f.max_hp))
+    }
+
     pub fn combatant_hp(&self, combatant_id: &str) -> Option<i32> {
         self.fighters
             .iter()
