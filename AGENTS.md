@@ -555,35 +555,35 @@ mark is owed its reward however long the walk home takes. The menu's **Quests** 
 gated on owning `class_hunter` — the menu never advertises what you have not earned — and
 is reading-only, because the reward is taken at the board.
 
-**A DIVE DEPARTS FROM A TOWN YOU BUILT — the authored deep hubs are RETIRED** (PG-2, now
-`BD-5`'s; `meld_proto::hubs`). What survives is the formula and one floor: departing from
-distance D starts every hero at `base_run_level(D)` = `1 + 0.078 × D`, and the **Center Hub**
-(d0, level 1) is the one departure point nothing can take away. The six authored rows
-(d500 … d3250) and the `vanguard` "have you been there" gate are **gone**.
+**LEVEL AT DISTANCE IS RETIRED — a town grants SERVICES, not levels** (PG-2 → `BD-5`).
+There is one departure point, the **Center Hub**, and it starts every hero at level 1. The
+six authored deep hubs (d500 … d3250) and the `vanguard` "have you been there" gate are
+gone, along with the idea behind them.
 
-Player-built forward towns do that job strictly better, and the reasons are worth keeping:
-an authored hub was scenery that appeared once you qualified, so qualification needed a
-server-owned all-time distance record — but **you cannot raise a town where you cannot
-stand, so the structure IS the proof** and the whole gate becomes a consequence. It also
-turns the ladder from a list into a loop: an unlocked hub was permanent and free, while a
-town is HP-bearing, Shift-exposed and siege-able, which is what finally makes an anchor
-beside it mean something. And the authored ladder was self-defeating — **d3200 ground demands
+**The longer you are out there, the stronger you tend to be.** Level comes from XP earned on
+the expedition, never from where you set off — which is why `AD-7` prices punching above your
+weight. A **player-built forward town** is worth building for what it lets you *do*: rest at
+an **inn** across sessions, **swap party members**, **resupply**, and buy an **NPC garrison**
+with chits. Players do not log off mid-dive, so an inn is a **save point that can be
+destroyed** — if the town falls while you are resting in it, you go with it. That one rule is
+what makes the garrison worth paying for, and it makes depth *accumulated risk*: the deeper
+you are, the more session boundaries your town has to survive.
+
+The authored ladder was also self-defeating, not merely unfashionable: **d3200 ground demands
 ~level 251** to survive four basic hits from a *standard* creature (a level-100 hero survives
-**1.4**), and levels are dive-scoped, so its top rung could only be unlocked by a party that
-had already walked to d3250 at level 1. It required what it was meant to grant.
+**1.4**), and levels are dive-scoped — so the d3250 hub could only be unlocked by a party
+that had already walked to d3250 at level 1. It required what it was meant to grant. Supply
+(`1 + 0.078d`, linear) does clear the terrain's quadratic demand at every old rung, crossing
+at **d≈3350**; that crossing is the real reason ~d3250 is the structural end of the game.
 
-Supply (`1 + 0.078d`, linear) does stay above the terrain's demand (quadratic) at every old
-rung, crossing at **d≈3350** — that crossing, not a chosen number, is why ~d3250 is the
-structural end of the game, and it still bounds how far out a town is worth hauling stock.
-It remains a **lookup, not an entity**: the run reads one distance, and a town supplies it
-through the `Structure` primitive's own placement and ownership — never a second lifecycle
-model beside it.
-
-⚠️ **Nothing wires a deep departure yet**, so every dive still starts at d0/level 1. The
-blockers are unchanged: spawn-at-distance, frontier generation around that distance, and
-extraction (the deep portal, the west-return border) still assuming d0 is the start. This is
-why **the end fight cannot currently be reached in play at all** and why its authored
-numbers are a laboratory result — see the warning in `[encounters]`.
+⚠️ **`base_run_level` / `hubs::start_level` are now DEV/QA instruments only.** Nothing in
+play reads them — they are the inverse of `MELD_START_LEVEL`, which sets a DISTANCE and lets
+the level follow, and they are how deep content is measured at all. Held against each other
+by a distance sweep. **Watch the arithmetic before flattening anything:** level costs are
+stated in FIGHTS (`fights_per_level` climbs 2 → 51) and deep fights are 4.4-creature packs,
+so a *continuous* expedition reaches only ~d1150 / level ~43 in four hours and the cap is
+~170 hours. The inn is what makes that a ladder instead of a wall — the session boundary was
+the problem, not the curve's shape.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you

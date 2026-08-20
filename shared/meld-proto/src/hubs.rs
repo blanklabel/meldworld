@@ -1,38 +1,29 @@
-//! Departure points (PG-2, superseded in part by `BD-5`): where a dive starts, and
-//! therefore what level it starts at.
+//! Where a dive starts. **Level at distance is RETIRED** (PG-2 -> `BD-5`).
 //!
-//! `start_level(distance)` is the load-bearing thing here — `1 + 0.078 × D`, so departing
-//! from d500 starts every hero at 40 and d3256 at the 255 cap. That formula is what makes
-//! pushing outward worth anything, and it is unchanged.
+//! There is one departure point — the **Center Hub** — and it starts every hero at level 1.
+//! The six authored deep hubs (d500 … d3250) and the `vanguard` "have you been there" gate
+//! are gone, and so is the idea behind them: *a departure point does not grant a level.*
 //!
-//! **THE AUTHORED DEEP HUBS ARE DEPRECATED.** There used to be six of them (d500 … d3250)
-//! gated on the player's own deepest recorded distance from the `vanguard` table. They are
-//! gone, and the gate with them, because `BD-5`'s **player-built forward towns** do the same
-//! job strictly better:
+//! **The longer you are out there, the stronger you tend to be.** Level comes from XP earned
+//! on the expedition (`AD-7` prices punching above your weight), never from where you set
+//! off. A `BD-5` forward town is worth building for what it lets you *do* — rest at an inn
+//! across sessions, swap party members, resupply, and buy an NPC garrison with chits — not
+//! for a number it hands you on departure. An inn is a **save point that can be destroyed**:
+//! if the town falls while you are resting in it, you go with it, which is what makes the
+//! garrison worth paying for.
 //!
-//! - **The gate becomes physical.** "Have you been here" needed a server-owned all-time
-//!   distance record precisely because a hub was scenery that appeared once you qualified.
-//!   A town is something you walked to, hauled stock to, and built — you cannot raise one
-//!   where you cannot stand, so the proof *is* the structure. A whole bookkeeping mechanism
-//!   turns into a consequence.
-//! - **The ladder becomes a loop instead of a list.** An authored hub, once unlocked, was
-//!   permanent and free. A town is HP-bearing, Shift-exposed and siege-able (`BD-2`/`BD-3`),
-//!   so a deep departure point is permanence you keep paying for — which is the loop those
-//!   epics exist to create, and the reason an anchor beside it means something.
-//! - **It was never reachable anyway.** Measured: the ground at d3200 demands ~level 251 to
-//!   survive four basic hits from a *standard* creature, and levels are dive-scoped, so the
-//!   d3250 hub could only ever be unlocked by a party that had already walked to d3250 at
-//!   level 1. The authored ladder's own top rung required the thing it was meant to grant.
+//! Retiring the authored hubs was not only a design call — the top rung was self-defeating.
+//! Measured: d3200 ground demands ~level 251 to survive four basic hits from a *standard*
+//! creature (a level-100 hero survives 1.4), and levels are dive-scoped, so the d3250 hub
+//! could only ever be unlocked by a party that had already walked to d3250 at level 1. It
+//! required exactly what it was meant to grant.
 //!
-//! **The Center Hub stays, and stays unconditional.** It is the one departure point nothing
-//! can take away — a player whose forward town is destroyed still has somewhere to dive
-//! from, at level 1. Everything deeper is built, held, and losable.
-//!
-//! **This is still a LOOKUP, not an entity.** The run reads one integer: a distance. A town
-//! supplies that integer through the `Structure` primitive's own placement and ownership
-//! (`BD-2`) — `do not build towns, anchors, portals and camps as separate systems`. Nothing
-//! here grows a placement or lifecycle model of its own; that was the point of the
-//! indirection and it is the point still.
+//! ⚠️ **`start_level` is now a DEV/QA INSTRUMENT, not a game rule.** Nothing in play reads
+//! it: it is the inverse of `MELD_START_LEVEL`, which sets a DISTANCE and lets the level
+//! follow, because level and depth are the same fact and a party holding one without the
+//! other cannot exist. It is how deep content is measured at all, so it must keep agreeing
+//! with the server's `base_run_level` — held by a distance SWEEP in `meld-run`, since this
+//! repo has already shipped one balance pass taken through a broken instrument.
 
 use serde::{Deserialize, Serialize};
 
@@ -88,10 +79,11 @@ mod tests {
         assert!(hub("not_a_hub").is_none());
     }
 
-    /// **The formula is what survived the deprecation, so it is what the test holds.** A
-    /// forward town at distance D starts every hero at `start_level(D)`, which is the entire
-    /// reason to push one outward. The old `the_deepest_hub_lands_on_the_level_cap` asserted
-    /// this through an authored row; the claim was never about the row.
+    /// The formula survives only as the `MELD_START_LEVEL` instrument, so what the test
+    /// holds is that the instrument spans the real range: level 1 at the origin up to the
+    /// cap at the structural end. Nothing in PLAY reads it — a town grants services, not
+    /// levels — but a measurement harness that cannot reach level 255 cannot measure the
+    /// deep game, which is the only place these numbers are in doubt.
     #[test]
     fn the_ladder_reaches_the_cap_exactly_at_the_structural_end() {
         assert_eq!(start_level(0), 1);

@@ -1804,28 +1804,44 @@ same always-running-when-unwatched spatial workload as the ecology).
 - [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
   structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
   attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).
-- [ ] **BD-5 — Towns: composition, guild ownership, and THE DEPARTURE LADDER.** A town = a
-  cluster of the primitive; **guild-owned** structures + permissions (**SOC**); `portal` =
-  plantable extraction (evolves D15). **This now owns the whole departure ladder** —
-  `PG-2`'s authored hubs are retired, so a forward town is the *only* way to start a dive
-  anywhere but the Center Hub, and `start_level(distance)` (`1 + 0.078 x D`) is what it
-  grants. That makes it the unblocker for everything authored above roughly level 16, which
-  is most of the ability ladder and all of `EW`.
-  - **Three decisions this needs before it is built**, because each changes what the loop
-    *is* rather than how it is coded:
-    - **Who may depart from it?** Owner only / party / guild / anyone. If a town is open to
-      all, the first player to push deep hands every newcomer a level-240 departure and the
-      ladder collapses for everyone at once. Leaning owner-or-guild.
-    - **What does losing it cost?** A town at d2500 grants level 196; if the Shift or a
-      siege takes it, does its owner drop straight back to level-1 departures from the
-      Center Hub? That is the honest reading of "permanence you keep paying for", and it is
-      a 195-level swing on one structure's HP bar. The alternative — a residual floor from
-      the deepest town ever held — is gentler but re-introduces exactly the bookkeeping gate
-      `PG-2` just deleted.
-    - **Does a town past the cap buy anything?** No (held by test), which bounds how far out
-      hauling stock is worth it and keeps ~d3250 the structural end.
-  - **Do not tune the end fight until this lands** — see `EW-0` and `AD-8`. Its numbers are
-    authored for "~level 100", a party that provably cannot reach where it stands.
+- [ ] **BD-5 — Forward towns: the forward base, and the save point that can be destroyed.**
+  A town = a cluster of the `BD-2` primitive, **guild-owned** with permissions (**SOC**).
+  **LEVEL AT DISTANCE IS RETIRED.** A town does not grant a starting level and there is no
+  departure ladder: *the longer you are out there, the stronger you tend to be* — level comes
+  from XP earned on the expedition, which is what `AD-7`'s punch-up bonus prices. What a town
+  sells is the ability to **not go home**:
+  - **Inn — park an expedition across sessions.** The load-bearing service, and the reason
+    the rest of this works. Players do not log off mid-dive; an inn is where an expedition
+    rests, so a deep push becomes a multi-session climb instead of one sitting. **It is a
+    save point that can be destroyed:** if the town falls while you are resting in it, you go
+    with it. That single rule is what makes every other service worth paying for.
+  - **Party swap.** Change composition without walking home — the only place outside the
+    Center Hub that the party builder opens.
+  - **Vendor.** Resupply potions and Town Portals forward, so a long expedition is a supply
+    problem rather than a round trip.
+  - **NPC garrison, bought with chits.** You are not defending property, you are defending
+    your sleeping self. Pairs with `BD-4` sieges and `BD-3` anchors (the Shift is the other
+    thing that can take a town).
+  - **`portal`** = plantable extraction (evolves D15).
+  - **Why the arithmetic needs the inn.** Level costs are stated in FIGHTS
+    (`fights_per_level` climbs 2 → 51), and deep fights are 4.4-creature packs at ~18
+    hero-hits each — so pricing every level at its own depth, a *continuous* expedition
+    reaches only **~d1150 / level ~43 in four hours**, and the 255 cap is ~170 hours. Without
+    an inn, everything above level ~43 is unreachable by construction — most of the ability
+    ladder and all of `EW`. With one, that 170 hours is an MMO-scale ladder spread over many
+    sessions, and **depth becomes accumulated risk**: the deeper you are, the more session
+    boundaries your town has to survive. Do not flatten `fights_per_level` to compensate
+    before the inn exists; the shape is not the problem, the session boundary is.
+  - **Open decisions** (each changes the loop, not the code):
+    - **Who may use a town's inn and services?** Owner / party / guild / anyone. Open-to-all
+      makes one player's deep town everyone's shortcut. Leaning owner-or-guild.
+    - **Does a wipe cost the expedition only, or the town too?** The town is a `Structure`
+      with HP, so it can be rebuilt; the expedition cannot.
+  - **What this retires.** `base_run_level(distance)` and `meld_proto::hubs::start_level` keep
+    no gameplay role — a town grants services, not levels. Both survive only as the
+    `MELD_START_LEVEL` dev/QA instrument, which must keep working: it is how deep content is
+    measured at all, and this repo has already shipped one balance pass taken through a
+    broken instrument.
 - [ ] **BD-6 — Field crafting & storage.** `stash` (siege-able field storage),
   `workshop` (`MS-1` Forge/Alembic in the field), `hearth` (respawn/rally aura).
 - [ ] **BD-7 — Persistence wiring (rides `SC-3`).** Structures / anchor-altered Shifts /
