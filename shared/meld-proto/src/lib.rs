@@ -18,6 +18,7 @@
 
 pub mod abilities;
 pub mod affixes;
+pub mod bosses;
 pub mod bounties;
 pub mod common;
 pub mod consumables;

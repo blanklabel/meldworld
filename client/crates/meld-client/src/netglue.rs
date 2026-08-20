@@ -300,6 +300,7 @@ pub(crate) fn pump_net(
                             aggression: e.aggression,
                             quarry: e.quarry,
                             held: e.held,
+                            boss: e.boss,
                             bodies_required: e.bodies_required,
                         },
                     );

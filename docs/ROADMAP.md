@@ -1498,6 +1498,23 @@ Make time in the field a living, dangerous place worth screenshotting.
   unique *boss mechanics* (special attack patterns, not just big stats), **class-emblem**
   drops feeding CL-1, party-scaled HP over a full merge, and a proper boss arena.
   See [`behaviors/combat-atb.md`](behaviors/combat-atb.md) battle merge.
+  - ✅ **A boss NAMES ITSELF on the overworld.** `boss_kind` reached the client only at
+    battle assembly, so an end-fight peer, a Gatekeeper standing in the pass and an
+    `AD-4` bounty mark all rode the snapshot as the host creature they overlay
+    (`mob:bog_stinger:beast`) and drew as ordinary wildlife — the thing the whole walk
+    out is pointed at was invisible as anything special until you touched it. Exactly
+    the failure mode the `pack:` token had. The identity now rides the tag as
+    `mob:<kind>:<faction>:boss:<key>` (a `key:value` token in the same SET as `held` /
+    `clash` / `quarry`, so it composes with them), the client renders the **boss sprite
+    set** from it (`boss_frames`) instead of the host's billboard and floats its
+    **title** on an ungated name plate, and `mcp/`'s `look` prints the title beside the
+    host kind — matching a boss by name was impossible before, which is how the gap was
+    found. Keys and titles are one shared registry
+    ([`meld_proto::bosses`](../shared/meld-proto/src/bosses.rs)) that the client, the
+    engine's `boss_display_name` and the asset loader all read, and both Gatekeeper
+    placements now go through `become_boss` — writing `boss_kind` directly had left
+    every gate boss wearing its host's LINEAGE, which is the bug `become_boss` exists
+    to prevent.
 - [ ] **FS-5 — Day/night cycle as a first-class system.** A seeded, server-
   authoritative time-of-day clock that other systems read: it drives the fireflies
   and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates

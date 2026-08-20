@@ -966,7 +966,15 @@ only if you respect two shared, machine-global resources: the **server port** an
   A token nothing renders is a token that does not exist to the player: `pack:` drove
   combat (pack rout) for a long time without reaching the client, so a leader at 1.7x HP
   and its minion at 0.45x — the same species, 3.8x apart — drew at identical size and read
-  as a bug.
+  as a bug. **A token that never left the server is the same bug, one step earlier**:
+  `boss_kind` (FS-4) reached the client only at battle assembly, so an end-fight peer, a
+  Gatekeeper in the pass and a bounty mark all rode the overworld snapshot as the host
+  creature they overlay (`mob:bog_stinger:beast`) and drew as ordinary fauna — the thing
+  the whole walk out is pointed at was unidentifiable until you touched it. It rides the
+  mob tag now (`:boss:<key>`, a `key:value` token in the same SET as `held`/`clash`/
+  `quarry`), and the client draws its sprite set and its title from
+  [`meld_proto::bosses`](shared/meld-proto/src/bosses.rs) — one registry, because ten
+  names copied to the far side of the wire is a copy that goes stale.
   Prefer this over adding wire fields for slice-scoped additions.
 - **Distance is the difficulty axis.** `tier(d)=floor(d/100)`, `mlevel(d)=max(1,round(d/12.5))`,
   and creature power is **three different curves, not one**: attack

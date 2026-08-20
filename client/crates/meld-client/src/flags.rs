@@ -147,7 +147,7 @@ pub(crate) fn hunts_preview_flag() -> bool {
 
 /// Preview a boss/elite sprite in The Last City plaza (with `MELD_CITY`) — a stable
 /// frame for eyeballing the encounter art. Native: `MELD_BOSS=ironmaw`. Browser:
-/// `?boss=ironmaw`. See `world_render::BOSS_KEYS` for valid ids.
+/// `?boss=ironmaw`. See `meld_proto::bosses` for valid ids.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn boss_preview() -> Option<String> {
     std::env::var("MELD_BOSS").ok().filter(|s| !s.is_empty())

@@ -21,6 +21,25 @@ fn bearing(dx: f64, dy: f64) -> &'static str {
     }
 }
 
+/// What to CALL a creature: its boss title where it has one (FS-4), with the host
+/// creature it overlays in parentheses, and the plain kind otherwise.
+///
+/// Both halves, because both are load-bearing: the title is what the player is out here
+/// for and what every doc, hunt and contract names it by, while the host kind is what its
+/// ability pool, its biome and its drops still key off. Printing only the kind is what
+/// made the end fight unfindable by name — it read as `bog_stinger` with a `[world_end]`
+/// bracket, so the only way to search for it was to search for the bracket.
+fn mob_name(e: &crate::session::Ent) -> String {
+    match e.boss() {
+        Some(k) => format!(
+            "{} ({})",
+            meld_proto::bosses::display_name(k).unwrap_or(k),
+            e.kind()
+        ),
+        None => e.kind().to_string(),
+    }
+}
+
 /// Where you are, what is around you, and what your party is carrying.
 pub fn look(s: &State) -> String {
     let mut out = String::new();
@@ -55,7 +74,7 @@ pub fn look(s: &State) -> String {
             let what = if e.is_mob() {
                 format!(
                     "{} L{}{}{}",
-                    e.kind(),
+                    mob_name(e),
                     e.level,
                     match e.encounter_class.as_str() {
                         "standard" => String::new(),
@@ -108,7 +127,7 @@ pub fn look(s: &State) -> String {
                     "  {:>5.0} {:<2}  {} L{} [{}]  {}\n",
                     d,
                     bearing(e.x - s.pos.0, e.y - s.pos.1),
-                    e.kind(),
+                    mob_name(e),
                     e.level,
                     e.encounter_class,
                     e.id

@@ -141,10 +141,13 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// PixelLab sprite set under `assets/bosses/<key>/`. Tiers: elite (gloamhound,
 /// rustfang), miniboss (choirmother, pyrewarden), dungeon (sepulcher, hollowbishop),
 /// region (ironmaw, weepingcolossus), biome (miredrowned, ashenleviathan).
-pub(crate) const BOSS_KEYS: [&str; 10] = [
-    "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
-    "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
-];
+///
+/// Read off [`meld_proto::bosses`], the registry the server names them from and the
+/// client titles them from — a hand-copied list here is a list that goes stale against
+/// the `boss:<key>` tags actually arriving on the wire.
+pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
+    meld_proto::bosses::keys()
+}
 
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
 /// overworld sync can spawn 3D entities without rebuilding assets each frame.
@@ -157,7 +160,7 @@ pub(crate) struct WorldAssets {
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
     /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
     /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
-    /// (see [`BOSS_KEYS`]). Look up via [`Self::boss_frames`]. Used by scripted
+    /// (see [`boss_keys`]). Look up via [`Self::boss_frames`]. Used by scripted
     /// encounters (gameplay wiring lands separately) + the `MELD_BOSS` preview.
     pub(crate) boss_chars: HashMap<String, CharacterFrames>,
     /// Bespoke HD-2D pixel-art billboards (PixelLab) for world props, keyed by full
@@ -215,7 +218,7 @@ impl WorldAssets {
             .clone()
     }
 
-    /// The sprite set for a boss id (see [`BOSS_KEYS`]), or `None` if unknown.
+    /// The sprite set for a boss id (see [`boss_keys`]), or `None` if unknown.
     /// The palette a boss wears at a given depth band (`boss_band:<n>` on the wire,
     /// server-assigned from the level it is met at). Band 0 is the sprite's own
     /// colours; deeper bands push it hotter and darker, so meeting the Choirmother
@@ -553,9 +556,8 @@ pub(crate) fn setup(
             _ => &[("walk", 8), ("attack", 8)],
         }
     }
-    let boss_chars: HashMap<String, CharacterFrames> = BOSS_KEYS
-        .iter()
-        .map(|&key| {
+    let boss_chars: HashMap<String, CharacterFrames> = boss_keys()
+        .map(|key| {
             (
                 key.to_string(),
                 hd2d::load_character_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),

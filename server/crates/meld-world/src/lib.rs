@@ -1730,20 +1730,12 @@ fn pick_gatekeeper_boss_kind(distance: i64, seed: u64) -> &'static str {
 
 /// The in-battle title for a boss id (FS-4), shown in place of the plain
 /// biome-creature name when a fighter carries a `boss_kind`.
+///
+/// The names live in [`meld_proto::bosses`] rather than here, because the CLIENT needs
+/// them too — a boss on the overworld wears its title on a name plate (`FS-4`), and a
+/// second copy of ten names on the far side of the wire is a copy that goes stale.
 pub fn boss_display_name(key: &str) -> &'static str {
-    match key {
-        "gloamhound" => "Gloamhound",
-        "rustfang" => "Rustfang",
-        "choirmother" => "Choirmother",
-        "pyrewarden" => "Pyrewarden",
-        "sepulcher" => "Sepulcher",
-        "hollowbishop" => "Hollow Bishop",
-        "ironmaw" => "Ironmaw",
-        "weepingcolossus" => "Weeping Colossus",
-        "miredrowned" => "Miredrowned",
-        "ashenleviathan" => "Ashen Leviathan",
-        _ => "Unknown Horror",
-    }
+    meld_proto::bosses::display_name(key).unwrap_or("Unknown Horror")
 }
 
 /// An item dropped on the ground when a creature is felled by an overworld
@@ -3225,8 +3217,13 @@ impl Arena {
                         "gatekeeper",
                     );
                     self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
-                    self.monsters[gidx].boss_kind =
-                        pick_gatekeeper_boss_kind(summit.x.floor() as i64, gseed ^ 0xB055).to_string();
+                    // Through `become_boss`, not by writing `boss_kind`: the identity and
+                    // the LINEAGE that comes with it are one act. Assigning the field
+                    // directly is what left every summit Gatekeeper fighting as whatever
+                    // wildlife it rode in on — a Choirmother tagged `beast`, which is the
+                    // exact bug `become_boss` was written to end.
+                    let boss = pick_gatekeeper_boss_kind(summit.x.floor() as i64, gseed ^ 0xB055);
+                    self.monsters[gidx].become_boss(boss);
                 } else {
                     self.chests.push(Chest {
                         opened_tick: 0,
@@ -3446,8 +3443,10 @@ impl Arena {
             self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
             // FS-4: unique boss mechanics — this gate boss fights as one of
             // the named bosses, tiered by which biome-seam threshold it guards.
-            self.monsters[gidx].boss_kind =
-                pick_gatekeeper_boss_kind(bd as i64, gseed ^ 0xB055).to_string();
+            // `become_boss` rather than a bare field write, so it also takes the boss's
+            // own lineage (see the summit gate above).
+            let boss = pick_gatekeeper_boss_kind(bd as i64, gseed ^ 0xB055);
+            self.monsters[gidx].become_boss(boss);
         }
 
         // Every biome is a MAZE: pack the play area with extra impassable props so
@@ -5444,20 +5443,6 @@ fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8)
         }
     }
 }
-
-#[cfg(test)]
-const BOSS_KEYS_FOR_TEST: [&str; 10] = [
-    "gloamhound",
-    "rustfang",
-    "choirmother",
-    "pyrewarden",
-    "sepulcher",
-    "hollowbishop",
-    "ironmaw",
-    "weepingcolossus",
-    "miredrowned",
-    "ashenleviathan",
-];
 
 #[cfg(test)]
 mod tests {
@@ -9169,7 +9154,7 @@ mod tests {
         assert_eq!(abilities::boss_faction("not_a_boss"), None);
 
         // Every named boss has a lineage, or it would silently keep its host's.
-        for key in BOSS_KEYS_FOR_TEST {
+        for key in meld_proto::bosses::keys() {
             assert!(
                 abilities::boss_faction(key).is_some(),
                 "{key} has no lineage"
@@ -9177,6 +9162,15 @@ mod tests {
         }
         assert_eq!(abilities::bosses_of_faction("undead").len(), 4);
         assert_eq!(abilities::bosses_of_faction("construct").len(), 5);
+
+        // The engine's roster and the shared registry are the SAME ten. The registry is
+        // what the client draws a name plate from, so a boss listed here and missing
+        // there would fight under a name nobody outside the server ever sees.
+        let mut engine: Vec<&str> = abilities::all_bosses().to_vec();
+        let mut shared: Vec<&str> = meld_proto::bosses::keys().collect();
+        engine.sort_unstable();
+        shared.sort_unstable();
+        assert_eq!(engine, shared, "the boss roster and the shared registry disagree");
     }
 
     #[test]
