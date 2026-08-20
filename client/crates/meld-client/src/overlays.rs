@@ -669,6 +669,17 @@ pub(crate) fn render_loot_report(
                         ));
                     });
                 }
+                // The COST, last and in the colour of a warning rather than a prize: the
+                // card is a balance sheet, and one that shows only the winnings teaches
+                // the player that dying is free. ASCII only — the default font has no
+                // em-dash and draws a missing-glyph box in its place.
+                for (hero, points) in &report.worn {
+                    p.spawn((
+                        Text::new(format!("{hero} fell: kit worn -{points} durability")),
+                        TextFont { font_size: 17.0, ..default() },
+                        TextColor(glass::WARN),
+                    ));
+                }
             });
         });
 }
@@ -1067,4 +1078,86 @@ pub(crate) fn locked_roster_lines(owned: &[String]) -> Vec<(String, String)> {
         // over and over with nothing to show for it.
         .map(|u| (u.name.to_string(), meld_proto::unlocks::how_to_earn(u, owned)))
         .collect()
+}
+
+/// GR-2: the report card has to carry the COST as well as the haul. A fight that took a
+/// hero down bills that hero's kit, and the card is the only place the player is standing
+/// when it happens — the Vault is a dive away.
+#[cfg(test)]
+mod report_cost_tests {
+    use super::*;
+
+    fn card_lines(report: LootReport) -> Vec<String> {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin));
+        app.init_state::<Screen>();
+        app.insert_resource(report);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.add_systems(Update, render_loot_report);
+        app.update();
+        let mut q = app.world_mut().query::<&Text>();
+        q.iter(app.world()).map(|t| t.0.clone()).collect()
+    }
+
+    #[test]
+    fn a_fight_that_cost_you_a_hero_says_so_on_the_card() {
+        let lines = card_lines(LootReport {
+            active: true,
+            title: "VICTORY".to_string(),
+            xp: Some(120),
+            chits: 4,
+            items: vec![],
+            gear: vec![],
+            worn: vec![("Kestrel".to_string(), 30)],
+            elapsed: 0.0,
+            gate_return: false,
+        });
+        assert!(
+            lines.iter().any(|l| l.contains("Kestrel") && l.contains("30") && l.is_ascii()),
+            "a victory that cost a hero its kit said nothing about it: {lines:?}"
+        );
+    }
+
+    /// The card is one long-lived resource, so raising it has to wipe the last one: a
+    /// chest opened after a costly fight was inheriting that fight's durability line and
+    /// billing the player twice for one death, in a place they could not connect it to.
+    #[test]
+    fn raising_a_card_never_inherits_the_last_ones_bill() {
+        let mut card = LootReport {
+            active: true,
+            title: "VICTORY".to_string(),
+            xp: Some(120),
+            chits: 9,
+            items: vec![],
+            gear: vec![],
+            worn: vec![("Kestrel".to_string(), 30)],
+            elapsed: 4.0,
+            gate_return: true,
+        };
+        card.raise("TREASURE!", None, 12, vec![], vec![]);
+        assert!(card.worn.is_empty(), "the chest inherited the last fight's bill");
+        assert_eq!(card.elapsed, 0.0, "the new card started part-way through its life");
+        assert!(!card.gate_return, "a chest must not gate the walk back to the overworld");
+    }
+
+    /// And stays quiet when nothing fell — a warning line on every clean win is a warning
+    /// line the player stops reading.
+    #[test]
+    fn a_clean_win_carries_no_warning() {
+        let lines = card_lines(LootReport {
+            active: true,
+            title: "VICTORY".to_string(),
+            xp: Some(120),
+            chits: 4,
+            items: vec![],
+            gear: vec![],
+            worn: vec![],
+            elapsed: 0.0,
+            gate_return: false,
+        });
+        assert!(
+            !lines.iter().any(|l| l.contains("kit worn")),
+            "a fight nobody fell in reported a bill: {lines:?}"
+        );
+    }
 }

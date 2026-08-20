@@ -509,6 +509,24 @@ pub mod battle {
         pub gear_drops: Vec<LootGear>,
         pub class_emblem_drops: Vec<EmblemDrop>,
         pub gatekeeper_cleared: bool,
+        /// What the fight COST the recipient in gear durability (GR-2): one entry per
+        /// hero of theirs that fell. Its own field rather than a negative line in
+        /// `loot`, because a cost is not a haul — and on the wire at all because a
+        /// charge the player is never shown is a charge they will read as a bug when
+        /// they next open the Vault.
+        #[serde(default)]
+        pub gear_worn: Vec<GearWorn>,
+    }
+    /// One hero's bill for going down (GR-2). `durability_lost` is points off EVERY
+    /// insured piece that hero was wearing, not a total across the set: the tax is
+    /// per piece, and a set of six loses this much six times over.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct GearWorn {
+        pub hero_slot: i32,
+        pub hero_name: String,
+        /// More than one when a hero was revived and killed again in the same fight.
+        pub falls: u32,
+        pub durability_lost: i32,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct XpAward {
@@ -1388,6 +1406,10 @@ pub mod run {
         /// Red-chest gear banked into the Vault on extraction (empty on death).
         #[serde(default)]
         pub gear_banked: Vec<LootGear>,
+        /// Whether this run cost any INSURED gear max durability. The tax rides hero
+        /// FALLS rather than the run's outcome (GR-2, CANON D6), so this is `true` on
+        /// an EXTRACTION in which a hero went down and was carried home — it is not a
+        /// second way of saying `died`.
         pub durability_loss_applied: bool,
     }
     impl Message for MemberResult {

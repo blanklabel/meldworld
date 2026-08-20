@@ -3256,30 +3256,56 @@ impl Db {
         Ok(())
     }
 
-    /// Apply the death durability sink to equipped blue-chest gear:
-    /// `max_durability ← floor(max_durability × 0.9)` (CANON.md D6).
-    pub async fn apply_death_durability(
+    /// Charge the durability tax on **one hero's own** equipped insured gear:
+    /// `max_durability ← max(max_durability - points_per_fall × falls, 0)` (CANON.md D6).
+    ///
+    /// The tax is per HERO DEATH, not per wipe (GR-2). A hero who falls and is
+    /// carried home by the rest of the party still pays for it, which is what makes
+    /// repair a standing cost rather than a bill you only ever see on the run that
+    /// already took everything else. A party wipe needs no arm of its own: it is
+    /// four heroes falling, so it arrives here four times, each charging its own
+    /// hero's pieces.
+    ///
+    /// **Flat points, not a fraction**, and that is what lets a piece be better
+    /// MADE: `ceil(max_durability / points_per_fall)` is the number of deaths it has
+    /// left in it, so a jittered roll and the `masterwork` affix both buy real
+    /// deaths. A fraction of current max gave every piece the same lifetime and never
+    /// actually reached zero.
+    ///
+    /// `hero_slot` is the party slot (0-based) — the tax reaches only what that hero
+    /// was actually wearing. `falls` above 1 is a hero who was revived and killed
+    /// again in the same fight.
+    pub async fn apply_hero_fall_durability(
         &self,
         player_id: Uuid,
-        rate: f64,
+        hero_slot: i32,
+        falls: u32,
+        points_per_fall: i32,
     ) -> Result<(), DbError> {
-        let keep = (1.0 - rate).clamp(0.0, 1.0);
+        if falls == 0 || points_per_fall <= 0 {
+            return Ok(());
+        }
+        let points = points_per_fall.saturating_mul(falls.min(i32::MAX as u32) as i32);
         match &self.backend {
             Backend::Pg(pool) => {
                 sqlx::query(
-                    "UPDATE gear SET max_durability = FLOOR(max_durability * $2)
-                     WHERE owner_player_id = $1 AND insurance = 'blue' AND equipped_hero_slot IS NOT NULL",
+                    "UPDATE gear SET max_durability = GREATEST(max_durability - $3, 0)
+                     WHERE owner_player_id = $1 AND insurance = 'blue' AND equipped_hero_slot = $2",
                 )
                 .bind(player_id)
-                .bind(keep)
+                .bind(hero_slot)
+                .bind(points)
                 .execute(pool)
                 .await?;
             }
             Backend::Mem(m) => {
                 let mut m = m.lock().unwrap();
                 for g in m.gear.values_mut() {
-                    if g.owner_player_id == player_id && g.insurance == "blue" && g.equipped_hero_slot.is_some() {
-                        g.max_durability = (g.max_durability as f64 * keep).floor() as i32;
+                    if g.owner_player_id == player_id
+                        && g.insurance == "blue"
+                        && g.equipped_hero_slot == Some(hero_slot)
+                    {
+                        g.max_durability = (g.max_durability - points).max(0);
                     }
                 }
             }
@@ -4176,10 +4202,11 @@ mod tests {
         assert_eq!(bonuses[1].atk, 7);
         assert_eq!(db.set_equipped(p, Uuid::now_v7(), Some(0)).await.unwrap(), EquipResult::NotFound);
 
-        // Death sink only touches equipped blue-chest gear (looted sword is red).
-        db.apply_death_durability(p, 0.1).await.unwrap();
+        // The fall sink only touches the FALLEN hero's equipped blue-chest gear
+        // (the looted sword is red, and it is on hero 1 besides).
+        db.apply_hero_fall_durability(p, 0, 1, 30).await.unwrap();
         let starter_row = db.get_gear(p).await.unwrap().into_iter().find(|g| g.gear_id == starter).unwrap();
-        assert_eq!(starter_row.max_durability, 90); // floor(100 * 0.9)
+        assert_eq!(starter_row.max_durability, 70, "one fall costs a flat 30 points");
 
         // Spec §5 red-gear canon gap: equipped red gear is DELETED on a run
         // that ends died/abandoned (the looted sword is equipped on hero 1),
@@ -4251,18 +4278,20 @@ mod tests {
         let dur = after.iter().find(|g| g.gear_id == insured).unwrap().max_durability;
         assert_eq!(dur, 100, "surviving a run costs insured gear nothing");
 
-        // A WIPE: standard is destroyed outright, insured only wears down.
+        // A WIPE: standard is destroyed outright, insured only wears down. The wipe has
+        // no arm of its own any more — it arrives as each hero's own fall (hero 0 here).
         db.destroy_equipped_standard_gear(p).await.unwrap();
-        db.apply_death_durability(p, 0.08).await.unwrap();
+        db.apply_hero_fall_durability(p, 0, 1, 30).await.unwrap();
         let after = db.get_gear(p).await.unwrap();
         assert!(!has(&after, "Plain Ring"), "a wipe takes standard gear entirely");
         assert!(has(&after, "Insured Ring"), "insured gear cannot be taken");
         let dur = after.iter().find(|g| g.gear_id == insured).unwrap().max_durability;
-        assert_eq!(dur, 92, "insured gear pays in durability instead: floor(100 * 0.92)");
+        assert_eq!(dur, 70, "insured gear pays in durability instead: 100 - 30");
 
-        // Enough wipes and it finally breaks — the price of never losing it.
-        for _ in 0..80 {
-            db.apply_death_durability(p, 0.08).await.unwrap();
+        // A FEW more falls and it is scrap — three from full at these numbers, which is
+        // the point of flat points: the piece has a countable number of deaths in it.
+        for _ in 0..3 {
+            db.apply_hero_fall_durability(p, 0, 1, 30).await.unwrap();
         }
         let dur = db
             .get_gear(p)
@@ -4272,7 +4301,76 @@ mod tests {
             .find(|g| g.gear_id == insured)
             .unwrap()
             .max_durability;
-        assert_eq!(dur, 0, "insured gear eventually wears out completely");
+        assert_eq!(dur, 0, "a 100-point piece has exactly four deaths in it: ceil(100 / 30)");
+    }
+
+    /// GR-2: the tax follows the hero who FELL, not the player who owns them. One
+    /// hero going down used to chew every hero's kit, because the sink was a wipe rule
+    /// and a wipe is the only thing that used to trigger it.
+    #[tokio::test]
+    async fn a_hero_falling_taxes_that_heros_gear_and_nobody_elses() {
+        let db = mem().await;
+        let p = db.register("faller", "correct-horse-battery").await.unwrap().player_id;
+        let piece = |name: &str| LootedGear {
+            insurance: meld_proto::Insurance::Insured,
+            gear_id: Uuid::now_v7(),
+            name: name.into(),
+            slot: "accessory".into(),
+            class_key: String::new(),
+            tier: 1,
+            atk_bonus: 1,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 100,
+            max_durability: 100,
+            damage_modifiers: "{}".into(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: "[]".into(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        db.insert_looted_gear(p, &[piece("Faller's Ring"), piece("Bystander's Ring")])
+            .await
+            .unwrap();
+        let ids: Vec<(String, Uuid)> = db
+            .get_gear(p)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|g| (g.name, g.gear_id))
+            .collect();
+        let id_of = |want: &str| ids.iter().find(|(n, _)| n == want).expect("ring exists").1;
+        for (slot, want) in ["Faller's Ring", "Bystander's Ring"].iter().enumerate() {
+            db.force_insurance(id_of(want), "blue").await.unwrap();
+            assert_eq!(
+                db.set_equipped(p, id_of(want), Some(slot as i32)).await.unwrap(),
+                EquipResult::Ok
+            );
+        }
+        let dur = |gs: &[GearRow], n: &str| {
+            gs.iter().find(|g| g.name == n).expect("ring exists").max_durability
+        };
+
+        // Hero 0 goes down twice in one fight — raised, and killed again.
+        db.apply_hero_fall_durability(p, 0, 2, 30).await.unwrap();
+        let after = db.get_gear(p).await.unwrap();
+        assert_eq!(
+            dur(&after, "Faller's Ring"),
+            40,
+            "two falls in one fight cost two charges: 100 - 2 x 30"
+        );
+        assert_eq!(
+            dur(&after, "Bystander's Ring"),
+            100,
+            "hero 1 never went down, so hero 1's kit is untouched — a teammate's death \
+             is not a bill you pay"
+        );
+
+        // A hero who never fell is charged nothing, so the caller can hand over the
+        // whole party's counts without filtering first.
+        db.apply_hero_fall_durability(p, 1, 0, 30).await.unwrap();
+        assert_eq!(dur(&db.get_gear(p).await.unwrap(), "Bystander's Ring"), 100);
     }
 
     #[tokio::test]
@@ -5136,7 +5234,7 @@ mod tests {
         // Repair: chew the durability the way a death does, then buy it back. It
         // never exceeds the piece's original maximum, and it only bills for what it
         // actually restored.
-        // Only EQUIPPED insured gear takes the death penalty, and hero 0's hand is
+        // Only the FALLEN hero's equipped insured gear takes the penalty, and hero 0's hand is
         // full of starter kit — free it, or the equip silently no-ops.
         let starter = db
             .get_gear(p)
@@ -5147,7 +5245,7 @@ mod tests {
             .expect("starter main-hand");
         assert_eq!(db.set_equipped(p, starter.gear_id, None).await.unwrap(), EquipResult::Ok);
         assert_eq!(db.set_equipped(p, gid, Some(0)).await.unwrap(), EquipResult::Ok);
-        db.apply_death_durability(p, 0.1).await.unwrap();
+        db.apply_hero_fall_durability(p, 0, 1, 30).await.unwrap();
         let chewed = db.get_gear_by_id(p, gid).await.unwrap().unwrap();
         assert!(chewed.max_durability < chewed.base_max_durability, "nothing was chewed");
         let missing = chewed.base_max_durability - chewed.max_durability;

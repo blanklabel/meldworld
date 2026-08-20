@@ -1,6 +1,14 @@
 //! Death durability sink (CANON.md D6): a passive solo bot walks into the
 //! monster and never attacks, so it dies. Its equipped blue-chest gear loses
-//! 10% max durability, persisted to Postgres — verified via `GET /v1/vault/gear`.
+//! `durability_loss_per_fall` points of its max durability, persisted to Postgres — verified
+//! via `GET /v1/vault/gear`.
+//!
+//! The tax is charged per HERO FALL (GR-2), and this bot's whole party goes down,
+//! so hero 0 is billed exactly once — the same number the old wipe-scoped sink
+//! produced, which is why this test reads unchanged across that rewrite. What it no
+//! longer proves on its own is the interesting half: that a hero falling *without*
+//! the run ending is billed too. That is held in `meld-server`'s
+//! `hero_fall_tax_tests`.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL`.
 
@@ -159,11 +167,11 @@ async fn death_degrades_equipped_gear_durability() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let decay = meld_balance::Balance::load_default().unwrap().loot.insured_death_decay;
-    let want = ((base_max as f64) * (1.0 - decay)).floor() as i64;
+    let per_fall = meld_balance::Balance::load_default().unwrap().loot.durability_loss_per_fall;
+    let want = (base_max - per_fall as i64).max(0);
     assert_eq!(
         degraded,
         Some(want),
-        "a wipe should cost insured gear one `insured_death_decay` of its max durability"
+        "hero 0 fell once, so its insured gear owes exactly one `durability_loss_per_fall`"
     );
 }

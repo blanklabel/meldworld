@@ -628,7 +628,7 @@ A party member's run reached its terminal state: `extracted`, `died`, or `abando
 | max_distance_reached | integer (int32, ≥ 0) | Yes | No | — | The member's deepest `floor` distance this run — the Vanguard Board input (CANON.md D3; board itself is HTTP-owned). |
 | banked | array of ItemStack | Yes | Yes | — | `extracted` only, own copy only: the backpack contents banked into the Vault (red-chest gear becomes owned Vault gear, still `red` tier). `null` otherwise. **Handoff:** the banking itself is a server-side persistent mutation; the Vault's new state is read via the HTTP API. |
 | lost | array of ItemStack | Yes | Yes | — | `died`/`abandoned`, own copy only: the deleted backpack contents. `null` otherwise. |
-| durability_loss_applied | boolean | Yes | No | — | Whether blue-chest gear lost max durability: `true` on `died` (−10% of current max, round down, floor 0 — CANON.md D6/§B, applied server-side, visible via HTTP), `false` on `extracted` and `abandoned`. |
+| durability_loss_applied | boolean | Yes | No | — | Whether this run cost blue-chest gear any max durability. **Not a synonym for `died`:** the tax is charged per **hero fall** (CANON.md D6/§B, GR-2), so it is `true` on an `extracted` or `abandoned` run in which a hero went down and was carried home, and `false` on a `died` run only in the impossible case that nothing was equipped. Applied server-side, visible via HTTP. |
 
 **Ordering** — for a death this message follows the terminal `battle.ended` (`outcome: "defeat"`); for extraction it follows the channel completing (no separate "channel completed" message — this is it).
 

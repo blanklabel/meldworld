@@ -753,6 +753,10 @@ pub enum ServerMsg {
         chits: i64,
         items: Vec<(String, i32)>,
         gear_drops: Vec<String>,
+        /// What the fight COST: `(hero name, points off each insured piece they wore)`
+        /// for every hero of ours that fell (GR-2). Reported on every outcome, because
+        /// a hero that went down in a fight you won still went down.
+        worn: Vec<(String, i32)>,
     },
     /// Ground loot a creature left behind, just walked over and banked (`CR-2`). Feeds
     /// the same report banner as a chest — the loot a kill leaves is as much a payout as
@@ -2962,12 +2966,18 @@ impl Inner {
                         .map(|i| (i.item_kind, i.quantity))
                         .collect();
                     let gear_drops = e.gear_drops.into_iter().map(|g| g.name).collect();
+                    let worn = e
+                        .gear_worn
+                        .into_iter()
+                        .map(|w| (w.hero_name, w.durability_lost))
+                        .collect();
                     self.out.push_back(ServerMsg::BattleEnded {
                         outcome,
                         xp,
                         chits: e.chits_found,
                         items,
                         gear_drops,
+                        worn,
                     });
                 }
             }

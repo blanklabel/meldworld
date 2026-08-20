@@ -18,10 +18,10 @@ Each `Player` in an instance has their own `Run` record; terminal states are per
 |------------|-----------------|----------|--------------|
 | — (none) | Player departs a Hub into the maze (instance created at maze-entry, D13) | `active` | `run_level` set to `base_run_level(hub)`; empty `Backpack` created; equipped blue-chest `GearItem`s carried into the run |
 | `active` | Extraction channel completes (portal or `ripcord_scroll`) | `extracted` | Backpack banked to `Vault`; red gear becomes owned Vault gear; Meld XP credited; run record finalized with max distance reached |
-| `active` | Player's battle ends in defeat ([combat-atb.md](./combat-atb.md)) | `died` | Backpack deleted; `run_level` deleted; blue-chest gear returned to Hub at `max_durability × 0.9` (round down) |
+| `active` | Player's battle ends in defeat ([combat-atb.md](./combat-atb.md)) | `died` | Backpack deleted; `run_level` deleted; equipped **standard** gear destroyed; blue-chest gear returned to the Hub (its durability was already charged per hero fall — see Death) |
 | `active` | Sleeping avatar killed by a monster while disconnected ([disconnect-handling.md](./disconnect-handling.md)) | `died` | Same as death above |
-| `active` | Player explicitly abandons the run (client-initiated, confirmed) | `abandoned` | Backpack deleted; `run_level` deleted; blue-chest gear returned **without** durability loss (see Note 1) |
-| `active` | Instance auto-close: 60 min with **all** members disconnected | `abandoned` | Counts as death for the Backpack (deleted), but **no durability loss** on blue-chest gear |
+| `active` | Player explicitly abandons the run (client-initiated, confirmed) | `abandoned` | Backpack deleted; `run_level` deleted; blue-chest gear returned with no **further** durability loss — abandoning is not itself a death, though falls taken during the run were already charged (see Note 1) |
+| `active` | Instance auto-close: 60 min with **all** members disconnected | `abandoned` | Counts as death for the Backpack (deleted), but adds **no durability loss** of its own on blue-chest gear |
 | `extracted` / `died` / `abandoned` | any | — | Terminal. A run never leaves a terminal state; re-entering the maze creates a new `Run`. |
 
 > **Note 1:** CANON only defines the *auto*-abandon trigger (60-min all-disconnected, CANON.md §B Disconnect handling) and its semantics (backpack deleted, no durability loss). A player-initiated abandon is implied by the `abandoned` terminal state in §G; this spec resolves it to the same semantics as auto-abandon. Flagged as a canon gap — see Edge Cases.
@@ -160,9 +160,43 @@ gathering a decision rather than a walk.
 2. The server atomically performs the terminal transition `active → died`:
    - The **Party Inventory and every hero's pouch** are **permanently deleted**, along with any unextracted red gear, equipped or carried. Both containers obey exactly the same rule: a pouch is not a safe-deposit box, so there is no arrangement of your items that survives a wipe. The `run.member_result` `lost` list reports both together.
    - The accumulated `run_level` is **deleted**.
-   - Blue-chest gear is returned to the Hub with `max_durability × 0.9`, rounded down, floor 0 **[TUNABLE]** (CANON.md §D6: −10% of current max durability per death). Gear at 0 max durability is unequippable until repaired by a Forging crafter.
+   - Blue-chest gear is returned to the Hub. Its durability loss is **not** charged here: it is charged **per hero death** as each hero falls (below), and a wipe is every hero falling — so a run that ends `died` has already paid for the four falls that ended it. Charging it again at the terminal transition would bill the same deaths twice.
+   - **Standard** gear that was equipped is **destroyed outright**, and ephemeral gear burns (as it does on every way home). Durability is what *insured* gear pays instead of being taken.
 3. Nothing else persistent changes: chits in the `Vault`, Meld Skills, class unlocks, and cosmetics are untouched by death.
 4. Death is per-player; the instance and other members' runs continue.
+
+### The durability tax is per HERO death, not per wipe
+
+A hero going down charges **that hero's own** equipped insured gear
+`max_durability − durability_loss_per_fall`, floor 0 **[TUNABLE]** (CANON.md §D6).
+Flat points rather than a fraction, so a piece's durability *is* the number of deaths
+it can still take: a rolled piece averages ~3 (2 on a poor roll, 4 on a good one) and
+an `of Masterwork` piece 4–6. It applies:
+
+- **Whatever the fight's outcome.** A hero that fell and was revived, or was simply
+  carried through to a victory, still fell. A tax only a lost run pays is a tax a
+  careful player never meets, which is what made durability a death penalty rather
+  than the repair sink it is specified to be (GDD §7).
+- **Per fall, not per corpse.** A hero raised by Revitalize and killed again pays
+  twice — two charges, so two deaths off the piece's life. A hero already down when a fight begins pays nothing
+  for staying down, and a hero whose party **flees** pays nothing at all — fleeing is
+  not dying.
+- **Only to the hero who fell.** A teammate's death is not a bill you pay.
+- **To insured gear only** — ephemeral and standard have their own, harsher rules.
+
+Falls are counted by the battle engine at the single point damage puts a fighter
+down. The two deaths that happen with **no battle** — a sprung dungeon trap and the
+Force blast of a Shift (CANON §W2) — charge the same tax from the same write.
+
+Gear at 0 max durability is unequippable until repaired by a Forging crafter, and
+contributes nothing to its hero while broken.
+
+**The charge is reported to the player**, on `battle.ended`'s `gear_worn` — one entry
+per hero of theirs that fell, carrying the hero's name, the number of falls and the
+points taken off each insured piece. Every outcome carries it (victory, defeat, flee),
+because a hero that went down in a fight you won went down all the same. The client
+shows it on the after-action card for a win and on the death screen for a wipe, which
+is where the bill is largest and least inferable.
 
 ---
 
@@ -170,8 +204,8 @@ gathering a decision rather than a walk.
 
 **Source:** CANON.md §B (Disconnect handling), §G (Run); GDD.md §5
 
-1. **Auto-abandon (canonical trigger):** if **all** members of an instance are disconnected for **60 min [TUNABLE]**, the instance closes and every remaining `active` run transitions to `abandoned`. This *counts as death for the Backpack* (deleted, with run levels) but applies **no durability loss** to blue-chest gear — explicitly different from a real death (see [disconnect-handling.md](./disconnect-handling.md)).
-2. **Player-initiated abandon:** a connected player may abandon their run (e.g. give up while lost). Semantics mirror auto-abandon: Backpack and run level deleted, blue gear returned with no durability loss. *(Canon gap resolution — see Note 1 above.)*
+1. **Auto-abandon (canonical trigger):** if **all** members of an instance are disconnected for **60 min [TUNABLE]**, the instance closes and every remaining `active` run transitions to `abandoned`. This *counts as death for the Backpack* (deleted, with run levels) but applies **no durability loss of its own** to blue-chest gear — explicitly different from a real death (see [disconnect-handling.md](./disconnect-handling.md)). Falls the party actually took earlier in the run were charged when they happened, and abandoning does not refund them.
+2. **Player-initiated abandon:** a connected player may abandon their run (e.g. give up while lost). Semantics mirror auto-abandon: Backpack and run level deleted, blue gear returned with no durability loss charged *for the abandon itself*. *(Canon gap resolution — see Note 1 above.)*
 3. Abandon never banks anything: the only path that moves Backpack contents into the `Vault` is `extracted`.
 
 ---

@@ -575,15 +575,29 @@ ephemeral_gear_chance = 0.10
 ephemeral_power_mult = 1.60
 permanent_gear_chance = 0.15
 insured_power_mult = 1.15
-# What one wipe costs a piece of INSURED gear: max durability keeps
-# `1 - insured_death_decay` of itself. Insured gear cannot be taken from you, so
-# erosion is the whole price of that guarantee — this dial is how long "eventually
-# breaks" takes. At 0.08 a piece survives roughly 28 wipes before it is scrap.
+# What one HERO DEATH costs that hero's INSURED gear, in POINTS of max durability.
+# Charged per fall, not per wipe (GR-2) — a hero the party carries home still went
+# down, so repair is a standing cost rather than a bill only a lost run presents. A
+# wipe needs no separate rate: it is every hero falling, so it charges each once.
+#
+# Flat points rather than a fraction, and that is the whole design: a piece's own
+# `max_durability` is what decides how many deaths it survives
+# (`ceil(durability / loss)`), so "this one is better made" is a real difference
+# between two drops instead of a number that reads the same on all of them. A
+# fraction of current max cannot express that — every piece would last identically
+# and approach zero without ever arriving.
 # [TUNABLE]
-insured_death_decay = 0.08
+durability_loss_per_fall = 30
 gear_atk_per_tier = 3.0
 gear_atk_jitter = 0.4
+# The MEAN durability of a rolled piece, jittered per drop. With the loss above, 80
+# is ~3 deaths (2 on a poor roll, 4 on a good one) — which is the intended feel: a
+# dive that costs you a hero costs you a visit to a smith, and gear you never repair
+# does not survive a bad week. `masterwork` (the "of Masterwork" affix) lifts a piece
+# clear of the band, to 4-6.
+# [TUNABLE]
 gear_base_durability = 80
+gear_durability_jitter = 0.35
 
 # Encounter variety (FS-4). Most creatures are Standard; a fraction roll ELITE
 # (champions — tougher, richer loot), and a GATEKEEPER guards each biome-band
@@ -798,6 +812,14 @@ tier_floor_element = 3           # elemental resistance
 tier_floor_ward = 4              # start-of-battle Barrier/Regen/Evasion
 tier_floor_keyword = 6           # class-mechanic twists
 tier_floor_synergy = 8           # ally-conditional bonuses (party builds)
+# Craft quality — how well the thing is MADE rather than what it does. Early, because
+# durability is an early-game pain and "this one lasts" should be a find you can have
+# before you understand builds.
+tier_floor_quality = 2
+# How much more max durability an "of Masterwork" piece carries, as a percent, before
+# the usual per-roll jitter. At 60 a masterwork piece takes 4-6 deaths against a plain
+# one's 2-4. [TUNABLE]
+masterwork_durability_pct = 60
 resist_pct_per_tier = 4          # elemental resist % per tier, capped [TUNABLE]
 resist_pct_cap = 40
 # Uniques + sets: the two chase tiers above affixes. A unique only drops from a

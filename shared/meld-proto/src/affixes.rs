@@ -14,6 +14,9 @@
 //!   class whose mechanic it is.
 //! - **Synergy** — conditional on an *ally* ("+N atk while a Resonant is in your
 //!   party"). This is what turns one drop into a **party** build decision.
+//! - **Quality** — how well it is MADE: `masterwork` carries extra max durability,
+//!   so the piece survives more hero deaths before a smith has to see it. The one
+//!   affix class that changes nothing about a fight.
 //!
 //! The registry (which affixes exist, what they twist, what they're called) is
 //! content and lives here; the numbers — how many affixes a rarity rolls, the
@@ -34,6 +37,11 @@ pub enum AffixClass {
     Ward,
     Keyword,
     Synergy,
+    /// How well the thing is MADE rather than what it does — it twists no stat and no
+    /// mechanic, only how long the piece survives being died in (GR-2). Its own class
+    /// because a tier floor is per class and "well made" should be findable long
+    /// before builds are.
+    Quality,
 }
 
 /// One rolled affix on one piece of gear. `magnitude` is already resolved (the
@@ -109,6 +117,11 @@ pub const AFFIXES: &[AffixDef] = &[
         Some(CharacterClass::Psyker),
         "of the Open Mind",
     ),
+    // Extra max durability, read as a PERCENT. The loss per hero death is flat points
+    // (`durability_loss_per_fall`), so more durability is literally more deaths
+    // survived — which is why craftsmanship can be an affix at all rather than a
+    // rounding difference.
+    def("masterwork", AffixClass::Quality, 1.0, None, "of Masterwork"),
     def("ally_atk", AffixClass::Synergy, 1.2, None, "of Fellowship"),
     def("ally_def", AffixClass::Synergy, 1.2, None, "of the Shield Wall"),
 ];
