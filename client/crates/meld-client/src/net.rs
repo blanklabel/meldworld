@@ -226,6 +226,10 @@ pub struct EntityView {
     /// This creature is PINNED by a Psyker right now (CL-2): it cannot move, and a fight
     /// begun against it opens with the whole party's gauges full.
     pub held: bool,
+    /// FS-4: the named boss this creature IS, if it is one (`gloamhound`, `ironmaw`, …).
+    /// A boss overlays a host creature, so `monster_kind` is the wildlife it rode in on
+    /// and this is what it actually fights and renders as. `None` for ordinary fauna.
+    pub boss: Option<String>,
     /// For dungeon entrances: how many heroes the doors inside want standing on
     /// plates at once. 1 for anything a lone player can finish.
     pub bodies_required: u8,
@@ -2710,6 +2714,7 @@ impl Inner {
                             let mut quarry = false;
                             let mut held = false;
                             let mut clashing = false;
+                            let mut boss: Option<String> = None;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
                                 Some("stair") => (EntityKind::Stair, None, None),
@@ -2724,14 +2729,15 @@ impl Inner {
                                     (EntityKind::Chest, None, None)
                                 }
                                 Some(s) if s.starts_with("mob:") => {
-                                    let (k, f, q, h, cl) = parse_mob_state(s);
-                                    quarry = q;
-                                    held = h;
-                                    clashing = cl;
+                                    let t = parse_mob_state(s);
+                                    quarry = t.quarry;
+                                    held = t.held;
+                                    clashing = t.clashing;
+                                    boss = t.boss.map(str::to_string);
                                     (
                                         EntityKind::Monster,
-                                        Some(k.to_string()),
-                                        (!f.is_empty()).then(|| f.to_string()),
+                                        Some(t.kind.to_string()),
+                                        (!t.faction.is_empty()).then(|| t.faction.to_string()),
                                     )
                                 }
                                 Some(s) if s.starts_with("resource:") => {
@@ -2798,6 +2804,7 @@ impl Inner {
                                 aggression: if is_mob { e.aggression } else { None },
                                 quarry,
                                 held,
+                                boss,
                                 clashing,
                                 bodies_required,
                             }
@@ -3075,28 +3082,49 @@ pub(crate) fn payout_of(cause: &str) -> Option<Payout> {
     }
 }
 
-/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:marker…]` — into its parts.
+/// What a monster's `avatar_state` tag says about it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct MobTag<'a> {
+    /// Creature content id — the HOST creature, even for a boss.
+    kind: &'a str,
+    /// Creature faction; drives the colour.
+    faction: &'a str,
+    /// FS-4: which named boss this is, if it is one — the identity a Gatekeeper, an
+    /// end-fight peer or a bounty mark actually fights and renders as.
+    boss: Option<&'a str>,
+    quarry: bool,
+    held: bool,
+    clashing: bool,
+}
+
+/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:token…]` — into its parts.
 ///
-/// The markers are optional, some are per-viewer (AD-4), and there can be SEVERAL: a
-/// pinned creature can also be a quarry, and either can also be mid-clash (`CR-2`). So
-/// every trailing part is read, not just the first — reading only the first meant the
-/// second marker vanished depending on which one happened to be appended earlier, which
-/// is the kind of bug that looks like a rendering glitch. (And this is one function
-/// because reading the faction with a `split_once` swallowed `hostile:quarry` whole.)
-fn parse_mob_state(state: &str) -> (&str, &str, bool, bool, bool) {
+/// The trailing tokens are optional, some are per-viewer (AD-4), and there can be
+/// SEVERAL: a pinned creature can also be a quarry, and either can also be mid-clash
+/// (`CR-2`) and a named boss (FS-4). So every trailing part is read, not just the first
+/// — reading only the first meant the second marker vanished depending on which one
+/// happened to be appended earlier, which is the kind of bug that looks like a rendering
+/// glitch. (And this is one function because reading the faction with a `split_once`
+/// swallowed `hostile:quarry` whole.)
+///
+/// A token may be a bare flag (`held`) or a `key:value` pair (`boss:ironmaw`), like the
+/// combatant `statuses` tokens it mirrors — so a value is CONSUMED by its key rather than
+/// being read as a flag of its own.
+fn parse_mob_state(state: &str) -> MobTag<'_> {
     let mut parts = state.strip_prefix("mob:").unwrap_or(state).split(':');
     let kind = parts.next().unwrap_or("");
     let faction = parts.next().unwrap_or("");
-    let (mut quarry, mut held, mut clashing) = (false, false, false);
-    for m in parts {
+    let mut tag = MobTag { kind, faction, ..Default::default() };
+    while let Some(m) = parts.next() {
         match m {
-            "quarry" => quarry = true,
-            "held" => held = true,
-            "clash" => clashing = true,
+            "quarry" => tag.quarry = true,
+            "held" => tag.held = true,
+            "clash" => tag.clashing = true,
+            "boss" => tag.boss = parts.next().filter(|k| !k.is_empty()),
             _ => {}
         }
     }
-    (kind, faction, quarry, held, clashing)
+    tag
 }
 
 /// GET the Den's board and hand it back over `tx`.
@@ -3564,34 +3592,35 @@ fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<Log
 mod mob_state_tests {
     use super::*;
 
+    fn tag<'a>(kind: &'a str, faction: &'a str) -> MobTag<'a> {
+        MobTag { kind, faction, ..Default::default() }
+    }
+
     #[test]
     fn a_mob_state_keeps_its_faction_whatever_marker_it_carries() {
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal"),
-            ("forest_bloom_stalker", "fungal", false, false, false)
+            tag("forest_bloom_stalker", "fungal")
         );
         // The marker must not be read as part of the faction — the faction drives the
         // creature's colour, and `fungal:quarry` is not a colour.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:quarry"),
-            ("forest_bloom_stalker", "fungal", true, false, false)
+            MobTag { quarry: true, ..tag("forest_bloom_stalker", "fungal") }
         );
         // CL-2's pin rides the same slot, and must not be read as a quarry either.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:held"),
-            ("forest_bloom_stalker", "fungal", false, true, false)
+            MobTag { held: true, ..tag("forest_bloom_stalker", "fungal") }
         );
         // CR-2's clash is a third marker in the same slot.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:clash"),
-            ("forest_bloom_stalker", "fungal", false, false, true)
+            MobTag { clashing: true, ..tag("forest_bloom_stalker", "fungal") }
         );
         // A factionless mob, and an unknown trailing token, both stay readable.
-        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false, false, false));
-        assert_eq!(
-            parse_mob_state("mob:dune_wyrm:wyrm:something"),
-            ("dune_wyrm", "wyrm", false, false, false)
-        );
+        assert_eq!(parse_mob_state("mob:dune_wyrm"), tag("dune_wyrm", ""));
+        assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:something"), tag("dune_wyrm", "wyrm"));
     }
 
     /// Markers COMPOSE. The server appends `held` before `clash` and the per-viewer cull
@@ -3603,12 +3632,48 @@ mod mob_state_tests {
     fn every_marker_on_a_mob_state_is_read_not_just_the_first() {
         assert_eq!(
             parse_mob_state("mob:dune_wyrm:wyrm:held:clash:quarry"),
-            ("dune_wyrm", "wyrm", true, true, true)
+            MobTag { quarry: true, held: true, clashing: true, ..tag("dune_wyrm", "wyrm") }
         );
         assert_eq!(
             parse_mob_state("mob:dune_wyrm:wyrm:held:quarry"),
-            ("dune_wyrm", "wyrm", true, true, false)
+            MobTag { quarry: true, held: true, ..tag("dune_wyrm", "wyrm") }
         );
+    }
+
+    /// FS-4: a boss NAMES itself on the overworld, and its name is a `key:value` token
+    /// rather than a flag — so the value must be consumed by its key and never read as a
+    /// marker of its own. A Gatekeeper, an end-fight peer and a bounty mark all overlay a
+    /// host creature, so without this token the client has nothing but the host's wildlife
+    /// kind and draws the thing the whole walk out is pointed at as a boar.
+    #[test]
+    fn a_boss_names_itself_and_still_composes_with_every_marker() {
+        assert_eq!(
+            parse_mob_state("mob:bog_stinger:undead:boss:choirmother"),
+            MobTag { boss: Some("choirmother"), ..tag("bog_stinger", "undead") }
+        );
+        // The boss key rides in FRONT of the state markers, and none of them is lost to
+        // it — nor is the key itself read as one of them.
+        assert_eq!(
+            parse_mob_state("mob:bog_stinger:construct:boss:ironmaw:held:clash:quarry"),
+            MobTag {
+                boss: Some("ironmaw"),
+                quarry: true,
+                held: true,
+                clashing: true,
+                ..tag("bog_stinger", "construct")
+            }
+        );
+        // Order is not load-bearing: the token set is a set.
+        assert_eq!(
+            parse_mob_state("mob:dune_wyrm:wyrm:clash:boss:rustfang"),
+            MobTag { boss: Some("rustfang"), clashing: true, ..tag("dune_wyrm", "wyrm") }
+        );
+        // A truncated pair names nobody rather than naming the empty string, which would
+        // resolve to no sprite and no title while still reading as "this is a boss".
+        assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:boss"), tag("dune_wyrm", "wyrm"));
+        assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:boss:"), tag("dune_wyrm", "wyrm"));
+        // Ordinary fauna names no boss at all.
+        assert_eq!(parse_mob_state("mob:thornback_boar:beast").boss, None);
     }
 }
 

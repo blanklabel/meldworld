@@ -96,6 +96,24 @@ impl Ent {
     pub fn is_mob(&self) -> bool {
         self.state.starts_with("mob:")
     }
+    /// FS-4: which of the ten named bosses this creature IS (`ironmaw`), or `None` for
+    /// ordinary fauna.
+    ///
+    /// A boss OVERLAYS a host creature, so [`Self::kind`] is the wildlife it rode in on —
+    /// which is why matching boss names against `look` output found nothing: the end
+    /// fight, every Gatekeeper and every bounty mark printed as `bog_stinger` and could
+    /// only be identified by the `[world_end]` bracket beside them. Reads the same
+    /// `boss:<key>` token the client renders from, so what the harness can see and what a
+    /// player can see are the same fact.
+    pub fn boss(&self) -> Option<&str> {
+        let mut parts = self.state.split(':').skip(2);
+        while let Some(p) = parts.next() {
+            if p == "boss" {
+                return parts.next().filter(|k| !k.is_empty());
+            }
+        }
+        None
+    }
     /// CR-2: this creature is trading blows with another right now. A harness that cannot
     /// see the brawl cannot measure whether waiting it out and taking what falls is ever
     /// the right play — which is the only interesting question a clash asks.

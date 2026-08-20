@@ -1968,6 +1968,17 @@ impl WorldActor {
                     // per-viewer cull appends below), and a marker that only survives
                     // when it happens to sort first is a marker that vanishes at random.
                     let mut tag = format!("mob:{}:{}", m.monster_kind, m.faction);
+                    // FS-4: WHICH named boss this is, if it is one. A boss overlays a
+                    // host creature, so its `monster_kind` is the wildlife it rode in on
+                    // — without this the end fight, every Gatekeeper and every bounty
+                    // mark ride the wire as `mob:bog_stinger:beast` and draw as ordinary
+                    // fauna until you touch them. The one thing the whole walk out is
+                    // pointed at was invisible as anything special. `key:value` like the
+                    // combatant `statuses` tokens, and read as part of the same set, so
+                    // it composes with the markers below.
+                    if !m.boss_kind.is_empty() {
+                        tag.push_str(&format!(":boss:{}", m.boss_kind));
+                    }
                     if m.held_for > 0.0 {
                         tag.push_str(":held");
                     }
@@ -2708,7 +2719,18 @@ impl WorldActor {
                                 entities.push(dungeon_prop(format!("dchest-{id}"), pos, "chest:1:0"));
                             }
                             Some(ObjectKind::Boss { sprite, .. }) => {
-                                entities.push(dungeon_prop(format!("dboss-{id}"), pos, &format!("mob:{sprite}:hostile")));
+                                // A dungeon boss carries its authored sprite in the KIND
+                                // slot (its art is its identity down here), and names
+                                // itself with the same `boss:` token the overworld uses
+                                // when that sprite is one of the ten (FS-4) — so the
+                                // plate and the sprite come from one rule in both venues.
+                                // Bespoke art that is not a named boss stays untitled
+                                // rather than being labelled a guess.
+                                let mut tag = format!("mob:{sprite}:hostile");
+                                if meld_proto::bosses::is_boss(sprite) {
+                                    tag.push_str(&format!(":boss:{sprite}"));
+                                }
+                                entities.push(dungeon_prop(format!("dboss-{id}"), pos, &tag));
                             }
                             // Stairs were never sent, so nothing downstream could see
                             // them: not the client, and not a player trying to find
@@ -11967,6 +11989,75 @@ mod watching_tests {
             assert!(parts.next().is_some_and(|k| !k.is_empty()), "{tag}");
             assert!(parts.next().is_some_and(|f| !f.is_empty()), "{tag}");
         }
+    }
+
+    /// FS-4: a named boss SAYS WHICH BOSS IT IS in the snapshot.
+    ///
+    /// A boss overlays a host creature — `monster_kind` stays the wildlife it rode in on —
+    /// so until this token existed the identity reached the client only at battle assembly.
+    /// An end-fight peer, a Gatekeeper standing in the pass and a bounty mark all rode the
+    /// wire as `mob:bog_stinger:beast` and drew as ordinary fauna: the thing the whole walk
+    /// out is pointed at was invisible as anything special until you touched it. Exactly
+    /// the failure the `pack:` token had, and worth pinning at THIS level because the tag is
+    /// the only thing the client has to go on — the boss identity is otherwise entirely
+    /// server-side, and every world-level test would keep passing with it stripped.
+    ///
+    /// One tag covers all three creation sites (the end fight, both Gatekeeper placements,
+    /// bounty marks) because they all set the same field on the same struct.
+    #[test]
+    fn a_boss_says_which_boss_it_is_in_the_snapshot() {
+        let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        std::mem::forget(rx);
+        w.run
+            .add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        let (id, kind, faction, boss, at) = w
+            .arena
+            .monsters
+            .iter()
+            .find(|m| !m.boss_kind.is_empty())
+            .map(|m| {
+                (
+                    m.entity_id.clone(),
+                    m.monster_kind.clone(),
+                    m.faction.clone(),
+                    m.boss_kind.clone(),
+                    m.position,
+                )
+            })
+            .expect("a world streamed past several biome seams placed no boss at all");
+        // Stand on it, so the interest cull cannot be what decides the assertion.
+        if let Some(a) = w.arena.avatar_mut("p1") {
+            a.position = at;
+        }
+        let out = w.snapshot_msgs();
+        let snap = sent(&out, "p1", wm::Snapshot::TYPE).expect("no snapshot for the diver");
+        let entities: Vec<&serde_json::Value> =
+            snap["entities"].as_array().into_iter().flatten().collect();
+        let tag = entities
+            .iter()
+            .find(|e| e["entity_id"] == serde_json::json!(id))
+            .and_then(|e| e["avatar_state"].as_str())
+            .expect("the boss the player is standing on is not in their own snapshot");
+        assert_eq!(
+            tag,
+            format!("mob:{kind}:{faction}:boss:{boss}"),
+            "the boss rode the wire as its host creature"
+        );
+        // The key has to be one the CLIENT can resolve, or the tag names something that
+        // has neither a sprite set nor a title on the far side.
+        assert!(
+            meld_proto::bosses::display_name(&boss).is_some(),
+            "{boss} is not in the shared boss registry"
+        );
+        // …and ordinary fauna still names no boss: the token is an identity, not a field
+        // every creature carries an empty copy of.
+        let plain: Vec<&str> = entities
+            .iter()
+            .filter_map(|e| e["avatar_state"].as_str())
+            .filter(|s| s.starts_with("mob:") && !s.contains(":boss:"))
+            .collect();
+        assert!(!plain.is_empty(), "every creature in the snapshot claimed to be a boss");
     }
 
     /// CR-2: a creature that survives a fight resumes roaming WOUNDED.

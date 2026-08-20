@@ -1555,13 +1555,21 @@ pub(crate) fn sync_overworld_sprites(
                 );
             }
             EntityKind::Monster => {
-                // A boss with authored 8-direction animation frames (`bosses/<key>/`,
-                // e.g. a dungeon boss `mob:hollowbishop:hostile`) renders as an
-                // ANIMATED, camera-facing `CharSprite` — idle breathing + turning as
-                // the camera orbits — just like a hero, instead of a single frozen
-                // billboard. Regular creatures (single-PNG art) keep the billboard.
+                // A boss with authored 8-direction animation frames (`bosses/<key>/`)
+                // renders as an ANIMATED, camera-facing `CharSprite` — idle breathing +
+                // turning as the camera orbits — just like a hero, instead of a single
+                // frozen billboard. Regular creatures (single-PNG art) keep the billboard.
+                //
+                // The boss IDENTITY comes off the tag (`boss:<key>`, FS-4), not off the
+                // creature kind. A boss overlays a host creature, so its kind is the
+                // wildlife it rode in on: reading the kind alone worked only for the
+                // dungeon props that carry a boss key in the kind slot, and drew every
+                // Gatekeeper, every end-fight peer and every bounty mark as ordinary
+                // fauna — the same fight, rendered as the thing it is standing in for.
+                // Kind stays the fallback, so those dungeon props still resolve.
                 let kind = creature_kind(e.name.as_deref().unwrap_or(""));
-                if let Some(frames) = wa.boss_frames(&kind) {
+                let boss_key = e.boss.as_deref().unwrap_or(&kind);
+                if let Some(frames) = wa.boss_frames(boss_key) {
                     let scale = match e.encounter_class.as_deref() {
                         Some("gatekeeper") => 2.6,
                         _ => 2.0,
@@ -2433,6 +2441,20 @@ pub(crate) fn update_mob_nameplates(
                 },
             ))
             .with_children(|c| {
+                // FS-4: a named boss WEARS ITS NAME. A Gatekeeper stands in the pass on
+                // every run and the end fight is what the whole walk out is pointed at,
+                // and until the tag carried an identity both read as the wildlife they
+                // overlay — you learned what you had touched by touching it. Ungated for
+                // the same reason the ⚔ and the QUARRY plate are: this is the world
+                // saying what that is, not intel a perk buys. Unknown keys are titleless
+                // rather than titled a guess.
+                if let Some(title) = ent.boss.as_deref().and_then(meld_proto::bosses::display_name) {
+                    c.spawn((
+                        Text::new(title),
+                        TextFont { font_size: 12.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.6, 0.55)),
+                    ));
+                }
                 // What you came out here for, over its head, in the board's own word.
                 if ent.quarry {
                     c.spawn((
@@ -2515,15 +2537,29 @@ pub(crate) fn update_mob_nameplates(
 /// Is there anything over a creature's head to draw right now?
 ///
 /// Two of these are PERK readouts (level and the HP bar are the Hunter's intel; the `!!!`
-/// threat marker is his eye at range) and three are EVENTS the world is reporting: the
-/// hunt you are holding (`quarry`), the pin you just spent (`held`), and a fight actually
-/// happening in front of you (`clash`, `CR-2`). Only the first pair may be gated on a
-/// perk. Getting that wrong is silent: an ungeared party would see a brawl go on beside
+/// threat marker is his eye at range) and four are FACTS the world is reporting: the
+/// hunt you are holding (`quarry`), the pin you just spent (`held`), a fight actually
+/// happening in front of you (`clash`, `CR-2`), and which named boss a creature IS
+/// (`boss`, FS-4). Only the first pair may be gated on a perk. Getting that wrong is silent: an ungeared party would see a brawl go on beside
 /// them with nothing on screen to say so, and never learn that waiting it out leaves loot.
 pub(crate) fn nameplates_wanted(intel: u8, threat: u8, world: &Overworld) -> bool {
     intel > 0
         || threat > 0
-        || world.entities.values().any(|e| e.quarry || e.held || e.clashing || wounded(e))
+        || world
+            .entities
+            .values()
+            .any(|e| e.quarry || e.held || e.clashing || wounded(e) || named_boss(e))
+}
+
+/// Is this creature a NAMED boss (FS-4) the plate can title?
+///
+/// A fourth thing the world reports rather than a perk readout: a boss overlays a host
+/// creature, so nothing about its billboard or its kind says which of the ten it is, and
+/// a Gatekeeper in the pass is exactly the creature a player must be able to identify
+/// *before* walking into it. Gated on the title resolving, so a dungeon's bespoke sprite
+/// asks for no plate it has nothing to put on.
+pub(crate) fn named_boss(e: &OwEntity) -> bool {
+    e.boss.as_deref().and_then(meld_proto::bosses::display_name).is_some()
 }
 
 /// Is this creature carrying a wound (`CR-2`)?
@@ -3476,6 +3512,7 @@ mod tests {
             aggression: None,
             quarry: false,
             held: false,
+            boss: None,
             bodies_required: 1,
         }
     }
@@ -3494,7 +3531,7 @@ mod tests {
         assert!(nameplates_wanted(1, 0, &world));
         assert!(nameplates_wanted(0, 1, &world));
 
-        for mark in ["clash", "quarry", "held", "wound"] {
+        for mark in ["clash", "quarry", "held", "wound", "boss"] {
             let mut world = Overworld::default();
             let mut e = ent(EntityKind::Monster, 1.0, 0.0);
             match mark {
@@ -3504,6 +3541,11 @@ mod tests {
                     e.hp = Some(30);
                     e.max_hp = Some(100);
                 }
+                // FS-4: a named boss is a fourth fact the world reports. A Gatekeeper
+                // stands in every pass and overlays a host creature, so nothing about
+                // its billboard says which of the ten it is — and it is exactly the
+                // creature a player must identify BEFORE walking into it.
+                "boss" => e.boss = Some("ironmaw".into()),
                 _ => e.held = true,
             }
             world.entities.insert("boar".into(), e);
@@ -3511,6 +3553,23 @@ mod tests {
                 nameplates_wanted(0, 0, &world),
                 "`{mark}` was swallowed by the perk early-out"
             );
+        }
+    }
+
+    /// A plate is asked for only when there is a TITLE to put on it. A dungeon's
+    /// authored boss sprite need not be one of the ten (`twingolem` is bespoke art), and
+    /// a plate reading a guess over ordinary scenery is worse than no plate — while a
+    /// creature carrying a real boss key must never be silent, since that is the whole
+    /// point of the token.
+    #[test]
+    fn only_a_boss_the_registry_can_name_asks_for_a_plate() {
+        let mut e = ent(EntityKind::Monster, 1.0, 0.0);
+        assert!(!named_boss(&e), "ordinary fauna claimed a boss title");
+        e.boss = Some("twingolem".into());
+        assert!(!named_boss(&e), "bespoke dungeon art was titled a named boss");
+        for key in meld_proto::bosses::keys() {
+            e.boss = Some(key.to_string());
+            assert!(named_boss(&e), "{key} rides the wire with no title to draw");
         }
     }
 
@@ -3880,6 +3939,7 @@ mod explored_map_tests {
             aggression: None,
             quarry: false,
             held: false,
+            boss: None,
             bodies_required: 1,
         }
     }
@@ -4284,6 +4344,7 @@ mod station_tests {
             aggression: None,
             quarry: false,
             held: false,
+            boss: None,
             bodies_required: 1,
         };
         world.entities.insert("me".into(), me.clone());
