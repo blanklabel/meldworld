@@ -459,6 +459,33 @@ could not be *entered*, and that is why every number in this file about deep con
 the shallow end. Any deep claim written before `AX-6` should be re-measured rather than
 trusted — including the ones in this file.
 
+**AND THE END FIGHT HAS NOW BEEN FOUGHT** — the first time, by anyone. Reaching it took two
+more fixes (`AX-7`): the deep start landed 600-1,811 units of arc off the world's own route,
+and `MELD_END_FIGHT_AT` did not compose with `MELD_START_LEVEL` (the frontier pump streamed
+with the un-overridden balance, so the fight went to d3200 whatever the flag asked for).
+Level-100 party, seed 424242, the three bosses at d1300, `kit` policy:
+
+| | ungeared | tier-32 |
+|---|---|---|
+| hero-turns | 23 | 20 |
+| HP lost | **2,141 — the whole party** | **624 of 2,141** |
+| outcome | **DEFEAT** | **victory, 71% HP left** |
+
+The gear check is the decisive fact about this encounter: the same party against the same
+three bosses loses everything undressed and wins comfortably dressed. ⚠️ It is the authored
+STATS at a shallower level, though, not the whole authored fight — `set_piece` fixes hp/atk/xp
+absolutely, but `def`/`ward`/speed still ride the placement distance and the deep-gated
+abilities come online by monster level, so the real d3200 bosses carry ~1.7x the defence
+(`(1 + d/500)^0.7`: 4.15 against 2.45). Treat the table as a **lower bound**.
+
+⚠️ **A BOSS RIDES THE WIRE AS ITS HOST CREATURE.** `become_boss` sets `boss_kind`, but the
+overworld snapshot tag is `mob:<monster_kind>:<faction>` and nothing carries the boss identity
+out — so an end-fight boss, a Gatekeeper and an FS-4 named bounty boss all render as ordinary
+wildlife until the battle starts, where `boss_kind` finally drives the fighter's kit and name.
+It is the `pack:` lesson again: a token nothing renders is a token that does not exist to the
+player. Note for harness work: `look` shows the `encounter_class` bracket, so the only way to
+find one from outside is `[world_end]` / `[gatekeeper]`, never the name.
+
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113
 on a Psyker (282) — the same bottle, 3.7x apart. A hero may pour one into somebody else (the

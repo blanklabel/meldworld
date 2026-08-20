@@ -2006,6 +2006,30 @@ spike that makes the whole economy cohere.
     section's "gear buys 3.5x survivability" was correct to within measurement noise and had
     simply never been checkable. The claim that displaced it — "ungeared 26 hero-turns to a
     geared 25" — was an artefact of an inert flag twice over.
+    ✅ **AND THE END FIGHT ITSELF HAS NOW BEEN FOUGHT** — the first time, by anyone, at any
+    level. It took `AX-7`'s two fixes to reach it (the deep start landed off the world's own
+    route; `MELD_END_FIGHT_AT` and `MELD_START_LEVEL` did not compose, so the fight was placed
+    at d3200 whatever the flag asked). Level-100 party, seed 424242, the three bosses placed
+    at d1300, `kit` policy:
+
+    | | ungeared | tier-32 |
+    |---|---|---|
+    | hero-turns | 23 | 20 |
+    | HP lost | **2,141 (the whole party)** | **624 of 2,141** |
+    | outcome | **DEFEAT** | **victory, 71% HP left** |
+
+    So the gear check is real and it is the *decisive* thing about this encounter: the same
+    party, same seed, same three bosses, loses everything undressed and wins comfortably in
+    tier-32. That is **at least 3.4x** less damage taken (a floor, not a figure — the ungeared
+    party died, so the incoming total exceeds the 2,141 it had to give), which lands on this
+    section's long-standing "~3.5x survivability" from a third independent direction.
+    ⚠️ **This is the authored STATS at a shallower level, not the whole authored fight.**
+    `set_piece` overrides hp/atk/xp absolutely, so those three numbers are exactly what d3200
+    would field — but `def`, `ward` and speed still ride the placement distance, and the boss's
+    deep-gated abilities come online by monster level. At d1300 the bosses are level 105 with a
+    defence multiplier of `(1 + 1300/500)^0.7 = 2.45` against d3200's `4.15`, so the real
+    encounter carries **~1.7x the defence** and a wider ability pool. Read the table above as a
+    *lower bound* on the authored fight's difficulty.
     ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
     blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
     tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
