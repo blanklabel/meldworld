@@ -2012,6 +2012,30 @@ spike that makes the whole economy cohere.
     section's "gear buys 3.5x survivability" was correct to within measurement noise and had
     simply never been checkable. The claim that displaced it — "ungeared 26 hero-turns to a
     geared 25" — was an artefact of an inert flag twice over.
+    ✅ **AND THE END FIGHT ITSELF HAS NOW BEEN FOUGHT** — the first time, by anyone, at any
+    level. It took `AX-7`'s two fixes to reach it (the deep start landed off the world's own
+    route; `MELD_END_FIGHT_AT` and `MELD_START_LEVEL` did not compose, so the fight was placed
+    at d3200 whatever the flag asked). Level-100 party, seed 424242, the three bosses placed
+    at d1300, `kit` policy:
+
+    | | ungeared | tier-32 |
+    |---|---|---|
+    | hero-turns | 23 | 20 |
+    | HP lost | **2,141 (the whole party)** | **624 of 2,141** |
+    | outcome | **DEFEAT** | **victory, 71% HP left** |
+
+    So the gear check is real and it is the *decisive* thing about this encounter: the same
+    party, same seed, same three bosses, loses everything undressed and wins comfortably in
+    tier-32. That is **at least 3.4x** less damage taken (a floor, not a figure — the ungeared
+    party died, so the incoming total exceeds the 2,141 it had to give), which lands on this
+    section's long-standing "~3.5x survivability" from a third independent direction.
+    ⚠️ **This is the authored STATS at a shallower level, not the whole authored fight.**
+    `set_piece` overrides hp/atk/xp absolutely, so those three numbers are exactly what d3200
+    would field — but `def`, `ward` and speed still ride the placement distance, and the boss's
+    deep-gated abilities come online by monster level. At d1300 the bosses are level 105 with a
+    defence multiplier of `(1 + 1300/500)^0.7 = 2.45` against d3200's `4.15`, so the real
+    encounter carries **~1.7x the defence** and a wider ability pool. Read the table above as a
+    *lower bound* on the authored fight's difficulty.
     ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
     blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
     tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
@@ -2688,6 +2712,33 @@ then the rest.
     unplayable for reasons that had nothing to do with balance — and because the harness could
     not boot there either, nothing could observe it. That is why every deep number in these
     docs came from the shallow end.
+- [x] **AX-7 — A DISTANCE IS A RING, so the deep start was landing off the world's own
+  route.** `MELD_START_LEVEL` streamed the frontier out and then set every avatar to
+  `(reach, 0)`. WG-4 bends corridor y into an ANGLE, so a distance is a whole ring and
+  `(reach, 0)` is one arbitrary point on it — while the clear path crosses that ring
+  somewhere else entirely. Measured across five seeds at d1269, the old landing stood
+  **600 to 1,811 units of arc** off the route. It now lands on `Arena::route_point_at`,
+  which is the same lookup the Shift's rescue already used to find a region's entry
+  (`region_entry` calls it now, rather than owning a second copy).
+  - **What that made unreachable.** Everything the world anchors to its route, from a
+    party started deep: the deep portal, the Gatekeeper standing in the pass — and the
+    **end fight**. At seed 424242 / d1269 the bosses stand at angle **-87°** while the
+    party stood at 0, roughly 1,700 units of arc away and far outside the interest cull, so
+    `look` never saw them and `walk toward:<id>` could not steer at an entity absent from
+    the snapshot (measured: 120 seconds of walking, zero units moved). That is why the end
+    fight had never once been *played* — by the harness or by anyone — despite
+    `MELD_END_FIGHT_AT` existing precisely to make it reachable.
+  - ⚠️ **The flag still does not guarantee the fight is in front of you.** The end fight
+    replaces the first *standard* spawn past its floor, and spawns scatter across the fan,
+    so its angle is a roll of the dice: at floor 1269 it is 1,700u from the route landing,
+    at 1300 it is **143u**, at 1330 it is 2,049u. Landing on the route is necessary and not
+    sufficient. Placing the encounter *on* the route — the way the portal is — is the
+    follow-up, and is a change to world generation rather than to a dev flag.
+  - Two tests hold it: the landing is one of the route's own waypoints and sits at the
+    depth that was asked for (checked in the CORRIDOR frame, since comparing raw world x is
+    the exact mistake the fan punishes), and — kept deliberately — the naive `(reach, 0)`
+    really is hundreds of units off-route, so if the fan is ever flattened the test says so
+    instead of quietly preserving a fix nothing needs.
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,

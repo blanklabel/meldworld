@@ -4707,20 +4707,42 @@ impl GameState {
         // A DEV/QA deep start has to move the party as well as its level, and the world has to
         // exist out there first: `ensure_frontier` streams a few sections per call (it caps
         // growth so a teleport cannot explode the tick), so it is pumped until it stops
-        // producing rings or a bound is hit. Then the avatars are placed on the ring itself.
+        // producing rings or a bound is hit. Then the avatars are placed **on the route** at
+        // that depth.
+        //
+        // NOT at `(reach, 0)`, which is what this used to do. The fan (WG-4) bends corridor y
+        // into an angle, so a distance is a RING and `(reach, 0)` is one arbitrary point on
+        // it — while the world's clear path crosses that ring somewhere else entirely.
+        // Measured across five seeds, the old spawn stood **600 to 1,811 units of arc** off
+        // the route. Everything the world anchors to its route is therefore a quarter-turn
+        // away from a party started deep: the end fight, the deep portal, the Gatekeeper in
+        // the pass. At seed 424242 / d1269 the end-fight bosses sit at angle -87 degrees
+        // while the party stood at 0, which is why that fight had never once been played.
         //
         // The rest of PG-2 is still not wired — extraction still assumes d0 is the start —
         // which is exactly why this is a TEST flag and not a departure hub.
         if departure_hub_distance > 0 {
             let reach = departure_hub_distance as f64;
+            // `inst.balance`, NOT `self.balance`. The world was built from a CLONE carrying
+            // the DEV overrides (`MELD_END_FIGHT_AT` rewrites `end_fight_min_distance` on it),
+            // and every section this pump streams is generated from whatever balance it is
+            // handed. Passing the un-overridden one meant `start_level` + `end_fight_at`
+            // silently disagreed: the initial `generate` honoured the requested floor, then
+            // every streamed section past it went back to the shipped d3200 — so the end
+            // fight was placed at d3200, an hour's walk further out than the flag asked for,
+            // and a party started deep never met it. Two overrides that do not compose is the
+            // same one-rule-two-call-sites failure this file has been bitten by before.
+            let inst_balance = inst.balance.clone();
             for _ in 0..256 {
-                if inst.arena.ensure_frontier(&self.balance, reach).is_empty() {
+                if inst.arena.ensure_frontier(&inst_balance, reach).is_empty() {
                     break;
                 }
             }
+            let landing = inst.arena.route_point_at(reach);
             for pid in &party_ids {
                 if let Some(a) = inst.arena.avatar_mut(pid) {
-                    a.position = Position::new(reach, 0.0);
+                    a.position = landing;
+                    a.elevation = 0;
                 }
             }
             tracing::warn!(

@@ -459,6 +459,33 @@ could not be *entered*, and that is why every number in this file about deep con
 the shallow end. Any deep claim written before `AX-6` should be re-measured rather than
 trusted — including the ones in this file.
 
+**AND THE END FIGHT HAS NOW BEEN FOUGHT** — the first time, by anyone. Reaching it took two
+more fixes (`AX-7`): the deep start landed 600-1,811 units of arc off the world's own route,
+and `MELD_END_FIGHT_AT` did not compose with `MELD_START_LEVEL` (the frontier pump streamed
+with the un-overridden balance, so the fight went to d3200 whatever the flag asked for).
+Level-100 party, seed 424242, the three bosses at d1300, `kit` policy:
+
+| | ungeared | tier-32 |
+|---|---|---|
+| hero-turns | 23 | 20 |
+| HP lost | **2,141 — the whole party** | **624 of 2,141** |
+| outcome | **DEFEAT** | **victory, 71% HP left** |
+
+The gear check is the decisive fact about this encounter: the same party against the same
+three bosses loses everything undressed and wins comfortably dressed. ⚠️ It is the authored
+STATS at a shallower level, though, not the whole authored fight — `set_piece` fixes hp/atk/xp
+absolutely, but `def`/`ward`/speed still ride the placement distance and the deep-gated
+abilities come online by monster level, so the real d3200 bosses carry ~1.7x the defence
+(`(1 + d/500)^0.7`: 4.15 against 2.45). Treat the table as a **lower bound**.
+
+⚠️ **A BOSS RIDES THE WIRE AS ITS HOST CREATURE.** `become_boss` sets `boss_kind`, but the
+overworld snapshot tag is `mob:<monster_kind>:<faction>` and nothing carries the boss identity
+out — so an end-fight boss, a Gatekeeper and an FS-4 named bounty boss all render as ordinary
+wildlife until the battle starts, where `boss_kind` finally drives the fighter's kit and name.
+It is the `pack:` lesson again: a token nothing renders is a token that does not exist to the
+player. Note for harness work: `look` shows the `encounter_class` bracket, so the only way to
+find one from outside is `[world_end]` / `[gatekeeper]`, never the name.
+
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113
 on a Psyker (282) — the same bottle, 3.7x apart. A hero may pour one into somebody else (the
@@ -729,7 +756,7 @@ intents (`BD-2`) with no harness verb, so the loop could not be driven at all fr
 that exists to drive it. A player verb without a harness verb is a verb nobody measures.
 
 `new_game` takes the DEV/QA overrides as arguments rather than env vars: `party`, `seed`,
-`tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. `MELD_START_LEVEL` sets a DISTANCE and lets the level follow from it (`base_run_level` and creature level both read 40 at d500), because level and depth are the same fact and a party holding one without the other cannot exist. It streams the frontier out and spawns you on the ring; extraction still assumes d0, which is why it is a TEST flag and not a departure hub — everything past
+`tutorial`, `start_level`, `gear_tier`, `end_fight_at`, `biome`. `MELD_START_LEVEL` sets a DISTANCE and lets the level follow from it (`base_run_level` and creature level both read 40 at d500), because level and depth are the same fact and a party holding one without the other cannot exist. It streams the frontier out and spawns you **on the route** at that depth (`Arena::route_point_at`) — *not* at `(reach, 0)`, which is what it used to do: WG-4 bends corridor y into an ANGLE, so a distance is a whole RING and `(reach, 0)` is one arbitrary point on it while the clear path crosses that ring somewhere else. Measured across five seeds at d1269, the old landing stood **600-1,811 units of arc off the route**, which put everything the world anchors to its route — the deep portal, the Gatekeeper in the pass, **the end fight** — a quarter-turn away from any party started deep. At seed 424242 that is why the end fight had never once been played: its bosses sit at angle -87° while the party stood at 0, outside the interest cull, and `walk toward:<id>` cannot steer at an entity absent from the snapshot (120 seconds of walking, zero units moved). Extraction still assumes d0, which is why it is a TEST flag and not a departure hub — everything past
 roughly level 16 is authored for a party that walked an hour to reach it, and PG-2's hubs
 are deliberately inert, so without it the only level deep content could be observed at was
 1, the one level it was never tuned for.
