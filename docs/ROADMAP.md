@@ -746,7 +746,29 @@ burns on death/leave; some is single-use. See
     The arithmetic behind these two levers was right and the game was still unplayable
     once (creature attack was scaled by party size and wiped level-1 parties), so the
     numbers get checked by playing them.
-- [ ] **PG-2 — Departure hubs: the ladder becomes reachable.** 🟡 *Designed, deliberately NOT wired.* `base_run_level(distance)`
+- [x] **PG-2 — RETIRED: the authored deep hubs are deprecated, superseded by `BD-5`.** The
+  six authored rows (d500 … d3250) and the `vanguard` "have you been there" gate are gone;
+  `meld_proto::hubs` keeps the **Center Hub** as the one unloseable floor and
+  `start_level(distance)`, which is the whole load-bearing part. A **player-built forward
+  town** supplies the distance instead. Three reasons, in order of weight:
+  - **The gate becomes physical.** An authored hub was scenery that appeared once you
+    qualified, so qualification needed a server-owned all-time distance record. You cannot
+    raise a town where you cannot stand — the structure *is* the proof, and a bookkeeping
+    mechanism becomes a consequence.
+  - **The ladder becomes a loop.** An unlocked hub was permanent and free. A town is
+    HP-bearing, Shift-exposed and siege-able (`BD-2`/`BD-3`), so a deep departure point is
+    permanence you keep paying for — and an anchor beside it finally means something.
+  - **The authored top rung required what it was meant to grant.** Measured: d3200 ground
+    demands ~level 251 to survive four basic hits from a *standard* creature (a level-100
+    hero takes 1.4), and levels are dive-scoped — so the d3250 hub could only ever be
+    unlocked by a party that had already walked to d3250 at level 1. The supply curve
+    (`1 + 0.078d`, linear) does stay above the terrain's demand (quadratic) at every old
+    rung, crossing at **d~3350** — which is the real reason ~d3250 is the structural end of
+    the game — but nothing could climb it from the bottom.
+  - **What is still unbuilt is now `BD-5`'s**, and the blockers are unchanged:
+    spawn-at-distance, frontier generation around that distance, and extraction (the deep
+    portal, the west-return border) still assuming d0 is the start.
+- [ ] ~~**PG-2 (original scoping, kept for the rationale)**~~ `base_run_level(distance)`
   has always existed and is tested; `departure_hub_distance` is hard-coded to `0` in
   `game.rs`, so every hero starts every dive at level 1 and everything above roughly level
   16 — which is now most of the game's abilities — is authored ahead of what any player can
@@ -1782,10 +1804,81 @@ same always-running-when-unwatched spatial workload as the ecology).
 - [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
   structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
   attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).
-- [ ] **BD-5 — Towns: composition, guild ownership, forward-town stops.** A town = a
-  cluster of the primitive; **guild-owned** structures + permissions (**SOC**); forward
-  towns sustain Run Level across a deep push (§W4); `portal` = plantable extraction
-  (evolves D15).
+- [ ] **BD-5 — Forward towns: the forward base, and the save point that can be destroyed.**
+  A town = a cluster of the `BD-2` primitive, **guild-owned** with permissions (**SOC**).
+  **LEVEL AT DISTANCE IS RETIRED.** A town does not grant a starting level and there is no
+  departure ladder: *the longer you are out there, the stronger you tend to be* — level comes
+  from XP earned on the expedition, which is what `AD-7`'s punch-up bonus prices. What a town
+  sells is the ability to **not go home**:
+  - **Inn — rest.** Restores HP/MP in full, clears every status effect (afflictions do not
+    expire on their own, so this is the one reliable cure on the road), and confers a
+    **`rested` bonus: extra XP for an hour.** Deliberately NOT a level save — a saved level
+    is durable per-player state that a destructible building would then be able to erase,
+    which is too much for a player to hold in their head and too much for the world to be
+    responsible for. An inn is a classic inn.
+  - **Party swap.** Change composition without walking home — the only place outside the
+    Center Hub that the party builder opens.
+  - **Vendor.** Resupply potions and Town Portals forward, so a long expedition is a supply
+    problem rather than a round trip.
+  - **NPC garrison, bought with chits.** You are not defending property, you are defending
+    your sleeping self. Pairs with `BD-4` sieges and `BD-3` anchors (the Shift is the other
+    thing that can take a town).
+  - **`portal`** = plantable extraction (evolves D15).
+  - **Why the arithmetic needs the inn.** Level costs are stated in FIGHTS
+    (`fights_per_level` climbs 2 → 51), and deep fights are 4.4-creature packs at ~18
+    hero-hits each — so pricing every level at its own depth, a *continuous* expedition
+    reaches only **~d1150 / level ~43 in four hours**, and the 255 cap is ~170 hours. Without
+    an inn, everything above level ~43 is unreachable by construction — most of the ability
+    ladder and all of `EW`. With one, that 170 hours is an MMO-scale ladder spread over many
+    sessions, and **depth becomes accumulated risk**: the deeper you are, the more session
+    boundaries your town has to survive. Do not flatten `fights_per_level` to compensate
+    before the inn exists; the shape is not the problem, the session boundary is.
+  - **DECIDED:**
+    - **Anyone may use a town** — inn, vendor, party swap, no permissions on the door. This
+      is safe *because the portal is the gate, not the door*: a town grants no levels, so
+      walking to a deep one still means surviving the terrain to get there, and arriving
+      hands you nothing you did not earn. The "one player's deep town is everyone's
+      shortcut" risk dies with level-at-distance.
+    - **A town persists beyond wipes**, and the relationship is ONE-DIRECTIONAL: a town
+      falling wipes everyone resting in it, but a player being wiped leaves the town
+      standing. Durable infrastructure, fragile expedition.
+    - **Portals into a town are guild- or party-owned and cost chits.** The town is public
+      once you have walked there; *fast* entry is owned and paid for. This is the only
+      shortcut in the design, and it is priced.
+  - **THE CATCH-UP MECHANISM IS `fights_per_level`, NOT A NEW SYSTEM.** A wipe leaves a
+    player at level 1 while the ground outside the town still demands 244, and the fix is
+    not saved state, a rejoin floor, or a catch-up buff — it is that **the marginal cost of
+    a level is wrong.** `fights_per_level` climbs 2 → 51, so catching up costs what the
+    original climb cost, because it *is* the original climb. Measured (carried by a 4-hero
+    party, punch-up bonus at its cap):
+
+    | `fights_per_level_ramp` | one level @L244 | catch-up at d3200 | hrs to d3200 | hrs to cap |
+    |---|---|---|---|---|
+    | 5 (today) | 28.5 enc | 2179 | 160 | 170 |
+    | 25 | 6.3 | 512 | 39 | 41 |
+    | **flat (no ramp)** | **1.1** | **126** | **11.5** | **11.9** |
+
+    Flattening closes three problems with one tunable: power-levelling a wiped teammate
+    becomes viable at **every** depth (~1 encounter per level rather than 28), a continuous
+    expedition can actually reach the deep world, and the catch-up gap closes with **no
+    stored state and nothing destructible to remember**. It also makes the social mechanism
+    the obvious one — *your guild walks you back up* — rather than a rule.
+  - **It is surgical, which is the argument for it.** Cumulative at-level fights: level 5 is
+    unchanged (8), level 10 goes 22 → 18, and every meaningful delta lands past level ~20 —
+    exactly the region nothing can currently reach. This is not a rebalance of the played
+    game; it makes the unplayed part playable. The stated design goal ("most players reach
+    doubles before the run that kills them") survives intact.
+  - **Consequence to accept on purpose:** levels become cheap, so **level stops being the
+    long-term progression and gear becomes it** — which is already the stated intent past
+    d2300 ("levels matter less, gear matters more") and what `AD-7`'s punch-up bonus prices.
+  - ⚠️ **Measure before shipping.** One tunable, fully reversible, but it is the master
+    progression curve: play it through `mcp/` first. This repo shipped the end fight
+    impossible three times off arithmetic, and the last time the arithmetic was correct.
+  - **What this retires.** `base_run_level(distance)` and `meld_proto::hubs::start_level` keep
+    no gameplay role — a town grants services, not levels. Both survive only as the
+    `MELD_START_LEVEL` dev/QA instrument, which must keep working: it is how deep content is
+    measured at all, and this repo has already shipped one balance pass taken through a
+    broken instrument.
 - [ ] **BD-6 — Field crafting & storage.** `stash` (siege-able field storage),
   `workshop` (`MS-1` Forge/Alembic in the field), `hearth` (respawn/rally aura).
 - [ ] **BD-7 — Persistence wiring (rides `SC-3`).** Structures / anchor-altered Shifts /
@@ -1861,7 +1954,16 @@ spike that makes the whole economy cohere.
     gear gets a ~25-round fight surviving ~5 hits; the same party wearing nothing dies in 1.5
     hits and would need 43 rounds. **Gear buys 3.5x survivability**, and
     `the_end_fight_is_a_gear_check` pins that MULTIPLE rather than the raw numbers, so a
-    retune has to preserve the shape.
+    retune has to preserve the shape. *(The `3900 HP / 420 atk` above is stale — balance.toml
+    is the source of truth and now reads 1000/210. Read the tunable, not this line.)*
+    ✅ **The gear check is REAL, and this section was right while AGENTS.md and balance.toml
+    were wrong.** Both of those claimed ability damage bypasses armour, citing "ungeared 26
+    hero-turns to a geared 25" — a number taken through `MELD_GEAR_TIER` while it was inert,
+    so both sides were undressed. Re-measured with the flag working (`mcp/`, seed 424242,
+    level 25, the same fight at d308): **ungeared lost 376 HP over 85 turns and was losing
+    with a hero down; tier-32 won in 47 turns having lost 172**, and the same all-enemy
+    ability landed `-25/-26/-7/-13` ungeared against `-0/-0/-7/-0` geared. Gear gates ability
+    damage and at that tier can null it. Both stale claims are corrected in place.
     ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
     blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
     tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
@@ -2256,6 +2358,34 @@ the current build.
     Bounty Board, so a finished contract says so instead of handing you power mid-run.
   - **Remains (the full system):** an explicit *accept* step, bestiary ties (`CR-5`),
     co-op and guild hunts (`SOC`), reputation, and hunt leaderboard points (`AD-6`).
+- [x] **AD-7 — Punching up pays, and it does not decay.** The reward half of "distance is
+  the difficulty axis": an encounter ABOVE a hero's level pays a bonus on the same
+  `xp_after_level_gap` funnel that already taxes one below it — +5 levels 1.05x, +10 1.10x,
+  +20 1.25x, capped at `xp_up_max`. This is the lever for a party that cannot get the gear:
+  out-level the ground instead of out-gearing it.
+  - **Why it had to be explicit.** A deeper encounter always paid more, but the *ratio* is
+    what "fighting up pays" means, and `base_xp`'s `(1 + d/500)^1.5` flattens — per creature
+    a +20-level fight paid **1.82x at hero level 1 and 1.11x at 235**. The lure to punch up
+    was strongest in the shallows, where the gap is most likely to simply kill you, and
+    weakest in the deep game, where out-levelling is the only route left. Backwards on both
+    counts. The new term is flat across levels, which is the property the test holds.
+  - ⚠️ **The route it opens is still closed past d2300, and not by XP.** Creature attack
+    rides `(1 + d/500)^2.0` while a hero's HP is LINEAR in level, so difficulty (hero-hits
+    to kill it ÷ its hits to kill you) runs 1.22 at the hub, sags to **0.68 at d400** — the
+    easiest ground in the game — then climbs to **4.37 at d3250**. Parity at d2300 needs
+    level 270 against a cap of 255, so past there no amount of grinding reaches it and gear
+    is the only answer. Reopening it is a change to the master difficulty curve, not a
+    knob: the exponent sets only the ramp's steepness, and every value that reopens the deep
+    end also flattens the mid-game to a walk (`exp=1.6` puts d1600 at 0.34). Wants a played
+    measurement before anything ships — see `AD-8`.
+- [ ] **AD-8 — The difficulty curve as a designed shape, not an emergent one.** Today the
+  ratio above is an accident of two curves that were never fitted to each other (creature
+  attack quadratic in depth, hero HP linear in level, hero attack tracking creature HP so
+  exactly that **every creature takes ~17.8 hero-hits at every depth from d100 out** — which
+  is also why a single standard creature at d346 is an 80-turn fight). Give the ramp a stated
+  target instead: hard at the hub, very hard at the end, parity always reachable inside the
+  level cap, with gear the accelerator rather than the toll. Tune against played fights
+  (`mcp/`), never a spreadsheet — the end fight shipped impossible three times that way.
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /
@@ -2440,49 +2570,28 @@ keeps agent participation low-risk. Sequenced so the cheap QA layer lands over
 today's protocol; the living-world layer follows **SC-3**. Focus **adventure first**,
 then the rest.
 
-- [x] **AX-1 — MCP over the wire protocol.** Shipped as [`mcp/`](../mcp/) (`meld-mcp`),
-  a stdio MCP server that boots the whole game in-process on a `memory://` DB — no
-  Postgres, no port to collide with, a fresh world per `new_game`. Tools: `new_game`,
-  `look`, `walk`, `battle`, `abilities`, `act`, `auto_battle`, `interact`, `say`, `chat`,
-  `wait`. Every one is a **player intent over the real wire protocol**; nothing reads
-  `MazeInstance`, because a harness that reaches into the engine measures the model, and
-  the model is what has been wrong every previous time. JSON-RPC framing is hand-rolled on
-  `serde_json` (~60 lines) rather than adding a crate to an offline build.
-  **Deliverable met:** a full dive → fight → extract loop, banking
-  `forest_bloom_petal` + potions into the Vault.
-  - **`MELD_START_LEVEL`** joins `MELD_END_FIGHT` / `MELD_GEAR_TIER` as a DEV/QA override,
-    surfaced as a `new_game` argument. Deep content is authored for ~level 100 and PG-2's
-    hubs are inert, so the only level it could previously be observed at was 1 — the one
-    level it was never tuned for.
-  - **It found a latent bug on its first geared run**: starting HP came from the class's
-    level-1 `base_hp` while the ceiling came from `max_hp_at_level`, so a party departing
-    at level 100 opened the dive at **52 of 1042 HP**. Harmless while every dive starts at
-    level 1, and live the moment PG-2 lands. Both now go through
-    `meld_run::starting_hp`, held by
-    `a_hero_starts_a_dive_at_full_health_whatever_level_it_leaves_at`.
-  - **The clock does not stop while an agent thinks.** A fighter awaiting input stops
-    filling its own gauge; everything else keeps ticking. 33 seconds spent composing the
-    next tool call is an entire boss fight, resolved by the 15-second auto-act — which is
-    how the first end-fight run was measured with heroes that never acted. Anything being
-    measured must happen inside ONE tool call. Widening `turn_timeout_ms` does **not** fix
-    it: a longer window is strictly more enemy turns.
-  - *Observed, not chased:* a successful extraction reports
-    `max_distance_reached: 0` on `run.member_result` for a run that reached d6.
-- [ ] **AX-2 — Agent-as-playtester harness.** Drive the whole loop with a reasoning
-  agent and emit **balance telemetry** — win/extract/die rates by distance, and the
-  feel of the loss knife-edge. The honest way to measure the "desperate but not
-  despair" tuning *at scale* before the sim/builder layers land. Extends AX-1 + the
-  `qa/` conformance suite.
-- [ ] **AX-3 — Agent inhabitants (living world).** Agents as first-class **async
-  actors**: run stalls, fulfil bounty contracts (**EC**), harvest, and **garrison
-  towns/anchors while owners are offline** — populating persistent seeded worlds
-  (solves the empty-world cold-start) and answering the offline-siege feel-bad (the
-  Shift, CANON §W2). Depends on **SC-3** (populated persistent worlds); PvE-only keeps
-  it safe. A natural **premium/convenience hook** (an offline-defense garrison agent,
-  pinned worlds — cf. **MON**), sold as *participation*, not "skip the loss."
-
----
-
+- [x] **AX-6 — FIXED: the harness could not boot the levels it exists to measure, and the
+  cause was a quadratic server pass, not the harness.** `new_game {start_level: 100}` never
+  started. The obvious diagnosis was wrong twice over: world generation to d1269 takes **0.7s**,
+  and a release build was no faster than debug. The real cause was `step_creatures`' **damage
+  pass** ("adjacent hostile creatures trade blows") scanning every creature for every creature
+  — at d1269 that is 10,650 creatures, so ~**113 million pair tests per 100 ms tick**, each one
+  a *string* faction compare. Measured **1,708 ms a tick in release** against a 100 ms budget,
+  on a single-task game loop, so `run.started` was never sent.
+  - **It is the same bug as the one already fixed above it.** The *movement* pass carries a
+    spatial grid and a comment saying it "was O(monsters²), which grew unbounded as the endless
+    world streamed in". The damage pass **twenty lines below** was left as a full scan — this
+    repo's signature failure mode: one rule, two call sites, one of them fixed.
+  - **d1269: 1,708 ms → 7.5 ms a tick (228x). d308: 28.8 → 1.2 ms.** Verified end to end: a
+    fresh binary boots `start_level: 100` and lands the party at d1269.
+    `the_creature_step_stays_linear_in_the_creature_count` guards it as a *ratio* (8x the
+    creatures must not cost 59x the time), since an absolute duration bound is either flaky or
+    useless.
+  - ⚠️ **This was never only a harness problem.** Every creature ever generated stays in the
+    arena, so *any player* who walked out to d1269 met the same 1.7s tick. The deep world was
+    unplayable for reasons that had nothing to do with balance — and because the harness could
+    not boot there either, nothing could observe it. That is why every deep number in these
+    docs came from the shallow end.
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,

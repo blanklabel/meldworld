@@ -4342,23 +4342,22 @@ impl GameState {
         // why every hero started every dive at level 1 and the ladder above roughly level
         // 16 was authored ahead of anything reachable.
         //
-        // **CLAMPED, not rejected**, exactly as `party` is clamped to owned classes: a
-        // client naming a hub the account has not reached gets the deepest one it HAS,
-        // rather than an error. The bar is the account's own all-time deepest distance,
-        // read from the `vanguard` record — server-written off validated movement, so a
-        // client cannot ask its way deeper than it has walked.
+        // **THE AUTHORED DEEP HUBS ARE RETIRED, and `wants_hub` with them.** There were six
+        // (d500 … d3250) gated on the account's all-time deepest distance from the `vanguard`
+        // record. `BD-5`'s player-built forward towns replace them and the gate: you cannot
+        // raise a town where you cannot stand, so the structure IS the proof you were there,
+        // and a departure point that is HP-bearing and Shift-exposed makes the deep ladder a
+        // loop you keep paying for rather than a list you tick off once.
         //
-        // **HELD OFF ON PURPOSE (PG-2).** The registry, the "have you been there" gate and
-        // the chooser all exist, but nothing honours them yet: `add_avatar` spawns every
-        // dive at the ORIGIN regardless, so departing from a deep hub would have handed out
-        // a level-40 party in the tutorial ring — a level-select with fiction on it rather
-        // than a departure point. Wiring it needs spawn-at-distance *and* frontier
-        // generation around that distance, and extraction (the deep portal, the west-return
-        // border) still assumes d0 is the start.
+        // The authored ladder was also self-defeating — measured, the ground at d3200 demands
+        // ~level 251 to survive four basic hits from a *standard* creature, and levels are
+        // dive-scoped, so its top rung could only be unlocked by a party that had already
+        // walked to d3250 at level 1. It required what it was meant to grant.
         //
-        // It is also not clearly needed: reaching the end-world depth takes about an hour
-        // on foot, so the ladder it was meant to unblock may not need unblocking. Left
-        // inert rather than half-wired.
+        // What survives is the LOOKUP: a dive reads one distance and `base_run_level` turns
+        // it into a starting level. When a town supplies that distance, this is where it
+        // lands — the blockers are unchanged (spawn-at-distance, frontier generation around
+        // it, and extraction still assuming d0 is the start).
         let _ = wants_hub;
         // `MELD_START_LEVEL=<n>` — DEV/QA, beside MELD_END_FIGHT / MELD_GEAR_TIER / MELD_POTIONS.
         //

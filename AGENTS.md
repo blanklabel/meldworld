@@ -395,17 +395,49 @@ Gear now gates *physical* ability damage through `def`; for gear to gate the ele
 needs a **ward affix**, which does not exist yet. That is the remaining piece of `EW-0`'s
 gear-check story.
 
- A creature ability's damage is
-`stat x coefficient` through `apply_typed_damage`, which applies the target's
-`damage_modifiers` and `min_damage` and then stops — `atk - def` and
-`damage_floor_fraction` live in `physical_hit`, which only the basic `Attack` action reaches.
-So armour is close to irrelevant against anything that fights with abilities, which is every
-champion and every boss. Measured on the end fight: an **ungeared** level-100 party lasted
-**26 hero-turns to a geared party's 25**. Any "gear check" built on `def` is therefore
-fiction, and any model that computes survivability as `hp / (atk - def)` is describing a
-minority of the damage the player actually takes. Nothing documents this as intentional, and
-the Psyker's Foci are called out *specifically* for ignoring armour — a pointless
-distinction if every ability already did (`EW-0` tracks the three ways out).
+⚠️ **THIS PARAGRAPH USED TO SAY ABILITIES BYPASS ARMOUR. THEY DO NOT — verify against
+the code, not against this file.** Every damage path except two goes through
+`apply_ability_damage`, which subtracts `def` for physical types and **`ward`** for
+everything elemental or psychic, then applies the target's `damage_modifiers`. The two
+exceptions are deliberate and narrow: a **basic attack** subtracts `def` itself inside
+`physical_hit`, and a **burn/poison DoT** is a fraction of the victim's OWN max HP, already
+scaled to the target. Creature abilities are not an exception — they route through
+`apply_ability_damage` like everything else.
+
+**MEASURED, with the flag working** (`mcp/`, seed 424242, level-25 party, same two
+`forest_bloom_stalker` at d308, `kit` policy):
+
+| | ungeared | tier-32 |
+|---|---|---|
+| hero-turns | 85 | **47** |
+| HP lost | 376 | **172** |
+| heroes down | 1 | 0 |
+| outcome | losing, boss at 72% | **victory** |
+
+The decisive line is the same all-enemy ability landing on the same four heroes: **`-25, -26,
+-7, -13` ungeared against `-0, -0, -7, -0` geared.** Gear does not merely blunt ability
+damage, it can null it — and the per-hero spread tracks each one's own `def`/`ward`, which is
+the mitigation visibly working target by target.
+
+**How the false claim survived is the lesson.** Its evidence was "an ungeared level-100 party
+lasted 26 hero-turns to a geared party's 25" — taken through `MELD_GEAR_TIER` while that flag
+was **inert**: `flush_gear_loads` mirrored the empty Vault over the dressing a tick later, so
+*both* sides of that comparison were undressed. A broken instrument produced a number, the
+number became a documented rule, and the rule justified not looking again. Two errors holding
+each other up, and the pair survived several releases.
+
+⚠️ **The numbers above are from d308, and until `AX-6` the deep end could not be reached
+at all — by the harness OR by a player.** `new_game {start_level: 100}` never booted, and the
+cause was not the harness: `step_creatures`' **damage pass** scanned every creature for every
+creature, so at d1269 (10,650 creatures, all of them retained because the world streams
+outward without bound) that was ~113 million pair tests per 100 ms tick and **1,708 ms a tick
+in release** on a single-task loop. Now 7.5 ms. **It was the same bug as the one already fixed
+in the movement pass twenty lines above it** — one rule, two call sites, one fixed.
+`the_creature_step_stays_linear_in_the_creature_count` holds the scaling as a ratio.
+
+The lesson worth keeping: a deep measurement had never been taken because the deep world
+could not be entered, and *that* is why every number in this file about deep content came from
+the shallow end. Re-measure deep claims now that it boots.
 
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113
@@ -555,16 +587,35 @@ mark is owed its reward however long the walk home takes. The menu's **Quests** 
 gated on owning `class_hunter` — the menu never advertises what you have not earned — and
 is reading-only, because the reward is taken at the board.
 
-**A dive departs from a hub you have STOOD on** (PG-2, `meld_proto::hubs`). A hub at
-distance D starts every hero at `base_run_level(D)` = `1 + 0.078 × D`, so the deepest
-(d3250) starts them at the 255 cap — which is why that distance is the structural end of the
-game: past it a hub buys nothing while creatures keep scaling. The gate is the account's own
-all-time deepest distance from the `vanguard` table (written off *validated movement*, read
-across ALL seasons — a season rollover must not revoke ground you stood on). It is a
-**lookup, not an entity**: the run reads one integer, so when `BD-5`'s player-built forward
-towns land they add a row rather than replacing a system — a hub deliberately has no
-placement or ownership of its own, because that is the `Structure` primitive. A requested
-hub is **clamped, never rejected**, exactly as `party` is clamped to owned classes.
+**LEVEL AT DISTANCE IS RETIRED — a town grants SERVICES, not levels** (PG-2 → `BD-5`).
+There is one departure point, the **Center Hub**, and it starts every hero at level 1. The
+six authored deep hubs (d500 … d3250) and the `vanguard` "have you been there" gate are
+gone, along with the idea behind them.
+
+**The longer you are out there, the stronger you tend to be.** Level comes from XP earned on
+the expedition, never from where you set off — which is why `AD-7` prices punching above your
+weight. A **player-built forward town** is worth building for what it lets you *do*: rest at
+an **inn** across sessions, **swap party members**, **resupply**, and buy an **NPC garrison**
+with chits. Players do not log off mid-dive, so an inn is a **save point that can be
+destroyed** — if the town falls while you are resting in it, you go with it. That one rule is
+what makes the garrison worth paying for, and it makes depth *accumulated risk*: the deeper
+you are, the more session boundaries your town has to survive.
+
+The authored ladder was also self-defeating, not merely unfashionable: **d3200 ground demands
+~level 251** to survive four basic hits from a *standard* creature (a level-100 hero survives
+**1.4**), and levels are dive-scoped — so the d3250 hub could only be unlocked by a party
+that had already walked to d3250 at level 1. It required what it was meant to grant. Supply
+(`1 + 0.078d`, linear) does clear the terrain's quadratic demand at every old rung, crossing
+at **d≈3350**; that crossing is the real reason ~d3250 is the structural end of the game.
+
+⚠️ **`base_run_level` / `hubs::start_level` are now DEV/QA instruments only.** Nothing in
+play reads them — they are the inverse of `MELD_START_LEVEL`, which sets a DISTANCE and lets
+the level follow, and they are how deep content is measured at all. Held against each other
+by a distance sweep. **Watch the arithmetic before flattening anything:** level costs are
+stated in FIGHTS (`fights_per_level` climbs 2 → 51) and deep fights are 4.4-creature packs,
+so a *continuous* expedition reaches only ~d1150 / level ~43 in four hours and the cap is
+~170 hours. The inn is what makes that a ladder instead of a wall — the session boundary was
+the problem, not the curve's shape.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you

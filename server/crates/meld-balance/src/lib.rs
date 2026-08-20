@@ -110,6 +110,14 @@ pub struct Runs {
     pub xp_gap_grace: i32,
     pub xp_gap_zero: i32,
     pub xp_gap_floor_mult: f64,
+    /// The other end of the same axis: what an encounter ABOVE a hero's level pays
+    /// extra. `xp_up_per_level` per level up to `xp_up_knee`, the steeper
+    /// `xp_up_per_level_steep` past it, capped at `xp_up_max`. See
+    /// `meld_run::xp_after_level_gap`.
+    pub xp_up_per_level: f64,
+    pub xp_up_knee: i32,
+    pub xp_up_per_level_steep: f64,
+    pub xp_up_max: f64,
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
     pub town_portal_drop_chance: f64,

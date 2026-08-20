@@ -95,6 +95,24 @@ max_hero_level = 255             # the ceiling a party is expected to reach befo
 xp_gap_grace = 3                 # levels above the encounter that still pay in full
 xp_gap_zero = 12                 # levels above it at which the payout hits the floor
 xp_gap_floor_mult = 0.05         # a kill is still a kill — never zero
+# THE OTHER END OF THE SAME AXIS: an encounter ABOVE a hero pays a bonus, so punching
+# above your weight is the lever for a party that cannot get the gear. Each level up is
+# worth `xp_up_per_level`, and past `xp_up_knee` levels up it steepens to
+# `xp_up_per_level_steep` — so +5 pays 1.05x, +10 pays 1.10x and +20 pays 1.25x.
+#
+# This is deliberately FLAT ACROSS LEVELS, because the bonus the depth curve already
+# pays implicitly is not: `base_xp` rides `(1 + d/500)^1.5`, whose *ratio* flattens as d
+# grows, so per creature a +20 fight paid 1.82x at level 1 and only 1.11x at level 235.
+# The incentive to punch up was therefore largest where the gap is most lethal and
+# smallest where it is the only way past a wall — backwards on both counts. This term is
+# the part that does not decay, and it is why the deep grind has an exit. [TUNABLE]
+xp_up_per_level = 0.01           # +1% a level for the first `knee` levels up
+xp_up_knee = 10
+xp_up_per_level_steep = 0.015    # +1.5% a level past the knee — fighting way up accelerates
+# The cap. Extrapolating the steep slope this is ~+37 levels, past which you are not
+# fighting the encounter so much as being carried through it by a teammate or by gear —
+# and the depth term is already paying several multiples there on its own.
+xp_up_max = 1.5
 # Extraction is mostly the Town Portal item, and it is BOUGHT — a dive no longer hands
 # you one. Kit is what you chose to bring: buy at the Apothecary, withdraw it at the
 # Vault-Deep, and it rides into the next Backpack. A free resupply every dive made the
@@ -626,11 +644,22 @@ undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [T
 end_fight_min_distance = 3200
 end_fight_bosses = 3
 # AUTHORED, not a multiple of the local creature. At d3200 an ordinary creature already
-# runs ~10k HP and two-shots a hero, because the deep curve is tuned for a party that
-# departed from a DEEP HUB — and hubs are held off (PG-2). So `x4 of local` made this ~14x
-# harder than anything a party can actually bring: the numbers below are tuned against the
-# party that really arrives (walked/fought out, ~level 100). Raise them when hubs land and
-# parties arrive at 255.
+# runs ~10k HP and two-shots a hero, so `x4 of local` made this ~14x harder than anything a
+# party can bring. The numbers below are tuned against a ~level-100 party.
+#
+# ⚠️ **THAT TUNING TARGET IS A PARTY THAT CANNOT REACH THIS FIGHT.** Measured: d3200 ground
+# demands ~level 251 to survive four basic hits from a STANDARD creature, and a level-100
+# hero survives 1.4 — while needing ~46 hero-hits (x4.4 party scale, so ~200) to fell one.
+# Levels are dive-scoped, so there is no accumulating your way there either. Every number
+# here was therefore measured at d30 through `MELD_END_FIGHT_AT`, against a party that
+# skipped the journey — and, before the fix, through an inert `MELD_GEAR_TIER`. Read them as
+# a laboratory result, not as a fight anyone has had.
+#
+# The old note here said "raise them when hubs land and parties arrive at 255". Hubs are
+# RETIRED (PG-2): the arrival level is now whatever a player-built forward town grants
+# (`BD-5`), so the target is `base_run_level` at whatever depth players actually plant one
+# near d3200 — about 251 if they reach it. Do not retune until BD-5 lands and the fight can
+# be played by a party that walked to it.
 #
 # `encounter_party_scale` still multiplies HP by party size on top of these, so a solo
 # player meets 1.0x and a full party 4.4x — the authored number is the per-boss baseline.
@@ -658,11 +687,21 @@ end_fight_bosses = 3
 # runs. POTIONS ARE PART OF THE REFERENCE: the starting kit is ~1130 HP of healing on a
 # 2648 HP party, so a measurement without them understates the party by 42%.
 #
-# ⚠️ Attack here is NOT a gear dial. A creature's ability damage never subtracts hero
-# defence (only its basic attack does), and these bosses act almost entirely through
-# abilities — measured, an UNGEARED party lasted 26 hero-turns to a geared party's 25. Until
-# that is resolved (see EW-0), raising or lowering this changes the fight for everyone
-# equally and gates nothing.
+# ⚠️ **THIS NOTE USED TO CLAIM ABILITY DAMAGE IGNORES ARMOUR. IT DOES NOT.** Everything but
+# a basic attack and a burn/poison DoT goes through `apply_ability_damage`, which subtracts
+# `def` for physical types and `ward` for everything elemental or psychic, then applies the
+# target's resistances. So attack here IS a gear dial, and these bosses' abilities answer to
+# def, ward and resistance like anything else.
+#
+# The claim was evidenced by "an UNGEARED party lasted 26 hero-turns to a geared party's 25"
+# — measured through `MELD_GEAR_TIER` while it was INERT (`flush_gear_loads` mirrored the
+# empty Vault back over the dressing a tick later), so both sides of that comparison were
+# undressed.
+#
+# RE-MEASURED with the flag working (mcp/, seed 424242, level 25, same fight at d308): the
+# ungeared party lost 376 HP over 85 turns and was LOSING with a hero down; the tier-32 party
+# won in 47 turns having lost 172. The same all-enemy ability landed -25/-26/-7/-13 ungeared
+# and -0/-0/-7/-0 geared. Gear gates ability damage, and at that tier it can null it.
 end_fight_boss_hp = 1000
 end_fight_boss_atk = 210
 end_fight_boss_xp = 40000
