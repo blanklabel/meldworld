@@ -31,7 +31,7 @@ GH_SLUG := $(shell git remote get-url origin 2>/dev/null | sed -E 's|^.*github\.
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-dev play-solo dist release look server smoke test stop
+.PHONY: help play play-dev play-solo dist release look server smoke check test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
@@ -53,6 +53,8 @@ help:
 	@echo "  make look         HD-2D render look-dev scene (standalone; tune it live, native)."
 	@echo "  make server       Boot Postgres + server only (no client)."
 	@echo "  make smoke        Headless client run against the server (exits 0 on victory)."
+	@echo "  make check        Build + lint + test BOTH workspaces (no Postgres needed)."
+	@echo "                     What CI runs; run it before opening a PR."
 	@echo "  make test         Run the end-to-end test suite (throwaway Postgres)."
 	@echo "  make stop         Stop the local server (Postgres is left running)."
 	@echo ""
@@ -129,6 +131,31 @@ server:
 
 smoke:
 	$(SERVE) cargo run -p meld-client --bin smoke
+
+# Everything that does not need Postgres, across BOTH workspaces — the one command CI runs
+# (`.github/workflows/check.yml`) and the one to run before opening a PR.
+#
+# It covers both on purpose. The Bevy client is a SEPARATE cargo workspace sharing only
+# `meld-proto` by path, so `cargo test --workspace` at the root never touches it: a variant
+# added to a shared enum can pass every server check and still leave the game unbuildable.
+# That is not hypothetical — `ConsumableEffect::ThrownAll` did exactly that (#264/#268) and
+# `main` could not build the client until someone tried.
+#
+# `clippy --all-targets` is doing double duty: it COMPILES every target including the `qa/`
+# tests, so a broken test there fails here even though the suite itself needs a database and
+# runs in `make test`.
+check:
+	@echo "→ server workspace: clippy (all targets, warnings are errors)"
+	cargo clippy --workspace --all-targets -- -D warnings
+	@echo "→ server workspace: tests (meld-qa needs Postgres — that is 'make test')"
+	cargo test --workspace --exclude meld-qa
+	@echo "→ client workspace: clippy (all targets, warnings are errors)"
+	cd client && cargo clippy -p meld-client --all-targets -- -D warnings
+	@echo "→ client workspace: tests"
+	cd client && cargo test -p meld-client
+	@echo ""
+	@echo "✔ check passed — both workspaces build clean and their DB-free tests pass."
+	@echo "  Postgres-backed conformance is 'make test'."
 
 # `--no-fail-fast`: each qa test is its own binary, and cargo stops at the FIRST one that
 # fails — so a single red test silently skips every binary after it and the run still reads
