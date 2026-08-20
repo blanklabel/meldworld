@@ -2661,6 +2661,33 @@ then the rest.
     unplayable for reasons that had nothing to do with balance — and because the harness could
     not boot there either, nothing could observe it. That is why every deep number in these
     docs came from the shallow end.
+- [x] **AX-7 — A DISTANCE IS A RING, so the deep start was landing off the world's own
+  route.** `MELD_START_LEVEL` streamed the frontier out and then set every avatar to
+  `(reach, 0)`. WG-4 bends corridor y into an ANGLE, so a distance is a whole ring and
+  `(reach, 0)` is one arbitrary point on it — while the clear path crosses that ring
+  somewhere else entirely. Measured across five seeds at d1269, the old landing stood
+  **600 to 1,811 units of arc** off the route. It now lands on `Arena::route_point_at`,
+  which is the same lookup the Shift's rescue already used to find a region's entry
+  (`region_entry` calls it now, rather than owning a second copy).
+  - **What that made unreachable.** Everything the world anchors to its route, from a
+    party started deep: the deep portal, the Gatekeeper standing in the pass — and the
+    **end fight**. At seed 424242 / d1269 the bosses stand at angle **-87°** while the
+    party stood at 0, roughly 1,700 units of arc away and far outside the interest cull, so
+    `look` never saw them and `walk toward:<id>` could not steer at an entity absent from
+    the snapshot (measured: 120 seconds of walking, zero units moved). That is why the end
+    fight had never once been *played* — by the harness or by anyone — despite
+    `MELD_END_FIGHT_AT` existing precisely to make it reachable.
+  - ⚠️ **The flag still does not guarantee the fight is in front of you.** The end fight
+    replaces the first *standard* spawn past its floor, and spawns scatter across the fan,
+    so its angle is a roll of the dice: at floor 1269 it is 1,700u from the route landing,
+    at 1300 it is **143u**, at 1330 it is 2,049u. Landing on the route is necessary and not
+    sufficient. Placing the encounter *on* the route — the way the portal is — is the
+    follow-up, and is a change to world generation rather than to a dev flag.
+  - Two tests hold it: the landing is one of the route's own waypoints and sits at the
+    depth that was asked for (checked in the CORRIDOR frame, since comparing raw world x is
+    the exact mistake the fan punishes), and — kept deliberately — the naive `(reach, 0)`
+    really is hundreds of units off-route, so if the fan is ever flattened the test says so
+    instead of quietly preserving a fix nothing needs.
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,

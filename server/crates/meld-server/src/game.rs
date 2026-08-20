@@ -4707,7 +4707,17 @@ impl GameState {
         // A DEV/QA deep start has to move the party as well as its level, and the world has to
         // exist out there first: `ensure_frontier` streams a few sections per call (it caps
         // growth so a teleport cannot explode the tick), so it is pumped until it stops
-        // producing rings or a bound is hit. Then the avatars are placed on the ring itself.
+        // producing rings or a bound is hit. Then the avatars are placed **on the route** at
+        // that depth.
+        //
+        // NOT at `(reach, 0)`, which is what this used to do. The fan (WG-4) bends corridor y
+        // into an angle, so a distance is a RING and `(reach, 0)` is one arbitrary point on
+        // it — while the world's clear path crosses that ring somewhere else entirely.
+        // Measured across five seeds, the old spawn stood **600 to 1,811 units of arc** off
+        // the route. Everything the world anchors to its route is therefore a quarter-turn
+        // away from a party started deep: the end fight, the deep portal, the Gatekeeper in
+        // the pass. At seed 424242 / d1269 the end-fight bosses sit at angle -87 degrees
+        // while the party stood at 0, which is why that fight had never once been played.
         //
         // The rest of PG-2 is still not wired — extraction still assumes d0 is the start —
         // which is exactly why this is a TEST flag and not a departure hub.
@@ -4718,9 +4728,11 @@ impl GameState {
                     break;
                 }
             }
+            let landing = inst.arena.route_point_at(reach);
             for pid in &party_ids {
                 if let Some(a) = inst.arena.avatar_mut(pid) {
-                    a.position = Position::new(reach, 0.0);
+                    a.position = landing;
+                    a.elevation = 0;
                 }
             }
             tracing::warn!(

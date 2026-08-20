@@ -5141,15 +5141,28 @@ impl Arena {
     /// route the player was following anyway.
     pub fn region_entry(&self, first: usize) -> Position {
         let inner = self.areas.get(first).map(|a| a.start_x).unwrap_or(0.0);
+        self.route_point_at(inner)
+    }
+
+    /// Where the ROUTE is at a given corridor distance — the clear-path waypoint closest
+    /// to `corridor_x`, in world space.
+    ///
+    /// The fan (WG-4) bends corridor y into an ANGLE, so "distance d" is a whole ring and
+    /// the route crosses it at exactly one arbitrary point on it. Anything that wants to
+    /// put a player *at a depth* therefore has to ask where the route is at that depth,
+    /// or it lands them somewhere the world's own path never goes — 600 to 1,800 units of
+    /// arc away, measured across seeds. Both callers need the same answer (the Shift's
+    /// rescue and the DEV/QA deep start), which is why it is one function.
+    pub fn route_point_at(&self, corridor_x: f64) -> Position {
         self.path
             .iter()
             .copied()
             .min_by(|a, b| {
-                let da = (self.corridorize(a).x - inner).abs();
-                let db = (self.corridorize(b).x - inner).abs();
+                let da = (self.corridorize(a).x - corridor_x).abs();
+                let db = (self.corridorize(b).x - corridor_x).abs();
                 da.total_cmp(&db)
             })
-            .unwrap_or(Position::new(inner, 0.0))
+            .unwrap_or(Position::new(corridor_x, 0.0))
     }
 
     /// Which biome the region becomes: never the one it already is, and never one the
