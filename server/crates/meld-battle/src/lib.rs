@@ -10137,3 +10137,43 @@ mod sweep_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod creature_aoe_tests {
+    use super::grouping_and_flanking::{balance, foe, hero};
+    use super::*;
+
+    /// A creature's all-enemy ability must not land on its own side. Playing a pack fight
+    /// showed a thornback_boar's Trample apparently hitting another thornback_boar, which
+    /// `creatures_hostile` says is impossible — so either the targeting is wrong or the
+    /// harness is mislabelling. This settles which.
+    #[test]
+    fn a_creatures_all_enemy_ability_spares_its_own_faction() {
+        let b = balance();
+        let mut leader = foe("leader", 0, false);
+        leader.faction = "beast".into();
+        let mut minion = foe("minion", 0, false);
+        minion.faction = "beast".into();
+        let mut other = foe("fungal_one", 1, false);
+        other.faction = "fungal".into();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hero("h", "p1")],
+            vec![leader, minion, other],
+            &b,
+            7,
+        );
+        let li = bt.fighters.iter().position(|f| f.combatant_id == "leader").unwrap();
+        let targets = bt.ability_targets(li, AbilityTarget::AllEnemies);
+        let named: Vec<&str> = targets
+            .iter()
+            .map(|&i| bt.fighters[i].combatant_id.as_str())
+            .collect();
+        assert!(
+            !named.contains(&"minion"),
+            "a beast's all-enemy ability targeted another beast: {named:?}"
+        );
+        assert!(named.contains(&"h"), "it did not target the party at all: {named:?}");
+    }
+}

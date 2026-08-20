@@ -657,11 +657,15 @@ fn apply(s: &mut State, v: &Value) -> bool {
                 c => s.note(format!("{c:+} chits")),
             }
         }
+        // `name`/`progress`/`target`, not `hunt_key`/`goal`. Both wrong lookups failed
+        // silently, so every hunt credit printed "hunt ?: 1/0" — the same shape as the
+        // backpack bug: a field name nobody checked against the wire.
         "run.hunt_progress" => s.note(format!(
-            "hunt {}: {}/{}",
-            p["hunt_key"].as_str().unwrap_or("?"),
+            "hunt {}: {}/{}{}",
+            p["name"].as_str().unwrap_or("?"),
             p["progress"].as_i64().unwrap_or(0),
-            p["goal"].as_i64().unwrap_or(0)
+            p["target"].as_i64().unwrap_or(0),
+            if p["complete"].as_bool().unwrap_or(false) { " COMPLETE" } else { "" }
         )),
         "run.channel_started" => {
             s.note(format!("channel: {}", p["kind"].as_str().unwrap_or("working")))
@@ -841,12 +845,23 @@ fn apply(s: &mut State, v: &Value) -> bool {
 
 /// One resolved action as a line a reader can follow: who did what to whom, for how much.
 fn describe_action(s: &State, p: &Value, actor: &str, auto: bool) -> String {
+    // Two creatures of the same kind share a name, so an unqualified label makes a pack
+    // fight unreadable: "thornback_boar -251" could be either boar, and a log you cannot
+    // attribute is a log you cannot measure from. Duplicated names get their position among
+    // their own kind appended — the leader and its minion become #1 and #2.
     let name = |id: &str| -> String {
-        s.battle
-            .as_ref()
-            .and_then(|b| b.get(id))
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| id.chars().take(6).collect())
+        let Some(b) = s.battle.as_ref() else {
+            return id.chars().take(6).collect();
+        };
+        let Some(c) = b.get(id) else {
+            return id.chars().take(6).collect();
+        };
+        let same: Vec<&Comb> = b.combatants.iter().filter(|o| o.name == c.name).collect();
+        if same.len() < 2 {
+            return c.name.clone();
+        }
+        let nth = same.iter().position(|o| o.id == c.id).map(|i| i + 1).unwrap_or(0);
+        format!("{}#{nth}", c.name)
     };
     let what = match p["action"].as_str().unwrap_or("") {
         "skill" => p["skill_kind"].as_str().unwrap_or("skill").to_string(),
