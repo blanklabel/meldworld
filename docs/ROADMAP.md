@@ -1832,11 +1832,40 @@ same always-running-when-unwatched spatial workload as the ecology).
     sessions, and **depth becomes accumulated risk**: the deeper you are, the more session
     boundaries your town has to survive. Do not flatten `fights_per_level` to compensate
     before the inn exists; the shape is not the problem, the session boundary is.
-  - **Open decisions** (each changes the loop, not the code):
-    - **Who may use a town's inn and services?** Owner / party / guild / anyone. Open-to-all
-      makes one player's deep town everyone's shortcut. Leaning owner-or-guild.
-    - **Does a wipe cost the expedition only, or the town too?** The town is a `Structure`
-      with HP, so it can be rebuilt; the expedition cannot.
+  - **DECIDED:**
+    - **Anyone may use a town** — inn, vendor, party swap, no permissions on the door. This
+      is safe *because the portal is the gate, not the door*: a town grants no levels, so
+      walking to a deep one still means surviving the terrain to get there, and arriving
+      hands you nothing you did not earn. The "one player's deep town is everyone's
+      shortcut" risk dies with level-at-distance.
+    - **A town persists beyond wipes**, and the relationship is ONE-DIRECTIONAL: a town
+      falling wipes everyone resting in it, but a player being wiped leaves the town
+      standing. Durable infrastructure, fragile expedition.
+    - **Portals into a town are guild- or party-owned and cost chits.** The town is public
+      once you have walked there; *fast* entry is owned and paid for. This is the only
+      shortcut in the design, and it is priced.
+  - ⚠️ **OPEN — a wipe currently removes a player from the expedition permanently, and the
+    numbers are brutal.** Level is time-out-there, so a wiped player is level 1; the town
+    they portal back into is unchanged, but the ground outside it is not. Measured, carried
+    by a 4-hero party with the punch-up bonus at its 1.5x cap:
+
+    | town | terrain needs | carried encounters to catch up |
+    |------|---------------|-------------------------------|
+    | d1000 | L35 | 21 |
+    | d2000 | L108 | 320 |
+    | d2500 | L158 | 766 |
+    | d3200 | L244 | **2179** |
+
+    Catching up costs what the original climb cost, because it *is* the original climb —
+    `xp_total_to_level` grows as fast as a deep encounter pays, so no per-kill bonus closes
+    it (even 10x leaves 218 encounters at d3200). So one death removes a player from their
+    guild's deep push for the rest of it, potentially across many sessions. In a co-op game
+    with no log-off that is a social problem, not just a difficulty one.
+    **The inn is the obvious answer and the design already implies it:** resting *saves* —
+    a wipe returns you to your last inn at the level you rested at, not to level 1. That
+    makes the town hold your progress (which is why it persists beyond wipes), makes the
+    garrison worth chits (the save can be destroyed), and makes the portal the way back to
+    it. All four services then serve one loop. Needs a call before `BD-5` is built.
   - **What this retires.** `base_run_level(distance)` and `meld_proto::hubs::start_level` keep
     no gameplay role — a town grants services, not levels. Both survive only as the
     `MELD_START_LEVEL` dev/QA instrument, which must keep working: it is how deep content is
