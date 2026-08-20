@@ -102,6 +102,8 @@ pub struct Runs {
 
     pub fights_per_level_base: i32,
     pub fights_per_level_ramp: i32,
+    pub fights_per_level_knee: i32,
+    pub fights_per_level_ramp_late: i32,
     pub xp_reference_creature: f64,
     pub max_hero_level: i32,
     /// How XP falls off once a hero has out-levelled the ground it is standing on:

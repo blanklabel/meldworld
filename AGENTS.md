@@ -632,10 +632,11 @@ at **d≈3350**; that crossing is the real reason ~d3250 is the structural end o
 play reads them — they are the inverse of `MELD_START_LEVEL`, which sets a DISTANCE and lets
 the level follow, and they are how deep content is measured at all. Held against each other
 by a distance sweep. **Watch the arithmetic before flattening anything:** level costs are
-stated in FIGHTS (`fights_per_level` climbs 2 → 51) and deep fights are 4.4-creature packs,
-so a *continuous* expedition reaches only ~d1150 / level ~43 in four hours and the cap is
-~170 hours. The inn is what makes that a ladder instead of a wall — the session boundary was
-the problem, not the curve's shape.
+stated in FIGHTS (`fights_per_level` climbs 2 → 21 by level 100, then **plateaus** to 31 at
+the cap) and deep fights are 4.4-creature packs, so a *continuous* expedition reaches only
+~d1150 / level ~43 in four hours, and the whole 1 → 255 climb is ~5,100 at-level fights
+(~127 hours). The inn is what makes that a ladder instead of a wall — the session boundary
+was the problem, not the curve's shape.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
@@ -1228,6 +1229,17 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   At the shipped values a level costs 2 fights at first and level 10 — the gate on
   your **second party slot** — costs 22, with the ramp biting later (65 to L20, 128
   to L30). `PlayerRun::award_hero_xp` levels each hero on victory.
+- **AND IT PLATEAUS PAST 100, WITHOUT GOING FLAT.** Two slopes, the same shape the
+  punch-up bonus uses: `fights_per_level_ramp` to `fights_per_level_knee` (100), then the
+  gentler `fights_per_level_ramp_late` (15) after it — 21 fights a level at 100 rising to
+  31 at the cap, where one rate forever wanted 52. Past 100 a level buys **stats alone**
+  (a martial class's ability ladder tops out there, `skills::ladder_top`), so an
+  ever-steeper price is a rising charge for a shrinking reward. It still rises, though,
+  and that half is load-bearing: out-levelling the ground is the route `AD-7` opened for
+  a party that cannot get the gear, so a deep ladder that went free would make grinding
+  strictly better than the loot chase it is meant to be an alternative to. The knee bends
+  only what comes after it — every level below 100 costs exactly what it did before, held
+  by test.
 - **An encounter is a POOL divided among the heroes still STANDING.** The last survivor
   of a bad fight banks the whole thing — a fight that nearly killed you is worth what it
   cost. `award_hero_xp` takes `shares` (the living count) SEPARATELY from `party_size`
