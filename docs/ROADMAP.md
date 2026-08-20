@@ -1860,14 +1860,15 @@ same always-running-when-unwatched spatial workload as the ecology).
     thing that can take a town).
   - **`portal`** = plantable extraction (evolves D15).
   - **Why the arithmetic needs the inn.** Level costs are stated in FIGHTS
-    (`fights_per_level` climbs 2 → 51), and deep fights are 4.4-creature packs at ~18
-    hero-hits each — so pricing every level at its own depth, a *continuous* expedition
-    reaches only **~d1150 / level ~43 in four hours**, and the 255 cap is ~170 hours. Without
-    an inn, everything above level ~43 is unreachable by construction — most of the ability
-    ladder and all of `EW`. With one, that 170 hours is an MMO-scale ladder spread over many
-    sessions, and **depth becomes accumulated risk**: the deeper you are, the more session
-    boundaries your town has to survive. Do not flatten `fights_per_level` to compensate
-    before the inn exists; the shape is not the problem, the session boundary is.
+    (`fights_per_level` climbs 2 → 21 by level 100, then plateaus to 31 at the cap — see
+    `AD-9`), and deep fights are 4.4-creature packs at ~18 hero-hits each — so pricing every
+    level at its own depth, a *continuous* expedition reaches only **~d1150 / level ~43 in
+    four hours**, and the 255 cap is ~127 hours. Without an inn, everything above level ~43
+    is unreachable by construction — most of the ability ladder and all of `EW`. With one,
+    that 127 hours is an MMO-scale ladder spread over many sessions, and **depth becomes
+    accumulated risk**: the deeper you are, the more session boundaries your town has to
+    survive. `AD-9` bent the deep half of the curve rather than flattening the whole thing;
+    the shape below 100 is not the problem, the session boundary is.
   - **DECIDED:**
     - **Anyone may use a town** — inn, vendor, party swap, no permissions on the door. This
       is safe *because the portal is the gate, not the door*: a town grants no levels, so
@@ -1883,16 +1884,21 @@ same always-running-when-unwatched spatial workload as the ecology).
   - **THE CATCH-UP MECHANISM IS `fights_per_level`, NOT A NEW SYSTEM.** A wipe leaves a
     player at level 1 while the ground outside the town still demands 244, and the fix is
     not saved state, a rejoin floor, or a catch-up buff — it is that **the marginal cost of
-    a level is wrong.** `fights_per_level` climbs 2 → 51, so catching up costs what the
-    original climb cost, because it *is* the original climb. Measured (carried by a 4-hero
-    party, punch-up bonus at its cap):
+    a level is wrong.** The ramp used to climb 2 → 51 with one slope, so catching up cost
+    what the original climb cost, because it *is* the original climb. Measured (carried by a
+    4-hero party, punch-up bonus at its cap):
 
     | `fights_per_level_ramp` | one level @L244 | catch-up at d3200 | hrs to d3200 | hrs to cap |
     |---|---|---|---|---|
-    | 5 (today) | 28.5 enc | 2179 | 160 | 170 |
+    | 5, no knee (the old shape) | 28.5 enc | 2179 | 160 | 170 |
+    | **5 to L100, then 15 (shipped, `AD-9`)** | **17.1** | **1659** | **122** | **127** |
     | 25 | 6.3 | 512 | 39 | 41 |
     | **flat (no ramp)** | **1.1** | **126** | **11.5** | **11.9** |
 
+    `AD-9` took the second row: a quarter off the whole climb and 40% off the marginal cost
+    of a deep level, without touching a single level below 100. It is a **dent in** this
+    problem, not an answer to it — 1659 encounters is still not a catch-up mechanism, so the
+    row below it stays on the table.
     Flattening closes three problems with one tunable: power-levelling a wiped teammate
     becomes viable at **every** depth (~1 encounter per level rather than 28), a continuous
     expedition can actually reach the deep world, and the catch-up gap closes with **no
@@ -2428,6 +2434,27 @@ the current build.
   target instead: hard at the hub, very hard at the end, parity always reachable inside the
   level cap, with gear the accelerator rather than the toll. Tune against played fights
   (`mcp/`), never a spreadsheet — the end fight shipped impossible three times that way.
+- [x] **AD-9 — The ladder plateaus past 100 (it does not flatten).** `fights_per_level`
+  had one slope for a 255-level ladder — one more at-level fight every 5 levels, forever —
+  so level 255 cost **52 fights** where level 100 cost 21, and the climb kept getting
+  steeper long after it stopped buying anything new. Now it has two, the same knee-and-
+  second-slope shape `AD-7`'s punch-up bonus uses: `fights_per_level_ramp` (5) up to
+  `fights_per_level_knee` (100), then `fights_per_level_ramp_late` (15) past it. 21 fights
+  a level at 100, 31 at the cap; the whole 1 → 255 climb drops from **6,833 at-level
+  fights to 5,109** (~170 h → ~127 h).
+  - **Why 100 is the knee.** Past it a level buys **stats and nothing else** — a martial
+    class's ability ladder tops out at 100 (`skills::ladder_top`) — so an ever-steeper
+    price there is a rising charge for a shrinking reward. Below it nothing changed: the
+    knee bends only what comes after it, and a test walks 1..=100 asserting the old
+    arithmetic exactly, because the opening act was tuned deliberately (level 10, the gate
+    on your second party slot, still costs 22) and this is not a retune of it.
+  - **Why it must not go flat.** Out-levelling the ground is the route `AD-7` opened for a
+    party that cannot get the gear — the only one left past d2300. A deep ladder that cost
+    nothing would make grinding strictly better than the loot chase it is meant to be an
+    *alternative* to, so the curve still rises past the knee; the test holds both halves
+    (monotonic in fights AND in XP, and a strictly gentler slope after the knee).
+  - Does not repair `BD-5`'s catch-up problem, and does not claim to: a wiped teammate at
+    d3200 still needs ~1,659 encounters, down from ~2,179. That row stays open.
 - [ ] **AD-5 — Keystone modifiers.** Opt-in challenge scaling for better loot; seeds from
   `FS-4` champion affixes; feeds the keystone leaderboard.
 - [ ] **AD-6 — Leaderboard suite.** Generalize the Vanguard board into **boss / keystone /

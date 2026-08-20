@@ -74,8 +74,19 @@ extraction_channel_ms = 2500
 # game's least interesting configuration. Here it costs 22, while level 20 costs 65
 # and level 30 costs 128 (the old shape wanted 209 and 464). The goal this is tuned
 # against: most players reach doubles before the run that kills them. [TUNABLE]
+#
+# AND IT PLATEAUS PAST THE KNEE. The ramp keeps rising forever if you let it, and past
+# `fights_per_level_knee` that is charging more for less: a martial class's ability
+# ladder tops out at 100 (`skills::ladder_top`), so every level after it buys stats
+# alone. The slope past the knee is `fights_per_level_ramp_late` — one more fight every
+# 15 levels rather than every 5 — which still RISES (21 fights at 100, 31 at 255) while
+# cutting the 1 -> 255 climb from 6,833 at-level fights to 5,109. It has to keep rising:
+# out-levelling the ground is the route AD-7 opened for a party that cannot get the
+# gear, and a flat ladder past 100 would make it the only route. [TUNABLE]
 fights_per_level_base = 2
 fights_per_level_ramp = 5
+fights_per_level_knee = 100       # levels past here ramp at the slower rate below
+fights_per_level_ramp_late = 15
 xp_reference_creature = 60       # the XP a mid-table creature pays at distance 0 [TUNABLE]
 # NOTE: how many creatures an encounter holds is DERIVED from `[[encounters.group_ramp]]`
 # (`Encounters::expected_group_size`) rather than stated twice. A constant here drifted

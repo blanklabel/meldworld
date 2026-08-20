@@ -48,16 +48,29 @@ pub fn same_level_encounter_xp(level: i32, balance: &Balance) -> i64 {
 }
 
 /// How many same-level fights level `level` costs — the design statement itself:
-/// `base` fights, plus one more every `ramp` levels.
+/// `base` fights, plus one more every `ramp` levels, and **one more every
+/// `ramp_late` levels once past `knee`**.
 ///
 /// The ramp is deliberately gentle through the first act. The gate on your second
 /// party slot is a hero at level 10, and under the old `(L + 1)` shape that cost 54
 /// at-level fights — the entire opening of the game spent as one hero alone, which
 /// is the least interesting configuration the game has. Here it costs 22, and the
 /// ramp still has teeth further out (65 to level 20, 128 to level 30).
+///
+/// **Then it PLATEAUS.** Two slopes, the same shape [`xp_after_level_gap`] uses for
+/// punching up, and for the same reason: one rate cannot serve both ends of a 255-level
+/// ladder. Past the knee a level buys stats and nothing else — a martial class's
+/// ability ladder tops out at 100 ([`meld_proto::skills::ladder_top`]) — so charging
+/// an ever-steeper price for it is charging more for less. It still rises, because
+/// out-levelling the ground is the route `AD-7` opened for a party that cannot get the
+/// gear, and a ladder that went flat at 100 would make it the *only* route.
 pub fn fights_per_level(level: i32, balance: &Balance) -> i32 {
     let r = &balance.runs;
-    (r.fights_per_level_base + (level.max(1) - 1) / r.fights_per_level_ramp.max(1)).max(1)
+    let level = level.max(1);
+    let knee = r.fights_per_level_knee.max(1);
+    let early = (level.min(knee) - 1) / r.fights_per_level_ramp.max(1);
+    let late = (level - knee).max(0) / r.fights_per_level_ramp_late.max(1);
+    (r.fights_per_level_base + early + late).max(1)
 }
 
 /// Total XP to climb from level 1 to `level`.
@@ -1608,6 +1621,64 @@ mod tests {
         assert!(same_level_encounter_xp(1, &b) < same_level_encounter_xp(20, &b));
         assert!(xp_to_next(1, &b) < xp_to_next(20, &b));
         assert!(xp_to_next(20, &b) < xp_to_next(255, &b));
+    }
+
+    /// **The ladder plateaus past the knee — it does not flatten.** Two properties, and
+    /// the pair is the design: the first hundred levels are UNTOUCHED (the knee only
+    /// bends what comes after it), and past it a level still costs more than the last
+    /// one did, just at a gentler rate. Past 100 a level buys stats alone — a martial
+    /// ladder tops out there — so an ever-steeper price is a rising charge for a
+    /// shrinking reward. But it must not go flat: out-levelling the ground is `AD-7`'s
+    /// route for a party that cannot get the gear, and a free deep ladder makes grinding
+    /// strictly better than the loot chase it is supposed to be an alternative to.
+    #[test]
+    fn the_ladder_plateaus_past_the_knee_without_flattening() {
+        let b = Balance::load_default().unwrap();
+        let knee = b.runs.fights_per_level_knee;
+
+        // Below the knee, the early ramp is the whole story — one more fight every
+        // `ramp` levels, exactly as it was before the plateau existed.
+        for level in 1..=knee {
+            let want = b.runs.fights_per_level_base + (level - 1) / b.runs.fights_per_level_ramp;
+            assert_eq!(
+                fights_per_level(level, &b),
+                want,
+                "the knee bent the ladder at level {level}, which is below it"
+            );
+        }
+
+        // Never cheaper than the level before it, at any point on either slope.
+        for level in 1..b.runs.max_hero_level {
+            assert!(
+                fights_per_level(level + 1, &b) >= fights_per_level(level, &b),
+                "level {} costs fewer fights than level {level}",
+                level + 1
+            );
+            assert!(
+                xp_to_next(level + 1, &b) > xp_to_next(level, &b),
+                "level {} costs less XP than level {level}",
+                level + 1
+            );
+        }
+
+        // Still rising past the knee — a flat deep ladder is the failure mode.
+        let cap = b.runs.max_hero_level;
+        assert!(
+            fights_per_level(cap, &b) > fights_per_level(knee, &b),
+            "the ladder went flat past the knee"
+        );
+
+        // …but rising more SLOWLY than it was. Compared as fights gained per level so
+        // the assertion is on the SLOPE and not on where the two spans happen to sit.
+        let early_slope = (fights_per_level(knee, &b) - fights_per_level(1, &b)) as f64
+            / (knee - 1).max(1) as f64;
+        let late_slope =
+            (fights_per_level(cap, &b) - fights_per_level(knee, &b)) as f64 / (cap - knee).max(1) as f64;
+        assert!(
+            late_slope < early_slope,
+            "the plateau is not a plateau: {early_slope:.3} fights/level before the knee, \
+             {late_slope:.3} after"
+        );
     }
 
     /// The design statement, as arithmetic: +5 levels up pays 1.05x, +10 pays 1.10x,
