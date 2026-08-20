@@ -763,10 +763,17 @@ fn choose_order(me: &session::Comb, party: &[&session::Comb], pouch: &[(String, 
 
     if me.class == "hunter" {
         let banked: i32 = tok("adrenaline:").and_then(|v| v.parse().ok()).unwrap_or(0);
-        // Below a full-price skill's cost there is nothing to spend, and attacking is
-        // what refills it. The exact cost is a `[TUNABLE]` the client cannot read, so
-        // this is a floor rather than a lookup.
-        if banked < 40 {
+        let bank_max: i32 = tok("adrenaline_max:").and_then(|v| v.parse().ok()).unwrap_or(100);
+        // Bank FULL before spending. The policy below picks the highest-unlock skill, which
+        // is also the dearest, and the exact cost is a `[TUNABLE]` the client cannot read —
+        // so a floor of 40 asked for a level-20 Frenzy on 50 banked and was refused, every
+        // turn, forever. Measured: a level-28 Hunter spent a whole fight on refusals and
+        // died having contributed almost nothing, which made every Hunter number this
+        // harness produced a measurement of its own incompetence.
+        //
+        // Full is the only threshold that is affordable whatever the skill costs, and it is
+        // the class's own loop anyway: attack to bank it, spend the bank.
+        if banked < bank_max {
             return Order::Attack;
         }
     }

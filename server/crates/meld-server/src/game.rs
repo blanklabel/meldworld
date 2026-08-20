@@ -1415,6 +1415,95 @@ fn spend_material(
     Some(kind)
 }
 
+
+/// DEV/QA: dress a party as though it were wearing a full six-slot set of tier-`n` insured
+/// epics (`MELD_GEAR_TIER`), on top of whatever the Vault actually holds.
+///
+/// **Applied wherever `gear_bonuses` is written, not just at `form_run`.** It used to be set
+/// once when the run formed, and then `flush_gear_loads` — which mirrors the real Vault into
+/// the world a tick later — overwrote it with the empty set. So the flag dressed the party
+/// for exactly as long as it took the first gear load to land, and every measurement taken
+/// through it was of an UNGEARED party wearing the word "geared".
+///
+/// Measured: at tier 3 a level-28 party's skills did -103 and -127 dressed, and -103 and
+/// -127 undressed. Identical to the digit.
+fn dress_for_dev(
+    balance: &Balance,
+    classes: &[CharacterClass],
+    gear: Vec<meld_db::GearBonus>,
+) -> Vec<meld_db::GearBonus> {
+            // `MELD_GEAR_TIER=<n>` — DEV/QA: dress every hero as if it were wearing a full
+    // set of tier-`n` insured epics, without a Vault full of them. The end fight is
+    // tuned as a GEAR CHECK, and the difference between a geared and an ungeared
+    // party there is 3.5x survivability — so without this the only observable case
+    // is the ungeared one, and the number that matters cannot be looked at.
+    //
+    // Mirrors what `equipped_gear_bonuses` derives from a real six-slot set: one
+    // weapon's worth of atk, four armour pieces' worth of def, each carrying two
+    // epic stat affixes.
+    let gear = match std::env::var("MELD_GEAR_TIER")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+    {
+        Some(tier) if tier > 0 => {
+            let l = &balance.loot;
+            let af = &balance.affix;
+            let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
+            let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
+            let atk = (piece + affix).round() as i32;
+            let def = (4.0 * (piece + affix)).round() as i32;
+            tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
+            // Four armour pieces of the weight the CLASS actually wears, so the
+            // dressed party answers for damage types the way a real set would.
+            // Without this the harness could see the atk/def half of gear and not
+            // the resistance half — which is the half the apex is gated on.
+            let comp = classes.to_vec();
+            gear.iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    let weight = comp
+                        .get(i)
+                        .and_then(|c| {
+                            meld_proto::equipment::armor_weights(*c).first().copied()
+                        })
+                        .map(|w| w.wire().to_string());
+                    // `MELD_GEAR_WARD=<TYPE>` dresses the set with an elemental ward
+                    // on every piece — what a player who KNEW what they were walking
+                    // into would bring. Without it the harness can only show gear's
+                    // physical half, and a fire fight is not answered by plate.
+                    let ward = std::env::var("MELD_GEAR_WARD").ok().and_then(|t| {
+                        let key = t.trim().to_uppercase();
+                        meld_proto::enums::DamageType::from_wire(&key).map(|_| key)
+                    });
+                    // A tier-`n` set rolls Aegis (flat ward) and Furnace (element
+                    // power) lines like any other epic, so the harness grants them
+                    // too — otherwise a dressed party shows gear's physical half and
+                    // none of its elemental one, which is the half the apex needs.
+                    let ward_stat = (af.magnitude_per_tier * tier as f64
+                        * af.count_epic as f64)
+                        .round() as i32;
+                    GearBonus {
+                        atk,
+                        def,
+                        ward: ward_stat,
+                        armor_weights: weight
+                            .into_iter()
+                            .flat_map(|w| std::iter::repeat_n(w, 4))
+                            .collect(),
+                        modifiers: ward
+                            .into_iter()
+                            .flat_map(|k| std::iter::repeat_n((k, 0.75), 4))
+                            .collect(),
+                        ..Default::default()
+                    }
+                })
+                .collect()
+        }
+        _ => gear,
+    };
+    gear
+}
+
 /// One queued request at a field station: everything the DB half needs, decided
 /// already by the world half. `owner`/`smith_level` are the STATION's smith — the
 /// skill the job is done at — while `requester` is whose gear it is. They are separate
@@ -4600,75 +4689,9 @@ impl GameState {
             }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
-            // `MELD_GEAR_TIER=<n>` — DEV/QA: dress every hero as if it were wearing a full
-            // set of tier-`n` insured epics, without a Vault full of them. The end fight is
-            // tuned as a GEAR CHECK, and the difference between a geared and an ungeared
-            // party there is 3.5x survivability — so without this the only observable case
-            // is the ungeared one, and the number that matters cannot be looked at.
-            //
-            // Mirrors what `equipped_gear_bonuses` derives from a real six-slot set: one
-            // weapon's worth of atk, four armour pieces' worth of def, each carrying two
-            // epic stat affixes.
-            let gear = match std::env::var("MELD_GEAR_TIER")
-                .ok()
-                .and_then(|v| v.trim().parse::<i32>().ok())
-            {
-                Some(tier) if tier > 0 => {
-                    let l = &inst.balance.loot;
-                    let af = &inst.balance.affix;
-                    let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
-                    let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
-                    let atk = (piece + affix).round() as i32;
-                    let def = (4.0 * (piece + affix)).round() as i32;
-                    tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
-                    // Four armour pieces of the weight the CLASS actually wears, so the
-                    // dressed party answers for damage types the way a real set would.
-                    // Without this the harness could see the atk/def half of gear and not
-                    // the resistance half — which is the half the apex is gated on.
-                    let comp = inst.party_classes.get(pid).cloned().unwrap_or_default();
-                    gear.iter()
-                        .enumerate()
-                        .map(|(i, _)| {
-                            let weight = comp
-                                .get(i)
-                                .and_then(|c| {
-                                    meld_proto::equipment::armor_weights(*c).first().copied()
-                                })
-                                .map(|w| w.wire().to_string());
-                            // `MELD_GEAR_WARD=<TYPE>` dresses the set with an elemental ward
-                            // on every piece — what a player who KNEW what they were walking
-                            // into would bring. Without it the harness can only show gear's
-                            // physical half, and a fire fight is not answered by plate.
-                            let ward = std::env::var("MELD_GEAR_WARD").ok().and_then(|t| {
-                                let key = t.trim().to_uppercase();
-                                meld_proto::enums::DamageType::from_wire(&key).map(|_| key)
-                            });
-                            // A tier-`n` set rolls Aegis (flat ward) and Furnace (element
-                            // power) lines like any other epic, so the harness grants them
-                            // too — otherwise a dressed party shows gear's physical half and
-                            // none of its elemental one, which is the half the apex needs.
-                            let ward_stat = (af.magnitude_per_tier * tier as f64
-                                * af.count_epic as f64)
-                                .round() as i32;
-                            GearBonus {
-                                atk,
-                                def,
-                                ward: ward_stat,
-                                armor_weights: weight
-                                    .into_iter()
-                                    .flat_map(|w| std::iter::repeat_n(w, 4))
-                                    .collect(),
-                                modifiers: ward
-                                    .into_iter()
-                                    .flat_map(|k| std::iter::repeat_n((k, 0.75), 4))
-                                    .collect(),
-                                ..Default::default()
-                            }
-                        })
-                        .collect()
-                }
-                _ => gear,
-            };
+            let dressed_classes =
+                inst.party_classes.get(pid).cloned().unwrap_or_default();
+            let gear = dress_for_dev(&inst.balance, &dressed_classes, gear);
             inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);
@@ -6154,6 +6177,14 @@ impl GameState {
                     // in the loop, so a moved method never sees a stale copy mid-tick.
                     if let Some(w) = self.world.as_mut() {
                         if w.run.runs.iter().any(|r| r.player_id == pid) {
+                            // Re-dress on the way in. THIS is where the dev flag used to
+                            // die: `form_run` dressed the party, and this line — a tick
+                            // later, with the real (often empty) Vault — put the undressed
+                            // set straight back. The flag held for as long as it took the
+                            // first gear load to land, and never longer.
+                            let classes =
+                                w.party_classes.get(&pid).cloned().unwrap_or_default();
+                            let bonuses = dress_for_dev(&w.balance, &classes, bonuses);
                             w.gear_bonuses.insert(pid.clone(), bonuses);
                         }
                     }
