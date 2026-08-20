@@ -4,7 +4,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
 
 use meld_client::glass;

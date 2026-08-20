@@ -4,8 +4,6 @@
 //! server) so a returning player never sees a one-frame flash of first-timer
 //! UI while their real "already seen it" flags are still in flight.
 
-use bevy::prelude::*;
-
 use meld_client::glass;
 use meld_client::net::{ClientCmd, Net};
 

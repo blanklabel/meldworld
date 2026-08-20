@@ -14,8 +14,6 @@
 //! "reach level N", no trigger hints — finding out is the game. Only what a hero
 //! actually has is listed.
 
-use bevy::prelude::*;
-
 use meld_client::glass;
 
 use super::*;

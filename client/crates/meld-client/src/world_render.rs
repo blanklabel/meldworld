@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use bevy::prelude::*;
 use bevy::gltf::GltfAssetLabel;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
