@@ -3,8 +3,6 @@
 //! Extracted from `main.rs` during the module reorg.
 
 
-use bevy::prelude::*;
-
 use meld_client::glass;
 use meld_client::net::{ClientCmd, GearLine};
 use meld_proto::enums::Insurance;

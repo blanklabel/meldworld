@@ -4,8 +4,6 @@
 
 use std::collections::HashSet;
 
-use bevy::prelude::*;
-
 use meld_client::glass;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::gltf::GltfAssetLabel;

@@ -2,8 +2,6 @@
 //! Extracted from `main.rs` during the module reorg.
 
 
-use bevy::prelude::*;
-
 use meld_client::net::{CombatantView, GearLine, SkillLine};
 
 use super::*;
