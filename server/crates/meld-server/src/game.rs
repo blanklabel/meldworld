@@ -10,7 +10,7 @@
 //! MazeInstance; the party is formed from the connected players at the first
 //! `run.enter_maze`; chunk streaming and Gatekeepers are deferred.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -194,8 +194,18 @@ impl GameHandle {
 /// main source of tick stalls / jitter under load (harvest XP fired on every
 /// harvest, deaths, renames). Loads that *do* feed state back stay on the loop.
 enum DbWrite {
-    /// Apply the death durability sink for a player whose run just ended.
+    /// A player's run ended in a wipe: destroy the STANDARD gear they had equipped and
+    /// burn their ephemeral. Deliberately NOT the durability sink any more — that is
+    /// charged per hero death (`HeroFalls`, GR-2), and a wipe is already every hero
+    /// falling. Doing both would bill the same deaths twice.
     Death(String),
+    /// Charge the durability tax on one hero's own equipped insured gear:
+    /// (player, hero slot, how many times that hero FELL). GR-2 / CANON D6.
+    ///
+    /// It rides per (hero, count) rather than as a whole-party vector because the two
+    /// non-battle death sources — a dungeon trap and a Shift's Force blast — put
+    /// individual heroes down without a battle to end.
+    HeroFalls(String, i32, u32),
     /// Permanently delete a player's EQUIPPED red-insurance gear — the spec §5
     /// canon-gap resolution: Vault-owned red gear brought back into a run is
     /// at absolute risk, burned when the run ends `died` OR `abandoned`.
@@ -248,17 +258,23 @@ enum DbWrite {
 
 /// Drain the DB-write queue on its own task, serializing writes off the hot path.
 async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedReceiver<DbWrite>) {
-    let decay = balance.loot.insured_death_decay;
+    let per_fall = balance.loot.durability_loss_per_fall;
     while let Some(job) = rx.recv().await {
         match job {
+            DbWrite::HeroFalls(pid, slot, falls) => {
+                if let Ok(uid) = Uuid::parse_str(&pid) {
+                    if let Err(e) = db.apply_hero_fall_durability(uid, slot, falls, per_fall).await {
+                        tracing::error!("fall durability failed for {pid} hero {slot}: {e}");
+                    }
+                }
+            }
             DbWrite::Death(pid) => {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
-                    // A wipe touches all three tiers, each in its own way: insured
-                    // wears down, standard is destroyed outright, ephemeral burns like
-                    // it would have on any other way home.
-                    if let Err(e) = db.apply_death_durability(uid, decay).await {
-                        tracing::error!("death durability failed for {pid}: {e}");
-                    }
+                    // A wipe takes the two tiers a death can TAKE: standard outright,
+                    // ephemeral like it would have burned on any other way home. What
+                    // insured gear pays is durability, and it has already been charged
+                    // per hero fall (`HeroFalls`) — including the falls that made this
+                    // wipe a wipe.
                     if let Err(e) = db.destroy_equipped_standard_gear(uid).await {
                         tracing::error!("standard-gear loss failed for {pid}: {e}");
                     }
@@ -1073,6 +1089,11 @@ struct WorldActor {
     /// condition something you carry down the road rather than something the next loading
     /// screen washes off.
     hero_afflictions: HashMap<String, Vec<Vec<String>>>,
+    /// Players whose insured gear this run has actually charged (GR-2). The tax rides
+    /// hero FALLS rather than the run's outcome, so "did this run cost durability" is
+    /// no longer a synonym for "did it end in death" — a hero can go down and the party
+    /// extract — and `run.member_result.durability_loss_applied` has to be told.
+    durability_charged: HashSet<String>,
     /// Movement inputs since a poisoned party last took its bite — venom is charged by
     /// DISTANCE, not by time.
     venom_steps: HashMap<String, i32>,
@@ -2495,17 +2516,24 @@ impl WorldActor {
         let base = self.balance.worldgen.dungeon_trap_damage as f64;
         let div = self.balance.world_scaling.stat_mult_base_divisor.max(1.0);
         let dmg = (base * (1.0 + hit.severity as f64 / div)).round() as i32;
+        // Who the trap put DOWN, not merely who it hurt — each of those owes the
+        // durability tax on its own kit (GR-2), whether or not the party survived.
+        let mut fell: Vec<(String, i32)> = Vec::new();
         let wiped = match self.hero_hp.get_mut(pid) {
             Some(hp) => {
-                for h in hp.iter_mut() {
+                for (slot, h) in hp.iter_mut().enumerate() {
                     if *h > 0 {
                         *h = (*h - dmg).max(0);
+                        if *h == 0 {
+                            fell.push((pid.to_string(), slot as i32));
+                        }
                     }
                 }
                 hp.iter().all(|h| *h <= 0)
             }
             None => return Vec::new(),
         };
+        self.charge_non_battle_falls(&fell);
         if wiped {
             self.world_death(pid)
         } else {
@@ -2530,6 +2558,7 @@ impl WorldActor {
         self.location.remove(pid);
         self.arena.avatars.retain(|a| a.player_id != pid);
         let mut out = Vec::new();
+        let charged = self.durability_charged.contains(pid);
         if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
             let mut lost = r.backpack.clone();
             lost.extend(r.pouches.iter().flatten().cloned());
@@ -2552,12 +2581,24 @@ impl WorldActor {
                     lost: Some(lost),
                     chits: lost_chits,
                     gear_banked: vec![],
-                    durability_loss_applied: true,
+                    durability_loss_applied: charged,
                 },
             ));
         }
         let _ = self.db_writes.send(DbWrite::Death(pid.to_string()));
         out
+    }
+
+    /// Charge the durability tax for heroes a NON-BATTLE blow just put down (GR-2):
+    /// a dungeon trap, or the Force blast of a Shift. Those are the only two ways a
+    /// hero dies with no battle to end, so there is no engine fall counter to read —
+    /// but it is the same tax, and it goes through the same write for the same reason
+    /// the engine counts falls in one place.
+    fn charge_non_battle_falls(&mut self, fell: &[(String, i32)]) {
+        for (pid, slot) in fell {
+            let _ = self.db_writes.send(DbWrite::HeroFalls(pid.clone(), *slot, 1));
+            self.durability_charged.insert(pid.clone());
+        }
     }
 
     /// Whether `pid`'s run has ended (result recorded) — the Router uses this after
@@ -4575,6 +4616,7 @@ impl GameState {
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
                 hero_afflictions: HashMap::new(),
+                durability_charged: HashSet::new(),
                 venom_steps: HashMap::new(),
                 party_classes: HashMap::new(),
                 gear_bonuses: HashMap::new(),
@@ -4833,6 +4875,11 @@ impl GameState {
             }
             inst.party_classes.insert(pid.clone(), comp);
             inst.hero_hp.insert(pid.clone(), hp);
+            // A fresh dive owes nothing yet. Cleared when the run STARTS rather than when
+            // the last one was released, because the end-of-run report is what reads it
+            // and a redive in a persistent world would otherwise inherit the last dive's
+            // answer.
+            inst.durability_charged.remove(pid);
             let dressed_classes =
                 inst.party_classes.get(pid).cloned().unwrap_or_default();
             let gear = dress_for_dev(&inst.balance, &dressed_classes, gear);
@@ -9003,7 +9050,10 @@ impl GameState {
                         lost: None,
                         chits: if own { b.chits } else { 0 },
                         gear_banked: if own { b.gear.clone() } else { vec![] },
-                        durability_loss_applied: false,
+                        durability_loss_applied: self
+                            .world
+                            .as_ref()
+                            .is_some_and(|w| w.durability_charged.contains(&b.player_id)),
                     },
                 ));
             }
@@ -9375,6 +9425,7 @@ impl WorldActor {
         // replaced it.
         let caught: Vec<(String, f64)> = outcome.caught.clone();
         let mut dead: Vec<String> = Vec::new();
+        let mut fell: Vec<(String, i32)> = Vec::new();
         let mut hits: HashMap<String, Vec<i32>> = HashMap::new();
         for (pid, fraction) in caught {
             let Some(classes) = self.party_classes.get(&pid).cloned() else { continue };
@@ -9397,12 +9448,18 @@ impl WorldActor {
                 let dmg = ((max as f64) * fraction).round().max(1.0) as i32;
                 taken[slot] = dmg.min(*cur);
                 *cur = (*cur - dmg).max(0);
+                if *cur == 0 {
+                    // The weather is the other thing that kills a hero with no battle
+                    // to end it (GR-2).
+                    fell.push((pid.clone(), slot as i32));
+                }
             }
             if hp.iter().all(|h| *h <= 0) {
                 dead.push(pid.clone());
             }
             hits.insert(pid, taken);
         }
+        self.charge_non_battle_falls(&fell);
 
         let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
         for pid in &members {
@@ -9923,6 +9980,10 @@ impl WorldActor {
         // Persist each participant's per-hero HP so wounds carry to the next
         // encounter (no free heal between fights). Read from the battle before its
         // slot is dropped below. (Disjoint field borrows: `battles` vs `hero_hp`.)
+        //
+        // `falls` is collected here and queued after the loop: the DB write needs
+        // `self.db_writes` while `inst` still holds the instance borrow.
+        let mut falls: Vec<(String, i32, u32)> = Vec::new();
         for pid in &members {
             if let (Some(cids), Some(hps)) =
                 (inst.battles[bidx].player_combatants.get(pid), inst.hero_hp.get_mut(pid))
@@ -9941,7 +10002,37 @@ impl WorldActor {
                     .map(|cid| inst.battles[bidx].battle.combatant_afflictions(cid))
                     .collect();
                 inst.hero_afflictions.insert(pid.clone(), carried);
+                // Every hero that FELL in this fight owes the durability tax on its own
+                // kit (GR-2). Counted by the engine per fall rather than read off the
+                // end state, so a hero raised and killed again pays twice and a hero
+                // who was already down pays nothing. Charged whatever the outcome:
+                // falling is what costs you, not losing.
+                falls.extend(cids.iter().enumerate().filter_map(|(slot, cid)| {
+                    let n = inst.battles[bidx].battle.combatant_falls(cid);
+                    (n > 0).then(|| (pid.clone(), slot as i32, n))
+                }));
             }
+        }
+
+        // The same falls, shaped for the player rather than for the DB: what this fight
+        // cost each of THEIR heroes, ready to ride out on `battle.ended`. Built here so
+        // every outcome arm reports it — a hero that fell in a fight you won, fled from
+        // or lost went down all the same.
+        let per_fall = inst.balance.loot.durability_loss_per_fall;
+        let mut worn: HashMap<String, Vec<wb::GearWorn>> = HashMap::new();
+        for (pid, slot, n) in &falls {
+            let hero_name = inst
+                .hero_names
+                .get(pid)
+                .and_then(|names| names.get(*slot as usize))
+                .cloned()
+                .unwrap_or_else(|| generated_hero_name(pid, *slot as usize));
+            worn.entry(pid.clone()).or_default().push(wb::GearWorn {
+                hero_slot: *slot,
+                hero_name,
+                falls: *n,
+                durability_lost: per_fall.saturating_mul(*n as i32),
+            });
         }
 
         let mut dead: Vec<String> = Vec::new();
@@ -10255,6 +10346,7 @@ impl WorldActor {
                         gear_drops: gear_drops.clone(),
                         class_emblem_drops: vec![],
                         gatekeeper_cleared: false,
+                        gear_worn: worn.get(pid).cloned().unwrap_or_default(),
                     };
                     out.push(out_msg(pid, &ended));
                     out.push(out_msg(
@@ -10386,6 +10478,7 @@ impl WorldActor {
                             gear_drops: vec![],
                             class_emblem_drops: vec![],
                             gatekeeper_cleared: false,
+                            gear_worn: worn.get(pid).cloned().unwrap_or_default(),
                         },
                     ));
                 }
@@ -10426,7 +10519,7 @@ impl WorldActor {
                             lost: Some(lost.clone()),
                             chits: *lost_chits,
                             gear_banked: vec![],
-                            durability_loss_applied: true,
+                            durability_loss_applied: inst.durability_charged.contains(pid),
                         },
                     ));
                 }
@@ -10539,6 +10632,7 @@ impl WorldActor {
                             gear_drops: vec![],
                             class_emblem_drops: vec![],
                             gatekeeper_cleared: false,
+                            gear_worn: worn.get(&pid).cloned().unwrap_or_default(),
                         },
                     ));
                     // Authoritatively mutate the client's mirrored backpack: the same
@@ -10627,6 +10721,15 @@ impl WorldActor {
             self.arena.avatars.retain(|a| a.player_id != pid);
             self.run.runs.retain(|r| r.player_id != pid);
             effects.push(WorldEffect::ReleaseFromRun(pid));
+        }
+        // Charge the durability tax for every hero that fell in this fight (GR-2). Queued
+        // here rather than inside the loop that counted them, because the instance borrow
+        // is still live up there. It is deliberately charged on a VICTORY too: a hero that
+        // went down and was carried through the rest of the fight still went down, and a
+        // tax only the losing run pays is a tax a careful player never meets.
+        for (pid, slot, n) in falls {
+            let _ = self.db_writes.send(DbWrite::HeroFalls(pid.clone(), slot, n));
+            self.durability_charged.insert(pid);
         }
         // Announce level-ups (classic stat-gain screen) then refresh the party
         // panel for anyone who leveled up (stats changed).
@@ -11361,6 +11464,7 @@ mod shifting_lands_tests {
             battles: Vec::new(),
             hero_hp: HashMap::new(),
             hero_afflictions: HashMap::new(),
+            durability_charged: HashSet::new(),
             venom_steps: HashMap::new(),
             party_classes: HashMap::new(),
             gear_bonuses: HashMap::new(),
@@ -11586,7 +11690,7 @@ mod watching_tests {
     }
 
     /// Did `player_id` get told `msg_type`, and what did it say?
-    fn sent(out: &[Outgoing], pid: &str, msg_type: &str) -> Option<serde_json::Value> {
+    pub(super) fn sent(out: &[Outgoing], pid: &str, msg_type: &str) -> Option<serde_json::Value> {
         out.iter()
             .find(|o| o.player_id == pid && o.msg_type == msg_type)
             .map(|o| serde_json::from_str(o.payload.get()).expect("payload is json"))
@@ -11951,5 +12055,162 @@ mod watching_tests {
             b.ai.watch_radius,
             b.ai.join_radius
         );
+    }
+}
+
+/// GR-2: the durability tax follows the hero who FELL. These hold the two halves the
+/// old wipe-scoped sink could not express — one hero going down while the party lives,
+/// and a wipe being nothing more than every hero going down at once.
+#[cfg(test)]
+mod hero_fall_tax_tests {
+    use super::*;
+    use meld_dungeon_run::TrapHit;
+
+    fn a_party_in_the_field(hp: Vec<i32>) -> (WorldActor, mpsc::UnboundedReceiver<DbWrite>) {
+        let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        w.run
+            .add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        w.hero_hp.insert("p1".into(), hp);
+        (w, rx)
+    }
+
+    fn drained(rx: &mut mpsc::UnboundedReceiver<DbWrite>) -> Vec<DbWrite> {
+        let mut out = Vec::new();
+        while let Ok(w) = rx.try_recv() {
+            out.push(w);
+        }
+        out
+    }
+
+    fn falls_of(writes: &[DbWrite]) -> Vec<(String, i32, u32)> {
+        writes
+            .iter()
+            .filter_map(|w| match w {
+                DbWrite::HeroFalls(pid, slot, n) => Some((pid.clone(), *slot, *n)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn a_death_was_recorded(writes: &[DbWrite]) -> bool {
+        writes.iter().any(|w| matches!(w, DbWrite::Death(_)))
+    }
+
+    /// The whole change, in one test: a trap kills ONE hero, the party walks on, and
+    /// that hero's gear is billed while nobody else's is. Under the old rule this run
+    /// paid nothing at all — the sink fired only when the run itself ended.
+    #[test]
+    fn one_hero_falling_bills_that_hero_and_the_run_continues() {
+        let (mut w, mut rx) = a_party_in_the_field(vec![1, 9_999, 9_999, 9_999]);
+        let out = w.apply_trap_hit("p1", &TrapHit { kind: "dart".into(), severity: 0 });
+        let writes = drained(&mut rx);
+        assert_eq!(
+            falls_of(&writes),
+            vec![("p1".to_string(), 0, 1)],
+            "only the hero the trap put down owes anything"
+        );
+        assert!(!a_death_was_recorded(&writes), "the party survived; the run has not ended");
+        assert!(out.is_empty(), "a survivable trap should not end the run");
+    }
+
+    /// A wipe is not its own rule any more — it is four falls, so it arrives as four
+    /// charges. If this ever regresses to a single whole-party write, the tax stops
+    /// being able to say WHICH hero fell.
+    #[test]
+    fn a_wipe_is_every_hero_falling_and_nothing_more() {
+        let (mut w, mut rx) = a_party_in_the_field(vec![1, 1, 1, 1]);
+        let _ = w.apply_trap_hit("p1", &TrapHit { kind: "pit".into(), severity: 0 });
+        let writes = drained(&mut rx);
+        let mut slots: Vec<i32> = falls_of(&writes).into_iter().map(|(_, s, _)| s).collect();
+        slots.sort();
+        assert_eq!(slots, vec![0, 1, 2, 3], "each hero pays for its own fall, once");
+        assert!(
+            a_death_was_recorded(&writes),
+            "a wipe still ends the run — that is what takes the standard gear"
+        );
+    }
+
+    /// The headline claim, end to end: a hero falls in a fight the party goes on to
+    /// WIN, and the tax still lands. This is what the old rule could not do — the sink
+    /// fired on the run's terminal transition, so a party that lost a hero and then
+    /// won, extracted, and went home paid nothing for it, and durability was a death
+    /// penalty rather than the repair sink GDD §7 specifies.
+    #[test]
+    fn a_hero_that_fell_pays_even_when_the_party_wins() {
+        let (mut w, mut rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        let party = w
+            .run
+            .add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        let at = w.arena.monsters[0].position;
+        if let Some(a) = w.arena.avatar_mut("p1") {
+            a.position = at;
+        }
+        // The hero walks in on its last hit point, so the creature's first blow puts it
+        // down. Carried HP is how a wound crosses between fights, so this is a state a
+        // real party reaches by taking a bad encounter and pressing on.
+        w.hero_hp.insert("p1".into(), vec![1]);
+        w.start_battle("p1", party, 0);
+        assert_eq!(w.battles.len(), 1, "the fixture did not start a fight");
+        let bid = w.battles[0].battle_id.clone();
+        let hero = w.battles[0]
+            .player_combatants
+            .get("p1")
+            .and_then(|c| c.first().cloned())
+            .expect("the hero has no combatant");
+        let _ = drained(&mut rx);
+
+        // Let the creature act. The hero never swings — the engine's timeout
+        // auto-DEFENDS, and defending does not save a hero on 1 HP.
+        for _ in 0..900 {
+            if w.battles.is_empty() || w.battles[0].battle.combatant_falls(&hero) > 0 {
+                break;
+            }
+            let _ = w.battles[0].battle.tick();
+        }
+        assert_eq!(
+            w.battles[0].battle.combatant_falls(&hero),
+            1,
+            "the creature never put the hero down, so there is nothing to charge"
+        );
+
+        // The party finishes the fight anyway. Victory, not defeat — the point.
+        let (out, _) = w.handle_battle_end(&bid, BattleOutcome::Victory);
+        let writes = drained(&mut rx);
+
+        // And the player is TOLD, on the same card that reports the XP and the loot. A
+        // charge nobody is shown is a charge that reads as a bug the next time they open
+        // the Vault.
+        let ended = super::watching_tests::sent(&out, "p1", wb::Ended::TYPE)
+            .expect("no battle.ended for the fighter");
+        let charged = ended["gear_worn"].as_array().expect("gear_worn missing from the wire");
+        assert_eq!(charged.len(), 1, "the fallen hero was left off the report: {ended}");
+        assert_eq!(charged[0]["falls"], serde_json::json!(1));
+        assert_eq!(
+            charged[0]["durability_lost"],
+            serde_json::json!(w.balance.loot.durability_loss_per_fall),
+            "the card quoted a different number than the tax charges"
+        );
+        assert_eq!(
+            falls_of(&writes),
+            vec![("p1".to_string(), 0, 1)],
+            "a hero fell and the win wrote it off"
+        );
+        assert!(
+            !a_death_was_recorded(&writes),
+            "nobody's run ended — a fallen hero is not a wipe"
+        );
+    }
+
+    /// The other direction, and the one a per-fall tax could get wrong: heroes who
+    /// were merely HURT owe nothing.
+    #[test]
+    fn a_hero_that_survives_the_blow_pays_nothing() {
+        let (mut w, mut rx) = a_party_in_the_field(vec![9_999, 9_999, 9_999, 9_999]);
+        let _ = w.apply_trap_hit("p1", &TrapHit { kind: "dart".into(), severity: 0 });
+        let writes = drained(&mut rx);
+        let charged = falls_of(&writes);
+        assert!(charged.is_empty(), "nobody went down, yet gear was billed: {charged:?}");
     }
 }

@@ -339,11 +339,18 @@ pub struct Loot {
     pub ephemeral_power_mult: f64,
     pub permanent_gear_chance: f64,
     pub insured_power_mult: f64,
-    /// Fraction of max durability an INSURED piece loses per wipe.
-    pub insured_death_decay: f64,
+    /// POINTS of max durability an INSURED piece loses per HERO DEATH (GR-2, CANON
+    /// D6), charged on the fallen hero's own kit. A wipe is not a separate case; it
+    /// is four heroes falling. Flat points, so a piece's own durability decides how
+    /// many deaths it survives — which is what makes one drop better MADE than
+    /// another rather than merely better rolled.
+    pub durability_loss_per_fall: i32,
     pub gear_atk_per_tier: f64,
     pub gear_atk_jitter: f64,
+    /// Mean max durability of a rolled piece; every drop jitters around it.
     pub gear_base_durability: i32,
+    /// ± fraction on each piece's durability roll, so no two drops wear out together.
+    pub gear_durability_jitter: f64,
 }
 
 /// Encounter-variety tunables (FS-4): Elite champions + Gatekeeper bosses. See the
@@ -799,6 +806,9 @@ pub struct Affix {
     pub tier_floor_ward: i32,
     pub tier_floor_keyword: i32,
     pub tier_floor_synergy: i32,
+    pub tier_floor_quality: i32,
+    /// Percent of extra max durability an "of Masterwork" piece carries.
+    pub masterwork_durability_pct: i32,
     pub resist_pct_per_tier: i32,
     pub resist_pct_cap: i32,
     pub unique_chance: f64,
@@ -828,6 +838,7 @@ impl Affix {
             "ward" => self.tier_floor_ward,
             "keyword" => self.tier_floor_keyword,
             "synergy" => self.tier_floor_synergy,
+            "quality" => self.tier_floor_quality,
             _ => self.tier_floor_stat,
         }
     }

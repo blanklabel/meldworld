@@ -349,13 +349,7 @@ pub(crate) fn pump_net(
                 // Auto-pickup used to be silent, so a creature that died fighting another
                 // creature and left something behind was indistinguishable from one that
                 // left nothing.
-                report.active = true;
-                report.title = "SPOILS".to_string();
-                report.xp = None;
-                report.chits = 0;
-                report.items = items;
-                report.gear = Vec::new();
-                report.elapsed = 0.0;
+                report.raise("SPOILS", None, 0, items, Vec::new());
             }
             ServerMsg::TurnReady { combatant_id } => {
                 // A hero's gauge filled; it can now act (its queued order fires).
@@ -446,19 +440,14 @@ pub(crate) fn pump_net(
                     }
                 }
             }
-            ServerMsg::BattleEnded { outcome, xp, chits, items, gear_drops } => {
+            ServerMsg::BattleEnded { outcome, xp, chits, items, gear_drops, worn } => {
                 // Victory returns to the overworld (go extract!) and pops up the
                 // after-action report; defeat ends the run.
                 if outcome == "victory" {
                     // Stay on the battle screen and show the tally THERE; dismissing
                     // it is what walks you back out (`render_loot_report`).
-                    report.active = true;
-                    report.title = "VICTORY".to_string();
-                    report.xp = Some(xp);
-                    report.chits = chits;
-                    report.items = items;
-                    report.gear = gear_drops;
-                    report.elapsed = 0.0;
+                    report.raise("VICTORY", Some(xp), chits, items, gear_drops);
+                    report.worn = worn;
                     report.gate_return = *state.get() == Screen::Battle;
                 } else if outcome == "fled" {
                     // Fleeing keeps the run alive — back to the overworld, not the
@@ -469,27 +458,28 @@ pub(crate) fn pump_net(
                         next.set(Screen::Overworld);
                     }
                     let dropped: i32 = items.iter().map(|(_, q)| *q).sum();
-                    session.status = if chits > 0 || dropped > 0 {
+                    let mut line = if chits > 0 || dropped > 0 {
                         format!("Fled — dropped {chits} chits, {dropped} item(s)")
                     } else {
                         "Fled the battle".to_string()
                     };
+                    // You still paid for whoever went down before you got out.
+                    if !worn.is_empty() {
+                        let names: Vec<&str> = worn.iter().map(|(n, _)| n.as_str()).collect();
+                        line.push_str(&format!(" - {} fell; kit worn", names.join(", ")));
+                    }
+                    session.status = line;
                 } else {
                     end.outcome = outcome;
                     end.banked = 0;
                     end.chits = 0;
                     end.gear = 0;
+                    end.worn = worn;
                     next.set(Screen::Ended);
                 }
             }
             ServerMsg::ChestOpened { chits, items, gear } => {
-                report.active = true;
-                report.title = "TREASURE!".to_string();
-                report.xp = None;
-                report.chits = chits;
-                report.items = items;
-                report.gear = gear;
-                report.elapsed = 0.0;
+                report.raise("TREASURE!", None, chits, items, gear);
                 // Order-independent: a curious player can open the chest before
                 // harvesting (nothing blocks it, and a chest can't be reopened to
                 // fix a missed advance later), so this must not require

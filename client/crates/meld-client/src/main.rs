@@ -1876,6 +1876,10 @@ struct EndInfo {
     chits: i64,
     /// Count of red-chest gear banked to the Vault on extraction.
     gear: usize,
+    /// What the last fight cost in gear durability, `(hero name, points)` per hero
+    /// that fell (GR-2). Shown on the DEATH screen above all: a wipe is where the
+    /// bill is largest, so it is where the player most needs to see it.
+    worn: Vec<(String, i32)>,
 }
 
 /// A loot report banner shown for a few seconds after a battle victory or a
@@ -1889,12 +1893,44 @@ struct LootReport {
     chits: i64,
     items: Vec<(String, i32)>,
     gear: Vec<String>,
+    /// The COST half of the card: `(hero name, durability points)` per hero that fell.
+    /// A report that lists only what you gained is a report that hides the price.
+    worn: Vec<(String, i32)>,
     elapsed: f32,
     /// This report is the end of a FIGHT, so it is shown on the battle screen and
     /// the walk back to the overworld waits for it to be dismissed. The tally for a
     /// fight belongs on the screen the fight happened on, not on top of a world you
     /// are already walking around in.
     gate_return: bool,
+}
+
+impl LootReport {
+    /// Raise the card, setting EVERY field from scratch.
+    ///
+    /// The resource outlives the report it last showed, so an arm that sets only the
+    /// fields it cares about inherits the rest: a chest opened after a costly fight
+    /// showed that fight's durability line over its treasure. A constructor cannot
+    /// forget a field the way three call sites can.
+    pub(crate) fn raise(
+        &mut self,
+        title: &str,
+        xp: Option<i64>,
+        chits: i64,
+        items: Vec<(String, i32)>,
+        gear: Vec<String>,
+    ) {
+        *self = LootReport {
+            active: true,
+            title: title.to_string(),
+            xp,
+            chits,
+            items,
+            gear,
+            worn: Vec::new(),
+            elapsed: 0.0,
+            gate_return: false,
+        };
+    }
 }
 
 /// Paces MoveIntents at a fixed cadence (see [`MOVE_INTENT_HZ`]) so walk speed

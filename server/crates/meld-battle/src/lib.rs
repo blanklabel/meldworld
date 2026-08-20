@@ -196,6 +196,15 @@ pub struct Fighter {
     /// Engine tick at which the turn became ready (for the 15 s timeout).
     ready_tick: u64,
     alive: bool,
+    /// How many times this fighter has been put DOWN in this battle. It is counted
+    /// where death actually happens — the one Ko point in [`Battle::apply_damage`] —
+    /// rather than inferred at battle end from `hp == 0`, because the gear tax
+    /// (GR-2, CANON D6) is charged per FALL: end-state cannot tell a hero who was
+    /// revived and killed again from one who fell once, nor a hero who fell in an
+    /// earlier fight and is still down from one who fell in this one. A successful
+    /// FLEE also clears `alive` without anybody dying, which is the other thing an
+    /// end-state read gets wrong.
+    falls: u32,
     /// Cached `build_wire_statuses()` output + a signature of the fields it reads,
     /// so the periodic gauge_update (every 100 ms) reuses the list and rebuilds it
     /// only when a status actually changes — instead of reallocating ~10 strings
@@ -299,6 +308,7 @@ impl Fighter {
             awaiting: false,
             ready_tick: 0,
             alive: hp > 0,
+            falls: 0,
             statuses_cache: Vec::new(),
             statuses_sig: 0,
             statuses_cached: false,
@@ -1203,6 +1213,17 @@ impl Battle {
             .iter()
             .find(|f| f.combatant_id == combatant_id)
             .map(|f| (f.hp, f.max_hp))
+    }
+
+    /// How many times a combatant FELL in this battle — what the durability tax is
+    /// charged on (GR-2). Per fall, not per corpse: a hero raised by Revitalize and
+    /// killed again pays twice, and a hero who was already down when the fight began
+    /// pays nothing for staying down.
+    pub fn combatant_falls(&self, combatant_id: &str) -> u32 {
+        self.fighters
+            .iter()
+            .find(|f| f.combatant_id == combatant_id)
+            .map_or(0, |f| f.falls)
     }
 
     pub fn combatant_hp(&self, combatant_id: &str) -> Option<i32> {
@@ -4815,6 +4836,10 @@ impl Battle {
             dmg
         };
         let t = &mut self.fighters[target_i];
+        // Whether there was anybody standing here to put down. A blow that lands on a
+        // fighter already at 0 must not count as a FALL — the tax is charged per fall
+        // (GR-2), and a corpse taking splash would otherwise bill its owner again.
+        let was_standing = t.alive;
         // Barrier (temp HP) soaks damage before HP does.
         let absorbed = t.barrier.min(dmg.max(0));
         t.barrier -= absorbed;
@@ -4823,6 +4848,11 @@ impl Battle {
         let dead = t.hp == 0;
         if dead {
             t.alive = false;
+            // The fall the gear tax is charged on (GR-2). Every hit in the game passes
+            // through here, so this is the only place that has to count.
+            if was_standing {
+                t.falls += 1;
+            }
         }
         // Report the HP actually lost (barrier absorption shows via the barrier bar).
         let mut effects = vec![ResolvedEffect { modifier_flag: None,
@@ -5519,6 +5549,82 @@ mod tests {
         }
         assert!(fled, "the skittish creature should flee");
         assert_eq!(outcome, Some(BattleOutcome::Victory));
+    }
+
+    #[test]
+    fn a_fall_is_counted_every_time_a_hero_goes_down_not_once_per_corpse() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        assert_eq!(battle.combatant_falls("a"), 0, "nobody has fallen yet");
+        let _ = battle.apply_damage(0, 9999);
+        assert_eq!(battle.combatant_falls("a"), 1);
+        // A revive stands them back up; the fall already happened and the gear
+        // already paid for it.
+        let _ = battle.raise_fallen(0, 0.5);
+        assert_eq!(battle.combatant_falls("a"), 1, "standing back up does not un-fall");
+        let _ = battle.apply_damage(0, 9999);
+        assert_eq!(
+            battle.combatant_falls("a"),
+            2,
+            "a hero raised and killed again fell TWICE — which an end-of-fight `hp == 0` \
+             read cannot see, and which is exactly what the durability tax charges for"
+        );
+    }
+
+    #[test]
+    fn a_corpse_taking_splash_does_not_fall_again() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        let _ = battle.apply_damage(0, 9999);
+        for _ in 0..5 {
+            let _ = battle.apply_damage(0, 9999);
+        }
+        assert_eq!(
+            battle.combatant_falls("a"),
+            1,
+            "an all-enemy ability sweeping a party with a body already on the floor \
+             must not bill that hero's gear once per blow"
+        );
+    }
+
+    #[test]
+    fn fleeing_is_not_dying() {
+        let b = balance();
+        // The skittish creature above leaves the field with `alive` cleared and its HP
+        // intact — the case that makes an end-state read wrong in the other direction.
+        let mut sh = creature("shade", 60, 400, "shade");
+        sh.hp = 5;
+        sh.flees = true;
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("p", 1)],
+            vec![sh],
+            &b,
+            7,
+        );
+        for _ in 0..20 {
+            let _ = battle.tick();
+        }
+        assert_eq!(
+            battle.combatant_falls("shade"),
+            0,
+            "it ran away; nothing put it down"
+        );
     }
 
     #[test]

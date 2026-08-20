@@ -251,6 +251,7 @@ pub(crate) fn mock_tally_setup(mut report: ResMut<LootReport>) {
             ("town_portal".to_string(), 1),
         ],
         gear: vec!["Rare Dune Ingot Blade".to_string()],
+        worn: vec![("Kestrel".to_string(), 30)],
         elapsed: 0.0,
         gate_return: false,
     };

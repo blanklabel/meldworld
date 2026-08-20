@@ -848,6 +848,29 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                 },
                 TextColor(color),
             ));
+            // The wipe's bill, itemised per hero. A TPK is the largest durability charge
+            // in the game and the one a player is least able to infer, since every hero
+            // in the party paid it at once.
+            for (hero, points) in &end.worn {
+                p.spawn((
+                    Text::new(format!("{hero} fell: kit worn -{points} durability")),
+                    TextFont {
+                        font_size: 18.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.95, 0.75, 0.35)),
+                ));
+            }
+            if !end.worn.is_empty() {
+                p.spawn((
+                    Text::new("Repair at the Forge before your next dive.".to_string()),
+                    TextFont {
+                        font_size: 16.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.7, 0.75, 0.85)),
+                ));
+            }
             p.spawn((
                 Text::new("Tap a button below, or press ENTER to return / ESC to quit"),
                 TextFont {

@@ -862,14 +862,36 @@ fn apply(s: &mut State, v: &Value) -> bool {
                             .collect()
                     })
                     .unwrap_or_default();
+                // What the fight COST, beside what it paid (GR-2). A harness that cannot
+                // see the bill cannot measure whether the durability sink is bearable, and
+                // that is the one number this whole mechanic is tuned against.
+                let worn: Vec<String> = p["gear_worn"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|w| {
+                                format!(
+                                    "{} fell (-{} durability)",
+                                    w["hero_name"].as_str().unwrap_or("?"),
+                                    w["durability_lost"].as_i64().unwrap_or(0)
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 s.note(format!(
-                    "battle {} after {} of your turns{}",
+                    "battle {} after {} of your turns{}{}",
                     b.ended.clone().unwrap_or_default(),
                     b.my_turns,
                     if b.loot.is_empty() {
                         String::new()
                     } else {
                         format!(" — loot: {}", b.loot.join(", "))
+                    },
+                    if worn.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — cost: {}", worn.join(", "))
                     }
                 ));
                 s.last_battle = Some(b);

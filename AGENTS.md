@@ -286,6 +286,20 @@ everything scales with pack size, beats a single-target weapon at about four ene
 makes the back rank, the group tier and the entire level-20-and-up AoE ability ladder
 pointless. It belongs on limited thrown consumables.
 
+**A HERO'S DEATH IS WHAT COSTS YOU, NOT THE RUN'S.** The durability tax is charged per
+FALL on that hero's own equipped insured pieces (`insured_death_decay`, CANON D6), so a
+party that loses a hero and wins anyway still pays — which is what makes repair a standing
+cost rather than a bill only a lost dive presents. It used to fire on the run's terminal
+transition and chew *every* hero's kit, so a careful player never met the sink at all. A
+**wipe is not a case**: it is four heroes falling, so the whole-player path is gone rather
+than sitting beside the new one and billing the same deaths twice. A fall is **counted** by
+the engine at the one Ko point (`Fighter::falls`), never inferred from `hp == 0` at battle
+end — that read cannot tell a hero raised and killed again (pays twice, compounding) from
+one who fell once, calls a hero still down from the *last* fight a fresh casualty, and
+counts a party that **fled** as dead, since fleeing clears `alive` with everyone alive. The
+two deaths with no battle to end — a dungeon trap and a Shift's Force blast — credit the
+same tax through the same write.
+
 ⚠️ **`GearBonus` is defined TWICE** — `meld_db::GearBonus` and `meld_run::GearBonus`, bridged
 by `effective_gear_bonus`. A property added to one and not the other is a bow that reaches in
 the Vault and not in the fight.

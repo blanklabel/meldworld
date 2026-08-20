@@ -293,13 +293,23 @@ Terminal resolution of the battle for the recipient's party.
 | loot | array of ItemStack | Yes | No | — | Items added to the recipient's own backpack (loot rolls are server-side; per-player, not shared). Mirrored by a `run.backpack_update`. Empty on `defeat`/`fled`. |
 | class_emblem_drops | array of object | Yes | No | — | Gatekeeper victories only, else empty. Fields: `player_id` string (uuid); `emblem_kind` string (e.g. `emblem_of_the_dragoon`). The account-level class unlock itself is a **persistent** mutation applied server-side and visible via the HTTP API — this field is a notification. |
 | gatekeeper_cleared | boolean | Yes | No | — | `true` when a Gatekeeper victory sets the per-instance clear flag opening the chokepoint (CANON.md §B); the arena terrain change arrives via re-sent `world.chunk_load`. |
+| gear_worn | GearWorn[] | No (default `[]`) | No | — | What the fight COST the recipient in gear durability (CANON.md §D6, GR-2): one entry per hero **of theirs** that fell. Present on **every** outcome — victory, defeat and flee — because the tax rides the fall, not the result. Empty when nobody went down. |
+
+**GearWorn**
+
+| Field | Type | Notes |
+|---|---|---|
+| hero_slot | integer | The party slot (0-based) that fell. |
+| hero_name | string | That hero's name, so the report reads as a person rather than an index. |
+| falls | integer | Times this hero went down in this fight; >1 when revived and killed again. |
+| durability_lost | integer | Points taken off **each** insured piece the hero was wearing — not a total across the set. |
 
 **Server behavior on `defeat`** — each KO'd player's run ends as `died`: backpack and run level deleted; blue-chest gear returned to the Hub at `max_durability × 0.9` (round down, floor 0; gear at 0 is unequippable until repaired) — a persistent server-side mutation (CANON.md §B, D6). A [`run.member_result`](run-social.md#runmember_result-s2c) with `result: "died"` follows immediately.
 
 **Example — victory**
 
 ```json
-{"type": "battle.ended", "seq": 4500, "ts": 1783728150000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "outcome": "victory", "xp_awards": [{"player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "xp": 420, "run_level_after": 13}], "loot": [{"item_id": "0197a602-8888-7abc-9def-0123456789ab", "item_kind": "iron_ore", "quantity": 3, "insurance": null}], "class_emblem_drops": [], "gatekeeper_cleared": false}}
+{"type": "battle.ended", "seq": 4500, "ts": 1783728150000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "outcome": "victory", "xp_awards": [{"player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "xp": 420, "run_level_after": 13}], "loot": [{"item_id": "0197a602-8888-7abc-9def-0123456789ab", "item_kind": "iron_ore", "quantity": 3, "insurance": null}], "class_emblem_drops": [], "gatekeeper_cleared": false, "gear_worn": [{"hero_slot": 2, "hero_name": "Kestrel", "falls": 1, "durability_lost": 30}]}}
 ```
 
 ---

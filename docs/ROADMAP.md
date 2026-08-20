@@ -289,13 +289,79 @@ burns on death/leave; some is single-use. See
   per-character equip; server derives stat bonuses from the full set; the tabbed
   inventory UI grows to the slot grid. Add the slot enum to `meld-proto`
   (additive), the persistence, and the derivation in `meld-run::party_fighters`.
-- [ ] **GR-2 — Durability & the wipe.** 🟡 *Partial:* death already degrades
-  equipped Blue-Chest durability (×0.9) and returns the gear to the Vault
-  ([`behaviors/run-lifecycle.md`](behaviors/run-lifecycle.md); death_durability
-  test). **Remaining:** durability as a real repair sink across the full slot set
-  (GR-1), max-durability loss on death, gear breaking, and the rule that **a wipe
-  strips everything you didn't extract** (backpack lost; only insured Blue-Chest
-  gear comes home). Ties to the crafter repair economy (MS-1) and GDD §7 "Durability Sink."
+- [x] **GR-2 — Durability & the wipe.** The stakes engine's other half: gear that
+  wears out, and a wipe that costs you. Ties to the crafter repair economy (MS-1)
+  and GDD §7 "Durability Sink."
+  - **THE TAX IS PER HERO DEATH, NOT PER WIPE**, which is the change that made
+    durability a repair sink instead of a death penalty. It was scoped to the run's
+    terminal transition, and it chewed *every* hero's kit when it fired — so a party
+    that lost a hero, won anyway, extracted and went home paid **nothing**, and a
+    careful player never met the sink at all. Now a hero going down charges
+    `max_durability × (1 - insured_death_decay)` on **that hero's own** equipped
+    insured pieces, whatever the fight's outcome. A **wipe is no longer a case**: it
+    is four heroes falling, so it arrives as four charges and the whole-player path
+    is gone — keeping both would bill the same deaths twice.
+  - **A fall is counted, not inferred.** `Fighter::falls` increments at the single Ko
+    point inside the one damage funnel, so a hero **raised and killed again pays
+    twice** (the erosion compounds) while a hero *already* down when a fight starts
+    pays nothing for staying down, and a party that **flees** pays nothing at all —
+    fleeing clears `alive` without anybody dying, which is exactly what an
+    end-of-fight `hp == 0` read gets wrong in both directions. A blow landing on a
+    body already on the floor is not a second fall either, or an all-enemy sweep
+    would bill a corpse once per hit.
+  - **The two deaths with no battle** — a sprung dungeon trap and the Force blast of
+    a Shift (CANON §W2) — never pass through the engine, so they credit the same tax
+    through the same write rather than growing a second rule.
+  - **Already shipped, and the item's old "Remaining" list was simply stale:** the
+    repair sink exists twice over (chits at `POST /v1/vault/gear/:id/repair`, the
+    smith's heat at a forge, both bounded by `base_max_durability`); max-durability
+    loss is the `base_max` / `max` pair; **breaking** is enforced at equip *and* in
+    derivation (a piece at 0 contributes nothing); and the wipe rule is whole —
+    backpack and pouches deleted, equipped **standard** gear destroyed outright,
+    ephemeral burned on every way home, only insured coming back, since
+    `bank_extraction` is the one path that banks.
+  - **DURABILITY IS MEASURED IN DEATHS, AND EVERY PIECE HAS ITS OWN NUMBER.** The loss
+    is flat POINTS (`durability_loss_per_fall`), not a fraction of current max — which
+    is what makes `max_durability` mean "deaths left in it"
+    (`ceil(durability / loss)`). A fraction could not express craftsmanship at all:
+    every piece lasted the same number of falls and none of them ever actually reached
+    zero. Durability is now rolled per drop
+    (`gear_base_durability` ± `gear_durability_jitter`) at **~3 deaths on average**,
+    spread 2–4, and **`of Masterwork`** — a new `Quality` affix class, the only one
+    that changes nothing about a fight — lifts a piece to 4–6. Held by
+    `a_piece_of_gear_survives_about_three_deaths_and_no_two_are_alike`, which asserts
+    the mean, the spread and that masterwork buys whole deaths rather than rounding.
+    Issued kit (the starter set, Requisition stock) stays deliberately uniform — it is
+    the dullest gear in the game by design.
+  - ⚠️ **The repair economy has not been re-checked against the new lifetime.** Three
+    deaths per piece across a six-slot set is a far larger chit drain than the old
+    ~28-wipe erosion, and `repair_chit_cost_per_point` was tuned against the latter.
+    That is the intended direction — a sink that bites — but the *magnitude* wants a
+    played dive, not arithmetic.
+  - **THE PLAYER IS TOLD, ON THE CARD THEY ARE ALREADY READING.** `battle.ended`
+    carries `gear_worn` — per fallen hero: name, falls, and points off each insured
+    piece — on **every** outcome, since a hero that went down in a fight you won went
+    down all the same. The after-action card gains a warning-coloured line under the
+    haul ("Kestrel fell — kit worn -30 durability"), so the report is a balance sheet
+    rather than a list of winnings; a clean win shows nothing, because a warning on
+    every fight is a warning nobody reads. **A TPK gets it itemised on the death
+    screen** with "Repair at the Forge before your next dive." — the wipe is where the
+    bill is largest and the one a player cannot infer, since every hero paid at once.
+    The **harness** prints it too (`— cost: Kestrel fell (-30 durability)`): the sink's
+    bearability is the number this mechanic is tuned against, and a harness that cannot
+    see the bill cannot measure it. `run.member_result.durability_loss_applied` was
+    also made truthful — it is no longer a synonym for `died`, since an extraction
+    after a hero fell reports `true`.
+  - ⚠️ **The card reports the CHARGE, not what broke.** The loop holds only the
+    aggregate gear bonus, never per-piece durability, so it can say "-30 each" but not
+    "your greaves are scrap". Breakage still surfaces in the Vault. Closing that wants
+    the DB write to report back up to the loop, which is a bigger wire than this
+    earns.
+  - Spec: CANON §D6 rewritten, `behaviors/run-lifecycle.md` Death flow gained "The
+    durability tax is per HERO death, not per wipe". Held by `meld-battle`'s fall
+    counter tests, `meld-db`'s `a_hero_falling_taxes_that_heros_gear_and_nobody_elses`,
+    and `meld-server`'s `hero_fall_tax_tests` (the headline one being *a hero that
+    fell pays even when the party wins*).
 - [ ] **GR-5 — Class-locked equipment & two-handed weapons.** Every equippable item
   declares a **family** (sword/shield/spear/staff/globe/gauntlet/dagger/parry_blade)
   and every class declares which families it may wear, so classes read as classes:

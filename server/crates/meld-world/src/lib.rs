@@ -880,7 +880,7 @@ pub fn roll_creature_loot(
             atk_bonus,
             def_bonus,
             spd_bonus,
-            max_durability: l.gear_base_durability,
+            max_durability: roll_durability(balance, &mut rng, &affixes),
             damage_modifiers,
             family,
             armor_weight,
@@ -964,6 +964,11 @@ pub(crate) fn roll_affixes(
         let magnitude = match d.class {
             // A brand has no magnitude; a resist does.
             _ if d.key == "brand" => 1,
+            // A percent of extra max durability, jittered like any other roll so two
+            // masterwork pieces are not the same piece.
+            aff::AffixClass::Quality => {
+                ((a.masterwork_durability_pct as f64 * jitter).round() as i32).max(1)
+            }
             // Both element affixes read as a PERCENTAGE — resisted, or dealt extra.
             aff::AffixClass::Element => (a.resist_pct_per_tier * tier).clamp(1, a.resist_pct_cap),
             _ => ((a.magnitude_per_tier * tier.max(1) as f64 * d.scale * jitter).round() as i32)
@@ -994,7 +999,28 @@ fn affix_class_word(class: aff::AffixClass) -> &'static str {
         aff::AffixClass::Ward => "ward",
         aff::AffixClass::Keyword => "keyword",
         aff::AffixClass::Synergy => "synergy",
+        aff::AffixClass::Quality => "quality",
     }
+}
+
+/// How much punishment this particular piece can take, in points of max durability.
+///
+/// Rolled per drop rather than read off one constant, because the loss per hero death
+/// is FLAT points (`durability_loss_per_fall`) — so durability is the number of deaths
+/// the piece survives, and two swords that differ here differ in something a player
+/// can feel. An `of Masterwork` roll lifts it clear of the band entirely.
+///
+/// Takes its draw LAST, after the affixes it reads, so adding it did not shift any
+/// roll above it in the same stream (the trap the trophy-quantity draw is written to
+/// avoid too).
+fn roll_durability(balance: &Balance, rng: &mut Rng, affixes: &[aff::Affix]) -> i32 {
+    let l = &balance.loot;
+    let jitter = 1.0 + rng.signed() * l.gear_durability_jitter;
+    let mut points = (l.gear_base_durability as f64) * jitter;
+    if let Some(m) = affixes.iter().find(|a| a.key == "masterwork") {
+        points *= 1.0 + (m.magnitude as f64) / 100.0;
+    }
+    (points.round() as i32).max(1)
 }
 
 /// The element a biome's gear wards against.
@@ -1102,7 +1128,7 @@ pub fn rolled_gear(
         atk_bonus,
         def_bonus,
         spd_bonus,
-        max_durability: l.gear_base_durability,
+        max_durability: roll_durability(balance, &mut rng, &affixes),
         damage_modifiers: Vec::new(),
         family,
         armor_weight,
@@ -8623,6 +8649,63 @@ mod tests {
              cosmetic"
         );
         assert!(near > 0.0, "it should still move, just less");
+    }
+
+    /// GR-2: durability is measured in DEATHS, and the average is the number the design
+    /// asks for. Held as a distribution rather than a value, because the point is that
+    /// no two pieces are the same and yet the mean is still what was tuned.
+    #[test]
+    fn a_piece_of_gear_survives_about_three_deaths_and_no_two_are_alike() {
+        let b = Balance::load_default().unwrap();
+        let loss = b.loot.durability_loss_per_fall;
+        assert!(loss > 0, "a flat loss of 0 would make durability infinite");
+        let deaths = |points: i32| (points + loss - 1) / loss;
+
+        let mut seen: Vec<i32> = Vec::new();
+        for seed in 0..500u64 {
+            let mut rng = Rng(seed);
+            seen.push(roll_durability(&b, &mut rng, &[]));
+        }
+        let lives: Vec<i32> = seen.iter().map(|p| deaths(*p)).collect();
+        let mean = lives.iter().sum::<i32>() as f64 / lives.len() as f64;
+        assert!(
+            (2.5..=3.6).contains(&mean),
+            "a plain piece should average about three deaths, got {mean:.2}"
+        );
+        let distinct: std::collections::HashSet<i32> = seen.iter().copied().collect();
+        assert!(
+            distinct.len() > 20,
+            "every piece rolled the same durability ({} distinct) — the jitter is dead",
+            distinct.len()
+        );
+        assert!(
+            lives.iter().any(|d| *d < 3) && lives.iter().any(|d| *d > 3),
+            "the spread collapsed onto the mean: {:?}..{:?}",
+            lives.iter().min(),
+            lives.iter().max()
+        );
+
+        // Masterwork is worth real deaths, not a rounding difference — otherwise
+        // "exceptionally crafted" is a name on a piece that wears out with the rest.
+        let fine = aff::Affix {
+            key: "masterwork".to_string(),
+            magnitude: b.affix.masterwork_durability_pct,
+            element: None,
+            ally_class: None,
+        };
+        let mut better = 0;
+        for seed in 0..500u64 {
+            let plain = deaths(roll_durability(&b, &mut Rng(seed), &[]));
+            let made = deaths(roll_durability(&b, &mut Rng(seed), std::slice::from_ref(&fine)));
+            assert!(made >= plain, "masterwork made a piece flimsier at seed {seed}");
+            if made > plain {
+                better += 1;
+            }
+        }
+        assert!(
+            better > 400,
+            "masterwork bought an extra death only {better}/500 times"
+        );
     }
 
     #[test]
