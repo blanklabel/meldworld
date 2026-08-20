@@ -426,11 +426,18 @@ was **inert**: `flush_gear_loads` mirrored the empty Vault over the dressing a t
 number became a documented rule, and the rule justified not looking again. Two errors holding
 each other up, and the pair survived several releases.
 
-⚠️ **The harness cannot yet reach the level it is most needed at.** `new_game
-{start_level: 100}` never boots — streaming the frontier out to d1269 exceeds the 15s
-`run.started` deadline (25 works, 50 does not). So the deep content `mcp/` exists to measure
-is out of its reach, and the numbers above are from d308. Raising that ceiling is worth more
-than any single measurement taken below it.
+⚠️ **The numbers above are from d308, and until `AX-6` the deep end could not be reached
+at all — by the harness OR by a player.** `new_game {start_level: 100}` never booted, and the
+cause was not the harness: `step_creatures`' **damage pass** scanned every creature for every
+creature, so at d1269 (10,650 creatures, all of them retained because the world streams
+outward without bound) that was ~113 million pair tests per 100 ms tick and **1,708 ms a tick
+in release** on a single-task loop. Now 7.5 ms. **It was the same bug as the one already fixed
+in the movement pass twenty lines above it** — one rule, two call sites, one fixed.
+`the_creature_step_stays_linear_in_the_creature_count` holds the scaling as a ratio.
+
+The lesson worth keeping: a deep measurement had never been taken because the deep world
+could not be entered, and *that* is why every number in this file about deep content came from
+the shallow end. Re-measure deep claims now that it boots.
 
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113

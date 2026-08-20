@@ -2570,58 +2570,28 @@ keeps agent participation low-risk. Sequenced so the cheap QA layer lands over
 today's protocol; the living-world layer follows **SC-3**. Focus **adventure first**,
 then the rest.
 
-- [ ] **AX-6 — The harness cannot boot the levels it exists to measure.** `new_game
-  {start_level: 100}` never starts: setting a level sets a DISTANCE, and streaming the
-  frontier out to d1269 exceeds the 15s `run.started` deadline. Measured, 25 boots (d308) and
-  50 does not — so the ceiling sits an order of magnitude below the content that most needs
-  checking. Everything authored for a level-100 party (the end fight, the deep rungs, every
-  gear-check claim) is therefore unmeasurable through the one tool built for measuring it, and
-  the numbers we do have are all from the shallow end. Either raise the deadline, stream
-  lazily around the spawn rather than out from d0, or let `start_level` place the party without
-  generating the corridor behind it. This bounds the value of every other `AX` item.
-- [x] **AX-1 — MCP over the wire protocol.** Shipped as [`mcp/`](../mcp/) (`meld-mcp`),
-  a stdio MCP server that boots the whole game in-process on a `memory://` DB — no
-  Postgres, no port to collide with, a fresh world per `new_game`. Tools: `new_game`,
-  `look`, `walk`, `battle`, `abilities`, `act`, `auto_battle`, `interact`, `say`, `chat`,
-  `wait`. Every one is a **player intent over the real wire protocol**; nothing reads
-  `MazeInstance`, because a harness that reaches into the engine measures the model, and
-  the model is what has been wrong every previous time. JSON-RPC framing is hand-rolled on
-  `serde_json` (~60 lines) rather than adding a crate to an offline build.
-  **Deliverable met:** a full dive → fight → extract loop, banking
-  `forest_bloom_petal` + potions into the Vault.
-  - **`MELD_START_LEVEL`** joins `MELD_END_FIGHT` / `MELD_GEAR_TIER` as a DEV/QA override,
-    surfaced as a `new_game` argument. Deep content is authored for ~level 100 and PG-2's
-    hubs are inert, so the only level it could previously be observed at was 1 — the one
-    level it was never tuned for.
-  - **It found a latent bug on its first geared run**: starting HP came from the class's
-    level-1 `base_hp` while the ceiling came from `max_hp_at_level`, so a party departing
-    at level 100 opened the dive at **52 of 1042 HP**. Harmless while every dive starts at
-    level 1, and live the moment PG-2 lands. Both now go through
-    `meld_run::starting_hp`, held by
-    `a_hero_starts_a_dive_at_full_health_whatever_level_it_leaves_at`.
-  - **The clock does not stop while an agent thinks.** A fighter awaiting input stops
-    filling its own gauge; everything else keeps ticking. 33 seconds spent composing the
-    next tool call is an entire boss fight, resolved by the 15-second auto-act — which is
-    how the first end-fight run was measured with heroes that never acted. Anything being
-    measured must happen inside ONE tool call. Widening `turn_timeout_ms` does **not** fix
-    it: a longer window is strictly more enemy turns.
-  - *Observed, not chased:* a successful extraction reports
-    `max_distance_reached: 0` on `run.member_result` for a run that reached d6.
-- [ ] **AX-2 — Agent-as-playtester harness.** Drive the whole loop with a reasoning
-  agent and emit **balance telemetry** — win/extract/die rates by distance, and the
-  feel of the loss knife-edge. The honest way to measure the "desperate but not
-  despair" tuning *at scale* before the sim/builder layers land. Extends AX-1 + the
-  `qa/` conformance suite.
-- [ ] **AX-3 — Agent inhabitants (living world).** Agents as first-class **async
-  actors**: run stalls, fulfil bounty contracts (**EC**), harvest, and **garrison
-  towns/anchors while owners are offline** — populating persistent seeded worlds
-  (solves the empty-world cold-start) and answering the offline-siege feel-bad (the
-  Shift, CANON §W2). Depends on **SC-3** (populated persistent worlds); PvE-only keeps
-  it safe. A natural **premium/convenience hook** (an offline-defense garrison agent,
-  pinned worlds — cf. **MON**), sold as *participation*, not "skip the loss."
-
----
-
+- [x] **AX-6 — FIXED: the harness could not boot the levels it exists to measure, and the
+  cause was a quadratic server pass, not the harness.** `new_game {start_level: 100}` never
+  started. The obvious diagnosis was wrong twice over: world generation to d1269 takes **0.7s**,
+  and a release build was no faster than debug. The real cause was `step_creatures`' **damage
+  pass** ("adjacent hostile creatures trade blows") scanning every creature for every creature
+  — at d1269 that is 10,650 creatures, so ~**113 million pair tests per 100 ms tick**, each one
+  a *string* faction compare. Measured **1,708 ms a tick in release** against a 100 ms budget,
+  on a single-task game loop, so `run.started` was never sent.
+  - **It is the same bug as the one already fixed above it.** The *movement* pass carries a
+    spatial grid and a comment saying it "was O(monsters²), which grew unbounded as the endless
+    world streamed in". The damage pass **twenty lines below** was left as a full scan — this
+    repo's signature failure mode: one rule, two call sites, one of them fixed.
+  - **d1269: 1,708 ms → 7.5 ms a tick (228x). d308: 28.8 → 1.2 ms.** Verified end to end: a
+    fresh binary boots `start_level: 100` and lands the party at d1269.
+    `the_creature_step_stays_linear_in_the_creature_count` guards it as a *ratio* (8x the
+    creatures must not cost 59x the time), since an absolute duration bound is either flaky or
+    useless.
+  - ⚠️ **This was never only a harness problem.** Every creature ever generated stays in the
+    arena, so *any player* who walked out to d1269 met the same 1.7s tick. The deep world was
+    unplayable for reasons that had nothing to do with balance — and because the harness could
+    not boot there either, nothing could observe it. That is why every deep number in these
+    docs came from the shallow end.
 ## Not on this roadmap yet (tracked elsewhere)
 
 Endgame breadth — the Vanguard Board leaderboard, the infinite zone past d=5000,

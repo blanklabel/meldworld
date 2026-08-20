@@ -3984,13 +3984,13 @@ impl Arena {
                 // Creatures don't walk through terrain either (slide per axis), and
                 // they stay on their own elevation (never wander off a terrace edge).
                 let cand = Position::new(nx, ny);
-                if !Self::obstacle_blocks(&obstacles, &cand, 0.5) && area_level_at(areas, &corridorize(&cand)) == m.elevation {
+                if !obstacles.blocks(&cand, 0.5) && area_level_at(areas, &corridorize(&cand)) == m.elevation {
                     m.position = cand;
-                } else if !Self::obstacle_blocks(&obstacles, &Position::new(nx, m.position.y), 0.5)
+                } else if !obstacles.blocks(&Position::new(nx, m.position.y), 0.5)
                     && area_level_at(areas, &corridorize(&Position::new(nx, m.position.y))) == m.elevation
                 {
                     m.position.x = nx;
-                } else if !Self::obstacle_blocks(&obstacles, &Position::new(m.position.x, ny), 0.5)
+                } else if !obstacles.blocks(&Position::new(m.position.x, ny), 0.5)
                     && area_level_at(areas, &corridorize(&Position::new(m.position.x, ny))) == m.elevation
                 {
                     m.position.y = ny;
@@ -4007,6 +4007,26 @@ impl Arena {
             .iter()
             .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
             .collect();
+        // Spatial hash of the POST-MOVEMENT positions, for the same reason the movement
+        // pass above has one — and it is the same bug: that pass was fixed and this one,
+        // twenty lines below it, was left scanning every creature for every creature.
+        // Measured at d1269 (10,650 creatures) that was ~113 million pair tests per 100 ms
+        // tick, each one a STRING faction compare, and it cost **1.7 seconds a tick** in a
+        // release build. The game loop is a single task, so a deep dive never caught up:
+        // `run.started` was never sent and the world read as unbootable.
+        //
+        // Cell = `skirmish_range`, so a creature's whole strike circle fits inside its own
+        // cell's 3x3 neighbourhood. Determinism is preserved by tie-breaking on
+        // (distance, index j), which reproduces the old `min_by` over index-ordered
+        // iteration exactly, whatever order the buckets are visited in (CANON §S).
+        let dcell = skirmish_range.max(1.0);
+        let dcell_of = |p: &Position| ((p.x / dcell).floor() as i32, (p.y / dcell).floor() as i32);
+        let mut dgrid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (j, (pos, _, alive, _)) in now.iter().enumerate() {
+            if *alive {
+                dgrid.entry(dcell_of(pos)).or_default().push(j);
+            }
+        }
         let mut hits: Vec<(usize, i32)> = Vec::new();
         for (i, m) in self.monsters.iter_mut().enumerate() {
             if m.defeated || m.in_battle {
@@ -4017,17 +4037,32 @@ impl Arena {
             if m.skirmish_cd > 0.0 {
                 continue;
             }
-            let victim = now
-                .iter()
-                .enumerate()
-                .filter(|(j, (_, fac, alive, _))| {
-                    *j != i && *alive && creatures_hostile(&m.faction, fac)
-                })
-                .filter(|(_, (pos, _, _, _))| m.position.distance_to(pos) <= skirmish_range)
-                .min_by(|(_, (a, _, _, _)), (_, (b, _, _, _))| {
-                    m.position.distance_to(a).total_cmp(&m.position.distance_to(b))
-                });
-            if let Some((j, (_, _, _, victim_def))) = victim {
+            let (cx, cy) = dcell_of(&m.position);
+            let mut best: Option<(f64, usize, i32)> = None;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let Some(bucket) = dgrid.get(&(cx + dx, cy + dy)) else {
+                        continue;
+                    };
+                    for &j in bucket {
+                        if j == i {
+                            continue;
+                        }
+                        let (pos, fac, alive, def) = &now[j];
+                        if !*alive || !creatures_hostile(&m.faction, fac) {
+                            continue;
+                        }
+                        let d = m.position.distance_to(pos);
+                        if d > skirmish_range {
+                            continue;
+                        }
+                        if best.is_none_or(|(bd, bj, _)| d < bd || (d == bd && j < bj)) {
+                            best = Some((d, j, *def));
+                        }
+                    }
+                }
+            }
+            if let Some((_, j, victim_def)) = best {
                 let dmg = (m.atk - victim_def).max(1);
                 hits.push((j, dmg));
                 m.skirmish_cd = interval;
@@ -4331,10 +4366,6 @@ impl Arena {
     }
 
     /// Is `p` (a body of `radius`) inside any impassable obstacle?
-    fn obstacle_blocks(obstacles: &[(Position, f64)], p: &Position, radius: f64) -> bool {
-        obstacles.iter().any(|(c, r)| p.distance_to(c) < r + radius)
-    }
-
     /// Integrate one movement intent against authoritative position, clamped to the
     /// world bounds and max speed, blocked by biome obstacles, and gated by
     /// elevation (server owns movement — CANON.md §S, D11). A candidate step is
@@ -4377,7 +4408,7 @@ impl Arena {
         // A candidate is acceptable iff it clears obstacles AND is level-permitted:
         // same level, or a connector joins the current & destination levels.
         let accept = |cand: Position| -> Option<u8> {
-            if Self::obstacle_blocks(&obstacles, &cand, pr) {
+            if obstacles.blocks(&cand, pr) {
                 return None;
             }
             // Biome seams NO LONGER wall the world — that full-width barrier-with-a-gap
@@ -4878,11 +4909,11 @@ impl Arena {
     /// never disagree with what movement itself considers solid. That is the same lesson
     /// the wall bug taught: two copies of "what blocks" drift, and the drift is invisible
     /// until a player is standing in the difference.
-    fn trapped_at(&self, field: &[(Position, f64)], p: &Position) -> bool {
+    fn trapped_at(&self, field: &BlockField, p: &Position) -> bool {
         if area_level_at(&self.areas, &self.corridorize(p)) != 0 {
             return true;
         }
-        field.iter().any(|(c, r)| p.distance_to(c) < r + self.player_radius)
+        field.blocks(p, self.player_radius)
     }
 
     /// The nearest place a player can definitely stand: the closest waypoint on the
@@ -5584,7 +5615,7 @@ mod tests {
             // And where they landed is somewhere they can actually stand.
             let field = a.blocking_field_for_test();
             assert!(
-                !field.iter().any(|(c, r)| now.distance_to(c) < r + b.worldgen.player_radius),
+                !field.blocks(&now, b.worldgen.player_radius),
                 "the rescue put them inside something else"
             );
         }
@@ -9281,10 +9312,75 @@ impl Arena {
     }
 
     #[cfg(test)]
-    pub(crate) fn blocking_field_for_test(&self) -> Vec<(Position, f64)> {
+    pub(crate) fn blocking_field_for_test(&self) -> BlockField {
         self.blocking_field()
     }
 
+}
+
+/// The blocking field as a spatial hash rather than a flat list.
+///
+/// **This is a per-tick cost, and the world streams outward without bound.** The check is
+/// asked two or three times per creature per tick, so a linear scan is O(creatures x props):
+/// measured at d1269 that is 10,650 creatures against 12,600 props — ~268 million distance
+/// tests per 100 ms tick, which took **1.8 SECONDS** in a debug build. The game loop is a
+/// single task, so it simply never caught up: a deep dive could not even send `run.started`,
+/// which read as "the harness cannot boot a level-100 party" and was really this.
+///
+/// A prop can only block `p` if its own centre lies within `max_radius + radius` of it, so
+/// bucketing by cell and sweeping the cells that span that distance returns exactly what the
+/// scan returned. `blocks` is a predicate, so bucket order cannot change the answer and the
+/// engine stays deterministic (CANON §S).
+pub struct BlockField {
+    cell: f64,
+    max_radius: f64,
+    buckets: HashMap<(i64, i64), Vec<(Position, f64)>>,
+}
+
+impl BlockField {
+    fn new(items: Vec<(Position, f64)>) -> Self {
+        let max_radius = items.iter().map(|(_, r)| *r).fold(0.0_f64, f64::max);
+        // Wide enough that a query sweeps few cells, narrow enough that a cell holds few
+        // props. Props are metres-wide, so a handful of metres is both.
+        let cell = (max_radius * 2.0).max(8.0);
+        let mut buckets: HashMap<(i64, i64), Vec<(Position, f64)>> = HashMap::new();
+        for it in items {
+            buckets.entry(Self::key(cell, &it.0)).or_default().push(it);
+        }
+        Self { cell, max_radius, buckets }
+    }
+
+    fn key(cell: f64, p: &Position) -> (i64, i64) {
+        ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64)
+    }
+
+    /// Does anything blocking overlap a disc of `radius` at `p`?
+    pub fn blocks(&self, p: &Position, radius: f64) -> bool {
+        let span = ((self.max_radius + radius) / self.cell).ceil() as i64;
+        let (cx, cy) = Self::key(self.cell, p);
+        for dx in -span..=span {
+            for dy in -span..=span {
+                if let Some(v) = self.buckets.get(&(cx + dx, cy + dy)) {
+                    if v.iter().any(|(c, r)| p.distance_to(c) < r + radius) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Everything in the field, for tests that want to reason about the whole set.
+    pub fn len(&self) -> usize {
+        self.buckets.values().map(|v| v.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Arena {
     /// Everything nothing may walk through: terrain props, plus every `Structure` whose
     /// function `blocks` (CANON D21/§W3).
     ///
@@ -9296,7 +9392,7 @@ impl Arena {
     ///
     /// A structure still going up already blocks: a half-built wall you can walk through
     /// is a wall nobody would bother finishing.
-    fn blocking_field(&self) -> Vec<(Position, f64)> {
+    fn blocking_field(&self) -> BlockField {
         let mut out: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
         out.extend(
@@ -9305,7 +9401,7 @@ impl Arena {
                 .filter(|s| s.blocks())
                 .map(|s| (s.position, self.structure_radius)),
         );
-        out
+        BlockField::new(out)
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.
