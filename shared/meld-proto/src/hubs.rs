@@ -1,20 +1,38 @@
-//! Departure hubs (PG-2): where a dive starts, and therefore what level it starts at.
+//! Departure points (PG-2, superseded in part by `BD-5`): where a dive starts, and
+//! therefore what level it starts at.
 //!
-//! `base_run_level(distance)` has always existed — `1 + 0.078 × D`, so a hub at d500 starts
-//! every hero at 40. What did not exist was any way to depart from anywhere but the Center
-//! Hub, so every hero started every dive at level 1 and the whole ladder above roughly
-//! level 16 was authored ahead of what anyone could reach.
+//! `start_level(distance)` is the load-bearing thing here — `1 + 0.078 × D`, so departing
+//! from d500 starts every hero at 40 and d3256 at the 255 cap. That formula is what makes
+//! pushing outward worth anything, and it is unchanged.
 //!
-//! **A hub is somewhere you have BEEN.** Not a purchase, not a trigger — the gate is the
-//! player's own deepest recorded distance, which the `vanguard` table already keeps off
-//! *validated movement* and which a client cannot submit. Read all-time, never the live
-//! season: a season rollover must not revoke a hub you demonstrably reached.
+//! **THE AUTHORED DEEP HUBS ARE DEPRECATED.** There used to be six of them (d500 … d3250)
+//! gated on the player's own deepest recorded distance from the `vanguard` table. They are
+//! gone, and the gate with them, because `BD-5`'s **player-built forward towns** do the same
+//! job strictly better:
 //!
-//! **This is a LOOKUP, not an entity.** The run reads one integer. These are the rows a
-//! server-owned world offers; when `BD-5`'s forward towns land, a player's own town becomes
-//! another row and nothing here is rewritten. A hub deliberately has no placement,
-//! ownership or lifecycle of its own — that is the `Structure` primitive (`BD-2`), and
-//! duplicating it is the rework this indirection exists to avoid.
+//! - **The gate becomes physical.** "Have you been here" needed a server-owned all-time
+//!   distance record precisely because a hub was scenery that appeared once you qualified.
+//!   A town is something you walked to, hauled stock to, and built — you cannot raise one
+//!   where you cannot stand, so the proof *is* the structure. A whole bookkeeping mechanism
+//!   turns into a consequence.
+//! - **The ladder becomes a loop instead of a list.** An authored hub, once unlocked, was
+//!   permanent and free. A town is HP-bearing, Shift-exposed and siege-able (`BD-2`/`BD-3`),
+//!   so a deep departure point is permanence you keep paying for — which is the loop those
+//!   epics exist to create, and the reason an anchor beside it means something.
+//! - **It was never reachable anyway.** Measured: the ground at d3200 demands ~level 251 to
+//!   survive four basic hits from a *standard* creature, and levels are dive-scoped, so the
+//!   d3250 hub could only ever be unlocked by a party that had already walked to d3250 at
+//!   level 1. The authored ladder's own top rung required the thing it was meant to grant.
+//!
+//! **The Center Hub stays, and stays unconditional.** It is the one departure point nothing
+//! can take away — a player whose forward town is destroyed still has somewhere to dive
+//! from, at level 1. Everything deeper is built, held, and losable.
+//!
+//! **This is still a LOOKUP, not an entity.** The run reads one integer: a distance. A town
+//! supplies that integer through the `Structure` primitive's own placement and ownership
+//! (`BD-2`) — `do not build towns, anchors, portals and camps as separate systems`. Nothing
+//! here grows a placement or lifecycle model of its own; that was the point of the
+//! indirection and it is the point still.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,56 +49,15 @@ pub struct HubDef {
     pub blurb: &'static str,
 }
 
-/// Every departure hub, shallowest first.
-///
-/// Spaced so each is a visible jump in starting level rather than a trickle — 1 / 40 / 79 /
-/// 118 / 157 / 196 / 255 — with the last landing exactly on `max_hero_level`. Past d3256 a
-/// hub buys nothing (heroes are capped while creatures keep scaling), which makes that
-/// distance the structural end of the game rather than an arbitrary wall.
-pub const HUBS: &[HubDef] = &[
-    HubDef {
-        key: "center",
-        name: "The Center Hub",
-        distance: 0,
-        blurb: "Where everyone starts. The Last City sits at its western wedge.",
-    },
-    HubDef {
-        key: "first_reach",
-        name: "First Reach",
-        distance: 500,
-        blurb: "The furthest post the Explorers kept after the second expansion.",
-    },
-    HubDef {
-        key: "the_span",
-        name: "The Span",
-        distance: 1000,
-        blurb: "A pass held open by an anchor nobody living remembers setting.",
-    },
-    HubDef {
-        key: "cinderwatch",
-        name: "Cinderwatch",
-        distance: 1500,
-        blurb: "Built downwind of the ashfall, and still standing.",
-    },
-    HubDef {
-        key: "the_lastward",
-        name: "The Lastward",
-        distance: 2000,
-        blurb: "The deepest ground the Vanguard has ever held for a full season.",
-    },
-    HubDef {
-        key: "hollow_march",
-        name: "Hollow March",
-        distance: 2500,
-        blurb: "Not a settlement. A staging line, and a name for what is past it.",
-    },
-    HubDef {
-        key: "the_threshold_deep",
-        name: "The Threshold Deep",
-        distance: 3250,
-        blurb: "As far out as a hero can still be made ready for. Beyond is the end-world.",
-    },
-];
+/// The authored departure points: the Center Hub, and nothing else. Everything deeper is a
+/// player-built forward town (`BD-5`) supplying its own distance — see the module docs for
+/// why the six authored deep hubs were retired.
+pub const HUBS: &[HubDef] = &[HubDef {
+    key: "center",
+    name: "The Center Hub",
+    distance: 0,
+    blurb: "Where everyone starts. The Last City sits at its western wedge.",
+}];
 
 /// The level every hero starts at when departing from `distance` — `base_run_level`'s
 /// formula, duplicated here ONLY so the chooser can say "heroes start at 40" without the
@@ -95,90 +72,53 @@ pub fn hub(key: &str) -> Option<&'static HubDef> {
     HUBS.iter().find(|h| h.key == key)
 }
 
-/// Every hub a player who has reached `deepest` may depart from, shallowest first. The
-/// Center Hub is always in the list — `distance: 0` clears any record, including none.
-pub fn hubs_reached(deepest: i32) -> Vec<&'static HubDef> {
-    HUBS.iter().filter(|h| h.distance <= deepest).collect()
-}
-
-/// The deepest hub a player who has reached `deepest` may depart from. What the chooser
-/// defaults to, and what a client that names nothing gets.
-pub fn deepest_hub(deepest: i32) -> &'static HubDef {
-    hubs_reached(deepest).last().copied().unwrap_or(&HUBS[0])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The Center Hub is unconditional. A brand-new account has no vanguard row at all, so
-    /// the read is 0 (or absent) — and it still has somewhere to dive from.
+    /// The Center Hub is unconditional and it is the ONLY authored one. A player whose
+    /// forward town has been destroyed — or who has never built one — still has somewhere
+    /// to dive from, at level 1.
     #[test]
-    fn everyone_can_always_leave_from_the_center() {
-        assert_eq!(deepest_hub(0).key, "center");
-        assert_eq!(deepest_hub(-1).key, "center", "a missing record is not a locked game");
-        assert_eq!(hubs_reached(0).len(), 1);
+    fn the_center_hub_is_the_floor_and_the_only_authored_row() {
+        assert_eq!(HUBS.len(), 1, "an authored deep hub came back — see the module docs");
+        assert_eq!(HUBS[0].distance, 0);
+        assert_eq!(start_level(HUBS[0].distance), 1, "the floor must start a hero at 1");
+        assert!(hub("center").is_some());
+        assert!(hub("not_a_hub").is_none());
     }
 
-    /// You may only leave from ground you have stood on. The whole point of reading the
-    /// vanguard record rather than selling hubs is that this cannot be short-circuited.
+    /// **The formula is what survived the deprecation, so it is what the test holds.** A
+    /// forward town at distance D starts every hero at `start_level(D)`, which is the entire
+    /// reason to push one outward. The old `the_deepest_hub_lands_on_the_level_cap` asserted
+    /// this through an authored row; the claim was never about the row.
     #[test]
-    fn a_hub_is_somewhere_you_have_been() {
-        for h in HUBS {
-            assert_eq!(
-                deepest_hub(h.distance).key,
-                h.key,
-                "reaching exactly {} did not unlock {}",
-                h.distance,
-                h.key
-            );
-            if h.distance > 0 {
-                assert_ne!(
-                    deepest_hub(h.distance - 1).key,
-                    h.key,
-                    "{} opened one unit short of itself",
-                    h.key
-                );
-            }
+    fn the_ladder_reaches_the_cap_exactly_at_the_structural_end() {
+        assert_eq!(start_level(0), 1);
+        assert!(start_level(3256) >= 255, "the deep end no longer reaches the cap");
+        // …and it is monotonic, so deeper is always worth more until the cap.
+        let mut prev = 0;
+        for d in (0..3300).step_by(50) {
+            let l = start_level(d);
+            assert!(l >= prev, "d{d} starts a hero lower than d{}", d - 50);
+            prev = l;
         }
     }
 
-    /// Shallowest first, no duplicate distances, and each a real jump in starting level —
-    /// a hub that started you within a level or two of the last one is a row nobody picks.
+    /// Past the cap a departure point buys nothing — heroes stop while creatures keep
+    /// scaling — which is what makes ~d3250 the structural end of the game rather than an
+    /// arbitrary wall, and what bounds how far a forward town is worth hauling stock.
     #[test]
-    fn the_hubs_are_ordered_and_meaningfully_spaced() {
-        let mut prev = -1;
-        for h in HUBS {
-            assert!(h.distance > prev, "{} is out of order or duplicated", h.key);
-            prev = h.distance;
-        }
-        for pair in HUBS.windows(2) {
-            let step = pair[1].distance - pair[0].distance;
-            assert!(step >= 400, "{} is only {step} past {}", pair[1].key, pair[0].key);
-        }
-    }
-
-    /// The deepest hub lands on the hero level cap, which is what makes it the end of the
-    /// ladder rather than a number someone liked. `base_run_level` is
-    /// `1 + 0.078 × D`, so 255 arrives at d3256 — and a hub past it would start a hero no
-    /// higher while the creatures there keep scaling.
-    #[test]
-    fn the_deepest_hub_lands_on_the_level_cap() {
-        let deepest = HUBS.last().unwrap();
-        let start = (1.0 + 0.078 * deepest.distance as f64).round() as i32;
-        assert!(
-            (250..=255).contains(&start),
-            "the deepest hub starts a hero at {start}, not at the 255 cap"
-        );
+    fn a_town_past_the_cap_buys_nothing() {
+        let capped = start_level(3256).min(255);
+        assert_eq!(start_level(6000).min(255), capped);
     }
 
     #[test]
-    fn every_hub_says_what_it_is() {
+    fn every_authored_hub_says_what_it_is() {
         for h in HUBS {
             assert!(!h.name.is_empty() && !h.blurb.is_empty(), "{} is unlabelled", h.key);
             assert!(h.blurb.len() > 20, "{}'s blurb says nothing", h.key);
-            assert!(hub(h.key).is_some());
         }
-        assert!(hub("not_a_hub").is_none());
     }
 }

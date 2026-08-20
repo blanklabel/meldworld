@@ -1348,22 +1348,24 @@ mod tests {
         assert!(e.end_fight_loot_mult > e.gatekeeper_loot_mult);
     }
 
+    /// The client has no `balance.toml`, so `meld_proto::hubs::start_level` carries a copy
+    /// of `base_run_level`'s formula. The two must agree at EVERY distance, not just at a
+    /// few authored rows: now that the authored deep hubs are retired and a `BD-5` forward
+    /// town supplies its own distance, a departure point can sit anywhere a player can
+    /// build, so a sweep is the only honest form of this test.
     #[test]
-    fn the_hub_chooser_agrees_with_the_real_curve() {
+    fn the_client_copy_of_the_ladder_agrees_with_the_real_curve() {
         let b = Balance::load_default().unwrap();
-        for h in meld_proto::hubs::HUBS {
+        for d in (0..=4000).step_by(25) {
             assert_eq!(
-                meld_proto::hubs::start_level(h.distance),
-                base_run_level(h.distance, &b),
-                "{} advertises a different starting level than the run would give it",
-                h.key
+                meld_proto::hubs::start_level(d),
+                base_run_level(d, &b),
+                "d{d} advertises a different starting level than the run would give it"
             );
         }
-        let deepest = meld_proto::hubs::HUBS.last().unwrap();
-        assert!(
-            base_run_level(deepest.distance, &b) <= b.runs.max_hero_level,
-            "the deepest hub starts heroes above the level cap"
-        );
+        for h in meld_proto::hubs::HUBS {
+            assert_eq!(meld_proto::hubs::start_level(h.distance), base_run_level(h.distance, &b));
+        }
     }
 
     /// The HP a dive opens on IS the ceiling it fights under, at every level on the

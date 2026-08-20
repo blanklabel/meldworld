@@ -644,11 +644,22 @@ undead_rite_chance = 0.05        # P(a spawn past the floor becomes the rite) [T
 end_fight_min_distance = 3200
 end_fight_bosses = 3
 # AUTHORED, not a multiple of the local creature. At d3200 an ordinary creature already
-# runs ~10k HP and two-shots a hero, because the deep curve is tuned for a party that
-# departed from a DEEP HUB — and hubs are held off (PG-2). So `x4 of local` made this ~14x
-# harder than anything a party can actually bring: the numbers below are tuned against the
-# party that really arrives (walked/fought out, ~level 100). Raise them when hubs land and
-# parties arrive at 255.
+# runs ~10k HP and two-shots a hero, so `x4 of local` made this ~14x harder than anything a
+# party can bring. The numbers below are tuned against a ~level-100 party.
+#
+# ⚠️ **THAT TUNING TARGET IS A PARTY THAT CANNOT REACH THIS FIGHT.** Measured: d3200 ground
+# demands ~level 251 to survive four basic hits from a STANDARD creature, and a level-100
+# hero survives 1.4 — while needing ~46 hero-hits (x4.4 party scale, so ~200) to fell one.
+# Levels are dive-scoped, so there is no accumulating your way there either. Every number
+# here was therefore measured at d30 through `MELD_END_FIGHT_AT`, against a party that
+# skipped the journey — and, before the fix, through an inert `MELD_GEAR_TIER`. Read them as
+# a laboratory result, not as a fight anyone has had.
+#
+# The old note here said "raise them when hubs land and parties arrive at 255". Hubs are
+# RETIRED (PG-2): the arrival level is now whatever a player-built forward town grants
+# (`BD-5`), so the target is `base_run_level` at whatever depth players actually plant one
+# near d3200 — about 251 if they reach it. Do not retune until BD-5 lands and the fight can
+# be played by a party that walked to it.
 #
 # `encounter_party_scale` still multiplies HP by party size on top of these, so a solo
 # player meets 1.0x and a full party 4.4x — the authored number is the per-boss baseline.

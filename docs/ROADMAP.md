@@ -746,7 +746,29 @@ burns on death/leave; some is single-use. See
     The arithmetic behind these two levers was right and the game was still unplayable
     once (creature attack was scaled by party size and wiped level-1 parties), so the
     numbers get checked by playing them.
-- [ ] **PG-2 — Departure hubs: the ladder becomes reachable.** 🟡 *Designed, deliberately NOT wired.* `base_run_level(distance)`
+- [x] **PG-2 — RETIRED: the authored deep hubs are deprecated, superseded by `BD-5`.** The
+  six authored rows (d500 … d3250) and the `vanguard` "have you been there" gate are gone;
+  `meld_proto::hubs` keeps the **Center Hub** as the one unloseable floor and
+  `start_level(distance)`, which is the whole load-bearing part. A **player-built forward
+  town** supplies the distance instead. Three reasons, in order of weight:
+  - **The gate becomes physical.** An authored hub was scenery that appeared once you
+    qualified, so qualification needed a server-owned all-time distance record. You cannot
+    raise a town where you cannot stand — the structure *is* the proof, and a bookkeeping
+    mechanism becomes a consequence.
+  - **The ladder becomes a loop.** An unlocked hub was permanent and free. A town is
+    HP-bearing, Shift-exposed and siege-able (`BD-2`/`BD-3`), so a deep departure point is
+    permanence you keep paying for — and an anchor beside it finally means something.
+  - **The authored top rung required what it was meant to grant.** Measured: d3200 ground
+    demands ~level 251 to survive four basic hits from a *standard* creature (a level-100
+    hero takes 1.4), and levels are dive-scoped — so the d3250 hub could only ever be
+    unlocked by a party that had already walked to d3250 at level 1. The supply curve
+    (`1 + 0.078d`, linear) does stay above the terrain's demand (quadratic) at every old
+    rung, crossing at **d~3350** — which is the real reason ~d3250 is the structural end of
+    the game — but nothing could climb it from the bottom.
+  - **What is still unbuilt is now `BD-5`'s**, and the blockers are unchanged:
+    spawn-at-distance, frontier generation around that distance, and extraction (the deep
+    portal, the west-return border) still assuming d0 is the start.
+- [ ] ~~**PG-2 (original scoping, kept for the rationale)**~~ `base_run_level(distance)`
   has always existed and is tested; `departure_hub_distance` is hard-coded to `0` in
   `game.rs`, so every hero starts every dive at level 1 and everything above roughly level
   16 — which is now most of the game's abilities — is authored ahead of what any player can
@@ -1782,10 +1804,28 @@ same always-running-when-unwatched spatial workload as the ecology).
 - [ ] **BD-4 — Walls, gates, towers & the siege.** Creatures path to and attack
   structures (extends `CR-2`); walls/gates soak; towers auto-defend; repair races
   attrition; always-running-when-unwatched freeze + catch-up (shared `CR-4`).
-- [ ] **BD-5 — Towns: composition, guild ownership, forward-town stops.** A town = a
-  cluster of the primitive; **guild-owned** structures + permissions (**SOC**); forward
-  towns sustain Run Level across a deep push (§W4); `portal` = plantable extraction
-  (evolves D15).
+- [ ] **BD-5 — Towns: composition, guild ownership, and THE DEPARTURE LADDER.** A town = a
+  cluster of the primitive; **guild-owned** structures + permissions (**SOC**); `portal` =
+  plantable extraction (evolves D15). **This now owns the whole departure ladder** —
+  `PG-2`'s authored hubs are retired, so a forward town is the *only* way to start a dive
+  anywhere but the Center Hub, and `start_level(distance)` (`1 + 0.078 x D`) is what it
+  grants. That makes it the unblocker for everything authored above roughly level 16, which
+  is most of the ability ladder and all of `EW`.
+  - **Three decisions this needs before it is built**, because each changes what the loop
+    *is* rather than how it is coded:
+    - **Who may depart from it?** Owner only / party / guild / anyone. If a town is open to
+      all, the first player to push deep hands every newcomer a level-240 departure and the
+      ladder collapses for everyone at once. Leaning owner-or-guild.
+    - **What does losing it cost?** A town at d2500 grants level 196; if the Shift or a
+      siege takes it, does its owner drop straight back to level-1 departures from the
+      Center Hub? That is the honest reading of "permanence you keep paying for", and it is
+      a 195-level swing on one structure's HP bar. The alternative — a residual floor from
+      the deepest town ever held — is gentler but re-introduces exactly the bookkeeping gate
+      `PG-2` just deleted.
+    - **Does a town past the cap buy anything?** No (held by test), which bounds how far out
+      hauling stock is worth it and keeps ~d3250 the structural end.
+  - **Do not tune the end fight until this lands** — see `EW-0` and `AD-8`. Its numbers are
+    authored for "~level 100", a party that provably cannot reach where it stands.
 - [ ] **BD-6 — Field crafting & storage.** `stash` (siege-able field storage),
   `workshop` (`MS-1` Forge/Alembic in the field), `hearth` (respawn/rally aura).
 - [ ] **BD-7 — Persistence wiring (rides `SC-3`).** Structures / anchor-altered Shifts /

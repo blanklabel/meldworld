@@ -1075,8 +1075,9 @@ struct LevelUpRoot;
 struct UnlocksRes {
     owned: Vec<String>,
     party_slots: i32,
-    /// PG-2: the account's all-time deepest distance. The hub chooser lists
-    /// `meld_proto::hubs::hubs_reached(this)`.
+    /// PG-2: the account's all-time deepest distance — the Vanguard Wall's own number.
+    /// It no longer gates a departure point: the authored deep hubs are retired and a
+    /// `BD-5` forward town is its own proof you stood there (`meld_proto::hubs`).
     deepest_ever: i32,
     pending: std::collections::VecDeque<meld_client::net::UnlockLine>,
     current: Option<meld_client::net::UnlockLine>,

@@ -555,16 +555,35 @@ mark is owed its reward however long the walk home takes. The menu's **Quests** 
 gated on owning `class_hunter` — the menu never advertises what you have not earned — and
 is reading-only, because the reward is taken at the board.
 
-**A dive departs from a hub you have STOOD on** (PG-2, `meld_proto::hubs`). A hub at
-distance D starts every hero at `base_run_level(D)` = `1 + 0.078 × D`, so the deepest
-(d3250) starts them at the 255 cap — which is why that distance is the structural end of the
-game: past it a hub buys nothing while creatures keep scaling. The gate is the account's own
-all-time deepest distance from the `vanguard` table (written off *validated movement*, read
-across ALL seasons — a season rollover must not revoke ground you stood on). It is a
-**lookup, not an entity**: the run reads one integer, so when `BD-5`'s player-built forward
-towns land they add a row rather than replacing a system — a hub deliberately has no
-placement or ownership of its own, because that is the `Structure` primitive. A requested
-hub is **clamped, never rejected**, exactly as `party` is clamped to owned classes.
+**A DIVE DEPARTS FROM A TOWN YOU BUILT — the authored deep hubs are RETIRED** (PG-2, now
+`BD-5`'s; `meld_proto::hubs`). What survives is the formula and one floor: departing from
+distance D starts every hero at `base_run_level(D)` = `1 + 0.078 × D`, and the **Center Hub**
+(d0, level 1) is the one departure point nothing can take away. The six authored rows
+(d500 … d3250) and the `vanguard` "have you been there" gate are **gone**.
+
+Player-built forward towns do that job strictly better, and the reasons are worth keeping:
+an authored hub was scenery that appeared once you qualified, so qualification needed a
+server-owned all-time distance record — but **you cannot raise a town where you cannot
+stand, so the structure IS the proof** and the whole gate becomes a consequence. It also
+turns the ladder from a list into a loop: an unlocked hub was permanent and free, while a
+town is HP-bearing, Shift-exposed and siege-able, which is what finally makes an anchor
+beside it mean something. And the authored ladder was self-defeating — **d3200 ground demands
+~level 251** to survive four basic hits from a *standard* creature (a level-100 hero survives
+**1.4**), and levels are dive-scoped, so its top rung could only be unlocked by a party that
+had already walked to d3250 at level 1. It required what it was meant to grant.
+
+Supply (`1 + 0.078d`, linear) does stay above the terrain's demand (quadratic) at every old
+rung, crossing at **d≈3350** — that crossing, not a chosen number, is why ~d3250 is the
+structural end of the game, and it still bounds how far out a town is worth hauling stock.
+It remains a **lookup, not an entity**: the run reads one distance, and a town supplies it
+through the `Structure` primitive's own placement and ownership — never a second lifecycle
+model beside it.
+
+⚠️ **Nothing wires a deep departure yet**, so every dive still starts at d0/level 1. The
+blockers are unchanged: spawn-at-distance, frontier generation around that distance, and
+extraction (the deep portal, the west-return border) still assuming d0 is the start. This is
+why **the end fight cannot currently be reached in play at all** and why its authored
+numbers are a laboratory result — see the warning in `[encounters]`.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
