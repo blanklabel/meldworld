@@ -1810,11 +1810,12 @@ same always-running-when-unwatched spatial workload as the ecology).
   departure ladder: *the longer you are out there, the stronger you tend to be* — level comes
   from XP earned on the expedition, which is what `AD-7`'s punch-up bonus prices. What a town
   sells is the ability to **not go home**:
-  - **Inn — park an expedition across sessions.** The load-bearing service, and the reason
-    the rest of this works. Players do not log off mid-dive; an inn is where an expedition
-    rests, so a deep push becomes a multi-session climb instead of one sitting. **It is a
-    save point that can be destroyed:** if the town falls while you are resting in it, you go
-    with it. That single rule is what makes every other service worth paying for.
+  - **Inn — rest.** Restores HP/MP in full, clears every status effect (afflictions do not
+    expire on their own, so this is the one reliable cure on the road), and confers a
+    **`rested` bonus: extra XP for an hour.** Deliberately NOT a level save — a saved level
+    is durable per-player state that a destructible building would then be able to erase,
+    which is too much for a player to hold in their head and too much for the world to be
+    responsible for. An inn is a classic inn.
   - **Party swap.** Change composition without walking home — the only place outside the
     Center Hub that the party builder opens.
   - **Vendor.** Resupply potions and Town Portals forward, so a long expedition is a supply
@@ -1844,28 +1845,35 @@ same always-running-when-unwatched spatial workload as the ecology).
     - **Portals into a town are guild- or party-owned and cost chits.** The town is public
       once you have walked there; *fast* entry is owned and paid for. This is the only
       shortcut in the design, and it is priced.
-  - ⚠️ **OPEN — a wipe currently removes a player from the expedition permanently, and the
-    numbers are brutal.** Level is time-out-there, so a wiped player is level 1; the town
-    they portal back into is unchanged, but the ground outside it is not. Measured, carried
-    by a 4-hero party with the punch-up bonus at its 1.5x cap:
+  - **THE CATCH-UP MECHANISM IS `fights_per_level`, NOT A NEW SYSTEM.** A wipe leaves a
+    player at level 1 while the ground outside the town still demands 244, and the fix is
+    not saved state, a rejoin floor, or a catch-up buff — it is that **the marginal cost of
+    a level is wrong.** `fights_per_level` climbs 2 → 51, so catching up costs what the
+    original climb cost, because it *is* the original climb. Measured (carried by a 4-hero
+    party, punch-up bonus at its cap):
 
-    | town | terrain needs | carried encounters to catch up |
-    |------|---------------|-------------------------------|
-    | d1000 | L35 | 21 |
-    | d2000 | L108 | 320 |
-    | d2500 | L158 | 766 |
-    | d3200 | L244 | **2179** |
+    | `fights_per_level_ramp` | one level @L244 | catch-up at d3200 | hrs to d3200 | hrs to cap |
+    |---|---|---|---|---|
+    | 5 (today) | 28.5 enc | 2179 | 160 | 170 |
+    | 25 | 6.3 | 512 | 39 | 41 |
+    | **flat (no ramp)** | **1.1** | **126** | **11.5** | **11.9** |
 
-    Catching up costs what the original climb cost, because it *is* the original climb —
-    `xp_total_to_level` grows as fast as a deep encounter pays, so no per-kill bonus closes
-    it (even 10x leaves 218 encounters at d3200). So one death removes a player from their
-    guild's deep push for the rest of it, potentially across many sessions. In a co-op game
-    with no log-off that is a social problem, not just a difficulty one.
-    **The inn is the obvious answer and the design already implies it:** resting *saves* —
-    a wipe returns you to your last inn at the level you rested at, not to level 1. That
-    makes the town hold your progress (which is why it persists beyond wipes), makes the
-    garrison worth chits (the save can be destroyed), and makes the portal the way back to
-    it. All four services then serve one loop. Needs a call before `BD-5` is built.
+    Flattening closes three problems with one tunable: power-levelling a wiped teammate
+    becomes viable at **every** depth (~1 encounter per level rather than 28), a continuous
+    expedition can actually reach the deep world, and the catch-up gap closes with **no
+    stored state and nothing destructible to remember**. It also makes the social mechanism
+    the obvious one — *your guild walks you back up* — rather than a rule.
+  - **It is surgical, which is the argument for it.** Cumulative at-level fights: level 5 is
+    unchanged (8), level 10 goes 22 → 18, and every meaningful delta lands past level ~20 —
+    exactly the region nothing can currently reach. This is not a rebalance of the played
+    game; it makes the unplayed part playable. The stated design goal ("most players reach
+    doubles before the run that kills them") survives intact.
+  - **Consequence to accept on purpose:** levels become cheap, so **level stops being the
+    long-term progression and gear becomes it** — which is already the stated intent past
+    d2300 ("levels matter less, gear matters more") and what `AD-7`'s punch-up bonus prices.
+  - ⚠️ **Measure before shipping.** One tunable, fully reversible, but it is the master
+    progression curve: play it through `mcp/` first. This repo shipped the end fight
+    impossible three times off arithmetic, and the last time the arithmetic was correct.
   - **What this retires.** `base_run_level(distance)` and `meld_proto::hubs::start_level` keep
     no gameplay role — a town grants services, not levels. Both survive only as the
     `MELD_START_LEVEL` dev/QA instrument, which must keep working: it is how deep content is
