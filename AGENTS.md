@@ -435,9 +435,25 @@ in release** on a single-task loop. Now 7.5 ms. **It was the same bug as the one
 in the movement pass twenty lines above it** — one rule, two call sites, one fixed.
 `the_creature_step_stays_linear_in_the_creature_count` holds the scaling as a ratio.
 
+**MEASURED AT LEVEL 100 once it booted** (`mcp/`, seed 424242, d1269, the same seeded
+`bog_stinger` pack — a 4,550 HP minion beside a 17,213 HP leader — `kit` policy):
+
+| | ungeared | tier-32 |
+|---|---|---|
+| hero-turns | 62 | **40** |
+| HP lost | **641** | **173** |
+| heroes lost | 1 (the psyker) | 0 |
+| outcome | victory | victory |
+
+**3.7x less damage taken**, which corroborates `EW-0`'s long-standing "gear buys 3.5x
+survivability" — a claim that was *right all along* and could not be checked until the deep
+world became enterable. Set against the stale note it replaces ("ungeared 26 hero-turns to a
+geared 25"), the real figures are 62 against 40 turns and a 3.7x damage gap.
+
 The lesson worth keeping: a deep measurement had never been taken because the deep world
-could not be entered, and *that* is why every number in this file about deep content came from
-the shallow end. Re-measure deep claims now that it boots.
+could not be *entered*, and that is why every number in this file about deep content came from
+the shallow end. Any deep claim written before `AX-6` should be re-measured rather than
+trusted — including the ones in this file.
 
 **A potion heals a fraction of the DRINKER's max HP, so who drinks it is a real decision.**
 `item_heal_fraction` is 0.4, which is 417 HP on a level-100 Phoenix Guard (1042 max) and 113

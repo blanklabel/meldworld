@@ -1964,6 +1964,13 @@ spike that makes the whole economy cohere.
     with a hero down; tier-32 won in 47 turns having lost 172**, and the same all-enemy
     ability landed `-25/-26/-7/-13` ungeared against `-0/-0/-7/-0` geared. Gear gates ability
     damage and at that tier can null it. Both stale claims are corrected in place.
+    ✅ **And re-measured AT LEVEL 100** — the level this fight is authored for, which nothing
+    could reach until `AX-6` (seed 424242, d1269, the same seeded `bog_stinger` pack: a 4,550
+    HP minion beside a 17,213 HP leader). **Ungeared: 62 turns, 641 HP lost, the psyker down.
+    Tier-32: 40 turns, 173 HP lost, nobody lost.** That is **3.7x less damage taken**, so this
+    section's "gear buys 3.5x survivability" was correct to within measurement noise and had
+    simply never been checkable. The claim that displaced it — "ungeared 26 hero-turns to a
+    geared 25" — was an artefact of an inert flag twice over.
     ⚠️ **`damage_floor_fraction` (0.25) bounds the attack number.** Defence can never cut a
     blow below a quarter of the attacker's power, so past `hero_def / 0.75` (~1205 with full
     tier-32 armour) **more armour buys nothing and the fight stops caring what you wear**.
