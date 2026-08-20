@@ -85,6 +85,11 @@ pub enum ClientCmd {
     TeardownStation { entity_id: String },
     /// Opt into the ongoing fight nearby (the server checks proximity).
     JoinBattle,
+    /// WATCH the nearest fight in reach without entering it (`SOC-3`) — another player's
+    /// battle, or two mobs tearing at each other (`CR-2`).
+    WatchBattle,
+    /// Stop watching. Idempotent server-side, so the same key can toggle.
+    StopWatching,
     /// Rename one of the caller's heroes (persistent, per-account).
     RenameHero { slot: i32, name: String },
     /// Set a hero to the front (`false`) or back (`true`) row (persistent).
@@ -198,6 +203,9 @@ pub struct EntityView {
     pub radius: f64,
     /// True if this is a player currently in a fight (`avatar_state == in_battle`).
     pub battling: bool,
+    /// CR-2: this creature is trading blows with another right now. An EVENT, not
+    /// intel — so it is marked for everyone, with no perk gating.
+    pub clashing: bool,
     /// Elevation level (terraced verticality) — the render height is raised by
     /// `level × step_height`. Absent on the wire → 0 (ground).
     pub level: u8,
@@ -711,6 +719,12 @@ pub enum ServerMsg {
         your_combatant_ids: Vec<String>,
         combatants: Vec<CombatantView>,
         monster_combatant: Option<String>,
+        /// This is a fight we are WATCHING, not one we are in (`SOC-3`): no command
+        /// menu, no loot report, and leaving it costs nothing. A flag rather than
+        /// "`your_combatant_ids` is empty", because empty is also what a malformed
+        /// roster looks like — and the back-compat fallback below turns that into a
+        /// hero id of `""`, which would hand a watcher a menu aimed at nobody.
+        spectating: bool,
     },
     TurnReady { combatant_id: String },
     /// An action resolved — drives hit feedback (floating numbers + flash).
@@ -740,6 +754,15 @@ pub enum ServerMsg {
         items: Vec<(String, i32)>,
         gear_drops: Vec<String>,
     },
+    /// Ground loot a creature left behind, just walked over and banked (`CR-2`). Feeds
+    /// the same report banner as a chest — the loot a kill leaves is as much a payout as
+    /// the loot a chest holds, and it was the only one the player was never shown.
+    LootPickedUp { items: Vec<(String, i32)> },
+    /// The fight we were WATCHING closed (`SOC-3`) — it finished, we walked out of
+    /// range, we were pulled into our own, or we asked to stop. Never a `BattleEnded`:
+    /// a watcher earned nothing, so popping somebody else's haul over their screen
+    /// would be a lie.
+    WatchEnded { battle_id: String, reason: String },
     /// A treasure chest was opened — feeds the same loot report banner as
     /// `BattleEnded` (no XP line, chest-only chits/items/gear).
     ChestOpened {
@@ -2136,6 +2159,8 @@ impl Inner {
                 self.send_env(wr::Strike::TYPE, json!({ "job_id": job_id, "at": at }))
             }
             ClientCmd::JoinBattle => self.send_env(wr::JoinBattle::TYPE, json!({})),
+            ClientCmd::WatchBattle => self.send_env(wr::WatchBattle::TYPE, json!({})),
+            ClientCmd::StopWatching => self.send_env(wr::StopWatching::TYPE, json!({})),
             ClientCmd::RenameHero { slot, name } => {
                 self.send_env(wr::RenameHero::TYPE, json!({ "slot": slot, "name": name }))
             }
@@ -2331,6 +2356,13 @@ impl Inner {
                 // which one this is, so the chest report only fires for chests.
                 let mut is_chest = false;
                 let mut chest_items: Vec<(String, i32)> = Vec::new();
+                // What a felled creature LEFT ON THE GROUND and we just walked over
+                // (`cause: pickup:<kind>`, `CR-2`). Auto-collected, which used to mean
+                // silently: the only trace was a counter ticking somewhere off-screen,
+                // so a kill that dropped something read exactly like one that did not.
+                // It pays out through the same report the chest does, because it is the
+                // same question — "what did I just get".
+                let mut picked_up: Vec<(String, i32)> = Vec::new();
                 // Units a harvest channel just paid out, so the overworld can pop
                 // "+1 Bog Myrrh" over the player's head. The bar filling is only half the
                 // feedback; this is the half that says what you actually got.
@@ -2342,12 +2374,16 @@ impl Inner {
                         continue;
                     }
                     let signed = if ch["delta"].as_str() == Some("removed") { -qty } else { qty };
-                    if ch["cause"].as_str() == Some("chest") && signed > 0 {
-                        is_chest = true;
-                        chest_items.push((kind.clone(), signed));
-                    }
-                    if ch["cause"].as_str().is_some_and(|c| c.starts_with("harvest")) && signed > 0 {
-                        harvested.push((kind.clone(), signed));
+                    // ONE place decides what a `cause` is worth showing, so the three
+                    // payout surfaces cannot disagree about which changes are a payout.
+                    match (signed > 0).then(|| payout_of(ch["cause"].as_str().unwrap_or(""))).flatten() {
+                        Some(Payout::Chest) => {
+                            is_chest = true;
+                            chest_items.push((kind.clone(), signed));
+                        }
+                        Some(Payout::Harvest) => harvested.push((kind.clone(), signed)),
+                        Some(Payout::Pickup) => picked_up.push((kind.clone(), signed)),
+                        None => {}
                     }
                     let e = self.backpack.entry(kind).or_insert(0);
                     *e += signed;
@@ -2380,6 +2416,12 @@ impl Inner {
                         items: chest_items,
                         gear: chest_gear,
                     });
+                }
+                // The spoils of a fight we did not have: one report per pickup EVENT, not
+                // per stack — the server hands over everything in range in a single
+                // message, so a body that dropped three things is one banner.
+                if !picked_up.is_empty() {
+                    self.out.push_back(ServerMsg::LootPickedUp { items: picked_up });
                 }
             }
             "run.gear" => {
@@ -2663,6 +2705,7 @@ impl Inner {
                             let mut opened = false;
                             let mut quarry = false;
                             let mut held = false;
+                            let mut clashing = false;
                             let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
                                 Some("portal") => (EntityKind::Portal, None, None),
                                 Some("stair") => (EntityKind::Stair, None, None),
@@ -2677,9 +2720,10 @@ impl Inner {
                                     (EntityKind::Chest, None, None)
                                 }
                                 Some(s) if s.starts_with("mob:") => {
-                                    let (k, f, q, h) = parse_mob_state(s);
+                                    let (k, f, q, h, cl) = parse_mob_state(s);
                                     quarry = q;
                                     held = h;
+                                    clashing = cl;
                                     (
                                         EntityKind::Monster,
                                         Some(k.to_string()),
@@ -2750,6 +2794,7 @@ impl Inner {
                                 aggression: if is_mob { e.aggression } else { None },
                                 quarry,
                                 held,
+                                clashing,
                                 bodies_required,
                             }
                         })
@@ -2814,11 +2859,21 @@ impl Inner {
                     self.out.push_back(ServerMsg::BattleStarted {
                         battle_id: b.battle_id,
                         your_combatant_id: b.your_combatant_id,
-                        your_combatant_ids,
+                        // A watcher controls nothing, so the back-compat fallback above
+                        // (empty ⇒ `vec![your_combatant_id]`) must not apply: it would
+                        // hand them one hero id of `""` and a menu aimed at nobody.
+                        your_combatant_ids: if b.spectating { Vec::new() } else { your_combatant_ids },
                         combatants,
                         monster_combatant,
+                        spectating: b.spectating,
                     });
                 }
+            }
+            "battle.watch_ended" => {
+                self.out.push_back(ServerMsg::WatchEnded {
+                    battle_id: raw.payload["battle_id"].as_str().unwrap_or("").to_string(),
+                    reason: raw.payload["reason"].as_str().unwrap_or("finished").to_string(),
+                });
             }
             "battle.action_resolved" => {
                 if let Ok(r) = serde_json::from_value::<wb::ActionResolved>(raw.payload) {
@@ -2980,17 +3035,58 @@ impl Inner {
 /// Turn a craft reply into one line for the panel. A refusal is reported as loudly as
 /// a success: the server's own message ("Insufficient materials (need 2 heartoak_bark)",
 /// "alchemy level 1 is below the required level 9") is already the right sentence.
-/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:quarry|:held]` — into its
-/// parts.
+/// What KIND of payout a `run.backpack_update` change is, when it is one at all.
 ///
-/// The trailing marker is optional and per-viewer (AD-4), which is exactly why this is one
-/// function: reading the faction with a `split_once` swallowed `hostile:quarry` whole.
-fn parse_mob_state(state: &str) -> (&str, &str, bool, bool) {
+/// The wire carries every backpack delta down one message — a chest, a harvest tick,
+/// ground loot walked over, a spend, a drop on death — and the `cause` string is the only
+/// thing that tells them apart. So the mapping lives HERE, once, rather than as three
+/// `starts_with` checks scattered down the parse: they were already subtly different from
+/// each other (`== "chest"` against `starts_with("harvest")`), which is how a fourth
+/// payout gets added and shows up on none of the surfaces that were supposed to greet it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Payout {
+    /// A treasure chest was opened: the loot-report banner.
+    Chest,
+    /// A harvest channel paid out a unit: the over-head "+1 Bog Myrrh" pop.
+    Harvest,
+    /// Ground loot a felled creature left behind, walked over and banked (`CR-2`): the
+    /// same banner the chest raises, because it answers the same question.
+    Pickup,
+}
+
+/// The payout a backpack change's `cause` announces, or `None` when the change is
+/// bookkeeping the player has already watched happen (a spend, a craft, a death).
+pub(crate) fn payout_of(cause: &str) -> Option<Payout> {
+    match cause {
+        "chest" => Some(Payout::Chest),
+        c if c.starts_with("harvest") => Some(Payout::Harvest),
+        c if c.starts_with("pickup:") => Some(Payout::Pickup),
+        _ => None,
+    }
+}
+
+/// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:marker…]` — into its parts.
+///
+/// The markers are optional, some are per-viewer (AD-4), and there can be SEVERAL: a
+/// pinned creature can also be a quarry, and either can also be mid-clash (`CR-2`). So
+/// every trailing part is read, not just the first — reading only the first meant the
+/// second marker vanished depending on which one happened to be appended earlier, which
+/// is the kind of bug that looks like a rendering glitch. (And this is one function
+/// because reading the faction with a `split_once` swallowed `hostile:quarry` whole.)
+fn parse_mob_state(state: &str) -> (&str, &str, bool, bool, bool) {
     let mut parts = state.strip_prefix("mob:").unwrap_or(state).split(':');
     let kind = parts.next().unwrap_or("");
     let faction = parts.next().unwrap_or("");
-    let marker = parts.next();
-    (kind, faction, marker == Some("quarry"), marker == Some("held"))
+    let (mut quarry, mut held, mut clashing) = (false, false, false);
+    for m in parts {
+        match m {
+            "quarry" => quarry = true,
+            "held" => held = true,
+            "clash" => clashing = true,
+            _ => {}
+        }
+    }
+    (kind, faction, quarry, held, clashing)
 }
 
 /// GET the Den's board and hand it back over `tx`.
@@ -3462,25 +3558,78 @@ mod mob_state_tests {
     fn a_mob_state_keeps_its_faction_whatever_marker_it_carries() {
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal"),
-            ("forest_bloom_stalker", "fungal", false, false)
+            ("forest_bloom_stalker", "fungal", false, false, false)
         );
         // The marker must not be read as part of the faction — the faction drives the
         // creature's colour, and `fungal:quarry` is not a colour.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:quarry"),
-            ("forest_bloom_stalker", "fungal", true, false)
+            ("forest_bloom_stalker", "fungal", true, false, false)
         );
         // CL-2's pin rides the same slot, and must not be read as a quarry either.
         assert_eq!(
             parse_mob_state("mob:forest_bloom_stalker:fungal:held"),
-            ("forest_bloom_stalker", "fungal", false, true)
+            ("forest_bloom_stalker", "fungal", false, true, false)
+        );
+        // CR-2's clash is a third marker in the same slot.
+        assert_eq!(
+            parse_mob_state("mob:forest_bloom_stalker:fungal:clash"),
+            ("forest_bloom_stalker", "fungal", false, false, true)
         );
         // A factionless mob, and an unknown trailing token, both stay readable.
-        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false, false));
+        assert_eq!(parse_mob_state("mob:dune_wyrm"), ("dune_wyrm", "", false, false, false));
         assert_eq!(
             parse_mob_state("mob:dune_wyrm:wyrm:something"),
-            ("dune_wyrm", "wyrm", false, false)
+            ("dune_wyrm", "wyrm", false, false, false)
         );
+    }
+
+    /// Markers COMPOSE. The server appends `held` before `clash` and the per-viewer cull
+    /// appends `quarry` last, so reading only the first trailing part meant a creature
+    /// that was pinned *and* the quarry of your hunt lost its QUARRY plate — a bug that
+    /// looks like a rendering glitch and only shows up on the one creature you care most
+    /// about seeing.
+    #[test]
+    fn every_marker_on_a_mob_state_is_read_not_just_the_first() {
+        assert_eq!(
+            parse_mob_state("mob:dune_wyrm:wyrm:held:clash:quarry"),
+            ("dune_wyrm", "wyrm", true, true, true)
+        );
+        assert_eq!(
+            parse_mob_state("mob:dune_wyrm:wyrm:held:quarry"),
+            ("dune_wyrm", "wyrm", true, true, false)
+        );
+    }
+}
+
+#[cfg(test)]
+mod payout_tests {
+    use super::*;
+
+    /// The bug this pins: ground loot was banked with `cause: pickup:<kind>` and nothing
+    /// read it, so a creature that died fighting another creature and left something
+    /// behind was indistinguishable from one that left nothing — the only trace was a
+    /// counter ticking somewhere off-screen.
+    #[test]
+    fn ground_loot_is_a_payout_the_player_gets_told_about() {
+        assert_eq!(payout_of("pickup:bog_myrrh"), Some(Payout::Pickup));
+    }
+
+    #[test]
+    fn a_chest_and_a_harvest_tick_keep_their_own_surfaces() {
+        assert_eq!(payout_of("chest"), Some(Payout::Chest));
+        assert_eq!(payout_of("harvest"), Some(Payout::Harvest));
+        assert_eq!(payout_of("harvest:bloom_herb"), Some(Payout::Harvest));
+    }
+
+    /// Bookkeeping is not a payout. Spending ore on a wall, losing a bag on death or
+    /// paying for a craft are all things the player just watched themselves do, and a
+    /// banner over each would train them to dismiss the banner.
+    #[test]
+    fn a_spend_is_not_a_payout() {
+        for cause in ["build", "craft", "death", "flee", "battle_loot", "potion_drop", ""] {
+            assert_eq!(payout_of(cause), None, "`{cause}` raised a payout banner");
+        }
     }
 }
 

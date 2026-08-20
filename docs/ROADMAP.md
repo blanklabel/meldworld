@@ -1545,14 +1545,49 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   Which order is better depends on the pack, which is the point — a pack fight is a
   *decision* instead of just more HP. Lone creatures, elites, gatekeepers and heroes are
   untouched by all three rules (tested).
-- [ ] **CR-2 — Creatures fight each other, visibly, with consequences.** 🟡
-  *Partial:* hostile factions already skirmish and lose `hp`. **Remaining:** show
-  the **fighting state on the map** (so you can read "those two are clashing"),
-  make skirmish **deaths drop loot** on the overworld (pickup per
-  [`behaviors/async-interaction.md`](behaviors/async-interaction.md)), **persist
-  damage** to the creature, and have it **slowly regenerate** as it roams (so a
-  wounded creature is a real, time-bound opportunity). Add regen + on-map combat
-  state to `MonsterSpawn`/`step_creatures`; tunables in `[worldgen]`/`[ai]`.
+- [x] **CR-2 — Creatures fight each other, visibly, with consequences.** Hostile factions
+  skirmish, lose `hp`, and **drop loot where they fall**
+  (`GroundLoot`, auto-collected within `[ai] loot_pickup_radius`). ✅ *The clash is now
+  VISIBLE and WATCHABLE.* A clash (`meld_world::Clash`) is derived from the blows a
+  `step_creatures` pass actually lands — never from proximity, because plenty of hostiles
+  stand inside each other's reach without swinging and a marker over each of those is
+  noise. It lingers `[ai] clash_linger_seconds` past its last blow, since creatures trade
+  on a cadence and a marker that strobed between swings would be worse than none. Its
+  creatures ride the snapshot tagged `mob:<kind>:<faction>:clash`, and the client draws
+  them the ⚔ a fighting player already wears **plus an HP bar that is not perk-gated** — a
+  clash resolves in seconds and whether to wait it out is a decision you cannot make from
+  an unmarked creature. `[V]` then WATCHES it through the same spectator feed a player's
+  fight uses (`SOC-3`). And the loot it leaves **says so**: auto-pickup was silent, so a
+  creature that died fighting another creature and left something behind was
+  indistinguishable from one that left nothing — it now raises the same report a chest
+  does.
+  - **Damage PERSISTS, and the wound is visible.** Three places leaked it. (1) A creature
+    that survived a player's fight — a flee, or a party wipe — resumed roaming at full,
+    so softening something up and coming back for it was impossible and fleeing a
+    nearly-won fight reset it. It now carries its battle HP back as a **fraction**
+    (`Battle::combatant_health` + `BattleSlot::monster_combatants`), never the raw
+    number: the fight scaled its pool by `encounter_party_scale`, so a four-hero party
+    chewed through several times the health the spawn actually has. (2) `build_battle`
+    built the enemy's *max* HP from its *current* hp, and `Fighter::new` sets
+    `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
+    The damage was real (it died to less) and completely invisible: the bar read 100% and
+    an execute scaling with missing HP found none missing. (3) On the overworld the bar
+    was gated behind the Hunter's `intel >= 2`, so an ungeared party could not tell a
+    creature at 20% from one at 100%. A **wound is an event the world is reporting**, like
+    the ⚔ and the QUARRY plate, so it shows for everyone; the perk still reads the bar on
+    untouched creatures, which is the 95% case where sizing one up matters.
+  - **And it CLOSES.** `Arena::mend_creatures` mends
+    `[ai] creature_regen_fraction_per_sec` (0.01) of max per second, so a half-dead
+    creature is whole again in ~50s — a window you can run across. Without it the world
+    is strip-minable by attrition (walk a ring, chip everything, come home to a map of
+    half-dead things), which is the opposite of a living world. Suspended while it is
+    clashing or in a battle — nothing mends while it is still being hit, and the clash's
+    own linger is exactly what covers the gap between one blow and the next. Sub-1 HP is
+    banked per creature (`regen_accum`) or the whole mechanic rounds to nothing on any
+    creature under a few hundred max HP, which is every creature in the on-ramp; a
+    creature at full carries no debt forward, so a healthy stretch cannot bank a burst.
+  - The harness reads it too (`look` shows `(clashing, -43%)`), because a decision about
+    where to walk that the harness cannot see is a decision nobody can measure.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,
@@ -2416,6 +2451,33 @@ the current build.
   - Design: [`proposals/parties-and-guilds.md`](proposals/parties-and-guilds.md)
     Part A — Phase 1 (group ≤4 = one instance) is the first ship; raid groups
     (5–16 via merge) are Phase 2.
+- [x] **SOC-3 — Watch a fight you are not in.** A nearby fight could only be JOINED, and
+  joining is a commitment: it puts your heroes in the queue, splits the XP and can kill
+  them. So the only way to find out whether the party over there was winning was to walk
+  into it. `run.watch_battle` / `run.stop_watching` open a read-only feed on the nearest
+  fight within `[ai] watch_radius` — deliberately WIDER than `join_radius`, because you can
+  see further than you can reach and looking costs nothing. Two sources, one feed: another
+  player's battle, or a creature-vs-creature **clash** (`CR-2`).
+  - The watcher is enrolled in the `BattleSlot`'s own `spectators` and rides **one audience
+    funnel** (`audience_of`), which every battle broadcast asks. That is the whole design:
+    a watcher gains each new event type the day it is added rather than the day somebody
+    remembers their call site. The gauges used to re-derive the party filter inline — a
+    watcher who received everything *except* the thing that moves reads as the fight having
+    frozen — so that copy is gone.
+  - `fighters_of` stays separate and narrower. A watcher did not flee, did not clear the
+    dungeon, and earns no XP or loot; `battle.ended` never reaches them, because it carries
+    somebody else's haul. `battle.watch_ended` closes the screen instead, with a reason
+    (`finished` / `out_of_range` / `own_battle` / `stopped`).
+  - They own no combatant, so `handle_submit` refuses every action they could send on the
+    same "Not a combatant." path an impostor's takes — no separate spectator guard to keep
+    in sync. A clash's `battle_id` is namespaced `clash:<anchor>` so it cannot collide with
+    a real battle, and is anchored on a BODY rather than a clash identity: a clash gains
+    and loses members every few seconds, so an id for it would go stale underneath the
+    watcher.
+  - Client: `[V]` on the overworld (its own key — `[E]` already *joins*, and collapsing the
+    two would walk a player who wanted to look into a fight instead), a WATCHING banner
+    over the arena, `[V]`/`[Esc]` to look away. Harness: `interact watch` /
+    `interact stop_watching`.
 - [ ] **SOC-2 — Guild system.** Persistent player organizations: membership +
   roles, a guild identity/tag, and a home in Last City. Later hooks (scope as it
   firms up): shared guild bank/stash (relates to SV-1), guild bounties (EC/economy),

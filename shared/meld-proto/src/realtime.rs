@@ -364,6 +364,13 @@ pub mod battle {
         #[serde(default)]
         pub your_combatant_ids: Vec<Id>,
         pub triggered_by: Option<Id>,
+        /// True when this feed is being WATCHED rather than fought (`SOC-3`). A
+        /// spectator controls nothing, so `your_combatant_ids` is empty — but empty
+        /// is also what a malformed roster looks like, and the client's back-compat
+        /// fallback turns that into `vec![""]`. The flag is what makes "I am not in
+        /// this fight" a fact on the wire instead of an inference.
+        #[serde(default)]
+        pub spectating: bool,
     }
     impl Message for Started {
         const TYPE: &'static str = "battle.started";
@@ -516,6 +523,21 @@ pub mod battle {
     }
     impl Message for Ended {
         const TYPE: &'static str = "battle.ended";
+    }
+
+    /// S2C — the fight you were WATCHING is no longer yours to watch (`SOC-3`): it
+    /// finished, you walked out of range, you were pulled into your own fight, or you
+    /// asked to stop. Its own message rather than a `battle.ended`, because a watcher
+    /// earned no XP and no loot: handing them an `Ended` would pop somebody else's
+    /// haul over their screen as though it were theirs.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct WatchEnded {
+        pub battle_id: Id,
+        /// Why the feed closed — `finished`, `out_of_range`, `own_battle`, `stopped`.
+        pub reason: String,
+    }
+    impl Message for WatchEnded {
+        const TYPE: &'static str = "battle.watch_ended";
     }
 }
 
@@ -1225,6 +1247,31 @@ pub mod run {
     pub struct JoinBattle {}
     impl Message for JoinBattle {
         const TYPE: &'static str = "run.join_battle";
+    }
+
+    /// C2S — WATCH the nearest fight in reach without entering it (`SOC-3`). Joining
+    /// is a commitment: it puts your heroes in the queue, splits the XP and can kill
+    /// them. Watching costs nothing, which is the point — a fight you can see is a
+    /// fight you can learn from, and reading whether the party over there is winning
+    /// is how you decide whether to walk in.
+    ///
+    /// The target is whatever is nearest within `[ai] watch_radius`: another player's
+    /// battle, or a creature-vs-creature **clash** (`CR-2`) — two mobs tearing at each
+    /// other is a fight too, and the loot it leaves is why you would wait it out.
+    /// Refused while you are in a fight of your own; you cannot watch and swing.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct WatchBattle {}
+    impl Message for WatchBattle {
+        const TYPE: &'static str = "run.watch_battle";
+    }
+
+    /// C2S — stop watching whatever fight this session was watching. Idempotent: a
+    /// caller watching nothing is a no-op, not an error, because the client fires it
+    /// off the same key that opened the feed.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct StopWatching {}
+    impl Message for StopWatching {
+        const TYPE: &'static str = "run.stop_watching";
     }
 
     /// C2S — rename one of the caller's heroes (persistent, per-account). Takes

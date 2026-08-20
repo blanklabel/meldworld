@@ -80,6 +80,12 @@ pub struct Ent {
     pub level: i64,
     pub encounter_class: String,
     pub elevation: i64,
+    /// Creature health, when the snapshot carries it (`CR-2`). A wound PERSISTS and mends
+    /// only slowly, so "is that thing already hurt" is a real decision about where to
+    /// walk — and a harness that cannot read it cannot measure whether the decision is
+    /// ever worth making.
+    pub hp: i64,
+    pub max_hp: i64,
 }
 
 impl Ent {
@@ -89,6 +95,18 @@ impl Ent {
     }
     pub fn is_mob(&self) -> bool {
         self.state.starts_with("mob:")
+    }
+    /// CR-2: this creature is trading blows with another right now. A harness that cannot
+    /// see the brawl cannot measure whether waiting it out and taking what falls is ever
+    /// the right play — which is the only interesting question a clash asks.
+    pub fn clashing(&self) -> bool {
+        self.state.split(':').skip(2).any(|m| m == "clash")
+    }
+    /// How hurt it is, as a whole percent of its own max — `None` when it is untouched
+    /// or the snapshot carried no health for it.
+    pub fn hurt_pct(&self) -> Option<i64> {
+        (self.max_hp > 0 && self.hp < self.max_hp)
+            .then(|| 100 - (self.hp * 100 / self.max_hp))
     }
     pub fn dist_to(&self, p: (f64, f64)) -> f64 {
         ((self.x - p.0).powi(2) + (self.y - p.1).powi(2)).sqrt()
@@ -565,6 +583,8 @@ fn apply(s: &mut State, v: &Value) -> bool {
                     level: e["mob_level"].as_i64().unwrap_or(0),
                     encounter_class: e["encounter_class"].as_str().unwrap_or("standard").to_string(),
                     elevation: e["level"].as_i64().unwrap_or(0),
+                    hp: e["hp"].as_i64().unwrap_or(0),
+                    max_hp: e["max_hp"].as_i64().unwrap_or(0),
                 });
             }
             s.entities = ents;
@@ -755,13 +775,30 @@ fn apply(s: &mut State, v: &Value) -> bool {
                 combatants,
                 ..Default::default()
             };
-            s.note(format!(
-                "battle: {} {} vs {} of yours",
-                b.enemies().len(),
-                b.encounter_class,
-                b.mine().len()
-            ));
+            // SOC-3: a WATCHED feed is somebody else's fight (or two mobs clawing at each
+            // other). It arrives as the same message on purpose, so the harness sees it
+            // the way the client does — but it must say so, or a spectator reads as a
+            // party of zero heroes that has somehow stopped being able to act.
+            if p["spectating"].as_bool().unwrap_or(false) {
+                s.note(format!("WATCHING: {} in it (not your fight)", b.combatants.len()));
+            } else {
+                s.note(format!(
+                    "battle: {} {} vs {} of yours",
+                    b.enemies().len(),
+                    b.encounter_class,
+                    b.mine().len()
+                ));
+            }
             s.battle = Some(b);
+        }
+        // The feed closed: it finished, we walked out of range, or we asked to stop. Never
+        // a `battle.ended` — a watcher earned nothing, so there is no outcome to record.
+        "battle.watch_ended" => {
+            s.battle = None;
+            s.note(format!(
+                "stopped watching ({})",
+                p["reason"].as_str().unwrap_or("finished")
+            ));
         }
         "battle.turn_ready" => {
             let id = p["combatant_id"].as_str().unwrap_or_default().to_string();

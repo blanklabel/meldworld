@@ -89,6 +89,7 @@ fn main() {
                     your_combatant_ids: _,
                     monster_combatant,
                     combatants,
+                    spectating: _,
                 } => {
                     in_battle = true;
                     battle_id = b;
@@ -124,6 +125,8 @@ fn main() {
                 }
                 ServerMsg::Gauge { .. }
                 | ServerMsg::ChestOpened { .. }
+                | ServerMsg::LootPickedUp { .. }
+                | ServerMsg::WatchEnded { .. }
                 | ServerMsg::HeroNames { .. }
                 | ServerMsg::VanguardBoard { .. }
                 | ServerMsg::ShopStock { .. }

@@ -54,12 +54,22 @@ pub fn look(s: &State) -> String {
         for (d, e) in near.iter().take(16) {
             let what = if e.is_mob() {
                 format!(
-                    "{} L{}{}",
+                    "{} L{}{}{}",
                     e.kind(),
                     e.level,
                     match e.encounter_class.as_str() {
                         "standard" => String::new(),
                         c => format!(" [{c}]"),
+                    },
+                    // What it is BUSY with and what it has already LOST, because that is
+                    // the decision: a creature already fighting is one you can watch
+                    // (`interact watch`), wait out, or catch wounded — and a wound mends
+                    // in under a minute, so it is a reason to hurry rather than a fact.
+                    match (e.clashing(), e.hurt_pct()) {
+                        (true, Some(h)) => format!(" (clashing, -{h}%)"),
+                        (true, None) => " (clashing)".to_string(),
+                        (false, Some(h)) => format!(" (-{h}%)"),
+                        (false, None) => String::new(),
                     }
                 )
             } else {

@@ -188,12 +188,12 @@ fn tool_schemas() -> Value {
         },
         {
             "name": "interact",
-            "description": "The world verbs [E] and the build menu cover, named explicitly: harvest a node, open a chest, descend an entrance, extract, pin a creature (Psyker), join a teammate's fight, drink a potion, raise/mend/pack down a structure.",
+            "description": "The world verbs [E], [V] and the build menu cover, named explicitly: harvest a node, open a chest, descend an entrance, extract, pin a creature (Psyker), join a teammate's fight, WATCH a fight without joining it (a player's battle or two mobs clashing), drink a potion, raise/mend/pack down a structure.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "verb": { "type": "string",
-                              "enum": ["harvest", "chest", "descend", "extract", "town_portal", "hold", "join", "use_item", "cancel", "build", "repair", "demolish"] },
+                              "enum": ["harvest", "chest", "descend", "extract", "town_portal", "hold", "join", "watch", "stop_watching", "use_item", "cancel", "build", "repair", "demolish"] },
                     "entity_id": { "type": "string", "description": "The thing being acted on, for the verbs that take one." },
                     "item": { "type": "string", "description": "Consumable key, for use_item." },
                     "function": { "type": "string", "description": "What to raise, for build: anchor (holds its region against the Shift) or wall (blocks movement). Costs ore you are carrying." },
@@ -953,6 +953,11 @@ async fn interact(s: &Session, args: &Value) -> Result<String, String> {
         "descend" => json!({"type":"run.enter_dungeon","payload":{"entity_id": need_ent()?}}),
         "hold" => json!({"type":"run.psyker_hold","payload":{"entity_id": need_ent()?}}),
         "join" => json!({"type":"run.join_battle","payload":{}}),
+        // SOC-3: watching is a player verb, so the harness has it. Whether standing off
+        // and reading a fight is worth doing — and whether a clash leaves anything worth
+        // waiting for — is exactly the sort of question only playing it answers.
+        "watch" => json!({"type":"run.watch_battle","payload":{}}),
+        "stop_watching" => json!({"type":"run.stop_watching","payload":{}}),
         "cancel" => json!({"type":"run.cancel_harvest","payload":{}}),
         "extract" => json!({"type":"run.begin_extraction",
             "payload":{"method":"portal","portal_entity_id": ent, "item_id": Value::Null}}),

@@ -2022,6 +2022,87 @@ pub(crate) fn target_state(menu: &BattleMenu, id: &str) -> (bool, bool) {
 /// flashes white when the enemy is struck and its name goes gold while it's the
 /// current target (matching the sprite's shimmer).
 #[allow(clippy::too_many_arguments)]
+/// Marker for the spectator banner's root.
+#[derive(Component)]
+pub(crate) struct WatchBanner;
+
+/// Look away from a watched fight (`SOC-3`). [V] toggles (the same key that opened it) and
+/// [Esc] backs out, because backing out of a screen is [Esc] everywhere else in this
+/// client.
+///
+/// The client never leaves optimistically: it asks, and the server's `battle.watch_ended`
+/// is what takes the screen down. A stop the server refused would otherwise strand a
+/// half-left battle screen with a live feed still pouring into it.
+pub(crate) fn watch_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    battle: Res<BattleData>,
+    net: NonSend<crate::NetRes>,
+) {
+    if !battle.spectating {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyV) || keys.just_pressed(KeyCode::Escape) {
+        net.0.send(crate::net::ClientCmd::StopWatching);
+    }
+}
+
+/// The banner over a WATCHED fight (`SOC-3`), and the key that leaves it.
+///
+/// Everything else on the battle screen already degrades correctly for a watcher — the
+/// command menu, the party strip and the hero keys all key off `your_ids`, which is empty
+/// — so what is missing is not a suppression but a STATEMENT: without it a spectator sees
+/// a fight, no menu, and no way out, which reads as the game having hung. Immediate-mode:
+/// a pure display with nothing to preserve across frames.
+pub(crate) fn render_watch_banner(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    existing: Query<Entity, With<WatchBanner>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    if !battle.spectating {
+        return;
+    }
+    commands
+        .spawn((
+            WatchBanner,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                top: Val::Px(16.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(2.0),
+                    padding: UiRect::axes(Val::Px(18.0), Val::Px(7.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(glass::GLASS_THIN),
+                BorderColor(glass::EDGE_SOFT),
+                BorderRadius::all(Val::Px(8.0)),
+            ))
+            .with_children(|p| {
+                p.spawn(glass::text("WATCHING".to_string(), 20.0, glass::DIM));
+                p.spawn(glass::text(
+                    "not your fight - [V] or [Esc] to look away".to_string(),
+                    14.0,
+                    glass::DIM,
+                ));
+            });
+        });
+}
+
 pub(crate) fn render_enemy_panel(
     mut commands: Commands,
     battle: Res<BattleData>,
@@ -3251,5 +3332,53 @@ mod pack_tests {
             "myconid brute",
             "a creature not in a pack gets no mark"
         );
+    }
+}
+
+#[cfg(test)]
+mod watch_banner_tests {
+    use super::*;
+
+    /// The banner is the only thing on the battle screen that says a watcher is watching
+    /// (`SOC-3`). Everything else already degrades right — the command menu, the party
+    /// strip and the hero keys all key off `your_ids`, which is empty for a spectator — so
+    /// without it they see a fight, no menu, and no way out, which reads as a hang.
+    ///
+    /// A real-system test rather than a screenshot: spectating is a transient state that
+    /// autoplay cannot be steered into, and the memory of chasing transient UI with
+    /// screenshots is a long one.
+    #[test]
+    fn the_banner_says_watching_only_while_watching() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<BattleData>();
+        app.add_systems(Update, render_watch_banner);
+
+        // In a fight of our own: nothing. The banner must not appear over a real battle.
+        app.update();
+        let mut q = app.world_mut().query_filtered::<Entity, With<WatchBanner>>();
+        assert_eq!(q.iter(app.world()).count(), 0, "a fighter was told they were watching");
+
+        app.world_mut().resource_mut::<BattleData>().spectating = true;
+        app.update();
+        let mut q = app.world_mut().query_filtered::<Entity, With<WatchBanner>>();
+        assert_eq!(q.iter(app.world()).count(), 1, "a watcher was told nothing");
+
+        // And it comes down the instant the feed closes, rather than lingering over the
+        // overworld or over the next fight.
+        app.world_mut().resource_mut::<BattleData>().spectating = false;
+        app.update();
+        let mut q = app.world_mut().query_filtered::<Entity, With<WatchBanner>>();
+        assert_eq!(q.iter(app.world()).count(), 0, "the banner outlived the feed");
+    }
+
+    /// A watcher owns no combatant, so the whole command surface has to fall silent on its
+    /// own — this pins the property the banner depends on rather than a second suppression
+    /// path that could drift from it.
+    #[test]
+    fn a_watcher_has_no_hero_to_command() {
+        let battle = BattleData { spectating: true, your_ids: Vec::new(), ..Default::default() };
+        assert!(battle.active.is_none(), "a watcher was handed an active hero");
+        assert!(battle.your_ids.is_empty());
     }
 }
