@@ -4723,8 +4723,18 @@ impl GameState {
         // which is exactly why this is a TEST flag and not a departure hub.
         if departure_hub_distance > 0 {
             let reach = departure_hub_distance as f64;
+            // `inst.balance`, NOT `self.balance`. The world was built from a CLONE carrying
+            // the DEV overrides (`MELD_END_FIGHT_AT` rewrites `end_fight_min_distance` on it),
+            // and every section this pump streams is generated from whatever balance it is
+            // handed. Passing the un-overridden one meant `start_level` + `end_fight_at`
+            // silently disagreed: the initial `generate` honoured the requested floor, then
+            // every streamed section past it went back to the shipped d3200 — so the end
+            // fight was placed at d3200, an hour's walk further out than the flag asked for,
+            // and a party started deep never met it. Two overrides that do not compose is the
+            // same one-rule-two-call-sites failure this file has been bitten by before.
+            let inst_balance = inst.balance.clone();
             for _ in 0..256 {
-                if inst.arena.ensure_frontier(&self.balance, reach).is_empty() {
+                if inst.arena.ensure_frontier(&inst_balance, reach).is_empty() {
                     break;
                 }
             }
