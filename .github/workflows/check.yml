@@ -1,0 +1,60 @@
+# Build + lint + test on every PR and every push to main.
+#
+# This runs `make check` and nothing else, deliberately: the same command a developer runs
+# locally is the command that gates a merge, so the two cannot drift. Adding a check means
+# editing the Makefile, not this file.
+#
+# What it covers, and why it is worth a job at all: the Bevy client is a SEPARATE cargo
+# workspace (sharing only `meld-proto` by path), so `cargo test --workspace` at the repo root
+# never touches it. A variant added to a shared enum can pass every server-side check and
+# still leave the game unbuildable — `ConsumableEffect::ThrownAll` did exactly that, and
+# `main` could not build the client for several merges before anyone tried it.
+#
+# The Postgres-backed `qa/` suite is NOT here. It drives real bot clients through real-time
+# loops with wall-clock deadlines, and those flake under a loaded shared runner — a suite that
+# goes red on its own would train everyone to ignore the light. `make check` still COMPILES
+# those tests (clippy --all-targets), so a broken one fails here; running them is `make test`.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# A new push to a PR makes the in-flight run pointless, so drop it rather than pay for it.
+# `main` is exempt: those runs say whether a merged commit is good and must not be cancelled.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Both workspaces from cold, including Bevy. Well clear of the ~20 min this takes
+    # uncached, without letting a hung run burn an hour.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bevy's Linux build needs ALSA + udev dev headers to COMPILE (X11 is dlopen'd at
+      # runtime, so no dev lib is needed just to build). Same list as the dist workflow.
+      - name: Install Linux build deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # BOTH target dirs — they are separate workspaces with separate locks, and the client's
+      # is the expensive one (Bevy). `.` must be listed explicitly once `client` is.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            client
+
+      - run: make check

@@ -580,10 +580,39 @@ loop for demos/screenshots.
 ## Testing
 
 ```sh
-cargo test --workspace                    # unit tests — no DB, no cloud, fully deterministic
-bash qa/scripts/local_pg.sh cargo test -p meld-qa --no-fail-fast   # DB-backed suite (boots throwaway PG)
-cargo clippy --workspace --all-targets    # keep clean
+make check        # ← run this before opening a PR. What CI runs, both workspaces.
+make test         # DB-backed conformance suite (boots a throwaway Postgres)
 ```
+
+`make check` is one command on purpose: it is exactly what
+[`.github/workflows/check.yml`](.github/workflows/check.yml) runs, so local and CI cannot
+drift. Adding a check means editing the `Makefile`, not the workflow.
+
+**It covers BOTH workspaces, and that is the point.** The Bevy client is a separate cargo
+workspace sharing only `meld-proto` by path, so `cargo test --workspace` at the repo root
+**never touches it** — a variant added to a shared enum can pass every server-side check and
+still leave the game unbuildable. `ConsumableEffect::ThrownAll` did exactly that: `main`
+could not build the client for several merges before anyone tried. If you touch a shared
+enum, `make check` is the only thing that will tell you.
+
+The pieces, if you need one on its own:
+
+```sh
+cargo clippy --workspace --all-targets -- -D warnings   # server; also COMPILES the qa/ tests
+cargo test --workspace --exclude meld-qa                # server, DB-free
+cd client && cargo clippy -p meld-client --all-targets -- -D warnings
+cd client && cargo test -p meld-client
+```
+
+Use `cd client`, not `--manifest-path client/Cargo.toml` — the latter has been observed to
+report success without relinking the release binary, which then boots as a *stale* build and
+fails with a balance-parse error naming a field that no longer exists. Check the binary's
+mtime before believing a boot failure.
+
+The `qa/` suite is deliberately NOT in CI: it drives real bot clients through real-time loops
+with wall-clock deadlines, and those flake on a loaded shared runner — a job that goes red on
+its own trains everyone to ignore the light. `make check` still *compiles* those tests, so a
+broken one fails there.
 
 **`--no-fail-fast` is not optional on the `qa/` suite.** Every test there is its own
 binary, and cargo stops at the FIRST binary that fails — so one red test silently
